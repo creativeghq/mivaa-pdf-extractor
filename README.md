@@ -1,10 +1,21 @@
 # MIVAA PDF Extractor using PyMuPDF4LLM
+
 ## Introduction
 
 Working with PDFs can be challenging, especially when dealing with documents containing tables, images, and metadata. This is particularly important for those in the AI field who are fine-tuning large language models (LLMs) or developing knowledge retrieval systems like RAG (Retrieval-Augmented Generation). Extracting accurate data is essential in these scenarios.
 
 This solution contains a generic REST based API for extracting text, images, tables, and metadata data from PDF documents.
 
+## Prerequisites
+
+1. **Download the Repository**:
+   - [Clone](https://github.com/MIVAA-ai/mivaa-las-to-json-convertor.git) or download the repository as a [ZIP](https://github.com/MIVAA-ai/mivaa-las-to-json-convertor/archive/refs/heads/main.zip) file.
+
+2. **Unzip the Repository**:
+   - Extract the downloaded ZIP file to a folder on your system.
+
+3. **Install Docker**:
+   - Ensure Docker is installed and running on your machine. You can download Docker [here](https://www.docker.com/).
 
 ## Installation 
 This application is build in python using fastAPI and PyMuPDF4LLM
@@ -75,6 +86,10 @@ The extraction of images along with text is often overlooked but incredibly sign
 ###### Response:
 ![Alt text](images/swagger_extract_images_response.jpg)
 
+## Additional Resources
 
+- **Blog**:
+  Read the detailed blog post about this application: [https://deepdatawithmivaa.com/2025/01/06/upgrade-your-well-log-data-workflow-vol-1-from-las-2-0-to-json/]
 
-
+- **Demonstration Video**:
+  Check out the video showcasing how to deploy and using this tool: [https://jsonwelllogformat.org/]
