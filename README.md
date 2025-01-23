@@ -26,6 +26,10 @@ This application is build in python using fastAPI and PyMuPDF4LLM
 ```
     pip install -r requirements.txt
 ```
+3. Run the following command:
+```
+    uvicorn main:app --host 0.0.0.0 --port 8000
+```
 
 ##### Docker installation
 1. Install docker
@@ -39,12 +43,7 @@ This application is build in python using fastAPI and PyMuPDF4LLM
 ```
 ## Run application
 
-Run the following command:
-```
-    uvicorn main:app --host 0.0.0.0 --port 8000
-```
-
-Lauch swagger APIs:
+Launch swagger APIs:
 ```
     http://localhost:8000/docs
 ```
