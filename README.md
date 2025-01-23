@@ -9,7 +9,7 @@ This solution contains a generic REST based API for extracting text, images, tab
 ## Prerequisites
 
 1. **Download the Repository**:
-   - [Clone](https://github.com/MIVAA-ai/mivaa-pdf-extractor.git) or download the repository as a [ZIP](https://github.com/MIVAA-ai/mivaa-las-to-json-convertor/archive/refs/heads/main.zip) file.
+   - [Clone](https://github.com/MIVAA-ai/mivaa-pdf-extractor.git) or download the repository as a [ZIP](https://github.com/MIVAA-ai/mivaa-pdf-extractor/archive/refs/heads/main.zip) file.
 
 2. **Unzip the Repository**:
    - Extract the downloaded ZIP file to a folder on your system.
