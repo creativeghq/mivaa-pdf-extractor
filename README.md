@@ -1,4 +1,4 @@
-# MIVAA PDF Extractor using 
+# MIVAA PDF Extractor using PyMuPDF4LLM
 ## Introduction
 
 Working with PDFs can be challenging, especially when dealing with documents containing tables, images, and metadata. This is particularly important for those in the AI field who are fine-tuning large language models (LLMs) or developing knowledge retrieval systems like RAG (Retrieval-Augmented Generation). Extracting accurate data is essential in these scenarios.
