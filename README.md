@@ -1,4 +1,4 @@
-# MIVAA PDF Extractor using PyMuPDF4LLM
+# MIVAA PDF Extractor using 
 ## Introduction
 
 Working with PDFs can be challenging, especially when dealing with documents containing tables, images, and metadata. This is particularly important for those in the AI field who are fine-tuning large language models (LLMs) or developing knowledge retrieval systems like RAG (Retrieval-Augmented Generation). Extracting accurate data is essential in these scenarios.
@@ -6,15 +6,26 @@ Working with PDFs can be challenging, especially when dealing with documents con
 This solution contains a generic REST based API for extracting text, images, tables, and metadata data from PDF documents.
 
 
-## Installation
-
+## Installation 
 This application is build in python using fastAPI and PyMuPDF4LLM
 
-##### Install dependency:
+##### Direct intallation
+1. Install python and pip
+2. Run following command:
 ```
     pip install -r requirements.txt
 ```
 
+##### Docker intallation
+1. Install docker
+2. Build docker image
+```
+     docker build -t mivaa-pdf-extractor:1.0.0 .
+```
+3. Run docker container
+```
+     docker run -p 8000:8000 mivaa-pdf-extractor:1.0.0
+```
 ## Run application
 
 Run the following command:
