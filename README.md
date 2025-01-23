@@ -9,14 +9,14 @@ This solution contains a generic REST based API for extracting text, images, tab
 ## Installation 
 This application is build in python using fastAPI and PyMuPDF4LLM
 
-##### Direct intallation
+##### Direct installation
 1. Install python and pip
 2. Run following command:
 ```
     pip install -r requirements.txt
 ```
 
-##### Docker intallation
+##### Docker installation
 1. Install docker
 2. Build docker image
 ```
