@@ -91,4 +91,4 @@ The extraction of images along with text is often overlooked but incredibly sign
   Read the detailed blog post about this application: [https://deepdatawithmivaa.com/2025/01/06/upgrade-your-well-log-data-workflow-vol-1-from-las-2-0-to-json/]
 
 - **Demonstration Video**:
-  Check out the video showcasing how to deploy and using this tool: [https://jsonwelllogformat.org/]
+  Check out the video showcasing how to deploy and using this tool: [https://youtu.be/cYO-O94lHI8]
