@@ -1,0 +1,188 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf2markdown-microservice"
+version = "0.1.0"
+description = "Production-ready FastAPI microservice for PDF to Markdown conversion with LlamaIndex integration"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Development Team", email = "dev@example.com"}
+]
+maintainers = [
+    {name = "Development Team", email = "dev@example.com"}
+]
+keywords = ["pdf", "markdown", "fastapi", "microservice", "llamaindex", "rag"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Framework :: FastAPI",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Text Processing :: Markup",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+]
+requires-python = ">=3.9"
+dependencies = [
+    "fastapi[standard]==0.104.1",
+    "uvicorn[standard]==0.24.0",
+    "pymupdf4llm==0.0.12",
+    "PyMuPDF==1.23.8",
+    "pandas==2.1.4",
+    "llama-index==0.9.13",
+    "llama-index-core==0.9.13",
+    "llama-index-embeddings-openai==0.1.6",
+    "llama-index-llms-openai==0.1.13",
+    "supabase==2.3.0",
+    "postgrest==0.13.0",
+    "python-dotenv==1.0.0",
+    "pydantic==2.5.2",
+    "pydantic-settings==2.1.0",
+    "httpx==0.25.2",
+    "requests==2.31.0",
+    "asyncio-mqtt==0.13.0",
+    "aiofiles==23.2.1",
+    "structlog==23.2.0",
+    "python-json-logger==2.0.7",
+    "python-multipart==0.0.6",
+    "email-validator==2.1.0",
+    "python-dateutil==2.8.2",
+    "typing-extensions==4.8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==7.4.3",
+    "pytest-asyncio==0.21.1",
+    "pytest-cov==4.1.0",
+    "black==23.11.0",
+    "isort==5.12.0",
+    "flake8==6.1.0",
+    "mypy==1.7.1",
+]
+test = [
+    "pytest==7.4.3",
+    "pytest-asyncio==0.21.1",
+    "pytest-cov==4.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/example/pdf2markdown-microservice"
+Documentation = "https://github.com/example/pdf2markdown-microservice#readme"
+Repository = "https://github.com/example/pdf2markdown-microservice.git"
+"Bug Tracker" = "https://github.com/example/pdf2markdown-microservice/issues"
+
+[project.scripts]
+pdf2md-server = "app.main:main"
+
+# Tool configurations
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+exclude = ["tests*"]
+
+[tool.black]
+line-length = 88
+target-version = ['py39', 'py310', 'py311', 'py312']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+known_first_party = ["app"]
+known_third_party = ["fastapi", "pydantic", "uvicorn", "pymupdf4llm", "llama_index", "supabase"]
+
+[tool.flake8]
+max-line-length = 88
+extend-ignore = ["E203", "W503"]
+exclude = [
+    ".git",
+    "__pycache__",
+    ".venv",
+    "build",
+    "dist",
+    "*.egg-info",
+]
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = [
+    "pymupdf4llm.*",
+    "fitz.*",
+    "supabase.*",
+    "postgrest.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q --strict-markers --strict-config"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+]
+
+[tool.coverage.run]
+source = ["app"]
+omit = [
+    "*/tests/*",
+    "*/test_*",
+    "*/__pycache__/*",
+    "*/venv/*",
+    "*/.venv/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]

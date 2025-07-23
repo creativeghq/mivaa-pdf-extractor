@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  mivaa-pdf-extractor:
+    image: ghcr.io/${GITHUB_REPOSITORY:-owner/repo}/mivaa-pdf-extractor:${IMAGE_TAG:-latest}
+    container_name: mivaa-pdf-extractor
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=production
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - SENTRY_DSN=${SENTRY_DSN}
+      - MATERIAL_KAI_API_URL=${MATERIAL_KAI_API_URL}
+      - MATERIAL_KAI_API_KEY=${MATERIAL_KAI_API_KEY}
+    volumes:
+      - ./logs:/app/logs
+      - ./uploads:/app/uploads
+      - ./temp:/app/temp
+    networks:
+      - mivaa-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  mivaa-network:
+    driver: bridge
+
+volumes:
+  logs:
+  uploads:
+  temp:

@@ -1,0 +1,235 @@
+name: Deploy to Digital Ocean
+
+on:
+  push:
+    branches: [ main, production ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/mivaa-pdf-extractor
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Run tests
+      run: |
+        python run_tests.py
+      env:
+        ENVIRONMENT: testing
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL_TEST }}
+        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY_TEST }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY_TEST }}
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Output image
+      id: image
+      run: echo "image=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/production'
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup SSH
+      uses: webfactory/ssh-agent@v0.8.0
+      with:
+        ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+    - name: Add server to known hosts
+      run: |
+        ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts
+
+    - name: Setup Server (First Time Only)
+      run: |
+        ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} << 'EOF'
+          # Check if setup is already done
+          if [ ! -f /opt/mivaa-pdf-extractor/.setup-complete ]; then
+            echo "🚀 Setting up server for first time..."
+            
+            # Create application directory first
+            sudo mkdir -p /opt/mivaa-pdf-extractor
+            sudo chown -R $USER:$USER /opt/mivaa-pdf-extractor
+            
+            # Clone repository if not exists
+            if [ ! -d /opt/mivaa-pdf-extractor/.git ]; then
+              cd /opt/mivaa-pdf-extractor
+              git clone https://github.com/${{ github.repository }}.git .
+            else
+              cd /opt/mivaa-pdf-extractor
+              git fetch origin
+              git reset --hard origin/main
+            fi
+            
+            # Make setup script executable and run it
+            chmod +x /opt/mivaa-pdf-extractor/deploy/setup-server.sh
+            sudo /opt/mivaa-pdf-extractor/deploy/setup-server.sh
+            
+            # Mark setup as complete
+            touch /opt/mivaa-pdf-extractor/.setup-complete
+            echo "✅ Server setup completed!"
+          else
+            echo "✅ Server already configured, skipping setup..."
+          fi
+        EOF
+
+    - name: Setup SSL Certificate
+      run: |
+        ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} << 'EOF'
+          # Setup SSL certificate if domain is provided
+          if [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            echo "🔒 Setting up SSL certificate for ${{ secrets.DOMAIN_NAME }}..."
+            
+            # Run SSL setup script
+            sudo /usr/local/bin/setup-ssl.sh "${{ secrets.DOMAIN_NAME }}" "${{ secrets.ADMIN_EMAIL }}"
+            
+            echo "✅ SSL certificate setup completed!"
+          else
+            echo "ℹ️ No domain name provided, skipping SSL setup..."
+          fi
+        EOF
+
+    - name: Deploy Application
+      run: |
+        ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} << 'EOF'
+          # Navigate to application directory
+          cd /opt/mivaa-pdf-extractor
+          
+          # Pull latest code
+          git fetch origin
+          git reset --hard origin/main
+          
+          # Login to GitHub Container Registry
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          
+          # Create docker-compose override for production
+          cat > docker-compose.override.yml << 'OVERRIDE_EOF'
+version: '3.8'
+services:
+  mivaa-pdf-extractor:
+    image: ${{ needs.build.outputs.image }}
+    environment:
+      - ENVIRONMENT=production
+      - SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+      - SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
+      - OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+      - SENTRY_DSN=${{ secrets.SENTRY_DSN }}
+      - MATERIAL_KAI_API_URL=${{ secrets.MATERIAL_KAI_API_URL }}
+      - MATERIAL_KAI_API_KEY=${{ secrets.MATERIAL_KAI_API_KEY }}
+OVERRIDE_EOF
+          
+          # Pull latest image
+          docker pull ${{ needs.build.outputs.image }}
+          
+          # Stop existing containers
+          docker-compose down
+          
+          # Start new containers with override
+          docker-compose up -d
+          
+          # Clean up old images
+          docker image prune -f
+          
+          # Wait for health check
+          echo "Waiting for application to be healthy..."
+          for i in {1..30}; do
+            if curl -f http://localhost/health > /dev/null 2>&1; then
+              echo "Application is healthy!"
+              break
+            fi
+            echo "Attempt $i/30: Application not ready yet..."
+            sleep 10
+          done
+          
+          # Verify deployment
+          if curl -f http://localhost/health > /dev/null 2>&1; then
+            echo "✅ Deployment successful!"
+            echo "🌐 Application is running at: http://${{ secrets.DEPLOY_HOST }}"
+          else
+            echo "❌ Health check failed!"
+            docker-compose logs --tail=50
+            exit 1
+          fi
+        EOF
+
+  notify:
+    needs: [test, build, deploy]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Notify deployment status
+      run: |
+        if [ "${{ needs.deploy.result }}" == "success" ]; then
+          echo "✅ Deployment successful!"
+          # Add notification logic here (Slack, Discord, email, etc.)
+        else
+          echo "❌ Deployment failed!"
+          # Add failure notification logic here
+        fi
