@@ -16,7 +16,7 @@ import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, status
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status
 from fastapi.responses import StreamingResponse
 
 # Import existing extractor functions
@@ -27,6 +27,8 @@ from app.utils.exceptions import (
     PDFValidationError,
     PDFExtractionError
 )
+from app.dependencies import get_current_user, get_workspace_context
+from app.schemas.auth import User, WorkspaceContext
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -81,7 +83,9 @@ def create_zip_stream(output_dir):
 )
 async def extract_markdown(
     file: UploadFile = File(..., description="PDF file to process"),
-    page_number: Optional[int] = None
+    page_number: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    workspace_context: WorkspaceContext = Depends(get_workspace_context)
 ):
     """
     Extract markdown content from a PDF file.
@@ -137,7 +141,9 @@ async def extract_markdown(
 )
 async def extract_tables(
     file: UploadFile = File(..., description="PDF file to process"),
-    page_number: Optional[int] = None
+    page_number: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    workspace_context: WorkspaceContext = Depends(get_workspace_context)
 ) -> StreamingResponse:
     """
     Extract tables from a PDF file and return as ZIP archive.
@@ -208,7 +214,9 @@ async def extract_tables(
 )
 async def extract_images(
     file: UploadFile = File(..., description="PDF file to process"),
-    page_number: Optional[int] = None
+    page_number: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    workspace_context: WorkspaceContext = Depends(get_workspace_context)
 ) -> StreamingResponse:
     """
     Extract images from a PDF file and return as ZIP archive.
@@ -276,7 +284,10 @@ async def extract_images(
     summary="PDF Service Health Check",
     description="Check the health and availability of PDF processing services"
 )
-async def health_check():
+async def health_check(
+    current_user: User = Depends(get_current_user),
+    workspace_context: WorkspaceContext = Depends(get_workspace_context)
+):
     """
     Health check endpoint for PDF processing service.
     

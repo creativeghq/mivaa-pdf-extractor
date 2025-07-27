@@ -69,6 +69,14 @@ class Settings(BaseSettings):
     # Security Settings
     max_requests_per_minute: int = Field(default=60, env="MAX_REQUESTS_PER_MINUTE")
     
+    # JWT Authentication Settings
+    jwt_secret_key: str = Field(default="", env="JWT_SECRET_KEY")
+    jwt_algorithm: str = Field(default="HS256", env="JWT_ALGORITHM")
+    jwt_access_token_expire_minutes: int = Field(default=30, env="JWT_ACCESS_TOKEN_EXPIRE_MINUTES")
+    jwt_refresh_token_expire_days: int = Field(default=7, env="JWT_REFRESH_TOKEN_EXPIRE_DAYS")
+    jwt_issuer: str = Field(default="material-kai-platform", env="JWT_ISSUER")
+    jwt_audience: str = Field(default="mivaa-pdf-extractor", env="JWT_AUDIENCE")
+    
     # Supabase Settings
     supabase_url: str = Field(default="", env="SUPABASE_URL")
     supabase_key: str = Field(default="", env="SUPABASE_KEY")
@@ -366,6 +374,22 @@ class Settings(BaseSettings):
             "enabled": self.sentry_enabled,
             "release": self.sentry_release,
             "server_name": self.sentry_server_name,
+        }
+    
+    def get_jwt_config(self) -> Dict[str, Any]:
+        """
+        Get JWT authentication configuration.
+        
+        This provides all necessary configuration for JWT authentication
+        including secret key, algorithm, token expiration, and validation settings.
+        """
+        return {
+            "secret_key": self.jwt_secret_key,
+            "algorithm": self.jwt_algorithm,
+            "access_token_expire_minutes": self.jwt_access_token_expire_minutes,
+            "refresh_token_expire_days": self.jwt_refresh_token_expire_days,
+            "issuer": self.jwt_issuer,
+            "audience": self.jwt_audience,
         }
     
     class Config:

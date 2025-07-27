@@ -481,14 +481,19 @@ def create_app() -> FastAPI:
         lifespan=lifespan
     )
     
-    # Add CORS middleware
+    # Add CORS middleware with secure configuration
+    cors_config = settings.get_cors_config()
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # Configure appropriately for production
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=cors_config["allow_origins"],
+        allow_credentials=cors_config["allow_credentials"],
+        allow_methods=cors_config["allow_methods"],
+        allow_headers=cors_config["allow_headers"],
     )
+    
+    # Add JWT authentication middleware
+    from app.middleware.jwt_auth import JWTAuthMiddleware
+    app.add_middleware(JWTAuthMiddleware)
     
     # Add performance monitoring middleware
     from app.monitoring.performance_monitor import PerformanceMiddleware
@@ -694,9 +699,18 @@ async def root() -> Dict[str, Any]:
     }
 
 
-# Include PDF processing API routes
+# Include API routes
 from app.api.pdf_routes import router as pdf_router
+from app.api.documents import router as documents_router
+from app.api.search import router as search_router
+from app.api.images import router as images_router
+from app.api.admin import router as admin_router
+
 app.include_router(pdf_router, prefix="/api/v1")
+app.include_router(documents_router)
+app.include_router(search_router)
+app.include_router(images_router)
+app.include_router(admin_router)
 
 
 def main():
