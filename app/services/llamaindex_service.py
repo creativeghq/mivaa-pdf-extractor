@@ -64,7 +64,7 @@ class LlamaIndexService:
             return
         
         # Configuration
-        self.embedding_model = self.config.get('embedding_model', 'text-embedding-ada-002')
+        self.embedding_model = self.config.get('embedding_model', 'text-embedding-3-small')
         self.llm_model = self.config.get('llm_model', 'gpt-3.5-turbo')
         self.chunk_size = self.config.get('chunk_size', 1024)
         self.chunk_overlap = self.config.get('chunk_overlap', 200)

@@ -90,7 +90,7 @@ class Settings(BaseSettings):
     
     # LlamaIndex RAG Settings
     llamaindex_embedding_model: str = Field(
-        default="text-embedding-ada-002",
+        default="text-embedding-3-small",
         env="LLAMAINDEX_EMBEDDING_MODEL"
     )
     llamaindex_llm_model: str = Field(
