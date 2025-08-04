@@ -55,7 +55,22 @@ mypy==1.7.1
 python-multipart==0.0.6
 email-validator==2.1.0
 
+# Image Processing
+opencv-python>=4.8.0
+Pillow>=10.0.0
+scikit-image>=0.21.0
+imageio>=2.31.0
+
+# Computer Vision
+torch>=2.0.0
+torchvision>=0.15.0
+transformers>=4.30.0
+clip-by-openai>=1.0
+
 # Additional utilities
 python-dateutil==2.8.2
 typing-extensions==4.8.0
 psutil==5.9.6
+numpy>=1.24.0
+scipy>=1.11.0
+matplotlib>=3.7.0
