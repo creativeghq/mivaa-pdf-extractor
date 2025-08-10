@@ -14,15 +14,24 @@ from pathlib import Path
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
+# Import the new embedding service
+from .embedding_service import EmbeddingService, EmbeddingConfig
+from .advanced_search_service import (
+    AdvancedSearchService,
+    QueryType,
+    SearchFilter,
+    MMRResult
+)
+
 try:
     from llama_index.core import (
-        VectorStoreIndex, 
-        Document, 
+        VectorStoreIndex,
+        Document,
         Settings,
         StorageContext,
         load_index_from_storage
     )
-    from llama_index.core.node_parser import SentenceSplitter
+    from llama_index.core.node_parser import SentenceSplitter, SemanticSplitterNodeParser
     from llama_index.core.embeddings import BaseEmbedding
     from llama_index.embeddings.openai import OpenAIEmbedding
     from llama_index.embeddings.huggingface import HuggingFaceEmbedding
@@ -32,7 +41,9 @@ try:
     from llama_index.core.retrievers import VectorIndexRetriever
     from llama_index.core.response_synthesizers import ResponseMode
     from llama_index.core.response_synthesizers import get_response_synthesizer
-    from llama_index.readers.file import PDFReader
+    from llama_index.readers.file import PDFReader, DocxReader, MarkdownReader
+    from llama_index.vector_stores.supabase import SupabaseVectorStore
+    import vecs
     LLAMAINDEX_AVAILABLE = True
 except ImportError as e:
     logging.warning(f"LlamaIndex not available: {e}")
@@ -70,17 +81,255 @@ class LlamaIndexService:
         self.chunk_overlap = self.config.get('chunk_overlap', 200)
         self.similarity_top_k = self.config.get('similarity_top_k', 5)
         
-        # Storage
+        # Supabase Configuration
+        self.supabase_url = self.config.get('supabase_url', os.getenv('SUPABASE_URL'))
+        self.supabase_key = self.config.get('supabase_key', os.getenv('SUPABASE_ANON_KEY'))
+        self.table_name = self.config.get('table_name', 'documents')
+        self.query_name = self.config.get('query_name', 'match_documents')
+        
+        # Storage (fallback for compatibility)
         self.storage_dir = self.config.get('storage_dir', tempfile.mkdtemp(prefix='llamaindex_'))
         Path(self.storage_dir).mkdir(parents=True, exist_ok=True)
+        
+        # Initialize centralized embedding service
+        self._initialize_embedding_service()
         
         # Initialize components
         self._initialize_components()
         
+        # Initialize vector store
+        self._initialize_vector_store()
+        
+        # Initialize document readers
+        self.document_readers = self._initialize_document_readers()
+        
         # Index cache
         self.indices: Dict[str, VectorStoreIndex] = {}
         
+        # Initialize advanced search service
+        self.advanced_search_service = None
+        self._initialize_advanced_search_service()
+        
+        # Conversation memory management
+        self.conversation_memories = {}  # Session ID -> conversation history
+        self.max_conversation_turns = 10  # Maximum turns to keep in memory
+        self.conversation_summary_threshold = 8  # Summarize when exceeding this
+        
         self.logger.info(f"LlamaIndex service initialized with storage: {self.storage_dir}")
+    
+    async def semantic_search_with_mmr(
+        self,
+        query: str,
+        document_id: Optional[str] = None,
+        k: int = 10,
+        lambda_mult: float = 0.5,
+        query_type: str = "semantic",
+        filters: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Perform semantic search with MMR (Maximal Marginal Relevance) for Phase 7.
+        
+        Args:
+            query: Search query
+            document_id: Optional document ID to search within
+            k: Number of results to return
+            lambda_mult: MMR lambda parameter (0.0 = max diversity, 1.0 = max relevance)
+            query_type: Type of query (semantic, factual, analytical, etc.)
+            filters: Optional metadata filters
+            
+        Returns:
+            Dictionary containing MMR results and metadata
+        """
+        if not self.available or not self.advanced_search_service:
+            return {
+                "results": [],
+                "message": "Advanced search service not available",
+                "total_results": 0
+            }
+        
+        try:
+            # Use the advanced search service for MMR
+            mmr_result = await self.advanced_search_service.semantic_search_with_mmr(
+                query=query,
+                document_id=document_id,
+                k=k,
+                lambda_mult=lambda_mult,
+                query_type=query_type,
+                filters=filters
+            )
+            
+            return {
+                "results": [
+                    {
+                        "content": result.content,
+                        "score": result.score,
+                        "diversity_score": result.diversity_score,
+                        "metadata": result.metadata,
+                        "document_id": result.document_id
+                    }
+                    for result in mmr_result.results
+                ],
+                "query_expansion": mmr_result.query_expansion.__dict__ if mmr_result.query_expansion else None,
+                "total_results": len(mmr_result.results),
+                "processing_time": mmr_result.processing_time,
+                "lambda_mult": lambda_mult,
+                "query_type": query_type
+            }
+            
+        except Exception as e:
+            self.logger.error(f"MMR search failed: {e}")
+            return {
+                "results": [],
+                "error": str(e),
+                "total_results": 0
+            }
+    
+    async def advanced_query_with_optimization(
+        self,
+        query: str,
+        document_id: Optional[str] = None,
+        query_type: str = "semantic",
+        enable_expansion: bool = True,
+        filters: Optional[Dict[str, Any]] = None,
+        top_k: int = 5
+    ) -> Dict[str, Any]:
+        """
+        Perform advanced query with optimization and expansion for Phase 7.
+        
+        Args:
+            query: Original query
+            document_id: Optional document ID to search within
+            query_type: Type of query processing
+            enable_expansion: Whether to enable query expansion
+            filters: Optional metadata filters
+            top_k: Number of results to return
+            
+        Returns:
+            Dictionary containing optimized query results
+        """
+        if not self.available or not self.advanced_search_service:
+            return {
+                "results": [],
+                "message": "Advanced search service not available",
+                "total_results": 0
+            }
+        
+        try:
+            # Use the advanced search service for optimized query
+            search_result = await self.advanced_search_service.advanced_search(
+                query=query,
+                document_id=document_id,
+                query_type=query_type,
+                enable_expansion=enable_expansion,
+                filters=filters,
+                top_k=top_k
+            )
+            
+            return {
+                "results": [
+                    {
+                        "content": result.content,
+                        "score": result.score,
+                        "metadata": result.metadata,
+                        "document_id": result.document_id
+                    }
+                    for result in search_result.results
+                ],
+                "optimized_query": search_result.optimized_query,
+                "query_expansion": search_result.query_expansion.__dict__ if search_result.query_expansion else None,
+                "total_results": len(search_result.results),
+                "processing_time": search_result.processing_time,
+                "query_type": query_type
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Advanced query failed: {e}")
+            return {
+                "results": [],
+                "error": str(e),
+                "total_results": 0
+            }
+    
+    def _initialize_embedding_service(self):
+        """Initialize the centralized embedding service."""
+        if not self.available:
+            return
+        
+        try:
+            # Get OpenAI API key from environment
+            openai_api_key = os.getenv('OPENAI_API_KEY')
+            if not openai_api_key:
+                self.logger.warning("OpenAI API key not found, embedding service will be limited")
+                self.embedding_service = None
+                return
+            
+            # Configure embedding service
+            embedding_config = EmbeddingConfig(
+                model_name=self.embedding_model,
+                api_key=openai_api_key,
+                max_tokens=8191,  # OpenAI text-embedding-3-small limit
+                batch_size=100,
+                rate_limit_rpm=3000,
+                rate_limit_tpm=1000000,
+                cache_ttl=3600,  # 1 hour cache
+                enable_cache=True
+            )
+            
+            # Initialize embedding service
+            self.embedding_service = EmbeddingService(embedding_config)
+            
+            self.logger.info(f"Centralized embedding service initialized with model: {self.embedding_model}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to initialize embedding service: {e}")
+            self.embedding_service = None
+    
+    def _create_embedding_wrapper(self):
+        """Create a wrapper that integrates our embedding service with LlamaIndex."""
+        from llama_index.core.embeddings import BaseEmbedding
+        from typing import List
+        
+        class EmbeddingServiceWrapper(BaseEmbedding):
+            """Wrapper to integrate our centralized embedding service with LlamaIndex."""
+            
+            def __init__(self, embedding_service: EmbeddingService):
+                super().__init__()
+                self.embedding_service = embedding_service
+                self._model_name = embedding_service.config.model_name
+                self._embed_batch_size = embedding_service.config.batch_size
+            
+            def _get_query_embedding(self, query: str) -> List[float]:
+                """Get embedding for a single query."""
+                try:
+                    result = self.embedding_service.get_embedding(query)
+                    return result.embedding
+                except Exception as e:
+                    self.embedding_service.logger.error(f"Query embedding failed: {e}")
+                    raise
+            
+            def _get_text_embedding(self, text: str) -> List[float]:
+                """Get embedding for a single text."""
+                try:
+                    result = self.embedding_service.get_embedding(text)
+                    return result.embedding
+                except Exception as e:
+                    self.embedding_service.logger.error(f"Text embedding failed: {e}")
+                    raise
+            
+            def _get_text_embeddings(self, texts: List[str]) -> List[List[float]]:
+                """Get embeddings for multiple texts using batch processing."""
+                try:
+                    batch_result = self.embedding_service.get_embeddings_batch(texts)
+                    return [result.embedding for result in batch_result.results]
+                except Exception as e:
+                    self.embedding_service.logger.error(f"Batch embedding failed: {e}")
+                    raise
+            
+            @property
+            def model_name(self) -> str:
+                return self._model_name
+        
+        return EmbeddingServiceWrapper(self.embedding_service)
     
     def _initialize_components(self):
         """Initialize LlamaIndex components."""
@@ -88,18 +337,25 @@ class LlamaIndexService:
             return
         
         try:
-            # Initialize embeddings
-            if self.embedding_model.startswith('text-embedding'):
-                # OpenAI embeddings
-                self.embeddings = OpenAIEmbedding(
-                    model=self.embedding_model,
-                    api_key=os.getenv('OPENAI_API_KEY')
-                )
+            # Initialize embeddings - use centralized embedding service if available
+            if hasattr(self, 'embedding_service') and self.embedding_service:
+                # Use centralized embedding service
+                self.embeddings = self._create_embedding_wrapper()
+                self.logger.info("Using centralized embedding service for LlamaIndex")
             else:
-                # HuggingFace embeddings as fallback
-                self.embeddings = HuggingFaceEmbedding(
-                    model_name="sentence-transformers/all-MiniLM-L6-v2"
-                )
+                # Fallback to direct embedding initialization
+                if self.embedding_model.startswith('text-embedding'):
+                    # OpenAI embeddings
+                    self.embeddings = OpenAIEmbedding(
+                        model=self.embedding_model,
+                        api_key=os.getenv('OPENAI_API_KEY')
+                    )
+                else:
+                    # HuggingFace embeddings as fallback
+                    self.embeddings = HuggingFaceEmbedding(
+                        model_name="sentence-transformers/all-MiniLM-L6-v2"
+                    )
+                self.logger.info("Using direct embedding initialization")
             
             # Initialize LLM
             if self.llm_model.startswith('gpt'):
@@ -129,6 +385,54 @@ class LlamaIndexService:
         except Exception as e:
             self.logger.error(f"Failed to initialize LlamaIndex components: {e}")
             self.available = False
+    
+    def _initialize_vector_store(self):
+        """Initialize SupabaseVectorStore for pgvector integration."""
+        if not self.available:
+            return
+        
+        try:
+            # Check if Supabase configuration is available
+            if not self.supabase_url or not self.supabase_key:
+                self.logger.warning("Supabase configuration missing, falling back to local storage")
+                self.vector_store = None
+                return
+            
+            # Initialize Supabase vector store
+            self.vector_store = SupabaseVectorStore(
+                postgres_connection_string=f"postgresql://postgres:{self.supabase_key}@{self.supabase_url.replace('https://', '').replace('http://', '')}:5432/postgres",
+                collection_name=self.table_name,
+                dimension=1536,  # Default for OpenAI text-embedding-3-small
+            )
+            
+            self.logger.info(f"SupabaseVectorStore initialized with table: {self.table_name}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to initialize SupabaseVectorStore: {e}")
+            self.logger.warning("Falling back to local storage")
+            self.vector_store = None
+    
+    def _initialize_advanced_search_service(self):
+        """Initialize the advanced search service for Phase 7 features."""
+        if not self.available:
+            return
+        
+        try:
+            # Initialize advanced search service with embedding service
+            if hasattr(self, 'embedding_service') and self.embedding_service:
+                self.advanced_search_service = AdvancedSearchService(
+                    embedding_service=self.embedding_service,
+                    vector_store=self.vector_store,
+                    logger=self.logger
+                )
+                self.logger.info("Advanced search service initialized successfully")
+            else:
+                self.logger.warning("Embedding service not available, advanced search service disabled")
+                self.advanced_search_service = None
+                
+        except Exception as e:
+            self.logger.error(f"Failed to initialize advanced search service: {e}")
+            self.advanced_search_service = None
     
     async def health_check(self) -> Dict[str, Any]:
         """Check the health of the LlamaIndex service."""
@@ -184,6 +488,288 @@ class LlamaIndexService:
                 }
             }
     
+    def _initialize_document_readers(self):
+        """Initialize document readers for different file formats."""
+        if not self.available:
+            return {}
+        
+        return {
+            'pdf': PDFReader(),
+            'docx': DocxReader(),
+            'md': MarkdownReader(),
+            'txt': None  # Will handle plain text directly
+        }
+    
+    def _detect_document_format(self, file_path: str) -> str:
+        """
+        Detect document format based on file extension and content analysis.
+        
+        Args:
+            file_path: Path to the document file
+            
+        Returns:
+            Document format ('pdf', 'docx', 'md', 'txt')
+        """
+        import os
+        
+        # Get file extension
+        _, ext = os.path.splitext(file_path.lower())
+        
+        # Map extensions to formats
+        extension_map = {
+            '.pdf': 'pdf',
+            '.docx': 'docx',
+            '.doc': 'docx',  # Treat .doc as .docx for now
+            '.md': 'md',
+            '.markdown': 'md',
+            '.txt': 'txt',
+            '.text': 'txt'
+        }
+        
+        detected_format = extension_map.get(ext, 'txt')  # Default to txt
+        
+        self.logger.info(f"Detected document format: {detected_format} for file: {file_path}")
+        return detected_format
+    
+    def _get_enhanced_node_parser(self, chunk_strategy: str = "semantic", chunk_size: int = 1000, chunk_overlap: int = 200):
+        """
+        Get the appropriate node parser based on strategy with enhanced chunking capabilities.
+        
+        Args:
+            chunk_strategy: Strategy for chunking ('sentence', 'semantic')
+            chunk_size: Target chunk size in characters
+            chunk_overlap: Overlap between chunks in characters
+            
+        Returns:
+            Configured node parser
+        """
+        if chunk_strategy.lower() == "semantic":
+            # Use semantic splitter for intelligent chunking
+            try:
+                return SemanticSplitterNodeParser(
+                    buffer_size=1,
+                    breakpoint_percentile_threshold=95,
+                    embed_model=self.embeddings
+                )
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize semantic splitter: {e}. Falling back to sentence splitter.")
+                return SentenceSplitter(
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
+                    separator=" "
+                )
+        else:
+            # Default to sentence splitter with optimized settings for 1536-dimensional embeddings
+            return SentenceSplitter(
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                separator=" "
+            )
+    
+    def _extract_document_metadata(self, file_path: str, document_format: str) -> Dict[str, Any]:
+        """
+        Extract metadata from document based on format.
+        
+        Args:
+            file_path: Path to the document file
+            document_format: Detected document format
+            
+        Returns:
+            Dictionary containing extracted metadata
+        """
+        import os
+        from datetime import datetime
+        
+        # Base metadata
+        metadata = {
+            'file_path': file_path,
+            'file_name': os.path.basename(file_path),
+            'file_format': document_format,
+            'file_size': os.path.getsize(file_path) if os.path.exists(file_path) else 0,
+            'processed_at': datetime.utcnow().isoformat(),
+            'chunk_strategy': 'semantic',  # Default strategy for Phase 3
+            'embedding_model': self.embedding_model,
+            'embedding_dimension': 1536  # OpenAI text-embedding-3-small dimension
+        }
+        
+        # Format-specific metadata extraction
+        try:
+            if document_format == 'pdf':
+                # For PDF, we can extract additional metadata using PDFReader
+                # This will be enhanced when we process the actual document
+                metadata.update({
+                    'document_type': 'pdf',
+                    'supports_ocr': False,  # Can be enhanced later
+                    'page_count': None  # Will be filled during processing
+                })
+            elif document_format == 'docx':
+                metadata.update({
+                    'document_type': 'word_document',
+                    'supports_formatting': True
+                })
+            elif document_format == 'md':
+                metadata.update({
+                    'document_type': 'markdown',
+                    'supports_formatting': True,
+                    'markup_language': 'markdown'
+                })
+            elif document_format == 'txt':
+                metadata.update({
+                    'document_type': 'plain_text',
+                    'supports_formatting': False
+                })
+        except Exception as e:
+            self.logger.warning(f"Failed to extract format-specific metadata: {e}")
+        
+        return metadata
+    
+    async def index_document_content(
+        self, 
+        file_content: bytes, 
+        document_id: str,
+        file_path: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        chunk_strategy: str = "semantic",
+        chunk_size: int = 1000,
+        chunk_overlap: int = 200
+    ) -> Dict[str, Any]:
+        """
+        Enhanced document indexing supporting multiple formats (PDF, TXT, DOCX, MD).
+        
+        Args:
+            file_content: Raw document bytes
+            document_id: Unique identifier for the document
+            file_path: Original file path (used for format detection)
+            metadata: Optional metadata to associate with the document
+            chunk_strategy: Chunking strategy ('sentence' or 'semantic')
+            chunk_size: Target chunk size optimized for 1536-dimensional embeddings
+            chunk_overlap: Overlap between chunks
+            
+        Returns:
+            Dict containing indexing results and statistics
+        """
+        if not self.available:
+            raise RuntimeError("LlamaIndex service not available")
+        
+        try:
+            # Detect document format
+            document_format = self._detect_document_format(file_path)
+            
+            # Extract metadata
+            extracted_metadata = self._extract_document_metadata(file_path, document_format)
+            if metadata:
+                extracted_metadata.update(metadata)
+            
+            # Save document to temporary file for processing
+            file_extension = f'.{document_format}' if document_format != 'txt' else '.txt'
+            with tempfile.NamedTemporaryFile(suffix=file_extension, delete=False) as temp_file:
+                temp_file.write(file_content)
+                temp_file_path = temp_file.name
+            
+            try:
+                # Load document using appropriate reader
+                documents = []
+                
+                if document_format == 'pdf':
+                    reader = self.document_readers['pdf']
+                    documents = reader.load_data(temp_file_path)
+                elif document_format == 'docx':
+                    reader = self.document_readers['docx']
+                    documents = reader.load_data(temp_file_path)
+                elif document_format == 'md':
+                    reader = self.document_readers['md']
+                    documents = reader.load_data(temp_file_path)
+                elif document_format == 'txt':
+                    # Handle plain text directly
+                    with open(temp_file_path, 'r', encoding='utf-8') as f:
+                        text_content = f.read()
+                    documents = [Document(text=text_content, metadata=extracted_metadata)]
+                else:
+                    raise ValueError(f"Unsupported document format: {document_format}")
+                
+                if not documents:
+                    raise ValueError("No content extracted from document")
+                
+                # Add metadata to all documents
+                for doc in documents:
+                    if doc.metadata is None:
+                        doc.metadata = {}
+                    doc.metadata.update(extracted_metadata)
+                    doc.metadata['document_id'] = document_id
+                
+                # Get enhanced node parser with intelligent chunking
+                node_parser = self._get_enhanced_node_parser(
+                    chunk_strategy=chunk_strategy,
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap
+                )
+                
+                # Parse documents into nodes with enhanced chunking
+                nodes = node_parser.get_nodes_from_documents(documents)
+                
+                # Add chunk-specific metadata
+                for i, node in enumerate(nodes):
+                    if node.metadata is None:
+                        node.metadata = {}
+                    node.metadata.update({
+                        'chunk_id': f"{document_id}_chunk_{i}",
+                        'chunk_index': i,
+                        'total_chunks': len(nodes),
+                        'chunk_strategy': chunk_strategy,
+                        'chunk_size_actual': len(node.text)
+                    })
+                
+                # Create or get index for this document
+                if self.vector_store:
+                    # Use SupabaseVectorStore
+                    storage_context = StorageContext.from_defaults(vector_store=self.vector_store)
+                    index = VectorStoreIndex(nodes, storage_context=storage_context)
+                else:
+                    # Fallback to local storage
+                    index = VectorStoreIndex(nodes)
+                
+                # Store index reference
+                self.indices[document_id] = index
+                
+                # Calculate statistics
+                total_chars = sum(len(node.text) for node in nodes)
+                avg_chunk_size = total_chars / len(nodes) if nodes else 0
+                
+                result = {
+                    "status": "success",
+                    "document_id": document_id,
+                    "document_format": document_format,
+                    "chunk_strategy": chunk_strategy,
+                    "statistics": {
+                        "total_chunks": len(nodes),
+                        "total_characters": total_chars,
+                        "average_chunk_size": avg_chunk_size,
+                        "embedding_dimension": 1536,
+                        "documents_processed": len(documents)
+                    },
+                    "metadata": extracted_metadata,
+                    "message": f"Successfully indexed {document_format.upper()} document with {len(nodes)} chunks using {chunk_strategy} strategy"
+                }
+                
+                self.logger.info(f"Successfully indexed document {document_id}: {len(nodes)} chunks, {total_chars} characters")
+                return result
+                
+            finally:
+                # Clean up temporary file
+                try:
+                    os.unlink(temp_file_path)
+                except Exception as e:
+                    self.logger.warning(f"Failed to clean up temporary file: {e}")
+                    
+        except Exception as e:
+            self.logger.error(f"Failed to index document {document_id}: {e}")
+            return {
+                "status": "error",
+                "document_id": document_id,
+                "error": str(e),
+                "message": f"Failed to index document: {str(e)}"
+            }
+
     async def index_pdf_content(
         self, 
         pdf_content: bytes, 
@@ -223,16 +809,28 @@ class LlamaIndexService:
                         **(metadata or {})
                     })
                 
-                # Create index
-                index = VectorStoreIndex.from_documents(
-                    documents,
-                    node_parser=self.node_parser
-                )
-                
-                # Store index
-                index_dir = Path(self.storage_dir) / document_id
-                index_dir.mkdir(exist_ok=True)
-                index.storage_context.persist(persist_dir=str(index_dir))
+                # Create index with SupabaseVectorStore if available, otherwise use local storage
+                if self.vector_store:
+                    # Use SupabaseVectorStore
+                    storage_context = StorageContext.from_defaults(vector_store=self.vector_store)
+                    index = VectorStoreIndex.from_documents(
+                        documents,
+                        storage_context=storage_context,
+                        node_parser=self.node_parser
+                    )
+                    self.logger.info(f"Created index in Supabase for document: {document_id}")
+                else:
+                    # Fallback to local storage
+                    index = VectorStoreIndex.from_documents(
+                        documents,
+                        node_parser=self.node_parser
+                    )
+                    
+                    # Store index locally
+                    index_dir = Path(self.storage_dir) / document_id
+                    index_dir.mkdir(exist_ok=True)
+                    index.storage_context.persist(persist_dir=str(index_dir))
+                    self.logger.info(f"Created local index for document: {document_id}")
                 
                 # Cache index
                 self.indices[document_id] = index
@@ -268,8 +866,8 @@ class LlamaIndexService:
             }
     
     async def query_document(
-        self, 
-        document_id: str, 
+        self,
+        document_id: str,
         query: str,
         response_mode: str = "compact"
     ) -> Dict[str, Any]:
@@ -349,6 +947,387 @@ class LlamaIndexService:
                 "query": query,
                 "error": str(e)
             }
+    
+    async def advanced_rag_query(
+        self,
+        query: str,
+        document_ids: Optional[List[str]] = None,
+        query_type: str = "factual",
+        similarity_threshold: float = 0.7,
+        max_results: int = 5,
+        enable_reranking: bool = True,
+        conversation_context: Optional[List[Dict[str, str]]] = None,
+        metadata_filters: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Advanced RAG query processing pipeline with enhanced capabilities.
+        
+        Args:
+            query: Natural language query
+            document_ids: Optional list of specific documents to query (None = all indexed)
+            query_type: Type of query ('factual', 'analytical', 'conversational', 'summarization')
+            similarity_threshold: Minimum similarity score for retrieved chunks
+            max_results: Maximum number of results to return
+            enable_reranking: Whether to apply relevance re-ranking
+            conversation_context: Previous conversation turns for context
+            metadata_filters: Optional metadata filters for retrieval
+            
+        Returns:
+            Dict containing comprehensive query results and metadata
+        """
+        if not self.available:
+            raise RuntimeError("LlamaIndex service not available")
+        
+        try:
+            # Step 1: Query Understanding and Preprocessing
+            processed_query = await self._preprocess_query(query, query_type, conversation_context)
+            
+            # Step 2: Determine target documents
+            target_documents = document_ids if document_ids else list(self.indices.keys())
+            
+            if not target_documents:
+                return {
+                    "success": False,
+                    "error": "No indexed documents available for querying"
+                }
+            
+            # Step 3: Multi-document retrieval with similarity thresholds
+            all_retrieved_nodes = []
+            retrieval_metadata = {}
+            
+            for doc_id in target_documents:
+                if doc_id not in self.indices:
+                    await self._load_index(doc_id)
+                    
+                if doc_id in self.indices:
+                    nodes = await self._retrieve_from_document(
+                        doc_id,
+                        processed_query,
+                        similarity_threshold,
+                        max_results,
+                        metadata_filters
+                    )
+                    all_retrieved_nodes.extend(nodes)
+                    retrieval_metadata[doc_id] = len(nodes)
+            
+            # Step 4: Apply relevance scoring and ranking
+            if enable_reranking and all_retrieved_nodes:
+                all_retrieved_nodes = await self._rerank_results(
+                    all_retrieved_nodes,
+                    processed_query,
+                    query_type
+                )
+            
+            # Step 5: Filter by similarity threshold and limit results
+            filtered_nodes = [
+                node for node in all_retrieved_nodes
+                if getattr(node, 'score', 1.0) >= similarity_threshold
+            ][:max_results]
+            
+            # Step 6: Context integration and response generation
+            response_data = await self._generate_contextual_response(
+                filtered_nodes,
+                processed_query,
+                query_type,
+                conversation_context
+            )
+            
+            # Step 7: Compile comprehensive results
+            return {
+                "success": True,
+                "query": {
+                    "original": query,
+                    "processed": processed_query,
+                    "type": query_type
+                },
+                "response": response_data["response"],
+                "confidence_score": response_data["confidence"],
+                "sources": self._format_source_nodes(filtered_nodes),
+                "retrieval_stats": {
+                    "total_documents_searched": len(target_documents),
+                    "nodes_retrieved": len(all_retrieved_nodes),
+                    "nodes_after_filtering": len(filtered_nodes),
+                    "similarity_threshold": similarity_threshold,
+                    "reranking_enabled": enable_reranking,
+                    "per_document_results": retrieval_metadata
+                },
+                "query_metadata": {
+                    "query_type": query_type,
+                    "has_conversation_context": conversation_context is not None,
+                    "metadata_filters_applied": metadata_filters is not None,
+                    "processing_time_ms": response_data.get("processing_time_ms", 0)
+                }
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Advanced RAG query failed: {e}")
+            return {
+                "success": False,
+                "query": query,
+                "error": str(e),
+                "query_type": query_type
+            }
+    
+    async def _preprocess_query(
+        self,
+        query: str,
+        query_type: str,
+        conversation_context: Optional[List[Dict[str, str]]] = None
+    ) -> str:
+        """
+        Preprocess and enhance the query based on type and context.
+        
+        Args:
+            query: Original query
+            query_type: Type of query for specialized processing
+            conversation_context: Previous conversation for context integration
+            
+        Returns:
+            Enhanced/processed query string
+        """
+        processed_query = query.strip()
+        
+        # Add conversation context if available
+        if conversation_context:
+            context_summary = self._summarize_conversation_context(conversation_context)
+            processed_query = f"Context: {context_summary}\n\nQuery: {processed_query}"
+        
+        # Query type specific enhancements
+        if query_type == "analytical":
+            processed_query = f"Analyze and provide detailed insights about: {processed_query}"
+        elif query_type == "conversational":
+            processed_query = f"In a conversational manner, please address: {processed_query}"
+        elif query_type == "summarization":
+            processed_query = f"Summarize the key information related to: {processed_query}"
+        # 'factual' queries use the original query as-is
+        
+        return processed_query
+    
+    async def _retrieve_from_document(
+        self,
+        document_id: str,
+        query: str,
+        similarity_threshold: float,
+        max_results: int,
+        metadata_filters: Optional[Dict[str, Any]] = None
+    ) -> List[Any]:
+        """
+        Retrieve relevant nodes from a specific document with filtering.
+        
+        Args:
+            document_id: Document to retrieve from
+            query: Query string
+            similarity_threshold: Minimum similarity score
+            max_results: Maximum results per document
+            metadata_filters: Optional metadata filters
+            
+        Returns:
+            List of retrieved nodes with scores
+        """
+        try:
+            index = self.indices[document_id]
+            
+            # Create retriever with enhanced parameters
+            retriever = VectorIndexRetriever(
+                index=index,
+                similarity_top_k=max_results * 2,  # Retrieve more for better filtering
+                doc_ids=None,
+                filters=metadata_filters
+            )
+            
+            # Retrieve nodes
+            retrieved_nodes = retriever.retrieve(query)
+            
+            # Filter by similarity threshold and add document context
+            filtered_nodes = []
+            for node in retrieved_nodes:
+                if getattr(node, 'score', 1.0) >= similarity_threshold:
+                    # Add document context to node metadata
+                    if hasattr(node, 'node') and hasattr(node.node, 'metadata'):
+                        node.node.metadata['source_document_id'] = document_id
+                    filtered_nodes.append(node)
+            
+            return filtered_nodes[:max_results]
+            
+        except Exception as e:
+            self.logger.error(f"Failed to retrieve from document {document_id}: {e}")
+            return []
+    
+    async def _rerank_results(
+        self,
+        nodes: List[Any],
+        query: str,
+        query_type: str
+    ) -> List[Any]:
+        """
+        Re-rank retrieved results based on relevance and query type.
+        
+        Args:
+            nodes: Retrieved nodes to re-rank
+            query: Original query
+            query_type: Type of query for specialized ranking
+            
+        Returns:
+            Re-ranked list of nodes
+        """
+        try:
+            # Simple relevance-based re-ranking
+            # In a production system, this could use a dedicated re-ranking model
+            
+            def calculate_relevance_score(node):
+                base_score = getattr(node, 'score', 0.5)
+                
+                # Query type specific scoring adjustments
+                text = node.node.text.lower() if hasattr(node, 'node') else ""
+                query_lower = query.lower()
+                
+                # Boost score for exact matches
+                if query_lower in text:
+                    base_score += 0.1
+                
+                # Query type specific boosts
+                if query_type == "analytical":
+                    analytical_keywords = ["analysis", "insight", "conclusion", "result", "finding"]
+                    if any(keyword in text for keyword in analytical_keywords):
+                        base_score += 0.05
+                elif query_type == "factual":
+                    factual_keywords = ["fact", "data", "number", "statistic", "measurement"]
+                    if any(keyword in text for keyword in factual_keywords):
+                        base_score += 0.05
+                
+                return min(base_score, 1.0)  # Cap at 1.0
+            
+            # Re-rank nodes by calculated relevance
+            ranked_nodes = sorted(nodes, key=calculate_relevance_score, reverse=True)
+            
+            # Update scores
+            for node in ranked_nodes:
+                node.score = calculate_relevance_score(node)
+            
+            return ranked_nodes
+            
+        except Exception as e:
+            self.logger.error(f"Failed to re-rank results: {e}")
+            return nodes  # Return original order on error
+    
+    async def _generate_contextual_response(
+        self,
+        nodes: List[Any],
+        query: str,
+        query_type: str,
+        conversation_context: Optional[List[Dict[str, str]]] = None
+    ) -> Dict[str, Any]:
+        """
+        Generate response with context integration and confidence scoring.
+        
+        Args:
+            nodes: Retrieved and ranked nodes
+            query: Processed query
+            query_type: Type of query
+            conversation_context: Previous conversation context
+            
+        Returns:
+            Dict with response, confidence score, and metadata
+        """
+        import time
+        start_time = time.time()
+        
+        try:
+            if not nodes:
+                return {
+                    "response": "I couldn't find relevant information to answer your query.",
+                    "confidence": 0.0,
+                    "processing_time_ms": int((time.time() - start_time) * 1000)
+                }
+            
+            # Select appropriate response mode based on query type
+            response_mode_map = {
+                "factual": "compact",
+                "analytical": "tree_summarize",
+                "conversational": "compact",
+                "summarization": "tree_summarize"
+            }
+            response_mode = response_mode_map.get(query_type, "compact")
+            
+            # Create response synthesizer
+            response_synthesizer = get_response_synthesizer(
+                response_mode=ResponseMode(response_mode)
+            )
+            
+            # Generate response
+            response = response_synthesizer.synthesize(query, nodes)
+            
+            # Calculate confidence score based on node scores and count
+            confidence = self._calculate_confidence_score(nodes, query_type)
+            
+            return {
+                "response": str(response),
+                "confidence": confidence,
+                "processing_time_ms": int((time.time() - start_time) * 1000)
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Failed to generate contextual response: {e}")
+            return {
+                "response": f"Error generating response: {str(e)}",
+                "confidence": 0.0,
+                "processing_time_ms": int((time.time() - start_time) * 1000)
+            }
+    
+    def _calculate_confidence_score(self, nodes: List[Any], query_type: str) -> float:
+        """Calculate confidence score based on retrieved nodes and query type."""
+        if not nodes:
+            return 0.0
+        
+        # Base confidence from node scores
+        node_scores = [getattr(node, 'score', 0.5) for node in nodes]
+        avg_score = sum(node_scores) / len(node_scores)
+        
+        # Adjust based on number of supporting nodes
+        node_count_factor = min(len(nodes) / 3.0, 1.0)  # Optimal around 3 nodes
+        
+        # Query type adjustments
+        type_multiplier = {
+            "factual": 1.0,      # Factual queries need high precision
+            "analytical": 0.9,   # Analytical queries are more subjective
+            "conversational": 0.8, # Conversational queries are more flexible
+            "summarization": 0.85  # Summarization depends on content coverage
+        }.get(query_type, 0.8)
+        
+        confidence = avg_score * node_count_factor * type_multiplier
+        return round(min(confidence, 1.0), 3)
+    
+    def _format_source_nodes(self, nodes: List[Any]) -> List[Dict[str, Any]]:
+        """Format source nodes for response output."""
+        sources = []
+        for i, node in enumerate(nodes):
+            if hasattr(node, 'node'):
+                sources.append({
+                    "rank": i + 1,
+                    "node_id": node.node.node_id,
+                    "score": round(getattr(node, 'score', 0.0), 3),
+                    "text_snippet": node.node.text[:300] + "..." if len(node.node.text) > 300 else node.node.text,
+                    "metadata": node.node.metadata or {},
+                    "document_id": node.node.metadata.get('source_document_id', 'unknown')
+                })
+        return sources
+    
+    def _summarize_conversation_context(self, context: List[Dict[str, str]]) -> str:
+        """Summarize conversation context for query enhancement."""
+        if not context:
+            return ""
+        
+        # Take last few turns for context (avoid too much context)
+        recent_context = context[-3:] if len(context) > 3 else context
+        
+        summary_parts = []
+        for turn in recent_context:
+            if turn.get('role') == 'user':
+                summary_parts.append(f"User asked: {turn.get('content', '')}")
+            elif turn.get('role') == 'assistant':
+                summary_parts.append(f"Assistant responded about: {turn.get('content', '')[:100]}...")
+        
+        return " | ".join(summary_parts)
     
     async def summarize_document(
         self, 
@@ -562,3 +1541,166 @@ class LlamaIndexService:
         """Cleanup resources when the service is destroyed."""
         if hasattr(self, 'executor') and self.executor:
             self.executor.shutdown(wait=True)
+    
+    # Conversation Memory Management Methods
+    
+    def manage_conversation_memory(
+        self, 
+        session_id: str, 
+        user_message: str, 
+        assistant_response: str
+    ) -> None:
+        """
+        Manage conversation memory for a session.
+        
+        Args:
+            session_id: Unique session identifier
+            user_message: User's message
+            assistant_response: Assistant's response
+        """
+        if session_id not in self.conversation_memories:
+            self.conversation_memories[session_id] = []
+        
+        # Add new conversation turn
+        self.conversation_memories[session_id].append({
+            "role": "user",
+            "content": user_message,
+            "timestamp": self._get_timestamp()
+        })
+        
+        self.conversation_memories[session_id].append({
+            "role": "assistant", 
+            "content": assistant_response,
+            "timestamp": self._get_timestamp()
+        })
+        
+        # Manage memory size
+        self._manage_memory_size(session_id)
+    
+    def get_conversation_context(self, session_id: str) -> List[Dict[str, str]]:
+        """
+        Get conversation context for a session.
+        
+        Args:
+            session_id: Session identifier
+            
+        Returns:
+            List of conversation turns
+        """
+        return self.conversation_memories.get(session_id, [])
+    
+    def clear_conversation_memory(self, session_id: str) -> None:
+        """
+        Clear conversation memory for a session.
+        
+        Args:
+            session_id: Session identifier
+        """
+        if session_id in self.conversation_memories:
+            del self.conversation_memories[session_id]
+            self.logger.info(f"Cleared conversation memory for session: {session_id}")
+    
+    def _manage_memory_size(self, session_id: str) -> None:
+        """
+        Manage conversation memory size, summarizing old conversations if needed.
+        
+        Args:
+            session_id: Session identifier
+        """
+        memory = self.conversation_memories[session_id]
+        
+        if len(memory) > self.max_conversation_turns:
+            # Check if we should summarize
+            if len(memory) > self.conversation_summary_threshold:
+                self._summarize_old_conversations(session_id)
+            else:
+                # Simple truncation - remove oldest turns
+                excess = len(memory) - self.max_conversation_turns
+                self.conversation_memories[session_id] = memory[excess:]
+    
+    def _summarize_old_conversations(self, session_id: str) -> None:
+        """
+        Summarize old conversations to preserve context while reducing memory.
+        
+        Args:
+            session_id: Session identifier
+        """
+        try:
+            memory = self.conversation_memories[session_id]
+            
+            # Keep recent conversations, summarize older ones
+            recent_turns = 4  # Keep last 4 turns
+            old_conversations = memory[:-recent_turns]
+            recent_conversations = memory[-recent_turns:]
+            
+            if not old_conversations:
+                return
+            
+            # Create summary of old conversations
+            conversation_text = "\n".join([
+                f"{turn['role']}: {turn['content']}" 
+                for turn in old_conversations
+            ])
+            
+            summary_prompt = f"""Summarize the following conversation history concisely, preserving key context and topics discussed:
+
+{conversation_text}
+
+Summary:"""
+            
+            # Use LLM to create summary (if available)
+            if hasattr(self, 'llm') and self.llm:
+                try:
+                    summary_response = self.llm.complete(summary_prompt)
+                    summary = str(summary_response).strip()
+                except Exception as e:
+                    self.logger.warning(f"Failed to generate conversation summary: {e}")
+                    summary = "Previous conversation covered multiple topics and queries."
+            else:
+                # Fallback summary
+                summary = f"Previous conversation with {len(old_conversations)} turns covering various topics."
+            
+            # Replace old conversations with summary
+            summary_entry = {
+                "role": "system",
+                "content": f"[Conversation Summary]: {summary}",
+                "timestamp": self._get_timestamp()
+            }
+            
+            self.conversation_memories[session_id] = [summary_entry] + recent_conversations
+            
+            self.logger.info(f"Summarized {len(old_conversations)} old conversation turns for session: {session_id}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to summarize conversations for session {session_id}: {e}")
+            # Fallback to simple truncation
+            memory = self.conversation_memories[session_id]
+            self.conversation_memories[session_id] = memory[-self.max_conversation_turns:]
+    
+    def _get_timestamp(self) -> str:
+        """Get current timestamp string."""
+        from datetime import datetime
+        return datetime.now().isoformat()
+    
+    def get_memory_stats(self) -> Dict[str, Any]:
+        """
+        Get conversation memory statistics.
+        
+        Returns:
+            Dict with memory statistics
+        """
+        stats = {
+            "total_sessions": len(self.conversation_memories),
+            "max_turns_per_session": self.max_conversation_turns,
+            "summary_threshold": self.conversation_summary_threshold,
+            "sessions": {}
+        }
+        
+        for session_id, memory in self.conversation_memories.items():
+            stats["sessions"][session_id] = {
+                "turn_count": len(memory),
+                "has_summary": any(turn.get("role") == "system" for turn in memory),
+                "last_activity": memory[-1]["timestamp"] if memory else None
+            }
+        
+        return stats

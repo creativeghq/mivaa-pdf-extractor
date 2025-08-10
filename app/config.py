@@ -77,10 +77,10 @@ class Settings(BaseSettings):
     jwt_issuer: str = Field(default="material-kai-platform", env="JWT_ISSUER")
     jwt_audience: str = Field(default="mivaa-pdf-extractor", env="JWT_AUDIENCE")
     
-    # Supabase Settings
+    # Supabase Settings (aligned with platform standards)
     supabase_url: str = Field(default="", env="SUPABASE_URL")
-    supabase_key: str = Field(default="", env="SUPABASE_KEY")
-    supabase_service_key: str = Field(default="", env="SUPABASE_SERVICE_KEY")
+    supabase_anon_key: str = Field(default="", env="SUPABASE_ANON_KEY")
+    supabase_service_role_key: str = Field(default="", env="SUPABASE_SERVICE_ROLE_KEY")
     supabase_storage_bucket: str = Field(default="pdf-documents", env="SUPABASE_STORAGE_BUCKET")
     
     # Database Settings

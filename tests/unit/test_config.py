@@ -51,7 +51,7 @@ class TestSettings:
             "PORT": "9000",
             "DATABASE_URL": "postgresql://test:test@localhost:5432/test_db",
             "SUPABASE_URL": "https://test.supabase.co",
-            "SUPABASE_KEY": "test_key_123",
+            "SUPABASE_ANON_KEY": "test_key_123",
             "OPENAI_API_KEY": "sk-test123",
             "OPENAI_MODEL": "gpt-4",
             "UPLOAD_DIR": "test_uploads",
@@ -241,7 +241,7 @@ class TestSettings:
         """Test Supabase configuration."""
         env_vars = {
             "SUPABASE_URL": "https://test.supabase.co",
-            "SUPABASE_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test",
+            "SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test",
         }
         
         with patch.dict(os.environ, env_vars, clear=True):

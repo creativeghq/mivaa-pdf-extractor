@@ -687,14 +687,23 @@ async def root() -> Dict[str, Any]:
             "pdf_markdown": "/api/v1/extract/markdown",
             "pdf_tables": "/api/v1/extract/tables",
             "pdf_images": "/api/v1/extract/images",
-            "api_health": "/api/v1/health"
+            "api_health": "/api/v1/health",
+            "rag_upload": "/api/v1/rag/documents/upload",
+            "rag_query": "/api/v1/rag/query",
+            "rag_chat": "/api/v1/rag/chat",
+            "rag_search": "/api/v1/rag/search",
+            "rag_documents": "/api/v1/rag/documents",
+            "rag_health": "/api/v1/rag/health"
         },
         "features": [
             "PDF to Markdown conversion",
             "Table extraction",
             "Image extraction",
-            "LlamaIndex integration",
-            "Supabase storage"
+            "LlamaIndex RAG integration",
+            "Document upload and processing",
+            "Semantic search and retrieval",
+            "Conversational Q&A",
+            "Supabase vector storage"
         ]
     }
 
@@ -705,12 +714,14 @@ from app.api.documents import router as documents_router
 from app.api.search import router as search_router
 from app.api.images import router as images_router
 from app.api.admin import router as admin_router
+from app.api.rag_routes import router as rag_router
 
 app.include_router(pdf_router, prefix="/api/v1")
 app.include_router(documents_router)
 app.include_router(search_router)
 app.include_router(images_router)
 app.include_router(admin_router)
+app.include_router(rag_router)
 
 
 def main():

@@ -1,0 +1,633 @@
+"""
+RAG (Retrieval-Augmented Generation) API Routes
+
+This module provides comprehensive FastAPI endpoints for RAG functionality including
+document embedding, querying, chat interface, and document management.
+"""
+
+import logging
+from datetime import datetime
+from typing import Dict, List, Optional, Any
+from uuid import uuid4
+
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, status
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, validator
+
+from app.config import get_settings
+from app.services.llamaindex_service import LlamaIndexService
+from app.services.embedding_service import EmbeddingService
+from app.services.advanced_search_service import QueryType, SearchOperator
+from app.utils.logging import PDFProcessingLogger
+
+logger = logging.getLogger(__name__)
+
+# Initialize router
+router = APIRouter(prefix="/api/v1/rag", tags=["RAG"])
+
+# Pydantic models for request/response validation
+class DocumentUploadRequest(BaseModel):
+    """Request model for document upload and processing."""
+    title: Optional[str] = Field(None, description="Document title")
+    description: Optional[str] = Field(None, description="Document description")
+    tags: Optional[List[str]] = Field(default_factory=list, description="Document tags")
+    chunk_size: Optional[int] = Field(1000, ge=100, le=4000, description="Chunk size for processing")
+    chunk_overlap: Optional[int] = Field(200, ge=0, le=1000, description="Chunk overlap")
+    enable_embedding: bool = Field(True, description="Enable automatic embedding generation")
+
+class DocumentUploadResponse(BaseModel):
+    """Response model for document upload."""
+    document_id: str = Field(..., description="Unique document identifier")
+    title: str = Field(..., description="Document title")
+    status: str = Field(..., description="Processing status")
+    chunks_created: int = Field(..., description="Number of chunks created")
+    embeddings_generated: bool = Field(..., description="Whether embeddings were generated")
+    processing_time: float = Field(..., description="Processing time in seconds")
+    message: str = Field(..., description="Status message")
+
+class QueryRequest(BaseModel):
+    """Request model for RAG queries."""
+    query: str = Field(..., min_length=1, max_length=2000, description="Query text")
+    top_k: Optional[int] = Field(5, ge=1, le=20, description="Number of top results to retrieve")
+    similarity_threshold: Optional[float] = Field(0.7, ge=0.0, le=1.0, description="Similarity threshold")
+    include_metadata: bool = Field(True, description="Include document metadata in response")
+    enable_reranking: bool = Field(True, description="Enable result reranking")
+    document_ids: Optional[List[str]] = Field(None, description="Filter by specific document IDs")
+
+class QueryResponse(BaseModel):
+    """Response model for RAG queries."""
+    query: str = Field(..., description="Original query")
+    answer: str = Field(..., description="Generated answer")
+    sources: List[Dict[str, Any]] = Field(..., description="Source documents and chunks")
+    confidence_score: float = Field(..., description="Confidence score for the answer")
+    processing_time: float = Field(..., description="Query processing time in seconds")
+    retrieved_chunks: int = Field(..., description="Number of chunks retrieved")
+
+class ChatRequest(BaseModel):
+    """Request model for conversational RAG."""
+    message: str = Field(..., min_length=1, max_length=2000, description="Chat message")
+    conversation_id: Optional[str] = Field(None, description="Conversation ID for context")
+    top_k: Optional[int] = Field(5, ge=1, le=20, description="Number of context chunks to retrieve")
+    include_history: bool = Field(True, description="Include conversation history in context")
+    document_ids: Optional[List[str]] = Field(None, description="Filter by specific document IDs")
+
+class ChatResponse(BaseModel):
+    """Response model for conversational RAG."""
+    message: str = Field(..., description="Original message")
+    response: str = Field(..., description="AI response")
+    conversation_id: str = Field(..., description="Conversation ID")
+    sources: List[Dict[str, Any]] = Field(..., description="Source documents used")
+    processing_time: float = Field(..., description="Response generation time")
+
+class SearchRequest(BaseModel):
+    """Request model for semantic search."""
+    query: str = Field(..., min_length=1, max_length=1000, description="Search query")
+    search_type: str = Field("semantic", regex="^(semantic|hybrid|keyword)$", description="Search type")
+    top_k: Optional[int] = Field(10, ge=1, le=50, description="Number of results to return")
+    similarity_threshold: Optional[float] = Field(0.6, ge=0.0, le=1.0, description="Similarity threshold")
+    document_ids: Optional[List[str]] = Field(None, description="Filter by document IDs")
+    include_content: bool = Field(True, description="Include chunk content in results")
+
+class SearchResponse(BaseModel):
+    """Response model for semantic search."""
+    query: str = Field(..., description="Original search query")
+    results: List[Dict[str, Any]] = Field(..., description="Search results")
+    total_results: int = Field(..., description="Total number of results")
+    search_type: str = Field(..., description="Type of search performed")
+    processing_time: float = Field(..., description="Search processing time")
+
+class DocumentListResponse(BaseModel):
+    """Response model for document listing."""
+    documents: List[Dict[str, Any]] = Field(..., description="List of documents")
+    total_count: int = Field(..., description="Total number of documents")
+    page: int = Field(..., description="Current page number")
+    page_size: int = Field(..., description="Page size")
+
+class HealthCheckResponse(BaseModel):
+    """Response model for RAG health check."""
+    status: str = Field(..., description="Health status")
+    services: Dict[str, Dict[str, Any]] = Field(..., description="Service health details")
+    timestamp: datetime = Field(..., description="Health check timestamp")
+
+# Advanced Search Models for Phase 7 Features
+class MMRSearchRequest(BaseModel):
+    """Request model for MMR (Maximal Marginal Relevance) search."""
+    query: str = Field(..., min_length=1, max_length=2000, description="Search query")
+    top_k: Optional[int] = Field(10, ge=1, le=50, description="Number of initial results to retrieve")
+    diversity_threshold: Optional[float] = Field(0.7, ge=0.0, le=1.0, description="MMR diversity threshold")
+    lambda_param: Optional[float] = Field(0.5, ge=0.0, le=1.0, description="MMR lambda parameter for relevance vs diversity balance")
+    document_ids: Optional[List[str]] = Field(None, description="Filter by specific document IDs")
+    include_metadata: bool = Field(True, description="Include document metadata in response")
+
+class MMRSearchResponse(BaseModel):
+    """Response model for MMR search."""
+    query: str = Field(..., description="Original search query")
+    results: List[Dict[str, Any]] = Field(..., description="MMR search results with diversity scores")
+    total_results: int = Field(..., description="Total number of results")
+    diversity_score: float = Field(..., description="Overall diversity score of results")
+    processing_time: float = Field(..., description="Search processing time in seconds")
+
+class AdvancedQueryRequest(BaseModel):
+    """Request model for advanced query with optimization."""
+    query: str = Field(..., min_length=1, max_length=2000, description="Query text")
+    query_type: str = Field("semantic", regex="^(factual|analytical|conversational|boolean|fuzzy|semantic)$", description="Type of query")
+    top_k: Optional[int] = Field(10, ge=1, le=50, description="Number of results to retrieve")
+    enable_expansion: bool = Field(True, description="Enable query expansion")
+    enable_rewriting: bool = Field(True, description="Enable query rewriting")
+    similarity_threshold: Optional[float] = Field(0.6, ge=0.0, le=1.0, description="Similarity threshold")
+    document_ids: Optional[List[str]] = Field(None, description="Filter by specific document IDs")
+    metadata_filters: Optional[Dict[str, Any]] = Field(None, description="Metadata-based filters")
+    search_operator: str = Field("AND", regex="^(AND|OR|NOT)$", description="Search operator for multiple terms")
+
+class AdvancedQueryResponse(BaseModel):
+    """Response model for advanced query."""
+    original_query: str = Field(..., description="Original query text")
+    optimized_query: str = Field(..., description="Optimized/expanded query")
+    query_type: str = Field(..., description="Type of query processed")
+    results: List[Dict[str, Any]] = Field(..., description="Search results with relevance scores")
+    total_results: int = Field(..., description="Total number of results")
+    expansion_terms: List[str] = Field(..., description="Terms added during query expansion")
+    processing_time: float = Field(..., description="Query processing time in seconds")
+    confidence_score: float = Field(..., description="Overall confidence score")
+
+# Dependency functions
+async def get_llamaindex_service() -> LlamaIndexService:
+    """Get LlamaIndex service instance."""
+    from app.main import app
+    if not hasattr(app.state, 'llamaindex_service') or app.state.llamaindex_service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="LlamaIndex service is not available"
+        )
+    return app.state.llamaindex_service
+
+async def get_embedding_service() -> EmbeddingService:
+    """Get embedding service instance."""
+    try:
+        settings = get_settings()
+        embedding_config = settings.get_embedding_config()
+        return EmbeddingService(embedding_config)
+    except Exception as e:
+        logger.error(f"Failed to initialize embedding service: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Embedding service is not available"
+        )
+
+# API Endpoints
+
+@router.post("/documents/upload", response_model=DocumentUploadResponse)
+async def upload_document(
+    file: UploadFile = File(...),
+    title: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
+    tags: Optional[str] = Form(None),  # JSON string of tags
+    chunk_size: int = Form(1000),
+    chunk_overlap: int = Form(200),
+    enable_embedding: bool = Form(True),
+    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
+):
+    """
+    Upload and process a document for RAG functionality.
+    
+    This endpoint accepts document uploads, processes them into chunks,
+    generates embeddings, and stores them in the vector database.
+    """
+    start_time = datetime.utcnow()
+    
+    try:
+        # Validate file type
+        if not file.content_type or not file.content_type.startswith(('application/pdf', 'text/', 'application/msword')):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Unsupported file type. Please upload PDF, text, or Word documents."
+            )
+        
+        # Parse tags if provided
+        document_tags = []
+        if tags:
+            try:
+                import json
+                document_tags = json.loads(tags)
+            except json.JSONDecodeError:
+                document_tags = [tag.strip() for tag in tags.split(',')]
+        
+        # Generate document ID
+        document_id = str(uuid4())
+        
+        # Read file content
+        file_content = await file.read()
+        
+        # Process document through LlamaIndex service
+        processing_result = await llamaindex_service.process_document(
+            document_id=document_id,
+            file_content=file_content,
+            filename=file.filename,
+            title=title or file.filename,
+            description=description,
+            tags=document_tags,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            enable_embedding=enable_embedding
+        )
+        
+        processing_time = (datetime.utcnow() - start_time).total_seconds()
+        
+        return DocumentUploadResponse(
+            document_id=document_id,
+            title=processing_result.get('title', file.filename),
+            status="completed",
+            chunks_created=processing_result.get('chunks_created', 0),
+            embeddings_generated=processing_result.get('embeddings_generated', False),
+            processing_time=processing_time,
+            message="Document processed successfully"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Document upload failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Document processing failed: {str(e)}"
+        )
+
+@router.post("/query", response_model=QueryResponse)
+async def query_documents(
+    request: QueryRequest,
+    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
+):
+    """
+    Query documents using RAG (Retrieval-Augmented Generation).
+    
+    This endpoint performs semantic search over the document collection
+    and generates contextual answers using the retrieved information.
+    """
+    start_time = datetime.utcnow()
+    
+    try:
+        # Perform RAG query
+        result = await llamaindex_service.query(
+            query=request.query,
+            top_k=request.top_k,
+            similarity_threshold=request.similarity_threshold,
+            include_metadata=request.include_metadata,
+            enable_reranking=request.enable_reranking,
+            document_ids=request.document_ids
+        )
+        
+        processing_time = (datetime.utcnow() - start_time).total_seconds()
+        
+        return QueryResponse(
+            query=request.query,
+            answer=result.get('answer', ''),
+            sources=result.get('sources', []),
+            confidence_score=result.get('confidence_score', 0.0),
+            processing_time=processing_time,
+            retrieved_chunks=len(result.get('sources', []))
+        )
+        
+    except Exception as e:
+        logger.error(f"Query processing failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Query processing failed: {str(e)}"
+        )
+
+@router.post("/chat", response_model=ChatResponse)
+async def chat_with_documents(
+    request: ChatRequest,
+    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
+):
+    """
+    Conversational interface for document Q&A.
+    
+    This endpoint maintains conversation context and provides
+    contextual responses based on the document collection.
+    """
+    start_time = datetime.utcnow()
+    
+    try:
+        # Generate conversation ID if not provided
+        conversation_id = request.conversation_id or str(uuid4())
+        
+        # Process chat message
+        result = await llamaindex_service.chat(
+            message=request.message,
+            conversation_id=conversation_id,
+            top_k=request.top_k,
+            include_history=request.include_history,
+            document_ids=request.document_ids
+        )
+        
+        processing_time = (datetime.utcnow() - start_time).total_seconds()
+        
+        return ChatResponse(
+            message=request.message,
+            response=result.get('response', ''),
+            conversation_id=conversation_id,
+            sources=result.get('sources', []),
+            processing_time=processing_time
+        )
+        
+    except Exception as e:
+        logger.error(f"Chat processing failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Chat processing failed: {str(e)}"
+        )
+
+@router.post("/search", response_model=SearchResponse)
+async def search_documents(
+    request: SearchRequest,
+    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
+):
+    """
+    Semantic search across document collection.
+    
+    This endpoint provides various search capabilities including
+    semantic, hybrid, and keyword search.
+    """
+    start_time = datetime.utcnow()
+    
+    try:
+        # Perform search
+        results = await llamaindex_service.search(
+            query=request.query,
+            search_type=request.search_type,
+            top_k=request.top_k,
+            similarity_threshold=request.similarity_threshold,
+            document_ids=request.document_ids,
+            include_content=request.include_content
+        )
+        
+        processing_time = (datetime.utcnow() - start_time).total_seconds()
+        
+        return SearchResponse(
+            query=request.query,
+            results=results.get('results', []),
+            total_results=results.get('total_results', 0),
+            search_type=request.search_type,
+            processing_time=processing_time
+        )
+        
+    except Exception as e:
+        logger.error(f"Search processing failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Search processing failed: {str(e)}"
+        )
+
+@router.get("/documents", response_model=DocumentListResponse)
+async def list_documents(
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Page size"),
+    search: Optional[str] = Query(None, description="Search term for filtering"),
+    tags: Optional[str] = Query(None, description="Comma-separated tags for filtering"),
+    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
+):
+    """
+    List and filter documents in the collection.
+    
+    This endpoint provides paginated access to the document collection
+    with optional filtering by search terms and tags.
+    """
+    try:
+        # Parse tags filter
+        tag_filter = []
+        if tags:
+            tag_filter = [tag.strip() for tag in tags.split(',')]
+        
+        # Get documents
+        result = await llamaindex_service.list_documents(
+            page=page,
+            page_size=page_size,
+            search=search,
+            tags=tag_filter
+        )
+        
+        return DocumentListResponse(
+            documents=result.get('documents', []),
+            total_count=result.get('total_count', 0),
+            page=page,
+            page_size=page_size
+        )
+        
+    except Exception as e:
+        logger.error(f"Document listing failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Document listing failed: {str(e)}"
+        )
+
+@router.delete("/documents/{document_id}")
+async def delete_document(
+    document_id: str,
+    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
+):
+    """
+    Delete a document and its associated embeddings.
+    
+    This endpoint removes a document from the collection and
+    cleans up all associated data including embeddings and chunks.
+    """
+    try:
+        # Delete document
+        result = await llamaindex_service.delete_document(document_id)
+        
+        if not result.get('success', False):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Document not found"
+            )
+        
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "message": "Document deleted successfully",
+                "document_id": document_id,
+                "chunks_deleted": result.get('chunks_deleted', 0)
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Document deletion failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Document deletion failed: {str(e)}"
+        )
+
+@router.get("/health", response_model=HealthCheckResponse)
+async def rag_health_check(
+    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service),
+    embedding_service: EmbeddingService = Depends(get_embedding_service)
+):
+    """
+    Health check for RAG services.
+    
+    This endpoint checks the health of all RAG-related services
+    including LlamaIndex, embedding service, and vector store.
+    """
+    try:
+        # Check LlamaIndex service health
+        llamaindex_health = await llamaindex_service.health_check()
+        
+        # Check embedding service health
+        embedding_health = await embedding_service.health_check()
+        
+        # Determine overall status
+        overall_status = "healthy"
+        if (llamaindex_health.get('status') != 'healthy' or 
+            embedding_health.get('status') != 'healthy'):
+            overall_status = "degraded"
+        
+        return HealthCheckResponse(
+            status=overall_status,
+            services={
+                "llamaindex": llamaindex_health,
+                "embedding": embedding_health
+            },
+            timestamp=datetime.utcnow()
+        )
+        
+    except Exception as e:
+        logger.error(f"RAG health check failed: {e}", exc_info=True)
+        return HealthCheckResponse(
+            status="unhealthy",
+            services={
+                "llamaindex": {"status": "error", "error": str(e)},
+                "embedding": {"status": "unknown"}
+            },
+            timestamp=datetime.utcnow()
+        )
+
+@router.get("/stats")
+async def get_rag_statistics(
+    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
+):
+    """
+    Get RAG system statistics.
+    
+    This endpoint provides statistics about the RAG system including
+    document counts, embedding statistics, and performance metrics.
+    """
+    try:
+        stats = await llamaindex_service.get_statistics()
+        
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "status": "success",
+                "statistics": stats,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Statistics retrieval failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Statistics retrieval failed: {str(e)}"
+        )
+
+# Advanced Search Endpoints for Phase 7 Features
+
+@router.post("/search/mmr", response_model=MMRSearchResponse)
+async def mmr_search(
+    request: MMRSearchRequest,
+    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
+):
+    """
+    Perform MMR (Maximal Marginal Relevance) search for diverse results.
+    
+    This endpoint implements MMR search to provide diverse, non-redundant results
+    by balancing relevance and diversity using the lambda parameter.
+    """
+    try:
+        start_time = datetime.utcnow()
+        
+        # Call the MMR search method from LlamaIndex service
+        results = await llamaindex_service.semantic_search_with_mmr(
+            query=request.query,
+            top_k=request.top_k,
+            diversity_threshold=request.diversity_threshold,
+            lambda_param=request.lambda_param,
+            document_ids=request.document_ids,
+            include_metadata=request.include_metadata
+        )
+        
+        processing_time = (datetime.utcnow() - start_time).total_seconds()
+        
+        return MMRSearchResponse(
+            query=request.query,
+            results=results.get('results', []),
+            total_results=results.get('total_results', 0),
+            diversity_score=results.get('diversity_score', 0.0),
+            processing_time=processing_time
+        )
+        
+    except Exception as e:
+        logger.error(f"MMR search failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"MMR search failed: {str(e)}"
+        )
+
+@router.post("/search/advanced", response_model=AdvancedQueryResponse)
+async def advanced_query_search(
+    request: AdvancedQueryRequest,
+    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
+):
+    """
+    Perform advanced query search with optimization and expansion.
+    
+    This endpoint provides advanced query processing including query expansion,
+    rewriting, and optimization based on query type and search parameters.
+    """
+    try:
+        start_time = datetime.utcnow()
+        
+        # Convert string enums to proper enum types
+        query_type = QueryType(request.query_type.upper())
+        search_operator = SearchOperator(request.search_operator.upper())
+        
+        # Call the advanced query method from LlamaIndex service
+        results = await llamaindex_service.advanced_query_with_optimization(
+            query=request.query,
+            query_type=query_type,
+            top_k=request.top_k,
+            enable_expansion=request.enable_expansion,
+            enable_rewriting=request.enable_rewriting,
+            similarity_threshold=request.similarity_threshold,
+            document_ids=request.document_ids,
+            metadata_filters=request.metadata_filters,
+            search_operator=search_operator
+        )
+        
+        processing_time = (datetime.utcnow() - start_time).total_seconds()
+        
+        return AdvancedQueryResponse(
+            original_query=request.query,
+            optimized_query=results.get('optimized_query', request.query),
+            query_type=request.query_type,
+            results=results.get('results', []),
+            total_results=results.get('total_results', 0),
+            expansion_terms=results.get('expansion_terms', []),
+            processing_time=processing_time,
+            confidence_score=results.get('confidence_score', 0.0)
+        )
+        
+    except ValueError as e:
+        logger.error(f"Invalid query parameters: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid query parameters: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Advanced query search failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Advanced query search failed: {str(e)}"
+        )

@@ -49,8 +49,8 @@ class SupabaseClient:
             if not settings.supabase_url:
                 raise ValueError("SUPABASE_URL is required but not provided")
             
-            if not settings.supabase_key:
-                raise ValueError("SUPABASE_KEY is required but not provided")
+            if not settings.supabase_anon_key:
+                raise ValueError("SUPABASE_ANON_KEY is required but not provided")
             
             # Create Supabase client
             self._client = create_client(
