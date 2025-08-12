@@ -24,7 +24,13 @@ class SearchRequest(BaseModel):
     # Search parameters
     limit: int = Field(10, ge=1, le=100, description="Maximum number of results")
     similarity_threshold: float = Field(0.7, ge=0.0, le=1.0, description="Minimum similarity score")
-    search_type: str = Field("hybrid", regex="^(semantic|keyword|hybrid)$", description="Type of search")
+    search_type: str = Field("hybrid", regex="^(semantic|keyword|hybrid|multimodal)$", description="Type of search")
+    
+    # Multi-modal search parameters
+    include_images: bool = Field(False, description="Include image analysis in search results")
+    include_ocr_text: bool = Field(True, description="Include OCR-extracted text in search")
+    content_types: Optional[List[str]] = Field(None, description="Filter by content types (text, image, mixed)")
+    ocr_confidence_threshold: float = Field(0.5, ge=0.0, le=1.0, description="Minimum OCR confidence threshold")
     
     # Filters
     date_from: Optional[str] = Field(None, description="Filter documents from date (ISO format)")
@@ -56,10 +62,20 @@ class SearchResult(BaseModel):
     keyword_score: Optional[float] = Field(None, description="Keyword matching score")
     combined_score: float = Field(..., description="Final combined relevance score")
     
+    # Multi-modal scoring
+    multimodal_score: Optional[float] = Field(None, description="Multi-modal relevance score (0-1)")
+    ocr_confidence: Optional[float] = Field(None, description="OCR extraction confidence (0-1)")
+    
     # Context information
     page_number: int = Field(..., description="Source page number")
     context_before: Optional[str] = Field(None, description="Text before the match")
     context_after: Optional[str] = Field(None, description="Text after the match")
+    
+    # Multi-modal content
+    content_type: str = Field("text", description="Content type (text, image, mixed)")
+    ocr_text: Optional[str] = Field(None, description="OCR-extracted text content")
+    associated_images: List[Dict[str, Any]] = Field(default_factory=list, description="Associated image information")
+    image_analysis: Optional[Dict[str, Any]] = Field(None, description="Image analysis results")
     
     # Highlighting
     highlighted_content: Optional[str] = Field(None, description="Content with search terms highlighted")
@@ -119,9 +135,16 @@ class QueryRequest(BaseModel):
     temperature: float = Field(0.7, ge=0.0, le=2.0, description="Response creativity (0=focused, 2=creative)")
     max_tokens: int = Field(500, ge=50, le=2000, description="Maximum response length")
     
+    # Multi-modal RAG parameters
+    include_image_context: bool = Field(False, description="Include image analysis in context retrieval")
+    include_ocr_context: bool = Field(True, description="Include OCR-extracted text in context")
+    multimodal_llm_model: Optional[str] = Field(None, description="Specific multi-modal LLM model to use")
+    image_analysis_depth: str = Field("standard", regex="^(basic|standard|detailed)$", description="Level of image analysis")
+    
     # Response options
     include_sources: bool = Field(True, description="Include source citations in response")
     include_confidence: bool = Field(True, description="Include confidence score")
+    include_image_references: bool = Field(False, description="Include image references in response")
     response_format: str = Field("markdown", regex="^(text|markdown|json)$", description="Response format")
     
     class Config:
@@ -135,6 +158,196 @@ class QueryRequest(BaseModel):
                 "include_sources": True,
                 "response_format": "markdown"
             }
+    
+    
+    # Multi-modal specific schemas
+    
+    class ImageSearchRequest(BaseModel):
+        """Request model for image-based search."""
+        
+        query: str = Field(..., min_length=1, max_length=1000, description="Image search query")
+        document_ids: Optional[List[str]] = Field(None, description="Limit search to specific documents")
+        
+        # Image search parameters
+        limit: int = Field(10, ge=1, le=50, description="Maximum number of results")
+        similarity_threshold: float = Field(0.6, ge=0.0, le=1.0, description="Minimum similarity score")
+        include_ocr_text: bool = Field(True, description="Include OCR-extracted text in search")
+        ocr_confidence_threshold: float = Field(0.5, ge=0.0, le=1.0, description="Minimum OCR confidence threshold")
+        
+        # Image analysis parameters
+        analysis_depth: str = Field("standard", regex="^(basic|standard|detailed)$", description="Level of image analysis")
+        include_visual_features: bool = Field(True, description="Include visual feature analysis")
+        
+        class Config:
+            schema_extra = {
+                "example": {
+                    "query": "charts and graphs showing revenue data",
+                    "document_ids": ["doc_123"],
+                    "limit": 15,
+                    "similarity_threshold": 0.7,
+                    "include_ocr_text": True,
+                    "analysis_depth": "detailed"
+                }
+            }
+    
+    
+    class ImageSearchResult(BaseModel):
+        """Individual image search result."""
+        
+        document_id: str = Field(..., description="Source document ID")
+        document_name: str = Field(..., description="Document name")
+        image_id: str = Field(..., description="Image identifier")
+        page_number: int = Field(..., description="Source page number")
+        
+        # Image information
+        image_path: Optional[str] = Field(None, description="Path to image file")
+        image_dimensions: Optional[Dict[str, int]] = Field(None, description="Image width and height")
+        image_format: Optional[str] = Field(None, description="Image format (PNG, JPEG, etc.)")
+        
+        # Analysis results
+        visual_description: Optional[str] = Field(None, description="AI-generated visual description")
+        ocr_text: Optional[str] = Field(None, description="OCR-extracted text from image")
+        ocr_confidence: Optional[float] = Field(None, description="OCR extraction confidence")
+        
+        # Relevance scoring
+        similarity_score: float = Field(..., description="Visual similarity score (0-1)")
+        ocr_relevance_score: Optional[float] = Field(None, description="OCR text relevance score")
+        combined_score: float = Field(..., description="Final combined relevance score")
+        
+        # Visual features
+        visual_features: Optional[Dict[str, Any]] = Field(None, description="Extracted visual features")
+        detected_objects: List[str] = Field(default_factory=list, description="Detected objects in image")
+        
+        class Config:
+            schema_extra = {
+                "example": {
+                    "document_id": "doc_123",
+                    "document_name": "Financial Report Q3",
+                    "image_id": "img_456",
+                    "page_number": 5,
+                    "visual_description": "Bar chart showing quarterly revenue growth",
+                    "ocr_text": "Q3 Revenue: $2.5M (+15% YoY)",
+                    "similarity_score": 0.89,
+                    "combined_score": 0.85,
+                    "detected_objects": ["chart", "text", "numbers"]
+                }
+            }
+    
+    
+    class ImageSearchResponse(BaseResponse):
+        """Response model for image search operations."""
+        
+        query: str = Field(..., description="Original search query")
+        results: List[ImageSearchResult] = Field(..., description="Image search results")
+        total_found: int = Field(..., description="Total number of matching images")
+        search_time_ms: float = Field(..., description="Search execution time in milliseconds")
+        
+        # Search metadata
+        analysis_depth: str = Field(..., description="Level of analysis performed")
+        ocr_enabled: bool = Field(..., description="Whether OCR was enabled")
+        
+        class Config:
+            schema_extra = {
+                "example": {
+                    "success": True,
+                    "query": "charts and graphs",
+                    "results": [
+                        {
+                            "document_id": "doc_123",
+                            "document_name": "Financial Report",
+                            "image_id": "img_456",
+                            "page_number": 5,
+                            "visual_description": "Bar chart showing revenue data",
+                            "similarity_score": 0.89,
+                            "combined_score": 0.85
+                        }
+                    ],
+                    "total_found": 12,
+                    "search_time_ms": 234.5,
+                    "analysis_depth": "standard",
+                    "timestamp": "2024-07-26T18:00:00Z"
+                }
+            }
+    
+    
+    class MultiModalAnalysisRequest(BaseModel):
+        """Request model for multi-modal document analysis."""
+        
+        document_id: str = Field(..., description="Document ID to analyze")
+        analysis_types: List[str] = Field(..., description="Types of analysis to perform")
+        
+        # Analysis parameters
+        include_text_analysis: bool = Field(True, description="Include text content analysis")
+        include_image_analysis: bool = Field(True, description="Include image content analysis")
+        include_ocr_analysis: bool = Field(True, description="Include OCR text analysis")
+        
+        # OCR parameters
+        ocr_language: str = Field("en", description="OCR language code")
+        ocr_confidence_threshold: float = Field(0.5, ge=0.0, le=1.0, description="Minimum OCR confidence")
+        
+        # Image analysis parameters
+        image_analysis_depth: str = Field("standard", regex="^(basic|standard|detailed)$", description="Image analysis depth")
+        detect_objects: bool = Field(True, description="Detect objects in images")
+        extract_visual_features: bool = Field(True, description="Extract visual features")
+        
+        class Config:
+            schema_extra = {
+                "example": {
+                    "document_id": "doc_123",
+                    "analysis_types": ["text", "image", "ocr"],
+                    "include_image_analysis": True,
+                    "image_analysis_depth": "detailed",
+                    "ocr_language": "en"
+                }
+            }
+    
+    
+    class MultiModalAnalysisResponse(BaseResponse):
+        """Response model for multi-modal analysis."""
+        
+        document_id: str = Field(..., description="Analyzed document ID")
+        document_name: str = Field(..., description="Document name")
+        
+        # Analysis results
+        text_analysis: Optional[Dict[str, Any]] = Field(None, description="Text analysis results")
+        image_analysis: Optional[Dict[str, Any]] = Field(None, description="Image analysis results")
+        ocr_analysis: Optional[Dict[str, Any]] = Field(None, description="OCR analysis results")
+        
+        # Combined insights
+        multimodal_insights: Optional[Dict[str, Any]] = Field(None, description="Combined multi-modal insights")
+        content_summary: Optional[str] = Field(None, description="Overall content summary")
+        
+        # Processing metadata
+        analysis_time_ms: float = Field(..., description="Total analysis time")
+        models_used: Dict[str, str] = Field(default_factory=dict, description="Models used for analysis")
+        
+        # Statistics
+        total_pages: int = Field(..., description="Total pages analyzed")
+        total_images: int = Field(..., description="Total images analyzed")
+        total_text_chunks: int = Field(..., description="Total text chunks analyzed")
+        
+        class Config:
+            schema_extra = {
+                "example": {
+                    "success": True,
+                    "document_id": "doc_123",
+                    "document_name": "Financial Report Q3",
+                    "text_analysis": {
+                        "key_topics": ["revenue", "growth", "market"],
+                        "sentiment": "positive"
+                    },
+                    "image_analysis": {
+                        "chart_count": 5,
+                        "table_count": 3,
+                        "detected_objects": ["charts", "tables", "logos"]
+                    },
+                    "content_summary": "Financial report showing positive Q3 growth with detailed charts and tables",
+                    "analysis_time_ms": 1250.0,
+                    "total_pages": 25,
+                    "total_images": 8,
+                    "timestamp": "2024-07-26T18:00:00Z"
+                }
+            }
         }
 
 
@@ -147,6 +360,12 @@ class SourceCitation(BaseModel):
     page_number: int = Field(..., description="Page number")
     relevance_score: float = Field(..., description="Relevance to the question")
     excerpt: str = Field(..., description="Relevant text excerpt")
+    
+    # Multi-modal citation fields
+    content_type: str = Field("text", description="Content type (text, image, mixed)")
+    ocr_excerpt: Optional[str] = Field(None, description="OCR-extracted text excerpt")
+    image_reference: Optional[Dict[str, Any]] = Field(None, description="Associated image information")
+    multimodal_confidence: Optional[float] = Field(None, description="Multi-modal analysis confidence")
 
 
 class QueryResponse(BaseResponse):
@@ -158,14 +377,21 @@ class QueryResponse(BaseResponse):
     # Quality metrics
     confidence_score: Optional[float] = Field(None, description="Answer confidence (0-1)")
     completeness_score: Optional[float] = Field(None, description="Answer completeness (0-1)")
+    multimodal_confidence: Optional[float] = Field(None, description="Multi-modal analysis confidence (0-1)")
     
     # Source information
     sources: List[SourceCitation] = Field(default_factory=list, description="Source citations")
     context_used: int = Field(..., description="Number of context chunks used")
+    image_context_used: int = Field(0, description="Number of image contexts used")
+    
+    # Multi-modal response fields
+    image_references: List[Dict[str, Any]] = Field(default_factory=list, description="Referenced images in response")
+    multimodal_analysis: Optional[Dict[str, Any]] = Field(None, description="Multi-modal analysis results")
     
     # Processing metadata
     processing_time_ms: float = Field(..., description="Query processing time")
     model_used: Optional[str] = Field(None, description="AI model used for generation")
+    multimodal_model_used: Optional[str] = Field(None, description="Multi-modal model used for analysis")
     
     class Config:
         schema_extra = {

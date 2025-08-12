@@ -35,6 +35,9 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from extractor import extract_pdf_to_markdown, extract_pdf_tables, extract_json_and_images
 
+# Import OCR service
+from app.services.ocr_service import get_ocr_service, OCRConfig
+
 # Import custom exceptions
 from app.utils.exceptions import (
     PDFProcessingError,
@@ -54,11 +57,14 @@ class PDFProcessingResult:
     document_id: str
     markdown_content: str
     extracted_images: List[Dict[str, Any]]
+    ocr_text: str  # Combined OCR text from all images
+    ocr_results: List[Dict[str, Any]]  # Detailed OCR results per image
     metadata: Dict[str, Any]
     processing_time: float
     page_count: int
     word_count: int
     character_count: int
+    multimodal_enabled: bool = False
 
 
 class PDFProcessor:
@@ -249,20 +255,51 @@ class PDFProcessor:
             # Calculate content metrics
             content_metrics = self._calculate_content_metrics(markdown_content)
             
+            # Initialize OCR results
+            ocr_text = ""
+            ocr_results = []
+            multimodal_enabled = processing_options.get('enable_multimodal', False)
+            
+            # Process images with OCR if multimodal is enabled
+            if multimodal_enabled and extracted_images:
+                self.logger.info(f"Processing {len(extracted_images)} images with OCR")
+                ocr_languages = processing_options.get('ocr_languages', ['en'])
+                ocr_text, ocr_results = await self._process_images_with_ocr(
+                    extracted_images, ocr_languages
+                )
+                
+                # Enhance extracted images with OCR data
+                for i, image_data in enumerate(extracted_images):
+                    if i < len(ocr_results):
+                        image_data['ocr_result'] = ocr_results[i]
+            
+            # Update content metrics to include OCR text
+            if ocr_text:
+                ocr_word_count = len(ocr_text.split())
+                content_metrics['word_count'] += ocr_word_count
+                content_metrics['character_count'] += len(ocr_text)
+
             return PDFProcessingResult(
                 document_id=document_id,
                 markdown_content=markdown_content,
                 extracted_images=extracted_images,
+                ocr_text=ocr_text,
+                ocr_results=ocr_results,
                 metadata={
                     **metadata,
                     **content_metrics,
                     'processing_options': processing_options,
-                    'timestamp': datetime.utcnow().isoformat()
+                    'timestamp': datetime.utcnow().isoformat(),
+                    'multimodal_enabled': multimodal_enabled,
+                    'ocr_enabled': multimodal_enabled and bool(extracted_images),
+                    'ocr_languages': ocr_languages if multimodal_enabled else [],
+                    'ocr_text_length': len(ocr_text) if ocr_text else 0
                 },
                 processing_time=0.0,  # Will be set by caller
                 page_count=metadata.get('page_count', 0),
                 word_count=content_metrics['word_count'],
-                character_count=content_metrics['character_count']
+                character_count=content_metrics['character_count'],
+                multimodal_enabled=multimodal_enabled
             )
             
         except Exception as e:
@@ -697,44 +734,60 @@ class PDFProcessor:
         )
         
         return unique_images
-
-
-# Convenience function for backward compatibility
-async def process_pdf_bytes(
-    pdf_bytes: bytes,
-    document_id: Optional[str] = None,
-    config: Optional[Dict[str, Any]] = None
-) -> PDFProcessingResult:
-    """
-    Convenience function to process PDF bytes.
     
-    Args:
-        pdf_bytes: Raw PDF file bytes
-        document_id: Optional document identifier
-        config: Processing configuration
+    async def _process_images_with_ocr(
+        self,
+        extracted_images: List[Dict[str, Any]],
+        ocr_languages: List[str]
+    ) -> Tuple[str, List[Dict[str, Any]]]:
+        """
+        Process extracted images with OCR using the OCR service.
         
-    Returns:
-        PDFProcessingResult with extracted content
-    """
-    processor = PDFProcessor(config)
-    return await processor.process_pdf_from_bytes(pdf_bytes, document_id)
-
-
-async def process_pdf_url(
-    pdf_url: str,
-    document_id: Optional[str] = None,
-    config: Optional[Dict[str, Any]] = None
-) -> PDFProcessingResult:
-    """
-    Convenience function to process PDF from URL.
-    
-    Args:
-        pdf_url: URL to PDF file
-        document_id: Optional document identifier
-        config: Processing configuration
-        
-    Returns:
-        PDFProcessingResult with extracted content
-    """
-    processor = PDFProcessor(config)
-    return await processor.process_pdf_from_url(pdf_url, document_id)
+        Args:
+            extracted_images: List of image dictionaries with metadata
+            ocr_languages: List of language codes for OCR processing
+            
+        Returns:
+            Tuple of (combined_ocr_text, ocr_results_list)
+        """
+        try:
+            ocr_service = get_ocr_service()
+            ocr_config = OCRConfig(languages=ocr_languages)
+            
+            combined_ocr_text = ""
+            ocr_results = []
+            
+            for image_data in extracted_images:
+                image_path = image_data.get('path')
+                if not image_path or not os.path.exists(image_path):
+                    continue
+                
+                try:
+                    # Process image with OCR
+                    ocr_result = await ocr_service.process_image(image_path, ocr_config)
+                    
+                    if ocr_result and ocr_result.get('text'):
+                        combined_ocr_text += ocr_result['text'] + "\n"
+                        ocr_results.append({
+                            'image_path': image_path,
+                            'text': ocr_result['text'],
+                            'confidence': ocr_result.get('confidence', 0.0),
+                            'language': ocr_result.get('language', 'unknown'),
+                            'processing_time': ocr_result.get('processing_time', 0.0)
+                        })
+                    
+                except Exception as e:
+                    self.logger.warning("OCR processing failed for image %s: %s", image_path, str(e))
+                    ocr_results.append({
+                        'image_path': image_path,
+                        'text': '',
+                        'confidence': 0.0,
+                        'language': 'unknown',
+                        'error': str(e)
+                    })
+            
+            return combined_ocr_text.strip(), ocr_results
+            
+        except Exception as e:
+            self.logger.error("Error in OCR processing: %s", str(e))
+            return "", []

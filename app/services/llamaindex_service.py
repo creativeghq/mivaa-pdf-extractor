@@ -43,6 +43,15 @@ try:
     from llama_index.core.response_synthesizers import get_response_synthesizer
     from llama_index.readers.file import PDFReader, DocxReader, MarkdownReader
     from llama_index.vector_stores.supabase import SupabaseVectorStore
+    
+    # Multi-modal imports for Phase 8
+    from llama_index.multi_modal_llms.openai import OpenAIMultiModal
+    from llama_index.multi_modal_llms.anthropic import AnthropicMultiModal
+    from llama_index.embeddings.clip import ClipEmbedding
+    from llama_index.readers.file import ImageReader
+    from llama_index.core.multi_modal_llms import MultiModalLLM
+    from llama_index.core.schema import ImageDocument, ImageNode
+    
     import vecs
     LLAMAINDEX_AVAILABLE = True
 except ImportError as e:
@@ -81,13 +90,20 @@ class LlamaIndexService:
         self.chunk_overlap = self.config.get('chunk_overlap', 200)
         self.similarity_top_k = self.config.get('similarity_top_k', 5)
         
+        # Multi-modal configuration for Phase 8
+        self.enable_multimodal = self.config.get('enable_multimodal', True)
+        self.multimodal_llm_model = self.config.get('multimodal_llm_model', 'gpt-4-vision-preview')
+        self.image_embedding_model = self.config.get('image_embedding_model', 'clip-ViT-B-32')
+        self.ocr_enabled = self.config.get('ocr_enabled', True)
+        self.ocr_language = self.config.get('ocr_language', 'en')
+        
         # Supabase Configuration
         self.supabase_url = self.config.get('supabase_url', os.getenv('SUPABASE_URL'))
         self.supabase_key = self.config.get('supabase_key', os.getenv('SUPABASE_ANON_KEY'))
         self.table_name = self.config.get('table_name', 'documents')
         self.query_name = self.config.get('query_name', 'match_documents')
         
-        # Storage (fallback for compatibility)
+        # Storage directory for LlamaIndex indices
         self.storage_dir = self.config.get('storage_dir', tempfile.mkdtemp(prefix='llamaindex_'))
         Path(self.storage_dir).mkdir(parents=True, exist_ok=True)
         
@@ -96,6 +112,9 @@ class LlamaIndexService:
         
         # Initialize components
         self._initialize_components()
+        
+        # Initialize multi-modal components for Phase 8
+        self._initialize_multimodal_components()
         
         # Initialize vector store
         self._initialize_vector_store()
@@ -109,6 +128,10 @@ class LlamaIndexService:
         # Initialize advanced search service
         self.advanced_search_service = None
         self._initialize_advanced_search_service()
+        
+        # Initialize multi-modal components if enabled
+        if self.config.enable_multimodal:
+            self._initialize_multimodal_components()
         
         # Conversation memory management
         self.conversation_memories = {}  # Session ID -> conversation history
@@ -343,30 +366,19 @@ class LlamaIndexService:
                 self.embeddings = self._create_embedding_wrapper()
                 self.logger.info("Using centralized embedding service for LlamaIndex")
             else:
-                # Fallback to direct embedding initialization
-                if self.embedding_model.startswith('text-embedding'):
-                    # OpenAI embeddings
-                    self.embeddings = OpenAIEmbedding(
-                        model=self.embedding_model,
-                        api_key=os.getenv('OPENAI_API_KEY')
-                    )
-                else:
-                    # HuggingFace embeddings as fallback
-                    self.embeddings = HuggingFaceEmbedding(
-                        model_name="sentence-transformers/all-MiniLM-L6-v2"
-                    )
+                # Direct embedding initialization
+                self.embeddings = OpenAIEmbedding(
+                    model=self.embedding_model,
+                    api_key=os.getenv('OPENAI_API_KEY')
+                )
                 self.logger.info("Using direct embedding initialization")
             
             # Initialize LLM
-            if self.llm_model.startswith('gpt'):
-                self.llm = OpenAI(
-                    model=self.llm_model,
-                    api_key=os.getenv('OPENAI_API_KEY'),
-                    temperature=0.1
-                )
-            else:
-                # Fallback to default
-                self.llm = OpenAI(model="gpt-3.5-turbo", temperature=0.1)
+            self.llm = OpenAI(
+                model=self.llm_model,
+                api_key=os.getenv('OPENAI_API_KEY'),
+                temperature=0.1
+            )
             
             # Configure global settings
             Settings.embed_model = self.embeddings
@@ -411,6 +423,248 @@ class LlamaIndexService:
             self.logger.error(f"Failed to initialize SupabaseVectorStore: {e}")
             self.logger.warning("Falling back to local storage")
             self.vector_store = None
+    def _initialize_multimodal_components(self):
+        """Initialize multi-modal components for Phase 8."""
+        if not self.available or not self.enable_multimodal:
+            self.logger.info("Multi-modal capabilities disabled")
+            self.multimodal_llm = None
+            self.image_embeddings = None
+            self.image_reader = None
+            return
+        
+        try:
+            # Initialize multi-modal LLM
+            if self.multimodal_llm_model.startswith('gpt-4'):
+                self.multimodal_llm = OpenAIMultiModal(
+                    model=self.multimodal_llm_model,
+                    api_key=os.getenv('OPENAI_API_KEY'),
+                    temperature=0.1
+                )
+                self.logger.info(f"OpenAI multi-modal LLM initialized: {self.multimodal_llm_model}")
+            elif self.multimodal_llm_model.startswith('claude'):
+                self.multimodal_llm = AnthropicMultiModal(
+                    model=self.multimodal_llm_model,
+                    api_key=os.getenv('ANTHROPIC_API_KEY'),
+                    temperature=0.1
+                )
+                self.logger.info(f"Anthropic multi-modal LLM initialized: {self.multimodal_llm_model}")
+            else:
+                self.logger.warning(f"Unsupported multi-modal LLM model: {self.multimodal_llm_model}")
+                self.multimodal_llm = None
+            
+            # Initialize image embeddings
+            try:
+                self.image_embeddings = ClipEmbedding(model_name=self.image_embedding_model)
+                self.logger.info(f"CLIP image embeddings initialized: {self.image_embedding_model}")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize CLIP embeddings: {e}")
+                self.image_embeddings = None
+            
+            # Initialize image reader
+            self.image_reader = ImageReader()
+            self.logger.info("Image reader initialized successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to initialize multi-modal components: {e}")
+            self.multimodal_llm = None
+            self.image_embeddings = None
+            self.image_reader = None
+    
+    def process_images_with_ocr(self, image_paths: List[str]) -> List[ImageDocument]:
+        """Process images with OCR to extract text for Phase 8 multi-modal capabilities."""
+        if not self.available or not self.enable_multimodal:
+            self.logger.warning("Multi-modal capabilities not available for OCR processing")
+            return []
+        
+        if not self.image_reader:
+            self.logger.error("Image reader not initialized")
+            return []
+        
+        image_documents = []
+        
+        try:
+            for image_path in image_paths:
+                if not os.path.exists(image_path):
+                    self.logger.warning(f"Image file not found: {image_path}")
+                    continue
+                
+                # Load image using LlamaIndex ImageReader
+                documents = self.image_reader.load_data(file=Path(image_path))
+                
+                # Process each document (usually one per image)
+                for doc in documents:
+                    # Perform OCR if enabled
+                    if self.ocr_enabled:
+                        try:
+                            import easyocr
+                            reader = easyocr.Reader([self.ocr_language])
+                            
+                            # Extract text from image
+                            ocr_results = reader.readtext(image_path)
+                            ocr_text = ' '.join([result[1] for result in ocr_results])
+                            
+                            # Combine OCR text with existing document text
+                            if ocr_text.strip():
+                                doc.text = f"{doc.text}\n\nOCR Extracted Text:\n{ocr_text}"
+                                self.logger.info(f"OCR extracted {len(ocr_text)} characters from {image_path}")
+                        
+                        except Exception as e:
+                            self.logger.warning(f"OCR processing failed for {image_path}: {e}")
+                    
+                    # Create ImageDocument with metadata
+                    image_doc = ImageDocument(
+                        image=doc.image,
+                        text=doc.text,
+                        metadata={
+                            **doc.metadata,
+                            'image_path': image_path,
+                            'processed_with_ocr': self.ocr_enabled,
+                            'processing_timestamp': datetime.now().isoformat()
+                        }
+                    )
+                    image_documents.append(image_doc)
+                    
+        except Exception as e:
+            self.logger.error(f"Failed to process images with OCR: {e}")
+        
+        self.logger.info(f"Processed {len(image_documents)} image documents with OCR")
+        return image_documents
+    
+    def create_multimodal_index(self, text_documents: List[Document], image_documents: List[ImageDocument]) -> Optional[VectorStoreIndex]:
+        """Create a multi-modal index combining text and image documents for Phase 8."""
+        if not self.available or not self.enable_multimodal:
+            self.logger.warning("Multi-modal capabilities not available for index creation")
+            return None
+        
+        try:
+            # Combine all documents
+            all_documents = []
+            
+            # Add text documents
+            all_documents.extend(text_documents)
+            
+            # Convert image documents to nodes with image embeddings
+            for img_doc in image_documents:
+                # Create ImageNode for multi-modal indexing
+                image_node = ImageNode(
+                    image=img_doc.image,
+                    text=img_doc.text,
+                    metadata=img_doc.metadata
+                )
+                all_documents.append(image_node)
+            
+            # Create index with multi-modal embeddings
+            if self.image_embeddings and len(image_documents) > 0:
+                # Use multi-modal embeddings for images
+                index = VectorStoreIndex.from_documents(
+                    all_documents,
+                    embed_model=self.image_embeddings,
+                    storage_context=self.storage_context,
+                    show_progress=True
+                )
+            else:
+                # Fallback to text embeddings only
+                index = VectorStoreIndex.from_documents(
+                    all_documents,
+                    embed_model=self.embed_model,
+                    storage_context=self.storage_context,
+                    show_progress=True
+                )
+            
+            self.logger.info(f"Created multi-modal index with {len(text_documents)} text docs and {len(image_documents)} image docs")
+            return index
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create multi-modal index: {e}")
+            return None
+    
+    def multimodal_query(self, query: str, index: VectorStoreIndex, include_images: bool = True) -> Optional[str]:
+        """Perform multi-modal query using both text and image understanding for Phase 8."""
+        if not self.available or not self.enable_multimodal:
+            self.logger.warning("Multi-modal capabilities not available for querying")
+            return None
+        
+        if not index:
+            self.logger.error("No index provided for multi-modal query")
+            return None
+        
+        try:
+            # Create query engine with multi-modal LLM if available
+            if self.multimodal_llm and include_images:
+                query_engine = index.as_query_engine(
+                    llm=self.multimodal_llm,
+                    similarity_top_k=5,
+                    response_mode="tree_summarize"
+                )
+                self.logger.info("Using multi-modal LLM for query processing")
+            else:
+                # Fallback to regular LLM
+                query_engine = index.as_query_engine(
+                    llm=self.llm,
+                    similarity_top_k=5,
+                    response_mode="tree_summarize"
+                )
+                self.logger.info("Using text-only LLM for query processing")
+            
+            # Execute query
+            response = query_engine.query(query)
+            
+            self.logger.info(f"Multi-modal query completed for: {query[:50]}...")
+            return str(response)
+            
+        except Exception as e:
+            self.logger.error(f"Failed to execute multi-modal query: {e}")
+            return None
+    
+    def analyze_image_with_llm(self, image_path: str, prompt: str = "Describe this image in detail") -> Optional[str]:
+        """Analyze an image using multi-modal LLM for Phase 8 capabilities."""
+        if not self.available or not self.enable_multimodal:
+            self.logger.warning("Multi-modal capabilities not available for image analysis")
+            return None
+        
+        if not self.multimodal_llm:
+            self.logger.error("Multi-modal LLM not initialized")
+            return None
+        
+        if not os.path.exists(image_path):
+            self.logger.error(f"Image file not found: {image_path}")
+            return None
+        
+        try:
+            # Load image using ImageReader
+            if not self.image_reader:
+                self.logger.error("Image reader not initialized")
+                return None
+            
+            documents = self.image_reader.load_data(file=Path(image_path))
+            
+            if not documents:
+                self.logger.error(f"Failed to load image: {image_path}")
+                return None
+            
+            # Use the first document (should be the image)
+            image_doc = documents[0]
+            
+            # Create ImageDocument for analysis
+            image_document = ImageDocument(
+                image=image_doc.image,
+                text=prompt,
+                metadata={'image_path': image_path}
+            )
+            
+            # Analyze with multi-modal LLM
+            response = self.multimodal_llm.complete(
+                prompt=prompt,
+                image_documents=[image_document]
+            )
+            
+            self.logger.info(f"Image analysis completed for: {image_path}")
+            return str(response)
+            
+        except Exception as e:
+            self.logger.error(f"Failed to analyze image with LLM: {e}")
+            return None
+    
     
     def _initialize_advanced_search_service(self):
         """Initialize the advanced search service for Phase 7 features."""

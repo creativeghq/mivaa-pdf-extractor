@@ -118,6 +118,96 @@ class Settings(BaseSettings):
         env="LLAMAINDEX_ENABLE_RAG"
     )
     
+    # Multi-modal Processing Settings
+    enable_multimodal: bool = Field(
+        default=True,
+        env="ENABLE_MULTIMODAL"
+    )
+    multimodal_llm_model: str = Field(
+        default="gpt-4-vision-preview",
+        env="MULTIMODAL_LLM_MODEL"
+    )
+    multimodal_max_tokens: int = Field(
+        default=4096,
+        env="MULTIMODAL_MAX_TOKENS"
+    )
+    multimodal_temperature: float = Field(
+        default=0.1,
+        env="MULTIMODAL_TEMPERATURE"
+    )
+    multimodal_image_detail: str = Field(
+        default="high",
+        env="MULTIMODAL_IMAGE_DETAIL"
+    )
+    multimodal_batch_size: int = Field(
+        default=5,
+        env="MULTIMODAL_BATCH_SIZE"
+    )
+    multimodal_timeout: int = Field(
+        default=60,
+        env="MULTIMODAL_TIMEOUT"
+    )
+    
+    # OCR Processing Settings
+    ocr_enabled: bool = Field(
+        default=True,
+        env="OCR_ENABLED"
+    )
+    ocr_language: str = Field(
+        default="en",
+        env="OCR_LANGUAGE"
+    )
+    ocr_confidence_threshold: float = Field(
+        default=0.6,
+        env="OCR_CONFIDENCE_THRESHOLD"
+    )
+    ocr_engine: str = Field(
+        default="easyocr",
+        env="OCR_ENGINE"
+    )
+    ocr_gpu_enabled: bool = Field(
+        default=False,
+        env="OCR_GPU_ENABLED"
+    )
+    ocr_preprocessing_enabled: bool = Field(
+        default=True,
+        env="OCR_PREPROCESSING_ENABLED"
+    )
+    ocr_deskew_enabled: bool = Field(
+        default=True,
+        env="OCR_DESKEW_ENABLED"
+    )
+    ocr_noise_removal_enabled: bool = Field(
+        default=True,
+        env="OCR_NOISE_REMOVAL_ENABLED"
+    )
+    
+    # Image Processing Settings
+    image_processing_enabled: bool = Field(
+        default=True,
+        env="IMAGE_PROCESSING_ENABLED"
+    )
+    image_analysis_model: str = Field(
+        default="gpt-4-vision-preview",
+        env="IMAGE_ANALYSIS_MODEL"
+    )
+    image_resize_max_width: int = Field(
+        default=2048,
+        env="IMAGE_RESIZE_MAX_WIDTH"
+    )
+    image_resize_max_height: int = Field(
+        default=2048,
+        env="IMAGE_RESIZE_MAX_HEIGHT"
+    )
+    image_compression_quality: int = Field(
+        default=85,
+        env="IMAGE_COMPRESSION_QUALITY"
+    )
+    image_format_conversion: str = Field(
+        default="JPEG",
+        env="IMAGE_FORMAT_CONVERSION"
+    )
+    
     # Material Kai Vision Platform Settings
     material_kai_platform_url: str = Field(
         default="https://api.materialkai.vision",
@@ -217,6 +307,42 @@ class Settings(BaseSettings):
             raise ValueError(f"Table strategy must be one of: {valid_strategies}")
         return v.lower()
     
+    @validator("multimodal_image_detail")
+    def validate_multimodal_image_detail(cls, v):
+        """Validate multi-modal image detail level."""
+        valid_details = ["low", "high", "auto"]
+        if v.lower() not in valid_details:
+            raise ValueError(f"Multi-modal image detail must be one of: {valid_details}")
+        return v.lower()
+    
+    @validator("ocr_engine")
+    def validate_ocr_engine(cls, v):
+        """Validate OCR engine selection."""
+        valid_engines = ["easyocr", "pytesseract", "both"]
+        if v.lower() not in valid_engines:
+            raise ValueError(f"OCR engine must be one of: {valid_engines}")
+        return v.lower()
+    
+    @validator("ocr_language")
+    def validate_ocr_language(cls, v):
+        """Validate OCR language code."""
+        # Common language codes - can be extended as needed
+        valid_languages = [
+            "en", "es", "fr", "de", "it", "pt", "ru", "ja", "ko", "zh",
+            "ar", "hi", "th", "vi", "tr", "pl", "nl", "sv", "da", "no"
+        ]
+        if v.lower() not in valid_languages:
+            raise ValueError(f"OCR language must be one of: {valid_languages}")
+        return v.lower()
+    
+    @validator("image_format_conversion")
+    def validate_image_format_conversion(cls, v):
+        """Validate image format for conversion."""
+        valid_formats = ["JPEG", "PNG", "WEBP", "TIFF"]
+        if v.upper() not in valid_formats:
+            raise ValueError(f"Image format conversion must be one of: {valid_formats}")
+        return v.upper()
+    
     @validator("temp_dir", pre=True)
     def set_temp_dir(cls, v):
         """Set default temp directory if not provided."""
@@ -304,25 +430,6 @@ class Settings(BaseSettings):
             "allow_headers": self.cors_headers,
             "allow_credentials": True,
         }
-    def get_extractor_config(self) -> Dict[str, Any]:
-        """
-        Get configuration compatible with existing extractor.py functions.
-        
-        This ensures backward compatibility with the existing PyMuPDF4LLM
-        implementation while providing new configuration options.
-        """
-        return {
-            "output_dir": str(self.get_output_path()),
-            "temp_dir": str(self.get_temp_path()),
-            "image_format": self.default_image_format,
-            "image_quality": self.default_image_quality,
-            "table_strategy": self.default_table_strategy,
-            "write_images": self.write_images,
-            "extract_tables": self.extract_tables,
-            "extract_images": self.extract_images,
-            "max_file_size": self.max_file_size,
-            "allowed_extensions": self.allowed_extensions,
-        }
     def get_llamaindex_config(self) -> Dict[str, Any]:
         """
         Get LlamaIndex RAG configuration.
@@ -374,6 +481,57 @@ class Settings(BaseSettings):
             "enabled": self.sentry_enabled,
             "release": self.sentry_release,
             "server_name": self.sentry_server_name,
+        }
+    
+    def get_multimodal_config(self) -> Dict[str, Any]:
+        """
+        Get multi-modal processing configuration.
+        
+        This provides all necessary configuration for multi-modal document
+        processing including LLM settings, image processing, and performance tuning.
+        """
+        return {
+            "enabled": self.enable_multimodal,
+            "llm_model": self.multimodal_llm_model,
+            "max_tokens": self.multimodal_max_tokens,
+            "temperature": self.multimodal_temperature,
+            "image_detail": self.multimodal_image_detail,
+            "batch_size": self.multimodal_batch_size,
+            "timeout": self.multimodal_timeout,
+        }
+    
+    def get_ocr_config(self) -> Dict[str, Any]:
+        """
+        Get OCR processing configuration.
+        
+        This provides all necessary configuration for OCR text extraction
+        including engine selection, language settings, and preprocessing options.
+        """
+        return {
+            "enabled": self.ocr_enabled,
+            "language": self.ocr_language,
+            "confidence_threshold": self.ocr_confidence_threshold,
+            "engine": self.ocr_engine,
+            "gpu_enabled": self.ocr_gpu_enabled,
+            "preprocessing_enabled": self.ocr_preprocessing_enabled,
+            "deskew_enabled": self.ocr_deskew_enabled,
+            "noise_removal_enabled": self.ocr_noise_removal_enabled,
+        }
+    
+    def get_image_processing_config(self) -> Dict[str, Any]:
+        """
+        Get image processing configuration.
+        
+        This provides all necessary configuration for image processing
+        including analysis models, resizing, compression, and format conversion.
+        """
+        return {
+            "enabled": self.image_processing_enabled,
+            "analysis_model": self.image_analysis_model,
+            "resize_max_width": self.image_resize_max_width,
+            "resize_max_height": self.image_resize_max_height,
+            "compression_quality": self.image_compression_quality,
+            "format_conversion": self.image_format_conversion,
         }
     
     def get_jwt_config(self) -> Dict[str, Any]:

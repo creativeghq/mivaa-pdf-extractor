@@ -12,20 +12,20 @@ from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
 from fastapi.responses import JSONResponse
 
 from ..schemas.search import (
-    DocumentQueryRequest,
-    DocumentQueryResponse,
-    SemanticSearchRequest,
-    SemanticSearchResponse,
-    SimilaritySearchRequest,
-    SimilaritySearchResponse,
-    RelatedDocumentsRequest,
-    RelatedDocumentsResponse,
-    DocumentSummaryRequest,
-    DocumentSummaryResponse,
-    EntityExtractionRequest,
-    EntityExtractionResponse,
-    DocumentComparisonRequest,
-    DocumentComparisonResponse
+    # Enhanced multi-modal schemas
+    SearchRequest,
+    SearchResult,
+    SearchResponse,
+    QueryRequest,
+    QueryResponse,
+    SourceCitation,
+    ImageSearchRequest,
+    ImageSearchResult,
+    ImageSearchResponse,
+    MultiModalAnalysisRequest,
+    MultiModalAnalysisResponse,
+    # Legacy schemas removed - Phase 8 cleanup completed
+    # All functionality now handled by modern multi-modal schemas above
 )
 from ..schemas.common import ErrorResponse, SuccessResponse
 from ..services.llamaindex_service import LlamaIndexService
@@ -586,4 +586,474 @@ async def search_health_check(
         raise HTTPException(
             status_code=500,
             detail=f"Health check failed: {str(e)}"
+        )
+
+
+# ============================================================================
+# NEW MULTI-MODAL ENDPOINTS
+# ============================================================================
+
+@router.post(
+    "/search/multimodal",
+    response_model=SearchResponse,
+    summary="Multi-modal search across documents",
+    description="Perform advanced multi-modal search across text and images with OCR support"
+)
+async def multimodal_search(
+    request: SearchRequest,
+    llamaindex: LlamaIndexService = Depends(get_llamaindex_service),
+    supabase: SupabaseClient = Depends(get_supabase_client)
+) -> SearchResponse:
+    """
+    Perform multi-modal search across documents with text and image support.
+    
+    This endpoint supports:
+    - Text-based semantic search
+    - OCR text search within images
+    - Image content analysis
+    - Combined multi-modal scoring
+    """
+    try:
+        # Get configuration for multi-modal settings
+        from ..config import get_multimodal_config, get_ocr_config
+        multimodal_config = get_multimodal_config()
+        ocr_config = get_ocr_config()
+        
+        # Validate multi-modal is enabled
+        if not multimodal_config.get("enable_multimodal", False):
+            raise HTTPException(
+                status_code=400,
+                detail="Multi-modal search is not enabled. Please check configuration."
+            )
+        
+        # Build search parameters
+        search_params = {
+            "query": request.query,
+            "limit": request.limit,
+            "similarity_threshold": request.similarity_threshold,
+            "include_images": request.include_images,
+            "include_ocr_text": request.include_ocr_text,
+            "content_types": request.content_types,
+            "ocr_confidence_threshold": request.ocr_confidence_threshold,
+            "multimodal_llm_model": request.multimodal_llm_model or multimodal_config.get("multimodal_llm_model"),
+            "image_analysis_depth": request.image_analysis_depth
+        }
+        
+        # Filter documents by IDs if specified
+        if request.document_ids:
+            document_ids = request.document_ids
+        else:
+            # Get all available documents
+            documents = await supabase.list_documents(
+                limit=1000,
+                status_filter="completed"
+            )
+            document_ids = [doc["id"] for doc in documents.get("documents", [])]
+        
+        if not document_ids:
+            return SearchResponse(
+                success=True,
+                query=request.query,
+                results=[],
+                total_results=0,
+                metadata={
+                    "searched_documents": 0,
+                    "multimodal_enabled": True,
+                    "search_type": "multimodal"
+                }
+            )
+        
+        # Perform multi-modal search
+        search_results = []
+        for doc_id in document_ids:
+            try:
+                # Use enhanced LlamaIndex service for multi-modal search
+                result = await llamaindex.multimodal_search(
+                    document_id=doc_id,
+                    **search_params
+                )
+                
+                if result["success"] and result.get("results"):
+                    for item in result["results"]:
+                        search_result = SearchResult(
+                            document_id=doc_id,
+                            score=item.get("score", 0.0),
+                            multimodal_score=item.get("multimodal_score", 0.0),
+                            content=item.get("content", ""),
+                            ocr_text=item.get("ocr_text", ""),
+                            ocr_confidence=item.get("ocr_confidence", 0.0),
+                            content_type=item.get("content_type", "text"),
+                            associated_images=item.get("associated_images", []),
+                            image_analysis=item.get("image_analysis", {}),
+                            metadata=item.get("metadata", {})
+                        )
+                        search_results.append(search_result)
+                        
+            except Exception as e:
+                logger.warning(f"Error in multi-modal search for document {doc_id}: {e}")
+                continue
+        
+        # Sort by multimodal score (or regular score if not available)
+        search_results.sort(
+            key=lambda x: x.multimodal_score if x.multimodal_score > 0 else x.score,
+            reverse=True
+        )
+        limited_results = search_results[:request.limit]
+        
+        return SearchResponse(
+            success=True,
+            query=request.query,
+            results=limited_results,
+            total_results=len(search_results),
+            metadata={
+                "searched_documents": len(document_ids),
+                "multimodal_enabled": True,
+                "search_type": "multimodal",
+                "returned_results": len(limited_results),
+                "ocr_enabled": ocr_config.get("ocr_enabled", False),
+                "image_analysis_enabled": request.include_images
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in multi-modal search: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Multi-modal search failed: {str(e)}"
+        )
+
+
+@router.post(
+    "/query/multimodal",
+    response_model=QueryResponse,
+    summary="Multi-modal RAG query",
+    description="Query documents using multi-modal RAG with text and image context"
+)
+async def multimodal_query(
+    request: QueryRequest,
+    llamaindex: LlamaIndexService = Depends(get_llamaindex_service),
+    supabase: SupabaseClient = Depends(get_supabase_client)
+) -> QueryResponse:
+    """
+    Perform multi-modal RAG query with enhanced context from text and images.
+    
+    This endpoint provides intelligent responses using:
+    - Text content from documents
+    - OCR-extracted text from images
+    - Image analysis and descriptions
+    - Multi-modal LLM reasoning
+    """
+    try:
+        # Get configuration
+        from ..config import get_multimodal_config
+        multimodal_config = get_multimodal_config()
+        
+        # Validate multi-modal is enabled
+        if not multimodal_config.get("enable_multimodal", False):
+            raise HTTPException(
+                status_code=400,
+                detail="Multi-modal RAG is not enabled. Please check configuration."
+            )
+        
+        # Build query parameters
+        query_params = {
+            "query": request.query,
+            "include_image_context": request.include_image_context,
+            "multimodal_llm_model": request.multimodal_llm_model or multimodal_config.get("multimodal_llm_model"),
+            "image_analysis_depth": request.image_analysis_depth,
+            "max_tokens": request.max_tokens,
+            "temperature": request.temperature,
+            "response_mode": request.response_mode
+        }
+        
+        # Filter documents if specified
+        if request.document_ids:
+            document_ids = request.document_ids
+        else:
+            # Get all available documents
+            documents = await supabase.list_documents(
+                limit=1000,
+                status_filter="completed"
+            )
+            document_ids = [doc["id"] for doc in documents.get("documents", [])]
+        
+        if not document_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="No documents available for querying"
+            )
+        
+        # Perform multi-modal RAG query
+        result = await llamaindex.multimodal_query(
+            document_ids=document_ids,
+            **query_params
+        )
+        
+        if not result["success"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Multi-modal query failed: {result.get('error', 'Unknown error')}"
+            )
+        
+        # Build source citations with multi-modal information
+        sources = []
+        for source in result.get("sources", []):
+            citation = SourceCitation(
+                document_id=source.get("document_id", ""),
+                content_excerpt=source.get("content_excerpt", ""),
+                content_type=source.get("content_type", "text"),
+                ocr_excerpt=source.get("ocr_excerpt", ""),
+                image_reference=source.get("image_reference", ""),
+                multimodal_confidence=source.get("multimodal_confidence", 0.0),
+                page_number=source.get("page_number"),
+                metadata=source.get("metadata", {})
+            )
+            sources.append(citation)
+        
+        return QueryResponse(
+            success=True,
+            query=request.query,
+            response=result["response"],
+            sources=sources,
+            multimodal_context_used=result.get("multimodal_context_used", False),
+            image_analysis_count=result.get("image_analysis_count", 0),
+            metadata={
+                **result.get("metadata", {}),
+                "multimodal_enabled": True,
+                "query_type": "multimodal_rag",
+                "model_used": query_params["multimodal_llm_model"],
+                "image_context_included": request.include_image_context
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in multi-modal query: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Multi-modal query failed: {str(e)}"
+        )
+
+
+@router.post(
+    "/search/images",
+    response_model=ImageSearchResponse,
+    summary="Image-specific search",
+    description="Search specifically within document images using visual analysis and OCR"
+)
+async def image_search(
+    request: ImageSearchRequest,
+    llamaindex: LlamaIndexService = Depends(get_llamaindex_service),
+    supabase: SupabaseClient = Depends(get_supabase_client)
+) -> ImageSearchResponse:
+    """
+    Search specifically within document images.
+    
+    This endpoint focuses on:
+    - Visual content analysis
+    - OCR text extraction and search
+    - Image similarity matching
+    - Visual element detection
+    """
+    try:
+        # Get configuration
+        from ..config import get_multimodal_config, get_ocr_config
+        multimodal_config = get_multimodal_config()
+        ocr_config = get_ocr_config()
+        
+        # Validate image processing is enabled
+        if not multimodal_config.get("image_processing_enabled", False):
+            raise HTTPException(
+                status_code=400,
+                detail="Image processing is not enabled. Please check configuration."
+            )
+        
+        # Build search parameters
+        search_params = {
+            "query": request.query,
+            "search_type": request.search_type,
+            "limit": request.limit,
+            "similarity_threshold": request.similarity_threshold,
+            "ocr_confidence_threshold": request.ocr_confidence_threshold,
+            "visual_similarity_threshold": request.visual_similarity_threshold,
+            "image_analysis_model": request.image_analysis_model or multimodal_config.get("image_analysis_model")
+        }
+        
+        # Filter documents if specified
+        if request.document_ids:
+            document_ids = request.document_ids
+        else:
+            # Get documents that have images
+            documents = await supabase.list_documents(
+                limit=1000,
+                status_filter="completed"
+            )
+            # Filter to only documents with images
+            document_ids = []
+            for doc in documents.get("documents", []):
+                # Check if document has associated images
+                images = await supabase.get_document_images(doc["id"])
+                if images:
+                    document_ids.append(doc["id"])
+        
+        if not document_ids:
+            return ImageSearchResponse(
+                success=True,
+                query=request.query,
+                results=[],
+                total_results=0,
+                metadata={
+                    "searched_documents": 0,
+                    "search_type": request.search_type,
+                    "image_processing_enabled": True
+                }
+            )
+        
+        # Perform image search
+        search_results = []
+        for doc_id in document_ids:
+            try:
+                result = await llamaindex.image_search(
+                    document_id=doc_id,
+                    **search_params
+                )
+                
+                if result["success"] and result.get("results"):
+                    for item in result["results"]:
+                        image_result = ImageSearchResult(
+                            document_id=doc_id,
+                            image_id=item.get("image_id", ""),
+                            image_path=item.get("image_path", ""),
+                            similarity_score=item.get("similarity_score", 0.0),
+                            ocr_text=item.get("ocr_text", ""),
+                            ocr_confidence=item.get("ocr_confidence", 0.0),
+                            visual_description=item.get("visual_description", ""),
+                            detected_elements=item.get("detected_elements", []),
+                            page_number=item.get("page_number"),
+                            metadata=item.get("metadata", {})
+                        )
+                        search_results.append(image_result)
+                        
+            except Exception as e:
+                logger.warning(f"Error in image search for document {doc_id}: {e}")
+                continue
+        
+        # Sort by similarity score
+        search_results.sort(key=lambda x: x.similarity_score, reverse=True)
+        limited_results = search_results[:request.limit]
+        
+        return ImageSearchResponse(
+            success=True,
+            query=request.query,
+            results=limited_results,
+            total_results=len(search_results),
+            metadata={
+                "searched_documents": len(document_ids),
+                "search_type": request.search_type,
+                "image_processing_enabled": True,
+                "returned_results": len(limited_results),
+                "ocr_enabled": ocr_config.get("ocr_enabled", False)
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in image search: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Image search failed: {str(e)}"
+        )
+
+
+@router.post(
+    "/analyze/multimodal",
+    response_model=MultiModalAnalysisResponse,
+    summary="Comprehensive multi-modal document analysis",
+    description="Perform comprehensive analysis of document content including text, images, and structure"
+)
+async def multimodal_analysis(
+    request: MultiModalAnalysisRequest,
+    llamaindex: LlamaIndexService = Depends(get_llamaindex_service),
+    supabase: SupabaseClient = Depends(get_supabase_client)
+) -> MultiModalAnalysisResponse:
+    """
+    Perform comprehensive multi-modal analysis of a document.
+    
+    This endpoint provides:
+    - Complete document structure analysis
+    - Text content analysis and summarization
+    - Image content analysis and description
+    - OCR text extraction and analysis
+    - Cross-modal relationship detection
+    """
+    try:
+        # Verify document exists
+        document_data = await supabase.get_document_by_id(request.document_id)
+        if not document_data:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Document {request.document_id} not found"
+            )
+        
+        # Get configuration
+        from ..config import get_multimodal_config
+        multimodal_config = get_multimodal_config()
+        
+        # Validate multi-modal is enabled
+        if not multimodal_config.get("enable_multimodal", False):
+            raise HTTPException(
+                status_code=400,
+                detail="Multi-modal analysis is not enabled. Please check configuration."
+            )
+        
+        # Build analysis parameters
+        analysis_params = {
+            "document_id": request.document_id,
+            "analysis_types": request.analysis_types,
+            "include_text_analysis": request.include_text_analysis,
+            "include_image_analysis": request.include_image_analysis,
+            "include_ocr_analysis": request.include_ocr_analysis,
+            "include_structure_analysis": request.include_structure_analysis,
+            "analysis_depth": request.analysis_depth,
+            "multimodal_llm_model": request.multimodal_llm_model or multimodal_config.get("multimodal_llm_model")
+        }
+        
+        # Perform comprehensive analysis
+        result = await llamaindex.multimodal_analysis(**analysis_params)
+        
+        if not result["success"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Multi-modal analysis failed: {result.get('error', 'Unknown error')}"
+            )
+        
+        return MultiModalAnalysisResponse(
+            success=True,
+            document_id=request.document_id,
+            analysis_types=request.analysis_types,
+            text_analysis=result.get("text_analysis", {}),
+            image_analysis=result.get("image_analysis", {}),
+            ocr_analysis=result.get("ocr_analysis", {}),
+            structure_analysis=result.get("structure_analysis", {}),
+            cross_modal_insights=result.get("cross_modal_insights", {}),
+            metadata={
+                **result.get("metadata", {}),
+                "document_title": document_data.get("title", ""),
+                "analysis_depth": request.analysis_depth,
+                "model_used": analysis_params["multimodal_llm_model"],
+                "multimodal_enabled": True
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in multi-modal analysis for document {request.document_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Multi-modal analysis failed: {str(e)}"
         )

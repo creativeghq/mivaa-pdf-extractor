@@ -133,7 +133,18 @@ class PDFProcessingLogger:
     
     def log_configuration_info(self):
         """Log current configuration information."""
-        config = self.settings.get_extractor_config()
+        config = {
+            "output_dir": str(self.settings.get_output_path()),
+            "temp_dir": str(self.settings.get_temp_path()),
+            "image_format": self.settings.default_image_format,
+            "image_quality": self.settings.default_image_quality,
+            "table_strategy": self.settings.default_table_strategy,
+            "write_images": self.settings.write_images,
+            "extract_tables": self.settings.extract_tables,
+            "extract_images": self.settings.extract_images,
+            "max_file_size": self.settings.max_file_size,
+            "allowed_extensions": self.settings.allowed_extensions,
+        }
         self.logger.info(f"⚙️ Configuration loaded: {config}")
     
     def log_health_check(self, status: str, **details):
