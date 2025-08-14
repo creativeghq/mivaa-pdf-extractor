@@ -42,6 +42,40 @@ jobs:
         SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY_TEST }}
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY_TEST }}
 
+    - name: Validate deployment configuration
+      run: |
+        python scripts/validate-deployment.py --environment=production
+      env:
+        # Core Application
+        ENVIRONMENT: production
+        DEBUG: false
+        LOG_LEVEL: INFO
+        
+        # Database Configuration
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        
+        # AI/ML Service API Keys
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        
+        # JWT Authentication
+        JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
+        
+        # Error Tracking & Monitoring
+        SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        
+        # Material Kai Platform Integration
+        MATERIAL_KAI_API_URL: ${{ secrets.MATERIAL_KAI_API_URL }}
+        MATERIAL_KAI_API_KEY: ${{ secrets.MATERIAL_KAI_API_KEY }}
+        
+        # Security
+        ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+        
+        # CI/CD Pipeline Variables
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   build:
     needs: test
     runs-on: ubuntu-latest
@@ -175,13 +209,74 @@ services:
   mivaa-pdf-extractor:
     image: ${{ needs.build.outputs.image }}
     environment:
+      # Core Application
       - ENVIRONMENT=production
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      - APP_NAME=MIVAA PDF Extractor
+      - APP_VERSION=1.0.0
+      
+      # Database Configuration
       - SUPABASE_URL=${{ secrets.SUPABASE_URL }}
       - SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
+      - SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      - DATABASE_URL=${{ secrets.DATABASE_URL }}
+      - DB_POOL_SIZE=${{ secrets.DB_POOL_SIZE || '10' }}
+      - DB_MAX_OVERFLOW=${{ secrets.DB_MAX_OVERFLOW || '20' }}
+      - DB_POOL_TIMEOUT=${{ secrets.DB_POOL_TIMEOUT || '30' }}
+      
+      # AI/ML Service API Keys
       - OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+      - OPENAI_ORG_ID=${{ secrets.OPENAI_ORG_ID }}
+      - OPENAI_PROJECT_ID=${{ secrets.OPENAI_PROJECT_ID }}
+      - ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+      - HUGGINGFACE_API_TOKEN=${{ secrets.HUGGINGFACE_API_TOKEN }}
+      - HUGGING_FACE_ACCESS_TOKEN=${{ secrets.HUGGING_FACE_ACCESS_TOKEN }}
+      - REPLICATE_API_KEY=${{ secrets.REPLICATE_API_KEY }}
+      - JINA_API_KEY=${{ secrets.JINA_API_KEY }}
+      - FIRECRAWL_API_KEY=${{ secrets.FIRECRAWL_API_KEY }}
+      
+      # JWT Authentication
+      - JWT_SECRET_KEY=${{ secrets.JWT_SECRET_KEY }}
+      - JWT_ALGORITHM=${{ secrets.JWT_ALGORITHM || 'HS256' }}
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=${{ secrets.JWT_ACCESS_TOKEN_EXPIRE_MINUTES || '30' }}
+      - JWT_REFRESH_TOKEN_EXPIRE_DAYS=${{ secrets.JWT_REFRESH_TOKEN_EXPIRE_DAYS || '7' }}
+      - JWT_ISSUER=${{ secrets.JWT_ISSUER || 'mivaa-pdf-extractor' }}
+      - JWT_AUDIENCE=${{ secrets.JWT_AUDIENCE || 'mivaa-users' }}
+      
+      # Error Tracking & Monitoring
       - SENTRY_DSN=${{ secrets.SENTRY_DSN }}
+      - SENTRY_AUTH_TOKEN=${{ secrets.SENTRY_AUTH_TOKEN }}
+      - SENTRY_ORG=${{ secrets.SENTRY_ORG }}
+      - SENTRY_PROJECT=${{ secrets.SENTRY_PROJECT }}
+      - SENTRY_ENVIRONMENT=production
+      - SENTRY_TRACES_SAMPLE_RATE=${{ secrets.SENTRY_TRACES_SAMPLE_RATE || '0.1' }}
+      - SENTRY_PROFILES_SAMPLE_RATE=${{ secrets.SENTRY_PROFILES_SAMPLE_RATE || '0.1' }}
+      
+      # Material Kai Platform Integration
       - MATERIAL_KAI_API_URL=${{ secrets.MATERIAL_KAI_API_URL }}
       - MATERIAL_KAI_API_KEY=${{ secrets.MATERIAL_KAI_API_KEY }}
+      - MATERIAL_KAI_CLIENT_ID=${{ secrets.MATERIAL_KAI_CLIENT_ID }}
+      - MATERIAL_KAI_CLIENT_SECRET=${{ secrets.MATERIAL_KAI_CLIENT_SECRET }}
+      - MATERIAL_KAI_WEBHOOK_SECRET=${{ secrets.MATERIAL_KAI_WEBHOOK_SECRET }}
+      
+      # Performance & Caching
+      - MAX_WORKERS=${{ secrets.MAX_WORKERS || '4' }}
+      - WORKER_TIMEOUT=${{ secrets.WORKER_TIMEOUT || '300' }}
+      - MAX_UPLOAD_SIZE=${{ secrets.MAX_UPLOAD_SIZE || '100' }}
+      
+      # Security & CORS
+      - CORS_ORIGINS=${{ secrets.CORS_ORIGINS || '*' }}
+      - CORS_ALLOW_CREDENTIALS=${{ secrets.CORS_ALLOW_CREDENTIALS || 'true' }}
+      - RATE_LIMIT_PER_MINUTE=${{ secrets.RATE_LIMIT_PER_MINUTE || '60' }}
+      - RATE_LIMIT_BURST=${{ secrets.RATE_LIMIT_BURST || '10' }}
+      - ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}
+      
+      # CI/CD Pipeline Variables
+      - GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+      - DOCKER_REGISTRY_URL=${{ secrets.DOCKER_REGISTRY_URL || 'ghcr.io' }}
+      - DOCKER_REGISTRY_USERNAME=${{ secrets.DOCKER_REGISTRY_USERNAME || github.actor }}
+      - DOCKER_REGISTRY_PASSWORD=${{ secrets.DOCKER_REGISTRY_PASSWORD || secrets.GITHUB_TOKEN }}
 OVERRIDE_EOF
           
           # Pull latest image
