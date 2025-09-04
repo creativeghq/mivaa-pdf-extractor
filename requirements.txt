@@ -82,6 +82,10 @@ pytesseract>=0.3.10
 scikit-learn==1.3.2
 nltk==3.8.1
 
+# TogetherAI integration dependencies
+together>=1.0.0  # TogetherAI Python SDK for LLaMA Vision API
+tenacity>=8.2.0  # Retry logic and rate limiting utilities
+
 # Additional utilities
 python-dateutil==2.8.2
 typing-extensions==4.8.0

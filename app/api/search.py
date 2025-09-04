@@ -30,6 +30,12 @@ from ..schemas.search import (
 from ..schemas.common import ErrorResponse, SuccessResponse
 from ..services.llamaindex_service import LlamaIndexService
 from ..services.supabase_client import SupabaseClient
+from ..services.material_visual_search_service import (
+    MaterialVisualSearchService,
+    MaterialSearchRequest,
+    MaterialSearchResponse,
+    get_material_visual_search_service
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -879,7 +885,18 @@ async def image_search(
             "similarity_threshold": request.similarity_threshold,
             "ocr_confidence_threshold": request.ocr_confidence_threshold,
             "visual_similarity_threshold": request.visual_similarity_threshold,
-            "image_analysis_model": request.image_analysis_model or multimodal_config.get("image_analysis_model")
+            "image_analysis_model": request.image_analysis_model or multimodal_config.get("image_analysis_model"),
+            # Material-specific parameters
+            "material_filters": request.material_filters,
+            "material_types": request.material_types,
+            "confidence_threshold": request.confidence_threshold,
+            "spectral_filters": request.spectral_filters,
+            "chemical_filters": request.chemical_filters,
+            "mechanical_filters": request.mechanical_filters,
+            "fusion_weights": request.fusion_weights,
+            "enable_clip_embeddings": request.enable_clip_embeddings,
+            "enable_llama_analysis": request.enable_llama_analysis,
+            "include_analytics": request.include_analytics
         }
         
         # Filter documents if specified
@@ -933,7 +950,16 @@ async def image_search(
                             visual_description=item.get("visual_description", ""),
                             detected_elements=item.get("detected_elements", []),
                             page_number=item.get("page_number"),
-                            metadata=item.get("metadata", {})
+                            metadata=item.get("metadata", {}),
+                            # Enhanced material analysis fields
+                            material_analysis=item.get("material_analysis", {}),
+                            clip_embedding=item.get("clip_embedding", []),
+                            llama_analysis=item.get("llama_analysis", {}),
+                            material_type=item.get("material_type"),
+                            material_confidence=item.get("material_confidence"),
+                            spectral_properties=item.get("spectral_properties", {}),
+                            chemical_composition=item.get("chemical_composition", {}),
+                            mechanical_properties=item.get("mechanical_properties", {})
                         )
                         search_results.append(image_result)
                         
@@ -1056,4 +1082,282 @@ async def multimodal_analysis(
         raise HTTPException(
             status_code=500,
             detail=f"Multi-modal analysis failed: {str(e)}"
+        )
+
+
+# ============================================================================
+# MATERIAL-SPECIFIC VISUAL SEARCH ENDPOINTS
+# ============================================================================
+
+async def get_material_visual_search_service() -> MaterialVisualSearchService:
+    """Dependency to get Material Visual Search service instance."""
+    try:
+        service = await get_material_visual_search_service()
+        return service
+    except Exception as e:
+        logger.error(f"Failed to initialize Material Visual Search service: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Material Visual Search service is not available. Please check configuration."
+        )
+
+
+@router.post(
+    "/search/materials/visual",
+    response_model=MaterialSearchResponse,
+    summary="Material-specific visual search",
+    description="Perform visual search with material property filtering and analysis"
+)
+async def material_visual_search(
+    request: MaterialSearchRequest,
+    material_search_service: MaterialVisualSearchService = Depends(get_material_visual_search_service)
+) -> MaterialSearchResponse:
+    """
+    Perform material-specific visual search with advanced filtering and analysis.
+    
+    This endpoint provides:
+    - Visual similarity search using CLIP embeddings
+    - Material property filtering (spectral, chemical, mechanical, thermal)
+    - LLaMA Vision analysis for material understanding
+    - Multi-modal fusion with configurable weights
+    - Integration with Supabase visual search infrastructure
+    """
+    try:
+        logger.info(f"Material visual search requested: {request.search_type}")
+        
+        # Execute material visual search
+        result = await material_search_service.search_materials(request)
+        
+        if not result.success:
+            raise HTTPException(
+                status_code=400,
+                detail="Material visual search failed"
+            )
+        
+        logger.info(f"Material search completed: {result.total_results} results")
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in material visual search: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Material visual search failed: {str(e)}"
+        )
+
+
+@router.post(
+    "/analyze/materials/image",
+    response_model=SuccessResponse,
+    summary="Analyze material image",
+    description="Analyze a material image using integrated visual analysis"
+)
+async def analyze_material_image(
+    request: Dict[str, Any],
+    material_search_service: MaterialVisualSearchService = Depends(get_material_visual_search_service)
+) -> SuccessResponse:
+    """
+    Analyze a material image using integrated visual analysis.
+    
+    This endpoint provides comprehensive material analysis including:
+    - Visual feature extraction
+    - Material identification and classification
+    - Spectral, chemical, and mechanical property analysis
+    - CLIP embedding generation
+    - LLaMA Vision material understanding
+    """
+    try:
+        image_data = request.get("image_data")
+        analysis_types = request.get("analysis_types", ["visual", "spectral", "chemical"])
+        
+        if not image_data:
+            raise HTTPException(
+                status_code=400,
+                detail="image_data is required"
+            )
+        
+        # Analyze material image
+        result = await material_search_service.analyze_material_image(
+            image_data=image_data,
+            analysis_types=analysis_types
+        )
+        
+        if not result.get("success", False):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Material image analysis failed: {result.get('error', 'Unknown error')}"
+            )
+        
+        return SuccessResponse(
+            success=True,
+            message="Material image analysis completed",
+            data=result.get("analysis", {})
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in material image analysis: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Material image analysis failed: {str(e)}"
+        )
+
+
+@router.post(
+    "/embeddings/materials/generate",
+    response_model=SuccessResponse,
+    summary="Generate material embeddings",
+    description="Generate CLIP and custom embeddings for material images"
+)
+async def generate_material_embeddings(
+    request: Dict[str, Any],
+    material_search_service: MaterialVisualSearchService = Depends(get_material_visual_search_service)
+) -> SuccessResponse:
+    """
+    Generate embeddings for material images.
+    
+    This endpoint provides:
+    - CLIP embedding generation for visual similarity
+    - Custom material-specific embeddings
+    - Batch processing for multiple images
+    - Embedding metadata and quality metrics
+    """
+    try:
+        image_data = request.get("image_data")
+        embedding_types = request.get("embedding_types", ["clip"])
+        
+        if not image_data:
+            raise HTTPException(
+                status_code=400,
+                detail="image_data is required"
+            )
+        
+        # Generate embeddings
+        result = await material_search_service.generate_material_embeddings(
+            image_data=image_data,
+            embedding_types=embedding_types
+        )
+        
+        if not result.get("success", False):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Embedding generation failed: {result.get('error', 'Unknown error')}"
+            )
+        
+        return SuccessResponse(
+            success=True,
+            message="Material embeddings generated successfully",
+            data={
+                "embeddings": result.get("embeddings", {}),
+                "metadata": result.get("embedding_metadata", {})
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in material embedding generation: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Material embedding generation failed: {str(e)}"
+        )
+
+
+@router.get(
+    "/search/materials/{material_id}/similar",
+    response_model=SuccessResponse,
+    summary="Find similar materials",
+    description="Find materials similar to a reference material using visual and property analysis"
+)
+async def find_similar_materials(
+    material_id: str,
+    similarity_threshold: float = Query(0.75, ge=0.0, le=1.0, description="Minimum similarity threshold"),
+    limit: int = Query(20, ge=1, le=100, description="Maximum number of results"),
+    material_search_service: MaterialVisualSearchService = Depends(get_material_visual_search_service)
+) -> SuccessResponse:
+    """
+    Find materials similar to a reference material.
+    
+    This endpoint performs:
+    - Visual similarity analysis using CLIP embeddings
+    - Material property comparison
+    - Multi-modal similarity scoring
+    - Ranked results with confidence scores
+    """
+    try:
+        # Search for similar materials
+        result = await material_search_service.search_similar_materials(
+            reference_material_id=material_id,
+            similarity_threshold=similarity_threshold,
+            limit=limit
+        )
+        
+        if not result.get("success", False):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Similar material search failed: {result.get('error', 'Unknown error')}"
+            )
+        
+        return SuccessResponse(
+            success=True,
+            message=f"Found {result.get('total_found', 0)} similar materials",
+            data={
+                "reference_material_id": material_id,
+                "similar_materials": result.get("similar_materials", []),
+                "total_found": result.get("total_found", 0),
+                "search_metadata": result.get("search_metadata", {})
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error finding similar materials for {material_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Similar material search failed: {str(e)}"
+        )
+
+
+@router.get(
+    "/search/materials/health",
+    response_model=SuccessResponse,
+    summary="Material visual search health check",
+    description="Check health and availability of material visual search services"
+)
+async def material_search_health_check(
+    material_search_service: MaterialVisualSearchService = Depends(get_material_visual_search_service)
+) -> SuccessResponse:
+    """
+    Check the health of material visual search services.
+    
+    This endpoint provides information about:
+    - Material Visual Search service status
+    - Supabase visual search function connectivity
+    - Material Kai service integration status
+    - CLIP embedding service availability
+    - Overall system health
+    """
+    try:
+        health_status = await material_search_service.health_check()
+        
+        return SuccessResponse(
+            success=True,
+            message="Material visual search health check completed",
+            data=health_status
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in material search health check: {e}")
+        return SuccessResponse(
+            success=False,
+            message="Material visual search health check failed",
+            data={
+                "error": str(e),
+                "service": "material_visual_search",
+                "status": "unhealthy",
+                "timestamp": datetime.utcnow().isoformat()
+            }
         )

@@ -208,6 +208,52 @@ class Settings(BaseSettings):
         env="IMAGE_FORMAT_CONVERSION"
     )
     
+    # TogetherAI Settings
+    together_api_key: str = Field(
+        default="",
+        env="TOGETHER_API_KEY"
+    )
+    together_base_url: str = Field(
+        default="https://api.together.xyz/v1/chat/completions",
+        env="TOGETHER_BASE_URL"
+    )
+    together_model: str = Field(
+        default="meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo",
+        env="TOGETHER_MODEL"
+    )
+    together_max_tokens: int = Field(
+        default=4096,
+        env="TOGETHER_MAX_TOKENS"
+    )
+    together_temperature: float = Field(
+        default=0.1,
+        env="TOGETHER_TEMPERATURE"
+    )
+    together_timeout: int = Field(
+        default=60,
+        env="TOGETHER_TIMEOUT"
+    )
+    together_enabled: bool = Field(
+        default=True,
+        env="TOGETHER_ENABLED"
+    )
+    together_rate_limit_rpm: int = Field(
+        default=200,
+        env="TOGETHER_RATE_LIMIT_RPM"
+    )
+    together_rate_limit_tpm: int = Field(
+        default=20000,
+        env="TOGETHER_RATE_LIMIT_TPM"
+    )
+    together_retry_attempts: int = Field(
+        default=3,
+        env="TOGETHER_RETRY_ATTEMPTS"
+    )
+    together_retry_delay: float = Field(
+        default=1.0,
+        env="TOGETHER_RETRY_DELAY"
+    )
+    
     # Material Kai Vision Platform Settings
     material_kai_platform_url: str = Field(
         default="https://api.materialkai.vision",
@@ -534,6 +580,18 @@ class Settings(BaseSettings):
             "format_conversion": self.image_format_conversion,
         }
     
+    @validator("together_model")
+    def validate_together_model(cls, v):
+        """Validate TogetherAI model name."""
+        valid_models = [
+            "meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo",
+            "meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo",
+            "meta-llama/Llama-Vision-Free"
+        ]
+        if v not in valid_models:
+            raise ValueError(f"TogetherAI model must be one of: {valid_models}")
+        return v
+
     def get_jwt_config(self) -> Dict[str, Any]:
         """
         Get JWT authentication configuration.
@@ -548,6 +606,27 @@ class Settings(BaseSettings):
             "refresh_token_expire_days": self.jwt_refresh_token_expire_days,
             "issuer": self.jwt_issuer,
             "audience": self.jwt_audience,
+        }
+    
+    def get_together_ai_config(self) -> Dict[str, Any]:
+        """
+        Get TogetherAI configuration.
+        
+        This provides all necessary configuration for TogetherAI integration
+        including API settings, model configuration, rate limiting, and retry logic.
+        """
+        return {
+            "api_key": self.together_api_key,
+            "base_url": self.together_base_url,
+            "model": self.together_model,
+            "max_tokens": self.together_max_tokens,
+            "temperature": self.together_temperature,
+            "timeout": self.together_timeout,
+            "enabled": self.together_enabled,
+            "rate_limit_rpm": self.together_rate_limit_rpm,
+            "rate_limit_tpm": self.together_rate_limit_tpm,
+            "retry_attempts": self.together_retry_attempts,
+            "retry_delay": self.together_retry_delay,
         }
     
     class Config:
