@@ -28,6 +28,14 @@ from tenacity import (
 from ..config import get_settings
 from ..core.exceptions import ServiceError, ConfigurationError, ExternalServiceError
 
+# Import enhanced material property extraction capabilities
+from .enhanced_material_property_extractor import (
+    EnhancedMaterialPropertyExtractor,
+    PropertyExtractionResult,
+    convert_to_legacy_format,
+    extract_enhanced_properties_from_analysis
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -307,8 +315,8 @@ Provide your response as a structured analysis with clear categorization."""
             analysis_text = response_data["choices"][0]["message"]["content"]
             
             # Extract structured information from the analysis
-            # This is a simplified extraction - in production, you might want more sophisticated parsing
-            result = self._parse_analysis_response(analysis_text, start_time)
+            # Enhanced semantic analysis with comprehensive property extraction
+            result = await self._parse_analysis_response(analysis_text, start_time)
             
             # Cache the result
             self._cache[cache_key] = (result, datetime.utcnow())
@@ -321,25 +329,155 @@ Provide your response as a structured analysis with clear categorization."""
             logger.error(f"Semantic analysis failed after {processing_time:.2f}s: {e}")
             raise
     
-    def _parse_analysis_response(self, analysis_text: str, start_time: float) -> SemanticAnalysisResult:
-        """Parse the analysis response from TogetherAI into structured result."""
-        processing_time = time.time() - start_time
+    async def _parse_analysis_response(self, analysis_text: str, start_time: float) -> SemanticAnalysisResult:
+        """
+        Parse the analysis response using enhanced semantic analysis.
         
-        # Basic parsing - extract key information from the response
-        # In a production system, you might want more sophisticated NLP parsing
-        lines = analysis_text.split('\n')
+        This method now leverages sophisticated LLM-based property extraction
+        to identify 60+ functional properties across 9 categories, replacing
+        the basic keyword matching with comprehensive document understanding.
+        """
+        processing_time = time.time() - start_time
         description = analysis_text.strip()
         
-        # Extract basic material properties and categories
-        # This is a simplified approach - you might want to enhance this
-        material_properties = {}
-        categories = []
-        confidence = 0.8  # Default confidence
+        logger.info("Starting enhanced semantic analysis with comprehensive property extraction")
         
-        # Look for common material indicators in the text
+        try:
+            # Use enhanced material property extraction for comprehensive analysis
+            enhanced_extraction_result = await extract_enhanced_properties_from_analysis(
+                analysis_text=analysis_text,
+                together_ai_client=self,  # Pass self for LLM capabilities
+                document_context=None  # Could be enhanced with additional context
+            )
+            
+            # Convert enhanced properties to legacy format for backward compatibility
+            enhanced_material_properties = convert_to_legacy_format(enhanced_extraction_result)
+            
+            # Determine sophisticated categories based on enhanced analysis
+            categories = self._determine_sophisticated_categories(enhanced_extraction_result)
+            
+            # Calculate confidence based on extraction quality and coverage
+            confidence = self._calculate_enhanced_confidence(enhanced_extraction_result)
+            
+            logger.info(f"Enhanced extraction completed: {enhanced_extraction_result.property_coverage_percentage:.1f}% coverage, "
+                       f"{confidence:.3f} confidence, {len(categories)} categories")
+            
+            # Create result with enhanced properties but maintain compatibility
+            result = SemanticAnalysisResult(
+                description=description,
+                confidence=confidence,
+                material_properties=enhanced_material_properties,
+                categories=categories,
+                processing_time=processing_time,
+                model_used=self.config.model
+            )
+            
+            # Add enhanced extraction metadata for monitoring and debugging
+            result.material_properties['enhanced_metadata'] = {
+                'extraction_method': enhanced_extraction_result.extraction_method,
+                'coverage_percentage': enhanced_extraction_result.property_coverage_percentage,
+                'extraction_confidence': enhanced_extraction_result.extraction_confidence,
+                'categories_extracted': len([k for k, v in enhanced_extraction_result.enhanced_properties.to_dict().items() if v]),
+                'processing_time_enhanced': enhanced_extraction_result.processing_time
+            }
+            
+            return result
+            
+        except Exception as e:
+            # Fallback to basic analysis if enhanced extraction fails
+            logger.warning(f"Enhanced extraction failed, falling back to basic analysis: {e}")
+            return self._basic_fallback_analysis(analysis_text, start_time)
+            
+    def _determine_sophisticated_categories(self, extraction_result: PropertyExtractionResult) -> List[str]:
+        """
+        Determine material categories based on enhanced property analysis.
+        
+        This replaces simple keyword matching with sophisticated category
+        determination based on extracted functional properties.
+        """
+        categories = []
+        enhanced_props = extraction_result.enhanced_properties.to_dict()
+        
+        # Determine categories based on extracted properties
+        if enhanced_props.get('mechanicalPropertiesExtended'):
+            categories.append('engineered_material')
+            
+        if enhanced_props.get('thermalProperties'):
+            categories.append('thermal_material')
+            
+        if enhanced_props.get('slipSafetyRatings'):
+            categories.append('safety_rated')
+            
+        if enhanced_props.get('chemicalHygieneResistance'):
+            categories.append('chemical_resistant')
+            
+        if enhanced_props.get('environmentalSustainability'):
+            categories.append('sustainable_material')
+            
+        if enhanced_props.get('acousticElectricalProperties'):
+            categories.append('functional_material')
+            
+        if enhanced_props.get('surfaceGlossReflectivity'):
+            categories.append('surface_finished')
+            
+        if enhanced_props.get('waterMoistureResistance'):
+            categories.append('moisture_resistant')
+            
+        if enhanced_props.get('dimensionalAesthetic'):
+            categories.append('architectural_material')
+            
+        # Default fallback if no specific categories identified
+        if not categories:
+            categories = ['general_material']
+            
+        return categories
+        
+    def _calculate_enhanced_confidence(self, extraction_result: PropertyExtractionResult) -> float:
+        """
+        Calculate sophisticated confidence score based on extraction quality.
+        
+        This replaces the fixed 0.8 confidence with dynamic scoring based on:
+        - Property coverage percentage
+        - Individual category confidence scores
+        - Extraction method reliability
+        """
+        base_confidence = extraction_result.extraction_confidence
+        coverage_factor = extraction_result.property_coverage_percentage / 100.0
+        
+        # Boost confidence for high coverage
+        if coverage_factor >= 0.8:
+            confidence_boost = 0.1
+        elif coverage_factor >= 0.6:
+            confidence_boost = 0.05
+        else:
+            confidence_boost = 0.0
+            
+        # Apply extraction method factor
+        method_factor = 1.0 if extraction_result.extraction_method == "llm_semantic_analysis" else 0.8
+        
+        # Calculate final confidence with bounds checking
+        final_confidence = min(0.95, (base_confidence + confidence_boost) * method_factor)
+        final_confidence = max(0.1, final_confidence)  # Minimum confidence floor
+        
+        return final_confidence
+        
+    def _basic_fallback_analysis(self, analysis_text: str, start_time: float) -> SemanticAnalysisResult:
+        """
+        Fallback to basic analysis if enhanced extraction fails.
+        
+        This maintains the original basic keyword matching as a safety net
+        while logging the fallback for monitoring purposes.
+        """
+        processing_time = time.time() - start_time
+        description = analysis_text.strip()
         text_lower = analysis_text.lower()
         
-        # Basic material type detection
+        logger.warning("Using basic fallback analysis - enhanced extraction unavailable")
+        
+        # Basic material type detection (original logic)
+        material_properties = {}
+        categories = []
+        
         if any(word in text_lower for word in ['metal', 'steel', 'aluminum', 'iron']):
             categories.append('metal')
             material_properties['material_family'] = 'metal'
@@ -356,21 +494,25 @@ Provide your response as a structured analysis with clear categorization."""
             categories.append('ceramic')
             material_properties['material_family'] = 'ceramic'
         
-        # Extract color information
+        # Basic color detection
         colors = ['red', 'blue', 'green', 'yellow', 'black', 'white', 'brown', 'gray', 'silver']
         detected_colors = [color for color in colors if color in text_lower]
         if detected_colors:
             material_properties['primary_colors'] = detected_colors
         
-        # Extract texture information
+        # Basic texture detection
         textures = ['smooth', 'rough', 'textured', 'glossy', 'matte', 'shiny']
         detected_textures = [texture for texture in textures if texture in text_lower]
         if detected_textures:
             material_properties['surface_textures'] = detected_textures
+            
+        # Mark as fallback analysis for monitoring
+        material_properties['analysis_method'] = 'basic_fallback'
+        material_properties['fallback_reason'] = 'enhanced_extraction_failed'
         
         return SemanticAnalysisResult(
             description=description,
-            confidence=confidence,
+            confidence=0.6,  # Lower confidence for basic analysis
             material_properties=material_properties,
             categories=categories,
             processing_time=processing_time,
