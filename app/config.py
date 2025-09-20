@@ -9,7 +9,8 @@ import os
 import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
-from pydantic import BaseSettings, Field, validator
+from pydantic import Field, validator
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -24,6 +25,15 @@ class Settings(BaseSettings):
     app_name: str = Field(default="PDF Processing Service", env="APP_NAME")
     app_version: str = Field(default="1.0.0", env="APP_VERSION")
     debug: bool = Field(default=False, env="DEBUG")
+    environment: str = Field(default="development", env="ENVIRONMENT")
+    
+    @validator('debug')
+    def validate_debug_mode(cls, v, values):
+        """Ensure debug mode is disabled in production environments."""
+        env = values.get('environment', 'development')
+        if env == 'production' and v:
+            raise ValueError("Debug mode cannot be enabled in production environment")
+        return v
     
     # Server Settings
     host: str = Field(default="0.0.0.0", env="HOST")
@@ -35,10 +45,13 @@ class Settings(BaseSettings):
     docs_url: str = Field(default="/docs", env="DOCS_URL")
     redoc_url: str = Field(default="/redoc", env="REDOC_URL")
     
-    # CORS Settings
-    cors_origins: list = Field(default=["*"], env="CORS_ORIGINS")
-    cors_methods: list = Field(default=["*"], env="CORS_METHODS")
-    cors_headers: list = Field(default=["*"], env="CORS_HEADERS")
+    # CORS Settings - Secure defaults, override via environment
+    cors_origins: list = Field(
+        default=["http://localhost:3000", "http://127.0.0.1:3000"],
+        env="CORS_ORIGINS"
+    )
+    cors_methods: list = Field(default=["GET", "POST", "PUT", "DELETE"], env="CORS_METHODS")
+    cors_headers: list = Field(default=["Content-Type", "Authorization"], env="CORS_HEADERS")
     
     # Logging Settings
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
@@ -70,7 +83,7 @@ class Settings(BaseSettings):
     max_requests_per_minute: int = Field(default=60, env="MAX_REQUESTS_PER_MINUTE")
     
     # JWT Authentication Settings
-    jwt_secret_key: str = Field(default="", env="JWT_SECRET_KEY")
+    jwt_secret_key: str = Field(env="JWT_SECRET_KEY")  # Required, no default
     jwt_algorithm: str = Field(default="HS256", env="JWT_ALGORITHM")
     jwt_access_token_expire_minutes: int = Field(default=30, env="JWT_ACCESS_TOKEN_EXPIRE_MINUTES")
     jwt_refresh_token_expire_days: int = Field(default=7, env="JWT_REFRESH_TOKEN_EXPIRE_DAYS")
@@ -310,9 +323,21 @@ class Settings(BaseSettings):
         env="SENTRY_PROFILES_SAMPLE_RATE"
     )
     sentry_enabled: bool = Field(
-        default=False,
+        default=False,  # Must be explicitly enabled for monitoring
         env="SENTRY_ENABLED"
     )
+    
+    @validator('sentry_enabled')
+    def validate_sentry_production(cls, v, values):
+        """Recommend enabling Sentry in production environments."""
+        env = values.get('environment', 'development')
+        if env == 'production' and not v:
+            import warnings
+            warnings.warn(
+                "Sentry monitoring is disabled in production environment. "
+                "Consider enabling SENTRY_ENABLED=true for error tracking."
+            )
+        return v
     sentry_release: Optional[str] = Field(
         default=None,
         env="SENTRY_RELEASE"

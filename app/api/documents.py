@@ -76,11 +76,18 @@ job_storage = {}
 
 
 async def validate_pdf_file(file: UploadFile) -> None:
-    """Validate uploaded PDF file."""
+    """Validate uploaded PDF file with comprehensive security checks."""
     if not file.filename:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No filename provided"
+        )
+    
+    # Sanitize filename - prevent path traversal
+    if ".." in file.filename or "/" in file.filename or "\\" in file.filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid filename - path traversal not allowed"
         )
     
     if not file.filename.lower().endswith('.pdf'):
@@ -89,15 +96,37 @@ async def validate_pdf_file(file: UploadFile) -> None:
             detail="File must be a PDF"
         )
     
+    # Validate content type
+    if file.content_type and not file.content_type.startswith('application/pdf'):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid content type - must be application/pdf"
+        )
+    
     # Check file size (limit to 50MB)
     file.file.seek(0, 2)  # Seek to end
     file_size = file.file.tell()
     file.file.seek(0)  # Reset to beginning
     
+    if file_size == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File is empty"
+        )
+    
     if file_size > 50 * 1024 * 1024:  # 50MB
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail="File size exceeds 50MB limit"
+        )
+    
+    # Basic PDF header validation
+    content_start = await file.read(8)
+    file.file.seek(0)  # Reset to beginning
+    if not content_start.startswith(b'%PDF-'):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid PDF file - missing PDF header"
         )
 
 
