@@ -147,18 +147,17 @@ class MivaaSearchIntegration {
 - **Dimensions:** 1536 (MIVAA standard)
 - **Centralized Service:** MIVAA embedding service
 
-#### 2.2 Update Main App to Use MIVAA Embedding Service
-**File:** `src/services/embedding/mivaaEmbeddingIntegration.ts`
+#### 2.2 Update Main App to Use MIVAA Embedding Service ✅ COMPLETED
+**File:** `src/services/embeddingGenerationService.ts` (consolidated service)
 **Implementation:**
 ```typescript
-// New integration service for main app
-export class MivaaEmbeddingIntegration {
-    private mivaaUrl: string;
-    private apiKey: string;
-    
-    constructor(mivaaUrl: string, apiKey: string) {
-        this.mivaaUrl = mivaaUrl;
-        this.apiKey = apiKey;
+// Consolidated embedding service with MIVAA integration
+export class EmbeddingGenerationService {
+    private config: EmbeddingGenerationConfig;
+
+    constructor(config: EmbeddingGenerationConfig) {
+        this.config = config;
+        // MIVAA gateway integration built-in
     }
     
     async generateEmbeddings(texts: string[]): Promise<number[][]> {
@@ -181,11 +180,11 @@ export class MivaaEmbeddingIntegration {
 }
 ```
 
-#### 2.3 Deprecate Main App Embedding Services
-**Files to Remove/Replace:**
-- `src/services/embedding/openai-embedding.service.ts` (replace with MIVAA integration)
-- `src/services/embeddingGenerationService.ts` (legacy service)
-- Update `src/config/embedding.config.ts` to point to MIVAA
+#### 2.3 Deprecate Main App Embedding Services ✅ COMPLETED
+**Files Removed/Consolidated:**
+- ✅ `src/services/mivaaEmbeddingIntegration.ts` (consolidated into embeddingGenerationService.ts)
+- ✅ `src/services/ragService.ts` (consolidated into ragKnowledgeService.ts)
+- ✅ Enhanced `src/services/embeddingGenerationService.ts` with MIVAA integration
 
 ### Phase 3: Database Schema Alignment (Critical)
 
@@ -279,7 +278,7 @@ export async function mivaaGateway(request: MivaaRequest): Promise<MivaaResponse
 10. ✅ **Update batchProcessingService.ts** - COMPLETED - Replaced EmbeddingGenerationService with MIVAA integration
 11. ✅ **Update DocumentWorkflowOrchestrator.ts** - COMPLETED - Replaced EmbeddingGenerationService with MIVAA integration
 12. ✅ **Update DI container interfaces and factory** - COMPLETED - Updated containerFactory.ts and interfaces.ts for MIVAA integration
-13. ✅ **Remove duplicate embedding service files** - COMPLETED - Successfully removed openai-embedding.service.ts (421 lines), embeddingGenerationService.ts confirmed non-existent
+13. ✅ **Consolidate duplicate services** - COMPLETED - Consolidated mivaaEmbeddingIntegration.ts and ragService.ts into unified services
 
 ### Phase 3: PDF Processing Consolidation (Tasks 14-20) ✅ COMPLETED
 14. ✅ **Consolidate PDF workflow services** - COMPLETED - Created consolidatedPDFWorkflowService.ts (394 lines) with MIVAA integration, workflow tracking, and TypeScript compilation successful
@@ -301,10 +300,11 @@ export async function mivaaGateway(request: MivaaRequest): Promise<MivaaResponse
 26. ✅ **Update search interface components** - COMPLETED - Search interfaces verified as MIVAA-integrated. UnifiedSearchInterface uses MIVAA services for enhanced text, image, and hybrid search. CrewAI interface includes MIVAA RAG capabilities with fallback support.
 
 **Phase 5 Implementation Summary:**
-- ✅ **UnifiedSearchInterface**: Fully MIVAA-integrated with MivaaSearchIntegration and MivaaEmbeddingIntegration services
+- ✅ **UnifiedSearchInterface**: Fully MIVAA-integrated with MivaaSearchIntegration and consolidated EmbeddingGenerationService
 - ✅ **Dashboard Components**: Properly delegate search functionality to MIVAA-integrated interfaces
 - ✅ **PDF Components**: Use consolidated MivaaIntegrationService for processing
 - ✅ **CrewAI Interface**: Includes MIVAA RAG capabilities via EnhancedRAGService
+- ✅ **Service Consolidation**: All duplicate services consolidated into unified architecture
 - ✅ **No Integration Issues Found**: All major frontend components properly use MIVAA services
 
 ### Phase 6: API Gateway & Routing (Tasks 27-29) ✅ COMPLETED
