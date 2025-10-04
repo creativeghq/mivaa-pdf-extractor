@@ -25,139 +25,9 @@ error() {
     echo -e "${RED}[$(date +'%Y-%m-%d %H:%M:%S')] ERROR: $1${NC}"
 }
 
-# Function to generate and export OpenAPI schema
-generate_openapi_schema() {
-    log "🔄 Generating OpenAPI schema..."
 
-    # Wait for service to be ready
-    local max_attempts=30
-    local attempt=1
 
-    while [ $attempt -le $max_attempts ]; do
-        if curl -f http://localhost:8000/health > /dev/null 2>&1; then
-            log "✅ Service is ready for schema generation"
-            break
-        fi
 
-        if [ $attempt -eq $max_attempts ]; then
-            error "Service not responding after $max_attempts attempts"
-            return 1
-        fi
-
-        log "⏳ Waiting for service to be ready (attempt $attempt/$max_attempts)..."
-        sleep 5
-        ((attempt++))
-    done
-
-    # Create docs directory
-    mkdir -p ./docs/openapi
-
-    # Export OpenAPI schema
-    log "📄 Exporting OpenAPI JSON..."
-    if curl -s http://localhost:8000/openapi.json > ./docs/openapi/openapi.json; then
-        log "✅ OpenAPI JSON exported successfully"
-    else
-        error "Failed to export OpenAPI JSON"
-        return 1
-    fi
-
-    # Generate JavaScript module
-    log "📄 Generating OpenAPI JavaScript module..."
-    cat > ./docs/openapi/openapi.js << EOF
-// MIVAA PDF Extractor - OpenAPI Schema
-// Auto-generated from FastAPI application
-// Generated on: $(date)
-
-export const openApiSchema = $(cat ./docs/openapi/openapi.json);
-
-export default openApiSchema;
-EOF
-
-    # Generate TypeScript module
-    log "📄 Generating OpenAPI TypeScript module..."
-    cat > ./docs/openapi/openapi.ts << 'EOF'
-// MIVAA PDF Extractor - OpenAPI Schema
-// Auto-generated from FastAPI application
-// Generated on: $(date)
-
-export interface OpenAPISchema {
-  openapi: string;
-  info: {
-    title: string;
-    version: string;
-    description?: string;
-    [key: string]: any;
-  };
-  servers?: Array<{
-    url: string;
-    description?: string;
-  }>;
-  paths: { [key: string]: any };
-  components?: { [key: string]: any };
-  tags?: Array<{
-    name: string;
-    description?: string;
-  }>;
-  [key: string]: any;
-}
-
-export const openApiSchema: OpenAPISchema =
-EOF
-    cat ./docs/openapi/openapi.json >> ./docs/openapi/openapi.ts
-    echo ";" >> ./docs/openapi/openapi.ts
-    echo "" >> ./docs/openapi/openapi.ts
-    echo "export default openApiSchema;" >> ./docs/openapi/openapi.ts
-
-    log "✅ OpenAPI schema exported successfully!"
-    log "📁 Files created:"
-    log "   - ./docs/openapi/openapi.json"
-    log "   - ./docs/openapi/openapi.js"
-    log "   - ./docs/openapi/openapi.ts"
-
-    # Get schema statistics
-    local endpoints=$(cat ./docs/openapi/openapi.json | jq '.paths | length' 2>/dev/null || echo "unknown")
-    local version=$(cat ./docs/openapi/openapi.json | jq -r '.info.version' 2>/dev/null || echo "unknown")
-    log "📊 Schema Statistics:"
-    log "   - API Version: $version"
-    log "   - Total Endpoints: $endpoints"
-}
-
-# Function to check if service is running
-check_service_api() {
-    local service_url="${1:-http://localhost:8000}"
-    local max_attempts="${2:-10}"
-    local attempt=1
-
-    while [ $attempt -le $max_attempts ]; do
-        if curl -s "$service_url/health" > /dev/null 2>&1; then
-            # Check if it's the new comprehensive API
-            local endpoint_count=$(curl -s "$service_url/" 2>/dev/null | python3 -c "
-import json, sys
-try:
-    data = json.load(sys.stdin)
-    print(data.get('api_info', {}).get('total_endpoints', 0))
-except:
-    print(0)
-" 2>/dev/null || echo "0")
-
-            if [ "$endpoint_count" -gt 10 ]; then
-                log "✅ Service is running with comprehensive API ($endpoint_count endpoints)"
-                return 0
-            else
-                log "⚠️  Service is running but with legacy API (only $endpoint_count endpoints)"
-                log "ℹ️  Manual restart may be needed to enable comprehensive API"
-                return 1
-            fi
-        fi
-
-        log "⏳ Waiting for service to start (attempt $attempt/$max_attempts)..."
-        sleep 3
-        ((attempt++))
-    done
-
-    log "❌ Service failed to start after $max_attempts attempts"
-    return 1
-}
 
 info() {
     echo -e "${BLUE}[$(date +'%Y-%m-%d %H:%M:%S')] INFO: $1${NC}"
@@ -770,10 +640,10 @@ tee -a ~/.bashrc > /dev/null <<EOF
 alias mivaa-logs='docker-compose -f $APP_DIR/docker-compose.yml logs -f'
 alias mivaa-status='docker-compose -f $APP_DIR/docker-compose.yml ps'
 alias mivaa-restart='docker-compose -f $APP_DIR/docker-compose.yml restart'
-alias mivaa-update='cd $APP_DIR && git pull && docker-compose pull && docker-compose up -d && sleep 15 && generate_openapi_schema'
+alias mivaa-update='cd $APP_DIR && git pull && docker-compose pull && docker-compose up -d'
 alias mivaa-backup='sudo /usr/local/bin/backup-mivaa.sh'
-alias mivaa-openapi='cd $APP_DIR && generate_openapi_schema'
-alias mivaa-check-api='cd $APP_DIR && check_service_api'
+
+
 alias ssl-setup='sudo /usr/local/bin/setup-ssl.sh'
 alias ssl-check='sudo /usr/local/bin/check-ssl-renewal.sh'
 EOF
@@ -804,9 +674,8 @@ info "=== USEFUL COMMANDS ==="
 info "• View logs: mivaa-logs"
 info "• Check status: mivaa-status"
 info "• Restart app: mivaa-restart (standard Docker restart)"
-info "• Update app: mivaa-update (git pull + Docker update + OpenAPI)"
-info "• Generate OpenAPI: mivaa-openapi"
-info "• Check API type: mivaa-check-api (verify comprehensive vs legacy)"
+info "• Update app: mivaa-update (git pull + Docker update)"
+
 info "• Setup SSL: ssl-setup yourdomain.com"
 info "• Check SSL: ssl-check"
 info "• Create backup: mivaa-backup"
