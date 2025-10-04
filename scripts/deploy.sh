@@ -567,18 +567,7 @@ deploy_application() {
         exit 1
     fi
 
-    # Check for legacy service and migrate if needed
-    if systemctl list-units --full -all | grep -Fq "mivaa-pdf-extractor.service"; then
-        warn "Legacy systemd service detected - migrating to Docker..."
-        if [ -f "$PROJECT_ROOT/scripts/migrate-to-docker.sh" ]; then
-            info "🔄 Running migration script..."
-            bash "$PROJECT_ROOT/scripts/migrate-to-docker.sh"
-            return $?
-        else
-            error "Migration script not found. Please run migration manually."
-            return 1
-        fi
-    fi
+
 
     # Pull latest code
     info "📥 Pulling latest code..."
