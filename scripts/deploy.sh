@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# MIVAA PDF Extractor - Digital Ocean Deployment Script
-# This script automates the deployment process to Digital Ocean droplets
+# MIVAA PDF Extractor - Comprehensive Deployment Script
+# This script handles both server setup and application deployment with nginx management
 
 set -euo pipefail
 
@@ -9,6 +9,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 LOG_FILE="/tmp/mivaa-deploy-$(date +%Y%m%d-%H%M%S).log"
+
+# Deployment options
+RESTART_NGINX="${RESTART_NGINX:-true}"
+CHECK_NGINX="${CHECK_NGINX:-true}"
+SETUP_SERVER="${SETUP_SERVER:-false}"
+DEPLOY_APP="${DEPLOY_APP:-true}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -42,34 +48,41 @@ success() {
 # Help function
 show_help() {
     cat << EOF
-MIVAA PDF Extractor - Digital Ocean Deployment Script
+MIVAA PDF Extractor - Comprehensive Deployment Script
 
 Usage: $0 [OPTIONS]
 
+MODES:
+    --setup-server          Set up a new server (requires SSH access)
+    --deploy-app            Deploy application (default)
+    --full                  Setup server + deploy application
+
 OPTIONS:
     -h, --help              Show this help message
+    --no-nginx              Skip nginx restart during deployment
+    --check-only            Only check nginx status, don't deploy
+    --force-nginx           Force nginx restart even if healthy
     -e, --environment ENV   Target environment (production, staging) [default: production]
     -v, --validate-only     Only validate configuration without deploying
     -f, --force             Force deployment without confirmation
     --skip-tests           Skip running tests before deployment
-    --skip-build           Skip building Docker image
     --dry-run              Show what would be deployed without executing
 
 EXAMPLES:
-    $0                                    # Deploy to production with confirmation
-    $0 -e staging                        # Deploy to staging environment
-    $0 --validate-only                   # Only validate configuration
-    $0 --force --skip-tests              # Force deploy without tests
-    $0 --dry-run                         # Show deployment plan
+    $0 --setup-server                    # Set up a new server
+    $0 --deploy-app                      # Deploy application only (default)
+    $0 --full                            # Setup server + deploy application
+    $0 --deploy-app --no-nginx           # Deploy without nginx restart
+    $0 --check-only                      # Only check nginx status
+    $0 --force-nginx                     # Force nginx restart
 
 ENVIRONMENT VARIABLES:
-    Required for deployment:
+    For server setup:
     - DEPLOY_HOST: Target server hostname/IP
-    - DEPLOY_USER: SSH username for deployment
-    - DEPLOY_SSH_KEY: Path to SSH private key
-    - GITHUB_TOKEN: GitHub token for container registry
+    - DEPLOY_USER: SSH username (default: root)
+    - SSH_PRIVATE_KEY: SSH private key content
 
-    Application secrets (validated):
+    For application deployment:
     - SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY
     - OPENAI_API_KEY
     - JWT_SECRET_KEY
@@ -84,6 +97,8 @@ ENVIRONMENT="production"
 VALIDATE_ONLY=false
 FORCE_DEPLOY=false
 SKIP_TESTS=false
+CHECK_ONLY=false
+FORCE_NGINX=false
 SKIP_BUILD=false
 DRY_RUN=false
 
@@ -92,6 +107,34 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             show_help
             exit 0
+            ;;
+        --setup-server)
+            SETUP_SERVER=true
+            DEPLOY_APP=false
+            shift
+            ;;
+        --deploy-app)
+            DEPLOY_APP=true
+            SETUP_SERVER=false
+            shift
+            ;;
+        --full)
+            SETUP_SERVER=true
+            DEPLOY_APP=true
+            shift
+            ;;
+        --no-nginx)
+            RESTART_NGINX=false
+            shift
+            ;;
+        --check-only)
+            CHECK_ONLY=true
+            DEPLOY_APP=false
+            shift
+            ;;
+        --force-nginx)
+            FORCE_NGINX=true
+            shift
             ;;
         -e|--environment)
             ENVIRONMENT="$2"
@@ -107,10 +150,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-tests)
             SKIP_TESTS=true
-            shift
-            ;;
-        --skip-build)
-            SKIP_BUILD=true
             shift
             ;;
         --dry-run)
@@ -415,6 +454,199 @@ EOF
     success "Deployment completed successfully"
 }
 
+# nginx management functions
+check_nginx_status() {
+    info "🔍 Checking nginx status..."
+
+    if systemctl is-active --quiet nginx; then
+        success "✅ nginx is running"
+        return 0
+    else
+        error "❌ nginx is not running"
+        return 1
+    fi
+}
+
+check_nginx_config() {
+    info "🔧 Checking nginx configuration..."
+
+    if nginx -t 2>/dev/null; then
+        success "✅ nginx configuration is valid"
+        return 0
+    else
+        error "❌ nginx configuration has errors:"
+        nginx -t
+        return 1
+    fi
+}
+
+restart_nginx() {
+    info "🔄 Restarting nginx..."
+
+    # First check configuration
+    if ! check_nginx_config; then
+        error "Cannot restart nginx due to configuration errors"
+        return 1
+    fi
+
+    # Restart nginx
+    if systemctl restart nginx; then
+        success "✅ nginx restarted successfully"
+
+        # Wait a moment and verify it's running
+        sleep 2
+        if check_nginx_status; then
+            success "✅ nginx is running after restart"
+            return 0
+        else
+            error "❌ nginx failed to start after restart"
+            return 1
+        fi
+    else
+        error "❌ Failed to restart nginx"
+        return 1
+    fi
+}
+
+check_nginx_for_github() {
+    info "🔍 Checking nginx status for GitHub Actions..."
+
+    # Check if nginx is installed
+    if ! command -v nginx &> /dev/null; then
+        error "nginx is not installed"
+        echo "::error::nginx is not installed on the server"
+        return 1
+    fi
+
+    # Check nginx configuration
+    if ! check_nginx_config; then
+        error "nginx configuration is invalid"
+        echo "::error::nginx configuration has errors"
+        nginx -t 2>&1 | while read line; do
+            echo "::error::$line"
+        done
+        return 1
+    fi
+
+    # Check nginx status
+    if ! check_nginx_status; then
+        error "nginx is not running"
+        echo "::error::nginx service is not running"
+
+        # Try to get more details
+        local status_output=$(systemctl status nginx 2>&1 || echo "Failed to get status")
+        echo "::error::nginx status: $status_output"
+
+        return 1
+    fi
+
+    # Check if nginx is responding to HTTP requests
+    if curl -f -s http://localhost > /dev/null 2>&1; then
+        success "✅ nginx is healthy and responding to requests"
+        echo "::notice::nginx is healthy and responding to requests"
+        return 0
+    else
+        error "nginx is running but not responding to HTTP requests"
+        echo "::warning::nginx is running but not responding to HTTP requests"
+        return 1
+    fi
+}
+
+# Application deployment with nginx management
+deploy_application() {
+    info "🚀 Starting application deployment..."
+
+    # Check if we're in the right directory
+    if [ ! -f "docker-compose.yml" ]; then
+        error "docker-compose.yml not found. Please run this script from the project root."
+        exit 1
+    fi
+
+    if [ ! -d "app" ]; then
+        error "app directory not found. Please run this script from the project root."
+        exit 1
+    fi
+
+    # Pull latest code
+    info "📥 Pulling latest code..."
+    if ! git pull; then
+        error "Failed to pull latest code"
+        return 1
+    fi
+
+    # Pull latest Docker images
+    info "🐳 Pulling latest Docker images..."
+    if ! docker-compose pull; then
+        error "Failed to pull Docker images"
+        return 1
+    fi
+
+    # Start/restart containers
+    info "🔄 Starting containers..."
+    if ! docker-compose up -d; then
+        error "Failed to start containers"
+        return 1
+    fi
+
+    # Wait for containers to be ready
+    info "⏳ Waiting for containers to be ready..."
+    sleep 10
+
+    # Check container status
+    if docker-compose ps | grep -q "Exit"; then
+        error "Some containers failed to start:"
+        docker-compose ps
+        return 1
+    fi
+
+    success "✅ Application deployment completed"
+    return 0
+}
+
+check_application_health() {
+    info "🏥 Checking application health..."
+
+    local max_attempts=30
+    local attempt=1
+
+    while [ $attempt -le $max_attempts ]; do
+        if curl -f -s http://localhost:8000/health > /dev/null 2>&1; then
+            success "✅ Application is healthy"
+            return 0
+        fi
+
+        if [ $attempt -eq $max_attempts ]; then
+            error "Application health check failed after $max_attempts attempts"
+            return 1
+        fi
+
+        info "⏳ Waiting for application to be ready (attempt $attempt/$max_attempts)..."
+        sleep 5
+        ((attempt++))
+    done
+}
+
+# Server setup function
+setup_server() {
+    info "🔧 Setting up server..."
+
+    # Check if setup script exists
+    if [ ! -f "$PROJECT_ROOT/deploy/setup-server.sh" ]; then
+        error "Server setup script not found at $PROJECT_ROOT/deploy/setup-server.sh"
+        return 1
+    fi
+
+    # Run server setup
+    info "🚀 Running server setup script..."
+    if bash "$PROJECT_ROOT/deploy/setup-server.sh"; then
+        success "✅ Server setup completed"
+        return 0
+    else
+        error "❌ Server setup failed"
+        return 1
+    fi
+}
+
 # Confirmation prompt
 confirm_deployment() {
     if [[ "$FORCE_DEPLOY" == "true" ]] || [[ "$DRY_RUN" == "true" ]]; then
@@ -436,22 +668,114 @@ confirm_deployment() {
 
 # Main deployment flow
 main() {
-    check_dependencies
-    validate_deployment_config
-    validate_application_secrets
-    
-    if [[ "$VALIDATE_ONLY" == "true" ]]; then
-        success "Validation completed successfully"
+    info "🚀 Starting MIVAA deployment process..."
+    info "📋 Mode: Setup Server=$SETUP_SERVER, Deploy App=$DEPLOY_APP, Check Only=$CHECK_ONLY"
+
+    # Check-only mode
+    if [[ "$CHECK_ONLY" == "true" ]]; then
+        info "🔍 Check-only mode: checking nginx status..."
+        if [ "$CHECK_NGINX" = "true" ]; then
+            if command -v check_nginx_for_github &> /dev/null; then
+                check_nginx_for_github
+            else
+                check_nginx_status
+            fi
+        fi
         exit 0
     fi
-    
-    confirm_deployment
-    
-    run_tests
-    build_docker_image
-    deploy_to_server
-    
-    success "🎉 MIVAA PDF Extractor deployment to $ENVIRONMENT completed successfully!"
+
+    # Server setup mode
+    if [[ "$SETUP_SERVER" == "true" ]]; then
+        info "🔧 Server setup mode..."
+        check_dependencies
+        setup_server
+    fi
+
+    # Application deployment mode
+    if [[ "$DEPLOY_APP" == "true" ]]; then
+        info "🚀 Application deployment mode..."
+
+        # Basic validation
+        check_dependencies
+
+        if [[ "$VALIDATE_ONLY" == "true" ]]; then
+            validate_deployment_config
+            validate_application_secrets
+            success "Validation completed successfully"
+            exit 0
+        fi
+
+        # Confirmation for deployment
+        if [[ "$FORCE_DEPLOY" != "true" ]]; then
+            confirm_deployment
+        fi
+
+        # Deploy application
+        if ! deploy_application; then
+            error "Application deployment failed"
+            exit 1
+        fi
+
+        # Check application health
+        if ! check_application_health; then
+            error "Application health check failed"
+            exit 1
+        fi
+
+        # nginx management
+        if [ "$CHECK_NGINX" = "true" ]; then
+            info "🌐 Managing nginx..."
+
+            if [ "${FORCE_NGINX:-false}" = "true" ]; then
+                info "🔄 Force nginx restart requested..."
+                if command -v restart_nginx &> /dev/null; then
+                    restart_nginx
+                else
+                    systemctl restart nginx
+                fi
+            elif [ "$RESTART_NGINX" = "true" ]; then
+                # Check if nginx needs restart
+                if ! check_nginx_status; then
+                    info "🔄 nginx needs restart..."
+                    if command -v restart_nginx &> /dev/null; then
+                        restart_nginx
+                    else
+                        systemctl restart nginx
+                    fi
+                else
+                    info "✅ nginx is healthy, no restart needed"
+                fi
+            fi
+
+            # Final nginx check
+            if ! check_nginx_status; then
+                error "nginx is not running after deployment"
+                exit 1
+            fi
+
+            # Test if nginx is serving requests
+            if curl -f -s http://localhost > /dev/null 2>&1; then
+                success "✅ nginx is serving requests"
+            else
+                warning "nginx is running but not serving requests properly"
+            fi
+        fi
+    fi
+
+    success "🎉 MIVAA deployment completed successfully!"
+    info "📋 Summary:"
+    if [[ "$SETUP_SERVER" == "true" ]]; then
+        info "   ✅ Server setup completed"
+    fi
+    if [[ "$DEPLOY_APP" == "true" ]]; then
+        info "   ✅ Application deployed and healthy"
+        if [ "$CHECK_NGINX" = "true" ]; then
+            info "   ✅ nginx checked and healthy"
+        fi
+        info "   🌐 Service available at: http://localhost"
+        info "   📊 Health endpoint: http://localhost:8000/health"
+        info "   📚 API docs: http://localhost:8000/docs"
+    fi
     info "📋 Deployment log: $LOG_FILE"
 }
 

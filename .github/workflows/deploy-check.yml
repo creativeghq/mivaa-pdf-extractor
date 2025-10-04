@@ -74,31 +74,24 @@ jobs:
       if: ${{ inputs.check_nginx }}
       run: |
         echo "🌐 Checking nginx status..."
-        
+
         ssh root@${{ inputs.server_host }} << 'EOF'
-        # Source the deployment functions
-        source /opt/mivaa-pdf-extractor/deploy/setup-server.sh
-        
-        # Check nginx with GitHub Actions logging
-        check_nginx_for_github
+        cd /opt/mivaa-pdf-extractor
+
+        # Use the unified deployment script for nginx check
+        ./scripts/deploy.sh --check-only
         EOF
-        
+
     - name: Restart nginx if requested
       if: ${{ inputs.restart_nginx }}
       run: |
         echo "🔄 Restarting nginx..."
-        
+
         ssh root@${{ inputs.server_host }} << 'EOF'
-        # Source the deployment functions
-        source /opt/mivaa-pdf-extractor/deploy/setup-server.sh
-        
-        # Restart nginx safely
-        if restart_nginx; then
-          echo "::notice::nginx restarted successfully"
-        else
-          echo "::error::Failed to restart nginx"
-          exit 1
-        fi
+        cd /opt/mivaa-pdf-extractor
+
+        # Use the unified deployment script to force nginx restart
+        ./scripts/deploy.sh --deploy-app --force-nginx --force
         EOF
         
     - name: Test Application Endpoints
