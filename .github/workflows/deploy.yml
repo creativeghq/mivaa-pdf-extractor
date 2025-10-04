@@ -1,41 +1,14 @@
-name: MIVAA Deployment & Health Check
+name: Deploy FastAPI App with uv
 
 on:
   push:
     branches: [ "main", "production"]
   workflow_dispatch:
-    inputs:
-      deployment_mode:
-        description: 'Deployment mode'
-        required: false
-        default: 'deploy-app'
-        type: choice
-        options:
-          - 'deploy-app'
-          - 'setup-server'
-          - 'full-deployment'
-          - 'check-only'
-      server_host:
-        description: 'Server hostname or IP (default: 104.248.68.3)'
-        required: false
-        default: '104.248.68.3'
-        type: string
-      restart_nginx:
-        description: 'Restart nginx during deployment'
-        required: false
-        default: true
-        type: boolean
-      force_deployment:
-        description: 'Force deployment without confirmation'
-        required: false
-        default: true
-        type: boolean
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: production
-    name: MIVAA Deployment
 
     steps:
       # 1. Checkout repository
@@ -48,210 +21,64 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
 
-      # 3. Add server to known hosts
-      - name: Add server to known hosts
+      # 3. Deploy to server
+      - name: Deploy to server
         run: |
-          SERVER_HOST="${{ inputs.server_host || '104.248.68.3' }}"
-          ssh-keyscan -H $SERVER_HOST >> ~/.ssh/known_hosts
-
-      # 4. Determine deployment parameters
-      - name: Set deployment parameters
-        id: deploy-params
-        run: |
-          # Set deployment mode
-          if [ "${{ github.event_name }}" = "push" ]; then
-            echo "mode=deploy-app" >> $GITHUB_OUTPUT
-            echo "force=--force" >> $GITHUB_OUTPUT
-          else
-            echo "mode=${{ inputs.deployment_mode || 'deploy-app' }}" >> $GITHUB_OUTPUT
-            echo "force=${{ inputs.force_deployment == true && '--force' || '' }}" >> $GITHUB_OUTPUT
-          fi
-
-          # Set nginx options
-          if [ "${{ inputs.restart_nginx }}" = "false" ]; then
-            echo "nginx=--no-nginx" >> $GITHUB_OUTPUT
-          else
-            echo "nginx=" >> $GITHUB_OUTPUT
-          fi
-
-          # Set server host
-          echo "server=${{ inputs.server_host || '104.248.68.3' }}" >> $GITHUB_OUTPUT
-
-      # 5. Execute deployment
-      - name: Execute deployment
-        run: |
-          SERVER_HOST="${{ steps.deploy-params.outputs.server }}"
-          DEPLOY_MODE="${{ steps.deploy-params.outputs.mode }}"
-          FORCE_FLAG="${{ steps.deploy-params.outputs.force }}"
-          NGINX_FLAG="${{ steps.deploy-params.outputs.nginx }}"
-
-          echo "🚀 Starting deployment to $SERVER_HOST"
-          echo "📋 Mode: $DEPLOY_MODE"
-          echo "🔧 Options: $FORCE_FLAG $NGINX_FLAG"
-
-          ssh -o StrictHostKeyChecking=no root@$SERVER_HOST << 'EOF'
+          ssh -o StrictHostKeyChecking=no root@104.248.68.3 << 'EOF'
           set -e
 
-          # Ensure we're in the right directory
-          APP_DIR=/opt/mivaa-pdf-extractor
-          if [ ! -d "$APP_DIR" ]; then
-            echo "::error::Application directory not found at $APP_DIR"
-            echo "::error::Please run server setup first"
-            exit 1
+          APP_DIR=/var/www/mivaa-pdf-extractor
+          DEPLOY_BRANCH="${{ github.ref_name }}"
+
+          # Clone repo if it doesn't exist
+          if [ ! -d "$APP_DIR/.git" ]; then
+            rm -rf "$APP_DIR"
+            git clone https://x-access-token:${{ secrets.GH_PAT }}@github.com/creativeghq/mivaa-pdf-extractor.git "$APP_DIR"
           fi
 
           cd "$APP_DIR"
 
-          # Pull latest changes
-          echo "📥 Pulling latest changes..."
-          git fetch origin
-          git reset --hard origin/${{ github.ref_name || 'main' }}
+          # Pull latest changes for the branch
+          git fetch origin "$DEPLOY_BRANCH"
+          git reset --hard origin/"$DEPLOY_BRANCH"
 
-          # Make scripts executable
-          chmod +x scripts/deploy.sh scripts/migrate-to-docker.sh
+          # --- Initialize pyenv ---
+          export PATH="$HOME/.pyenv/bin:$PATH"
+          eval "$(pyenv init --path)"
+          eval "$(pyenv init -)"
+          eval "$(pyenv virtualenv-init -)"
 
-          # Check for legacy service and handle migration
-          if systemctl list-units --full -all | grep -Fq "mivaa-pdf-extractor.service"; then
-            echo "🔄 Legacy service detected - running migration..."
-            ./scripts/migrate-to-docker.sh
-          else
-            echo "🐳 No legacy service - proceeding with Docker deployment..."
+          # Use pyenv Python
+          PYTHON=python3.9
 
-            # Ensure Docker is running
-            if ! systemctl is-active --quiet docker; then
-              echo "🔄 Starting Docker service..."
-              systemctl start docker
-            fi
-
-            # Pull latest code changes
-            echo "📥 Pulling latest changes..."
-            git pull origin ${{ github.ref_name || 'main' }}
-
-            # Pull latest Docker images
-            echo "🐳 Pulling latest Docker images..."
-            docker-compose pull
-
-            # Start/restart containers
-            echo "🔄 Starting containers..."
-            docker-compose up -d
-
-            # Wait for containers to be ready
-            echo "⏳ Waiting for containers to be ready..."
-            sleep 15
-
-            # Check container status
-            if docker-compose ps | grep -q "Exit"; then
-              echo "::error::Some containers failed to start"
-              docker-compose ps
-              exit 1
-            fi
-
-            echo "✅ Docker deployment completed"
+          # --- Create virtual environment ---
+          if [ ! -d ".venv" ] || [ ! -f ".venv/pyvenv.cfg" ]; then
+            rm -rf .venv
+            $PYTHON -m venv .venv
           fi
 
-          # nginx management (if enabled)
-          if [ "${{ steps.deploy-params.outputs.nginx }}" != "--no-nginx" ]; then
-            echo "🌐 Managing nginx..."
+          # Activate venv
+          source .venv/bin/activate
 
-            # Check nginx status
-            if command -v nginx &> /dev/null; then
-              if ! systemctl is-active --quiet nginx; then
-                echo "🔄 Starting nginx..."
-                systemctl start nginx
-              fi
+          # --- Ensure pip and uv are installed ---
+          python -m ensurepip --upgrade
+          pip install --upgrade pip
+          pip install uv
 
-              # Test nginx configuration
-              if nginx -t 2>/dev/null; then
-                echo "✅ nginx configuration is valid"
-                systemctl reload nginx
-              else
-                echo "::warning::nginx configuration has issues"
-              fi
-            else
-              echo "::notice::nginx not installed - skipping nginx management"
-            fi
-          fi
+          # --- Generate uv.lock dynamically ---
+          uv pip compile -o uv.lock requirements.txt requirements-torch.txt
 
-          echo "🎉 Deployment completed successfully"
+          # --- Sync dependencies ---
+          uv pip sync uv.lock
+
+          # --- Verify installations ---
+          python -c "import fastapi; print('FastAPI OK')"
+          python -c "import pymupdf; print('PyMuPDF OK')"
+          python -c "import pymupdf4llm; print('pymupdf4llm OK')"
+
+          # Restart the FastAPI service
+          sudo systemctl restart mivaa-pdf-extractor
+
+          # Check service status
+          sudo systemctl status mivaa-pdf-extractor --no-pager
           EOF
-
-      # 6. Verify deployment
-      - name: Verify deployment
-        if: ${{ steps.deploy-params.outputs.mode != 'check-only' }}
-        run: |
-          SERVER_HOST="${{ steps.deploy-params.outputs.server }}"
-
-          echo "🔍 Verifying deployment..."
-
-          # Wait a moment for services to stabilize
-          sleep 10
-
-          # Test application health with retries
-          echo "🏥 Testing application health..."
-          for i in {1..6}; do
-            if curl -f -s http://$SERVER_HOST:8000/health > /dev/null; then
-              echo "✅ Application health check passed (attempt $i)"
-              echo "::notice::Application is healthy and responding"
-              break
-            elif [ $i -eq 6 ]; then
-              echo "::error::Application health check failed after 6 attempts"
-
-              # Get container status for debugging
-              ssh -o StrictHostKeyChecking=no root@$SERVER_HOST << 'EOF'
-              cd /opt/mivaa-pdf-extractor
-              echo "Container status:"
-              docker-compose ps
-              echo "Recent logs:"
-              docker-compose logs --tail=20
-              EOF
-              exit 1
-            else
-              echo "⏳ Health check attempt $i failed, retrying in 10s..."
-              sleep 10
-            fi
-          done
-
-          # Test API documentation
-          if curl -f -s http://$SERVER_HOST:8000/docs > /dev/null; then
-            echo "✅ API documentation is accessible"
-            echo "::notice::API docs available at http://$SERVER_HOST:8000/docs"
-          else
-            echo "::warning::API documentation test failed"
-          fi
-
-          # Test nginx (if enabled)
-          if [ "${{ steps.deploy-params.outputs.nginx }}" != "--no-nginx" ]; then
-            if curl -f -s http://$SERVER_HOST > /dev/null; then
-              echo "✅ nginx is serving requests"
-              echo "::notice::nginx is healthy and serving requests"
-            else
-              echo "::warning::nginx is not serving requests properly"
-              # Don't fail deployment for nginx issues, just warn
-            fi
-          fi
-
-      # 7. Generate deployment report
-      - name: Generate deployment report
-        if: always()
-        run: |
-          SERVER_HOST="${{ steps.deploy-params.outputs.server }}"
-
-          echo "## 📊 Deployment Report" >> $GITHUB_STEP_SUMMARY
-          echo "**Server:** $SERVER_HOST" >> $GITHUB_STEP_SUMMARY
-          echo "**Mode:** ${{ steps.deploy-params.outputs.mode }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Branch:** ${{ github.ref_name || 'main' }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Timestamp:** $(date)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          if [ "${{ job.status }}" = "success" ]; then
-            echo "✅ **Status:** Deployment completed successfully" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### 🔗 Quick Links" >> $GITHUB_STEP_SUMMARY
-            echo "- [Application Health](http://$SERVER_HOST:8000/health)" >> $GITHUB_STEP_SUMMARY
-            echo "- [API Documentation](http://$SERVER_HOST:8000/docs)" >> $GITHUB_STEP_SUMMARY
-            echo "- [Application](http://$SERVER_HOST)" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "❌ **Status:** Deployment failed" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "Please check the logs above for error details." >> $GITHUB_STEP_SUMMARY
-          fi
