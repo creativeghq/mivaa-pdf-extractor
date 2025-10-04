@@ -31,11 +31,11 @@ except ImportError as e:
 @dataclass
 class EmbeddingConfig:
     """Configuration for embedding models and processing."""
-    model_name: str = "text-embedding-3-small"
+    model_name: str = "text-embedding-ada-002"  # PLATFORM STANDARD
     model_type: str = "openai"  # "openai" or "huggingface"
     dimension: int = 1536
     batch_size: int = 100
-    max_tokens: int = 8191  # OpenAI text-embedding-3-small limit
+    max_tokens: int = 8191  # OpenAI text-embedding-ada-002 limit
     cache_enabled: bool = True
     cache_ttl_hours: int = 24
     rate_limit_rpm: int = 3000  # Requests per minute

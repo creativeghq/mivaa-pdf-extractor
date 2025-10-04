@@ -41,7 +41,7 @@ from ..services.material_visual_search_service import (
 logger = logging.getLogger(__name__)
 
 # Create router
-router = APIRouter(prefix="/api/v1", tags=["search", "rag"])
+router = APIRouter(prefix="/api", tags=["Search", "Embeddings", "Chat"])
 
 # Initialize services
 llamaindex_service = LlamaIndexService()

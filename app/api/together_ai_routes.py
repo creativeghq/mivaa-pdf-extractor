@@ -31,7 +31,7 @@ from ..utils.exceptions import ServiceError, ExternalServiceError
 logger = logging.getLogger(__name__)
 
 # Create router
-router = APIRouter(prefix="/api/v1/together-ai", tags=["TogetherAI"])
+router = APIRouter(prefix="/api", tags=["AI Analysis"])
 
 # Get settings
 settings = get_settings()

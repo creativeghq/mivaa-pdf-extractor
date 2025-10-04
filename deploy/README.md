@@ -2,6 +2,17 @@
 
 This guide covers deploying the MIVAA PDF Extractor to Digital Ocean using Docker and GitHub Actions with **fully automated deployment**.
 
+## 🚀 **Service Overview (Updated January 2025)**
+
+The MIVAA PDF Extractor is now a comprehensive microservice providing:
+- **PDF Processing**: Advanced text, table, and image extraction
+- **RAG System**: Retrieval-Augmented Generation with LlamaIndex
+- **Vector Search**: Semantic similarity search with optimized embeddings
+- **AI Analysis**: LLaMA Vision models for material analysis
+- **37+ API Endpoints** across 7 modules
+- **JWT Authentication** for secure access
+- **Performance Monitoring** with built-in metrics
+
 ## Prerequisites
 
 - Digital Ocean Droplet (Ubuntu 24.10 or later, minimum 2GB RAM recommended)
@@ -234,6 +245,46 @@ For issues and questions:
 3. Check this documentation
 4. Create an issue in the GitHub repository
 
+## 🧪 **Testing Deployed Service**
+
+After successful deployment, test the key endpoints:
+
+### **Health Check**
+```bash
+curl https://your-domain.com/health
+```
+
+### **API Documentation**
+```bash
+# Access Swagger UI (if debug mode enabled)
+https://your-domain.com/docs
+```
+
+### **PDF Processing Test**
+```bash
+curl -X POST https://your-domain.com/api/v1/extract/markdown \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -F "file=@test.pdf"
+```
+
+### **RAG System Test**
+```bash
+curl -X POST https://your-domain.com/api/v1/rag/query \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What are the material properties?"}'
+```
+
+### **Available Endpoints**
+The deployed service provides 37+ endpoints across:
+- **PDF Processing**: `/api/v1/extract/*`
+- **RAG Operations**: `/api/v1/rag/*`
+- **Search APIs**: `/api/search/*`
+- **Embedding APIs**: `/api/embeddings/*`
+- **AI Analysis**: `/api/semantic-analysis`
+- **Chat APIs**: `/api/chat/*`
+- **Health & Monitoring**: `/health`, `/metrics`, `/performance/summary`
+
 ## Next Steps
 
 After successful deployment:
@@ -241,8 +292,9 @@ After successful deployment:
 1. **Configure SSL** if using a custom domain - see [SSL Deployment Guide](SSL_DEPLOYMENT_GUIDE.md)
 2. **Set up monitoring** alerts in Sentry
 3. **Configure backups** for uploaded files
-4. **Test all endpoints** to ensure proper functionality
+4. **Test all endpoints** using the examples above
 5. **Monitor performance** using the `/metrics` endpoint
+6. **Configure JWT authentication** for secure API access
 
 ## Additional Documentation
 

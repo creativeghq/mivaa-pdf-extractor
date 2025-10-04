@@ -36,7 +36,7 @@ from ..middleware.jwt_auth import WorkspaceContext, User
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/admin", tags=["Administration & Monitoring"])
+router = APIRouter(prefix="/api", tags=["Health & Monitoring"])
 
 # Global job tracking
 active_jobs: Dict[str, Dict[str, Any]] = {}
