@@ -33,9 +33,30 @@ jobs:
           
           ssh -o StrictHostKeyChecking=no root@104.248.68.3 << EOF
           set -e
-          
-          cd /opt/mivaa-pdf-extractor
-          
+
+          # Find the correct directory
+          if [ -d "/opt/mivaa-pdf-extractor" ]; then
+            APP_DIR="/opt/mivaa-pdf-extractor"
+          elif [ -d "/var/www/mivaa-pdf-extractor" ]; then
+            APP_DIR="/var/www/mivaa-pdf-extractor"
+          else
+            echo "::error::Application directory not found"
+            echo "Available directories:"
+            ls -la /opt/ /var/www/ || true
+            exit 1
+          fi
+
+          echo "📁 Using directory: \$APP_DIR"
+          cd "\$APP_DIR"
+
+          # Check if docker-compose.yml exists
+          if [ ! -f "docker-compose.yml" ]; then
+            echo "::error::docker-compose.yml not found in \$APP_DIR"
+            echo "Directory contents:"
+            ls -la
+            exit 1
+          fi
+
           # Stop any legacy services
           if systemctl list-units --full -all | grep -Fq "mivaa-pdf-extractor.service"; then
             echo "🛑 Stopping legacy service..."
