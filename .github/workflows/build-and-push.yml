@@ -47,10 +47,11 @@ jobs:
 
       # 5. Build and push Docker image
       - name: Build and push Docker image
+        id: build
         uses: docker/build-push-action@v5
         with:
-          context: ./mivaa-pdf-extractor
-          file: ./mivaa-pdf-extractor/Dockerfile
+          context: .
+          file: ./Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -58,18 +59,81 @@ jobs:
           cache-to: type=gha,mode=max
           platforms: linux/amd64
 
-      # 6. Generate build summary
-      - name: Generate build summary
+      # 6. Generate comprehensive build summary
+      - name: Generate comprehensive build summary
+        if: always()
         run: |
           echo "## 🐳 Docker Image Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Registry:** \`${{ env.REGISTRY }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Image Name:** \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Platform:** linux/amd64" >> $GITHUB_STEP_SUMMARY
-          echo "- **Build Cache:** GitHub Actions Cache" >> $GITHUB_STEP_SUMMARY
+
+          # Build Status
+          if [ "${{ steps.build.outcome }}" == "success" ]; then
+            echo "### ✅ Build Status: **SUCCESS**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ❌ Build Status: **FAILED**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Error Details:**" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "Build failed with context: ." >> $GITHUB_STEP_SUMMARY
+            echo "Dockerfile path: ./Dockerfile" >> $GITHUB_STEP_SUMMARY
+            echo "Working directory: mivaa-pdf-extractor/" >> $GITHUB_STEP_SUMMARY
+            echo "Repository: ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+            echo "Branch: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+            echo "Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi
+
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 🚀 Next Steps" >> $GITHUB_STEP_SUMMARY
-          echo "The image is now available and the 'Deploy FastAPI App' workflow will be automatically triggered if this is the main/production branch." >> $GITHUB_STEP_SUMMARY
+
+          # Build Configuration
+          echo "### 🔧 Build Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Registry** | \`${{ env.REGISTRY }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Repository** | \`${{ github.repository }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image Name** | \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Platform** | \`linux/amd64\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Build Context** | \`.\` (mivaa-pdf-extractor directory) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Dockerfile** | \`./Dockerfile\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Build Cache** | \`GitHub Actions Cache\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Branch** | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit SHA** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit Message** | \`${{ github.event.head_commit.message }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Image Tags
+          echo "### 🏷️ Generated Image Tags" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Image Labels
+          echo "### 🏷️ Image Labels" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.labels }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Next Steps
+          if [ "${{ steps.build.outcome }}" == "success" ]; then
+            echo "### 🚀 Next Steps" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ **Image successfully pushed** to GitHub Container Registry" >> $GITHUB_STEP_SUMMARY
+            if [ "${{ github.ref_name }}" == "main" ] || [ "${{ github.ref_name }}" == "production" ]; then
+              echo "- 🚀 **Auto-deployment triggered** - Deploy workflow will start automatically" >> $GITHUB_STEP_SUMMARY
+              echo "- 📊 **Monitor deployment** in the Actions tab" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- ⏸️ **No auto-deployment** (not main/production branch)" >> $GITHUB_STEP_SUMMARY
+              echo "- 🔄 **Manual deployment** available via workflow dispatch" >> $GITHUB_STEP_SUMMARY
+            fi
+            echo "- 🐳 **Pull command:** \`docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}-${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### 🔧 Troubleshooting" >> $GITHUB_STEP_SUMMARY
+            echo "- 📁 **Check file structure** - Ensure Dockerfile exists in mivaa-pdf-extractor/" >> $GITHUB_STEP_SUMMARY
+            echo "- 🔍 **Review build logs** above for specific error details" >> $GITHUB_STEP_SUMMARY
+            echo "- 🔄 **Retry build** by pushing a new commit or manual trigger" >> $GITHUB_STEP_SUMMARY
+            echo "- 📖 **Documentation** available in /docs/deployment-guide.md" >> $GITHUB_STEP_SUMMARY
+          fi
 
   # Deploy after successful build (only for main/production)
   deploy:
