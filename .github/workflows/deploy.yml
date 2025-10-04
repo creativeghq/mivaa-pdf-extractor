@@ -1,332 +1,84 @@
-name: Deploy to Digital Ocean
+name: Deploy FastAPI App with uv
 
 on:
   push:
-    branches: [ main, production ]
+    branches: [ "main", "production"]
   workflow_dispatch:
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/mivaa-pdf-extractor
-
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Set up Python 3.11
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
-    
-    - name: Cache pip dependencies
-      uses: actions/cache@v3
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-    
-    - name: Run tests
-      run: |
-        python run_tests.py
-      env:
-        ENVIRONMENT: testing
-        SUPABASE_URL: ${{ secrets.SUPABASE_URL_TEST }}
-        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY_TEST }}
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY_TEST }}
-
-    - name: Validate deployment configuration
-      run: |
-        python scripts/validate-deployment.py --environment=production
-      env:
-        # Core Application
-        ENVIRONMENT: production
-        DEBUG: false
-        LOG_LEVEL: INFO
-        
-        # Database Configuration
-        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-        SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        
-        # AI/ML Service API Keys
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        TOGETHER_API_KEY: ${{ secrets.TOGETHER_API_KEY }}
-        
-        # JWT Authentication
-        JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
-        
-        # Error Tracking & Monitoring
-        SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
-        
-        # Material Kai Platform Integration
-        MATERIAL_KAI_API_URL: ${{ secrets.MATERIAL_KAI_API_URL }}
-        MATERIAL_KAI_API_KEY: ${{ secrets.MATERIAL_KAI_API_KEY }}
-        
-        # Security
-        ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
-        
-        # CI/CD Pipeline Variables
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  build:
-    needs: test
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    outputs:
-      image: ${{ steps.image.outputs.image }}
-    
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Log in to Container Registry
-      uses: docker/login-action@v3
-      with:
-        registry: ${{ env.REGISTRY }}
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Extract metadata
-      id: meta
-      uses: docker/metadata-action@v5
-      with:
-        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-        tags: |
-          type=ref,event=branch
-          type=ref,event=pr
-          type=sha,prefix={{branch}}-
-          type=raw,value=latest,enable={{is_default_branch}}
-
-    - name: Build and push Docker image
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        file: ./Dockerfile
-        push: true
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
-
-    - name: Output image
-      id: image
-      run: echo "image=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}" >> $GITHUB_OUTPUT
-
   deploy:
-    needs: build
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/production'
-    
+    environment: production
+
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      # 1. Checkout repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Setup SSH
-      uses: webfactory/ssh-agent@v0.8.0
-      with:
-        ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+      # 2. Setup SSH
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
 
-    - name: Add server to known hosts
-      run: |
-        ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts
+      # 3. Deploy to server
+      - name: Deploy to server
+        run: |
+          ssh -o StrictHostKeyChecking=no root@104.248.190.55 << 'EOF'
+          set -e
 
-    - name: Setup Server (First Time Only)
-      run: |
-        ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} << 'EOF'
-          # Check if setup is already done
-          if [ ! -f /opt/mivaa-pdf-extractor/.setup-complete ]; then
-            echo "🚀 Setting up server for first time..."
-            
-            # Create application directory first
-            sudo mkdir -p /opt/mivaa-pdf-extractor
-            sudo chown -R $USER:$USER /opt/mivaa-pdf-extractor
-            
-            # Clone repository if not exists
-            if [ ! -d /opt/mivaa-pdf-extractor/.git ]; then
-              cd /opt/mivaa-pdf-extractor
-              git clone https://github.com/${{ github.repository }}.git .
-            else
-              cd /opt/mivaa-pdf-extractor
-              git fetch origin
-              git reset --hard origin/main
-            fi
-            
-            # Make setup script executable and run it
-            chmod +x /opt/mivaa-pdf-extractor/deploy/setup-server.sh
-            sudo /opt/mivaa-pdf-extractor/deploy/setup-server.sh
-            
-            # Mark setup as complete
-            touch /opt/mivaa-pdf-extractor/.setup-complete
-            echo "✅ Server setup completed!"
-          else
-            echo "✅ Server already configured, skipping setup..."
+          APP_DIR=/var/www/mivaa-pdf-extractor
+          DEPLOY_BRANCH="${{ github.ref_name }}"
+
+          # Clone repo if it doesn't exist
+          if [ ! -d "$APP_DIR/.git" ]; then
+            rm -rf "$APP_DIR"
+            git clone https://x-access-token:${{ secrets.GH_PAT }}@github.com/nocodeapi/mivaa-pdf-extractor.git "$APP_DIR"
           fi
-        EOF
 
-    - name: Setup SSL Certificate
-      run: |
-        ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} << 'EOF'
-          # Setup SSL certificate if domain is provided
-          if [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
-            echo "🔒 Setting up SSL certificate for ${{ secrets.DOMAIN_NAME }}..."
-            
-            # Run SSL setup script
-            sudo /usr/local/bin/setup-ssl.sh "${{ secrets.DOMAIN_NAME }}" "${{ secrets.ADMIN_EMAIL }}"
-            
-            echo "✅ SSL certificate setup completed!"
-          else
-            echo "ℹ️ No domain name provided, skipping SSL setup..."
+          cd "$APP_DIR"
+
+          # Pull latest changes for the branch
+          git fetch origin "$DEPLOY_BRANCH"
+          git reset --hard origin/"$DEPLOY_BRANCH"
+
+          # --- Initialize pyenv ---
+          export PATH="$HOME/.pyenv/bin:$PATH"
+          eval "$(pyenv init --path)"
+          eval "$(pyenv init -)"
+          eval "$(pyenv virtualenv-init -)"
+
+          # Use pyenv Python
+          PYTHON=python3.9
+
+          # --- Create virtual environment ---
+          if [ ! -d ".venv" ] || [ ! -f ".venv/pyvenv.cfg" ]; then
+            rm -rf .venv
+            $PYTHON -m venv .venv
           fi
-        EOF
 
-    - name: Deploy Application
-      run: |
-        ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} << 'EOF'
-          # Navigate to application directory
-          cd /opt/mivaa-pdf-extractor
-          
-          # Pull latest code
-          git fetch origin
-          git reset --hard origin/main
-          
-          # Login to GitHub Container Registry
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          
-          # Create docker-compose override for production
-          cat > docker-compose.override.yml << 'OVERRIDE_EOF'
-version: '3.8'
-services:
-  mivaa-pdf-extractor:
-    image: ${{ needs.build.outputs.image }}
-    environment:
-      # Core Application
-      - ENVIRONMENT=production
-      - DEBUG=false
-      - LOG_LEVEL=INFO
-      - APP_NAME=MIVAA PDF Extractor
-      - APP_VERSION=1.0.0
-      
-      # Database Configuration
-      - SUPABASE_URL=${{ secrets.SUPABASE_URL }}
-      - SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
-      - SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      - DATABASE_URL=${{ secrets.DATABASE_URL }}
-      - DB_POOL_SIZE=${{ secrets.DB_POOL_SIZE || '10' }}
-      - DB_MAX_OVERFLOW=${{ secrets.DB_MAX_OVERFLOW || '20' }}
-      - DB_POOL_TIMEOUT=${{ secrets.DB_POOL_TIMEOUT || '30' }}
-      
-      # AI/ML Service API Keys
-      - OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
-      - OPENAI_ORG_ID=${{ secrets.OPENAI_ORG_ID }}
-      - OPENAI_PROJECT_ID=${{ secrets.OPENAI_PROJECT_ID }}
-      - ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
-      - TOGETHER_API_KEY=${{ secrets.TOGETHER_API_KEY }}
-      - HUGGINGFACE_API_TOKEN=${{ secrets.HUGGINGFACE_API_TOKEN }}
-      - HUGGING_FACE_ACCESS_TOKEN=${{ secrets.HUGGING_FACE_ACCESS_TOKEN }}
-      - REPLICATE_API_KEY=${{ secrets.REPLICATE_API_KEY }}
-      - JINA_API_KEY=${{ secrets.JINA_API_KEY }}
-      - FIRECRAWL_API_KEY=${{ secrets.FIRECRAWL_API_KEY }}
-      
-      # JWT Authentication
-      - JWT_SECRET_KEY=${{ secrets.JWT_SECRET_KEY }}
-      - JWT_ALGORITHM=${{ secrets.JWT_ALGORITHM || 'HS256' }}
-      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=${{ secrets.JWT_ACCESS_TOKEN_EXPIRE_MINUTES || '30' }}
-      - JWT_REFRESH_TOKEN_EXPIRE_DAYS=${{ secrets.JWT_REFRESH_TOKEN_EXPIRE_DAYS || '7' }}
-      - JWT_ISSUER=${{ secrets.JWT_ISSUER || 'mivaa-pdf-extractor' }}
-      - JWT_AUDIENCE=${{ secrets.JWT_AUDIENCE || 'mivaa-users' }}
-      
-      # Error Tracking & Monitoring
-      - SENTRY_DSN=${{ secrets.SENTRY_DSN }}
-      - SENTRY_AUTH_TOKEN=${{ secrets.SENTRY_AUTH_TOKEN }}
-      - SENTRY_ORG=${{ secrets.SENTRY_ORG }}
-      - SENTRY_PROJECT=${{ secrets.SENTRY_PROJECT }}
-      - SENTRY_ENVIRONMENT=production
-      - SENTRY_TRACES_SAMPLE_RATE=${{ secrets.SENTRY_TRACES_SAMPLE_RATE || '0.1' }}
-      - SENTRY_PROFILES_SAMPLE_RATE=${{ secrets.SENTRY_PROFILES_SAMPLE_RATE || '0.1' }}
-      
-      # Material Kai Platform Integration
-      - MATERIAL_KAI_API_URL=${{ secrets.MATERIAL_KAI_API_URL }}
-      - MATERIAL_KAI_API_KEY=${{ secrets.MATERIAL_KAI_API_KEY }}
-      - MATERIAL_KAI_CLIENT_ID=${{ secrets.MATERIAL_KAI_CLIENT_ID }}
-      - MATERIAL_KAI_CLIENT_SECRET=${{ secrets.MATERIAL_KAI_CLIENT_SECRET }}
-      - MATERIAL_KAI_WEBHOOK_SECRET=${{ secrets.MATERIAL_KAI_WEBHOOK_SECRET }}
-      
-      # Performance & Caching
-      - MAX_WORKERS=${{ secrets.MAX_WORKERS || '4' }}
-      - WORKER_TIMEOUT=${{ secrets.WORKER_TIMEOUT || '300' }}
-      - MAX_UPLOAD_SIZE=${{ secrets.MAX_UPLOAD_SIZE || '100' }}
-      
-      # Security & CORS
-      - CORS_ORIGINS=${{ secrets.CORS_ORIGINS || '*' }}
-      - CORS_ALLOW_CREDENTIALS=${{ secrets.CORS_ALLOW_CREDENTIALS || 'true' }}
-      - RATE_LIMIT_PER_MINUTE=${{ secrets.RATE_LIMIT_PER_MINUTE || '60' }}
-      - RATE_LIMIT_BURST=${{ secrets.RATE_LIMIT_BURST || '10' }}
-      - ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}
-      
-      # CI/CD Pipeline Variables
-      - GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
-      - DOCKER_REGISTRY_URL=${{ secrets.DOCKER_REGISTRY_URL || 'ghcr.io' }}
-      - DOCKER_REGISTRY_USERNAME=${{ secrets.DOCKER_REGISTRY_USERNAME || github.actor }}
-      - DOCKER_REGISTRY_PASSWORD=${{ secrets.DOCKER_REGISTRY_PASSWORD || secrets.GITHUB_TOKEN }}
-OVERRIDE_EOF
-          
-          # Pull latest image
-          docker pull ${{ needs.build.outputs.image }}
-          
-          # Stop existing containers
-          docker-compose down
-          
-          # Start new containers with override
-          docker-compose up -d
-          
-          # Clean up old images
-          docker image prune -f
-          
-          # Wait for health check
-          echo "Waiting for application to be healthy..."
-          for i in {1..30}; do
-            if curl -f http://localhost/health > /dev/null 2>&1; then
-              echo "Application is healthy!"
-              break
-            fi
-            echo "Attempt $i/30: Application not ready yet..."
-            sleep 10
-          done
-          
-          # Verify deployment
-          if curl -f http://localhost/health > /dev/null 2>&1; then
-            echo "✅ Deployment successful!"
-            echo "🌐 Application is running at: http://${{ secrets.DEPLOY_HOST }}"
-          else
-            echo "❌ Health check failed!"
-            docker-compose logs --tail=50
-            exit 1
-          fi
-        EOF
+          # Activate venv
+          source .venv/bin/activate
 
-  notify:
-    needs: [test, build, deploy]
-    runs-on: ubuntu-latest
-    if: always()
-    
-    steps:
-    - name: Notify deployment status
-      run: |
-        if [ "${{ needs.deploy.result }}" == "success" ]; then
-          echo "✅ Deployment successful!"
-          # Add notification logic here (Slack, Discord, email, etc.)
-        else
-          echo "❌ Deployment failed!"
-          # Add failure notification logic here
-        fi
+          # --- Ensure pip and uv are installed ---
+          python -m ensurepip --upgrade
+          pip install --upgrade pip
+          pip install uv
+
+          # --- Generate uv.lock dynamically ---
+          uv pip compile -o uv.lock requirements.txt requirements-torch.txt
+
+          # --- Sync dependencies ---
+          uv pip sync uv.lock
+
+          # --- Verify installations ---
+          python -c "import fastapi; print('FastAPI OK')"
+          python -c "import pymupdf; print('PyMuPDF OK')"
+          python -c "import pymupdf4llm; print('pymupdf4llm OK')"
+
+          # Restart the FastAPI service
+          sudo systemctl restart mivaa-pdf-extractor
+
+          # Check service status
+          sudo systemctl status mivaa-pdf-extractor --no-pager
+          EOF
