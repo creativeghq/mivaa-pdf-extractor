@@ -1,7 +1,18 @@
-name: Deploy FastAPI App with uv
+name: Deploy FastAPI App
 
 on:
+  workflow_call:
+    inputs:
+      image_tag:
+        required: true
+        type: string
   workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy'
+        required: false
+        default: 'latest'
+        type: string
 
 jobs:
   deploy:
@@ -9,184 +20,76 @@ jobs:
     environment: production
 
     steps:
-      # 1. Checkout repository
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      # 2. Setup SSH
+      # 1. Setup SSH
       - name: Setup SSH
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
 
-      # 3. Deploy to server
+      # 2. Deploy to server
       - name: Deploy to server
         run: |
-          ssh -o StrictHostKeyChecking=no root@104.248.68.3 << 'EOF'
+          IMAGE_TAG="${{ inputs.image_tag }}"
+          
+          ssh -o StrictHostKeyChecking=no root@104.248.68.3 << EOF
           set -e
-
-          APP_DIR=/var/www/mivaa-pdf-extractor
-          DEPLOY_BRANCH="${{ github.ref_name }}"
-
-          # Clone repo if it doesn't exist
-          if [ ! -d "$APP_DIR/.git" ]; then
-            rm -rf "$APP_DIR"
-            git clone https://x-access-token:${{ secrets.GH_PAT }}@github.com/creativeghq/mivaa-pdf-extractor.git "$APP_DIR"
-          fi
-
-          cd "$APP_DIR"
-
-          # Pull latest changes
-          echo "📥 Pulling latest changes..."
-          git fetch origin
-          git reset --hard origin/${{ github.ref_name || 'main' }}
-
-          # Make scripts executable
-          chmod +x scripts/deploy.sh
-
-          # Stop any legacy services if they exist
+          
+          cd /opt/mivaa-pdf-extractor
+          
+          # Stop any legacy services
           if systemctl list-units --full -all | grep -Fq "mivaa-pdf-extractor.service"; then
             echo "🛑 Stopping legacy service..."
             systemctl stop mivaa-pdf-extractor || true
             systemctl disable mivaa-pdf-extractor || true
           fi
-
+          
           # Ensure Docker is running
           if ! systemctl is-active --quiet docker; then
             echo "🔄 Starting Docker service..."
             systemctl start docker
           fi
-
-          # Set environment variables for docker-compose
+          
+          # Set environment variables
           export GITHUB_REPOSITORY="${{ github.repository }}"
-          export IMAGE_TAG="${{ github.ref_name }}-${{ github.sha }}"
-
-          echo "🐳 Pulling Docker image: ghcr.io/\$GITHUB_REPOSITORY/mivaa-pdf-extractor:\$IMAGE_TAG"
-
-          # Pull latest Docker images
+          export IMAGE_TAG="$IMAGE_TAG"
+          
+          echo "🐳 Pulling image: ghcr.io/\$GITHUB_REPOSITORY/mivaa-pdf-extractor:\$IMAGE_TAG"
+          
+          # Pull and start containers
           docker-compose pull
-
-          # Start/restart containers
-          echo "🔄 Starting containers..."
           docker-compose up -d
-
-          # Wait for containers to be ready
-          echo "⏳ Waiting for containers to be ready..."
+          
+          # Wait and verify
+          echo "⏳ Waiting for containers..."
           sleep 15
-
-          # Check container status
+          
           if docker-compose ps | grep -q "Exit"; then
-            echo "::error::Some containers failed to start"
+            echo "::error::Container failed to start"
             docker-compose ps
-            docker-compose logs --tail=50
+            docker-compose logs --tail=20
             exit 1
           fi
-
-          echo "✅ Docker deployment completed"
-
-          # nginx management (if enabled)
-          if [ "${{ steps.deploy-params.outputs.nginx }}" != "--no-nginx" ]; then
-            echo "🌐 Managing nginx..."
-
-            # Check nginx status
-            if command -v nginx &> /dev/null; then
-              if ! systemctl is-active --quiet nginx; then
-                echo "🔄 Starting nginx..."
-                systemctl start nginx
-              fi
-
-              # Test nginx configuration
-              if nginx -t 2>/dev/null; then
-                echo "✅ nginx configuration is valid"
-                systemctl reload nginx
-              else
-                echo "::warning::nginx configuration has issues"
-              fi
-            else
-              echo "::notice::nginx not installed - skipping nginx management"
-            fi
-          fi
-
-          echo "🎉 Deployment completed successfully"
+          
+          echo "✅ Deployment completed"
           EOF
 
-      # 6. Verify deployment
+      # 3. Verify deployment
       - name: Verify deployment
-        if: ${{ steps.deploy-params.outputs.mode != 'check-only' }}
         run: |
-          SERVER_HOST="${{ steps.deploy-params.outputs.server }}"
-
           echo "🔍 Verifying deployment..."
-
-          # Wait a moment for services to stabilize
-          sleep 10
-
-          # Test application health with retries
-          echo "🏥 Testing application health..."
+          
+          # Test health endpoint
           for i in {1..6}; do
-            if curl -f -s http://$SERVER_HOST:8000/health > /dev/null; then
-              echo "✅ Application health check passed (attempt $i)"
-              echo "::notice::Application is healthy and responding"
+            if curl -f -s http://104.248.68.3:8000/health > /dev/null; then
+              echo "✅ Health check passed"
               break
             elif [ $i -eq 6 ]; then
-              echo "::error::Application health check failed after 6 attempts"
-
-              # Get container status for debugging
-              ssh -o StrictHostKeyChecking=no root@$SERVER_HOST << 'EOF'
-              cd /opt/mivaa-pdf-extractor
-              echo "Container status:"
-              docker-compose ps
-              echo "Recent logs:"
-              docker-compose logs --tail=20
-              EOF
+              echo "::error::Health check failed after 6 attempts"
               exit 1
             else
-              echo "⏳ Health check attempt $i failed, retrying in 10s..."
+              echo "⏳ Health check attempt $i failed, retrying..."
               sleep 10
             fi
           done
-
-          # Test API documentation
-          if curl -f -s http://$SERVER_HOST:8000/docs > /dev/null; then
-            echo "✅ API documentation is accessible"
-            echo "::notice::API docs available at http://$SERVER_HOST:8000/docs"
-          else
-            echo "::warning::API documentation test failed"
-          fi
-
-          # Test nginx (if enabled)
-          if [ "${{ steps.deploy-params.outputs.nginx }}" != "--no-nginx" ]; then
-            if curl -f -s http://$SERVER_HOST > /dev/null; then
-              echo "✅ nginx is serving requests"
-              echo "::notice::nginx is healthy and serving requests"
-            else
-              echo "::warning::nginx is not serving requests properly"
-              # Don't fail deployment for nginx issues, just warn
-            fi
-          fi
-
-      # 7. Generate deployment report
-      - name: Generate deployment report
-        if: always()
-        run: |
-          SERVER_HOST="${{ steps.deploy-params.outputs.server }}"
-
-          echo "## 📊 Deployment Report" >> $GITHUB_STEP_SUMMARY
-          echo "**Server:** $SERVER_HOST" >> $GITHUB_STEP_SUMMARY
-          echo "**Mode:** ${{ steps.deploy-params.outputs.mode }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Branch:** ${{ github.ref_name || 'main' }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Timestamp:** $(date)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          if [ "${{ job.status }}" = "success" ]; then
-            echo "✅ **Status:** Deployment completed successfully" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### 🔗 Quick Links" >> $GITHUB_STEP_SUMMARY
-            echo "- [Application Health](http://$SERVER_HOST:8000/health)" >> $GITHUB_STEP_SUMMARY
-            echo "- [API Documentation](http://$SERVER_HOST:8000/docs)" >> $GITHUB_STEP_SUMMARY
-            echo "- [Application](http://$SERVER_HOST)" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "❌ **Status:** Deployment failed" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "Please check the logs above for error details." >> $GITHUB_STEP_SUMMARY
-          fi
+          
+          echo "🎉 Deployment verified successfully"
