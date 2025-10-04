@@ -33,62 +33,21 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         
-    - name: Ensure Comprehensive API is Running
+    - name: Start Service for Schema Generation
       run: |
-        # Check if legacy main.py exists and disable it
-        if [ -f "main.py" ] && ! grep -q "LEGACY FILE - DEPRECATED" main.py; then
-          echo "⚠️  Disabling legacy main.py..."
-          cp main.py main.py.legacy.backup
-          cat > main.py << 'EOF'
-        # LEGACY FILE - DEPRECATED
-        # This file has been replaced by app/main.py
-        #
-        # The new comprehensive API is located in app/main.py with 37+ endpoints
-        # This file is kept for reference only and should not be used
-        #
-        # To run the new API:
-        # uvicorn app.main:app --host 0.0.0.0 --port 8000
-
-        """
-        # Original legacy code moved to main.py.legacy.backup
-        # Use app/main.py for the comprehensive API instead
-        """
-
-        # END OF LEGACY FILE
-        EOF
-          echo "✅ Legacy main.py disabled"
-        fi
-
-        # Start the comprehensive API
-        echo "🚀 Starting comprehensive API..."
+        # Start the API service for schema generation
+        echo "🚀 Starting API service..."
         uvicorn app.main:app --host 0.0.0.0 --port 8000 &
 
-        # Wait for service to be ready and verify it's comprehensive
-        echo "⏳ Waiting for comprehensive API to start..."
+        # Wait for service to be ready
+        echo "⏳ Waiting for API service to start..."
         max_attempts=30
         attempt=1
 
         while [ $attempt -le $max_attempts ]; do
           if curl -s http://localhost:8000/health > /dev/null 2>&1; then
-            # Check if it's the comprehensive API
-            endpoint_count=$(curl -s http://localhost:8000/ 2>/dev/null | python3 -c "
-        import json, sys
-        try:
-            data = json.load(sys.stdin)
-            print(data.get('api_info', {}).get('total_endpoints', 0))
-        except:
-            print(0)
-        " 2>/dev/null || echo "0")
-
-            if [ "$endpoint_count" -gt 10 ]; then
-              echo "✅ Comprehensive API is running with $endpoint_count endpoints"
-              break
-            else
-              echo "⚠️  Only $endpoint_count endpoints detected, restarting..."
-              pkill -f uvicorn || true
-              sleep 2
-              uvicorn app.main:app --host 0.0.0.0 --port 8000 &
-            fi
+            echo "✅ API service is running"
+            break
           fi
 
           if [ $attempt -eq $max_attempts ]; then

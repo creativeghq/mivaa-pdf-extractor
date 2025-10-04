@@ -71,68 +71,12 @@ except:
             return 0
         else
             warn "Service is running but with legacy API (only $endpoint_count endpoints)"
+            warn "Manual restart may be needed to enable comprehensive API"
+            warn "Use: docker-compose restart or uvicorn app.main:app --host 0.0.0.0 --port 8000"
             return 1
         fi
     else
         error "Service is not responding"
-        return 1
-    fi
-}
-
-# Restart service with comprehensive API
-restart_comprehensive_api() {
-    log "🔄 Restarting service with comprehensive API..."
-
-    # Check if legacy main.py exists and disable it
-    if [ -f "main.py" ] && ! grep -q "LEGACY FILE - DEPRECATED" main.py; then
-        warn "Disabling legacy main.py..."
-        cp main.py main.py.legacy.backup
-        cat > main.py << 'EOF'
-# LEGACY FILE - DEPRECATED
-# This file has been replaced by app/main.py
-#
-# The new comprehensive API is located in app/main.py with 37+ endpoints
-# This file is kept for reference only and should not be used
-#
-# To run the new API:
-# uvicorn app.main:app --host 0.0.0.0 --port 8000
-
-"""
-# Original legacy code moved to main.py.legacy.backup
-# Use app/main.py for the comprehensive API instead
-"""
-
-# END OF LEGACY FILE
-EOF
-        log "✅ Legacy main.py disabled and backed up"
-    fi
-
-    # Stop any running services
-    log "🛑 Stopping existing services..."
-    if command -v docker-compose &> /dev/null && [ -f "docker-compose.yml" ]; then
-        docker-compose down 2>/dev/null || true
-    fi
-    pkill -f uvicorn 2>/dev/null || true
-
-    # Wait for cleanup
-    sleep 3
-
-    # Start the comprehensive API
-    log "🚀 Starting comprehensive API..."
-    if command -v docker-compose &> /dev/null && [ -f "docker-compose.yml" ]; then
-        docker-compose up -d
-        sleep 10
-    else
-        uvicorn app.main:app --host 0.0.0.0 --port 8000 &
-        sleep 5
-    fi
-
-    # Verify service started with comprehensive API
-    if check_comprehensive_api; then
-        log "✅ Service restarted successfully with comprehensive API"
-        return 0
-    else
-        error "Failed to restart service with comprehensive API"
         return 1
     fi
 }
@@ -233,21 +177,17 @@ main() {
     log "🚀 Starting OpenAPI schema update process..."
     log "🎯 Target service: $service_url"
 
-    # Check if service is running with comprehensive API
+    # Check if service is running
+    if ! check_service "$service_url"; then
+        error "Cannot proceed without a running service"
+        exit 1
+    fi
+
+    # Check if service is running with comprehensive API (informational)
     if ! check_comprehensive_api "$service_url"; then
-        warn "Service is not running with comprehensive API"
-        log "🔄 Attempting to restart with comprehensive API..."
-
-        if ! restart_comprehensive_api; then
-            error "Failed to restart service with comprehensive API"
-            exit 1
-        fi
-
-        # Verify the restart worked
-        if ! check_comprehensive_api "$service_url"; then
-            error "Service still not running with comprehensive API after restart"
-            exit 1
-        fi
+        warn "Service appears to be running with legacy API"
+        warn "Schema will be generated from current running service"
+        warn "For comprehensive API, manually restart with: docker-compose restart"
     fi
 
     # Generate schema
