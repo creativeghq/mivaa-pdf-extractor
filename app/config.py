@@ -9,8 +9,7 @@ import os
 import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
-from pydantic import Field, validator
-from pydantic_settings import BaseSettings
+from pydantic import BaseSettings, Field, validator
 
 
 class Settings(BaseSettings):
