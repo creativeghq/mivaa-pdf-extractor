@@ -7,7 +7,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/mivaa-pdf-extractor
+  IMAGE_NAME: creativeghq/material-kai-vision-platform/mivaa-pdf-extractor
 
 jobs:
   build-and-push:
