@@ -296,3 +296,19 @@ def create_zip_stream(output_dir):
                 zf.write(file_path, os.path.relpath(file_path, output_dir))
     zip_stream.seek(0)
     return zip_stream
+"""
+
+# END OF LEGACY FILE
+#
+# ⚠️  THIS FILE IS DEPRECATED ⚠️
+#
+# Use the new comprehensive API in app/main.py instead:
+# - 37+ endpoints with full functionality
+# - JWT authentication
+# - Performance monitoring
+# - RAG system integration
+# - Vector search capabilities
+# - Multi-modal processing
+#
+# To start the new API:
+# uvicorn app.main:app --host 0.0.0.0 --port 8000
