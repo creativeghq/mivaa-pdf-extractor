@@ -173,19 +173,53 @@ info "Log file: $LOG_FILE"
 # Check required tools
 check_dependencies() {
     info "Checking dependencies..."
-    
+
+    # Check and install Docker if missing
+    if ! command -v docker &> /dev/null; then
+        warn "Docker not found. Installing Docker..."
+        install_docker_if_missing
+    fi
+
+    # Check if Docker service is running
+    if ! systemctl is-active --quiet docker 2>/dev/null; then
+        warn "Docker service not running. Starting Docker..."
+        sudo systemctl enable docker
+        sudo systemctl start docker
+        sleep 3  # Give Docker a moment to start
+    fi
+
+    # Check and install Docker Compose if missing
+    if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
+        warn "Docker Compose not found. Installing Docker Compose..."
+        install_docker_compose_if_missing
+    fi
+
+    # Check other required tools
     local missing_tools=()
-    
-    for tool in docker git ssh python3; do
+    for tool in git ssh python3; do
         if ! command -v "$tool" &> /dev/null; then
             missing_tools+=("$tool")
         fi
     done
-    
+
     if [[ ${#missing_tools[@]} -gt 0 ]]; then
-        error "Missing required tools: ${missing_tools[*]}"
+        warn "Installing missing tools: ${missing_tools[*]}"
+        sudo apt-get update
+        for tool in "${missing_tools[@]}"; do
+            case "$tool" in
+                "git")
+                    sudo apt-get install -y git
+                    ;;
+                "ssh")
+                    sudo apt-get install -y openssh-client
+                    ;;
+                "python3")
+                    sudo apt-get install -y python3 python3-pip
+                    ;;
+            esac
+        done
     fi
-    
+
     success "All required tools are available"
 }
 
@@ -552,6 +586,56 @@ check_nginx_for_github() {
     fi
 }
 
+# Install Docker if missing
+install_docker_if_missing() {
+    info "🐳 Installing Docker..."
+
+    # Update package index
+    sudo apt-get update
+
+    # Install packages to allow apt to use a repository over HTTPS
+    sudo apt-get install -y \
+        ca-certificates \
+        curl \
+        gnupg \
+        lsb-release
+
+    # Add Docker's official GPG key
+    sudo mkdir -p /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+
+    # Set up the repository
+    echo \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+      $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+    # Update package index again
+    sudo apt-get update
+
+    # Install Docker Engine
+    sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+    # Add current user to docker group
+    sudo usermod -aG docker $USER
+
+    # Enable and start Docker
+    sudo systemctl enable docker
+    sudo systemctl start docker
+
+    success "✅ Docker installed successfully"
+}
+
+# Install Docker Compose if missing
+install_docker_compose_if_missing() {
+    info "🐳 Installing Docker Compose..."
+
+    DOCKER_COMPOSE_VERSION="v2.24.1"
+    sudo curl -L "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    sudo chmod +x /usr/local/bin/docker-compose
+
+    success "✅ Docker Compose installed successfully"
+}
+
 # Application deployment with nginx management
 deploy_application() {
     info "🚀 Starting application deployment..."
@@ -566,8 +650,6 @@ deploy_application() {
         error "app directory not found. Please run this script from the project root."
         exit 1
     fi
-
-
 
     # Pull latest code
     info "📥 Pulling latest code..."
