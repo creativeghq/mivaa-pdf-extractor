@@ -28,11 +28,21 @@ jobs:
 
       # 2. Deploy to server
       - name: Deploy to server
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           IMAGE_TAG="${{ inputs.image_tag }}"
-          
-          ssh -o StrictHostKeyChecking=no root@104.248.68.3 << EOF
+
+          # Create deployment script
+          cat > deploy_script.sh << 'SCRIPT_EOF'
+          #!/bin/bash
           set -e
+
+          # Environment variables will be passed via SSH
+          GH_TOKEN="$1"
+          GITHUB_ACTOR="$2"
+          IMAGE_TAG="$3"
+          GITHUB_REPOSITORY="$4"
 
           # Find the correct directory
           if [ -d "/opt/mivaa-pdf-extractor" ]; then
@@ -46,8 +56,8 @@ jobs:
             exit 1
           fi
 
-          echo "📁 Using directory: \$APP_DIR"
-          cd "\$APP_DIR"
+          echo "📁 Using directory: $APP_DIR"
+          cd "$APP_DIR"
 
           # Check if docker-compose.yml exists
           if [ ! -f "docker-compose.yml" ]; then
@@ -117,12 +127,11 @@ jobs:
             systemctl start docker
           fi
           
-          # Set environment variables
-          export GITHUB_REPOSITORY="${{ github.repository }}"
-          export IMAGE_TAG="$IMAGE_TAG"
-          
-          echo "🐳 Pulling image: ghcr.io/\$GITHUB_REPOSITORY/mivaa-pdf-extractor:\$IMAGE_TAG"
-          
+          echo "🔐 Authenticating with GitHub Container Registry..."
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+          echo "🐳 Pulling image: ghcr.io/$GITHUB_REPOSITORY/mivaa-pdf-extractor:$IMAGE_TAG"
+
           # Pull and start containers
           docker-compose pull
           docker-compose up -d
@@ -139,7 +148,15 @@ jobs:
           fi
           
           echo "✅ Deployment completed"
-          EOF
+          SCRIPT_EOF
+
+          # Make script executable and copy to server
+          chmod +x deploy_script.sh
+          scp -o StrictHostKeyChecking=no deploy_script.sh root@104.248.68.3:/tmp/
+
+          # Execute deployment script on server
+          ssh -o StrictHostKeyChecking=no root@104.248.68.3 \
+            "/tmp/deploy_script.sh '$GH_TOKEN' '${{ github.actor }}' '$IMAGE_TAG' '${{ github.repository }}'"
 
       # 3. Verify deployment
       - name: Verify deployment
