@@ -90,7 +90,7 @@ jobs:
           echo "- **Build Cache:** GitHub Actions Cache" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🚀 Next Steps" >> $GITHUB_STEP_SUMMARY
-          echo "The image is now available and will be automatically deployed if this is the main/production branch." >> $GITHUB_STEP_SUMMARY
+          echo "The image is now available and the 'Deploy FastAPI App with uv' workflow will be automatically triggered if this is the main/production branch." >> $GITHUB_STEP_SUMMARY
 
   # Trigger deployment after successful build (only for main/production)
   trigger-deployment:
@@ -107,19 +107,13 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               workflow_id: 'deploy.yml',
-              ref: context.ref,
-              inputs: {
-                deployment_mode: 'deploy-app',
-                server_host: '104.248.68.3',
-                restart_nginx: 'true',
-                force_deployment: 'true'
-              }
+              ref: context.ref
             });
-            
+
             console.log('Deployment workflow triggered:', result.status);
-            
+
             core.summary
               .addHeading('🚀 Deployment Triggered')
-              .addRaw('The deployment workflow has been automatically triggered with the new image.')
+              .addRaw('The "Deploy FastAPI App with uv" workflow has been automatically triggered with the new image.')
               .addLink('View Deployment', `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions`)
               .write();
