@@ -97,13 +97,11 @@ jobs:
 - **Raw Schema**: \`/openapi.json\` endpoint when service is running
             `;
           } catch (error) {
-            schemaInfo = `
-## 📄 OpenAPI Schema Generation
-            
+            schemaInfo = `## 📄 OpenAPI Schema Generation
+
 ⚠️ Could not read schema details: ${error.message}
-            
-Generated files are available in the artifacts.
-            `;
+
+Generated files are available in the artifacts.`;
           }
           
           github.rest.issues.createComment({
