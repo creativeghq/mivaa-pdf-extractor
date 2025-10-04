@@ -30,6 +30,12 @@ jobs:
       - name: Deploy to server
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          MATERIAL_KAI_API_URL: ${{ secrets.MATERIAL_KAI_API_URL }}
+          MATERIAL_KAI_API_KEY: ${{ secrets.MATERIAL_KAI_API_KEY }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: |
           IMAGE_TAG="${{ inputs.image_tag }}"
 
@@ -43,6 +49,12 @@ jobs:
           GITHUB_ACTOR="$2"
           IMAGE_TAG="$3"
           GITHUB_REPOSITORY="$4"
+          SUPABASE_URL="$5"
+          SUPABASE_ANON_KEY="$6"
+          OPENAI_API_KEY="$7"
+          MATERIAL_KAI_API_URL="$8"
+          MATERIAL_KAI_API_KEY="$9"
+          SENTRY_DSN="${10}"
 
           # Find the correct directory
           if [ -d "/opt/mivaa-pdf-extractor" ]; then
@@ -130,6 +142,16 @@ jobs:
           echo "🔐 Authenticating with GitHub Container Registry..."
           echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
+          echo "🔧 Setting up environment variables for Docker..."
+          export GITHUB_REPOSITORY="$GITHUB_REPOSITORY"
+          export IMAGE_TAG="$IMAGE_TAG"
+          export SUPABASE_URL="$SUPABASE_URL"
+          export SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY"
+          export OPENAI_API_KEY="$OPENAI_API_KEY"
+          export MATERIAL_KAI_API_URL="$MATERIAL_KAI_API_URL"
+          export MATERIAL_KAI_API_KEY="$MATERIAL_KAI_API_KEY"
+          export SENTRY_DSN="$SENTRY_DSN"
+
           echo "🐳 Pulling image: ghcr.io/$GITHUB_REPOSITORY/mivaa-pdf-extractor:$IMAGE_TAG"
 
           # Pull and start containers
@@ -156,7 +178,7 @@ jobs:
 
           # Execute deployment script on server
           ssh -o StrictHostKeyChecking=no root@104.248.68.3 \
-            "/tmp/deploy_script.sh '$GH_TOKEN' '${{ github.actor }}' '$IMAGE_TAG' '${{ github.repository }}'"
+            "/tmp/deploy_script.sh '$GH_TOKEN' '${{ github.actor }}' '$IMAGE_TAG' '${{ github.repository }}' '$SUPABASE_URL' '$SUPABASE_ANON_KEY' '$OPENAI_API_KEY' '$MATERIAL_KAI_API_URL' '$MATERIAL_KAI_API_KEY' '$SENTRY_DSN'"
 
       # 3. Verify deployment
       - name: Verify deployment
