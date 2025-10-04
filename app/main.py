@@ -474,7 +474,7 @@ def create_app() -> FastAPI:
     
     app = FastAPI(
         title=settings.app_name,
-        version=settings.version,
+        version=settings.app_version,
         description="""
 # MIVAA PDF Extractor - Comprehensive API
 
