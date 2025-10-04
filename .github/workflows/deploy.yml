@@ -143,7 +143,7 @@ jobs:
           echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
           echo "🔧 Setting up environment variables for Docker..."
-          export GITHUB_REPOSITORY="$GITHUB_REPOSITORY"
+          export GITHUB_REPOSITORY="creativeghq/material-kai-vision-platform"
           export IMAGE_TAG="$IMAGE_TAG"
           export SUPABASE_URL="$SUPABASE_URL"
           export SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY"
