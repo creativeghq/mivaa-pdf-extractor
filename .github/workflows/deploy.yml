@@ -42,46 +42,47 @@ jobs:
           git reset --hard origin/${{ github.ref_name || 'main' }}
 
           # Make scripts executable
-          chmod +x scripts/deploy.sh scripts/migrate-to-docker.sh
+          chmod +x scripts/deploy.sh
 
-          # Check for legacy service and handle migration
+          # Stop any legacy services if they exist
           if systemctl list-units --full -all | grep -Fq "mivaa-pdf-extractor.service"; then
-            echo "🔄 Legacy service detected - running migration..."
-            ./scripts/migrate-to-docker.sh
-          else
-            echo "🐳 No legacy service - proceeding with Docker deployment..."
-
-            # Ensure Docker is running
-            if ! systemctl is-active --quiet docker; then
-              echo "🔄 Starting Docker service..."
-              systemctl start docker
-            fi
-
-            # Pull latest code changes
-            echo "📥 Pulling latest changes..."
-            git pull origin ${{ github.ref_name || 'main' }}
-
-            # Pull latest Docker images
-            echo "🐳 Pulling latest Docker images..."
-            docker-compose pull
-
-            # Start/restart containers
-            echo "🔄 Starting containers..."
-            docker-compose up -d
-
-            # Wait for containers to be ready
-            echo "⏳ Waiting for containers to be ready..."
-            sleep 15
-
-            # Check container status
-            if docker-compose ps | grep -q "Exit"; then
-              echo "::error::Some containers failed to start"
-              docker-compose ps
-              exit 1
-            fi
-
-            echo "✅ Docker deployment completed"
+            echo "🛑 Stopping legacy service..."
+            systemctl stop mivaa-pdf-extractor || true
+            systemctl disable mivaa-pdf-extractor || true
           fi
+
+          # Ensure Docker is running
+          if ! systemctl is-active --quiet docker; then
+            echo "🔄 Starting Docker service..."
+            systemctl start docker
+          fi
+
+          # Set environment variables for docker-compose
+          export GITHUB_REPOSITORY="${{ github.repository }}"
+          export IMAGE_TAG="${{ github.ref_name }}-${{ github.sha }}"
+
+          echo "🐳 Pulling Docker image: ghcr.io/\$GITHUB_REPOSITORY/mivaa-pdf-extractor:\$IMAGE_TAG"
+
+          # Pull latest Docker images
+          docker-compose pull
+
+          # Start/restart containers
+          echo "🔄 Starting containers..."
+          docker-compose up -d
+
+          # Wait for containers to be ready
+          echo "⏳ Waiting for containers to be ready..."
+          sleep 15
+
+          # Check container status
+          if docker-compose ps | grep -q "Exit"; then
+            echo "::error::Some containers failed to start"
+            docker-compose ps
+            docker-compose logs --tail=50
+            exit 1
+          fi
+
+          echo "✅ Docker deployment completed"
 
           # nginx management (if enabled)
           if [ "${{ steps.deploy-params.outputs.nginx }}" != "--no-nginx" ]; then
