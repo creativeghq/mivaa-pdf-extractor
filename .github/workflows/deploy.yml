@@ -136,7 +136,7 @@ jobs:
           export MATERIAL_KAI_API_KEY="$MATERIAL_KAI_API_KEY"
           export SENTRY_DSN="$SENTRY_DSN"
           
-          echo "🐳 Pulling image: ghcr.io/$GITHUB_REPOSITORY/mivaa-pdf-extractor:$IMAGE_TAG"
+          echo "🐳 Pulling image: ghcr.io/$GITHUB_REPOSITORY:$IMAGE_TAG"
           
           # Create docker-compose.yml if it doesn't exist
           if [ ! -f "docker-compose.yml" ]; then
@@ -144,7 +144,7 @@ jobs:
             cat > docker-compose.yml << 'COMPOSE_EOF'
           services:
             mivaa-pdf-extractor:
-              image: ghcr.io/\${GITHUB_REPOSITORY}/mivaa-pdf-extractor:\${IMAGE_TAG}
+              image: ghcr.io/\${GITHUB_REPOSITORY}:\${IMAGE_TAG}
               container_name: mivaa-pdf-extractor
               restart: unless-stopped
               ports:
@@ -203,7 +203,7 @@ jobs:
           
           # Execute deployment script on server
           ssh -o StrictHostKeyChecking=no root@104.248.68.3 \
-            "/tmp/deploy_script.sh '$GH_TOKEN' '${{ github.actor }}' '$IMAGE_TAG' 'creativeghq/material-kai-vision-platform' '$SUPABASE_URL' '$SUPABASE_ANON_KEY' '$OPENAI_API_KEY' '$MATERIAL_KAI_API_URL' '$MATERIAL_KAI_API_KEY' '$SENTRY_DSN'"
+            "/tmp/deploy_script.sh '$GH_TOKEN' '${{ github.actor }}' '$IMAGE_TAG' '${{ github.repository }}' '$SUPABASE_URL' '$SUPABASE_ANON_KEY' '$OPENAI_API_KEY' '$MATERIAL_KAI_API_URL' '$MATERIAL_KAI_API_KEY' '$SENTRY_DSN'"
 
       # 3. Verify deployment
       - name: Verify deployment

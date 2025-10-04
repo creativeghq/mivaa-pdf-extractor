@@ -1,6 +1,6 @@
 services:
   mivaa-pdf-extractor:
-    image: ghcr.io/${GITHUB_REPOSITORY:-creativeghq/material-kai-vision-platform}/mivaa-pdf-extractor:${IMAGE_TAG:-latest}
+    image: ghcr.io/${GITHUB_REPOSITORY:-creativeghq/mivaa-pdf-extractor}:${IMAGE_TAG:-latest}
     container_name: mivaa-pdf-extractor
     restart: unless-stopped
     ports:
