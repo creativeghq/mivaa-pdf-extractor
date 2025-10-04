@@ -1,0 +1,158 @@
+name: Deployment Health Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_host:
+        description: 'Server hostname or IP'
+        required: true
+        type: string
+      check_nginx:
+        description: 'Check nginx status'
+        required: false
+        default: true
+        type: boolean
+      restart_nginx:
+        description: 'Restart nginx if needed'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    name: Check Server Health
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup SSH
+      uses: webfactory/ssh-agent@v0.8.0
+      with:
+        ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+        
+    - name: Add server to known hosts
+      run: |
+        ssh-keyscan -H ${{ inputs.server_host }} >> ~/.ssh/known_hosts
+        
+    - name: Check Server Health
+      run: |
+        echo "🔍 Checking server health for: ${{ inputs.server_host }}"
+        
+        # Check if server is reachable
+        if ! ssh -o ConnectTimeout=10 root@${{ inputs.server_host }} "echo 'Server is reachable'"; then
+          echo "::error::Cannot connect to server ${{ inputs.server_host }}"
+          exit 1
+        fi
+        
+        echo "✅ Server is reachable"
+        
+    - name: Check Docker Services
+      run: |
+        echo "🐳 Checking Docker services..."
+        
+        ssh root@${{ inputs.server_host }} << 'EOF'
+        # Check if Docker is running
+        if ! systemctl is-active --quiet docker; then
+          echo "::error::Docker service is not running"
+          exit 1
+        fi
+        echo "✅ Docker service is running"
+        
+        # Check MIVAA containers
+        cd /opt/mivaa-pdf-extractor
+        if ! docker-compose ps | grep -q "Up"; then
+          echo "::warning::MIVAA containers may not be running"
+          docker-compose ps
+        else
+          echo "✅ MIVAA containers are running"
+        fi
+        EOF
+        
+    - name: Check nginx Status
+      if: ${{ inputs.check_nginx }}
+      run: |
+        echo "🌐 Checking nginx status..."
+        
+        ssh root@${{ inputs.server_host }} << 'EOF'
+        # Source the deployment functions
+        source /opt/mivaa-pdf-extractor/deploy/setup-server.sh
+        
+        # Check nginx with GitHub Actions logging
+        check_nginx_for_github
+        EOF
+        
+    - name: Restart nginx if requested
+      if: ${{ inputs.restart_nginx }}
+      run: |
+        echo "🔄 Restarting nginx..."
+        
+        ssh root@${{ inputs.server_host }} << 'EOF'
+        # Source the deployment functions
+        source /opt/mivaa-pdf-extractor/deploy/setup-server.sh
+        
+        # Restart nginx safely
+        if restart_nginx; then
+          echo "::notice::nginx restarted successfully"
+        else
+          echo "::error::Failed to restart nginx"
+          exit 1
+        fi
+        EOF
+        
+    - name: Test Application Endpoints
+      run: |
+        echo "🧪 Testing application endpoints..."
+        
+        # Test if the application is responding
+        if curl -f -s http://${{ inputs.server_host }}/health > /dev/null; then
+          echo "✅ Application health endpoint is responding"
+          echo "::notice::Application is healthy and responding"
+        else
+          echo "::warning::Application health endpoint is not responding"
+        fi
+        
+        # Test if nginx is serving requests
+        if curl -f -s http://${{ inputs.server_host }} > /dev/null; then
+          echo "✅ nginx is serving requests"
+          echo "::notice::nginx is healthy and serving requests"
+        else
+          echo "::error::nginx is not serving requests"
+          exit 1
+        fi
+        
+    - name: Generate Health Report
+      run: |
+        echo "📊 Generating health report..."
+        
+        ssh root@${{ inputs.server_host }} << 'EOF'
+        echo "## 🏥 Server Health Report"
+        echo "**Timestamp:** $(date)"
+        echo "**Server:** ${{ inputs.server_host }}"
+        echo ""
+        
+        echo "### 🐳 Docker Status"
+        systemctl status docker --no-pager -l || echo "Docker status check failed"
+        echo ""
+        
+        echo "### 📦 Container Status"
+        cd /opt/mivaa-pdf-extractor
+        docker-compose ps || echo "Container status check failed"
+        echo ""
+        
+        echo "### 🌐 nginx Status"
+        systemctl status nginx --no-pager -l || echo "nginx status check failed"
+        echo ""
+        
+        echo "### 💾 Disk Usage"
+        df -h / || echo "Disk usage check failed"
+        echo ""
+        
+        echo "### 🧠 Memory Usage"
+        free -h || echo "Memory usage check failed"
+        echo ""
+        
+        echo "### 🔥 System Load"
+        uptime || echo "System load check failed"
+        EOF

@@ -33,6 +33,107 @@ info() {
     echo -e "${BLUE}[$(date +'%Y-%m-%d %H:%M:%S')] INFO: $1${NC}"
 }
 
+# Function to check nginx status
+check_nginx_status() {
+    log "🔍 Checking nginx status..."
+
+    if systemctl is-active --quiet nginx; then
+        log "✅ nginx is running"
+        return 0
+    else
+        error "❌ nginx is not running"
+        return 1
+    fi
+}
+
+# Function to check nginx configuration
+check_nginx_config() {
+    log "🔧 Checking nginx configuration..."
+
+    if nginx -t 2>/dev/null; then
+        log "✅ nginx configuration is valid"
+        return 0
+    else
+        error "❌ nginx configuration has errors:"
+        nginx -t
+        return 1
+    fi
+}
+
+# Function to restart nginx safely
+restart_nginx() {
+    log "🔄 Restarting nginx..."
+
+    # First check configuration
+    if ! check_nginx_config; then
+        error "Cannot restart nginx due to configuration errors"
+        return 1
+    fi
+
+    # Restart nginx
+    if systemctl restart nginx; then
+        log "✅ nginx restarted successfully"
+
+        # Wait a moment and verify it's running
+        sleep 2
+        if check_nginx_status; then
+            log "✅ nginx is running after restart"
+            return 0
+        else
+            error "❌ nginx failed to start after restart"
+            return 1
+        fi
+    else
+        error "❌ Failed to restart nginx"
+        return 1
+    fi
+}
+
+# Function to check nginx and report status for GitHub Actions
+check_nginx_for_github() {
+    log "🔍 Checking nginx status for GitHub Actions..."
+
+    # Check if nginx is installed
+    if ! command -v nginx &> /dev/null; then
+        error "nginx is not installed"
+        echo "::error::nginx is not installed on the server"
+        return 1
+    fi
+
+    # Check nginx configuration
+    if ! check_nginx_config; then
+        error "nginx configuration is invalid"
+        echo "::error::nginx configuration has errors"
+        nginx -t 2>&1 | while read line; do
+            echo "::error::$line"
+        done
+        return 1
+    fi
+
+    # Check nginx status
+    if ! check_nginx_status; then
+        error "nginx is not running"
+        echo "::error::nginx service is not running"
+
+        # Try to get more details
+        local status_output=$(systemctl status nginx 2>&1 || echo "Failed to get status")
+        echo "::error::nginx status: $status_output"
+
+        return 1
+    fi
+
+    # Check if nginx is responding to HTTP requests
+    if curl -f -s http://localhost > /dev/null 2>&1; then
+        log "✅ nginx is responding to HTTP requests"
+        echo "::notice::nginx is healthy and responding to requests"
+        return 0
+    else
+        error "nginx is running but not responding to HTTP requests"
+        echo "::warning::nginx is running but not responding to HTTP requests"
+        return 1
+    fi
+}
+
 # Check if running as root
 if [[ $EUID -eq 0 ]]; then
    error "This script should not be run as root for security reasons"
@@ -640,10 +741,16 @@ tee -a ~/.bashrc > /dev/null <<EOF
 alias mivaa-logs='docker-compose -f $APP_DIR/docker-compose.yml logs -f'
 alias mivaa-status='docker-compose -f $APP_DIR/docker-compose.yml ps'
 alias mivaa-restart='docker-compose -f $APP_DIR/docker-compose.yml restart'
-alias mivaa-update='cd $APP_DIR && git pull && docker-compose pull && docker-compose up -d'
+alias mivaa-update='cd $APP_DIR && git pull && docker-compose pull && docker-compose up -d && restart_nginx'
+alias mivaa-update-no-nginx='cd $APP_DIR && git pull && docker-compose pull && docker-compose up -d'
 alias mivaa-backup='sudo /usr/local/bin/backup-mivaa.sh'
 
+# nginx management aliases
+alias nginx-restart='restart_nginx'
+alias nginx-check='check_nginx_for_github'
+alias nginx-status='check_nginx_status'
 
+# SSL management aliases
 alias ssl-setup='sudo /usr/local/bin/setup-ssl.sh'
 alias ssl-check='sudo /usr/local/bin/check-ssl-renewal.sh'
 EOF
@@ -674,8 +781,11 @@ info "=== USEFUL COMMANDS ==="
 info "• View logs: mivaa-logs"
 info "• Check status: mivaa-status"
 info "• Restart app: mivaa-restart (standard Docker restart)"
-info "• Update app: mivaa-update (git pull + Docker update)"
-
+info "• Update app: mivaa-update (git pull + Docker update + nginx restart)"
+info "• Update app (no nginx): mivaa-update-no-nginx (git pull + Docker update only)"
+info "• Restart nginx: nginx-restart"
+info "• Check nginx: nginx-check (with GitHub Actions logging)"
+info "• nginx status: nginx-status"
 info "• Setup SSL: ssl-setup yourdomain.com"
 info "• Check SSL: ssl-check"
 info "• Create backup: mivaa-backup"
