@@ -1,7 +1,7 @@
 # Fixed image path for deployment
 services:
   mivaa-pdf-extractor:
-    image: ghcr.io/${GITHUB_REPOSITORY:-creativeghq/mivaa-pdf-extractor}:${IMAGE_TAG:-latest}
+    image: ghcr.io/creativeghq/mivaa-pdf-extractor:main-ba255c1fd4344014cc3acd5b02552edbb9d0d7a5
     container_name: mivaa-pdf-extractor
     restart: unless-stopped
     ports:
