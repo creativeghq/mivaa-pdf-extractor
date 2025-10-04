@@ -741,16 +741,15 @@ tee -a ~/.bashrc > /dev/null <<EOF
 alias mivaa-logs='docker-compose -f $APP_DIR/docker-compose.yml logs -f'
 alias mivaa-status='docker-compose -f $APP_DIR/docker-compose.yml ps'
 alias mivaa-restart='docker-compose -f $APP_DIR/docker-compose.yml restart'
-alias mivaa-deploy='cd $APP_DIR && ./scripts/deploy.sh --deploy-app --force'
-alias mivaa-deploy-no-nginx='cd $APP_DIR && ./scripts/deploy.sh --deploy-app --no-nginx --force'
-alias mivaa-setup='cd $APP_DIR && ./scripts/deploy.sh --setup-server'
-alias mivaa-full-deploy='cd $APP_DIR && ./scripts/deploy.sh --full --force'
+alias mivaa-deploy='cd $APP_DIR && docker-compose pull && docker-compose up -d'
+alias mivaa-update='cd $APP_DIR && git pull && docker-compose pull && docker-compose up -d'
+alias mivaa-stop='docker-compose -f $APP_DIR/docker-compose.yml down'
 alias mivaa-backup='sudo /usr/local/bin/backup-mivaa.sh'
 
 # nginx management aliases
-alias nginx-restart='cd $APP_DIR && ./scripts/deploy.sh --deploy-app --force-nginx --force'
-alias nginx-check='cd $APP_DIR && ./scripts/deploy.sh --check-only'
-alias nginx-status='check_nginx_status'
+alias nginx-restart='systemctl restart nginx'
+alias nginx-status='systemctl status nginx'
+alias nginx-reload='systemctl reload nginx'
 
 # SSL management aliases
 alias ssl-setup='sudo /usr/local/bin/setup-ssl.sh'
@@ -782,14 +781,13 @@ echo
 info "=== USEFUL COMMANDS ==="
 info "• View logs: mivaa-logs"
 info "• Check status: mivaa-status"
-info "• Restart containers: mivaa-restart (Docker restart only)"
-info "• Deploy app: mivaa-deploy (comprehensive deployment with nginx)"
-info "• Deploy app (no nginx): mivaa-deploy-no-nginx (deployment without nginx restart)"
-info "• Setup server: mivaa-setup (initial server configuration)"
-info "• Full deployment: mivaa-full-deploy (setup + deploy)"
-info "• Restart nginx: nginx-restart (force nginx restart)"
-info "• Check nginx: nginx-check (comprehensive nginx health check)"
-info "• nginx status: nginx-status (quick nginx status)"
+info "• Restart containers: mivaa-restart"
+info "• Deploy app: mivaa-deploy (build and start containers)"
+info "• Update app: mivaa-update (git pull + build + start)"
+info "• Stop app: mivaa-stop"
+info "• Restart nginx: nginx-restart"
+info "• nginx status: nginx-status"
+info "• Reload nginx: nginx-reload"
 info "• Setup SSL: ssl-setup yourdomain.com"
 info "• Check SSL: ssl-check"
 info "• Create backup: mivaa-backup"

@@ -1,8 +1,6 @@
 name: Deploy FastAPI App with uv
 
 on:
-  push:
-    branches: [ "main", "production"]
   workflow_dispatch:
 
 jobs:
@@ -38,47 +36,156 @@ jobs:
 
           cd "$APP_DIR"
 
-          # Pull latest changes for the branch
-          git fetch origin "$DEPLOY_BRANCH"
-          git reset --hard origin/"$DEPLOY_BRANCH"
+          # Pull latest changes
+          echo "📥 Pulling latest changes..."
+          git fetch origin
+          git reset --hard origin/${{ github.ref_name || 'main' }}
 
-          # --- Initialize pyenv ---
-          export PATH="$HOME/.pyenv/bin:$PATH"
-          eval "$(pyenv init --path)"
-          eval "$(pyenv init -)"
-          eval "$(pyenv virtualenv-init -)"
+          # Make scripts executable
+          chmod +x scripts/deploy.sh scripts/migrate-to-docker.sh
 
-          # Use pyenv Python
-          PYTHON=python3.9
+          # Check for legacy service and handle migration
+          if systemctl list-units --full -all | grep -Fq "mivaa-pdf-extractor.service"; then
+            echo "🔄 Legacy service detected - running migration..."
+            ./scripts/migrate-to-docker.sh
+          else
+            echo "🐳 No legacy service - proceeding with Docker deployment..."
 
-          # --- Create virtual environment ---
-          if [ ! -d ".venv" ] || [ ! -f ".venv/pyvenv.cfg" ]; then
-            rm -rf .venv
-            $PYTHON -m venv .venv
+            # Ensure Docker is running
+            if ! systemctl is-active --quiet docker; then
+              echo "🔄 Starting Docker service..."
+              systemctl start docker
+            fi
+
+            # Pull latest code changes
+            echo "📥 Pulling latest changes..."
+            git pull origin ${{ github.ref_name || 'main' }}
+
+            # Pull latest Docker images
+            echo "🐳 Pulling latest Docker images..."
+            docker-compose pull
+
+            # Start/restart containers
+            echo "🔄 Starting containers..."
+            docker-compose up -d
+
+            # Wait for containers to be ready
+            echo "⏳ Waiting for containers to be ready..."
+            sleep 15
+
+            # Check container status
+            if docker-compose ps | grep -q "Exit"; then
+              echo "::error::Some containers failed to start"
+              docker-compose ps
+              exit 1
+            fi
+
+            echo "✅ Docker deployment completed"
           fi
 
-          # Activate venv
-          source .venv/bin/activate
+          # nginx management (if enabled)
+          if [ "${{ steps.deploy-params.outputs.nginx }}" != "--no-nginx" ]; then
+            echo "🌐 Managing nginx..."
 
-          # --- Ensure pip and uv are installed ---
-          python -m ensurepip --upgrade
-          pip install --upgrade pip
-          pip install uv
+            # Check nginx status
+            if command -v nginx &> /dev/null; then
+              if ! systemctl is-active --quiet nginx; then
+                echo "🔄 Starting nginx..."
+                systemctl start nginx
+              fi
 
-          # --- Generate uv.lock dynamically ---
-          uv pip compile -o uv.lock requirements.txt requirements-torch.txt
+              # Test nginx configuration
+              if nginx -t 2>/dev/null; then
+                echo "✅ nginx configuration is valid"
+                systemctl reload nginx
+              else
+                echo "::warning::nginx configuration has issues"
+              fi
+            else
+              echo "::notice::nginx not installed - skipping nginx management"
+            fi
+          fi
 
-          # --- Sync dependencies ---
-          uv pip sync uv.lock
-
-          # --- Verify installations ---
-          python -c "import fastapi; print('FastAPI OK')"
-          python -c "import pymupdf; print('PyMuPDF OK')"
-          python -c "import pymupdf4llm; print('pymupdf4llm OK')"
-
-          # Restart the FastAPI service
-          sudo systemctl restart mivaa-pdf-extractor
-
-          # Check service status
-          sudo systemctl status mivaa-pdf-extractor --no-pager
+          echo "🎉 Deployment completed successfully"
           EOF
+
+      # 6. Verify deployment
+      - name: Verify deployment
+        if: ${{ steps.deploy-params.outputs.mode != 'check-only' }}
+        run: |
+          SERVER_HOST="${{ steps.deploy-params.outputs.server }}"
+
+          echo "🔍 Verifying deployment..."
+
+          # Wait a moment for services to stabilize
+          sleep 10
+
+          # Test application health with retries
+          echo "🏥 Testing application health..."
+          for i in {1..6}; do
+            if curl -f -s http://$SERVER_HOST:8000/health > /dev/null; then
+              echo "✅ Application health check passed (attempt $i)"
+              echo "::notice::Application is healthy and responding"
+              break
+            elif [ $i -eq 6 ]; then
+              echo "::error::Application health check failed after 6 attempts"
+
+              # Get container status for debugging
+              ssh -o StrictHostKeyChecking=no root@$SERVER_HOST << 'EOF'
+              cd /opt/mivaa-pdf-extractor
+              echo "Container status:"
+              docker-compose ps
+              echo "Recent logs:"
+              docker-compose logs --tail=20
+              EOF
+              exit 1
+            else
+              echo "⏳ Health check attempt $i failed, retrying in 10s..."
+              sleep 10
+            fi
+          done
+
+          # Test API documentation
+          if curl -f -s http://$SERVER_HOST:8000/docs > /dev/null; then
+            echo "✅ API documentation is accessible"
+            echo "::notice::API docs available at http://$SERVER_HOST:8000/docs"
+          else
+            echo "::warning::API documentation test failed"
+          fi
+
+          # Test nginx (if enabled)
+          if [ "${{ steps.deploy-params.outputs.nginx }}" != "--no-nginx" ]; then
+            if curl -f -s http://$SERVER_HOST > /dev/null; then
+              echo "✅ nginx is serving requests"
+              echo "::notice::nginx is healthy and serving requests"
+            else
+              echo "::warning::nginx is not serving requests properly"
+              # Don't fail deployment for nginx issues, just warn
+            fi
+          fi
+
+      # 7. Generate deployment report
+      - name: Generate deployment report
+        if: always()
+        run: |
+          SERVER_HOST="${{ steps.deploy-params.outputs.server }}"
+
+          echo "## 📊 Deployment Report" >> $GITHUB_STEP_SUMMARY
+          echo "**Server:** $SERVER_HOST" >> $GITHUB_STEP_SUMMARY
+          echo "**Mode:** ${{ steps.deploy-params.outputs.mode }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref_name || 'main' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Timestamp:** $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "✅ **Status:** Deployment completed successfully" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 🔗 Quick Links" >> $GITHUB_STEP_SUMMARY
+            echo "- [Application Health](http://$SERVER_HOST:8000/health)" >> $GITHUB_STEP_SUMMARY
+            echo "- [API Documentation](http://$SERVER_HOST:8000/docs)" >> $GITHUB_STEP_SUMMARY
+            echo "- [Application](http://$SERVER_HOST)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Status:** Deployment failed" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Please check the logs above for error details." >> $GITHUB_STEP_SUMMARY
+          fi
