@@ -1,3 +1,17 @@
+# LEGACY FILE - DEPRECATED
+# This file has been replaced by app/main.py
+#
+# The new comprehensive API is located in app/main.py with 37+ endpoints
+# This file is kept for reference only and should not be used
+#
+# To run the new API:
+# uvicorn app.main:app --host 0.0.0.0 --port 8000
+#
+# For Docker:
+# CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# COMMENTED OUT TO PREVENT ACCIDENTAL USE
+"""
 from fastapi import FastAPI, UploadFile
 from extractor import extract_pdf_to_markdown, extract_pdf_tables, extract_json_and_images
 from pathlib import Path
@@ -8,19 +22,22 @@ from fastapi.responses import StreamingResponse
 
 app = FastAPI()
 
+# LEGACY ENDPOINTS - COMMENTED OUT
+# These endpoints have been moved to app/api/pdf_routes.py with enhanced functionality
+"""
 @app.post("/extract/markdown")
 def extract_markdown(file: UploadFile, page_number:int=None):
-    
+
     return extract_pdf_to_markdown(save_upload_file_tmp((file)),page_number)
 
 @app.post("/extract/tables")
 def extract_table(file: UploadFile, page_number:int=None):
-    
+
     out_dir= create_output_dir()
     file_name, file_extension = os.path.splitext(file.filename)
     extract_pdf_tables(save_upload_file_tmp((file)),page_number,out_dir)
     zip_stream = create_zip_stream(out_dir)
-    
+
     return StreamingResponse(zip_stream, media_type="application/octet-stream", headers={"Content-Disposition": "attachment;  filename="+file_name+"_csv"+".zip"})
 
 @app.post("/extract/images")
@@ -271,11 +288,27 @@ def _generate_application_suggestions(functional_properties):
 
 def create_zip_stream(output_dir):
 
-    zip_stream = io.BytesIO()  
-    with zipfile.ZipFile(zip_stream, "w") as zf:  
-        for root, _, files in os.walk(output_dir):  
-            for file in files:  
-                file_path = os.path.join(root, file)  
-                zf.write(file_path, os.path.relpath(file_path, output_dir))  
-    zip_stream.seek(0) 
+    zip_stream = io.BytesIO()
+    with zipfile.ZipFile(zip_stream, "w") as zf:
+        for root, _, files in os.walk(output_dir):
+            for file in files:
+                file_path = os.path.join(root, file)
+                zf.write(file_path, os.path.relpath(file_path, output_dir))
+    zip_stream.seek(0)
     return zip_stream
+"""
+
+# END OF LEGACY FILE
+#
+# ⚠️  THIS FILE IS DEPRECATED ⚠️
+#
+# Use the new comprehensive API in app/main.py instead:
+# - 37+ endpoints with full functionality
+# - JWT authentication
+# - Performance monitoring
+# - RAG system integration
+# - Vector search capabilities
+# - Multi-modal processing
+#
+# To start the new API:
+# uvicorn app.main:app --host 0.0.0.0 --port 8000

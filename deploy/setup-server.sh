@@ -122,6 +122,132 @@ EOF
     log "   - Total Endpoints: $endpoints"
 }
 
+# Function to check if service is running with comprehensive API
+check_service_api() {
+    local service_url="${1:-http://localhost:8000}"
+    local max_attempts="${2:-10}"
+    local attempt=1
+
+    while [ $attempt -le $max_attempts ]; do
+        if curl -s "$service_url/health" > /dev/null 2>&1; then
+            # Check if it's the new comprehensive API
+            local endpoint_count=$(curl -s "$service_url/" 2>/dev/null | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    print(data.get('api_info', {}).get('total_endpoints', 0))
+except:
+    print(0)
+" 2>/dev/null || echo "0")
+
+            if [ "$endpoint_count" -gt 10 ]; then
+                log "✅ Service is running with comprehensive API ($endpoint_count endpoints)"
+                return 0
+            else
+                log "⚠️  Service is running but with legacy API (only $endpoint_count endpoints)"
+                return 1
+            fi
+        fi
+
+        log "⏳ Waiting for service to start (attempt $attempt/$max_attempts)..."
+        sleep 3
+        ((attempt++))
+    done
+
+    log "❌ Service failed to start after $max_attempts attempts"
+    return 1
+}
+
+# Function to restart service with comprehensive API
+restart_service_comprehensive() {
+    local app_dir="${1:-$APP_DIR}"
+
+    log "🔄 Restarting MIVAA service with comprehensive API..."
+
+    # Change to app directory
+    cd "$app_dir" || error "Failed to change to app directory: $app_dir"
+
+    # Stop any running services
+    log "🛑 Stopping existing services..."
+    docker-compose down 2>/dev/null || true
+
+    # Kill any stray uvicorn processes
+    pkill -f uvicorn 2>/dev/null || true
+
+    # Wait for cleanup
+    sleep 3
+
+    # Verify legacy main.py is disabled
+    if [ -f "main.py" ]; then
+        if grep -q "LEGACY FILE - DEPRECATED" main.py; then
+            log "✅ Legacy main.py is properly disabled"
+        else
+            log "⚠️  Disabling legacy main.py..."
+            # Backup original
+            cp main.py main.py.legacy.backup
+
+            # Create disabled version
+            cat > main.py << 'EOF'
+# LEGACY FILE - DEPRECATED
+# This file has been replaced by app/main.py
+#
+# The new comprehensive API is located in app/main.py with 37+ endpoints
+# This file is kept for reference only and should not be used
+#
+# To run the new API:
+# uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+"""
+# Original legacy code moved to main.py.legacy.backup
+# Use app/main.py for the comprehensive API instead
+"""
+
+# END OF LEGACY FILE
+#
+# ⚠️  THIS FILE IS DEPRECATED ⚠️
+#
+# Use the new comprehensive API in app/main.py instead:
+# - 37+ endpoints with full functionality
+# - JWT authentication
+# - Performance monitoring
+# - RAG system integration
+# - Vector search capabilities
+# - Multi-modal processing
+#
+# To start the new API:
+# uvicorn app.main:app --host 0.0.0.0 --port 8000
+EOF
+            log "✅ Legacy main.py disabled and backed up to main.py.legacy.backup"
+        fi
+    fi
+
+    # Start services with Docker Compose
+    log "🚀 Starting services with Docker Compose..."
+    if ! docker-compose up -d; then
+        error "Failed to start services with Docker Compose"
+    fi
+
+    # Wait for service to be ready
+    log "⏳ Waiting for service to start..."
+    sleep 10
+
+    # Verify the service is running with comprehensive API
+    if check_service_api "http://localhost:8000" 15; then
+        log "✅ Service restarted successfully with comprehensive API!"
+
+        # Get service info
+        local service_info=$(curl -s http://localhost:8000/ 2>/dev/null)
+        if [ $? -eq 0 ]; then
+            log "📋 Service Information:"
+            echo "$service_info" | python3 -m json.tool 2>/dev/null | head -20
+        fi
+
+        return 0
+    else
+        error "Service failed to start with comprehensive API. Check logs: docker-compose logs"
+    fi
+}
+
 info() {
     echo -e "${BLUE}[$(date +'%Y-%m-%d %H:%M:%S')] INFO: $1${NC}"
 }
@@ -732,10 +858,11 @@ tee -a ~/.bashrc > /dev/null <<EOF
 # MIVAA PDF Extractor aliases
 alias mivaa-logs='docker-compose -f $APP_DIR/docker-compose.yml logs -f'
 alias mivaa-status='docker-compose -f $APP_DIR/docker-compose.yml ps'
-alias mivaa-restart='docker-compose -f $APP_DIR/docker-compose.yml restart'
-alias mivaa-update='cd $APP_DIR && git pull && docker-compose pull && docker-compose up -d && sleep 15 && generate_openapi_schema'
+alias mivaa-restart='cd $APP_DIR && restart_service_comprehensive'
+alias mivaa-update='cd $APP_DIR && git pull && docker-compose pull && restart_service_comprehensive && generate_openapi_schema'
 alias mivaa-backup='sudo /usr/local/bin/backup-mivaa.sh'
 alias mivaa-openapi='cd $APP_DIR && generate_openapi_schema'
+alias mivaa-check-api='cd $APP_DIR && check_service_api'
 alias ssl-setup='sudo /usr/local/bin/setup-ssl.sh'
 alias ssl-check='sudo /usr/local/bin/check-ssl-renewal.sh'
 EOF
@@ -765,9 +892,10 @@ echo
 info "=== USEFUL COMMANDS ==="
 info "• View logs: mivaa-logs"
 info "• Check status: mivaa-status"
-info "• Restart app: mivaa-restart"
-info "• Update app: mivaa-update (includes OpenAPI generation)"
+info "• Restart app: mivaa-restart (ensures comprehensive API)"
+info "• Update app: mivaa-update (git pull + comprehensive restart + OpenAPI)"
 info "• Generate OpenAPI: mivaa-openapi"
+info "• Check API type: mivaa-check-api (verify comprehensive vs legacy)"
 info "• Setup SSL: ssl-setup yourdomain.com"
 info "• Check SSL: ssl-check"
 info "• Create backup: mivaa-backup"
