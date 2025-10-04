@@ -33,7 +33,7 @@ jobs:
           # Clone repo if it doesn't exist
           if [ ! -d "$APP_DIR/.git" ]; then
             rm -rf "$APP_DIR"
-            git clone https://x-access-token:${{ secrets.GH_PAT }}@github.com/nocodeapi/mivaa-pdf-extractor.git "$APP_DIR"
+            git clone https://x-access-token:${{ secrets.GH_PAT }}@github.com/creativeghq/mivaa-pdf-extractor.git "$APP_DIR"
           fi
 
           cd "$APP_DIR"
