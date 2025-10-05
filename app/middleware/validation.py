@@ -30,7 +30,6 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 from pydantic import BaseModel, ValidationError, validator
-from pydantic.error_wrappers import ErrorWrapper
 
 from app.schemas.common import BaseResponse, ErrorResponse
 from app.config import settings
