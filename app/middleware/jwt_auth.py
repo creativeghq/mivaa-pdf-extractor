@@ -26,6 +26,36 @@ from starlette.responses import JSONResponse
 from ..config import get_settings
 from ..database import get_supabase_client
 
+# Import auth schemas for type consistency
+try:
+    from ..schemas.auth import WorkspaceContext, User, UserRole, Permission
+except ImportError:
+    # Fallback if schemas not available yet - define minimal classes
+    from enum import Enum
+    from pydantic import BaseModel
+    
+    class UserRole(str, Enum):
+        MEMBER = "member"
+        ADMIN = "admin"
+        OWNER = "owner"
+    
+    class Permission(str, Enum):
+        ADMIN_ALL = "admin:all"
+    
+    class WorkspaceContext(BaseModel):
+        workspace_id: str
+        user_id: str
+        role: UserRole
+        permissions: List[str] = []
+        
+        def has_permission(self, permission: str) -> bool:
+            return permission in self.permissions or "admin:all" in self.permissions
+    
+    class User(BaseModel):
+        id: str
+        email: str
+        name: Optional[str] = None
+
 
 logger = logging.getLogger(__name__)
 security = HTTPBearer()
@@ -99,15 +129,15 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             
             # Add authentication context to request state
             request.state.auth_user_id = claims.get("sub")
-            request.state.workspace_id = workspace_context["workspace_id"]
-            request.state.workspace_role = workspace_context["role"]
-            request.state.permissions = workspace_context["permissions"]
+            request.state.workspace_id = workspace_context.workspace_id
+            request.state.workspace_role = workspace_context.role
+            request.state.permissions = workspace_context.permissions
             request.state.jwt_claims = claims
             
             # Log authentication success
             logger.info(
                 f"Authentication successful for user {claims.get('sub')} "
-                f"in workspace {workspace_context['workspace_id']}"
+                f"in workspace {workspace_context.workspace_id}"
             )
             
             # Continue to next middleware/handler
@@ -211,7 +241,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         # For now, return False (no blacklist check)
         return False
     
-    async def _extract_workspace_context(self, claims: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def _extract_workspace_context(self, claims: Dict[str, Any]) -> Optional[WorkspaceContext]:
         """
         Extract workspace context from JWT claims.
         
@@ -219,7 +249,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             claims: JWT token claims
             
         Returns:
-            Workspace context dictionary or None if invalid
+            WorkspaceContext object or None if invalid
         """
         try:
             # Extract workspace information from claims
@@ -229,7 +259,13 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                 return None
             
             # Extract user role and permissions
-            role = claims.get("role", "member")
+            role_str = claims.get("role", "member")
+            try:
+                role = UserRole(role_str)
+            except ValueError:
+                logger.warning(f"Invalid role in token claims: {role_str}")
+                role = UserRole.MEMBER
+            
             permissions = claims.get("permissions", [])
             
             # Validate workspace access via Supabase
@@ -238,12 +274,12 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                 logger.warning(f"User {user_id} does not have access to workspace {workspace_id}")
                 return None
             
-            return {
-                "workspace_id": workspace_id,
-                "role": role,
-                "permissions": permissions,
-                "user_id": user_id
-            }
+            return WorkspaceContext(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                role=role,
+                permissions=permissions
+            )
             
         except Exception as e:
             logger.error(f"Workspace context extraction error: {str(e)}")
@@ -385,3 +421,32 @@ def get_current_user(request: Request) -> Dict[str, Any]:
         "permissions": getattr(request.state, "permissions", []),
         "jwt_claims": getattr(request.state, "jwt_claims", {})
     }
+
+
+def get_current_workspace_context(request: Request) -> Optional[WorkspaceContext]:
+    """
+    Extract current workspace context from authenticated request.
+    
+    Args:
+        request: Authenticated HTTP request
+        
+    Returns:
+        WorkspaceContext object if available, None otherwise
+    """
+    workspace_id = getattr(request.state, "workspace_id", None)
+    user_id = getattr(request.state, "auth_user_id", None)
+    role = getattr(request.state, "workspace_role", None)
+    permissions = getattr(request.state, "permissions", [])
+    
+    if not (workspace_id and user_id and role):
+        return None
+    
+    try:
+        return WorkspaceContext(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            role=UserRole(role) if isinstance(role, str) else role,
+            permissions=permissions
+        )
+    except Exception:
+        return None
