@@ -409,7 +409,26 @@ jobs:
 
           # First ensure PyMuPDF is working
           echo 'Testing PyMuPDF before installing pymupdf4llm...'
-          if python -c 'import fitz; print(\"PyMuPDF test:\", fitz.__version__)' 2>/dev/null; then
+          echo 'Debugging PyMuPDF import issue...'
+
+          # Try to fix library path issues
+          export LD_LIBRARY_PATH=\"/usr/lib/x86_64-linux-gnu:/usr/local/lib:/lib/x86_64-linux-gnu:\$LD_LIBRARY_PATH\"
+          ldconfig 2>/dev/null || echo 'ldconfig failed'
+
+          # Check what libraries are actually available
+          echo 'Available MuPDF libraries:'
+          find /usr -name '*mupdf*' 2>/dev/null | head -10 || echo 'No MuPDF libraries found'
+
+          # Try to create symlinks for missing library versions
+          if [ -f /usr/lib/x86_64-linux-gnu/libmupdf.so ]; then
+            echo 'Creating symlinks for libmupdf versions...'
+            ln -sf /usr/lib/x86_64-linux-gnu/libmupdf.so /usr/lib/x86_64-linux-gnu/libmupdf.so.24 2>/dev/null || echo 'Symlink 24 failed'
+            ln -sf /usr/lib/x86_64-linux-gnu/libmupdf.so /usr/lib/x86_64-linux-gnu/libmupdf.so.24.1 2>/dev/null || echo 'Symlink 24.1 failed'
+          fi
+
+          # Test PyMuPDF import with detailed error output
+          echo 'Testing PyMuPDF import:'
+          if python -c 'import fitz; print(\"PyMuPDF test:\", fitz.__version__)' 2>&1; then
             echo '✅ PyMuPDF is working, proceeding with pymupdf4llm...'
 
             if pip install --no-deps pymupdf4llm==0.0.12 2>&1 | tee -a /tmp/pip-install.log; then
@@ -423,8 +442,37 @@ jobs:
               pip install pymupdf4llm==0.0.6 2>&1 | tee -a /tmp/pip-install.log || echo 'All pymupdf4llm versions failed'
             fi
           else
-            echo '❌ PyMuPDF not working - skipping pymupdf4llm installation'
-            echo 'PyMuPDF must be fixed first before pymupdf4llm can work'
+            echo '❌ PyMuPDF not working - trying alternative approaches...'
+
+            # Try reinstalling PyMuPDF with different options
+            echo 'Attempting PyMuPDF reinstall with system libraries...'
+            pip uninstall -y PyMuPDF 2>/dev/null || echo 'Uninstall failed'
+
+            # Try installing with system MuPDF
+            echo 'Installing system MuPDF development packages...'
+            apt-get update -qq 2>/dev/null || echo 'apt update failed'
+            apt-get install -y -qq libmupdf-dev mupdf-tools 2>/dev/null || echo 'System MuPDF install failed'
+
+            # Try building PyMuPDF from source with system libraries
+            echo 'Attempting PyMuPDF build from source...'
+            pip install --no-binary PyMuPDF PyMuPDF==1.23.26 2>&1 | tee -a /tmp/pip-install.log || echo 'Source build failed'
+
+            # Test again
+            if python -c 'import fitz; print(\"PyMuPDF test after rebuild:\", fitz.__version__)' 2>&1; then
+              echo '✅ PyMuPDF working after rebuild - installing pymupdf4llm...'
+              pip install pymupdf4llm==0.0.12 2>&1 | tee -a /tmp/pip-install.log || echo 'pymupdf4llm still failed'
+            else
+              echo '❌ PyMuPDF still not working - trying alternative PDF libraries...'
+              echo 'Installing alternative PDF processing libraries as fallback...'
+
+              # Install alternative PDF libraries
+              pip install pdfplumber==0.10.3 2>/dev/null || echo 'pdfplumber failed'
+              pip install pypdf2==3.0.1 2>/dev/null || echo 'pypdf2 failed'
+              pip install pdfminer.six==20231228 2>/dev/null || echo 'pdfminer failed'
+
+              echo 'Alternative PDF libraries installed - application may work with reduced functionality'
+              echo 'PyMuPDF functionality will be disabled until library issues are resolved'
+            fi
           fi
           pip install --no-deps supabase==2.3.0
           pip install --no-deps postgrest==0.13.0
@@ -479,15 +527,24 @@ jobs:
           python -c 'import cv2; print(\"OpenCV: OK\")'
           # Test PyMuPDF with detailed error handling
           echo 'Testing PyMuPDF installation...'
-          python -c 'import sys; import fitz; print(\"PyMuPDF (fitz): OK - Version\", fitz.version[0]); print(\"PyMuPDF library path:\", fitz.__file__)' 2>/dev/null || {
-            echo 'PyMuPDF (fitz): FAILED'
-            python -c 'import fitz' 2>&1 | head -3 || echo 'Import completely failed'
-          }
+          if python -c 'import sys; import fitz; print(\"PyMuPDF (fitz): OK - Version\", fitz.version[0]); print(\"PyMuPDF library path:\", fitz.__file__)' 2>/dev/null; then
+            echo '✅ PyMuPDF working correctly'
+          else
+            echo '❌ PyMuPDF (fitz): FAILED'
+            echo 'Detailed error:'
+            python -c 'import fitz' 2>&1 | head -5 || echo 'Import completely failed'
+            echo 'Checking alternative PDF libraries...'
+            python -c 'import pdfplumber; print(\"pdfplumber: OK\")' 2>/dev/null || echo 'pdfplumber: Not available'
+            python -c 'import pypdf; print(\"pypdf: OK\")' 2>/dev/null || echo 'pypdf: Not available'
+          fi
 
-          python -c 'import pymupdf4llm; print(\"PyMuPDF4LLM: OK\"); print(\"PyMuPDF4LLM path:\", pymupdf4llm.__file__)' 2>/dev/null || {
-            echo 'PyMuPDF4LLM: FAILED'
-            python -c 'import pymupdf4llm' 2>&1 | head -3 || echo 'Import completely failed'
-          }
+          if python -c 'import pymupdf4llm; print(\"PyMuPDF4LLM: OK\"); print(\"PyMuPDF4LLM path:\", pymupdf4llm.__file__)' 2>/dev/null; then
+            echo '✅ PyMuPDF4LLM working correctly'
+          else
+            echo '❌ PyMuPDF4LLM: FAILED'
+            echo 'Detailed error:'
+            python -c 'import pymupdf4llm' 2>&1 | head -5 || echo 'Import completely failed'
+          fi
           python -c 'import llama_index; print(\"LlamaIndex: OK\")' || echo 'LlamaIndex: FAILED - Check installation'
           python -c 'import supabase; print(\"Supabase: OK\")'
           python -c 'import numpy; print(\"NumPy: OK\")'
