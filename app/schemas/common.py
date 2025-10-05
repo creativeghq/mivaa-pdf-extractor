@@ -60,6 +60,26 @@ class ErrorResponse(BaseResponse):
         }
 
 
+class SuccessResponse(BaseResponse):
+    """Success response model with optional data payload."""
+
+    success: bool = Field(True, description="Always true for success responses")
+    data: Optional[Dict[str, Any]] = Field(None, description="Response data payload")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Operation completed successfully",
+                "data": {
+                    "result": "example_value",
+                    "count": 42
+                },
+                "timestamp": "2024-07-26T18:00:00Z"
+            }
+        }
+
+
 class PaginationParams(BaseModel):
     """Pagination parameters for list endpoints."""
     
