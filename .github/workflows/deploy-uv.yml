@@ -106,18 +106,15 @@ jobs:
           # Upgrade pip
           python -m pip install --upgrade pip
 
-          # Install dependencies
-          echo "📦 Installing dependencies..."
-          if [ -f "requirements.txt" ]; then
-              echo "Installing from requirements.txt..."
-              python -m pip install -r requirements.txt
-          elif [ -f "pyproject.toml" ]; then
-              echo "Installing from pyproject.toml..."
-              python -m pip install -e .
-          else
-              echo "No dependency file found!"
+          # Install dependencies from requirements.txt
+          echo "📦 Installing dependencies from requirements.txt..."
+          if [ ! -f "requirements.txt" ]; then
+              echo "❌ requirements.txt not found!"
               exit 1
           fi
+
+          python -m pip install -r requirements.txt
+          echo "✅ Dependencies installed successfully"
           
           echo "🔧 Setting up systemd service..."
           # Create systemd service file with all environment variables
