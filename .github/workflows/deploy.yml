@@ -238,14 +238,40 @@ jobs:
           uv pip sync uv.lock
 
           # --- Ensure critical packages are installed ---
-          echo \"🔧 Ensuring critical packages are installed...\"
+          echo 'Installing critical packages to ensure none are missing...'
           pip install opencv-python-headless>=4.8.0 --upgrade
           pip install fastapi[standard]>=0.104.1 --upgrade
           pip install uvicorn[standard]>=0.24.0 --upgrade
+          pip install pymupdf4llm>=0.0.12 --upgrade
+          pip install supabase>=2.3.0 --upgrade
+          pip install numpy>=1.24.0 --upgrade
+          pip install pandas>=2.0.0 --upgrade
+          pip install pillow>=10.0.0 --upgrade
+          pip install pydantic>=2.0.0 --upgrade
+          pip install requests>=2.31.0 --upgrade
+          pip install easyocr>=1.7.0 --upgrade
+          pip install pytesseract>=0.3.10 --upgrade
+          pip install python-multipart>=0.0.6 --upgrade
+          pip install llama-index>=0.9.0 --upgrade
+          pip install openai>=1.0.0 --upgrade
+          pip install anthropic>=0.8.0 --upgrade
+          pip install transformers>=4.35.0 --upgrade
+          pip install torch>=2.0.0 --upgrade
+          pip install scikit-learn>=1.3.0 --upgrade
+          pip install sentence-transformers>=2.2.0 --upgrade
+          pip install python-dotenv>=1.0.0 --upgrade
+          pip install python-dateutil>=2.8.0 --upgrade
+          pip install email-validator>=2.0.0 --upgrade
+          pip install cryptography>=41.0.0 --upgrade
+          pip install PyJWT>=2.8.0 --upgrade
+          pip install bcrypt>=4.0.0 --upgrade
+          pip install aiofiles>=23.0.0 --upgrade
+          pip install httpx>=0.25.0 --upgrade
+          echo 'Critical packages installation completed'
 
           # --- Comprehensive Package Verification ---
-          echo \"📦 Verifying all critical packages from requirements.txt...\"
-          echo \"================================================================\"
+          echo 'Verifying all critical packages from requirements.txt...'
+          echo '================================================================'
 
           # Create verification script
           cat > verify_packages.py << 'VERIFY_EOF'
@@ -285,16 +311,20 @@ with open('requirements.txt', 'r') as f:
 
             packages_to_check[package_name] = import_name
 
-# Critical packages that must be available
+# Critical packages that must be available - DEPLOYMENT FAILS if any missing
 critical_packages = {
     'fastapi', 'uvicorn', 'pydantic', 'supabase', 'pymupdf4llm',
-    'numpy', 'pandas', 'opencv-python-headless', 'pillow', 'requests'
+    'numpy', 'pandas', 'opencv-python-headless', 'pillow', 'requests',
+    'easyocr', 'pytesseract', 'python-multipart', 'llama-index',
+    'openai', 'anthropic', 'transformers', 'torch', 'scikit-learn',
+    'sentence-transformers', 'python-dotenv', 'email-validator',
+    'cryptography', 'aiofiles', 'httpx'
 }
 
-print(\"\\n📦 PACKAGE VERIFICATION RESULTS\")
-print(\"=\" * 50)
-print(f\"{'Package Name':<25} {'Import Name':<15} {'Status':<10} {'Version':<15}\")
-print(\"-\" * 70)
+print('PACKAGE VERIFICATION RESULTS')
+print('=' * 50)
+print(f'{"Package Name":<25} {"Import Name":<15} {"Status":<10} {"Version":<15}')
+print('-' * 70)
 
 failed_packages = []
 critical_failed = []
@@ -303,38 +333,38 @@ for package_name, import_name in sorted(packages_to_check.items()):
     try:
         module = importlib.import_module(import_name)
         version = getattr(module, '__version__', 'unknown')
-        status = '✅ OK'
-        print(f\"{package_name:<25} {import_name:<15} {status:<10} {version:<15}\")
+        status = 'OK'
+        print(f'{package_name:<25} {import_name:<15} {status:<10} {version:<15}')
     except ImportError:
-        status = '❌ MISSING'
+        status = 'MISSING'
         version = 'N/A'
-        print(f\"{package_name:<25} {import_name:<15} {status:<10} {version:<15}\")
+        print(f'{package_name:<25} {import_name:<15} {status:<10} {version:<15}')
         failed_packages.append(package_name)
         if package_name in critical_packages:
             critical_failed.append(package_name)
 
-print(\"-\" * 70)
-print(f\"Total packages checked: {len(packages_to_check)}\")
-print(f\"Successfully imported: {len(packages_to_check) - len(failed_packages)}\")
-print(f\"Failed to import: {len(failed_packages)}\")
-print(f\"Critical packages failed: {len(critical_failed)}\")
+print('-' * 70)
+print(f'Total packages checked: {len(packages_to_check)}')
+print(f'Successfully imported: {len(packages_to_check) - len(failed_packages)}')
+print(f'Failed to import: {len(failed_packages)}')
+print(f'Critical packages failed: {len(critical_failed)}')
 
 if critical_failed:
-    print(f\"\\n🚨 CRITICAL PACKAGES MISSING: {', '.join(critical_failed)}\")
+    print(f'CRITICAL PACKAGES MISSING: {critical_failed}')
     sys.exit(1)
 elif failed_packages:
-    print(f\"\\n⚠️  Optional packages missing: {', '.join(failed_packages)}\")
-    print(\"✅ All critical packages are available - deployment can proceed\")
+    print(f'Optional packages missing: {failed_packages}')
+    print('All critical packages are available - deployment can proceed')
 else:
-    print(\"\\n🎉 ALL PACKAGES SUCCESSFULLY VERIFIED!\")
+    print('ALL PACKAGES SUCCESSFULLY VERIFIED!')
 
-print(\"\\n🔍 OpenCV Specific Check:\")
+print('OpenCV Specific Check:')
 try:
     import cv2
-    print(f\"✅ OpenCV version: {cv2.__version__}\")
-    print(\"✅ OpenCV headless successfully imported\")
+    print(f'OpenCV version: {cv2.__version__}')
+    print('OpenCV headless successfully imported')
 except ImportError as e:
-    print(f\"❌ OpenCV import failed: {e}\")
+    print(f'OpenCV import failed: {e}')
     sys.exit(1)
 VERIFY_EOF
 
@@ -348,36 +378,36 @@ import re
 
 # All packages to check with categories and descriptions
 all_packages = {
-    'fastapi': ('🌐 Web Framework', 'FastAPI web framework'),
-    'uvicorn': ('🌐 Server', 'ASGI server'),
-    'opencv-python-headless': ('🖼️ Computer Vision', 'Image processing (headless)'),
-    'pymupdf4llm': ('📄 PDF Processing', 'PDF processing for LLM'),
-    'supabase': ('🗄️ Database', 'Database client'),
-    'numpy': ('🔢 Computing', 'Numerical computing'),
-    'pandas': ('📊 Data', 'Data manipulation'),
-    'pydantic': ('✅ Validation', 'Data validation'),
-    'requests': ('🌐 HTTP', 'HTTP client'),
-    'pillow': ('🖼️ Images', 'Image processing'),
-    'llama-index': ('🤖 AI/ML', 'LLM framework'),
-    'openai': ('🤖 AI/ML', 'OpenAI API client'),
-    'anthropic': ('🤖 AI/ML', 'Anthropic API client'),
-    'transformers': ('🤖 AI/ML', 'HuggingFace transformers'),
-    'torch': ('🤖 AI/ML', 'PyTorch deep learning'),
-    'scikit-learn': ('🤖 AI/ML', 'Machine learning'),
-    'sentence-transformers': ('🤖 AI/ML', 'Sentence embeddings'),
-    'easyocr': ('🔍 OCR', 'Optical character recognition'),
-    'pytesseract': ('🔍 OCR', 'Tesseract OCR wrapper'),
-    'python-multipart': ('📤 Upload', 'File upload support'),
-    'python-dotenv': ('⚙️ Config', 'Environment variables'),
-    'python-dateutil': ('📅 Date/Time', 'Date utilities'),
-    'email-validator': ('✅ Validation', 'Email validation'),
-    'cryptography': ('🔐 Security', 'Cryptographic functions'),
-    'jwt': ('🔐 Security', 'JSON Web Tokens'),
-    'bcrypt': ('🔐 Security', 'Password hashing'),
-    'aiofiles': ('📁 Files', 'Async file operations'),
-    'httpx': ('🌐 HTTP', 'Async HTTP client'),
-    'websockets': ('🔌 WebSocket', 'WebSocket support'),
-    'redis': ('💾 Cache', 'Redis client')
+    'fastapi': ('Web Framework', 'FastAPI web framework'),
+    'uvicorn': ('Server', 'ASGI server'),
+    'opencv-python-headless': ('Computer Vision', 'Image processing (headless)'),
+    'pymupdf4llm': ('PDF Processing', 'PDF processing for LLM'),
+    'supabase': ('Database', 'Database client'),
+    'numpy': ('Computing', 'Numerical computing'),
+    'pandas': ('Data', 'Data manipulation'),
+    'pydantic': ('Validation', 'Data validation'),
+    'requests': ('HTTP', 'HTTP client'),
+    'pillow': ('Images', 'Image processing'),
+    'llama-index': ('AI/ML', 'LLM framework'),
+    'openai': ('AI/ML', 'OpenAI API client'),
+    'anthropic': ('AI/ML', 'Anthropic API client'),
+    'transformers': ('AI/ML', 'HuggingFace transformers'),
+    'torch': ('AI/ML', 'PyTorch deep learning'),
+    'scikit-learn': ('AI/ML', 'Machine learning'),
+    'sentence-transformers': ('AI/ML', 'Sentence embeddings'),
+    'easyocr': ('OCR', 'Optical character recognition'),
+    'pytesseract': ('OCR', 'Tesseract OCR wrapper'),
+    'python-multipart': ('Upload', 'File upload support'),
+    'python-dotenv': ('Config', 'Environment variables'),
+    'python-dateutil': ('Date/Time', 'Date utilities'),
+    'email-validator': ('Validation', 'Email validation'),
+    'cryptography': ('Security', 'Cryptographic functions'),
+    'jwt': ('Security', 'JSON Web Tokens'),
+    'bcrypt': ('Security', 'Password hashing'),
+    'aiofiles': ('Files', 'Async file operations'),
+    'httpx': ('HTTP', 'Async HTTP client'),
+    'websockets': ('WebSocket', 'WebSocket support'),
+    'redis': ('Cache', 'Redis client')
 }
 
 # Import name mapping
@@ -393,7 +423,7 @@ import_mapping = {
     'llama-index': 'llama_index'
 }
 
-print('## 📦 Final Package Installation Status')
+print('## Final Package Installation Status')
 print('')
 print('| Package | Category | Description | Status | Version |')
 print('|---------|----------|-------------|--------|---------|')
@@ -406,23 +436,23 @@ for package_name, (category, description) in sorted(all_packages.items()):
     try:
         module = importlib.import_module(import_name)
         version = getattr(module, '__version__', 'unknown')
-        status = '🟢 Installed'
+        status = 'Installed'
         installed_count += 1
         print(f'| **{package_name}** | {category} | {description} | {status} | `{version}` |')
     except ImportError:
-        status = '🔴 Missing'
+        status = 'Missing'
         print(f'| **{package_name}** | {category} | {description} | {status} | N/A |')
 
 print('')
-print(f'> 📊 **Installation Summary**: {installed_count}/{total_count} packages successfully installed ({installed_count/total_count*100:.1f}%)')
+print(f'> **Installation Summary**: {installed_count}/{total_count} packages successfully installed ({installed_count/total_count*100:.1f}%)')
 print('')
 
 # Special OpenCV check
 try:
     import cv2
-    print(f'> ✅ **OpenCV Status**: Successfully installed version `{cv2.__version__}` (headless)')
+    print(f'> **OpenCV Status**: Successfully installed version `{cv2.__version__}` (headless)')
 except ImportError:
-    print(f'> ❌ **OpenCV Status**: Failed to install - this will cause service startup issues')
+    print(f'> **OpenCV Status**: Failed to install - this will cause service startup issues')
 UPDATE_EOF
 
           python update_package_status.py > package_status_update.md

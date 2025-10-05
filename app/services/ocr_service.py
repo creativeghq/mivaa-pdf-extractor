@@ -81,8 +81,8 @@ class ImagePreprocessor:
             # Convert back to numpy array
             enhanced = np.array(pil_image)
             
-            # Convert back to BGR if original was BGR and cv2 is available
-            if len(image.shape) == 3 and CV2_AVAILABLE:
+            # Convert back to BGR if original was BGR
+            if len(image.shape) == 3:
                 enhanced = cv2.cvtColor(enhanced, cv2.COLOR_RGB2BGR)
                 
             return enhanced
@@ -103,15 +103,6 @@ class ImagePreprocessor:
             Preprocessed image as numpy array
         """
         try:
-            if not CV2_AVAILABLE:
-                # Basic preprocessing without OpenCV
-                if len(image.shape) == 3:
-                    # Convert to grayscale using numpy
-                    gray = np.dot(image[...,:3], [0.2989, 0.5870, 0.1140])
-                    return gray.astype(np.uint8)
-                return image
-
-            # Full preprocessing with OpenCV
             # Convert to grayscale if needed
             if len(image.shape) == 3:
                 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -439,14 +430,9 @@ class OCRService:
                 if not image_path.exists():
                     raise ValueError(f"Image file not found: {image_path}")
 
-                if CV2_AVAILABLE:
-                    image = cv2.imread(str(image_path))
-                    if image is None:
-                        raise ValueError(f"Could not load image: {image_path}")
-                else:
-                    # Fallback to PIL
-                    pil_image = Image.open(image_path)
-                    image = np.array(pil_image)
+                image = cv2.imread(str(image_path))
+                if image is None:
+                    raise ValueError(f"Could not load image: {image_path}")
 
             elif isinstance(image_input, np.ndarray):
                 # Already a numpy array
@@ -455,7 +441,7 @@ class OCRService:
             elif isinstance(image_input, Image.Image):
                 # Convert PIL Image to numpy array
                 image = np.array(image_input)
-                if len(image.shape) == 3 and CV2_AVAILABLE:
+                if len(image.shape) == 3:
                     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
                     
             else:
