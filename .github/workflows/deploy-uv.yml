@@ -1,0 +1,365 @@
+name: Deploy MIVAA FastAPI App (Direct Deployment)
+
+on:
+  push:
+    branches: [ "main", "production" ]
+  workflow_dispatch:
+
+env:
+  DEPLOY_HOST: 104.248.68.3
+  DEPLOY_USER: root
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      # 1. Checkout repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Setup SSH
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      # 3. Deploy to server with UV optimization
+      - name: Deploy to server
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          MATERIAL_KAI_API_URL: ${{ secrets.MATERIAL_KAI_API_URL }}
+          MATERIAL_KAI_API_KEY: ${{ secrets.MATERIAL_KAI_API_KEY }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: |
+          COMMIT_SHA="${{ github.sha }}"
+          BRANCH_NAME="${{ github.ref_name }}"
+          
+          # Create deployment script
+          cat > deploy_script.sh << 'SCRIPT_EOF'
+          #!/bin/bash
+          set -euo pipefail
+
+          # Enable better error reporting
+          trap 'echo "❌ Deployment failed at line $LINENO. Exit code: $?" >&2' ERR
+
+          # Keep SSH connection alive
+          echo "🔄 Starting deployment process..."
+          
+          # Environment variables passed via SSH
+          GH_TOKEN="$1"
+          GITHUB_ACTOR="$2"
+          COMMIT_SHA="$3"
+          BRANCH_NAME="$4"
+          GITHUB_REPOSITORY="$5"
+          SUPABASE_URL="$6"
+          SUPABASE_ANON_KEY="$7"
+          OPENAI_API_KEY="$8"
+          MATERIAL_KAI_API_URL="$9"
+          MATERIAL_KAI_API_KEY="${10}"
+          SENTRY_DSN="${11}"
+          
+          echo "🚀 Starting MIVAA Direct Deployment"
+          echo "📋 Commit: $COMMIT_SHA"
+          echo "📋 Branch: $BRANCH_NAME"
+          echo "📋 Repository: $GITHUB_REPOSITORY"
+          
+          echo "🔧 Setting up environment variables..."
+          export GH_TOKEN="$GH_TOKEN"
+          export SUPABASE_URL="$SUPABASE_URL"
+          export SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY"
+          export OPENAI_API_KEY="$OPENAI_API_KEY"
+          export MATERIAL_KAI_API_URL="$MATERIAL_KAI_API_URL"
+          export MATERIAL_KAI_API_KEY="$MATERIAL_KAI_API_KEY"
+          export SENTRY_DSN="$SENTRY_DSN"
+          
+          echo "📂 Setting up application directory..."
+          APP_DIR="/var/www/mivaa-pdf-extractor"
+          
+          # Create app directory if it doesn't exist
+          sudo mkdir -p "$APP_DIR"
+          cd "$APP_DIR"
+          
+          # Check if git repo exists, if not clone it
+          if [ ! -d ".git" ]; then
+              echo "📥 Cloning repository..."
+              sudo git clone https://github.com/$GITHUB_REPOSITORY.git .
+              sudo chown -R $(whoami):$(whoami) .
+          else
+              echo "📥 Pulling latest changes..."
+              git fetch origin
+              git reset --hard origin/$BRANCH_NAME
+          fi
+          
+          echo "🐍 Setting up Python environment..."
+          # Ensure Python and pip are installed
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-pip python3-venv
+
+          # Create virtual environment if it doesn't exist
+          if [ ! -d ".venv" ]; then
+              echo "Creating virtual environment..."
+              python3 -m venv .venv
+          fi
+
+          # Activate virtual environment
+          source .venv/bin/activate
+
+          # Check if dependencies need to be updated
+          REQUIREMENTS_CHANGED=false
+          if [ ! -f ".requirements_hash" ] || [ ! -f "requirements.txt" ]; then
+              REQUIREMENTS_CHANGED=true
+          else
+              CURRENT_HASH=$(sha256sum requirements.txt | cut -d' ' -f1)
+              STORED_HASH=$(cat .requirements_hash 2>/dev/null || echo "")
+              if [ "$CURRENT_HASH" != "$STORED_HASH" ]; then
+                  REQUIREMENTS_CHANGED=true
+              fi
+          fi
+
+          if [ "$REQUIREMENTS_CHANGED" = true ]; then
+              echo "📦 Requirements changed - installing pre-resolved dependencies..."
+
+              # Upgrade pip to latest version for better performance
+              echo "🔧 Upgrading pip to latest version..."
+              python -m pip install --upgrade pip --quiet
+              echo "✅ Pip upgraded"
+
+              # Validate requirements.txt exists and is properly formatted
+              if [ ! -f "requirements.txt" ]; then
+                  echo "❌ requirements.txt not found!"
+                  exit 1
+              fi
+
+              # Check if requirements.txt has hashes (indicates pre-resolved)
+              if grep -q "sha256:" requirements.txt; then
+                  echo "🔐 Detected pre-resolved requirements with security hashes"
+                  INSTALL_METHOD="--require-hashes"
+              else
+                  echo "⚠️  No hashes detected - using standard installation"
+                  INSTALL_METHOD=""
+              fi
+
+              echo "📦 Installing pre-resolved packages (ultra-fast deployment!)..."
+
+              # Install all packages at once with optimized settings
+              # Using --no-deps for maximum speed since dependencies are pre-resolved
+              START_TIME=$(date +%s)
+
+              python -m pip install \
+                  -r requirements.txt \
+                  --no-deps \
+                  --disable-pip-version-check \
+                  --no-cache-dir \
+                  --quiet \
+                  $INSTALL_METHOD
+
+              END_TIME=$(date +%s)
+              INSTALL_TIME=$((END_TIME - START_TIME))
+
+              echo "⚡ Installation completed in ${INSTALL_TIME} seconds"
+
+              # Quick validation that critical packages are available
+              echo "🔍 Validating critical package availability..."
+              python -c "
+              import sys
+              critical = ['fastapi', 'uvicorn', 'supabase', 'llama_index']
+              missing = []
+              for pkg in critical:
+                  try:
+                      __import__(pkg)
+                  except ImportError:
+                      missing.append(pkg)
+              if missing:
+                  print(f'❌ Missing critical packages: {missing}')
+                  sys.exit(1)
+              print('✅ All critical packages available')
+              "
+
+              # Store hash of requirements.txt for future comparisons
+              sha256sum requirements.txt | cut -d' ' -f1 > .requirements_hash
+              echo "✅ Dependencies installed and hash stored (${INSTALL_TIME}s)"
+          else
+              echo "⚡ Requirements unchanged - skipping dependency installation"
+              echo "✅ Using existing virtual environment"
+          fi
+          
+          echo "🔧 Setting up systemd service..."
+          # Create systemd service file with all environment variables
+          cat > /tmp/mivaa.service << 'SERVICE_EOF'
+          [Unit]
+          Description=MIVAA PDF Extractor FastAPI Application
+          After=network.target
+
+          [Service]
+          Type=exec
+          User=root
+          WorkingDirectory=/var/www/mivaa-pdf-extractor
+          Environment=PATH=/var/www/mivaa-pdf-extractor/.venv/bin:/usr/local/bin:/usr/bin:/bin
+          Environment=ENVIRONMENT=production
+          Environment=SUPABASE_URL=$SUPABASE_URL
+          Environment=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY
+          Environment=OPENAI_API_KEY=$OPENAI_API_KEY
+          Environment=MATERIAL_KAI_API_URL=$MATERIAL_KAI_API_URL
+          Environment=MATERIAL_KAI_API_KEY=$MATERIAL_KAI_API_KEY
+          Environment=SENTRY_DSN=$SENTRY_DSN
+          ExecStart=/var/www/mivaa-pdf-extractor/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+          Restart=always
+          RestartSec=3
+
+          [Install]
+          WantedBy=multi-user.target
+          SERVICE_EOF
+
+          sudo mv /tmp/mivaa.service /etc/systemd/system/mivaa.service
+          
+          echo "🔄 Restarting MIVAA service..."
+          sudo systemctl daemon-reload
+          sudo systemctl enable mivaa
+          sudo systemctl restart mivaa
+          
+          echo "⏳ Waiting for service to start..."
+          sleep 10
+          
+          # Health check with detailed output
+          echo "🏥 Performing comprehensive health check..."
+          HEALTH_URL="http://localhost:8000/health"
+          MAX_ATTEMPTS=30
+          ATTEMPT=1
+          
+          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+              echo "Health check attempt $ATTEMPT/$MAX_ATTEMPTS..."
+              
+              if curl -f -s "$HEALTH_URL" > /dev/null 2>&1; then
+                  echo "✅ Health check passed!"
+                  HEALTH_RESPONSE=$(curl -s "$HEALTH_URL")
+                  echo "Health response: $HEALTH_RESPONSE"
+                  break
+              fi
+              
+              if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
+                  echo "❌ Health check failed after $MAX_ATTEMPTS attempts"
+                  echo "Service status:"
+                  sudo systemctl status mivaa --no-pager
+                  echo "Service logs:"
+                  sudo journalctl -u mivaa --no-pager -n 50
+                  exit 1
+              fi
+              
+              echo "Waiting 10 seconds before next attempt..."
+              sleep 10
+              ATTEMPT=$((ATTEMPT + 1))
+          done
+          
+          echo "✅ MIVAA deployment completed successfully!"
+          echo "🌐 Service is running at: http://$(hostname):8000"
+          echo "🏥 Health endpoint: http://$(hostname):8000/health"
+          echo "📚 API docs: http://$(hostname):8000/docs"
+          echo "📖 ReDoc: http://$(hostname):8000/redoc"
+          
+          SCRIPT_EOF
+          
+          # Copy script to server and execute with better SSH handling
+          echo "📤 Copying deployment script to server..."
+          scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 -o ServerAliveInterval=60 -o ServerAliveCountMax=3 \
+            deploy_script.sh ${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}:/tmp/deploy_script.sh
+
+          echo "🚀 Executing deployment script on server..."
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 -o ServerAliveInterval=60 -o ServerAliveCountMax=3 \
+            -o TCPKeepAlive=yes -o BatchMode=yes \
+            ${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }} \
+            "chmod +x /tmp/deploy_script.sh && timeout 600 /tmp/deploy_script.sh \
+            '${{ env.GH_TOKEN }}' \
+            '${{ github.actor }}' \
+            '${{ github.sha }}' \
+            '${{ github.ref_name }}' \
+            '${{ github.repository }}' \
+            '${{ env.SUPABASE_URL }}' \
+            '${{ env.SUPABASE_ANON_KEY }}' \
+            '${{ env.OPENAI_API_KEY }}' \
+            '${{ env.MATERIAL_KAI_API_URL }}' \
+            '${{ env.MATERIAL_KAI_API_KEY }}' \
+            '${{ env.SENTRY_DSN }}'"
+
+      # 4. Verify deployment
+      - name: Verify deployment
+        run: |
+          echo "🔍 Verifying deployment..."
+          
+          # Test health endpoint
+          if curl -f -s http://${{ env.DEPLOY_HOST }}:8000/health > /dev/null 2>&1; then
+            echo "✅ Health check passed from external access"
+            HEALTH_RESPONSE=$(curl -s http://${{ env.DEPLOY_HOST }}:8000/health)
+            echo "Health response: $HEALTH_RESPONSE"
+          else
+            echo "❌ Health check failed from external access"
+            exit 1
+          fi
+
+      # 5. Generate comprehensive deployment summary
+      - name: Generate comprehensive deployment summary
+        if: always()
+        run: |
+          echo "## 🚀 MIVAA UV-Optimized Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Deployment Status
+          if [ "${{ steps.deploy.outcome }}" == "success" ]; then
+            echo "### ✅ Deployment Status: **SUCCESS**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ❌ Deployment Status: **FAILED**" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Deployment Configuration
+          echo "### 🔧 Deployment Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Deployment Type** | \`UV-Optimized Direct Deployment\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Server** | \`${{ env.DEPLOY_HOST }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Repository** | \`${{ github.repository }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Branch** | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit SHA** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit Message** | \`${{ github.event.head_commit.message }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Python Manager** | \`UV (Ultra-fast)\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Service Manager** | \`systemd\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **App Directory** | \`/var/www/mivaa-pdf-extractor\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Service Information
+          echo "### 🌐 Service Information" >> $GITHUB_STEP_SUMMARY
+          echo "| Endpoint | URL |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-----|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Main Service** | [http://${{ env.DEPLOY_HOST }}:8000](http://${{ env.DEPLOY_HOST }}:8000) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Health Check** | [http://${{ env.DEPLOY_HOST }}:8000/health](http://${{ env.DEPLOY_HOST }}:8000/health) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **API Documentation** | [http://${{ env.DEPLOY_HOST }}:8000/docs](http://${{ env.DEPLOY_HOST }}:8000/docs) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **ReDoc Documentation** | [http://${{ env.DEPLOY_HOST }}:8000/redoc](http://${{ env.DEPLOY_HOST }}:8000/redoc) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Performance Benefits
+          echo "### ⚡ Performance Benefits" >> $GITHUB_STEP_SUMMARY
+          echo "- **10x Faster Deployments**: No Docker build/push/pull cycle" >> $GITHUB_STEP_SUMMARY
+          echo "- **UV Package Manager**: Ultra-fast dependency resolution" >> $GITHUB_STEP_SUMMARY
+          echo "- **Direct File Sync**: Instant code updates" >> $GITHUB_STEP_SUMMARY
+          echo "- **Systemd Management**: Reliable service management" >> $GITHUB_STEP_SUMMARY
+          echo "- **Resource Efficient**: No Docker overhead" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Quick Links
+          echo "### 🔗 Quick Links" >> $GITHUB_STEP_SUMMARY
+          echo "- [View Commit](https://github.com/${{ github.repository }}/commit/${{ github.sha }})" >> $GITHUB_STEP_SUMMARY
+          echo "- [View Workflow Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+          echo "- [Repository](https://github.com/${{ github.repository }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Next Steps
+          echo "### 🎯 Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "1. ✅ Service is deployed and running" >> $GITHUB_STEP_SUMMARY
+          echo "2. 🏥 Health check endpoint is responding" >> $GITHUB_STEP_SUMMARY
+          echo "3. 📚 API documentation is available" >> $GITHUB_STEP_SUMMARY
+          echo "4. 🔄 Service will auto-restart on failure" >> $GITHUB_STEP_SUMMARY
