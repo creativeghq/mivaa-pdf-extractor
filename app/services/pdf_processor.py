@@ -31,9 +31,30 @@ from skimage import filters, morphology, measure
 from scipy import ndimage
 
 # Import existing extraction functions
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-from extractor import extract_pdf_to_markdown, extract_pdf_tables, extract_json_and_images
+try:
+    # Try to import from the proper location first
+    from ..core.extractor import extract_pdf_to_markdown, extract_pdf_tables, extract_json_and_images
+except ImportError:
+    # Fall back to the root level extractor if it exists
+    import sys
+    import os
+    root_path = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    if root_path not in sys.path:
+        sys.path.append(root_path)
+    try:
+        from extractor import extract_pdf_to_markdown, extract_pdf_tables, extract_json_and_images
+    except ImportError as e:
+        # Log the error and provide a fallback
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Failed to import extractor functions: {e}")
+        # Define placeholder functions that will raise NotImplementedError
+        def extract_pdf_to_markdown(*args, **kwargs):
+            raise NotImplementedError("PDF extraction functions not available")
+        def extract_pdf_tables(*args, **kwargs):
+            raise NotImplementedError("PDF table extraction functions not available")
+        def extract_json_and_images(*args, **kwargs):
+            raise NotImplementedError("PDF image extraction functions not available")
 
 # Import OCR service
 from app.services.ocr_service import get_ocr_service, OCRConfig

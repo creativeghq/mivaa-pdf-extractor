@@ -53,9 +53,11 @@ class SupabaseClient:
                 raise ValueError("SUPABASE_ANON_KEY is required but not provided")
             
             # Create Supabase client
+            # Use service role key if available, otherwise use anon key
+            supabase_key = settings.supabase_service_role_key or settings.supabase_anon_key
             self._client = create_client(
                 supabase_url=settings.supabase_url,
-                supabase_key=settings.supabase_key
+                supabase_key=supabase_key
             )
             
             logger.info("Supabase client initialized successfully")

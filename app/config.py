@@ -9,7 +9,15 @@ import os
 import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
-from pydantic import BaseSettings, Field, validator
+try:
+    # Try Pydantic v2 first
+    from pydantic_settings import BaseSettings
+    from pydantic import Field, field_validator as validator
+    PYDANTIC_V2 = True
+except ImportError:
+    # Fall back to Pydantic v1
+    from pydantic import BaseSettings, Field, validator
+    PYDANTIC_V2 = False
 
 
 class Settings(BaseSettings):
@@ -322,80 +330,166 @@ class Settings(BaseSettings):
         env="SENTRY_SERVER_NAME"
     )
     
-    @validator("cors_origins", "cors_methods", "cors_headers", "allowed_extensions", pre=True)
-    def parse_list_from_string(cls, v):
-        """Parse comma-separated string into list."""
-        if isinstance(v, str):
-            return [item.strip() for item in v.split(",") if item.strip()]
-        return v
-    
-    @validator("log_level")
-    def validate_log_level(cls, v):
-        """Validate log level."""
-        valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
-        if v.upper() not in valid_levels:
-            raise ValueError(f"Log level must be one of: {valid_levels}")
-        return v.upper()
-    
-    @validator("default_image_format")
-    def validate_image_format(cls, v):
-        """Validate image format."""
-        valid_formats = ["png", "jpg", "jpeg", "webp"]
-        if v.lower() not in valid_formats:
-            raise ValueError(f"Image format must be one of: {valid_formats}")
-        return v.lower()
-    
-    @validator("default_table_strategy")
-    def validate_table_strategy(cls, v):
-        """Validate table extraction strategy."""
-        valid_strategies = ["fast", "accurate"]
-        if v.lower() not in valid_strategies:
-            raise ValueError(f"Table strategy must be one of: {valid_strategies}")
-        return v.lower()
-    
-    @validator("multimodal_image_detail")
-    def validate_multimodal_image_detail(cls, v):
-        """Validate multi-modal image detail level."""
-        valid_details = ["low", "high", "auto"]
-        if v.lower() not in valid_details:
-            raise ValueError(f"Multi-modal image detail must be one of: {valid_details}")
-        return v.lower()
-    
-    @validator("ocr_engine")
-    def validate_ocr_engine(cls, v):
-        """Validate OCR engine selection."""
-        valid_engines = ["easyocr", "pytesseract", "both"]
-        if v.lower() not in valid_engines:
-            raise ValueError(f"OCR engine must be one of: {valid_engines}")
-        return v.lower()
-    
-    @validator("ocr_language")
-    def validate_ocr_language(cls, v):
-        """Validate OCR language code."""
-        # Common language codes - can be extended as needed
-        valid_languages = [
-            "en", "es", "fr", "de", "it", "pt", "ru", "ja", "ko", "zh",
-            "ar", "hi", "th", "vi", "tr", "pl", "nl", "sv", "da", "no"
-        ]
-        if v.lower() not in valid_languages:
-            raise ValueError(f"OCR language must be one of: {valid_languages}")
-        return v.lower()
-    
-    @validator("image_format_conversion")
-    def validate_image_format_conversion(cls, v):
-        """Validate image format for conversion."""
-        valid_formats = ["JPEG", "PNG", "WEBP", "TIFF"]
-        if v.upper() not in valid_formats:
-            raise ValueError(f"Image format conversion must be one of: {valid_formats}")
-        return v.upper()
-    
-    @validator("temp_dir", pre=True)
-    def set_temp_dir(cls, v):
-        """Set default temp directory if not provided."""
-        if v is None:
-            import tempfile
-            return tempfile.gettempdir()
-        return v
+    if PYDANTIC_V2:
+        @field_validator("cors_origins", "cors_methods", "cors_headers", "allowed_extensions", mode="before")
+        @classmethod
+        def parse_list_from_string(cls, v):
+            """Parse comma-separated string into list."""
+            if isinstance(v, str):
+                return [item.strip() for item in v.split(",") if item.strip()]
+            return v
+
+        @field_validator("log_level")
+        @classmethod
+        def validate_log_level(cls, v):
+            """Validate log level."""
+            valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+            if v.upper() not in valid_levels:
+                raise ValueError(f"Log level must be one of: {valid_levels}")
+            return v.upper()
+
+        @field_validator("default_image_format")
+        @classmethod
+        def validate_image_format(cls, v):
+            """Validate image format."""
+            valid_formats = ["png", "jpg", "jpeg", "webp"]
+            if v.lower() not in valid_formats:
+                raise ValueError(f"Image format must be one of: {valid_formats}")
+            return v.lower()
+
+        @field_validator("default_table_strategy")
+        @classmethod
+        def validate_table_strategy(cls, v):
+            """Validate table extraction strategy."""
+            valid_strategies = ["fast", "accurate"]
+            if v.lower() not in valid_strategies:
+                raise ValueError(f"Table strategy must be one of: {valid_strategies}")
+            return v.lower()
+
+        @field_validator("multimodal_image_detail")
+        @classmethod
+        def validate_multimodal_image_detail(cls, v):
+            """Validate multi-modal image detail level."""
+            valid_details = ["low", "high", "auto"]
+            if v.lower() not in valid_details:
+                raise ValueError(f"Multi-modal image detail must be one of: {valid_details}")
+            return v.lower()
+
+        @field_validator("ocr_engine")
+        @classmethod
+        def validate_ocr_engine(cls, v):
+            """Validate OCR engine selection."""
+            valid_engines = ["easyocr", "pytesseract", "both"]
+            if v.lower() not in valid_engines:
+                raise ValueError(f"OCR engine must be one of: {valid_engines}")
+            return v.lower()
+
+        @field_validator("ocr_language")
+        @classmethod
+        def validate_ocr_language(cls, v):
+            """Validate OCR language code."""
+            # Common language codes - can be extended as needed
+            valid_languages = [
+                "en", "es", "fr", "de", "it", "pt", "ru", "ja", "ko", "zh",
+                "ar", "hi", "th", "vi", "tr", "pl", "nl", "sv", "da", "no"
+            ]
+            if v.lower() not in valid_languages:
+                raise ValueError(f"OCR language must be one of: {valid_languages}")
+            return v.lower()
+
+        @field_validator("image_format_conversion")
+        @classmethod
+        def validate_image_format_conversion(cls, v):
+            """Validate image format for conversion."""
+            valid_formats = ["JPEG", "PNG", "WEBP", "TIFF"]
+            if v.upper() not in valid_formats:
+                raise ValueError(f"Image format conversion must be one of: {valid_formats}")
+            return v.upper()
+
+        @field_validator("temp_dir", mode="before")
+        @classmethod
+        def set_temp_dir(cls, v):
+            """Set default temp directory if not provided."""
+            if v is None:
+                import tempfile
+                return tempfile.gettempdir()
+            return v
+    else:
+        # Pydantic v1 validators
+        @validator("cors_origins", "cors_methods", "cors_headers", "allowed_extensions", pre=True)
+        def parse_list_from_string(cls, v):
+            """Parse comma-separated string into list."""
+            if isinstance(v, str):
+                return [item.strip() for item in v.split(",") if item.strip()]
+            return v
+
+        @validator("log_level")
+        def validate_log_level(cls, v):
+            """Validate log level."""
+            valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+            if v.upper() not in valid_levels:
+                raise ValueError(f"Log level must be one of: {valid_levels}")
+            return v.upper()
+
+        @validator("default_image_format")
+        def validate_image_format(cls, v):
+            """Validate image format."""
+            valid_formats = ["png", "jpg", "jpeg", "webp"]
+            if v.lower() not in valid_formats:
+                raise ValueError(f"Image format must be one of: {valid_formats}")
+            return v.lower()
+
+        @validator("default_table_strategy")
+        def validate_table_strategy(cls, v):
+            """Validate table extraction strategy."""
+            valid_strategies = ["fast", "accurate"]
+            if v.lower() not in valid_strategies:
+                raise ValueError(f"Table strategy must be one of: {valid_strategies}")
+            return v.lower()
+
+        @validator("multimodal_image_detail")
+        def validate_multimodal_image_detail(cls, v):
+            """Validate multi-modal image detail level."""
+            valid_details = ["low", "high", "auto"]
+            if v.lower() not in valid_details:
+                raise ValueError(f"Multi-modal image detail must be one of: {valid_details}")
+            return v.lower()
+
+        @validator("ocr_engine")
+        def validate_ocr_engine(cls, v):
+            """Validate OCR engine selection."""
+            valid_engines = ["easyocr", "pytesseract", "both"]
+            if v.lower() not in valid_engines:
+                raise ValueError(f"OCR engine must be one of: {valid_engines}")
+            return v.lower()
+
+        @validator("ocr_language")
+        def validate_ocr_language(cls, v):
+            """Validate OCR language code."""
+            # Common language codes - can be extended as needed
+            valid_languages = [
+                "en", "es", "fr", "de", "it", "pt", "ru", "ja", "ko", "zh",
+                "ar", "hi", "th", "vi", "tr", "pl", "nl", "sv", "da", "no"
+            ]
+            if v.lower() not in valid_languages:
+                raise ValueError(f"OCR language must be one of: {valid_languages}")
+            return v.lower()
+
+        @validator("image_format_conversion")
+        def validate_image_format_conversion(cls, v):
+            """Validate image format for conversion."""
+            valid_formats = ["JPEG", "PNG", "WEBP", "TIFF"]
+            if v.upper() not in valid_formats:
+                raise ValueError(f"Image format conversion must be one of: {valid_formats}")
+            return v.upper()
+
+        @validator("temp_dir", pre=True)
+        def set_temp_dir(cls, v):
+            """Set default temp directory if not provided."""
+            if v is None:
+                import tempfile
+                return tempfile.gettempdir()
+            return v
     
     def get_output_path(self) -> Path:
         """Get the output directory path."""
@@ -580,17 +674,31 @@ class Settings(BaseSettings):
             "format_conversion": self.image_format_conversion,
         }
     
-    @validator("together_model")
-    def validate_together_model(cls, v):
-        """Validate TogetherAI model name."""
-        valid_models = [
-            "meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo",
-            "meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo",
-            "meta-llama/Llama-Vision-Free"
-        ]
-        if v not in valid_models:
-            raise ValueError(f"TogetherAI model must be one of: {valid_models}")
-        return v
+    if PYDANTIC_V2:
+        @field_validator("together_model")
+        @classmethod
+        def validate_together_model(cls, v):
+            """Validate TogetherAI model name."""
+            valid_models = [
+                "meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo",
+                "meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo",
+                "meta-llama/Llama-Vision-Free"
+            ]
+            if v not in valid_models:
+                raise ValueError(f"TogetherAI model must be one of: {valid_models}")
+            return v
+    else:
+        @validator("together_model")
+        def validate_together_model(cls, v):
+            """Validate TogetherAI model name."""
+            valid_models = [
+                "meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo",
+                "meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo",
+                "meta-llama/Llama-Vision-Free"
+            ]
+            if v not in valid_models:
+                raise ValueError(f"TogetherAI model must be one of: {valid_models}")
+            return v
 
     def get_jwt_config(self) -> Dict[str, Any]:
         """

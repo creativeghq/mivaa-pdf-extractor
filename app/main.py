@@ -54,7 +54,7 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting PDF2Markdown Microservice...")
     settings = get_settings()
-    logger.info(f"Service: {settings.app_name} v{settings.version}")
+    logger.info(f"Service: {settings.app_name} v{settings.app_version}")
     logger.info(f"Debug mode: {settings.debug}")
     
     # Initialize Sentry for error tracking and monitoring
@@ -698,7 +698,7 @@ async def health_check() -> HealthResponse:
     return HealthResponse(
         status="healthy",
         timestamp=datetime.utcnow(),
-        version=settings.version,
+        version=settings.app_version,
         service=settings.app_name
     )
 
@@ -767,7 +767,7 @@ async def root() -> Dict[str, Any]:
     
     return {
         "service": settings.app_name,
-        "version": settings.version,
+        "version": settings.app_version,
         "status": "running",
         "timestamp": datetime.utcnow(),
         "endpoints": {

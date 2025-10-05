@@ -77,4 +77,4 @@ python-dateutil==2.8.2
 typing-extensions==4.8.0
 psutil==5.9.6
 
-jwt<=1.4.0
+PyJWT>=2.8.0
