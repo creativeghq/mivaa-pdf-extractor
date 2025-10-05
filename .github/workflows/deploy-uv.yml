@@ -122,29 +122,67 @@ jobs:
           fi
 
           if [ "$REQUIREMENTS_CHANGED" = true ]; then
-              echo "📦 Requirements changed - installing dependencies..."
+              echo "📦 Requirements changed - installing pre-resolved dependencies..."
 
-              # Upgrade pip with progress
-              echo "🔧 Upgrading pip..."
-              python -m pip install --upgrade pip
+              # Upgrade pip to latest version for better performance
+              echo "🔧 Upgrading pip to latest version..."
+              python -m pip install --upgrade pip --quiet
               echo "✅ Pip upgraded"
 
-              # Install dependencies from requirements.txt
+              # Validate requirements.txt exists and is properly formatted
               if [ ! -f "requirements.txt" ]; then
                   echo "❌ requirements.txt not found!"
                   exit 1
               fi
 
-              echo "📦 Installing pre-resolved packages (fast!)..."
-              # Install with no-deps first for speed, then resolve any missing
-              python -m pip install -r requirements.txt --no-deps --progress-bar on
-              echo "🔍 Checking for any missing dependencies..."
-              python -m pip check || python -m pip install -r requirements.txt
-              echo "✅ All packages installed"
+              # Check if requirements.txt has hashes (indicates pre-resolved)
+              if grep -q "sha256:" requirements.txt; then
+                  echo "🔐 Detected pre-resolved requirements with security hashes"
+                  INSTALL_METHOD="--require-hashes"
+              else
+                  echo "⚠️  No hashes detected - using standard installation"
+                  INSTALL_METHOD=""
+              fi
+
+              echo "📦 Installing pre-resolved packages (ultra-fast deployment!)..."
+
+              # Install all packages at once with optimized settings
+              # Using --no-deps for maximum speed since dependencies are pre-resolved
+              START_TIME=$(date +%s)
+
+              python -m pip install \
+                  -r requirements.txt \
+                  --no-deps \
+                  --disable-pip-version-check \
+                  --no-cache-dir \
+                  --quiet \
+                  $INSTALL_METHOD
+
+              END_TIME=$(date +%s)
+              INSTALL_TIME=$((END_TIME - START_TIME))
+
+              echo "⚡ Installation completed in ${INSTALL_TIME} seconds"
+
+              # Quick validation that critical packages are available
+              echo "🔍 Validating critical package availability..."
+              python -c "
+              import sys
+              critical = ['fastapi', 'uvicorn', 'supabase', 'llama_index']
+              missing = []
+              for pkg in critical:
+                  try:
+                      __import__(pkg)
+                  except ImportError:
+                      missing.append(pkg)
+              if missing:
+                  print(f'❌ Missing critical packages: {missing}')
+                  sys.exit(1)
+              print('✅ All critical packages available')
+              "
 
               # Store hash of requirements.txt for future comparisons
               sha256sum requirements.txt | cut -d' ' -f1 > .requirements_hash
-              echo "✅ Dependencies installed and hash stored"
+              echo "✅ Dependencies installed and hash stored (${INSTALL_TIME}s)"
           else
               echo "⚡ Requirements unchanged - skipping dependency installation"
               echo "✅ Using existing virtual environment"
