@@ -103,18 +103,39 @@ jobs:
           # Activate virtual environment
           source .venv/bin/activate
 
-          # Upgrade pip
-          python -m pip install --upgrade pip
-
-          # Install dependencies from requirements.txt
-          echo "📦 Installing dependencies from requirements.txt..."
-          if [ ! -f "requirements.txt" ]; then
-              echo "❌ requirements.txt not found!"
-              exit 1
+          # Check if dependencies need to be updated
+          REQUIREMENTS_CHANGED=false
+          if [ ! -f ".requirements_hash" ] || [ ! -f "requirements.txt" ]; then
+              REQUIREMENTS_CHANGED=true
+          else
+              CURRENT_HASH=$(sha256sum requirements.txt | cut -d' ' -f1)
+              STORED_HASH=$(cat .requirements_hash 2>/dev/null || echo "")
+              if [ "$CURRENT_HASH" != "$STORED_HASH" ]; then
+                  REQUIREMENTS_CHANGED=true
+              fi
           fi
 
-          python -m pip install -r requirements.txt
-          echo "✅ Dependencies installed successfully"
+          if [ "$REQUIREMENTS_CHANGED" = true ]; then
+              echo "📦 Requirements changed - installing dependencies..."
+
+              # Upgrade pip
+              python -m pip install --upgrade pip
+
+              # Install dependencies from requirements.txt
+              if [ ! -f "requirements.txt" ]; then
+                  echo "❌ requirements.txt not found!"
+                  exit 1
+              fi
+
+              python -m pip install -r requirements.txt
+
+              # Store hash of requirements.txt for future comparisons
+              sha256sum requirements.txt | cut -d' ' -f1 > .requirements_hash
+              echo "✅ Dependencies installed and hash stored"
+          else
+              echo "⚡ Requirements unchanged - skipping dependency installation"
+              echo "✅ Using existing virtual environment"
+          fi
           
           echo "🔧 Setting up systemd service..."
           # Create systemd service file with all environment variables
