@@ -337,8 +337,8 @@ jobs:
           python -c 'import uvicorn; print(\"Uvicorn: OK\")'
           python -c 'import cv2; print(\"OpenCV: OK\")'
           # Test PyMuPDF with error handling
-          python -c "import fitz; print('PyMuPDF (fitz): OK - Version', fitz.version[0])" || echo "PyMuPDF (fitz): FAILED"
-          python -c "import pymupdf4llm; print('PyMuPDF4LLM: OK')" || echo "PyMuPDF4LLM: FAILED"
+          python -c 'import fitz; print(\"PyMuPDF (fitz): OK - Version\", fitz.version[0])' || echo 'PyMuPDF (fitz): FAILED'
+          python -c 'import pymupdf4llm; print(\"PyMuPDF4LLM: OK\")' || echo 'PyMuPDF4LLM: FAILED'
           python -c 'import supabase; print(\"Supabase: OK\")'
           python -c 'import numpy; print(\"NumPy: OK\")'
           python -c 'import pandas; print(\"Pandas: OK\")'
