@@ -459,31 +459,15 @@ jobs:
           python -c 'import cv2; print(\"OpenCV: OK\")'
           # Test PyMuPDF with detailed error handling
           echo 'Testing PyMuPDF installation...'
-          python -c '
-import sys
-try:
-    import fitz
-    print(\"PyMuPDF (fitz): OK - Version\", fitz.version[0])
-    print(\"PyMuPDF library path:\", fitz.__file__)
-except ImportError as e:
-    print(\"PyMuPDF (fitz): FAILED -\", str(e))
-    sys.exit(1)
-except Exception as e:
-    print(\"PyMuPDF (fitz): ERROR -\", str(e))
-    sys.exit(1)
-' || echo 'PyMuPDF verification failed'
+          python -c 'import sys; import fitz; print(\"PyMuPDF (fitz): OK - Version\", fitz.version[0]); print(\"PyMuPDF library path:\", fitz.__file__)' 2>/dev/null || {
+            echo 'PyMuPDF (fitz): FAILED'
+            python -c 'import fitz' 2>&1 | head -3 || echo 'Import completely failed'
+          }
 
-          python -c '
-import sys
-try:
-    import pymupdf4llm
-    print(\"PyMuPDF4LLM: OK\")
-    print(\"PyMuPDF4LLM path:\", pymupdf4llm.__file__)
-except ImportError as e:
-    print(\"PyMuPDF4LLM: FAILED -\", str(e))
-except Exception as e:
-    print(\"PyMuPDF4LLM: ERROR -\", str(e))
-' || echo 'PyMuPDF4LLM verification failed'
+          python -c 'import pymupdf4llm; print(\"PyMuPDF4LLM: OK\"); print(\"PyMuPDF4LLM path:\", pymupdf4llm.__file__)' 2>/dev/null || {
+            echo 'PyMuPDF4LLM: FAILED'
+            python -c 'import pymupdf4llm' 2>&1 | head -3 || echo 'Import completely failed'
+          }
           python -c 'import llama_index; print(\"LlamaIndex: OK\")' || echo 'LlamaIndex: FAILED - Check installation'
           python -c 'import supabase; print(\"Supabase: OK\")'
           python -c 'import numpy; print(\"NumPy: OK\")'
