@@ -700,9 +700,9 @@ jobs:
                 # SSH and get service status
                 ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 root@$DEPLOY_HOST '
                 echo "📊 Service Diagnostics:"
-                echo "  • Service Status: $(sudo systemctl is-active mivaa-pdf-extractor 2>/dev/null || echo \"unknown\")"
-                echo "  • Service Enabled: $(sudo systemctl is-enabled mivaa-pdf-extractor 2>/dev/null || echo \"unknown\")"
-                echo "  • Port 8000 Status: $(ss -tlnp | grep :8000 | head -1 || echo \"not listening\")"
+                echo "  • Service Status: $(sudo systemctl is-active mivaa-pdf-extractor 2>/dev/null || echo '\''unknown'\'')"
+                echo "  • Service Enabled: $(sudo systemctl is-enabled mivaa-pdf-extractor 2>/dev/null || echo '\''unknown'\'')"
+                echo "  • Port 8000 Status: $(ss -tlnp | grep :8000 | head -1 || echo '\''not listening'\'')"
                 echo ""
                 echo "📋 Recent Logs (last 10 lines):"
                 sudo journalctl -u mivaa-pdf-extractor --no-pager --lines=10 --since "5 minutes ago" 2>/dev/null || echo "No logs available"
@@ -726,7 +726,7 @@ jobs:
             sudo systemctl restart mivaa-pdf-extractor
             sleep 10
             echo "  • New status: $(sudo systemctl is-active mivaa-pdf-extractor)"
-            echo "  • Port check: $(ss -tlnp | grep :8000 | head -1 || echo \"not listening\")"
+            echo "  • Port check: $(ss -tlnp | grep :8000 | head -1 || echo '\''not listening'\'')"
             '
 
             # Re-test after restart
@@ -863,7 +863,7 @@ jobs:
             if [ -d \"/var/www/mivaa-pdf-extractor/.venv\" ]; then
               echo \"  ✅ Virtual environment exists\"
               echo \"  • Python version: $(cd /var/www/mivaa-pdf-extractor && source .venv/bin/activate && python --version)\"
-              echo \"  • FastAPI status: $(cd /var/www/mivaa-pdf-extractor && source .venv/bin/activate && python -c \"import fastapi; print(\\\"OK\\\")\" 2>/dev/null || echo \"FAILED\")\"
+              echo \"  • FastAPI status: $(cd /var/www/mivaa-pdf-extractor && source .venv/bin/activate && python -c '\''import fastapi; print(\"OK\")'\'' 2>/dev/null || echo '\''FAILED'\'')\"
             else
               echo \"  ❌ Virtual environment missing\"
             fi

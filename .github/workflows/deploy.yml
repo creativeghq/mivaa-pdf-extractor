@@ -317,12 +317,12 @@ jobs:
             echo ""
 
             echo "🌐 Network & Port Status:"
-            echo "  • Port 8000 listening: $(ss -tlnp | grep :8000 || echo \"NOT LISTENING\")"
-            echo "  • Process on port 8000: $(lsof -i :8000 || echo \"NO PROCESS\")"
+            echo "  • Port 8000 listening: $(ss -tlnp | grep :8000 || echo '\''NOT LISTENING'\'')"
+            echo "  • Process on port 8000: $(lsof -i :8000 || echo '\''NO PROCESS'\'')"
             echo ""
 
             echo "📁 Application Directory:"
-            echo "  • Directory exists: $([ -d /var/www/mivaa-pdf-extractor ] && echo \"YES\" || echo \"NO\")"
+            echo "  • Directory exists: $([ -d /var/www/mivaa-pdf-extractor ] && echo '\''YES'\'' || echo '\''NO'\'')"
             echo "  • Recent files: $(ls -la /var/www/mivaa-pdf-extractor/ | head -10)"
             echo ""
 
@@ -331,7 +331,7 @@ jobs:
             if [ -f ".venv/bin/activate" ]; then
               source .venv/bin/activate
               echo "  • Python version: $(python --version)"
-              echo "  • FastAPI installed: $(python -c \"import fastapi; print(fastapi.__version__)\" 2>/dev/null || echo \"NOT FOUND\")"
+              echo "  • FastAPI installed: $(python -c '\''import fastapi; print(fastapi.__version__)'\'' 2>/dev/null || echo '\''NOT FOUND'\'')"
               echo "  • Virtual env active: $VIRTUAL_ENV"
             else
               echo "  • Virtual environment: NOT FOUND"
