@@ -317,61 +317,26 @@ jobs:
 
           # Generate actual package status for GitHub summary
           echo 'Generating package status report...'
-          python -c '
-import sys
-import importlib
 
-packages = [
-    (\"fastapi\", \"Web Framework\", \"FastAPI web framework\", \"fastapi\"),
-    (\"uvicorn\", \"Server\", \"ASGI server\", \"uvicorn\"),
-    (\"opencv-python-headless\", \"Computer Vision\", \"Image processing (headless)\", \"cv2\"),
-    (\"pymupdf4llm\", \"PDF Processing\", \"PDF processing for LLM\", \"pymupdf4llm\"),
-    (\"supabase\", \"Database\", \"Database client\", \"supabase\"),
-    (\"numpy\", \"Computing\", \"Numerical computing\", \"numpy\"),
-    (\"pandas\", \"Data\", \"Data manipulation\", \"pandas\"),
-    (\"pydantic\", \"Validation\", \"Data validation\", \"pydantic\"),
-    (\"requests\", \"HTTP\", \"HTTP client\", \"requests\"),
-    (\"pillow\", \"Images\", \"Image processing\", \"PIL\"),
-    (\"llama-index\", \"AI/ML\", \"LLM framework\", \"llama_index\"),
-    (\"openai\", \"AI/ML\", \"OpenAI API client\", \"openai\"),
-    (\"anthropic\", \"AI/ML\", \"Anthropic API client\", \"anthropic\"),
-    (\"transformers\", \"AI/ML\", \"HuggingFace transformers\", \"transformers\"),
-    (\"torch\", \"AI/ML\", \"PyTorch deep learning\", \"torch\"),
-    (\"scikit-learn\", \"AI/ML\", \"Machine learning\", \"sklearn\"),
-    (\"easyocr\", \"OCR\", \"Optical character recognition\", \"easyocr\"),
-    (\"pytesseract\", \"OCR\", \"Tesseract OCR wrapper\", \"pytesseract\"),
-    (\"python-multipart\", \"Upload\", \"File upload support\", \"multipart\"),
-    (\"llama-index-embeddings-clip\", \"AI/ML\", \"CLIP embeddings for visual analysis\", \"llama_index.embeddings.clip\")
-]
+          # Create simple package status check
+          echo '| Package | Category | Description | Status | Version |' > package_status_report.txt
+          echo '|---------|----------|-------------|--------|---------|' >> package_status_report.txt
 
-print(\"| Package | Category | Description | Status | Version |\")
-print(\"|---------|----------|-------------|--------|---------|\")\n
-installed_count = 0
-total_count = len(packages)
+          # Check each critical package individually
+          python -c 'import fastapi; print(f\"| **fastapi** | Web Framework | FastAPI web framework | 🟢 Installed | {fastapi.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **fastapi** | Web Framework | FastAPI web framework | 🔴 Missing | N/A |' >> package_status_report.txt
+          python -c 'import uvicorn; print(f\"| **uvicorn** | Server | ASGI server | 🟢 Installed | {uvicorn.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **uvicorn** | Server | ASGI server | 🔴 Missing | N/A |' >> package_status_report.txt
+          python -c 'import cv2; print(f\"| **opencv-python-headless** | Computer Vision | Image processing | 🟢 Installed | {cv2.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **opencv-python-headless** | Computer Vision | Image processing | 🔴 Missing | N/A |' >> package_status_report.txt
+          python -c 'import pymupdf4llm; print(f\"| **pymupdf4llm** | PDF Processing | PDF processing for LLM | 🟢 Installed | {pymupdf4llm.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **pymupdf4llm** | PDF Processing | PDF processing for LLM | 🔴 Missing | N/A |' >> package_status_report.txt
+          python -c 'import supabase; print(f\"| **supabase** | Database | Database client | 🟢 Installed | {supabase.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **supabase** | Database | Database client | 🔴 Missing | N/A |' >> package_status_report.txt
+          python -c 'import numpy; print(f\"| **numpy** | Computing | Numerical computing | 🟢 Installed | {numpy.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **numpy** | Computing | Numerical computing | 🔴 Missing | N/A |' >> package_status_report.txt
+          python -c 'import pandas; print(f\"| **pandas** | Data | Data manipulation | 🟢 Installed | {pandas.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **pandas** | Data | Data manipulation | 🔴 Missing | N/A |' >> package_status_report.txt
+          python -c 'import torch; print(f\"| **torch** | AI/ML | PyTorch deep learning | 🟢 Installed | {torch.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **torch** | AI/ML | PyTorch deep learning | 🔴 Missing | N/A |' >> package_status_report.txt
+          python -c 'import openai; print(f\"| **openai** | AI/ML | OpenAI API client | 🟢 Installed | {openai.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **openai** | AI/ML | OpenAI API client | 🔴 Missing | N/A |' >> package_status_report.txt
+          python -c 'import anthropic; print(f\"| **anthropic** | AI/ML | Anthropic API client | 🟢 Installed | {anthropic.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **anthropic** | AI/ML | Anthropic API client | 🔴 Missing | N/A |' >> package_status_report.txt
+          python -c 'import llama_index; print(f\"| **llama-index** | AI/ML | LLM framework | 🟢 Installed | {llama_index.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **llama-index** | AI/ML | LLM framework | 🔴 Missing | N/A |' >> package_status_report.txt
 
-for pkg_name, category, description, import_name in packages:
-    try:
-        if \".\" in import_name:
-            # Handle nested imports like llama_index.embeddings.clip
-            parts = import_name.split(\".\")
-            module = __import__(parts[0])
-            for part in parts[1:]:
-                module = getattr(module, part)
-        else:
-            module = importlib.import_module(import_name)
-
-        version = getattr(module, \"__version__\", \"unknown\")
-        status = \"🟢 Installed\"
-        installed_count += 1
-        print(f\"| **{pkg_name}** | {category} | {description} | {status} | `{version}` |\")
-    except (ImportError, AttributeError) as e:
-        status = \"🔴 Missing\"
-        print(f\"| **{pkg_name}** | {category} | {description} | {status} | N/A |\")
-
-print(f\"\nInstallation Summary: {installed_count}/{total_count} packages successfully installed ({installed_count/total_count*100:.1f}%)\")
-' > package_status_report.txt
-
-          echo 'Package status report generated'
+          echo '' >> package_status_report.txt
+          echo 'Package status report generated successfully'
           "
 
       # 4.5. Update Package Status in Summary
