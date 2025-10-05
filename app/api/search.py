@@ -20,6 +20,8 @@ from ..schemas.search import (
     DocumentQueryResponse,
     SemanticSearchRequest,
     SemanticSearchResponse,
+    SimilaritySearchRequest,
+    SimilaritySearchResponse,
     QueryRequest,
     QueryResponse,
     SourceCitation,
