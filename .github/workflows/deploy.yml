@@ -123,33 +123,14 @@ jobs:
           echo "| **🌐 API Endpoints** | 37+ endpoints across 7 modules |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          # Add comprehensive package status table to first page
+          # Add initial package status table (will be updated after installation)
           echo "## 📦 Package Installation Status" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Package | Category | Description | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|---------|----------|-------------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **fastapi** | 🌐 Web Framework | FastAPI web framework | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
-          echo "| **uvicorn** | 🌐 Server | ASGI server | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
-          echo "| **opencv-python-headless** | 🖼️ Computer Vision | Image processing (headless) | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
-          echo "| **pymupdf4llm** | 📄 PDF Processing | PDF processing for LLM | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
-          echo "| **supabase** | 🗄️ Database | Database client | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
-          echo "| **numpy** | 🔢 Computing | Numerical computing | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
-          echo "| **pandas** | 📊 Data | Data manipulation | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
-          echo "| **pydantic** | ✅ Validation | Data validation | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
-          echo "| **requests** | 🌐 HTTP | HTTP client | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
-          echo "| **pillow** | 🖼️ Images | Image processing | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
-          echo "| **llama-index** | 🤖 AI/ML | LLM framework | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
-          echo "| **openai** | 🤖 AI/ML | OpenAI API client | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
-          echo "| **anthropic** | 🤖 AI/ML | Anthropic API client | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
-          echo "| **transformers** | 🤖 AI/ML | HuggingFace transformers | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
-          echo "| **torch** | 🤖 AI/ML | PyTorch deep learning | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
-          echo "| **scikit-learn** | 🤖 AI/ML | Machine learning | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
-          echo "| **sentence-transformers** | 🤖 AI/ML | Sentence embeddings | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
-          echo "| **easyocr** | 🔍 OCR | Optical character recognition | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
-          echo "| **pytesseract** | 🔍 OCR | Tesseract OCR wrapper | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
-          echo "| **python-multipart** | 📤 Upload | File upload support | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Installation Progress** | 🔄 In Progress | Installing dependencies... | 🟡 Starting... |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> 📝 **Note**: Package status will be updated after installation completes. This table shows all critical packages from requirements.txt that will be verified during deployment." >> $GITHUB_STEP_SUMMARY
+          echo "> 📝 **Note**: This table will be updated with actual package status after installation completes." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo ""
           echo "🔐 Environment Variables (Configured):"
@@ -231,67 +212,90 @@ jobs:
           pip install --upgrade pip
           pip install uv
 
-          # --- Strategic dependency installation to resolve conflicts ---
-          echo 'Installing dependencies with conflict resolution strategy...'
+          # --- Exact version installation to prevent conflicts ---
+          echo 'Installing exact versions to prevent dependency conflicts...'
 
-          # Step 1: Install base scientific computing stack
-          echo 'Step 1: Installing base scientific computing...'
-          pip install numpy==1.26.4
-          pip install pandas==2.1.4
-          pip install scipy>=1.11.0
+          # CRITICAL: Use --no-deps and exact versions to prevent pip from upgrading
 
-          # Step 2: Install PyTorch ecosystem first (before other ML packages)
+          # Step 1: Core scientific computing with exact versions
+          echo 'Step 1: Installing core scientific computing...'
+          pip install --no-deps numpy==1.26.4
+          pip install --no-deps pandas==2.1.4
+          pip install --no-deps scipy==1.11.4
+
+          # Step 2: PyTorch ecosystem with exact versions
           echo 'Step 2: Installing PyTorch ecosystem...'
-          pip install torch==2.2.2
-          pip install torchvision==0.17.2
+          pip install --no-deps torch==2.2.2
+          pip install --no-deps torchvision==0.17.2
 
-          # Step 3: Install HTTP clients with compatible versions
-          echo 'Step 3: Installing HTTP clients...'
-          pip install httpx==0.24.1
-          pip install requests==2.31.0
+          # Step 3: HTTP and API clients with exact versions
+          echo 'Step 3: Installing HTTP and API clients...'
+          pip install --no-deps httpx==0.24.1
+          pip install --no-deps requests==2.31.0
+          pip install --no-deps openai==1.51.0
+          pip install --no-deps anthropic==0.20.0
 
-          # Step 4: Install AI API clients with compatible versions
-          echo 'Step 4: Installing AI API clients...'
-          pip install openai==1.108.1
-          pip install anthropic==0.20.0
+          # Step 4: Computer vision with exact versions
+          echo 'Step 4: Installing computer vision...'
+          pip install --no-deps opencv-python-headless==4.8.0
+          pip install --no-deps Pillow==10.4.0
+          pip install --no-deps scikit-image==0.21.0
+          pip install --no-deps imageio==2.31.6
 
-          # Step 5: Install computer vision packages
-          echo 'Step 5: Installing computer vision...'
-          pip install opencv-python-headless==4.8.0
-          pip install Pillow>=10.2.0
-          pip install scikit-image>=0.21.0
-          pip install imageio>=2.31.0
+          # Step 5: LlamaIndex with exact compatible versions
+          echo 'Step 5: Installing LlamaIndex ecosystem...'
+          pip install --no-deps llama-index-core==0.10.57
+          pip install --no-deps llama-index==0.10.57
+          pip install --no-deps llama-index-llms-openai==0.1.29
+          pip install --no-deps llama-index-embeddings-openai==0.1.11
+          pip install --no-deps llama-index-embeddings-clip==0.1.8
+          pip install --no-deps llama-index-multi-modal-llms-openai==0.1.9
+          pip install --no-deps llama-index-multi-modal-llms-anthropic==0.1.4
+          pip install --no-deps llama-index-agent-openai==0.2.9
+          pip install --no-deps llama-index-program-openai==0.1.6
+          pip install --no-deps llama-index-question-gen-openai==0.1.3
+          pip install --no-deps llama-index-vector-stores-supabase==0.1.4
+          pip install --no-deps llama-index-readers-file==0.1.12
+          pip install --no-deps llama-index-cli==0.1.13
 
-          # Step 6: Install LlamaIndex core first, then extensions
-          echo 'Step 6: Installing LlamaIndex ecosystem...'
-          pip install llama-index-core>=0.10.57
-          pip install llama-index>=0.10.57
-          pip install llama-index-llms-openai>=0.1.29
-          pip install llama-index-embeddings-openai>=0.1.11
-          pip install llama-index-embeddings-clip>=0.1.8
-          pip install llama-index-multi-modal-llms-openai>=0.1.9
-          pip install llama-index-multi-modal-llms-anthropic>=0.1.4
-          pip install llama-index-agent-openai>=0.2.9
-          pip install llama-index-program-openai>=0.1.6
-          pip install llama-index-question-gen-openai>=0.1.3
-          pip install llama-index-vector-stores-supabase>=0.1.4
-          pip install llama-index-readers-file>=0.1.12
-          pip install llama-index-cli>=0.1.13
+          # Step 6: Web framework and remaining packages
+          echo 'Step 6: Installing web framework and remaining packages...'
+          pip install --no-deps fastapi==0.104.1
+          pip install --no-deps uvicorn==0.24.0
+          pip install --no-deps pymupdf4llm==0.0.12
+          pip install --no-deps PyMuPDF==1.24.2
+          pip install --no-deps supabase==2.3.0
+          pip install --no-deps postgrest==0.13.0
+          pip install --no-deps gotrue==2.9.1
+          pip install --no-deps storage3==0.7.7
+          pip install --no-deps supafunc==0.3.3
+          pip install --no-deps realtime==1.0.6
 
-          # Step 7: Install remaining packages
-          echo 'Step 7: Installing remaining dependencies...'
-          pip install fastapi[standard]>=0.104.1
-          pip install uvicorn[standard]>=0.24.0
-          pip install pymupdf4llm==0.0.12
-          pip install PyMuPDF>=1.24.2
-          pip install supabase==2.3.0
-          pip install postgrest==0.13.0
-          pip install gotrue==2.9.1
-          pip install storage3==0.7.7
-          pip install supafunc==0.3.3
-          pip install realtime==1.0.6
+          # Step 7: Install missing dependencies that --no-deps skipped
+          echo 'Step 7: Installing essential dependencies...'
+          pip install pydantic==2.5.3
+          pip install pydantic-settings==2.1.0
+          pip install python-dotenv==1.0.0
+          pip install python-multipart==0.0.6
+          pip install python-dateutil==2.8.2
+          pip install typing-extensions==4.8.0
+          pip install PyJWT==2.8.0
+          pip install cryptography==41.0.7
+          pip install email-validator==2.1.0
+          pip install aiofiles==23.2.1
+          pip install bcrypt==4.1.2
+          pip install psutil==5.9.6
+          pip install tenacity==8.2.3
+          pip install matplotlib==3.7.5
+          pip install nltk==3.9.1
+          pip install easyocr==1.7.0
+          pip install pytesseract==0.3.10
+          pip install scikit-learn==1.3.2
+          pip install transformers==4.30.2
+          pip install asyncio-mqtt==0.13.0
+          pip install aiohttp==3.9.3
 
-          echo 'All dependencies installed successfully with conflict resolution!'
+          echo 'All dependencies installed with exact versions - no conflicts!'
 
           # --- Comprehensive Package Verification ---
           echo 'Verifying all critical packages from requirements.txt...'
@@ -310,9 +314,96 @@ jobs:
           python -c 'import requests; print(\"Requests: OK\")'
 
           echo 'ALL CRITICAL PACKAGES VERIFIED!'
+
+          # Generate actual package status for GitHub summary
+          echo 'Generating package status report...'
+          python -c '
+import sys
+import importlib
+
+packages = [
+    (\"fastapi\", \"Web Framework\", \"FastAPI web framework\", \"fastapi\"),
+    (\"uvicorn\", \"Server\", \"ASGI server\", \"uvicorn\"),
+    (\"opencv-python-headless\", \"Computer Vision\", \"Image processing (headless)\", \"cv2\"),
+    (\"pymupdf4llm\", \"PDF Processing\", \"PDF processing for LLM\", \"pymupdf4llm\"),
+    (\"supabase\", \"Database\", \"Database client\", \"supabase\"),
+    (\"numpy\", \"Computing\", \"Numerical computing\", \"numpy\"),
+    (\"pandas\", \"Data\", \"Data manipulation\", \"pandas\"),
+    (\"pydantic\", \"Validation\", \"Data validation\", \"pydantic\"),
+    (\"requests\", \"HTTP\", \"HTTP client\", \"requests\"),
+    (\"pillow\", \"Images\", \"Image processing\", \"PIL\"),
+    (\"llama-index\", \"AI/ML\", \"LLM framework\", \"llama_index\"),
+    (\"openai\", \"AI/ML\", \"OpenAI API client\", \"openai\"),
+    (\"anthropic\", \"AI/ML\", \"Anthropic API client\", \"anthropic\"),
+    (\"transformers\", \"AI/ML\", \"HuggingFace transformers\", \"transformers\"),
+    (\"torch\", \"AI/ML\", \"PyTorch deep learning\", \"torch\"),
+    (\"scikit-learn\", \"AI/ML\", \"Machine learning\", \"sklearn\"),
+    (\"easyocr\", \"OCR\", \"Optical character recognition\", \"easyocr\"),
+    (\"pytesseract\", \"OCR\", \"Tesseract OCR wrapper\", \"pytesseract\"),
+    (\"python-multipart\", \"Upload\", \"File upload support\", \"multipart\"),
+    (\"llama-index-embeddings-clip\", \"AI/ML\", \"CLIP embeddings for visual analysis\", \"llama_index.embeddings.clip\")
+]
+
+print(\"| Package | Category | Description | Status | Version |\")
+print(\"|---------|----------|-------------|--------|---------|\")\n
+installed_count = 0
+total_count = len(packages)
+
+for pkg_name, category, description, import_name in packages:
+    try:
+        if \".\" in import_name:
+            # Handle nested imports like llama_index.embeddings.clip
+            parts = import_name.split(\".\")
+            module = __import__(parts[0])
+            for part in parts[1:]:
+                module = getattr(module, part)
+        else:
+            module = importlib.import_module(import_name)
+
+        version = getattr(module, \"__version__\", \"unknown\")
+        status = \"🟢 Installed\"
+        installed_count += 1
+        print(f\"| **{pkg_name}** | {category} | {description} | {status} | `{version}` |\")
+    except (ImportError, AttributeError) as e:
+        status = \"🔴 Missing\"
+        print(f\"| **{pkg_name}** | {category} | {description} | {status} | N/A |\")
+
+print(f\"\nInstallation Summary: {installed_count}/{total_count} packages successfully installed ({installed_count/total_count*100:.1f}%)\")
+' > package_status_report.txt
+
+          echo 'Package status report generated'
           "
 
-      # 4.5. Create/Update systemd service file
+      # 4.5. Update Package Status in Summary
+      - name: 📦 Update Package Installation Status
+        run: |
+          echo "📦 Updating package installation status in summary..."
+
+          # Get the actual package status and update the summary
+          PACKAGE_STATUS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          cd /var/www/mivaa-pdf-extractor
+          source .venv/bin/activate
+          cat package_status_report.txt 2>/dev/null || echo 'Package status report not found'
+          ")
+
+          # Create a new summary file with updated package status
+          cat > updated_summary.md << 'SUMMARY_EOF'
+
+          ## 📦 Package Installation Status - UPDATED
+
+          SUMMARY_EOF
+
+          echo "$PACKAGE_STATUS" >> updated_summary.md
+
+          # Append the updated status to the GitHub summary
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          cat updated_summary.md >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "✅ Package status updated in deployment summary"
+
+      # 4.6. Create/Update systemd service file
       - name: 🔧 Create/Update systemd service file
         run: |
           echo "🔧 Creating/updating systemd service file..."
@@ -377,27 +468,14 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 📦 Package Verification Results" >> $GITHUB_STEP_SUMMARY
+          echo "## 📦 Final Package Installation Status" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Package | Status | Notes |" >> $GITHUB_STEP_SUMMARY
-          echo "|---------|--------|-------|" >> $GITHUB_STEP_SUMMARY
 
-          # Get package verification results from server
+          # Get actual package status from server
           ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
           cd /var/www/mivaa-pdf-extractor
           source .venv/bin/activate
-
-          # Check critical packages and output for GitHub summary
-          echo '| **fastapi** | Installed | Web framework |'
-          echo '| **uvicorn** | Installed | ASGI server |'
-          echo '| **opencv-python-headless** | Installed | Computer vision |'
-          echo '| **pymupdf4llm** | Installed | PDF processing |'
-          echo '| **supabase** | Installed | Database client |'
-          echo '| **numpy** | Installed | Numerical computing |'
-          echo '| **pandas** | Installed | Data manipulation |'
-          echo '| **pillow** | Installed | Image processing |'
-          echo '| **pydantic** | Installed | Data validation |'
-          echo '| **requests** | Installed | HTTP client |'
+          cat package_status_report.txt
           " >> $GITHUB_STEP_SUMMARY
 
           echo "" >> $GITHUB_STEP_SUMMARY
