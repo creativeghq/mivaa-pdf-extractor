@@ -94,9 +94,20 @@ jobs:
           if ! command -v uv &> /dev/null; then
               echo "Installing UV..."
               curl -LsSf https://astral.sh/uv/install.sh | sh
+              # Source the cargo environment to get UV in PATH
+              source "$HOME/.cargo/env" || true
               export PATH="$HOME/.cargo/bin:$PATH"
+              # Verify UV installation
+              if ! command -v uv &> /dev/null; then
+                  echo "UV installation failed, trying alternative method..."
+                  # Alternative: install via pip
+                  python3 -m pip install uv
+              fi
           fi
-          
+
+          # Verify UV is available
+          echo "UV version: $(uv --version)"
+
           # Create/update virtual environment and install dependencies
           echo "📦 Installing dependencies with UV (super fast!)..."
           uv sync --frozen
