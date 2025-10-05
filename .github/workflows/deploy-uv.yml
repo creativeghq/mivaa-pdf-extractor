@@ -135,9 +135,11 @@ jobs:
                   exit 1
               fi
 
-              echo "📦 Installing packages (this may take a few minutes)..."
-              # Install with progress and keep connection alive
-              python -m pip install -r requirements.txt --progress-bar on
+              echo "📦 Installing pre-resolved packages (fast!)..."
+              # Install with no-deps first for speed, then resolve any missing
+              python -m pip install -r requirements.txt --no-deps --progress-bar on
+              echo "🔍 Checking for any missing dependencies..."
+              python -m pip check || python -m pip install -r requirements.txt
               echo "✅ All packages installed"
 
               # Store hash of requirements.txt for future comparisons
