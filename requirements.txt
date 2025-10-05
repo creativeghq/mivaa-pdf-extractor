@@ -33,15 +33,15 @@ llama-index-embeddings-clip==0.1.5
 llama-index-readers-file==0.1.12
 
 # Supabase integration
-supabase==2.3.0
-postgrest==0.13.0
+supabase>=2.7.0
+postgrest>=0.16.0
 
 # Configuration and environment management
 python-dotenv==1.0.0
 pydantic>=2.5.2
 
 # HTTP client for external API calls
-httpx>=0.25.2
+httpx>=0.24.0,<0.25.0
 requests==2.31.0
 aiohttp>=3.9.3
 
