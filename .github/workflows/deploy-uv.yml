@@ -103,7 +103,7 @@ jobs:
           
           echo "🔧 Setting up systemd service..."
           # Create systemd service file with all environment variables
-          sudo tee /etc/systemd/system/mivaa.service > /dev/null << SERVICE_EOF
+          sudo tee /etc/systemd/system/mivaa.service > /dev/null << 'SERVICE_EOF'
 [Unit]
 Description=MIVAA PDF Extractor FastAPI Application
 After=network.target
