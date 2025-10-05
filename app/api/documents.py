@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 import aiohttp
 import aiofiles
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, status, BackgroundTasks, Depends
+from fastapi import APIRouter, UploadFile, File, HTTPException, status, BackgroundTasks, Depends, Query
 from fastapi.responses import JSONResponse
 
 # Import authentication dependencies

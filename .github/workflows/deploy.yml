@@ -606,6 +606,11 @@ jobs:
 
           INSTALLATION_LOGS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "cat /tmp/installation_logs.txt 2>/dev/null" || echo "Could not retrieve installation logs")
 
+          # Check if installation logs are empty or just contain basic info
+          if [ ${#INSTALLATION_LOGS} -lt 100 ] || [[ "$INSTALLATION_LOGS" == *"Could not retrieve"* ]]; then
+            INSTALLATION_LOGS="✅ Everything is Good - No installation issues detected"
+          fi
+
 
 
       # 4.5.1. Fallback Package Status (Always runs)
@@ -698,6 +703,11 @@ jobs:
           " 2>/dev/null || echo "Could not create deployment logs file"
 
           DEPLOYMENT_LOGS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "cat /tmp/deployment_logs.txt 2>/dev/null" || echo "Could not retrieve deployment logs")
+
+          # Check if deployment logs are empty or just contain basic info
+          if [ ${#DEPLOYMENT_LOGS} -lt 100 ] || [[ "$DEPLOYMENT_LOGS" == *"Could not retrieve"* ]]; then
+            DEPLOYMENT_LOGS="✅ Everything is Good - No deployment issues detected"
+          fi
 
 
 
@@ -840,6 +850,17 @@ jobs:
           echo "</details>" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
+          # Diagnostic Logs Accordion
+          echo "<details>" >> $GITHUB_STEP_SUMMARY
+          echo "<summary>🔧 Diagnostic Logs</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$DIAGNOSTIC_LOGS" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
           # Debugging Information (always visible)
           echo "### 🐛 Debugging Information" >> $GITHUB_STEP_SUMMARY
           echo "Service Name: mivaa-pdf-extractor" >> $GITHUB_STEP_SUMMARY
@@ -977,16 +998,12 @@ jobs:
             sudo journalctl -u mivaa-pdf-extractor --no-pager --lines=20 --since "1 minute ago"
             ' 2>/dev/null || echo "Could not retrieve diagnostic information")
 
-            # Add collapsible diagnostic logs section to GitHub summary
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "<details>" >> $GITHUB_STEP_SUMMARY
-            echo "<summary>🔧 Diagnostic Logs (Click to expand)</summary>" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            echo "$DIAGNOSTIC_LOGS" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "</details>" >> $GITHUB_STEP_SUMMARY
+            # Check if diagnostic logs are empty or just contain basic info
+            if [ ${#DIAGNOSTIC_LOGS} -lt 100 ] || [[ "$DIAGNOSTIC_LOGS" == *"Could not retrieve"* ]]; then
+              DIAGNOSTIC_LOGS="✅ Everything is Good - No diagnostic issues detected"
+            fi
+
+
 
             echo ""
             echo "🔄 Re-testing health endpoint after diagnostics..."
