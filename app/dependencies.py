@@ -14,7 +14,8 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.config import get_settings
-from app.middleware.jwt_auth import JWTAuthMiddleware, WorkspaceContext
+from app.middleware.jwt_auth import JWTAuthMiddleware
+from app.schemas.auth import WorkspaceContext, User
 from app.services.supabase_client import get_supabase_client as _get_supabase_client
 from app.services.material_kai_service import get_material_kai_service as _get_material_kai_service
 from app.services.llamaindex_service import LlamaIndexService
@@ -75,19 +76,19 @@ async def get_current_user(
     """
     try:
         # Get JWT middleware instance
-        jwt_middleware = JWTAuthMiddleware()
+        jwt_middleware = JWTAuthMiddleware(None)
         
-        # Validate token and extract user info
-        user_info = await jwt_middleware.validate_token(credentials.credentials)
+        # Validate token and extract claims
+        claims = await jwt_middleware._validate_token(credentials.credentials)
         
-        if not user_info:
+        if not claims:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid authentication credentials",
                 headers={"WWW-Authenticate": "Bearer"},
             )
             
-        return user_info
+        return claims
         
     except Exception as e:
         raise HTTPException(
@@ -106,7 +107,7 @@ async def get_workspace_context(
     
     Args:
         request: FastAPI request object
-        user: Authenticated user information
+        user: Authenticated user information (JWT claims)
         
     Returns:
         WorkspaceContext with validated workspace information
@@ -116,10 +117,10 @@ async def get_workspace_context(
     """
     try:
         # Get JWT middleware instance
-        jwt_middleware = JWTAuthMiddleware()
+        jwt_middleware = JWTAuthMiddleware(None)
         
         # Extract workspace context
-        workspace_context = await jwt_middleware.extract_workspace_context(user)
+        workspace_context = await jwt_middleware._extract_workspace_context(user)
         
         if not workspace_context:
             raise HTTPException(
