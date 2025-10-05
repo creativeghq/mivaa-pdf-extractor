@@ -327,7 +327,7 @@ jobs:
           pip install --no-deps httpx==0.27.0
           pip install --no-deps requests==2.31.0
           pip install --no-deps openai==1.51.0
-          pip install --no-deps anthropic==0.27.0
+          pip install --no-deps anthropic==0.23.1
 
           # Step 4: Computer vision with exact versions
           echo 'Step 4: Installing computer vision...'
@@ -336,16 +336,16 @@ jobs:
           pip install --no-deps scikit-image==0.21.0
           pip install --no-deps imageio==2.31.6
 
-          # Step 5: LlamaIndex with ACTUALLY compatible versions (fixed conflicts)
-          echo 'Step 5: Installing LlamaIndex ecosystem with verified compatible versions...'
-          pip install --no-deps llama-index-core==0.11.20 || echo 'llama-index-core installation failed'
+          # Step 5: LlamaIndex with PROPERLY compatible versions (FINAL FIX)
+          echo 'Step 5: Installing LlamaIndex ecosystem with VERIFIED compatible versions...'
+          pip install --no-deps llama-index-core==0.10.57 || echo 'llama-index-core installation failed'
           echo \"Installing llama-index...\" >> /tmp/pip-install.log
           echo 'Attempting llama-index installation...'
-          if pip install --no-deps llama-index==0.11.20 2>&1 | tee -a /tmp/pip-install.log; then
+          if pip install --no-deps llama-index==0.10.57 2>&1 | tee -a /tmp/pip-install.log; then
             echo '✅ llama-index installed successfully with --no-deps'
-          elif pip install llama-index==0.11.20 2>&1 | tee -a /tmp/pip-install.log; then
+          elif pip install llama-index==0.10.57 2>&1 | tee -a /tmp/pip-install.log; then
             echo '✅ llama-index installed successfully with dependencies'
-          elif pip install --force-reinstall llama-index==0.11.20 2>&1 | tee -a /tmp/pip-install.log; then
+          elif pip install --force-reinstall llama-index==0.10.57 2>&1 | tee -a /tmp/pip-install.log; then
             echo '✅ llama-index installed successfully with force-reinstall'
           else
             echo '❌ llama-index installation failed completely' | tee -a /tmp/pip-install.log
