@@ -179,6 +179,62 @@ class DocumentQueryResponse(BaseResponse):
         }
 
 
+class SemanticSearchRequest(BaseModel):
+    """Request model for semantic search across documents."""
+
+    query: str = Field(..., min_length=1, max_length=1000, description="Search query for semantic matching")
+    document_ids: Optional[List[str]] = Field(None, description="Specific document IDs to search (if None, searches all)")
+    similarity_threshold: float = Field(0.7, ge=0.0, le=1.0, description="Minimum similarity score threshold")
+    max_results: int = Field(20, ge=1, le=100, description="Maximum number of results to return")
+    include_metadata: bool = Field(True, description="Whether to include result metadata")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "query": "machine learning algorithms",
+                "document_ids": ["doc_123", "doc_456"],
+                "similarity_threshold": 0.75,
+                "max_results": 10,
+                "include_metadata": True
+            }
+        }
+
+
+class SemanticSearchResponse(BaseResponse):
+    """Response model for semantic search operations."""
+
+    query: str = Field(..., description="Original search query")
+    results: List[Dict[str, Any]] = Field(default_factory=list, description="Search results with similarity scores")
+    total_results: int = Field(..., description="Total number of results found")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Search metadata and statistics")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "query": "machine learning algorithms",
+                "results": [
+                    {
+                        "document_id": "doc_123",
+                        "score": 0.85,
+                        "content": "Machine learning algorithms are...",
+                        "metadata": {
+                            "page": 1,
+                            "section": "Introduction"
+                        }
+                    }
+                ],
+                "total_results": 5,
+                "metadata": {
+                    "searched_documents": 10,
+                    "similarity_threshold": 0.75,
+                    "search_time": 1.2
+                },
+                "timestamp": "2024-07-26T18:00:00Z"
+            }
+        }
+
+
 class QueryRequest(BaseModel):
     """Request model for RAG-based question answering."""
     

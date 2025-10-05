@@ -18,6 +18,8 @@ from ..schemas.search import (
     SearchResponse,
     DocumentQueryRequest,
     DocumentQueryResponse,
+    SemanticSearchRequest,
+    SemanticSearchResponse,
     QueryRequest,
     QueryResponse,
     SourceCitation,
