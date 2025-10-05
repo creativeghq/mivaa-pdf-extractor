@@ -802,43 +802,52 @@ jobs:
             echo "Raw logs content: '$SERVICE_LOGS'"
           fi
 
-          # Add consolidated Errors & Logs section to GitHub summary
+          # Add Errors & Logs section with separate accordions
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "<details>" >> $GITHUB_STEP_SUMMARY
-          echo "<summary>📋 Errors & Logs</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "## 📋 Errors & Logs" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          # Service Status & Logs
-          echo '### 🚨 Service Status & Logs' >> $GITHUB_STEP_SUMMARY
+          # Service Status & Logs Accordion
+          echo "<details>" >> $GITHUB_STEP_SUMMARY
+          echo "<summary>🚨 Service Status & Logs</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "$SERVICE_LOGS" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
 
-          # Installation Logs
-          echo '### 📦 Installation Logs' >> $GITHUB_STEP_SUMMARY
+          # Installation Logs Accordion
+          echo "<details>" >> $GITHUB_STEP_SUMMARY
+          echo "<summary>📦 Installation Logs</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "$INSTALLATION_LOGS" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
 
-          # Comprehensive Deployment Logs
-          echo '### 📋 Comprehensive Deployment Logs' >> $GITHUB_STEP_SUMMARY
+          # Comprehensive Deployment Logs Accordion
+          echo "<details>" >> $GITHUB_STEP_SUMMARY
+          echo "<summary>📋 Comprehensive Deployment Logs</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "$DEPLOYMENT_LOGS" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-
-          # Debugging Information (always visible)
-          echo '### 🐛 Debugging Information' >> $GITHUB_STEP_SUMMARY
-          echo 'Service Name: mivaa-pdf-extractor' >> $GITHUB_STEP_SUMMARY
-          echo 'Log Command: `sudo journalctl -u mivaa-pdf-extractor -f`' >> $GITHUB_STEP_SUMMARY
-          echo 'Service Status: `sudo systemctl status mivaa-pdf-extractor`' >> $GITHUB_STEP_SUMMARY
-          echo 'Service Restart: `sudo systemctl restart mivaa-pdf-extractor`' >> $GITHUB_STEP_SUMMARY
-          echo 'Log Location: `/var/log/mivaa-pdf-extractor/`' >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          echo "</details>" >> $GITHUB_STEP_SUMMARY
+          # Debugging Information (always visible)
+          echo "### 🐛 Debugging Information" >> $GITHUB_STEP_SUMMARY
+          echo "Service Name: mivaa-pdf-extractor" >> $GITHUB_STEP_SUMMARY
+          echo "Log Command: \`sudo journalctl -u mivaa-pdf-extractor -f\`" >> $GITHUB_STEP_SUMMARY
+          echo "Service Status: \`sudo systemctl status mivaa-pdf-extractor\`" >> $GITHUB_STEP_SUMMARY
+          echo "Service Restart: \`sudo systemctl restart mivaa-pdf-extractor\`" >> $GITHUB_STEP_SUMMARY
+          echo "Log Location: \`/var/log/mivaa-pdf-extractor/\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
 
           # Package status is already updated in the main status section above
 

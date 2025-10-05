@@ -391,6 +391,49 @@ class DocumentAnalysisResponse(BaseResponse):
         }
 
 
+class DocumentMetadataResponse(BaseResponse):
+    """Response model for document metadata retrieval."""
+
+    metadata: DocumentMetadata = Field(..., description="Document metadata")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Document metadata retrieved successfully",
+                "metadata": {
+                    "title": "Research Paper on AI",
+                    "author": "Dr. Smith",
+                    "creation_date": "2024-07-26T18:00:00Z",
+                    "page_count": 25,
+                    "word_count": 5000,
+                    "file_size": 2048000,
+                    "tags": ["research", "ai", "machine-learning"]
+                }
+            }
+        }
+
+
+class DocumentContentResponse(BaseResponse):
+    """Response model for document content retrieval."""
+
+    content: DocumentContent = Field(..., description="Document content")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Document content retrieved successfully",
+                "content": {
+                    "markdown_content": "# Research Paper\n\nThis paper discusses...",
+                    "chunks": [],
+                    "images": [],
+                    "tables": []
+                }
+            }
+        }
+
+
 class DocumentDeleteResponse(BaseResponse):
     """Response model for document deletion."""
 

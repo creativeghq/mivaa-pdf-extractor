@@ -35,7 +35,11 @@ from app.schemas.documents import (
     BatchProcessRequest,
     BatchProcessResponse,
     DocumentAnalysisRequest,
-    DocumentAnalysisResponse
+    DocumentAnalysisResponse,
+    DocumentListResponse,
+    DocumentListItem,
+    DocumentMetadataResponse,
+    DocumentContentResponse
 )
 from app.schemas.common import (
     BaseResponse,
