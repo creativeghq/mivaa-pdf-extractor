@@ -122,6 +122,35 @@ jobs:
           echo "| **📊 Monitoring** | Sentry error tracking |" >> $GITHUB_STEP_SUMMARY
           echo "| **🌐 API Endpoints** | 37+ endpoints across 7 modules |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Add comprehensive package status table to first page
+          echo "## 📦 Package Installation Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Package | Category | Description | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|----------|-------------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **fastapi** | 🌐 Web Framework | FastAPI web framework | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
+          echo "| **uvicorn** | 🌐 Server | ASGI server | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
+          echo "| **opencv-python-headless** | 🖼️ Computer Vision | Image processing (headless) | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
+          echo "| **pymupdf4llm** | 📄 PDF Processing | PDF processing for LLM | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
+          echo "| **supabase** | 🗄️ Database | Database client | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
+          echo "| **numpy** | 🔢 Computing | Numerical computing | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
+          echo "| **pandas** | 📊 Data | Data manipulation | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
+          echo "| **pydantic** | ✅ Validation | Data validation | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
+          echo "| **requests** | 🌐 HTTP | HTTP client | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
+          echo "| **pillow** | 🖼️ Images | Image processing | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
+          echo "| **llama-index** | 🤖 AI/ML | LLM framework | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
+          echo "| **openai** | 🤖 AI/ML | OpenAI API client | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
+          echo "| **anthropic** | 🤖 AI/ML | Anthropic API client | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
+          echo "| **transformers** | 🤖 AI/ML | HuggingFace transformers | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
+          echo "| **torch** | 🤖 AI/ML | PyTorch deep learning | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
+          echo "| **scikit-learn** | 🤖 AI/ML | Machine learning | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
+          echo "| **sentence-transformers** | 🤖 AI/ML | Sentence embeddings | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
+          echo "| **easyocr** | 🔍 OCR | Optical character recognition | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
+          echo "| **pytesseract** | 🔍 OCR | Tesseract OCR wrapper | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
+          echo "| **python-multipart** | 📤 Upload | File upload support | 🟡 Installing... |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> 📝 **Note**: Package status will be updated after installation completes. This table shows all critical packages from requirements.txt that will be verified during deployment." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo ""
           echo "🔐 Environment Variables (Configured):"
           echo "  • SUPABASE_URL: ✅ Configured"
@@ -141,9 +170,11 @@ jobs:
           echo "  3. 🐍 Python environment setup (pyenv + venv)"
           echo "  4. 📋 Dependency compilation (uv.lock generation)"
           echo "  5. ⚡ Ultra-fast dependency installation (uv)"
-          echo "  6. ✅ Critical dependency verification"
-          echo "  7. 🔄 Service restart (systemd)"
-          echo "  8. 🏥 Health check and status verification"
+          echo "  6. 🔧 Critical package installation (OpenCV, FastAPI, etc.)"
+          echo "  7. ✅ Comprehensive package verification (all requirements.txt)"
+          echo "  8. 🔄 Service restart (systemd)"
+          echo "  9. 🏥 Health check and status verification"
+          echo "  10. 📊 Package status reporting in deployment summary"
           echo ""
           echo "🎯 Expected Outcomes:"
           echo "  • Zero-downtime deployment"
@@ -206,10 +237,195 @@ jobs:
           # --- Sync dependencies ---
           uv pip sync uv.lock
 
-          # --- Verify installations ---
-          python -c \"import fastapi; print('FastAPI OK')\"
-          python -c \"import pymupdf; print('PyMuPDF OK')\"
-          python -c \"import pymupdf4llm; print('pymupdf4llm OK')\"
+          # --- Ensure critical packages are installed ---
+          echo \"🔧 Ensuring critical packages are installed...\"
+          pip install opencv-python-headless>=4.8.0 --upgrade
+          pip install fastapi[standard]>=0.104.1 --upgrade
+          pip install uvicorn[standard]>=0.24.0 --upgrade
+
+          # --- Comprehensive Package Verification ---
+          echo \"📦 Verifying all critical packages from requirements.txt...\"
+          echo \"================================================================\"
+
+          # Create verification script
+          cat > verify_packages.py << 'VERIFY_EOF'
+import sys
+import importlib
+import re
+
+# Parse requirements.txt to get expected packages
+packages_to_check = {}
+with open('requirements.txt', 'r') as f:
+    for line in f:
+        line = line.strip()
+        if line.startswith('#') or not line:
+            continue
+
+        # Parse package name
+        match = re.match(r'^([a-zA-Z0-9_-]+)', line)
+        if match:
+            package_name = match.group(1)
+
+            # Map package names to import names
+            import_name = package_name
+            if package_name == 'opencv-python-headless':
+                import_name = 'cv2'
+            elif package_name == 'pillow':
+                import_name = 'PIL'
+            elif package_name == 'python-dotenv':
+                import_name = 'dotenv'
+            elif package_name == 'python-multipart':
+                import_name = 'multipart'
+            elif package_name == 'python-dateutil':
+                import_name = 'dateutil'
+            elif package_name == 'python-json-logger':
+                import_name = 'pythonjsonlogger'
+            elif package_name == 'email-validator':
+                import_name = 'email_validator'
+
+            packages_to_check[package_name] = import_name
+
+# Critical packages that must be available
+critical_packages = {
+    'fastapi', 'uvicorn', 'pydantic', 'supabase', 'pymupdf4llm',
+    'numpy', 'pandas', 'opencv-python-headless', 'pillow', 'requests'
+}
+
+print(\"\\n📦 PACKAGE VERIFICATION RESULTS\")
+print(\"=\" * 50)
+print(f\"{'Package Name':<25} {'Import Name':<15} {'Status':<10} {'Version':<15}\")
+print(\"-\" * 70)
+
+failed_packages = []
+critical_failed = []
+
+for package_name, import_name in sorted(packages_to_check.items()):
+    try:
+        module = importlib.import_module(import_name)
+        version = getattr(module, '__version__', 'unknown')
+        status = '✅ OK'
+        print(f\"{package_name:<25} {import_name:<15} {status:<10} {version:<15}\")
+    except ImportError:
+        status = '❌ MISSING'
+        version = 'N/A'
+        print(f\"{package_name:<25} {import_name:<15} {status:<10} {version:<15}\")
+        failed_packages.append(package_name)
+        if package_name in critical_packages:
+            critical_failed.append(package_name)
+
+print(\"-\" * 70)
+print(f\"Total packages checked: {len(packages_to_check)}\")
+print(f\"Successfully imported: {len(packages_to_check) - len(failed_packages)}\")
+print(f\"Failed to import: {len(failed_packages)}\")
+print(f\"Critical packages failed: {len(critical_failed)}\")
+
+if critical_failed:
+    print(f\"\\n🚨 CRITICAL PACKAGES MISSING: {', '.join(critical_failed)}\")
+    sys.exit(1)
+elif failed_packages:
+    print(f\"\\n⚠️  Optional packages missing: {', '.join(failed_packages)}\")
+    print(\"✅ All critical packages are available - deployment can proceed\")
+else:
+    print(\"\\n🎉 ALL PACKAGES SUCCESSFULLY VERIFIED!\")
+
+print(\"\\n🔍 OpenCV Specific Check:\")
+try:
+    import cv2
+    print(f\"✅ OpenCV version: {cv2.__version__}\")
+    print(\"✅ OpenCV headless successfully imported\")
+except ImportError as e:
+    print(f\"❌ OpenCV import failed: {e}\")
+    sys.exit(1)
+VERIFY_EOF
+
+          # Run verification
+          python verify_packages.py
+
+          # Create updated package status for GitHub summary
+          cat > update_package_status.py << 'UPDATE_EOF'
+import importlib
+import re
+
+# All packages to check with categories and descriptions
+all_packages = {
+    'fastapi': ('🌐 Web Framework', 'FastAPI web framework'),
+    'uvicorn': ('🌐 Server', 'ASGI server'),
+    'opencv-python-headless': ('🖼️ Computer Vision', 'Image processing (headless)'),
+    'pymupdf4llm': ('📄 PDF Processing', 'PDF processing for LLM'),
+    'supabase': ('🗄️ Database', 'Database client'),
+    'numpy': ('🔢 Computing', 'Numerical computing'),
+    'pandas': ('📊 Data', 'Data manipulation'),
+    'pydantic': ('✅ Validation', 'Data validation'),
+    'requests': ('🌐 HTTP', 'HTTP client'),
+    'pillow': ('🖼️ Images', 'Image processing'),
+    'llama-index': ('🤖 AI/ML', 'LLM framework'),
+    'openai': ('🤖 AI/ML', 'OpenAI API client'),
+    'anthropic': ('🤖 AI/ML', 'Anthropic API client'),
+    'transformers': ('🤖 AI/ML', 'HuggingFace transformers'),
+    'torch': ('🤖 AI/ML', 'PyTorch deep learning'),
+    'scikit-learn': ('🤖 AI/ML', 'Machine learning'),
+    'sentence-transformers': ('🤖 AI/ML', 'Sentence embeddings'),
+    'easyocr': ('🔍 OCR', 'Optical character recognition'),
+    'pytesseract': ('🔍 OCR', 'Tesseract OCR wrapper'),
+    'python-multipart': ('📤 Upload', 'File upload support'),
+    'python-dotenv': ('⚙️ Config', 'Environment variables'),
+    'python-dateutil': ('📅 Date/Time', 'Date utilities'),
+    'email-validator': ('✅ Validation', 'Email validation'),
+    'cryptography': ('🔐 Security', 'Cryptographic functions'),
+    'jwt': ('🔐 Security', 'JSON Web Tokens'),
+    'bcrypt': ('🔐 Security', 'Password hashing'),
+    'aiofiles': ('📁 Files', 'Async file operations'),
+    'httpx': ('🌐 HTTP', 'Async HTTP client'),
+    'websockets': ('🔌 WebSocket', 'WebSocket support'),
+    'redis': ('💾 Cache', 'Redis client')
+}
+
+# Import name mapping
+import_mapping = {
+    'opencv-python-headless': 'cv2',
+    'pillow': 'PIL',
+    'python-dotenv': 'dotenv',
+    'python-multipart': 'multipart',
+    'python-dateutil': 'dateutil',
+    'python-json-logger': 'pythonjsonlogger',
+    'email-validator': 'email_validator',
+    'scikit-learn': 'sklearn',
+    'llama-index': 'llama_index'
+}
+
+print('## 📦 Final Package Installation Status')
+print('')
+print('| Package | Category | Description | Status | Version |')
+print('|---------|----------|-------------|--------|---------|')
+
+installed_count = 0
+total_count = len(all_packages)
+
+for package_name, (category, description) in sorted(all_packages.items()):
+    import_name = import_mapping.get(package_name, package_name.replace('-', '_'))
+    try:
+        module = importlib.import_module(import_name)
+        version = getattr(module, '__version__', 'unknown')
+        status = '🟢 Installed'
+        installed_count += 1
+        print(f'| **{package_name}** | {category} | {description} | {status} | `{version}` |')
+    except ImportError:
+        status = '🔴 Missing'
+        print(f'| **{package_name}** | {category} | {description} | {status} | N/A |')
+
+print('')
+print(f'> 📊 **Installation Summary**: {installed_count}/{total_count} packages successfully installed ({installed_count/total_count*100:.1f}%)')
+print('')
+
+# Special OpenCV check
+try:
+    import cv2
+    print(f'> ✅ **OpenCV Status**: Successfully installed version `{cv2.__version__}` (headless)')
+except ImportError:
+    print(f'> ❌ **OpenCV Status**: Failed to install - this will cause service startup issues')
+UPDATE_EOF
+
+          python update_package_status.py > package_status_update.md
           "
 
       # 4.5. Create/Update systemd service file
@@ -273,7 +489,22 @@ jobs:
           echo "  • URL: $HEALTH_URL"
           echo "  • HTTP Status: $HTTP_STATUS"
 
-          # Add health check to summary
+          # Update package status in summary with actual results
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Get the updated package status from server
+          ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          cd /var/www/mivaa-pdf-extractor
+          source .venv/bin/activate
+          cat package_status_update.md
+          " >> $GITHUB_STEP_SUMMARY
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+
+
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## 🏥 Health Check Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

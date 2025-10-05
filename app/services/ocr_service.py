@@ -81,8 +81,8 @@ class ImagePreprocessor:
             # Convert back to numpy array
             enhanced = np.array(pil_image)
             
-            # Convert back to BGR if original was BGR
-            if len(image.shape) == 3:
+            # Convert back to BGR if original was BGR and cv2 is available
+            if len(image.shape) == 3 and CV2_AVAILABLE:
                 enhanced = cv2.cvtColor(enhanced, cv2.COLOR_RGB2BGR)
                 
             return enhanced
@@ -95,35 +95,44 @@ class ImagePreprocessor:
     def preprocess_for_ocr(image: np.ndarray) -> np.ndarray:
         """
         Preprocess image for optimal OCR performance.
-        
+
         Args:
             image: Input image as numpy array
-            
+
         Returns:
             Preprocessed image as numpy array
         """
         try:
+            if not CV2_AVAILABLE:
+                # Basic preprocessing without OpenCV
+                if len(image.shape) == 3:
+                    # Convert to grayscale using numpy
+                    gray = np.dot(image[...,:3], [0.2989, 0.5870, 0.1140])
+                    return gray.astype(np.uint8)
+                return image
+
+            # Full preprocessing with OpenCV
             # Convert to grayscale if needed
             if len(image.shape) == 3:
                 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
             else:
                 gray = image.copy()
-            
+
             # Apply Gaussian blur to reduce noise
             blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-            
+
             # Apply adaptive thresholding
             thresh = cv2.adaptiveThreshold(
-                blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                 cv2.THRESH_BINARY, 11, 2
             )
-            
+
             # Morphological operations to clean up
             kernel = np.ones((2, 2), np.uint8)
             cleaned = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-            
+
             return cleaned
-            
+
         except Exception as e:
             logger.warning(f"Image preprocessing failed: {str(e)}")
             return image
@@ -429,19 +438,24 @@ class OCRService:
                 image_path = Path(image_input)
                 if not image_path.exists():
                     raise ValueError(f"Image file not found: {image_path}")
-                
-                image = cv2.imread(str(image_path))
-                if image is None:
-                    raise ValueError(f"Could not load image: {image_path}")
-                
+
+                if CV2_AVAILABLE:
+                    image = cv2.imread(str(image_path))
+                    if image is None:
+                        raise ValueError(f"Could not load image: {image_path}")
+                else:
+                    # Fallback to PIL
+                    pil_image = Image.open(image_path)
+                    image = np.array(pil_image)
+
             elif isinstance(image_input, np.ndarray):
                 # Already a numpy array
                 image = image_input.copy()
-                
+
             elif isinstance(image_input, Image.Image):
                 # Convert PIL Image to numpy array
                 image = np.array(image_input)
-                if len(image.shape) == 3:
+                if len(image.shape) == 3 and CV2_AVAILABLE:
                     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
                     
             else:
