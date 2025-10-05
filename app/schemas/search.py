@@ -158,269 +158,269 @@ class QueryRequest(BaseModel):
                 "include_sources": True,
                 "response_format": "markdown"
             }
-    
+        }
     
     # Multi-modal specific schemas
     
-    class ImageSearchRequest(BaseModel):
-        """Request model for image-based search with material-specific filtering."""
-        
-        query: str = Field(..., min_length=1, max_length=1000, description="Image search query")
-        document_ids: Optional[List[str]] = Field(None, description="Limit search to specific documents")
-        
-        # Image search parameters
-        limit: int = Field(10, ge=1, le=50, description="Maximum number of results")
-        similarity_threshold: float = Field(0.6, ge=0.0, le=1.0, description="Minimum similarity score")
-        include_ocr_text: bool = Field(True, description="Include OCR-extracted text in search")
-        ocr_confidence_threshold: float = Field(0.5, ge=0.0, le=1.0, description="Minimum OCR confidence threshold")
-        
-        # Visual similarity parameters
-        visual_similarity_threshold: float = Field(0.75, ge=0.0, le=1.0, description="Minimum visual similarity threshold")
-        search_type: str = Field("visual_similarity", regex="^(visual_similarity|semantic_analysis|hybrid|material_properties)$", description="Type of visual search")
-        
-        # Image analysis parameters
-        analysis_depth: str = Field("standard", regex="^(basic|standard|detailed)$", description="Level of image analysis")
-        include_visual_features: bool = Field(True, description="Include visual feature analysis")
-        image_analysis_model: Optional[str] = Field(None, description="Specific image analysis model to use")
-        
-        # Material-specific filtering
-        material_filters: Optional[Dict[str, Any]] = Field(None, description="Material property filters")
-        material_types: Optional[List[str]] = Field(None, description="Filter by specific material types")
-        confidence_threshold: Optional[float] = Field(None, ge=0.0, le=1.0, description="Minimum material analysis confidence")
-        
-        # Advanced material property filters
-        spectral_filters: Optional[Dict[str, Any]] = Field(None, description="Spectral analysis filters")
-        chemical_filters: Optional[Dict[str, Any]] = Field(None, description="Chemical composition filters")
-        mechanical_filters: Optional[Dict[str, Any]] = Field(None, description="Mechanical property filters")
-        
-        # Fusion weights for hybrid material search
-        fusion_weights: Optional[Dict[str, float]] = Field(None, description="Weights for combining different analysis types")
-        
-        # Advanced options
-        enable_clip_embeddings: bool = Field(True, description="Enable CLIP embedding generation for visual similarity")
-        enable_llama_analysis: bool = Field(False, description="Enable LLaMA Vision analysis for material properties")
-        include_analytics: bool = Field(False, description="Include search analytics in response")
-        
-        class Config:
-            schema_extra = {
-                "example": {
-                    "query": "charts and graphs showing revenue data",
-                    "document_ids": ["doc_123"],
-                    "limit": 15,
-                    "similarity_threshold": 0.7,
-                    "include_ocr_text": True,
-                    "analysis_depth": "detailed"
-                }
-            }
+class ImageSearchRequest(BaseModel):
+    """Request model for image-based search with material-specific filtering."""
     
+    query: str = Field(..., min_length=1, max_length=1000, description="Image search query")
+    document_ids: Optional[List[str]] = Field(None, description="Limit search to specific documents")
     
-    class ImageSearchResult(BaseModel):
-        """Individual image search result."""
-        
-        document_id: str = Field(..., description="Source document ID")
-        document_name: str = Field(..., description="Document name")
-        image_id: str = Field(..., description="Image identifier")
-        page_number: int = Field(..., description="Source page number")
-        
-        # Image information
-        image_path: Optional[str] = Field(None, description="Path to image file")
-        image_dimensions: Optional[Dict[str, int]] = Field(None, description="Image width and height")
-        image_format: Optional[str] = Field(None, description="Image format (PNG, JPEG, etc.)")
-        
-        # Analysis results
-        visual_description: Optional[str] = Field(None, description="AI-generated visual description")
-        ocr_text: Optional[str] = Field(None, description="OCR-extracted text from image")
-        ocr_confidence: Optional[float] = Field(None, description="OCR extraction confidence")
-        
-        # Relevance scoring
-        similarity_score: float = Field(..., description="Visual similarity score (0-1)")
-        ocr_relevance_score: Optional[float] = Field(None, description="OCR text relevance score")
-        combined_score: float = Field(..., description="Final combined relevance score")
-        
-        # Visual features
-        visual_features: Optional[Dict[str, Any]] = Field(None, description="Extracted visual features")
-        detected_objects: List[str] = Field(default_factory=list, description="Detected objects in image")
-        
-        # Material analysis results
-        material_analysis: Optional[Dict[str, Any]] = Field(None, description="Material property analysis results")
-        clip_embedding: Optional[List[float]] = Field(None, description="CLIP embedding vector for visual similarity")
-        llama_analysis: Optional[Dict[str, Any]] = Field(None, description="LLaMA Vision material analysis")
-        
-        # Material properties
-        material_type: Optional[str] = Field(None, description="Identified material type")
-        material_confidence: Optional[float] = Field(None, description="Material identification confidence")
-        spectral_properties: Optional[Dict[str, Any]] = Field(None, description="Spectral analysis properties")
-        chemical_composition: Optional[Dict[str, Any]] = Field(None, description="Chemical composition analysis")
-        mechanical_properties: Optional[Dict[str, Any]] = Field(None, description="Mechanical property analysis")
-        
-        class Config:
-            schema_extra = {
-                "example": {
-                    "document_id": "doc_123",
-                    "document_name": "Financial Report Q3",
-                    "image_id": "img_456",
-                    "page_number": 5,
-                    "visual_description": "Bar chart showing quarterly revenue growth",
-                    "ocr_text": "Q3 Revenue: $2.5M (+15% YoY)",
-                    "similarity_score": 0.89,
-                    "combined_score": 0.85,
-                    "detected_objects": ["chart", "text", "numbers"]
-                }
-            }
+    # Image search parameters
+    limit: int = Field(10, ge=1, le=50, description="Maximum number of results")
+    similarity_threshold: float = Field(0.6, ge=0.0, le=1.0, description="Minimum similarity score")
+    include_ocr_text: bool = Field(True, description="Include OCR-extracted text in search")
+    ocr_confidence_threshold: float = Field(0.5, ge=0.0, le=1.0, description="Minimum OCR confidence threshold")
     
+    # Visual similarity parameters
+    visual_similarity_threshold: float = Field(0.75, ge=0.0, le=1.0, description="Minimum visual similarity threshold")
+    search_type: str = Field("visual_similarity", regex="^(visual_similarity|semantic_analysis|hybrid|material_properties)$", description="Type of visual search")
     
-    class ImageSearchResponse(BaseResponse):
-        """Response model for image search operations."""
-        
-        query: str = Field(..., description="Original search query")
-        results: List[ImageSearchResult] = Field(..., description="Image search results")
-        total_found: int = Field(..., description="Total number of matching images")
-        search_time_ms: float = Field(..., description="Search execution time in milliseconds")
-        
-        # Search metadata
-        analysis_depth: str = Field(..., description="Level of analysis performed")
-        ocr_enabled: bool = Field(..., description="Whether OCR was enabled")
-        
-        class Config:
-            schema_extra = {
-                "example": {
-                    "success": True,
-                    "query": "charts and graphs",
-                    "results": [
-                        {
-                            "document_id": "doc_123",
-                            "document_name": "Financial Report",
-                            "image_id": "img_456",
-                            "page_number": 5,
-                            "visual_description": "Bar chart showing revenue data",
-                            "similarity_score": 0.89,
-                            "combined_score": 0.85
-                        }
-                    ],
-                    "total_found": 12,
-                    "search_time_ms": 234.5,
-                    "analysis_depth": "standard",
-                    "timestamp": "2024-07-26T18:00:00Z"
-                }
-            }
+    # Image analysis parameters
+    analysis_depth: str = Field("standard", regex="^(basic|standard|detailed)$", description="Level of image analysis")
+    include_visual_features: bool = Field(True, description="Include visual feature analysis")
+    image_analysis_model: Optional[str] = Field(None, description="Specific image analysis model to use")
     
+    # Material-specific filtering
+    material_filters: Optional[Dict[str, Any]] = Field(None, description="Material property filters")
+    material_types: Optional[List[str]] = Field(None, description="Filter by specific material types")
+    confidence_threshold: Optional[float] = Field(None, ge=0.0, le=1.0, description="Minimum material analysis confidence")
     
-    class MultiModalAnalysisRequest(BaseModel):
-        """Request model for multi-modal document analysis with material-specific capabilities."""
-        
-        document_id: str = Field(..., description="Document ID to analyze")
-        analysis_types: List[str] = Field(..., description="Types of analysis to perform")
-        
-        # Analysis parameters
-        include_text_analysis: bool = Field(True, description="Include text content analysis")
-        include_image_analysis: bool = Field(True, description="Include image content analysis")
-        include_ocr_analysis: bool = Field(True, description="Include OCR text analysis")
-        include_structure_analysis: bool = Field(False, description="Include document structure analysis")
-        
-        # OCR parameters
-        ocr_language: str = Field("en", description="OCR language code")
-        ocr_confidence_threshold: float = Field(0.5, ge=0.0, le=1.0, description="Minimum OCR confidence")
-        
-        # Image analysis parameters
-        image_analysis_depth: str = Field("standard", regex="^(basic|standard|detailed)$", description="Image analysis depth")
-        detect_objects: bool = Field(True, description="Detect objects in images")
-        extract_visual_features: bool = Field(True, description="Extract visual features")
-        
-        # Material-specific analysis parameters
-        enable_material_analysis: bool = Field(False, description="Enable material property analysis")
-        material_analysis_types: List[str] = Field(default_factory=list, description="Types of material analysis (spectral, chemical, mechanical, thermal)")
-        enable_clip_embeddings: bool = Field(False, description="Generate CLIP embeddings for visual similarity")
-        enable_llama_vision: bool = Field(False, description="Use LLaMA Vision for material understanding")
-        
-        # Advanced material analysis
-        spectral_analysis: bool = Field(False, description="Perform spectral analysis on materials")
-        chemical_analysis: bool = Field(False, description="Perform chemical composition analysis")
-        mechanical_analysis: bool = Field(False, description="Perform mechanical property analysis")
-        thermal_analysis: bool = Field(False, description="Perform thermal property analysis")
-        
-        # Multi-modal integration
-        multimodal_llm_model: Optional[str] = Field(None, description="Specific multi-modal LLM model to use")
-        cross_modal_analysis: bool = Field(False, description="Analyze relationships between different modalities")
-        
-        # Processing options
-        analysis_depth: str = Field("standard", regex="^(basic|standard|detailed|comprehensive)$", description="Overall analysis depth")
-        prioritize_materials: bool = Field(False, description="Prioritize material-related content in analysis")
-        
-        class Config:
-            schema_extra = {
-                "example": {
-                    "document_id": "doc_123",
-                    "analysis_types": ["text", "image", "ocr"],
-                    "include_image_analysis": True,
-                    "image_analysis_depth": "detailed",
-                    "ocr_language": "en"
-                }
-            }
+    # Advanced material property filters
+    spectral_filters: Optional[Dict[str, Any]] = Field(None, description="Spectral analysis filters")
+    chemical_filters: Optional[Dict[str, Any]] = Field(None, description="Chemical composition filters")
+    mechanical_filters: Optional[Dict[str, Any]] = Field(None, description="Mechanical property filters")
     
+    # Fusion weights for hybrid material search
+    fusion_weights: Optional[Dict[str, float]] = Field(None, description="Weights for combining different analysis types")
     
-    class MultiModalAnalysisResponse(BaseResponse):
-        """Response model for multi-modal analysis."""
-        
-        document_id: str = Field(..., description="Analyzed document ID")
-        document_name: str = Field(..., description="Document name")
-        
-        # Analysis results
-        text_analysis: Optional[Dict[str, Any]] = Field(None, description="Text analysis results")
-        image_analysis: Optional[Dict[str, Any]] = Field(None, description="Image analysis results")
-        ocr_analysis: Optional[Dict[str, Any]] = Field(None, description="OCR analysis results")
-        structure_analysis: Optional[Dict[str, Any]] = Field(None, description="Document structure analysis")
-        
-        # Material-specific analysis results
-        material_analysis: Optional[Dict[str, Any]] = Field(None, description="Comprehensive material analysis results")
-        spectral_analysis: Optional[Dict[str, Any]] = Field(None, description="Spectral analysis results")
-        chemical_analysis: Optional[Dict[str, Any]] = Field(None, description="Chemical composition analysis")
-        mechanical_analysis: Optional[Dict[str, Any]] = Field(None, description="Mechanical property analysis")
-        thermal_analysis: Optional[Dict[str, Any]] = Field(None, description="Thermal property analysis")
-        
-        # Visual embeddings and analysis
-        clip_embeddings: Optional[List[List[float]]] = Field(None, description="Generated CLIP embeddings for visual similarity")
-        llama_vision_analysis: Optional[Dict[str, Any]] = Field(None, description="LLaMA Vision material understanding results")
-        
-        # Combined insights
-        multimodal_insights: Optional[Dict[str, Any]] = Field(None, description="Combined multi-modal insights")
-        cross_modal_insights: Optional[Dict[str, Any]] = Field(None, description="Cross-modal relationship insights")
-        content_summary: Optional[str] = Field(None, description="Overall content summary")
-        material_summary: Optional[str] = Field(None, description="Material-focused analysis summary")
-        
-        # Processing metadata
-        analysis_time_ms: float = Field(..., description="Total analysis time")
-        models_used: Dict[str, str] = Field(default_factory=dict, description="Models used for analysis")
-        material_analysis_enabled: bool = Field(False, description="Whether material analysis was performed")
-        
-        # Statistics
-        total_pages: int = Field(..., description="Total pages analyzed")
-        total_images: int = Field(..., description="Total images analyzed")
-        total_text_chunks: int = Field(..., description="Total text chunks analyzed")
-        total_materials_identified: int = Field(0, description="Total materials identified in analysis")
-        
-        class Config:
-            schema_extra = {
-                "example": {
-                    "success": True,
-                    "document_id": "doc_123",
-                    "document_name": "Financial Report Q3",
-                    "text_analysis": {
-                        "key_topics": ["revenue", "growth", "market"],
-                        "sentiment": "positive"
-                    },
-                    "image_analysis": {
-                        "chart_count": 5,
-                        "table_count": 3,
-                        "detected_objects": ["charts", "tables", "logos"]
-                    },
-                    "content_summary": "Financial report showing positive Q3 growth with detailed charts and tables",
-                    "analysis_time_ms": 1250.0,
-                    "total_pages": 25,
-                    "total_images": 8,
-                    "timestamp": "2024-07-26T18:00:00Z"
-                }
+    # Advanced options
+    enable_clip_embeddings: bool = Field(True, description="Enable CLIP embedding generation for visual similarity")
+    enable_llama_analysis: bool = Field(False, description="Enable LLaMA Vision analysis for material properties")
+    include_analytics: bool = Field(False, description="Include search analytics in response")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "query": "charts and graphs showing revenue data",
+                "document_ids": ["doc_123"],
+                "limit": 15,
+                "similarity_threshold": 0.7,
+                "include_ocr_text": True,
+                "analysis_depth": "detailed"
             }
         }
+    
+
+class ImageSearchResult(BaseModel):
+    """Individual image search result."""
+    
+    document_id: str = Field(..., description="Source document ID")
+    document_name: str = Field(..., description="Document name")
+    image_id: str = Field(..., description="Image identifier")
+    page_number: int = Field(..., description="Source page number")
+    
+    # Image information
+    image_path: Optional[str] = Field(None, description="Path to image file")
+    image_dimensions: Optional[Dict[str, int]] = Field(None, description="Image width and height")
+    image_format: Optional[str] = Field(None, description="Image format (PNG, JPEG, etc.)")
+    
+    # Analysis results
+    visual_description: Optional[str] = Field(None, description="AI-generated visual description")
+    ocr_text: Optional[str] = Field(None, description="OCR-extracted text from image")
+    ocr_confidence: Optional[float] = Field(None, description="OCR extraction confidence")
+    
+    # Relevance scoring
+    similarity_score: float = Field(..., description="Visual similarity score (0-1)")
+    ocr_relevance_score: Optional[float] = Field(None, description="OCR text relevance score")
+    combined_score: float = Field(..., description="Final combined relevance score")
+    
+    # Visual features
+    visual_features: Optional[Dict[str, Any]] = Field(None, description="Extracted visual features")
+    detected_objects: List[str] = Field(default_factory=list, description="Detected objects in image")
+    
+    # Material analysis results
+    material_analysis: Optional[Dict[str, Any]] = Field(None, description="Material property analysis results")
+    clip_embedding: Optional[List[float]] = Field(None, description="CLIP embedding vector for visual similarity")
+    llama_analysis: Optional[Dict[str, Any]] = Field(None, description="LLaMA Vision material analysis")
+    
+    # Material properties
+    material_type: Optional[str] = Field(None, description="Identified material type")
+    material_confidence: Optional[float] = Field(None, description="Material identification confidence")
+    spectral_properties: Optional[Dict[str, Any]] = Field(None, description="Spectral analysis properties")
+    chemical_composition: Optional[Dict[str, Any]] = Field(None, description="Chemical composition analysis")
+    mechanical_properties: Optional[Dict[str, Any]] = Field(None, description="Mechanical property analysis")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "document_id": "doc_123",
+                "document_name": "Financial Report Q3",
+                "image_id": "img_456",
+                "page_number": 5,
+                "visual_description": "Bar chart showing quarterly revenue growth",
+                "ocr_text": "Q3 Revenue: $2.5M (+15% YoY)",
+                "similarity_score": 0.89,
+                "combined_score": 0.85,
+                "detected_objects": ["chart", "text", "numbers"]
+            }
+        }
+
+    
+class ImageSearchResponse(BaseResponse):
+    """Response model for image search operations."""
+    
+    query: str = Field(..., description="Original search query")
+    results: List[ImageSearchResult] = Field(..., description="Image search results")
+    total_found: int = Field(..., description="Total number of matching images")
+    search_time_ms: float = Field(..., description="Search execution time in milliseconds")
+    
+    # Search metadata
+    analysis_depth: str = Field(..., description="Level of analysis performed")
+    ocr_enabled: bool = Field(..., description="Whether OCR was enabled")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "success": True,
+                "query": "charts and graphs",
+                "results": [
+                    {
+                        "document_id": "doc_123",
+                        "document_name": "Financial Report",
+                        "image_id": "img_456",
+                        "page_number": 5,
+                        "visual_description": "Bar chart showing revenue data",
+                        "similarity_score": 0.89,
+                        "combined_score": 0.85
+                    }
+                ],
+                "total_found": 12,
+                "search_time_ms": 234.5,
+                "analysis_depth": "standard",
+                "timestamp": "2024-07-26T18:00:00Z"
+            }
+        }
+    
+    
+class MultiModalAnalysisRequest(BaseModel):
+    """Request model for multi-modal document analysis with material-specific capabilities."""
+    
+    document_id: str = Field(..., description="Document ID to analyze")
+    analysis_types: List[str] = Field(..., description="Types of analysis to perform")
+    
+    # Analysis parameters
+    include_text_analysis: bool = Field(True, description="Include text content analysis")
+    include_image_analysis: bool = Field(True, description="Include image content analysis")
+    include_ocr_analysis: bool = Field(True, description="Include OCR text analysis")
+    include_structure_analysis: bool = Field(False, description="Include document structure analysis")
+    
+    # OCR parameters
+    ocr_language: str = Field("en", description="OCR language code")
+    ocr_confidence_threshold: float = Field(0.5, ge=0.0, le=1.0, description="Minimum OCR confidence")
+    
+    # Image analysis parameters
+    image_analysis_depth: str = Field("standard", regex="^(basic|standard|detailed)$", description="Image analysis depth")
+    detect_objects: bool = Field(True, description="Detect objects in images")
+    extract_visual_features: bool = Field(True, description="Extract visual features")
+    
+    # Material-specific analysis parameters
+    enable_material_analysis: bool = Field(False, description="Enable material property analysis")
+    material_analysis_types: List[str] = Field(default_factory=list, description="Types of material analysis (spectral, chemical, mechanical, thermal)")
+    enable_clip_embeddings: bool = Field(False, description="Generate CLIP embeddings for visual similarity")
+    enable_llama_vision: bool = Field(False, description="Use LLaMA Vision for material understanding")
+    
+    # Advanced material analysis
+    spectral_analysis: bool = Field(False, description="Perform spectral analysis on materials")
+    chemical_analysis: bool = Field(False, description="Perform chemical composition analysis")
+    mechanical_analysis: bool = Field(False, description="Perform mechanical property analysis")
+    thermal_analysis: bool = Field(False, description="Perform thermal property analysis")
+    
+    # Multi-modal integration
+    multimodal_llm_model: Optional[str] = Field(None, description="Specific multi-modal LLM model to use")
+    cross_modal_analysis: bool = Field(False, description="Analyze relationships between different modalities")
+    
+    # Processing options
+    analysis_depth: str = Field("standard", regex="^(basic|standard|detailed|comprehensive)$", description="Overall analysis depth")
+    prioritize_materials: bool = Field(False, description="Prioritize material-related content in analysis")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "document_id": "doc_123",
+                "analysis_types": ["text", "image", "ocr"],
+                "include_image_analysis": True,
+                "image_analysis_depth": "detailed",
+                "ocr_language": "en"
+            }
+        }
+    
+    
+class MultiModalAnalysisResponse(BaseResponse):
+    """Response model for multi-modal analysis."""
+    
+    document_id: str = Field(..., description="Analyzed document ID")
+    document_name: str = Field(..., description="Document name")
+    
+    # Analysis results
+    text_analysis: Optional[Dict[str, Any]] = Field(None, description="Text analysis results")
+    image_analysis: Optional[Dict[str, Any]] = Field(None, description="Image analysis results")
+    ocr_analysis: Optional[Dict[str, Any]] = Field(None, description="OCR analysis results")
+    structure_analysis: Optional[Dict[str, Any]] = Field(None, description="Document structure analysis")
+    
+    # Material-specific analysis results
+    material_analysis: Optional[Dict[str, Any]] = Field(None, description="Comprehensive material analysis results")
+    spectral_analysis: Optional[Dict[str, Any]] = Field(None, description="Spectral analysis results")
+    chemical_analysis: Optional[Dict[str, Any]] = Field(None, description="Chemical composition analysis")
+    mechanical_analysis: Optional[Dict[str, Any]] = Field(None, description="Mechanical property analysis")
+    thermal_analysis: Optional[Dict[str, Any]] = Field(None, description="Thermal property analysis")
+    
+    # Visual embeddings and analysis
+    clip_embeddings: Optional[List[List[float]]] = Field(None, description="Generated CLIP embeddings for visual similarity")
+    llama_vision_analysis: Optional[Dict[str, Any]] = Field(None, description="LLaMA Vision material understanding results")
+    
+    # Combined insights
+    multimodal_insights: Optional[Dict[str, Any]] = Field(None, description="Combined multi-modal insights")
+    cross_modal_insights: Optional[Dict[str, Any]] = Field(None, description="Cross-modal relationship insights")
+    content_summary: Optional[str] = Field(None, description="Overall content summary")
+    material_summary: Optional[str] = Field(None, description="Material-focused analysis summary")
+    
+    # Processing metadata
+    analysis_time_ms: float = Field(..., description="Total analysis time")
+    models_used: Dict[str, str] = Field(default_factory=dict, description="Models used for analysis")
+    material_analysis_enabled: bool = Field(False, description="Whether material analysis was performed")
+    
+    # Statistics
+    total_pages: int = Field(..., description="Total pages analyzed")
+    total_images: int = Field(..., description="Total images analyzed")
+    total_text_chunks: int = Field(..., description="Total text chunks analyzed")
+    total_materials_identified: int = Field(0, description="Total materials identified in analysis")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "success": True,
+                "document_id": "doc_123",
+                "document_name": "Financial Report Q3",
+                "text_analysis": {
+                    "key_topics": ["revenue", "growth", "market"],
+                    "sentiment": "positive"
+                },
+                "image_analysis": {
+                    "chart_count": 5,
+                    "table_count": 3,
+                    "detected_objects": ["charts", "tables", "logos"]
+                },
+                "content_summary": "Financial report showing positive Q3 growth with detailed charts and tables",
+                "analysis_time_ms": 1250.0,
+                "total_pages": 25,
+                "total_images": 8,
+                "timestamp": "2024-07-26T18:00:00Z"
+            }
+        }
+        
 
 
 class SourceCitation(BaseModel):
