@@ -231,43 +231,67 @@ jobs:
           pip install --upgrade pip
           pip install uv
 
-          # --- Generate uv.lock dynamically ---
-          uv pip compile -o uv.lock requirements.txt requirements-torch.txt
+          # --- Strategic dependency installation to resolve conflicts ---
+          echo 'Installing dependencies with conflict resolution strategy...'
 
-          # --- Sync dependencies ---
-          uv pip sync uv.lock
+          # Step 1: Install base scientific computing stack
+          echo 'Step 1: Installing base scientific computing...'
+          pip install numpy==1.26.4
+          pip install pandas==2.1.4
+          pip install scipy>=1.11.0
 
-          # --- Ensure critical packages are installed ---
-          echo 'Installing critical packages to ensure none are missing...'
-          pip install opencv-python-headless>=4.8.0 --upgrade
-          pip install fastapi[standard]>=0.104.1 --upgrade
-          pip install uvicorn[standard]>=0.24.0 --upgrade
-          pip install pymupdf4llm>=0.0.12 --upgrade
-          pip install supabase>=2.3.0 --upgrade
-          pip install numpy>=1.24.0 --upgrade
-          pip install pandas>=2.0.0 --upgrade
-          pip install pillow>=10.0.0 --upgrade
-          pip install pydantic>=2.0.0 --upgrade
-          pip install requests>=2.31.0 --upgrade
-          pip install easyocr>=1.7.0 --upgrade
-          pip install pytesseract>=0.3.10 --upgrade
-          pip install python-multipart>=0.0.6 --upgrade
-          pip install llama-index>=0.9.0 --upgrade
-          pip install openai>=1.0.0 --upgrade
-          pip install anthropic>=0.8.0 --upgrade
-          pip install transformers>=4.35.0 --upgrade
-          pip install torch>=2.0.0 --upgrade
-          pip install scikit-learn>=1.3.0 --upgrade
-          pip install sentence-transformers>=2.2.0 --upgrade
-          pip install python-dotenv>=1.0.0 --upgrade
-          pip install python-dateutil>=2.8.0 --upgrade
-          pip install email-validator>=2.0.0 --upgrade
-          pip install cryptography>=41.0.0 --upgrade
-          pip install PyJWT>=2.8.0 --upgrade
-          pip install bcrypt>=4.0.0 --upgrade
-          pip install aiofiles>=23.0.0 --upgrade
-          pip install httpx>=0.25.0 --upgrade
-          echo 'Critical packages installation completed'
+          # Step 2: Install PyTorch ecosystem first (before other ML packages)
+          echo 'Step 2: Installing PyTorch ecosystem...'
+          pip install torch==2.2.2
+          pip install torchvision==0.17.2
+
+          # Step 3: Install HTTP clients with compatible versions
+          echo 'Step 3: Installing HTTP clients...'
+          pip install httpx==0.24.1
+          pip install requests==2.31.0
+
+          # Step 4: Install AI API clients with compatible versions
+          echo 'Step 4: Installing AI API clients...'
+          pip install openai==1.108.1
+          pip install anthropic==0.20.0
+
+          # Step 5: Install computer vision packages
+          echo 'Step 5: Installing computer vision...'
+          pip install opencv-python-headless==4.8.0
+          pip install Pillow>=10.2.0
+          pip install scikit-image>=0.21.0
+          pip install imageio>=2.31.0
+
+          # Step 6: Install LlamaIndex core first, then extensions
+          echo 'Step 6: Installing LlamaIndex ecosystem...'
+          pip install llama-index-core>=0.10.57
+          pip install llama-index>=0.10.57
+          pip install llama-index-llms-openai>=0.1.29
+          pip install llama-index-embeddings-openai>=0.1.11
+          pip install llama-index-embeddings-clip>=0.1.8
+          pip install llama-index-multi-modal-llms-openai>=0.1.9
+          pip install llama-index-multi-modal-llms-anthropic>=0.1.4
+          pip install llama-index-agent-openai>=0.2.9
+          pip install llama-index-program-openai>=0.1.6
+          pip install llama-index-question-gen-openai>=0.1.3
+          pip install llama-index-vector-stores-supabase>=0.1.4
+          pip install llama-index-readers-file>=0.1.12
+          pip install llama-index-cli>=0.1.13
+
+          # Step 7: Install remaining packages
+          echo 'Step 7: Installing remaining dependencies...'
+          pip install fastapi[standard]>=0.104.1
+          pip install uvicorn[standard]>=0.24.0
+          pip install pymupdf4llm==0.0.12
+          pip install PyMuPDF>=1.24.2
+          pip install supabase==2.3.0
+          pip install postgrest==0.13.0
+          pip install gotrue==2.9.1
+          pip install storage3==0.7.7
+          pip install supafunc==0.3.3
+          pip install realtime==1.0.6
+
+          echo 'All dependencies installed successfully with conflict resolution!'
 
           # --- Comprehensive Package Verification ---
           echo 'Verifying all critical packages from requirements.txt...'

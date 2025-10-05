@@ -11,7 +11,7 @@ PyMuPDF>=1.24.2
 pandas==2.1.4
 
 # Essential scientific computing
-numpy>=1.24.0
+numpy>=1.24.0,<2.0.0
 scipy>=1.11.0
 
 # ML and Computer Vision libraries (PyTorch installed separately)
@@ -19,26 +19,36 @@ transformers>=4.30.0
 scikit-learn==1.3.2
 # OpenCV headless version for server deployment (no GUI dependencies)
 opencv-python-headless>=4.8.0
-Pillow>=10.2.0,<11.0.0
+Pillow>=10.2.0
 scikit-image>=0.21.0
 imageio>=2.31.0
 
-# LlamaIndex for RAG capabilities
-llama-index==0.10.36
-llama-index-core==0.10.36
-llama-index-agent-openai==0.2.4
-llama-index-program-openai==0.1.5
-llama-index-llms-openai==0.1.13
-llama-index-embeddings-openai==0.1.6
-llama-index-vector-stores-supabase==0.1.4
-llama-index-multi-modal-llms-openai==0.1.6
-llama-index-multi-modal-llms-anthropic==0.1.3
-llama-index-embeddings-clip==0.1.5
-llama-index-readers-file==0.1.12
+# AI/ML API clients - compatible with LlamaIndex
+openai>=1.108.1,<2.0.0
+anthropic>=0.20.0
+
+# LlamaIndex for RAG capabilities - upgraded to compatible versions
+llama-index>=0.10.57
+llama-index-core>=0.10.57
+llama-index-agent-openai>=0.2.9
+llama-index-program-openai>=0.1.6
+llama-index-llms-openai>=0.1.29
+llama-index-embeddings-openai>=0.1.11
+llama-index-vector-stores-supabase>=0.1.4
+llama-index-multi-modal-llms-openai>=0.1.9
+llama-index-multi-modal-llms-anthropic>=0.1.4
+llama-index-embeddings-clip>=0.1.8
+llama-index-question-gen-openai>=0.1.3
+llama-index-cli>=0.1.13
+llama-index-readers-file>=0.1.12
 
 # Supabase integration
 supabase==2.3.0
 postgrest==0.13.0
+gotrue==2.9.1
+storage3==0.7.7
+supafunc==0.3.3
+realtime==1.0.6
 
 # Configuration and environment management
 python-dotenv==1.0.0
