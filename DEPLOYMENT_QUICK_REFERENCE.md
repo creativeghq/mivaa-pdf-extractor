@@ -82,6 +82,8 @@ git push origin main
 | **Deployment Speed** | 🟢 Fast (2-3 min) | 🟡 Variable (15s-60s) |
 | **Validation** | 🟡 Basic | 🟢 Comprehensive |
 | **Analysis** | 🟡 Standard | 🟢 Advanced |
+| **Health Checks** | 🟢 Real-time + Auto-diagnostics | 🟢 Real-time + Auto-diagnostics |
+| **Auto-Recovery** | ✅ Yes | ✅ Yes |
 | **Reporting** | 🟢 Good + Summary Tables | 🟢 Excellent + Summary Tables |
 | **Summary Page** | ✅ Yes | ✅ Yes |
 | **Configuration** | 🟡 Limited | 🟢 Extensive |
@@ -112,14 +114,15 @@ git push origin main
 ### Default Deployment Steps
 1. 📋 **Deployment Overview** - System info and configuration
 2. 🚀 **Deploy to Server** - Code deployment and service restart
-3. 📊 **Deployment Summary** - Health check and verification
+3. 🏥 **Health Check & Diagnostics** - Real-time endpoint testing with auto-recovery
+4. 📊 **Final Deployment Summary** - Complete verification and status
 
 ### Orchestrated Deployment Phases
 1. 🧠 **Phase 1: Analysis** - Code analysis and strategy selection
 2. 🔧 **Phase 2: Dependencies** - Dependency resolution and optimization
 3. 🔬 **Phase 3: Validation** - System validation and diagnostics
 4. 🚀 **Phase 4: Deployment** - Actual deployment execution
-5. 🔍 **Phase 5: Verification** - Comprehensive health checks
+5. 🔍 **Phase 5: Verification** - Real-time health checks with auto-diagnostics
 
 ---
 
@@ -127,13 +130,13 @@ git push origin main
 
 After successful deployment, these endpoints are available:
 
-- **Health Check**: http://104.248.68.3:8000/health
-- **API Documentation**: http://104.248.68.3:8000/docs
-- **ReDoc**: http://104.248.68.3:8000/redoc
-- **OpenAPI Schema**: http://104.248.68.3:8000/openapi.json
-- **PDF Processing**: http://104.248.68.3:8000/api/v1/pdf/*
-- **AI Analysis**: http://104.248.68.3:8000/api/v1/ai/*
-- **Vector Search**: http://104.248.68.3:8000/api/v1/search/*
+- **Health Check**: https://v1api.materialshub.gr/health
+- **API Documentation**: https://v1api.materialshub.gr/docs
+- **ReDoc**: https://v1api.materialshub.gr/redoc
+- **OpenAPI Schema**: https://v1api.materialshub.gr/openapi.json
+- **PDF Processing**: https://v1api.materialshub.gr/api/v1/pdf/*
+- **AI Analysis**: https://v1api.materialshub.gr/api/v1/ai/*
+- **Vector Search**: https://v1api.materialshub.gr/api/v1/search/*
 
 ---
 
@@ -141,7 +144,7 @@ After successful deployment, these endpoints are available:
 
 ### Quick Health Check
 ```bash
-curl http://104.248.68.3:8000/health
+curl https://v1api.materialshub.gr/health
 ```
 
 ### SSH Access

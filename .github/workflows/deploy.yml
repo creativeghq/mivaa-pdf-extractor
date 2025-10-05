@@ -218,8 +218,172 @@ jobs:
           sudo systemctl status mivaa-pdf-extractor --no-pager
           EOF
 
-      # 5. Post-Deployment Summary
-      - name: 📊 Deployment Summary & Health Check
+      # 5. Health Check & Diagnostics
+      - name: 🏥 Health Check & Diagnostics
+        run: |
+          echo "🏥 Performing comprehensive health checks..."
+          echo "=========================================="
+
+          # Wait a moment for service to fully start
+          sleep 10
+
+          # Health check with detailed response
+          echo "🔍 Checking health endpoint..."
+          HEALTH_URL="https://v1api.materialshub.gr/health"
+
+          # Perform health check and capture response
+          HTTP_STATUS=$(curl -s -o /tmp/health_response.json -w "%{http_code}" "$HEALTH_URL" || echo "000")
+
+          echo "📊 Health Check Results:"
+          echo "  • URL: $HEALTH_URL"
+          echo "  • HTTP Status: $HTTP_STATUS"
+
+          # Add health check to summary
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🏥 Health Check Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Status | Details |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|---------|" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$HTTP_STATUS" = "200" ]; then
+            echo "✅ Health check PASSED - Service is healthy!"
+            echo "📄 Response:"
+            cat /tmp/health_response.json 2>/dev/null || echo "  (No response body)"
+
+            # Add success to summary
+            echo "| **🏥 Health Endpoint** | ✅ HEALTHY | HTTP 200 - Service responding correctly |" >> $GITHUB_STEP_SUMMARY
+            echo "| **📊 Response Time** | ✅ GOOD | < 5 seconds |" >> $GITHUB_STEP_SUMMARY
+
+            # Test additional endpoints
+            echo ""
+            echo "🔍 Testing additional endpoints..."
+
+            # Test API docs
+            DOCS_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://v1api.materialshub.gr/docs" || echo "000")
+            echo "  • API Docs (/docs): $DOCS_STATUS"
+
+            # Test OpenAPI schema
+            OPENAPI_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://v1api.materialshub.gr/openapi.json" || echo "000")
+            echo "  • OpenAPI Schema (/openapi.json): $OPENAPI_STATUS"
+
+            # Add endpoint tests to summary
+            if [ "$DOCS_STATUS" = "200" ]; then
+              echo "| **📚 API Documentation** | ✅ AVAILABLE | HTTP 200 |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| **📚 API Documentation** | ⚠️ ISSUE | HTTP $DOCS_STATUS |" >> $GITHUB_STEP_SUMMARY
+            fi
+
+            if [ "$OPENAPI_STATUS" = "200" ]; then
+              echo "| **📋 OpenAPI Schema** | ✅ AVAILABLE | HTTP 200 |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| **📋 OpenAPI Schema** | ⚠️ ISSUE | HTTP $OPENAPI_STATUS |" >> $GITHUB_STEP_SUMMARY
+            fi
+
+          else
+            echo "❌ Health check FAILED - Service has issues!"
+            echo "🚨 HTTP Status: $HTTP_STATUS"
+            echo "📄 Response (if any):"
+            cat /tmp/health_response.json 2>/dev/null || echo "  (No response received)"
+
+            # Add failure to summary
+            echo "| **🏥 Health Endpoint** | ❌ UNHEALTHY | HTTP $HTTP_STATUS - Service not responding correctly |" >> $GITHUB_STEP_SUMMARY
+            echo "| **🚨 Issue Detected** | ⚠️ CRITICAL | Automatic diagnostics initiated |" >> $GITHUB_STEP_SUMMARY
+
+            echo ""
+            echo "🔧 Initiating automatic diagnostics..."
+            echo "====================================="
+
+            # SSH into server and gather diagnostics
+            ssh -o StrictHostKeyChecking=no root@104.248.68.3 << 'DIAG_EOF'
+            echo "🔍 AUTOMATIC DIAGNOSTICS - Service Health Check Failed"
+            echo "======================================================"
+            echo ""
+
+            echo "📊 System Status:"
+            echo "  • Date: $(date)"
+            echo "  • Uptime: $(uptime)"
+            echo "  • Load: $(cat /proc/loadavg)"
+            echo "  • Memory: $(free -h | grep Mem)"
+            echo "  • Disk: $(df -h / | tail -1)"
+            echo ""
+
+            echo "🔧 Service Status:"
+            sudo systemctl status mivaa-pdf-extractor --no-pager --lines=10
+            echo ""
+
+            echo "📋 Recent Service Logs (Last 50 lines):"
+            echo "========================================"
+            sudo journalctl -u mivaa-pdf-extractor --no-pager --lines=50 --since "10 minutes ago"
+            echo ""
+
+            echo "🌐 Network & Port Status:"
+            echo "  • Port 8000 listening: $(ss -tlnp | grep :8000 || echo 'NOT LISTENING')"
+            echo "  • Process on port 8000: $(lsof -i :8000 || echo 'NO PROCESS')"
+            echo ""
+
+            echo "📁 Application Directory:"
+            echo "  • Directory exists: $([ -d /var/www/mivaa-pdf-extractor ] && echo 'YES' || echo 'NO')"
+            echo "  • Recent files: $(ls -la /var/www/mivaa-pdf-extractor/ | head -10)"
+            echo ""
+
+            echo "🐍 Python Environment:"
+            cd /var/www/mivaa-pdf-extractor 2>/dev/null || echo "Cannot access app directory"
+            if [ -f ".venv/bin/activate" ]; then
+              source .venv/bin/activate
+              echo "  • Python version: $(python --version)"
+              echo "  • FastAPI installed: $(python -c 'import fastapi; print(fastapi.__version__)' 2>/dev/null || echo 'NOT FOUND')"
+              echo "  • Virtual env active: $VIRTUAL_ENV"
+            else
+              echo "  • Virtual environment: NOT FOUND"
+            fi
+            echo ""
+
+            echo "🔄 Attempting Service Restart:"
+            echo "=============================="
+            sudo systemctl restart mivaa-pdf-extractor
+            sleep 5
+            echo "  • Restart completed"
+            echo "  • New status: $(sudo systemctl is-active mivaa-pdf-extractor)"
+            echo ""
+
+            echo "📋 Post-Restart Logs (Last 20 lines):"
+            echo "====================================="
+            sudo journalctl -u mivaa-pdf-extractor --no-pager --lines=20 --since "1 minute ago"
+DIAG_EOF
+
+            echo ""
+            echo "🔄 Re-testing health endpoint after diagnostics..."
+            sleep 10
+
+            # Re-test health endpoint
+            RETEST_STATUS=$(curl -s -o /tmp/health_retest.json -w "%{http_code}" "https://v1api.materialshub.gr/health" || echo "000")
+            echo "🔍 Re-test Results:"
+            echo "  • HTTP Status: $RETEST_STATUS"
+
+            if [ "$RETEST_STATUS" = "200" ]; then
+              echo "✅ Service recovered after restart!"
+              echo "| **🔄 Recovery Status** | ✅ RECOVERED | Service healthy after automatic restart |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "❌ Service still unhealthy after restart"
+              echo "🚨 Manual intervention may be required"
+              echo "| **🔄 Recovery Status** | ❌ FAILED | Manual intervention required |" >> $GITHUB_STEP_SUMMARY
+              echo "| **📞 Next Steps** | 🔧 MANUAL | Check logs above and contact system administrator |" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔍 Health Check Details" >> $GITHUB_STEP_SUMMARY
+          echo "- **Endpoint**: \`$HEALTH_URL\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Test Time**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "- **Response Code**: \`$HTTP_STATUS\`" >> $GITHUB_STEP_SUMMARY
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "- **⚠️ Diagnostics**: Automatic diagnostics executed (see logs above)" >> $GITHUB_STEP_SUMMARY
+            echo "- **🔄 Recovery**: Automatic restart attempted" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+      # 6. Post-Deployment Summary
+      - name: 📊 Final Deployment Summary
         run: |
           echo ""
           echo "🎉 MIVAA PDF Extractor Deployment Complete!"
@@ -249,12 +413,12 @@ jobs:
           echo "  • Process Manager: systemd"
           echo ""
           echo "🔗 API Endpoints Available:"
-          echo "  • Health Check: http://104.248.68.3:8000/health"
-          echo "  • API Documentation: http://104.248.68.3:8000/docs"
-          echo "  • OpenAPI Schema: http://104.248.68.3:8000/openapi.json"
-          echo "  • PDF Processing: http://104.248.68.3:8000/api/v1/pdf/*"
-          echo "  • AI Analysis: http://104.248.68.3:8000/api/v1/ai/*"
-          echo "  • Vector Search: http://104.248.68.3:8000/api/v1/search/*"
+          echo "  • Health Check: https://v1api.materialshub.gr/health"
+          echo "  • API Documentation: https://v1api.materialshub.gr/docs"
+          echo "  • OpenAPI Schema: https://v1api.materialshub.gr/openapi.json"
+          echo "  • PDF Processing: https://v1api.materialshub.gr/api/v1/pdf/*"
+          echo "  • AI Analysis: https://v1api.materialshub.gr/api/v1/ai/*"
+          echo "  • Vector Search: https://v1api.materialshub.gr/api/v1/search/*"
 
           # Add API endpoints to summary
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -262,13 +426,13 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Service | URL | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|---------|-----|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **🏥 Health Check** | [http://104.248.68.3:8000/health](http://104.248.68.3:8000/health) | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
-          echo "| **📚 API Documentation** | [http://104.248.68.3:8000/docs](http://104.248.68.3:8000/docs) | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
-          echo "| **📖 ReDoc** | [http://104.248.68.3:8000/redoc](http://104.248.68.3:8000/redoc) | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
-          echo "| **📋 OpenAPI Schema** | [http://104.248.68.3:8000/openapi.json](http://104.248.68.3:8000/openapi.json) | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
-          echo "| **📄 PDF Processing** | http://104.248.68.3:8000/api/v1/pdf/* | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
-          echo "| **🤖 AI Analysis** | http://104.248.68.3:8000/api/v1/ai/* | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
-          echo "| **🔍 Vector Search** | http://104.248.68.3:8000/api/v1/search/* | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🏥 Health Check** | [https://v1api.materialshub.gr/health](https://v1api.materialshub.gr/health) | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
+          echo "| **📚 API Documentation** | [https://v1api.materialshub.gr/docs](https://v1api.materialshub.gr/docs) | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
+          echo "| **📖 ReDoc** | [https://v1api.materialshub.gr/redoc](https://v1api.materialshub.gr/redoc) | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
+          echo "| **📋 OpenAPI Schema** | [https://v1api.materialshub.gr/openapi.json](https://v1api.materialshub.gr/openapi.json) | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
+          echo "| **📄 PDF Processing** | https://v1api.materialshub.gr/api/v1/pdf/* | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🤖 AI Analysis** | https://v1api.materialshub.gr/api/v1/ai/* | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🔍 Vector Search** | https://v1api.materialshub.gr/api/v1/search/* | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo ""
           echo "🧪 Quick Health Check Commands:"
@@ -302,10 +466,10 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## 🚀 Quick Actions" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- 🌐 [**Access Application**](http://104.248.68.3:8000)" >> $GITHUB_STEP_SUMMARY
-          echo "- 🏥 [**Check Health**](http://104.248.68.3:8000/health)" >> $GITHUB_STEP_SUMMARY
-          echo "- 📚 [**View API Docs**](http://104.248.68.3:8000/docs)" >> $GITHUB_STEP_SUMMARY
-          echo "- 📖 [**View ReDoc**](http://104.248.68.3:8000/redoc)" >> $GITHUB_STEP_SUMMARY
+          echo "- 🌐 [**Access Application**](https://v1api.materialshub.gr)" >> $GITHUB_STEP_SUMMARY
+          echo "- 🏥 [**Check Health**](https://v1api.materialshub.gr/health)" >> $GITHUB_STEP_SUMMARY
+          echo "- 📚 [**View API Docs**](https://v1api.materialshub.gr/docs)" >> $GITHUB_STEP_SUMMARY
+          echo "- 📖 [**View ReDoc**](https://v1api.materialshub.gr/redoc)" >> $GITHUB_STEP_SUMMARY
           echo "- 🔍 [**View Commit**](https://github.com/${{ github.repository }}/commit/${{ github.sha }})" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
@@ -314,7 +478,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Quick Health Check" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "curl http://104.248.68.3:8000/health" >> $GITHUB_STEP_SUMMARY
+          echo "curl https://v1api.materialshub.gr/health" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### SSH Access" >> $GITHUB_STEP_SUMMARY

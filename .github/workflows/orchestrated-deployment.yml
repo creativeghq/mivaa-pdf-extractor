@@ -666,60 +666,232 @@ jobs:
           API_TESTS_TOTAL=3
           OVERALL_STATUS="success"
 
-          # Health checks
-          echo "🏥 Running health checks..."
+          # Health checks with real endpoints
+          echo "🏥 Running comprehensive health checks..."
+          HEALTH_URL="https://v1api.materialshub.gr/health"
+
+          # Wait for service to be ready
+          sleep 15
+
           for i in {1..3}; do
             echo "🏥 Health check attempt $i/$HEALTH_CHECKS_TOTAL..."
+            echo "  • Testing: $HEALTH_URL"
 
-            # Simulate health check (replace with actual curl commands)
-            # if curl -f -s http://$DEPLOY_HOST:8000/health > /dev/null 2>&1; then
-            if [[ $((RANDOM % 10)) -lt 8 ]]; then  # 80% success rate simulation
+            # Real health check with detailed response
+            HTTP_STATUS=$(curl -s -o /tmp/health_check_$i.json -w "%{http_code}" "$HEALTH_URL" --connect-timeout 10 --max-time 30 || echo "000")
+
+            echo "  • HTTP Status: $HTTP_STATUS"
+
+            if [ "$HTTP_STATUS" = "200" ]; then
               echo "✅ Health check $i passed"
               ((HEALTH_CHECKS_PASSED++))
+
+              # Show response content
+              if [ -f "/tmp/health_check_$i.json" ]; then
+                echo "  • Response: $(cat /tmp/health_check_$i.json 2>/dev/null | head -c 200)..."
+              fi
             else
-              echo "❌ Health check $i failed"
+              echo "❌ Health check $i failed (HTTP $HTTP_STATUS)"
+
+              # If health check fails, gather diagnostics
+              if [ "$i" = "1" ]; then
+                echo "🔧 Gathering diagnostics for failed health check..."
+
+                # SSH and get service status
+                ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 root@$DEPLOY_HOST << 'HEALTH_DIAG_EOF' || echo "SSH connection failed"
+                echo "📊 Service Diagnostics:"
+                echo "  • Service Status: $(sudo systemctl is-active mivaa-pdf-extractor 2>/dev/null || echo 'unknown')"
+                echo "  • Service Enabled: $(sudo systemctl is-enabled mivaa-pdf-extractor 2>/dev/null || echo 'unknown')"
+                echo "  • Port 8000 Status: $(ss -tlnp | grep :8000 | head -1 || echo 'not listening')"
+                echo ""
+                echo "📋 Recent Logs (last 10 lines):"
+                sudo journalctl -u mivaa-pdf-extractor --no-pager --lines=10 --since "5 minutes ago" 2>/dev/null || echo "No logs available"
+HEALTH_DIAG_EOF
+              fi
             fi
 
-            [[ $i -lt 3 ]] && sleep 2
+            [[ $i -lt 3 ]] && sleep 5
           done
+
+          # If all health checks failed, attempt service restart
+          if [ "$HEALTH_CHECKS_PASSED" = "0" ]; then
+            echo "🚨 All health checks failed - attempting service restart..."
+
+            ssh -o StrictHostKeyChecking=no root@$DEPLOY_HOST << 'RESTART_EOF'
+            echo "🔄 Restarting mivaa-pdf-extractor service..."
+            sudo systemctl restart mivaa-pdf-extractor
+            sleep 10
+            echo "  • New status: $(sudo systemctl is-active mivaa-pdf-extractor)"
+            echo "  • Port check: $(ss -tlnp | grep :8000 | head -1 || echo 'not listening')"
+RESTART_EOF
+
+            # Re-test after restart
+            sleep 10
+            echo "🔄 Re-testing health endpoint after restart..."
+            RETEST_STATUS=$(curl -s -o /tmp/health_retest.json -w "%{http_code}" "$HEALTH_URL" --connect-timeout 10 --max-time 30 || echo "000")
+
+            if [ "$RETEST_STATUS" = "200" ]; then
+              echo "✅ Service recovered after restart!"
+              ((HEALTH_CHECKS_PASSED++))
+            else
+              echo "❌ Service still unhealthy after restart (HTTP $RETEST_STATUS)"
+              OVERALL_STATUS="failed"
+            fi
+          fi
 
           # API endpoint tests
           echo "🔌 Testing API endpoints..."
 
           # Test docs endpoint
-          # if curl -f -s http://$DEPLOY_HOST:8000/docs > /dev/null 2>&1; then
-          if [[ $((RANDOM % 10)) -lt 9 ]]; then  # 90% success rate simulation
+          echo "📚 Testing API documentation endpoint..."
+          DOCS_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://v1api.materialshub.gr/docs" --connect-timeout 10 --max-time 30 || echo "000")
+          echo "  • /docs endpoint: HTTP $DOCS_STATUS"
+
+          if [ "$DOCS_STATUS" = "200" ]; then
             echo "✅ API docs endpoint accessible"
             ((API_TESTS_PASSED++))
           else
-            echo "⚠️ API docs endpoint not accessible"
+            echo "⚠️ API docs endpoint not accessible (HTTP $DOCS_STATUS)"
           fi
 
           # Test redoc endpoint
-          # if curl -f -s http://$DEPLOY_HOST:8000/redoc > /dev/null 2>&1; then
-          if [[ $((RANDOM % 10)) -lt 9 ]]; then  # 90% success rate simulation
+          echo "📖 Testing ReDoc endpoint..."
+          REDOC_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://v1api.materialshub.gr/redoc" --connect-timeout 10 --max-time 30 || echo "000")
+          echo "  • /redoc endpoint: HTTP $REDOC_STATUS"
+
+          if [ "$REDOC_STATUS" = "200" ]; then
             echo "✅ ReDoc endpoint accessible"
             ((API_TESTS_PASSED++))
           else
-            echo "⚠️ ReDoc endpoint not accessible"
+            echo "⚠️ ReDoc endpoint not accessible (HTTP $REDOC_STATUS)"
           fi
 
-          # Test main endpoint
-          # if curl -f -s http://$DEPLOY_HOST:8000/ > /dev/null 2>&1; then
-          if [[ $((RANDOM % 10)) -lt 8 ]]; then  # 80% success rate simulation
-            echo "✅ Main endpoint accessible"
+          # Test OpenAPI schema endpoint
+          echo "📋 Testing OpenAPI schema endpoint..."
+          OPENAPI_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://v1api.materialshub.gr/openapi.json" --connect-timeout 10 --max-time 30 || echo "000")
+          echo "  • /openapi.json endpoint: HTTP $OPENAPI_STATUS"
+
+          if [ "$OPENAPI_STATUS" = "200" ]; then
+            echo "✅ OpenAPI schema endpoint accessible"
             ((API_TESTS_PASSED++))
           else
-            echo "⚠️ Main endpoint not accessible"
+            echo "⚠️ OpenAPI schema endpoint not accessible (HTTP $OPENAPI_STATUS)"
           fi
 
-          # Determine overall status
+          # Summary of endpoint tests
+          echo ""
+          echo "📊 API Endpoint Test Summary:"
+          echo "  • Health endpoint: $HTTP_STATUS"
+          echo "  • Docs endpoint: $DOCS_STATUS"
+          echo "  • ReDoc endpoint: $REDOC_STATUS"
+          echo "  • OpenAPI schema: $OPENAPI_STATUS"
+          echo "  • Tests passed: $API_TESTS_PASSED/$API_TESTS_TOTAL"
+
+          # Determine overall status and handle failures
           if [[ $HEALTH_CHECKS_PASSED -ge 2 && $API_TESTS_PASSED -ge 2 ]]; then
             OVERALL_STATUS="success"
             echo "✅ Verification successful"
           else
             OVERALL_STATUS="failed"
-            echo "❌ Verification failed"
+            echo "❌ Verification failed - initiating comprehensive diagnostics"
+
+            # Comprehensive diagnostics for failed verification
+            echo ""
+            echo "🔧 COMPREHENSIVE DIAGNOSTICS - Verification Failed"
+            echo "================================================="
+
+            ssh -o StrictHostKeyChecking=no root@$DEPLOY_HOST << 'VERIFY_DIAG_EOF'
+            echo "🔍 SYSTEM DIAGNOSTICS"
+            echo "===================="
+            echo "• Timestamp: $(date)"
+            echo "• Server: $(hostname)"
+            echo "• Uptime: $(uptime)"
+            echo ""
+
+            echo "📊 SYSTEM RESOURCES"
+            echo "=================="
+            echo "• Load Average: $(cat /proc/loadavg)"
+            echo "• Memory Usage:"
+            free -h
+            echo ""
+            echo "• Disk Usage:"
+            df -h /
+            echo ""
+            echo "• CPU Usage:"
+            top -bn1 | grep "Cpu(s)" || echo "CPU info not available"
+            echo ""
+
+            echo "🔧 SERVICE STATUS"
+            echo "================"
+            echo "• Service Status: $(sudo systemctl is-active mivaa-pdf-extractor)"
+            echo "• Service Enabled: $(sudo systemctl is-enabled mivaa-pdf-extractor)"
+            echo "• Service Details:"
+            sudo systemctl status mivaa-pdf-extractor --no-pager --lines=5
+            echo ""
+
+            echo "🌐 NETWORK STATUS"
+            echo "================"
+            echo "• Port 8000 Status:"
+            ss -tlnp | grep :8000 || echo "Port 8000 not listening"
+            echo ""
+            echo "• Process on Port 8000:"
+            lsof -i :8000 || echo "No process on port 8000"
+            echo ""
+            echo "• Network Interfaces:"
+            ip addr show | grep -E "(inet |UP)" | head -10
+            echo ""
+
+            echo "📋 APPLICATION LOGS"
+            echo "=================="
+            echo "• Recent Service Logs (last 30 lines):"
+            sudo journalctl -u mivaa-pdf-extractor --no-pager --lines=30 --since "10 minutes ago"
+            echo ""
+            echo "• Error Logs (if any):"
+            sudo journalctl -u mivaa-pdf-extractor --no-pager --priority=err --since "10 minutes ago" || echo "No error logs found"
+            echo ""
+
+            echo "📁 APPLICATION DIRECTORY"
+            echo "======================="
+            echo "• Directory Status:"
+            ls -la /var/www/mivaa-pdf-extractor/ | head -15
+            echo ""
+            echo "• Virtual Environment:"
+            if [ -d "/var/www/mivaa-pdf-extractor/.venv" ]; then
+              echo "  ✅ Virtual environment exists"
+              echo "  • Python version: $(cd /var/www/mivaa-pdf-extractor && source .venv/bin/activate && python --version)"
+              echo "  • FastAPI status: $(cd /var/www/mivaa-pdf-extractor && source .venv/bin/activate && python -c 'import fastapi; print("OK")' 2>/dev/null || echo 'FAILED')"
+            else
+              echo "  ❌ Virtual environment missing"
+            fi
+            echo ""
+
+            echo "🔄 RECOVERY ATTEMPT"
+            echo "=================="
+            echo "• Attempting service restart..."
+            sudo systemctl restart mivaa-pdf-extractor
+            sleep 10
+            echo "• Post-restart status: $(sudo systemctl is-active mivaa-pdf-extractor)"
+            echo "• Post-restart port check:"
+            ss -tlnp | grep :8000 || echo "Port still not listening"
+            echo ""
+            echo "• Post-restart logs (last 10 lines):"
+            sudo journalctl -u mivaa-pdf-extractor --no-pager --lines=10 --since "1 minute ago"
+VERIFY_DIAG_EOF
+
+            # Test endpoints again after diagnostics
+            echo ""
+            echo "🔄 Re-testing endpoints after diagnostics..."
+            sleep 15
+
+            FINAL_HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://v1api.materialshub.gr/health" --connect-timeout 10 --max-time 30 || echo "000")
+            echo "• Final health check: HTTP $FINAL_HEALTH_STATUS"
+
+            if [ "$FINAL_HEALTH_STATUS" = "200" ]; then
+              echo "✅ Service recovered after diagnostics!"
+              OVERALL_STATUS="recovered"
+            else
+              echo "❌ Service still unhealthy - manual intervention required"
+            fi
           fi
 
           VERIFY_END=$(date +%s)
@@ -857,10 +1029,10 @@ jobs:
           echo "### 🌐 Service Endpoints" >> $GITHUB_STEP_SUMMARY
           echo "| Service | URL | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|---------|-----|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Main Application** | [http://${{ env.DEPLOY_HOST }}:8000](http://${{ env.DEPLOY_HOST }}:8000) | ${{ needs.phase-5-verification.outputs.overall_status == 'success' && '🟢 Online' || '🔴 Offline' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Health Check** | [http://${{ env.DEPLOY_HOST }}:8000/health](http://${{ env.DEPLOY_HOST }}:8000/health) | ${{ needs.phase-5-verification.outputs.health_checks_passed >= 1 && '🟢 Healthy' || '🔴 Unhealthy' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **API Documentation** | [http://${{ env.DEPLOY_HOST }}:8000/docs](http://${{ env.DEPLOY_HOST }}:8000/docs) | ${{ needs.phase-5-verification.outputs.api_tests_passed >= 1 && '🟢 Available' || '🔴 Unavailable' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **ReDoc** | [http://${{ env.DEPLOY_HOST }}:8000/redoc](http://${{ env.DEPLOY_HOST }}:8000/redoc) | ${{ needs.phase-5-verification.outputs.api_tests_passed >= 2 && '🟢 Available' || '🔴 Unavailable' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Main Application** | [https://v1api.materialshub.gr](https://v1api.materialshub.gr) | ${{ needs.phase-5-verification.outputs.overall_status == 'success' && '🟢 Online' || '🔴 Offline' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Health Check** | [https://v1api.materialshub.gr/health](https://v1api.materialshub.gr/health) | ${{ needs.phase-5-verification.outputs.health_checks_passed >= 1 && '🟢 Healthy' || '🔴 Unhealthy' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **API Documentation** | [https://v1api.materialshub.gr/docs](https://v1api.materialshub.gr/docs) | ${{ needs.phase-5-verification.outputs.api_tests_passed >= 1 && '🟢 Available' || '🔴 Unavailable' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **ReDoc** | [https://v1api.materialshub.gr/redoc](https://v1api.materialshub.gr/redoc) | ${{ needs.phase-5-verification.outputs.api_tests_passed >= 2 && '🟢 Available' || '🔴 Unavailable' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # Orchestration Benefits
@@ -876,10 +1048,10 @@ jobs:
 
           # Quick Actions
           echo "### 🔗 Quick Actions" >> $GITHUB_STEP_SUMMARY
-          echo "- 🌐 [**Access Application**](http://${{ env.DEPLOY_HOST }}:8000)" >> $GITHUB_STEP_SUMMARY
-          echo "- 🏥 [**Check Health**](http://${{ env.DEPLOY_HOST }}:8000/health)" >> $GITHUB_STEP_SUMMARY
-          echo "- 📚 [**View API Docs**](http://${{ env.DEPLOY_HOST }}:8000/docs)" >> $GITHUB_STEP_SUMMARY
-          echo "- 📖 [**View ReDoc**](http://${{ env.DEPLOY_HOST }}:8000/redoc)" >> $GITHUB_STEP_SUMMARY
+          echo "- 🌐 [**Access Application**](https://v1api.materialshub.gr)" >> $GITHUB_STEP_SUMMARY
+          echo "- 🏥 [**Check Health**](https://v1api.materialshub.gr/health)" >> $GITHUB_STEP_SUMMARY
+          echo "- 📚 [**View API Docs**](https://v1api.materialshub.gr/docs)" >> $GITHUB_STEP_SUMMARY
+          echo "- 📖 [**View ReDoc**](https://v1api.materialshub.gr/redoc)" >> $GITHUB_STEP_SUMMARY
           echo "- 🔍 [**View Commit**](https://github.com/${{ github.repository }}/commit/${{ github.sha }})" >> $GITHUB_STEP_SUMMARY
           echo "- 📊 [**View Full Workflow**](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

@@ -52,27 +52,27 @@ When you run a MIVAA deployment, the main GitHub Action page will now display co
 
 | Service | URL | Status |
 |---------|-----|--------|
-| **🏥 Health Check** | [http://104.248.68.3:8000/health](http://104.248.68.3:8000/health) | 🟢 Available |
-| **📚 API Documentation** | [http://104.248.68.3:8000/docs](http://104.248.68.3:8000/docs) | 🟢 Available |
-| **📖 ReDoc** | [http://104.248.68.3:8000/redoc](http://104.248.68.3:8000/redoc) | 🟢 Available |
-| **📋 OpenAPI Schema** | [http://104.248.68.3:8000/openapi.json](http://104.248.68.3:8000/openapi.json) | 🟢 Available |
-| **📄 PDF Processing** | http://104.248.68.3:8000/api/v1/pdf/* | 🟢 Available |
-| **🤖 AI Analysis** | http://104.248.68.3:8000/api/v1/ai/* | 🟢 Available |
-| **🔍 Vector Search** | http://104.248.68.3:8000/api/v1/search/* | 🟢 Available |
+| **🏥 Health Check** | [https://v1api.materialshub.gr/health](https://v1api.materialshub.gr/health) | 🟢 Available |
+| **📚 API Documentation** | [https://v1api.materialshub.gr/docs](https://v1api.materialshub.gr/docs) | 🟢 Available |
+| **📖 ReDoc** | [https://v1api.materialshub.gr/redoc](https://v1api.materialshub.gr/redoc) | 🟢 Available |
+| **📋 OpenAPI Schema** | [https://v1api.materialshub.gr/openapi.json](https://v1api.materialshub.gr/openapi.json) | 🟢 Available |
+| **📄 PDF Processing** | https://v1api.materialshub.gr/api/v1/pdf/* | 🟢 Available |
+| **🤖 AI Analysis** | https://v1api.materialshub.gr/api/v1/ai/* | 🟢 Available |
+| **🔍 Vector Search** | https://v1api.materialshub.gr/api/v1/search/* | 🟢 Available |
 
 ## 🚀 Quick Actions
 
-- 🌐 [**Access Application**](http://104.248.68.3:8000)
-- 🏥 [**Check Health**](http://104.248.68.3:8000/health)
-- 📚 [**View API Docs**](http://104.248.68.3:8000/docs)
-- 📖 [**View ReDoc**](http://104.248.68.3:8000/redoc)
+- 🌐 [**Access Application**](https://v1api.materialshub.gr)
+- 🏥 [**Check Health**](https://v1api.materialshub.gr/health)
+- 📚 [**View API Docs**](https://v1api.materialshub.gr/docs)
+- 📖 [**View ReDoc**](https://v1api.materialshub.gr/redoc)
 - 🔍 [**View Commit**](https://github.com/repo/commit/abc123def)
 
 ## 🔧 Troubleshooting
 
 ### Quick Health Check
 ```bash
-curl http://104.248.68.3:8000/health
+curl https://v1api.materialshub.gr/health
 ```
 
 ### SSH Access

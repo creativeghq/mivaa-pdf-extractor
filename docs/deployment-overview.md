@@ -34,18 +34,24 @@ The MIVAA PDF Extractor now includes comprehensive deployment overviews in all G
 ### 📈 Post-Deployment Summary
 - **Deployment Status**: Success/failure with timestamps and duration
 - **Service Information**: Server details, service status, process management
+- **🏥 Health Check Results**: Real-time endpoint testing with HTTP status codes
 - **API Endpoints**: Complete list of available endpoints with health check URLs
 - **Verification Checklist**: Confirmation of all deployment steps
+- **🔧 Automatic Diagnostics**: Comprehensive system analysis when health checks fail
+- **🔄 Auto-Recovery**: Automatic service restart and re-testing on failures
 - **Troubleshooting Guide**: Quick access to logs, status commands, and common fixes
 - **Next Steps**: Recommended actions after deployment
 - **📋 Results Table**: Deployment results and service status on the main action page
 
 ### 🎯 GitHub Action Summary
-**NEW FEATURE**: All deployment details are now displayed on the main GitHub Action page as organized tables, including:
+**NEW FEATURES**: All deployment details are now displayed on the main GitHub Action page as organized tables, including:
 - **Deployment Overview Table**: Configuration, branch, commit, trigger information
 - **Application Architecture Table**: Service details, runtime, components
+- **🏥 Health Check Results Table**: Real-time endpoint testing with HTTP status codes
 - **Deployment Results Table**: Status, completion time, service health
-- **Service Endpoints Table**: Direct links to all API endpoints
+- **Service Endpoints Table**: Direct links to all API endpoints with status indicators
+- **🔧 Automatic Diagnostics**: Comprehensive system analysis when issues are detected
+- **🔄 Auto-Recovery Status**: Automatic restart attempts and recovery verification
 - **Quick Actions**: One-click access to health checks, documentation, and troubleshooting
 - **Troubleshooting Commands**: Copy-paste ready commands for debugging
 
@@ -134,17 +140,17 @@ All critical environment variables are verified as configured:
 ## 🌐 API Endpoints Information
 
 ### Available Endpoints
-- **Health Check**: `http://104.248.68.3:8000/health`
-- **API Documentation**: `http://104.248.68.3:8000/docs`
-- **OpenAPI Schema**: `http://104.248.68.3:8000/openapi.json`
-- **PDF Processing**: `http://104.248.68.3:8000/api/v1/pdf/*`
-- **AI Analysis**: `http://104.248.68.3:8000/api/v1/ai/*`
-- **Vector Search**: `http://104.248.68.3:8000/api/v1/search/*`
+- **Health Check**: `https://v1api.materialshub.gr/health`
+- **API Documentation**: `https://v1api.materialshub.gr/docs`
+- **OpenAPI Schema**: `https://v1api.materialshub.gr/openapi.json`
+- **PDF Processing**: `https://v1api.materialshub.gr/api/v1/pdf/*`
+- **AI Analysis**: `https://v1api.materialshub.gr/api/v1/ai/*`
+- **Vector Search**: `https://v1api.materialshub.gr/api/v1/search/*`
 
 ### Quick Health Check Commands
 ```bash
-curl http://104.248.68.3:8000/health
-curl http://104.248.68.3:8000/docs
+curl https://v1api.materialshub.gr/health
+curl https://v1api.materialshub.gr/docs
 ```
 
 ## 🔧 Troubleshooting Information
@@ -169,25 +175,59 @@ sudo systemctl restart mivaa-pdf-extractor
 cd /var/www/mivaa-pdf-extractor
 ```
 
+## 🏥 Health Check & Diagnostics Features
+
+### 🔍 Real-Time Health Monitoring
+- **HTTP Status Code Verification**: Tests actual endpoint responses (200, 502, 404, etc.)
+- **Multiple Endpoint Testing**: Health, docs, redoc, and OpenAPI schema endpoints
+- **Response Time Monitoring**: Tracks endpoint response times and availability
+- **Retry Logic**: Multiple attempts with intelligent backoff
+
+### 🔧 Automatic Diagnostics
+When health checks fail, the system automatically:
+- **System Resource Analysis**: CPU, memory, disk usage, and load averages
+- **Service Status Investigation**: systemd service status and configuration
+- **Network Diagnostics**: Port availability, process binding, and network interfaces
+- **Application Log Analysis**: Recent logs, error logs, and service history
+- **Environment Verification**: Python environment, dependencies, and application structure
+
+### 🔄 Auto-Recovery Features
+- **Automatic Service Restart**: Attempts to restart failed services
+- **Post-Restart Verification**: Re-tests endpoints after recovery attempts
+- **Recovery Status Reporting**: Clear indication of recovery success or failure
+- **Escalation Path**: Provides manual intervention steps when auto-recovery fails
+
+### 📊 Comprehensive Reporting
+- **Real-Time Status Updates**: Live updates during health check execution
+- **Detailed Error Information**: HTTP status codes, response content, and error messages
+- **Diagnostic Summaries**: Organized presentation of system analysis results
+- **Recovery Documentation**: Complete audit trail of recovery attempts
+
 ## 📈 Benefits
 
 ### 🎯 Enhanced Visibility
 - Complete transparency into deployment process
 - Real-time status updates and progress tracking
+- **Live health monitoring** with actual HTTP status codes
 - Clear expectations and outcomes
 
 ### 🚀 Improved Reliability
 - Pre-deployment verification of all requirements
-- Post-deployment confirmation of service health
+- **Real-time post-deployment health verification**
+- **Automatic issue detection and recovery**
 - Comprehensive troubleshooting information
 
 ### 🔧 Better Debugging
 - Detailed environment and configuration information
+- **Automatic diagnostic collection** when issues occur
+- **Live system analysis** with resource monitoring
 - Quick access to logs and status commands
 - Clear next steps for issue resolution
 
 ### 📊 Professional Presentation
 - Clean, organized deployment information
+- **Real-time health status indicators**
+- **Comprehensive diagnostic reports**
 - Consistent formatting across all workflows
 - Easy-to-read status indicators and summaries
 
