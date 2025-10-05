@@ -9,6 +9,10 @@ detailed error messages for different failure scenarios.
 from typing import Optional, Dict, Any
 
 
+class MaterialKaiIntegrationError(Exception):
+    """Custom exception for Material Kai integration errors."""
+    pass
+
 class PDFProcessingError(Exception):
     """
     Base exception class for all PDF processing related errors.
