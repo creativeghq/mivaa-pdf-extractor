@@ -57,6 +57,7 @@ from app.schemas.jobs import (
 
 # Import existing services
 from app.services.pdf_processor import PDFProcessor, PDFProcessingResult
+from app.services.supabase_client import SupabaseClient
 from app.utils.exceptions import (
     PDFProcessingError,
     PDFValidationError,
@@ -73,9 +74,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/documents", tags=["Document Processing"])
 
 # Dependency function for Supabase client
-async def get_supabase_client():
+async def get_supabase_client() -> SupabaseClient:
     """Dependency to get Supabase client instance."""
-    from app.services.supabase_client import SupabaseClient
     return SupabaseClient()
 
 # Initialize PDF processor service
