@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Union
 from datetime import datetime
 from enum import Enum
 
-from pydantic import ValidationError as PydanticValidationError
+from pydantic.error_wrappers import ErrorWrapper, ValidationError
 from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
 
