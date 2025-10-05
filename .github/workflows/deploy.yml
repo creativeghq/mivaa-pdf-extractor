@@ -170,8 +170,8 @@ jobs:
           echo "⏱️ Starting deployment process..."
           echo ""
 
-      # 4. Deploy to server
-      - name: Deploy to server
+      # 4.1. Setup deployment environment
+      - name: 🔧 Setup deployment environment
         run: |
           ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
           set -e
@@ -288,6 +288,15 @@ jobs:
           echo '| **System Dependencies** | System | Ubuntu packages for PyMuPDF | 🟢 Installed | N/A |' >> package_status_report.txt
           echo '| **Python Environment** | Runtime | Virtual environment setup | 🟢 Ready | N/A |' >> package_status_report.txt
           echo '| **Package Installation** | Dependencies | Python package installation | 🟡 Installing... | N/A |' >> package_status_report.txt
+          "
+
+      # 4.2. Install Python packages
+      - name: 📦 Install Python packages
+        run: |
+          ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          cd /var/www/mivaa-pdf-extractor
+          source .venv/bin/activate
+          export LD_LIBRARY_PATH=\"/usr/lib/x86_64-linux-gnu:\$LD_LIBRARY_PATH\"
 
           # --- Ensure pip and uv are installed ---
           python -m ensurepip --upgrade
@@ -448,6 +457,15 @@ jobs:
           pip install aiohttp==3.9.3
 
           echo 'All dependencies installed with exact versions - no conflicts!'
+          "
+
+      # 4.3. Verify package installations
+      - name: ✅ Verify package installations
+        run: |
+          ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          cd /var/www/mivaa-pdf-extractor
+          source .venv/bin/activate
+          export LD_LIBRARY_PATH=\"/usr/lib/x86_64-linux-gnu:\$LD_LIBRARY_PATH\"
 
           # --- Comprehensive Package Verification ---
           echo 'Verifying all critical packages from requirements.txt...'
