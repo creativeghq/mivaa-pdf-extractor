@@ -241,6 +241,10 @@ jobs:
           # Activate venv
           source .venv/bin/activate
 
+          # Set library path for MuPDF
+          export LD_LIBRARY_PATH=\"/usr/lib/x86_64-linux-gnu:\$LD_LIBRARY_PATH\"
+          echo \"LD_LIBRARY_PATH set to: \$LD_LIBRARY_PATH\"
+
           # --- Install system dependencies for PyMuPDF ---
           echo 'Installing system dependencies for PyMuPDF...'
 
@@ -255,9 +259,28 @@ jobs:
           apt-get update -qq 2>/dev/null || echo 'Warning: apt update had issues'
 
           # Install packages individually to avoid failure if one is missing
-          for pkg in libfreetype6-dev libfontconfig1-dev libjpeg-dev libopenjp2-7-dev libharfbuzz-dev liblcms2-dev libssl-dev zlib1g-dev libffi-dev build-essential pkg-config; do
-            apt-get install -y -qq \\\$pkg 2>/dev/null && echo \"✅ Installed: \\\$pkg\" || echo \"⚠️ Skipped: \\\$pkg (not available)\"
-          done
+          echo 'Installing system packages individually...'
+          apt-get install -y -qq libfreetype6-dev 2>/dev/null && echo \"✅ Installed: libfreetype6-dev\" || echo \"⚠️ Skipped: libfreetype6-dev (not available)\"
+          apt-get install -y -qq libfontconfig1-dev 2>/dev/null && echo \"✅ Installed: libfontconfig1-dev\" || echo \"⚠️ Skipped: libfontconfig1-dev (not available)\"
+          apt-get install -y -qq libjpeg-dev 2>/dev/null && echo \"✅ Installed: libjpeg-dev\" || echo \"⚠️ Skipped: libjpeg-dev (not available)\"
+          apt-get install -y -qq libopenjp2-7-dev 2>/dev/null && echo \"✅ Installed: libopenjp2-7-dev\" || echo \"⚠️ Skipped: libopenjp2-7-dev (not available)\"
+          apt-get install -y -qq libharfbuzz-dev 2>/dev/null && echo \"✅ Installed: libharfbuzz-dev\" || echo \"⚠️ Skipped: libharfbuzz-dev (not available)\"
+          apt-get install -y -qq liblcms2-dev 2>/dev/null && echo \"✅ Installed: liblcms2-dev\" || echo \"⚠️ Skipped: liblcms2-dev (not available)\"
+          apt-get install -y -qq libssl-dev 2>/dev/null && echo \"✅ Installed: libssl-dev\" || echo \"⚠️ Skipped: libssl-dev (not available)\"
+          apt-get install -y -qq zlib1g-dev 2>/dev/null && echo \"✅ Installed: zlib1g-dev\" || echo \"⚠️ Skipped: zlib1g-dev (not available)\"
+          apt-get install -y -qq libffi-dev 2>/dev/null && echo \"✅ Installed: libffi-dev\" || echo \"⚠️ Skipped: libffi-dev (not available)\"
+          apt-get install -y -qq build-essential 2>/dev/null && echo \"✅ Installed: build-essential\" || echo \"⚠️ Skipped: build-essential (not available)\"
+          apt-get install -y -qq pkg-config 2>/dev/null && echo \"✅ Installed: pkg-config\" || echo \"⚠️ Skipped: pkg-config (not available)\"
+
+          # Try to install MuPDF system library as alternative
+          echo 'Attempting to install system MuPDF library...'
+          apt-get install -y -qq mupdf-tools libmupdf-dev 2>/dev/null && echo \"✅ System MuPDF installed\" || echo \"⚠️ System MuPDF not available\"
+
+          # Try alternative: install from Ubuntu 22.04 repository
+          echo 'Attempting to install MuPDF from alternative sources...'
+          wget -q http://archive.ubuntu.com/ubuntu/pool/universe/m/mupdf/libmupdf24_1.24.1+ds1-1_amd64.deb -O /tmp/libmupdf24.deb 2>/dev/null || echo 'Could not download libmupdf24'
+          dpkg -i /tmp/libmupdf24.deb 2>/dev/null || echo 'Could not install libmupdf24'
+          ldconfig 2>/dev/null || echo 'ldconfig failed'
 
           # Update status after system dependencies
           echo '| Package | Category | Description | Status | Version |' > package_status_report.txt
@@ -295,51 +318,103 @@ jobs:
           pip install --no-deps httpx==0.24.1
           pip install --no-deps requests==2.31.0
           pip install --no-deps openai==1.51.0
-          pip install --no-deps anthropic==0.20.0
+          pip install --no-deps anthropic==0.23.1
 
           # Step 4: Computer vision with exact versions
           echo 'Step 4: Installing computer vision...'
           pip install --no-deps opencv-python-headless==4.8.0.76
-          pip install --no-deps Pillow==10.4.0
+          pip install --no-deps Pillow==10.2.0
           pip install --no-deps scikit-image==0.21.0
           pip install --no-deps imageio==2.31.6
 
-          # Step 5: LlamaIndex with exact compatible versions
-          echo 'Step 5: Installing LlamaIndex ecosystem...'
-          pip install --no-deps llama-index-core==0.10.57 || echo 'llama-index-core installation failed'
+          # Step 5: LlamaIndex with compatible versions (updated to resolve conflicts)
+          echo 'Step 5: Installing LlamaIndex ecosystem with compatible versions...'
+          pip install --no-deps llama-index-core==0.13.0 || echo 'llama-index-core installation failed'
           echo \"Installing llama-index...\" >> /tmp/pip-install.log
-          pip install --no-deps llama-index==0.10.57 2>&1 | tee -a /tmp/pip-install.log || {
-            echo 'llama-index 0.10.57 failed, trying without --no-deps...' | tee -a /tmp/pip-install.log
-            pip install llama-index==0.10.57 2>&1 | tee -a /tmp/pip-install.log || echo 'llama-index installation failed completely' | tee -a /tmp/pip-install.log
-          }
-          pip install --no-deps llama-index-llms-openai==0.1.29
-          pip install --no-deps llama-index-embeddings-openai==0.1.11
-          pip install --no-deps llama-index-embeddings-clip==0.1.5
-          pip install --no-deps llama-index-multi-modal-llms-openai==0.1.9
-          pip install --no-deps llama-index-multi-modal-llms-anthropic==0.1.4
-          pip install --no-deps llama-index-agent-openai==0.2.9
-          pip install --no-deps llama-index-program-openai==0.1.6
-          pip install --no-deps llama-index-question-gen-openai==0.1.3
-          pip install --no-deps llama-index-vector-stores-supabase==0.1.4
-          pip install --no-deps llama-index-readers-file==0.1.12
-          pip install --no-deps llama-index-cli==0.1.13
+          echo 'Attempting llama-index installation...'
+          if pip install --no-deps llama-index==0.13.0 2>&1 | tee -a /tmp/pip-install.log; then
+            echo '✅ llama-index installed successfully with --no-deps'
+          elif pip install llama-index==0.13.0 2>&1 | tee -a /tmp/pip-install.log; then
+            echo '✅ llama-index installed successfully with dependencies'
+          elif pip install --force-reinstall llama-index==0.13.0 2>&1 | tee -a /tmp/pip-install.log; then
+            echo '✅ llama-index installed successfully with force-reinstall'
+          else
+            echo '❌ llama-index installation failed completely' | tee -a /tmp/pip-install.log
+            echo 'Checking if llama-index-core is available...'
+            python -c 'import llama_index_core; print(\"llama-index-core available:\", llama_index_core.__version__)' || echo 'llama-index-core not available'
+          fi
+          pip install --no-deps llama-index-llms-openai==0.2.0
+          pip install --no-deps llama-index-embeddings-openai==0.2.0
+          pip install --no-deps llama-index-embeddings-clip==0.2.0
+          pip install --no-deps llama-index-multi-modal-llms-openai==0.2.0
+          pip install --no-deps llama-index-multi-modal-llms-anthropic==0.2.0
+          pip install --no-deps llama-index-agent-openai==0.3.0
+          pip install --no-deps llama-index-program-openai==0.2.0
+          pip install --no-deps llama-index-question-gen-openai==0.2.0
+          pip install --no-deps llama-index-vector-stores-supabase==0.2.0
+          pip install --no-deps llama-index-readers-file==0.2.0
+          pip install --no-deps llama-index-cli==0.2.0
+
+          # Fix pypdf version conflict
+          pip install --no-deps pypdf==4.3.1
 
           # Step 6: Web framework and remaining packages
           echo 'Step 6: Installing web framework and remaining packages...'
           pip install --no-deps fastapi==0.104.1
           pip install --no-deps uvicorn==0.24.0
-          # Try to install PyMuPDF with fallback to older version if needed
-          pip install --no-deps PyMuPDF==1.24.2 || {
-            echo 'PyMuPDF 1.24.2 failed, trying older stable version 1.23.26...'
-            pip install --no-deps PyMuPDF==1.23.26
-          }
+          # Try to install PyMuPDF with multiple fallback strategies
+          echo \"Installing PyMuPDF...\" >> /tmp/pip-install.log
+          echo 'Attempting PyMuPDF installation with bundled libraries...'
 
-          # Install pymupdf4llm with error handling
+          # First try: Use older version that might have better compatibility
+          if pip install --no-deps PyMuPDF==1.23.26 2>&1 | tee -a /tmp/pip-install.log; then
+            echo '✅ PyMuPDF 1.23.26 installed successfully'
+          elif pip install PyMuPDF==1.23.26 2>&1 | tee -a /tmp/pip-install.log; then
+            echo '✅ PyMuPDF 1.23.26 installed with dependencies'
+          elif pip install --force-reinstall --no-cache-dir PyMuPDF==1.23.26 2>&1 | tee -a /tmp/pip-install.log; then
+            echo '✅ PyMuPDF 1.23.26 force-reinstalled'
+          elif pip install --no-deps PyMuPDF==1.22.5 2>&1 | tee -a /tmp/pip-install.log; then
+            echo '✅ PyMuPDF 1.22.5 installed (older stable version)'
+          else
+            echo '❌ All PyMuPDF versions failed' | tee -a /tmp/pip-install.log
+            echo 'Trying alternative approaches...'
+
+            # Try installing from wheel with specific platform
+            echo 'Trying platform-specific wheel...'
+            pip install --no-deps --only-binary=all PyMuPDF==1.23.26 2>&1 | tee -a /tmp/pip-install.log || echo 'Platform wheel failed'
+
+            # Try different package name
+            echo 'Trying pymupdf package name...'
+            pip install pymupdf==1.23.26 2>&1 | tee -a /tmp/pip-install.log || echo 'pymupdf package failed'
+
+            # Try building from source as last resort
+            echo 'Trying build from source...'
+            pip install --no-binary PyMuPDF PyMuPDF==1.23.26 2>&1 | tee -a /tmp/pip-install.log || echo 'Source build failed'
+          fi
+
+          # Install pymupdf4llm with comprehensive error handling
           echo \"Installing pymupdf4llm...\" >> /tmp/pip-install.log
-          pip install --no-deps pymupdf4llm==0.0.12 2>&1 | tee -a /tmp/pip-install.log || {
-            echo 'pymupdf4llm 0.0.12 failed, trying without --no-deps...' | tee -a /tmp/pip-install.log
-            pip install pymupdf4llm==0.0.12 2>&1 | tee -a /tmp/pip-install.log || echo 'pymupdf4llm installation failed completely' | tee -a /tmp/pip-install.log
-          }
+          echo 'Attempting pymupdf4llm installation...'
+
+          # First ensure PyMuPDF is working
+          echo 'Testing PyMuPDF before installing pymupdf4llm...'
+          if python -c 'import fitz; print(\"PyMuPDF test:\", fitz.__version__)' 2>/dev/null; then
+            echo '✅ PyMuPDF is working, proceeding with pymupdf4llm...'
+
+            if pip install --no-deps pymupdf4llm==0.0.12 2>&1 | tee -a /tmp/pip-install.log; then
+              echo '✅ pymupdf4llm installed successfully with --no-deps'
+            elif pip install pymupdf4llm==0.0.12 2>&1 | tee -a /tmp/pip-install.log; then
+              echo '✅ pymupdf4llm installed successfully with dependencies'
+            elif pip install --force-reinstall pymupdf4llm==0.0.12 2>&1 | tee -a /tmp/pip-install.log; then
+              echo '✅ pymupdf4llm installed successfully with force-reinstall'
+            else
+              echo '❌ pymupdf4llm installation failed - trying older version...'
+              pip install pymupdf4llm==0.0.6 2>&1 | tee -a /tmp/pip-install.log || echo 'All pymupdf4llm versions failed'
+            fi
+          else
+            echo '❌ PyMuPDF not working - skipping pymupdf4llm installation'
+            echo 'PyMuPDF must be fixed first before pymupdf4llm can work'
+          fi
           pip install --no-deps supabase==2.3.0
           pip install --no-deps postgrest==0.13.0
           pip install --no-deps gotrue==2.9.1
@@ -349,8 +424,8 @@ jobs:
 
           # Step 7: Install missing dependencies that --no-deps skipped
           echo 'Step 7: Installing essential dependencies...'
-          pip install pydantic==2.5.3
-          pip install pydantic-settings==2.1.0
+          pip install pydantic==1.10.15
+          pip install pydantic-settings==1.3.0
           pip install python-dotenv==1.0.0
           pip install python-multipart==0.0.6
           pip install python-dateutil==2.8.2
@@ -367,7 +442,8 @@ jobs:
           pip install easyocr==1.7.0
           pip install pytesseract==0.3.10
           pip install scikit-learn==1.3.2
-          pip install transformers==4.30.2
+          pip install transformers==4.41.0
+          pip install sentence-transformers==3.0.0
           pip install asyncio-mqtt==0.13.0
           pip install aiohttp==3.9.3
 
@@ -381,9 +457,33 @@ jobs:
           python -c 'import fastapi; print(\"FastAPI: OK\")'
           python -c 'import uvicorn; print(\"Uvicorn: OK\")'
           python -c 'import cv2; print(\"OpenCV: OK\")'
-          # Test PyMuPDF with error handling
-          python -c 'import fitz; print(\"PyMuPDF (fitz): OK - Version\", fitz.version[0])' || echo 'PyMuPDF (fitz): FAILED'
-          python -c 'import pymupdf4llm; print(\"PyMuPDF4LLM: OK\")' || echo 'PyMuPDF4LLM: FAILED - Check PyMuPDF installation'
+          # Test PyMuPDF with detailed error handling
+          echo 'Testing PyMuPDF installation...'
+          python -c '
+import sys
+try:
+    import fitz
+    print(\"PyMuPDF (fitz): OK - Version\", fitz.version[0])
+    print(\"PyMuPDF library path:\", fitz.__file__)
+except ImportError as e:
+    print(\"PyMuPDF (fitz): FAILED -\", str(e))
+    sys.exit(1)
+except Exception as e:
+    print(\"PyMuPDF (fitz): ERROR -\", str(e))
+    sys.exit(1)
+' || echo 'PyMuPDF verification failed'
+
+          python -c '
+import sys
+try:
+    import pymupdf4llm
+    print(\"PyMuPDF4LLM: OK\")
+    print(\"PyMuPDF4LLM path:\", pymupdf4llm.__file__)
+except ImportError as e:
+    print(\"PyMuPDF4LLM: FAILED -\", str(e))
+except Exception as e:
+    print(\"PyMuPDF4LLM: ERROR -\", str(e))
+' || echo 'PyMuPDF4LLM verification failed'
           python -c 'import llama_index; print(\"LlamaIndex: OK\")' || echo 'LlamaIndex: FAILED - Check installation'
           python -c 'import supabase; print(\"Supabase: OK\")'
           python -c 'import numpy; print(\"NumPy: OK\")'
@@ -396,7 +496,29 @@ jobs:
 
           # Debug: Check if problematic packages are actually installed
           echo 'Debugging package installations...'
-          pip list | grep -E '(pymupdf4llm|llama-index|PyMuPDF)' || echo 'Some packages not found in pip list'
+          echo 'Checking pip list for problematic packages:'
+          pip list | grep -i pymupdf || echo 'No PyMuPDF packages found'
+          pip list | grep -i llama || echo 'No llama packages found'
+
+          echo 'Testing direct imports:'
+          python -c 'import pymupdf4llm; print(\"pymupdf4llm import: SUCCESS\")' 2>/dev/null || echo 'pymupdf4llm import: FAILED'
+          python -c 'import llama_index; print(\"llama_index import: SUCCESS\")' 2>/dev/null || echo 'llama_index import: FAILED'
+
+          # Debug: Check system libraries
+          echo 'Checking system MuPDF libraries...'
+          find /usr -name '*mupdf*' 2>/dev/null | head -10 || echo 'No MuPDF libraries found in /usr'
+          ldconfig -p | grep mupdf || echo 'No MuPDF libraries in ldconfig cache'
+
+          # Check what libmupdf files are available
+          echo 'Checking for libmupdf.so files...'
+          find /usr -name 'libmupdf.so*' 2>/dev/null || echo 'No libmupdf.so files found'
+          ls -la /usr/lib/x86_64-linux-gnu/libmupdf* 2>/dev/null || echo 'No libmupdf in standard lib directory'
+
+          # Check if we can create a symlink to fix the version issue
+          if [ -f /usr/lib/x86_64-linux-gnu/libmupdf.so ]; then
+            echo 'Found libmupdf.so, creating version-specific symlink...'
+            ln -sf /usr/lib/x86_64-linux-gnu/libmupdf.so /usr/lib/x86_64-linux-gnu/libmupdf.so.24.1 2>/dev/null && echo 'Symlink created' || echo 'Symlink failed'
+          fi
 
           # Generate actual package status for GitHub summary
           echo 'Generating package status report...'
@@ -409,14 +531,28 @@ jobs:
           python -c 'import fastapi; print(f\"| **fastapi** | Web Framework | FastAPI web framework | 🟢 Installed | {fastapi.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **fastapi** | Web Framework | FastAPI web framework | 🔴 Missing | N/A |' >> package_status_report.txt
           python -c 'import uvicorn; print(f\"| **uvicorn** | Server | ASGI server | 🟢 Installed | {uvicorn.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **uvicorn** | Server | ASGI server | 🔴 Missing | N/A |' >> package_status_report.txt
           python -c 'import cv2; print(f\"| **opencv-python-headless** | Computer Vision | Image processing | 🟢 Installed | {cv2.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **opencv-python-headless** | Computer Vision | Image processing | 🔴 Missing | N/A |' >> package_status_report.txt
-          python -c 'import pymupdf4llm; print(f\"| **pymupdf4llm** | PDF Processing | PDF processing for LLM | 🟢 Installed | {pymupdf4llm.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **pymupdf4llm** | PDF Processing | PDF processing for LLM | 🔴 Missing | N/A |' >> package_status_report.txt
+          # Check pymupdf4llm with detailed error handling
+          if python -c 'import pymupdf4llm; print(f\"| **pymupdf4llm** | PDF Processing | PDF processing for LLM | 🟢 Installed | {pymupdf4llm.__version__} |\")' >> package_status_report.txt 2>/dev/null; then
+            echo 'pymupdf4llm status: OK'
+          else
+            echo '| **pymupdf4llm** | PDF Processing | PDF processing for LLM | 🔴 Missing | N/A |' >> package_status_report.txt
+            echo 'pymupdf4llm status: FAILED'
+            python -c 'import pymupdf4llm' 2>&1 | head -3 || echo 'Import test failed'
+          fi
           python -c 'import supabase; print(f\"| **supabase** | Database | Database client | 🟢 Installed | {supabase.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **supabase** | Database | Database client | 🔴 Missing | N/A |' >> package_status_report.txt
           python -c 'import numpy; print(f\"| **numpy** | Computing | Numerical computing | 🟢 Installed | {numpy.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **numpy** | Computing | Numerical computing | 🔴 Missing | N/A |' >> package_status_report.txt
           python -c 'import pandas; print(f\"| **pandas** | Data | Data manipulation | 🟢 Installed | {pandas.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **pandas** | Data | Data manipulation | 🔴 Missing | N/A |' >> package_status_report.txt
           python -c 'import torch; print(f\"| **torch** | AI/ML | PyTorch deep learning | 🟢 Installed | {torch.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **torch** | AI/ML | PyTorch deep learning | 🔴 Missing | N/A |' >> package_status_report.txt
           python -c 'import openai; print(f\"| **openai** | AI/ML | OpenAI API client | 🟢 Installed | {openai.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **openai** | AI/ML | OpenAI API client | 🔴 Missing | N/A |' >> package_status_report.txt
           python -c 'import anthropic; print(f\"| **anthropic** | AI/ML | Anthropic API client | 🟢 Installed | {anthropic.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **anthropic** | AI/ML | Anthropic API client | 🔴 Missing | N/A |' >> package_status_report.txt
-          python -c 'import llama_index; print(f\"| **llama-index** | AI/ML | LLM framework | 🟢 Installed | {llama_index.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **llama-index** | AI/ML | LLM framework | 🔴 Missing | N/A |' >> package_status_report.txt
+          # Check llama-index with detailed error handling
+          if python -c 'import llama_index; print(f\"| **llama-index** | AI/ML | LLM framework | 🟢 Installed | {llama_index.__version__} |\")' >> package_status_report.txt 2>/dev/null; then
+            echo 'llama-index status: OK'
+          else
+            echo '| **llama-index** | AI/ML | LLM framework | 🔴 Missing | N/A |' >> package_status_report.txt
+            echo 'llama-index status: FAILED'
+            python -c 'import llama_index' 2>&1 | head -3 || echo 'Import test failed'
+          fi
 
           echo '' >> package_status_report.txt
           echo 'Package status report generated successfully'
@@ -571,13 +707,16 @@ jobs:
           echo '=== MIVAA PDF Extractor Service Logs ==='
           echo 'Last 50 log entries:'
           echo ''
-          journalctl -u mivaa-pdf-extractor --no-pager -n 50 --output=short-iso 2>/dev/null || echo 'Service logs not available'
+          journalctl -u mivaa-pdf-extractor --no-pager -n 50 --since='1 hour ago' 2>/dev/null || echo 'Service logs not available'
           echo ''
           echo '=== Service Status ==='
-          systemctl status mivaa-pdf-extractor --no-pager 2>/dev/null || echo 'Service status not available'
+          systemctl status mivaa-pdf-extractor --no-pager --lines=20 2>/dev/null || echo 'Service status not available'
+          echo ''
+          echo '=== Live Service Logs (Last 10 seconds) ==='
+          timeout 10s journalctl -u mivaa-pdf-extractor -f --no-pager 2>/dev/null || echo 'Live logs not available'
           echo ''
           echo '=== Recent System Logs (Errors) ==='
-          journalctl --no-pager -p err -n 10 --output=short-iso 2>/dev/null || echo 'System error logs not available'
+          journalctl --no-pager -p err -n 10 --since='1 hour ago' 2>/dev/null || echo 'System error logs not available'
           echo ''
           echo '=== Disk Space ==='
           df -h /var/www/mivaa-pdf-extractor 2>/dev/null || echo 'Disk space info not available'

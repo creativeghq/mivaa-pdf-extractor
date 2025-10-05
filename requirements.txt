@@ -8,6 +8,7 @@ uvicorn[standard]>=0.24.0
 # PDF processing dependencies
 pymupdf4llm==0.0.12
 PyMuPDF>=1.23.26
+pypdf>=4.0.1,<5.0.0
 pandas==2.1.4
 
 # Essential scientific computing
@@ -27,14 +28,14 @@ imageio>=2.31.0
 openai==1.51.0
 anthropic==0.20.0
 
-# LlamaIndex for RAG capabilities - exact compatible versions
-llama-index==0.10.57
-llama-index-core==0.10.57
-llama-index-llms-openai==0.1.29
-llama-index-embeddings-openai==0.1.11
-llama-index-vector-stores-supabase==0.1.4
-llama-index-embeddings-clip==0.1.5
-llama-index-multi-modal-llms-openai==0.1.9
+# LlamaIndex for RAG capabilities - updated compatible versions
+llama-index==0.13.0
+llama-index-core==0.13.0
+llama-index-llms-openai==0.2.0
+llama-index-embeddings-openai==0.2.0
+llama-index-vector-stores-supabase==0.2.0
+llama-index-embeddings-clip==0.2.0
+llama-index-multi-modal-llms-openai==0.2.0
 llama-index-multi-modal-llms-anthropic==0.1.4
 llama-index-agent-openai==0.2.9
 llama-index-program-openai==0.1.6
