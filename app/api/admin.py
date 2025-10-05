@@ -741,54 +741,106 @@ async def get_package_status():
 
 
 async def get_basic_package_status():
-    """Fallback method for basic package status checking"""
+    """Get package status by parsing requirements.txt and checking imports"""
     import importlib
+    import re
+    import os
 
+    # Parse requirements.txt to get all packages
+    requirements_path = "/var/www/mivaa-pdf-extractor/requirements.txt"
+    if not os.path.exists(requirements_path):
+        requirements_path = "requirements.txt"  # Fallback for local development
+
+    packages_from_requirements = {}
+
+    try:
+        with open(requirements_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                # Skip comments and empty lines
+                if line.startswith('#') or not line:
+                    continue
+
+                # Parse package name and version
+                # Handle formats like: package>=1.0.0, package==1.0.0, package[extra]>=1.0.0
+                match = re.match(r'^([a-zA-Z0-9_-]+)(\[.*?\])?([><=!]+.*)?', line)
+                if match:
+                    package_name = match.group(1)
+                    version_spec = match.group(3) or ''
+
+                    # Map some package names to their import names
+                    import_name = package_name
+                    if package_name == 'opencv-python-headless':
+                        import_name = 'cv2'
+                    elif package_name == 'pillow':
+                        import_name = 'PIL'
+                    elif package_name == 'python-dotenv':
+                        import_name = 'dotenv'
+                    elif package_name == 'python-multipart':
+                        import_name = 'multipart'
+                    elif package_name == 'python-dateutil':
+                        import_name = 'dateutil'
+                    elif package_name == 'python-json-logger':
+                        import_name = 'pythonjsonlogger'
+                    elif package_name == 'email-validator':
+                        import_name = 'email_validator'
+
+                    packages_from_requirements[package_name] = {
+                        'import_name': import_name,
+                        'version_spec': version_spec.strip(),
+                        'required': True
+                    }
+    except Exception as e:
+        logger.error(f"Error reading requirements.txt: {e}")
+
+    # Check each package
+    package_status = {}
     critical_packages = {
-        'fastapi': 'FastAPI web framework',
-        'uvicorn': 'ASGI server',
-        'pydantic': 'Data validation',
-        'supabase': 'Database client',
-        'pymupdf4llm': 'PDF processing',
-        'numpy': 'Numerical computing',
-        'pandas': 'Data manipulation',
-        'cv2': 'OpenCV (headless)',
+        'fastapi', 'uvicorn', 'pydantic', 'supabase', 'pymupdf4llm',
+        'numpy', 'pandas', 'opencv-python-headless', 'pillow'
     }
 
-    package_status = {}
-
-    for package, description in critical_packages.items():
+    for package_name, info in packages_from_requirements.items():
         try:
-            module = importlib.import_module(package)
+            module = importlib.import_module(info['import_name'])
             version = getattr(module, '__version__', 'unknown')
-            package_status[package] = {
+            package_status[package_name] = {
                 'available': True,
                 'version': version,
-                'description': description,
-                'critical': True
+                'version_spec': info['version_spec'],
+                'critical': package_name in critical_packages,
+                'import_name': info['import_name']
             }
         except ImportError:
-            package_status[package] = {
+            package_status[package_name] = {
                 'available': False,
                 'version': None,
-                'description': description,
-                'critical': True,
+                'version_spec': info['version_spec'],
+                'critical': package_name in critical_packages,
+                'import_name': info['import_name'],
                 'error': 'Package not found'
             }
+
+    # Calculate summary
+    critical_missing = sum(1 for pkg, status in package_status.items()
+                          if pkg in critical_packages and not status['available'])
+    total_packages = len(package_status)
+    total_critical = len([pkg for pkg in package_status.keys() if pkg in critical_packages])
+    available_packages = sum(1 for status in package_status.values() if status['available'])
 
     return {
         "success": True,
         "data": {
-            "packages": {
-                "critical": package_status,
-                "optional": {}
-            },
+            "packages": package_status,
             "summary": {
-                "critical_missing": sum(1 for p in package_status.values() if not p['available']),
-                "total_critical": len(critical_packages)
-            },
-            "deployment_ready": all(p['available'] for p in package_status.values())
+                "total_packages": total_packages,
+                "available_packages": available_packages,
+                "missing_packages": total_packages - available_packages,
+                "critical_missing": critical_missing,
+                "total_critical": total_critical,
+                "deployment_ready": critical_missing == 0
+            }
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "method": "basic_check"
+        "source": "requirements.txt"
     }
