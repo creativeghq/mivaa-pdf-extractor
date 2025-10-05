@@ -16,6 +16,8 @@ from ..schemas.search import (
     SearchRequest,
     SearchResult,
     SearchResponse,
+    DocumentQueryRequest,
+    DocumentQueryResponse,
     QueryRequest,
     QueryResponse,
     SourceCitation,

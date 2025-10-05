@@ -128,6 +128,57 @@ class SearchResponse(BaseResponse):
         }
 
 
+class DocumentQueryRequest(BaseModel):
+    """Request model for document-specific RAG queries."""
+
+    query: str = Field(..., min_length=1, max_length=2000, description="Question or query about the document")
+    response_mode: str = Field("compact", description="Response mode (compact, tree_summarize, etc.)")
+    include_sources: bool = Field(True, description="Whether to include source citations")
+    max_tokens: Optional[int] = Field(None, ge=1, le=4000, description="Maximum tokens in response")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "query": "What are the main findings in this research paper?",
+                "response_mode": "compact",
+                "include_sources": True,
+                "max_tokens": 1000
+            }
+        }
+
+
+class DocumentQueryResponse(BaseResponse):
+    """Response model for document-specific RAG queries."""
+
+    document_id: str = Field(..., description="ID of the queried document")
+    query: str = Field(..., description="Original query")
+    response: str = Field(..., description="Generated response based on document content")
+    sources: List[Dict[str, Any]] = Field(default_factory=list, description="Source citations and references")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional response metadata")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "document_id": "doc_123",
+                "query": "What are the main findings?",
+                "response": "The main findings include...",
+                "sources": [
+                    {
+                        "page": 1,
+                        "text": "relevant excerpt",
+                        "confidence": 0.95
+                    }
+                ],
+                "metadata": {
+                    "document_title": "Research Paper",
+                    "response_time": 1.2
+                },
+                "timestamp": "2024-07-26T18:00:00Z"
+            }
+        }
+
+
 class QueryRequest(BaseModel):
     """Request model for RAG-based question answering."""
     
