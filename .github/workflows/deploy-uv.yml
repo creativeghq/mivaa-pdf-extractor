@@ -1,8 +1,9 @@
-name: 🚀 Intelligent MIVAA Deployment Pipeline
+# DEPRECATED: This workflow has been replaced by orchestrated-deployment.yml
+# The new orchestrated workflow provides sequential execution with comprehensive monitoring
+name: 🚀 [DEPRECATED] Intelligent MIVAA Deployment Pipeline
 
 on:
-  push:
-    branches: [ "main", "production" ]
+  # Disabled - use orchestrated-deployment.yml instead
   workflow_dispatch:
     inputs:
       deployment_type:

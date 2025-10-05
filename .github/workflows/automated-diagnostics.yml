@@ -1,10 +1,10 @@
-name: 🔬 Automated Diagnostics & Validation
+# DEPRECATED: This workflow has been integrated into orchestrated-deployment.yml
+# The new orchestrated workflow handles diagnostics as Phase 3
+name: 🔬 [DEPRECATED] Automated Diagnostics & Validation
 
 on:
-  push:
-    branches: [ main, production, develop ]
-  pull_request:
-    branches: [ main, production ]
+  # Disabled - integrated into orchestrated-deployment.yml
+  # Still available for scheduled runs if needed
   schedule:
     # Run comprehensive diagnostics daily at 3 AM UTC
     - cron: '0 3 * * *'

@@ -1,13 +1,9 @@
-name: 🔍 Intelligent Change Detection & Auto-Processing
+# DEPRECATED: This workflow has been integrated into orchestrated-deployment.yml
+# The new orchestrated workflow handles change detection as Phase 1
+name: 🔍 [DEPRECATED] Intelligent Change Detection & Auto-Processing
 
 on:
-  push:
-    branches: [ main, production, develop ]
-  pull_request:
-    branches: [ main, production ]
-  schedule:
-    # Run daily at 2 AM UTC to check for dependency updates
-    - cron: '0 2 * * *'
+  # Disabled - integrated into orchestrated-deployment.yml
   workflow_dispatch:
     inputs:
       analysis_depth:

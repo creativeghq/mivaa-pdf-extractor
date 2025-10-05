@@ -1,21 +1,9 @@
-name: 🤖 Intelligent Dependency Management
+# DEPRECATED: This workflow has been integrated into orchestrated-deployment.yml
+# The new orchestrated workflow handles dependency management as Phase 2
+name: 🤖 [DEPRECATED] Intelligent Dependency Management
 
 on:
-  push:
-    branches: [ main, production, develop ]
-    paths:
-      - 'requirements.in'
-      - 'requirements.txt'
-      - 'pyproject.toml'
-      - 'scripts/**'
-      - '.github/workflows/**'
-  pull_request:
-    branches: [ main, production ]
-    paths:
-      - 'requirements.in'
-      - 'requirements.txt'
-      - 'pyproject.toml'
-      - 'scripts/**'
+  # Disabled - integrated into orchestrated-deployment.yml
   workflow_dispatch:
     inputs:
       force_update:
