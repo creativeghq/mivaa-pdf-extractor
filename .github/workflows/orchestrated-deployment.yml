@@ -698,15 +698,15 @@ jobs:
                 echo "🔧 Gathering diagnostics for failed health check..."
 
                 # SSH and get service status
-                ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 root@$DEPLOY_HOST << 'HEALTH_DIAG_EOF'
+                ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 root@$DEPLOY_HOST '
                 echo "📊 Service Diagnostics:"
-                echo "  • Service Status: $(sudo systemctl is-active mivaa-pdf-extractor 2>/dev/null || echo 'unknown')"
-                echo "  • Service Enabled: $(sudo systemctl is-enabled mivaa-pdf-extractor 2>/dev/null || echo 'unknown')"
-                echo "  • Port 8000 Status: $(ss -tlnp | grep :8000 | head -1 || echo 'not listening')"
+                echo "  • Service Status: $(sudo systemctl is-active mivaa-pdf-extractor 2>/dev/null || echo \"unknown\")"
+                echo "  • Service Enabled: $(sudo systemctl is-enabled mivaa-pdf-extractor 2>/dev/null || echo \"unknown\")"
+                echo "  • Port 8000 Status: $(ss -tlnp | grep :8000 | head -1 || echo \"not listening\")"
                 echo ""
                 echo "📋 Recent Logs (last 10 lines):"
                 sudo journalctl -u mivaa-pdf-extractor --no-pager --lines=10 --since "5 minutes ago" 2>/dev/null || echo "No logs available"
-                HEALTH_DIAG_EOF
+                '
 
                 if [ $? -ne 0 ]; then
                   echo "SSH connection failed for diagnostics"
@@ -721,13 +721,13 @@ jobs:
           if [ "$HEALTH_CHECKS_PASSED" = "0" ]; then
             echo "🚨 All health checks failed - attempting service restart..."
 
-            ssh -o StrictHostKeyChecking=no root@$DEPLOY_HOST << 'RESTART_EOF'
+            ssh -o StrictHostKeyChecking=no root@$DEPLOY_HOST '
             echo "🔄 Restarting mivaa-pdf-extractor service..."
             sudo systemctl restart mivaa-pdf-extractor
             sleep 10
             echo "  • New status: $(sudo systemctl is-active mivaa-pdf-extractor)"
-            echo "  • Port check: $(ss -tlnp | grep :8000 | head -1 || echo 'not listening')"
-            RESTART_EOF
+            echo "  • Port check: $(ss -tlnp | grep :8000 | head -1 || echo \"not listening\")"
+            '
 
             # Re-test after restart
             sleep 10
@@ -804,7 +804,7 @@ jobs:
             echo "🔧 COMPREHENSIVE DIAGNOSTICS - Verification Failed"
             echo "================================================="
 
-            ssh -o StrictHostKeyChecking=no root@$DEPLOY_HOST << 'VERIFY_DIAG_EOF'
+            ssh -o StrictHostKeyChecking=no root@$DEPLOY_HOST '
             echo "🔍 SYSTEM DIAGNOSTICS"
             echo "===================="
             echo "• Timestamp: $(date)"
@@ -822,7 +822,7 @@ jobs:
             df -h /
             echo ""
             echo "• CPU Usage:"
-            top -bn1 | grep "Cpu(s)" || echo "CPU info not available"
+            top -bn1 | grep \"Cpu(s)\" || echo \"CPU info not available\"
             echo ""
 
             echo "🔧 SERVICE STATUS"
@@ -836,22 +836,22 @@ jobs:
             echo "🌐 NETWORK STATUS"
             echo "================"
             echo "• Port 8000 Status:"
-            ss -tlnp | grep :8000 || echo "Port 8000 not listening"
+            ss -tlnp | grep :8000 || echo \"Port 8000 not listening\"
             echo ""
             echo "• Process on Port 8000:"
-            lsof -i :8000 || echo "No process on port 8000"
+            lsof -i :8000 || echo \"No process on port 8000\"
             echo ""
             echo "• Network Interfaces:"
-            ip addr show | grep -E "(inet |UP)" | head -10
+            ip addr show | grep -E \"(inet |UP)\" | head -10
             echo ""
 
             echo "📋 APPLICATION LOGS"
             echo "=================="
             echo "• Recent Service Logs (last 30 lines):"
-            sudo journalctl -u mivaa-pdf-extractor --no-pager --lines=30 --since "10 minutes ago"
+            sudo journalctl -u mivaa-pdf-extractor --no-pager --lines=30 --since \"10 minutes ago\"
             echo ""
             echo "• Error Logs (if any):"
-            sudo journalctl -u mivaa-pdf-extractor --no-pager --priority=err --since "10 minutes ago" || echo "No error logs found"
+            sudo journalctl -u mivaa-pdf-extractor --no-pager --priority=err --since \"10 minutes ago\" || echo \"No error logs found\"
             echo ""
 
             echo "📁 APPLICATION DIRECTORY"
@@ -860,27 +860,27 @@ jobs:
             ls -la /var/www/mivaa-pdf-extractor/ | head -15
             echo ""
             echo "• Virtual Environment:"
-            if [ -d "/var/www/mivaa-pdf-extractor/.venv" ]; then
-              echo "  ✅ Virtual environment exists"
-              echo "  • Python version: $(cd /var/www/mivaa-pdf-extractor && source .venv/bin/activate && python --version)"
-              echo "  • FastAPI status: $(cd /var/www/mivaa-pdf-extractor && source .venv/bin/activate && python -c 'import fastapi; print(\"OK\")' 2>/dev/null || echo 'FAILED')"
+            if [ -d \"/var/www/mivaa-pdf-extractor/.venv\" ]; then
+              echo \"  ✅ Virtual environment exists\"
+              echo \"  • Python version: $(cd /var/www/mivaa-pdf-extractor && source .venv/bin/activate && python --version)\"
+              echo \"  • FastAPI status: $(cd /var/www/mivaa-pdf-extractor && source .venv/bin/activate && python -c \"import fastapi; print(\\\"OK\\\")\" 2>/dev/null || echo \"FAILED\")\"
             else
-              echo "  ❌ Virtual environment missing"
+              echo \"  ❌ Virtual environment missing\"
             fi
             echo ""
 
             echo "🔄 RECOVERY ATTEMPT"
             echo "=================="
-            echo "• Attempting service restart..."
+            echo \"• Attempting service restart...\"
             sudo systemctl restart mivaa-pdf-extractor
             sleep 10
-            echo "• Post-restart status: $(sudo systemctl is-active mivaa-pdf-extractor)"
-            echo "• Post-restart port check:"
-            ss -tlnp | grep :8000 || echo "Port still not listening"
+            echo \"• Post-restart status: $(sudo systemctl is-active mivaa-pdf-extractor)\"
+            echo \"• Post-restart port check:\"
+            ss -tlnp | grep :8000 || echo \"Port still not listening\"
             echo ""
-            echo "• Post-restart logs (last 10 lines):"
-            sudo journalctl -u mivaa-pdf-extractor --no-pager --lines=10 --since "1 minute ago"
-            VERIFY_DIAG_EOF
+            echo \"• Post-restart logs (last 10 lines):\"
+            sudo journalctl -u mivaa-pdf-extractor --no-pager --lines=10 --since \"1 minute ago\"
+            '
 
             # Test endpoints again after diagnostics
             echo ""

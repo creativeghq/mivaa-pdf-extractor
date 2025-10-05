@@ -159,37 +159,37 @@ jobs:
       # 4. Deploy to server
       - name: Deploy to server
         run: |
-          ssh -o StrictHostKeyChecking=no root@104.248.68.3 << 'EOF'
+          ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
           set -e
 
           APP_DIR=/var/www/mivaa-pdf-extractor
-          DEPLOY_BRANCH="${{ github.ref_name }}"
+          DEPLOY_BRANCH=\"${{ github.ref_name }}\"
 
           # Clone repo if it doesn't exist
-          if [ ! -d "$APP_DIR/.git" ]; then
-            rm -rf "$APP_DIR"
-            git clone https://x-access-token:${{ secrets.GH_PAT }}@github.com/creativeghq/mivaa-pdf-extractor.git "$APP_DIR"
+          if [ ! -d \"\$APP_DIR/.git\" ]; then
+            rm -rf \"\$APP_DIR\"
+            git clone https://x-access-token:${{ secrets.GH_PAT }}@github.com/creativeghq/mivaa-pdf-extractor.git \"\$APP_DIR\"
           fi
 
-          cd "$APP_DIR"
+          cd \"\$APP_DIR\"
 
           # Pull latest changes for the branch
-          git fetch origin "$DEPLOY_BRANCH"
-          git reset --hard origin/"$DEPLOY_BRANCH"
+          git fetch origin \"\$DEPLOY_BRANCH\"
+          git reset --hard origin/\"\$DEPLOY_BRANCH\"
 
           # --- Initialize pyenv ---
-          export PATH="$HOME/.pyenv/bin:$PATH"
-          eval "$(pyenv init --path)"
-          eval "$(pyenv init -)"
-          eval "$(pyenv virtualenv-init -)"
+          export PATH=\"\$HOME/.pyenv/bin:\$PATH\"
+          eval \"\$(pyenv init --path)\"
+          eval \"\$(pyenv init -)\"
+          eval \"\$(pyenv virtualenv-init -)\"
 
           # Use pyenv Python
           PYTHON=python3.9
 
           # --- Create virtual environment ---
-          if [ ! -d ".venv" ] || [ ! -f ".venv/pyvenv.cfg" ]; then
+          if [ ! -d \".venv\" ] || [ ! -f \".venv/pyvenv.cfg\" ]; then
             rm -rf .venv
-            $PYTHON -m venv .venv
+            \$PYTHON -m venv .venv
           fi
 
           # Activate venv
@@ -207,16 +207,16 @@ jobs:
           uv pip sync uv.lock
 
           # --- Verify installations ---
-          python -c "import fastapi; print('FastAPI OK')"
-          python -c "import pymupdf; print('PyMuPDF OK')"
-          python -c "import pymupdf4llm; print('pymupdf4llm OK')"
+          python -c \\\"import fastapi; print('FastAPI OK')\\\"
+          python -c \\\"import pymupdf; print('PyMuPDF OK')\\\"
+          python -c \\\"import pymupdf4llm; print('pymupdf4llm OK')\\\"
 
           # Restart the FastAPI service
           sudo systemctl restart mivaa-pdf-extractor
 
           # Check service status
           sudo systemctl status mivaa-pdf-extractor --no-pager
-          EOF
+          "
 
       # 5. Health Check & Diagnostics
       - name: 🏥 Health Check & Diagnostics
@@ -294,7 +294,7 @@ jobs:
             echo "====================================="
 
             # SSH into server and gather diagnostics
-            ssh -o StrictHostKeyChecking=no root@104.248.68.3 << 'DIAG_EOF'
+            ssh -o StrictHostKeyChecking=no root@104.248.68.3 '
             echo "🔍 AUTOMATIC DIAGNOSTICS - Service Health Check Failed"
             echo "======================================================"
             echo ""
@@ -317,12 +317,12 @@ jobs:
             echo ""
 
             echo "🌐 Network & Port Status:"
-            echo "  • Port 8000 listening: $(ss -tlnp | grep :8000 || echo 'NOT LISTENING')"
-            echo "  • Process on port 8000: $(lsof -i :8000 || echo 'NO PROCESS')"
+            echo "  • Port 8000 listening: $(ss -tlnp | grep :8000 || echo \"NOT LISTENING\")"
+            echo "  • Process on port 8000: $(lsof -i :8000 || echo \"NO PROCESS\")"
             echo ""
 
             echo "📁 Application Directory:"
-            echo "  • Directory exists: $([ -d /var/www/mivaa-pdf-extractor ] && echo 'YES' || echo 'NO')"
+            echo "  • Directory exists: $([ -d /var/www/mivaa-pdf-extractor ] && echo \"YES\" || echo \"NO\")"
             echo "  • Recent files: $(ls -la /var/www/mivaa-pdf-extractor/ | head -10)"
             echo ""
 
@@ -331,7 +331,7 @@ jobs:
             if [ -f ".venv/bin/activate" ]; then
               source .venv/bin/activate
               echo "  • Python version: $(python --version)"
-              echo "  • FastAPI installed: $(python -c 'import fastapi; print(fastapi.__version__)' 2>/dev/null || echo 'NOT FOUND')"
+              echo "  • FastAPI installed: $(python -c \"import fastapi; print(fastapi.__version__)\" 2>/dev/null || echo \"NOT FOUND\")"
               echo "  • Virtual env active: $VIRTUAL_ENV"
             else
               echo "  • Virtual environment: NOT FOUND"
@@ -349,7 +349,7 @@ jobs:
             echo "📋 Post-Restart Logs (Last 20 lines):"
             echo "====================================="
             sudo journalctl -u mivaa-pdf-extractor --no-pager --lines=20 --since "1 minute ago"
-            DIAG_EOF
+            '
 
             echo ""
             echo "🔄 Re-testing health endpoint after diagnostics..."
