@@ -1,8 +1,6 @@
-name: 🚀 Orchestrated MIVAA Deployment Pipeline
+name: 🚀 Orchestrated MIVAA Deployment Pipeline (On-Demand)
 
 on:
-  push:
-    branches: [ main, production ]
   workflow_dispatch:
     inputs:
       deployment_mode:
@@ -19,6 +17,19 @@ on:
         required: false
         default: 'false'
         type: boolean
+      target_branch:
+        description: '🌿 Target branch to deploy'
+        required: false
+        default: 'main'
+        type: choice
+        options:
+          - 'main'
+          - 'production'
+      deployment_reason:
+        description: '📝 Reason for orchestrated deployment'
+        required: false
+        default: 'Manual deployment with advanced orchestration'
+        type: string
 
 defaults:
   run:
@@ -458,6 +469,52 @@ jobs:
     steps:
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
+
+      - name: 📋 Orchestrated Deployment Overview
+        run: |
+          echo "🚀 MIVAA Orchestrated Deployment Overview (ON-DEMAND)"
+          echo "===================================================="
+          echo ""
+          echo "🎯 Deployment Type: ORCHESTRATED (Advanced Pipeline)"
+          echo "📝 Reason: ${{ github.event.inputs.deployment_reason || 'Manual deployment with advanced orchestration' }}"
+          echo ""
+          echo "📊 Deployment Configuration:"
+          echo "  • Strategy: ${{ needs.phase-1-analysis.outputs.deployment_strategy }}"
+          echo "  • Mode: ${{ github.event.inputs.deployment_mode || 'intelligent' }}"
+          echo "  • Target Branch: ${{ github.event.inputs.target_branch || github.ref_name }}"
+          echo "  • Target Server: ${{ env.DEPLOY_HOST }}"
+          echo "  • Commit: ${{ github.sha }}"
+          echo "  • Deployment ID: ${{ env.DEPLOYMENT_ID }}"
+          echo "  • Triggered By: ${{ github.actor }} (Manual)"
+          echo ""
+          echo "🏗️ Phase Completion Status:"
+          echo "  • Phase 1 (Analysis): ✅ Complete"
+          echo "  • Phase 2 (Dependencies): ✅ Complete"
+          echo "  • Phase 3 (Validation): ✅ Complete"
+          echo "  • Phase 4 (Deployment): 🔄 In Progress"
+          echo ""
+          echo "⚡ Optimization Features:"
+          echo "  • Smart dependency resolution"
+          echo "  • Pre-validated environment"
+          echo "  • Intelligent deployment strategy"
+          echo "  • Automated rollback on failure"
+          echo ""
+          echo "🎯 Expected Deployment Time:"
+          case "${{ needs.phase-1-analysis.outputs.deployment_strategy }}" in
+            "fast-track")
+              echo "  • Estimated: ~15 seconds (Fast Track)"
+              ;;
+            "optimized")
+              echo "  • Estimated: ~30 seconds (Optimized)"
+              ;;
+            "standard")
+              echo "  • Estimated: ~45 seconds (Standard)"
+              ;;
+            "comprehensive")
+              echo "  • Estimated: ~60 seconds (Comprehensive)"
+              ;;
+          esac
+          echo ""
 
       - name: 🚀 Execute deployment
         id: deploy

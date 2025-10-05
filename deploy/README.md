@@ -19,9 +19,21 @@ The MIVAA PDF Extractor is now a comprehensive microservice providing:
 - Domain name (optional, for SSL)
 - GitHub repository with Actions enabled
 
-## Fully Automated Deployment
+## 🚀 Deployment Options
 
+### 🔄 Default Deployment (Recommended)
 The deployment is now **completely automated** through GitHub Actions. No manual server setup is required!
+
+- **Automatic**: Triggers on push to `main` or `production` branches
+- **Fast & Reliable**: Optimized for regular deployments
+- **Manual Option**: Available via GitHub Actions workflow_dispatch
+
+### 🚀 Orchestrated Deployment (Advanced)
+For complex deployments requiring detailed analysis and validation:
+
+- **On-Demand Only**: Manual trigger via GitHub Actions
+- **Multi-Phase Pipeline**: Intelligence, validation, and comprehensive reporting
+- **Configurable**: Multiple deployment modes and options
 
 ### Step 1: Create Digital Ocean Droplet
 
@@ -73,7 +85,21 @@ ssh-keygen -t rsa -b 4096 -C "github-actions@yourdomain.com"
 
 ### Step 3: Deploy
 
-Simply push to the `main` branch or create a pull request. GitHub Actions will:
+**Option A: Default Deployment (Recommended)**
+Simply push to the `main` branch. GitHub Actions will automatically deploy using the default pipeline.
+
+**Option B: Manual Default Deployment**
+1. Go to GitHub Actions tab
+2. Select "MIVAA Deployment (Default)"
+3. Click "Run workflow" and provide optional reason
+
+**Option C: Orchestrated Deployment (Advanced)**
+1. Go to GitHub Actions tab
+2. Select "Orchestrated MIVAA Deployment Pipeline (On-Demand)"
+3. Configure deployment options (mode, branch, reason)
+4. Click "Run workflow"
+
+The deployment will:
 
 1. **Automatically detect** if this is the first deployment
 2. **Setup the server** with all required dependencies (Docker, NGINX, firewall, etc.)
@@ -103,10 +129,20 @@ The entire process takes about 5-10 minutes for the first deployment, and 2-3 mi
 
 ## Monitoring Deployment
 
+### 📋 Deployment Overview (NEW!)
+Every deployment now includes a comprehensive overview providing:
+- **Pre-deployment**: Complete system architecture, environment verification, and process breakdown
+- **Real-time status**: Live deployment progress with detailed step information
+- **Post-deployment**: Service health, API endpoints, troubleshooting guides, and next steps
+
+View the deployment overview in GitHub Actions logs for complete visibility into your deployment process.
+
 ### GitHub Actions
 Monitor your deployment in the GitHub Actions tab:
+- **Deployment Overview**: Comprehensive pre-deployment information and architecture details
 - Build logs show compilation progress
 - Deploy logs show server setup and deployment status
+- **Deployment Summary**: Post-deployment health check and service verification
 - Health check results confirm successful deployment
 
 ### Server Access
@@ -236,13 +272,18 @@ The deployment uses:
 - **Supabase**: Database and authentication
 - **Sentry**: Error tracking and monitoring
 
+## 📚 Documentation
+
+- **[Deployment Overview Guide](../docs/deployment-overview.md)**: Comprehensive guide to the new deployment overview features
+- **[Main Deployment Guide](../../docs/deployment-guide.md)**: Complete platform deployment documentation
+
 ## Support
 
 For issues and questions:
 
-1. Check the GitHub Actions logs first
+1. Check the GitHub Actions logs first (including the new deployment overview)
 2. Review application logs on the server
-3. Check this documentation
+3. Check this documentation and the deployment overview guide
 4. Create an issue in the GitHub repository
 
 ## 🧪 **Testing Deployed Service**
