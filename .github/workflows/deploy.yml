@@ -211,6 +211,33 @@ jobs:
           python -c \"import pymupdf; print('PyMuPDF OK')\"
           python -c \"import pymupdf4llm; print('pymupdf4llm OK')\"
 
+          # --- Create/Update systemd service file ---
+          echo \"🔧 Creating/updating systemd service file...\"
+          sudo tee /etc/systemd/system/mivaa-pdf-extractor.service > /dev/null <<EOF
+[Unit]
+Description=Mivaa PDF Extractor FastAPI service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/www/mivaa-pdf-extractor
+Environment=PATH=/root/.pyenv/shims:/root/.pyenv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PYTHONPATH=/var/www/mivaa-pdf-extractor
+ExecStart=/var/www/mivaa-pdf-extractor/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+          # Reload systemd and enable service
+          sudo systemctl daemon-reload
+          sudo systemctl enable mivaa-pdf-extractor
+
           # Restart the FastAPI service
           sudo systemctl restart mivaa-pdf-extractor
 
@@ -311,6 +338,18 @@ jobs:
             sudo systemctl status mivaa-pdf-extractor --no-pager --lines=10
             echo ""
 
+            echo "📋 Service Configuration:"
+            echo "  • Service file: /etc/systemd/system/mivaa-pdf-extractor.service"
+            if [ -f "/etc/systemd/system/mivaa-pdf-extractor.service" ]; then
+              echo "  • Service file exists: ✅"
+              echo "  • Working Directory: $(grep WorkingDirectory /etc/systemd/system/mivaa-pdf-extractor.service || echo '\''Not set'\'')"
+              echo "  • ExecStart: $(grep ExecStart /etc/systemd/system/mivaa-pdf-extractor.service || echo '\''Not set'\'')"
+              echo "  • Environment: $(grep Environment /etc/systemd/system/mivaa-pdf-extractor.service || echo '\''Not set'\'')"
+            else
+              echo "  • Service file exists: ❌"
+            fi
+            echo ""
+
             echo "📋 Recent Service Logs (Last 50 lines):"
             echo "========================================"
             sudo journalctl -u mivaa-pdf-extractor --no-pager --lines=50 --since "10 minutes ago"
@@ -382,6 +421,65 @@ jobs:
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
+          # Get FINAL current status of all endpoints for accurate Service Endpoints table
+          echo "🔍 Getting final current status of all endpoints for Service Endpoints table..."
+          FINAL_HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://v1api.materialshub.gr/health" --connect-timeout 10 --max-time 30 || echo "000")
+          FINAL_DOCS_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://v1api.materialshub.gr/docs" --connect-timeout 10 --max-time 30 || echo "000")
+          FINAL_REDOC_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://v1api.materialshub.gr/redoc" --connect-timeout 10 --max-time 30 || echo "000")
+          FINAL_OPENAPI_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://v1api.materialshub.gr/openapi.json" --connect-timeout 10 --max-time 30 || echo "000")
+
+          echo "📊 Final Status Summary:"
+          echo "  • Health: $FINAL_HEALTH_STATUS"
+          echo "  • Docs: $FINAL_DOCS_STATUS"
+          echo "  • ReDoc: $FINAL_REDOC_STATUS"
+          echo "  • OpenAPI: $FINAL_OPENAPI_STATUS"
+
+          # Add Service Endpoints table with FINAL current status
+          echo "## 🌐 Service Endpoints" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | URL | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-----|--------|" >> $GITHUB_STEP_SUMMARY
+
+          # Health endpoint status
+          if [ "$FINAL_HEALTH_STATUS" = "200" ]; then
+            echo "| **🏥 Health Check** | [https://v1api.materialshub.gr/health](https://v1api.materialshub.gr/health) | 🟢 Available (HTTP 200) |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **🏥 Health Check** | [https://v1api.materialshub.gr/health](https://v1api.materialshub.gr/health) | 🔴 Unavailable (HTTP $FINAL_HEALTH_STATUS) |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # API docs status
+          if [ "$FINAL_DOCS_STATUS" = "200" ]; then
+            echo "| **📚 API Documentation** | [https://v1api.materialshub.gr/docs](https://v1api.materialshub.gr/docs) | 🟢 Available (HTTP 200) |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **📚 API Documentation** | [https://v1api.materialshub.gr/docs](https://v1api.materialshub.gr/docs) | 🔴 Unavailable (HTTP $FINAL_DOCS_STATUS) |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # OpenAPI schema status
+          if [ "$FINAL_OPENAPI_STATUS" = "200" ]; then
+            echo "| **📋 OpenAPI Schema** | [https://v1api.materialshub.gr/openapi.json](https://v1api.materialshub.gr/openapi.json) | 🟢 Available (HTTP 200) |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **📋 OpenAPI Schema** | [https://v1api.materialshub.gr/openapi.json](https://v1api.materialshub.gr/openapi.json) | 🔴 Unavailable (HTTP $FINAL_OPENAPI_STATUS) |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # ReDoc endpoint status
+          if [ "$FINAL_REDOC_STATUS" = "200" ]; then
+            echo "| **📖 ReDoc** | [https://v1api.materialshub.gr/redoc](https://v1api.materialshub.gr/redoc) | 🟢 Available (HTTP 200) |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **📖 ReDoc** | [https://v1api.materialshub.gr/redoc](https://v1api.materialshub.gr/redoc) | 🔴 Unavailable (HTTP $FINAL_REDOC_STATUS) |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # API endpoints depend on health status
+          if [ "$FINAL_HEALTH_STATUS" = "200" ]; then
+            echo "| **📄 PDF Processing** | [https://v1api.materialshub.gr/api/v1/pdf/](https://v1api.materialshub.gr/api/v1/pdf/) | 🟢 Available (Depends on Health) |" >> $GITHUB_STEP_SUMMARY
+            echo "| **🤖 AI Analysis** | [https://v1api.materialshub.gr/api/v1/ai/](https://v1api.materialshub.gr/api/v1/ai/) | 🟢 Available (Depends on Health) |" >> $GITHUB_STEP_SUMMARY
+            echo "| **🔍 Vector Search** | [https://v1api.materialshub.gr/api/v1/search/](https://v1api.materialshub.gr/api/v1/search/) | 🟢 Available (Depends on Health) |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **📄 PDF Processing** | [https://v1api.materialshub.gr/api/v1/pdf/](https://v1api.materialshub.gr/api/v1/pdf/) | 🔴 Unavailable (Service Down) |" >> $GITHUB_STEP_SUMMARY
+            echo "| **🤖 AI Analysis** | [https://v1api.materialshub.gr/api/v1/ai/](https://v1api.materialshub.gr/api/v1/ai/) | 🔴 Unavailable (Service Down) |" >> $GITHUB_STEP_SUMMARY
+            echo "| **🔍 Vector Search** | [https://v1api.materialshub.gr/api/v1/search/](https://v1api.materialshub.gr/api/v1/search/) | 🔴 Unavailable (Service Down) |" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+
       # 6. Post-Deployment Summary
       - name: 📊 Final Deployment Summary
         run: |
@@ -420,24 +518,12 @@ jobs:
           echo "  • AI Analysis: https://v1api.materialshub.gr/api/v1/ai/*"
           echo "  • Vector Search: https://v1api.materialshub.gr/api/v1/search/*"
 
-          # Add API endpoints to summary
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 🌐 Service Endpoints" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Service | URL | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|---------|-----|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **🏥 Health Check** | [https://v1api.materialshub.gr/health](https://v1api.materialshub.gr/health) | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
-          echo "| **📚 API Documentation** | [https://v1api.materialshub.gr/docs](https://v1api.materialshub.gr/docs) | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
-          echo "| **📖 ReDoc** | [https://v1api.materialshub.gr/redoc](https://v1api.materialshub.gr/redoc) | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
-          echo "| **📋 OpenAPI Schema** | [https://v1api.materialshub.gr/openapi.json](https://v1api.materialshub.gr/openapi.json) | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
-          echo "| **📄 PDF Processing** | https://v1api.materialshub.gr/api/v1/pdf/* | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
-          echo "| **🤖 AI Analysis** | https://v1api.materialshub.gr/api/v1/ai/* | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
-          echo "| **🔍 Vector Search** | https://v1api.materialshub.gr/api/v1/search/* | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
+
           echo "" >> $GITHUB_STEP_SUMMARY
           echo ""
           echo "🧪 Quick Health Check Commands:"
-          echo "  curl http://104.248.68.3:8000/health"
-          echo "  curl http://104.248.68.3:8000/docs"
+          echo "  curl https://v1api.materialshub.gr/health"
+          echo "  curl https://v1api.materialshub.gr/docs"
           echo ""
           echo "📋 Deployment Verification:"
           echo "  • ✅ Code updated to latest commit"

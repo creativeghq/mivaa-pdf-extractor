@@ -901,6 +901,19 @@ jobs:
           VERIFY_END=$(date +%s)
           VERIFICATION_TIME=$((VERIFY_END - VERIFY_START))
 
+          # Get FINAL current status of all endpoints for accurate reporting
+          echo "🔍 Getting final current status of all endpoints..."
+          FINAL_HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://v1api.materialshub.gr/health" --connect-timeout 10 --max-time 30 || echo "000")
+          FINAL_DOCS_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://v1api.materialshub.gr/docs" --connect-timeout 10 --max-time 30 || echo "000")
+          FINAL_REDOC_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://v1api.materialshub.gr/redoc" --connect-timeout 10 --max-time 30 || echo "000")
+          FINAL_OPENAPI_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://v1api.materialshub.gr/openapi.json" --connect-timeout 10 --max-time 30 || echo "000")
+
+          echo "📊 Final Status Summary:"
+          echo "  • Health: $FINAL_HEALTH_STATUS"
+          echo "  • Docs: $FINAL_DOCS_STATUS"
+          echo "  • ReDoc: $FINAL_REDOC_STATUS"
+          echo "  • OpenAPI: $FINAL_OPENAPI_STATUS"
+
           # Set outputs
           echo "verification_complete=true" >> $GITHUB_OUTPUT
           echo "health_checks_passed=$HEALTH_CHECKS_PASSED" >> $GITHUB_OUTPUT
@@ -909,6 +922,10 @@ jobs:
           echo "api_tests_total=$API_TESTS_TOTAL" >> $GITHUB_OUTPUT
           echo "verification_time=$VERIFICATION_TIME" >> $GITHUB_OUTPUT
           echo "overall_status=$OVERALL_STATUS" >> $GITHUB_OUTPUT
+          echo "health_status=$FINAL_HEALTH_STATUS" >> $GITHUB_OUTPUT
+          echo "docs_status=$FINAL_DOCS_STATUS" >> $GITHUB_OUTPUT
+          echo "redoc_status=$FINAL_REDOC_STATUS" >> $GITHUB_OUTPUT
+          echo "openapi_status=$FINAL_OPENAPI_STATUS" >> $GITHUB_OUTPUT
 
           echo "🔍 Verification Results:"
           echo "   - Health Checks: $HEALTH_CHECKS_PASSED/$HEALTH_CHECKS_TOTAL"
@@ -1033,10 +1050,13 @@ jobs:
           echo "### 🌐 Service Endpoints" >> $GITHUB_STEP_SUMMARY
           echo "| Service | URL | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|---------|-----|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Main Application** | [https://v1api.materialshub.gr](https://v1api.materialshub.gr) | ${{ needs.phase-5-verification.outputs.overall_status == 'success' && '🟢 Online' || '🔴 Offline' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Health Check** | [https://v1api.materialshub.gr/health](https://v1api.materialshub.gr/health) | ${{ needs.phase-5-verification.outputs.health_checks_passed >= 1 && '🟢 Healthy' || '🔴 Unhealthy' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **API Documentation** | [https://v1api.materialshub.gr/docs](https://v1api.materialshub.gr/docs) | ${{ needs.phase-5-verification.outputs.api_tests_passed >= 1 && '🟢 Available' || '🔴 Unavailable' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **ReDoc** | [https://v1api.materialshub.gr/redoc](https://v1api.materialshub.gr/redoc) | ${{ needs.phase-5-verification.outputs.api_tests_passed >= 2 && '🟢 Available' || '🔴 Unavailable' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🏥 Health Check** | [https://v1api.materialshub.gr/health](https://v1api.materialshub.gr/health) | ${{ needs.phase-5-verification.outputs.health_status == '200' && '🟢 Available' || '🔴 Unavailable' }} (HTTP ${{ needs.phase-5-verification.outputs.health_status }}) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **📚 API Documentation** | [https://v1api.materialshub.gr/docs](https://v1api.materialshub.gr/docs) | ${{ needs.phase-5-verification.outputs.docs_status == '200' && '🟢 Available' || '🔴 Unavailable' }} (HTTP ${{ needs.phase-5-verification.outputs.docs_status }}) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **📖 ReDoc** | [https://v1api.materialshub.gr/redoc](https://v1api.materialshub.gr/redoc) | ${{ needs.phase-5-verification.outputs.redoc_status == '200' && '🟢 Available' || '🔴 Unavailable' }} (HTTP ${{ needs.phase-5-verification.outputs.redoc_status }}) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **📋 OpenAPI Schema** | [https://v1api.materialshub.gr/openapi.json](https://v1api.materialshub.gr/openapi.json) | ${{ needs.phase-5-verification.outputs.openapi_status == '200' && '🟢 Available' || '🔴 Unavailable' }} (HTTP ${{ needs.phase-5-verification.outputs.openapi_status }}) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **📄 PDF Processing** | [https://v1api.materialshub.gr/api/v1/pdf/*](https://v1api.materialshub.gr/api/v1/pdf/) | ${{ needs.phase-5-verification.outputs.health_status == '200' && '🟢 Available' || '🔴 Unavailable' }} (Depends on Health) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🤖 AI Analysis** | [https://v1api.materialshub.gr/api/v1/ai/*](https://v1api.materialshub.gr/api/v1/ai/) | ${{ needs.phase-5-verification.outputs.health_status == '200' && '🟢 Available' || '🔴 Unavailable' }} (Depends on Health) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🔍 Vector Search** | [https://v1api.materialshub.gr/api/v1/search/*](https://v1api.materialshub.gr/api/v1/search/) | ${{ needs.phase-5-verification.outputs.health_status == '200' && '🟢 Available' || '🔴 Unavailable' }} (Depends on Health) |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # Orchestration Benefits
