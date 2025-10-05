@@ -189,7 +189,19 @@ jobs:
             echo '| **Package Installation** | Dependencies | Python package installation | 🔴 Failed | N/A |' >> package_status_report.txt
             echo '| **Deployment Status** | Overall | Complete deployment process | 🔴 Failed | N/A |' >> package_status_report.txt
 
-            echo \"📊 Error report created in package_status_report.txt\"
+            # Capture error logs
+            echo \"📋 Capturing error logs...\"
+            echo '=== DEPLOYMENT ERROR LOGS ===' > deployment_error_logs.txt
+            echo \"Error: \\\$1\" >> deployment_error_logs.txt
+            echo \"Time: \\\$(date)\" >> deployment_error_logs.txt
+            echo \"Working Directory: \\\$(pwd)\" >> deployment_error_logs.txt
+            echo \"Python Version: \\\$(python --version 2>&1)\" >> deployment_error_logs.txt
+            echo \"Pip Version: \\\$(pip --version 2>&1)\" >> deployment_error_logs.txt
+            echo \"Virtual Environment: \\\$(which python)\" >> deployment_error_logs.txt
+            echo \"Recent pip install output:\" >> deployment_error_logs.txt
+            tail -20 /tmp/pip-install.log 2>/dev/null >> deployment_error_logs.txt || echo 'No pip install log available' >> deployment_error_logs.txt
+
+            echo \"📊 Error report and logs created\"
             exit 1
           }
 
@@ -262,6 +274,9 @@ jobs:
           # --- Exact version installation to prevent conflicts ---
           echo 'Installing exact versions to prevent dependency conflicts...'
 
+          # Create pip install log file
+          touch /tmp/pip-install.log
+
           # CRITICAL: Use --no-deps and exact versions to prevent pip from upgrading
 
           # Step 1: Core scientific computing with exact versions
@@ -291,8 +306,12 @@ jobs:
 
           # Step 5: LlamaIndex with exact compatible versions
           echo 'Step 5: Installing LlamaIndex ecosystem...'
-          pip install --no-deps llama-index-core==0.10.57
-          pip install --no-deps llama-index==0.10.57
+          pip install --no-deps llama-index-core==0.10.57 || echo 'llama-index-core installation failed'
+          echo \"Installing llama-index...\" >> /tmp/pip-install.log
+          pip install --no-deps llama-index==0.10.57 2>&1 | tee -a /tmp/pip-install.log || {
+            echo 'llama-index 0.10.57 failed, trying without --no-deps...' | tee -a /tmp/pip-install.log
+            pip install llama-index==0.10.57 2>&1 | tee -a /tmp/pip-install.log || echo 'llama-index installation failed completely' | tee -a /tmp/pip-install.log
+          }
           pip install --no-deps llama-index-llms-openai==0.1.29
           pip install --no-deps llama-index-embeddings-openai==0.1.11
           pip install --no-deps llama-index-embeddings-clip==0.1.5
@@ -314,7 +333,13 @@ jobs:
             echo 'PyMuPDF 1.24.2 failed, trying older stable version 1.23.26...'
             pip install --no-deps PyMuPDF==1.23.26
           }
-          pip install --no-deps pymupdf4llm==0.0.12
+
+          # Install pymupdf4llm with error handling
+          echo \"Installing pymupdf4llm...\" >> /tmp/pip-install.log
+          pip install --no-deps pymupdf4llm==0.0.12 2>&1 | tee -a /tmp/pip-install.log || {
+            echo 'pymupdf4llm 0.0.12 failed, trying without --no-deps...' | tee -a /tmp/pip-install.log
+            pip install pymupdf4llm==0.0.12 2>&1 | tee -a /tmp/pip-install.log || echo 'pymupdf4llm installation failed completely' | tee -a /tmp/pip-install.log
+          }
           pip install --no-deps supabase==2.3.0
           pip install --no-deps postgrest==0.13.0
           pip install --no-deps gotrue==2.9.1
@@ -358,7 +383,8 @@ jobs:
           python -c 'import cv2; print(\"OpenCV: OK\")'
           # Test PyMuPDF with error handling
           python -c 'import fitz; print(\"PyMuPDF (fitz): OK - Version\", fitz.version[0])' || echo 'PyMuPDF (fitz): FAILED'
-          python -c 'import pymupdf4llm; print(\"PyMuPDF4LLM: OK\")' || echo 'PyMuPDF4LLM: FAILED'
+          python -c 'import pymupdf4llm; print(\"PyMuPDF4LLM: OK\")' || echo 'PyMuPDF4LLM: FAILED - Check PyMuPDF installation'
+          python -c 'import llama_index; print(\"LlamaIndex: OK\")' || echo 'LlamaIndex: FAILED - Check installation'
           python -c 'import supabase; print(\"Supabase: OK\")'
           python -c 'import numpy; print(\"NumPy: OK\")'
           python -c 'import pandas; print(\"Pandas: OK\")'
@@ -367,6 +393,10 @@ jobs:
           python -c 'import requests; print(\"Requests: OK\")'
 
           echo 'ALL CRITICAL PACKAGES VERIFIED!'
+
+          # Debug: Check if problematic packages are actually installed
+          echo 'Debugging package installations...'
+          pip list | grep -E '(pymupdf4llm|llama-index|PyMuPDF)' || echo 'Some packages not found in pip list'
 
           # Generate actual package status for GitHub summary
           echo 'Generating package status report...'
@@ -535,21 +565,28 @@ jobs:
           echo "  • URL: $HEALTH_URL"
           echo "  • HTTP Status: $HTTP_STATUS"
 
-          # Update package status in summary with actual results
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "---" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 📦 Final Package Installation Status" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          # Capture service logs and system information for debugging
+          echo "📋 Capturing service logs and system information..."
+          SERVICE_LOGS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          echo '=== MIVAA PDF Extractor Service Logs ==='
+          echo 'Last 50 log entries:'
+          echo ''
+          journalctl -u mivaa-pdf-extractor --no-pager -n 50 --output=short-iso 2>/dev/null || echo 'Service logs not available'
+          echo ''
+          echo '=== Service Status ==='
+          systemctl status mivaa-pdf-extractor --no-pager 2>/dev/null || echo 'Service status not available'
+          echo ''
+          echo '=== Recent System Logs (Errors) ==='
+          journalctl --no-pager -p err -n 10 --output=short-iso 2>/dev/null || echo 'System error logs not available'
+          echo ''
+          echo '=== Disk Space ==='
+          df -h /var/www/mivaa-pdf-extractor 2>/dev/null || echo 'Disk space info not available'
+          echo ''
+          echo '=== Memory Usage ==='
+          free -h 2>/dev/null || echo 'Memory info not available'
+          " 2>/dev/null || echo "Could not retrieve service logs and system information")
 
-          # Get actual package status from server
-          ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
-          cd /var/www/mivaa-pdf-extractor
-          source .venv/bin/activate
-          cat package_status_report.txt
-          " >> $GITHUB_STEP_SUMMARY
-
-          echo "" >> $GITHUB_STEP_SUMMARY
+          # Package status is already updated in the main status section above
 
 
 
@@ -844,6 +881,29 @@ jobs:
           echo "- 📚 [**View API Docs**](https://v1api.materialshub.gr/docs)" >> $GITHUB_STEP_SUMMARY
           echo "- 📖 [**View ReDoc**](https://v1api.materialshub.gr/redoc)" >> $GITHUB_STEP_SUMMARY
           echo "- 🔍 [**View Commit**](https://github.com/${{ github.repository }}/commit/${{ github.sha }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Add Errors & Logs section (collapsible)
+          echo "## 📋 Errors & Logs" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "<details>" >> $GITHUB_STEP_SUMMARY
+          echo "<summary>🔍 <strong>Click to view service logs and debugging information</strong></summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Service Status & Logs" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$SERVICE_LOGS" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🐛 Debugging Information" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Service Name**: mivaa-pdf-extractor" >> $GITHUB_STEP_SUMMARY
+          echo "- **Log Command**: \`sudo journalctl -u mivaa-pdf-extractor -f\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Service Status**: \`sudo systemctl status mivaa-pdf-extractor\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Service Restart**: \`sudo systemctl restart mivaa-pdf-extractor\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Log Location**: \`/var/log/mivaa-pdf-extractor/\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # Add troubleshooting section
