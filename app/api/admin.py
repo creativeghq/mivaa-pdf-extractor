@@ -734,32 +734,10 @@ async def get_package_status():
     including version information and availability status.
     """
     try:
-        import subprocess
-        import json
-
-        # Run the deployment verification script
-        result = subprocess.run(
-            ["python3", "verify_deployment.py", "--json"],
-            capture_output=True,
-            text=True,
-            cwd="/var/www/mivaa-pdf-extractor"
-        )
-
-        if result.returncode == 0:
-            package_data = json.loads(result.stdout)
-            return {
-                "success": True,
-                "data": package_data,
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        else:
-            # Fallback to basic package check
-            return await get_basic_package_status()
-
+        return await get_basic_package_status()
     except Exception as e:
         logger.error(f"Error getting package status: {str(e)}")
-        # Fallback to basic package check
-        return await get_basic_package_status()
+        raise HTTPException(status_code=500, detail=f"Failed to get package status: {str(e)}")
 
 
 async def get_basic_package_status():

@@ -1,6 +1,5 @@
 # MIVAA PDF Extractor Dependencies
-# Use verify_deployment.py to check if all packages are properly installed
-# Use check_opencv.py to verify OpenCV headless installation
+# OpenCV headless is installed automatically from requirements.txt
 
 # Core FastAPI and server dependencies
 fastapi[standard]>=0.104.1
