@@ -33,7 +33,7 @@ from pydantic import BaseModel, ValidationError, validator
 from pydantic.error_wrappers import ErrorWrapper
 
 from app.schemas.common import BaseResponse, ErrorResponse
-from app.core.config import settings
+from app.config import settings
 
 
 # Configure logger for validation middleware
