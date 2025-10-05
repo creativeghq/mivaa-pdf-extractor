@@ -207,6 +207,22 @@ jobs:
           # Activate venv
           source .venv/bin/activate
 
+          # --- Install system dependencies for PyMuPDF ---
+          echo 'Installing system dependencies for PyMuPDF...'
+          apt-get update -qq
+          apt-get install -y -qq \
+            libmupdf-dev \
+            libfreetype6-dev \
+            libfontconfig1-dev \
+            libjpeg-dev \
+            libopenjp2-7-dev \
+            libgumbo-dev \
+            libharfbuzz-dev \
+            libjbig2-dev \
+            liblcms2-dev \
+            libssl-dev \
+            zlib1g-dev
+
           # --- Ensure pip and uv are installed ---
           python -m ensurepip --upgrade
           pip install --upgrade pip
@@ -262,8 +278,12 @@ jobs:
           echo 'Step 6: Installing web framework and remaining packages...'
           pip install --no-deps fastapi==0.104.1
           pip install --no-deps uvicorn==0.24.0
+          # Try to install PyMuPDF with fallback to older version if needed
+          pip install --no-deps PyMuPDF==1.24.2 || {
+            echo 'PyMuPDF 1.24.2 failed, trying older stable version 1.23.26...'
+            pip install --no-deps PyMuPDF==1.23.26
+          }
           pip install --no-deps pymupdf4llm==0.0.12
-          pip install --no-deps PyMuPDF==1.24.2
           pip install --no-deps supabase==2.3.0
           pip install --no-deps postgrest==0.13.0
           pip install --no-deps gotrue==2.9.1
@@ -305,7 +325,22 @@ jobs:
           python -c 'import fastapi; print(\"FastAPI: OK\")'
           python -c 'import uvicorn; print(\"Uvicorn: OK\")'
           python -c 'import cv2; print(\"OpenCV: OK\")'
-          python -c 'import pymupdf4llm; print(\"PyMuPDF4LLM: OK\")'
+          # Test PyMuPDF with detailed error reporting
+          python -c '
+import sys
+try:
+    import fitz
+    print(f"PyMuPDF (fitz): OK - Version {fitz.version[0]}")
+except ImportError as e:
+    print(f"PyMuPDF (fitz): FAILED - {e}")
+    sys.exit(1)
+try:
+    import pymupdf4llm
+    print("PyMuPDF4LLM: OK")
+except ImportError as e:
+    print(f"PyMuPDF4LLM: FAILED - {e}")
+    sys.exit(1)
+'
           python -c 'import supabase; print(\"Supabase: OK\")'
           python -c 'import numpy; print(\"NumPy: OK\")'
           python -c 'import pandas; print(\"Pandas: OK\")'

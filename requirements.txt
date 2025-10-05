@@ -7,7 +7,7 @@ uvicorn[standard]>=0.24.0
 
 # PDF processing dependencies
 pymupdf4llm==0.0.12
-PyMuPDF>=1.24.2
+PyMuPDF>=1.23.26
 pandas==2.1.4
 
 # Essential scientific computing
