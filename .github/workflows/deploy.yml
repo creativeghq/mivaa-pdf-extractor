@@ -217,25 +217,25 @@ jobs:
         run: |
           echo "🔧 Creating/updating systemd service file..."
           ssh -o StrictHostKeyChecking=no root@104.248.68.3 'sudo tee /etc/systemd/system/mivaa-pdf-extractor.service > /dev/null' << 'SERVICE_EOF'
-[Unit]
-Description=Mivaa PDF Extractor FastAPI service
-After=network.target
+          [Unit]
+          Description=Mivaa PDF Extractor FastAPI service
+          After=network.target
 
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/var/www/mivaa-pdf-extractor
-Environment=PATH=/root/.pyenv/shims:/root/.pyenv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-Environment=PYTHONPATH=/var/www/mivaa-pdf-extractor
-ExecStart=/var/www/mivaa-pdf-extractor/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
-Restart=always
-RestartSec=3
-StandardOutput=journal
-StandardError=journal
+          [Service]
+          Type=simple
+          User=root
+          WorkingDirectory=/var/www/mivaa-pdf-extractor
+          Environment=PATH=/root/.pyenv/shims:/root/.pyenv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          Environment=PYTHONPATH=/var/www/mivaa-pdf-extractor
+          ExecStart=/var/www/mivaa-pdf-extractor/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+          Restart=always
+          RestartSec=3
+          StandardOutput=journal
+          StandardError=journal
 
-[Install]
-WantedBy=multi-user.target
-SERVICE_EOF
+          [Install]
+          WantedBy=multi-user.target
+          SERVICE_EOF
 
       # 4.6. Restart service
       - name: 🔄 Restart service
