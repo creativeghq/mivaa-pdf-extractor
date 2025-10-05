@@ -327,7 +327,7 @@ jobs:
           pip install --no-deps httpx==0.27.0
           pip install --no-deps requests==2.31.0
           pip install --no-deps openai==1.51.0
-          pip install --no-deps anthropic==0.26.2
+          pip install --no-deps anthropic==0.27.0
 
           # Step 4: Computer vision with exact versions
           echo 'Step 4: Installing computer vision...'
@@ -373,107 +373,16 @@ jobs:
           pip install --no-deps starlette==0.40.0
           pip install --no-deps anyio==3.7.1
           pip install --no-deps uvicorn==0.24.0
-          # Try to install PyMuPDF with multiple fallback strategies
-          echo \"Installing PyMuPDF...\" >> /tmp/pip-install.log
-          echo 'Attempting PyMuPDF installation with bundled libraries...'
-
-          # First try: Use older version that might have better compatibility
-          if pip install --no-deps PyMuPDF==1.23.26 2>&1 | tee -a /tmp/pip-install.log; then
-            echo '✅ PyMuPDF 1.23.26 installed successfully'
-          elif pip install PyMuPDF==1.23.26 2>&1 | tee -a /tmp/pip-install.log; then
-            echo '✅ PyMuPDF 1.23.26 installed with dependencies'
-          elif pip install --force-reinstall --no-cache-dir PyMuPDF==1.23.26 2>&1 | tee -a /tmp/pip-install.log; then
-            echo '✅ PyMuPDF 1.23.26 force-reinstalled'
-          elif pip install --no-deps PyMuPDF==1.22.5 2>&1 | tee -a /tmp/pip-install.log; then
-            echo '✅ PyMuPDF 1.22.5 installed (older stable version)'
-          else
-            echo '❌ All PyMuPDF versions failed' | tee -a /tmp/pip-install.log
-            echo 'Trying alternative approaches...'
-
-            # Try installing from wheel with specific platform
-            echo 'Trying platform-specific wheel...'
-            pip install --no-deps --only-binary=all PyMuPDF==1.23.26 2>&1 | tee -a /tmp/pip-install.log || echo 'Platform wheel failed'
-
-            # Try different package name
-            echo 'Trying pymupdf package name...'
-            pip install pymupdf==1.23.26 2>&1 | tee -a /tmp/pip-install.log || echo 'pymupdf package failed'
-
-            # Try building from source as last resort
-            echo 'Trying build from source...'
-            pip install --no-binary PyMuPDF PyMuPDF==1.23.26 2>&1 | tee -a /tmp/pip-install.log || echo 'Source build failed'
-          fi
-
-          # Install pymupdf4llm with comprehensive error handling
+          # Install pymupdf4llm directly - let it handle PyMuPDF dependencies
           echo \"Installing pymupdf4llm...\" >> /tmp/pip-install.log
-          echo 'Attempting pymupdf4llm installation...'
+          echo 'Installing pymupdf4llm - letting it handle PyMuPDF dependencies automatically...'
 
-          # First ensure PyMuPDF is working
-          echo 'Testing PyMuPDF before installing pymupdf4llm...'
-          echo 'Debugging PyMuPDF import issue...'
+          # Install pymupdf4llm and let pip resolve PyMuPDF dependencies
+          pip install pymupdf4llm==0.0.12 2>&1 | tee -a /tmp/pip-install.log
 
-          # Try to fix library path issues
-          export LD_LIBRARY_PATH=\"/usr/lib/x86_64-linux-gnu:/usr/local/lib:/lib/x86_64-linux-gnu:\$LD_LIBRARY_PATH\"
-          ldconfig 2>/dev/null || echo 'ldconfig failed'
-
-          # Check what libraries are actually available
-          echo 'Available MuPDF libraries:'
-          find /usr -name '*mupdf*' 2>/dev/null | head -10 || echo 'No MuPDF libraries found'
-
-          # Try to create symlinks for missing library versions
-          if [ -f /usr/lib/x86_64-linux-gnu/libmupdf.so ]; then
-            echo 'Creating symlinks for libmupdf versions...'
-            ln -sf /usr/lib/x86_64-linux-gnu/libmupdf.so /usr/lib/x86_64-linux-gnu/libmupdf.so.24 2>/dev/null || echo 'Symlink 24 failed'
-            ln -sf /usr/lib/x86_64-linux-gnu/libmupdf.so /usr/lib/x86_64-linux-gnu/libmupdf.so.24.1 2>/dev/null || echo 'Symlink 24.1 failed'
-          fi
-
-          # Test PyMuPDF import with detailed error output
-          echo 'Testing PyMuPDF import:'
-          if python -c 'import fitz; print(\"PyMuPDF test:\", fitz.__version__)' 2>&1; then
-            echo '✅ PyMuPDF is working, proceeding with pymupdf4llm...'
-
-            if pip install --no-deps pymupdf4llm==0.0.12 2>&1 | tee -a /tmp/pip-install.log; then
-              echo '✅ pymupdf4llm installed successfully with --no-deps'
-            elif pip install pymupdf4llm==0.0.12 2>&1 | tee -a /tmp/pip-install.log; then
-              echo '✅ pymupdf4llm installed successfully with dependencies'
-            elif pip install --force-reinstall pymupdf4llm==0.0.12 2>&1 | tee -a /tmp/pip-install.log; then
-              echo '✅ pymupdf4llm installed successfully with force-reinstall'
-            else
-              echo '❌ pymupdf4llm installation failed - trying older version...'
-              pip install pymupdf4llm==0.0.6 2>&1 | tee -a /tmp/pip-install.log || echo 'All pymupdf4llm versions failed'
-            fi
-          else
-            echo '❌ PyMuPDF not working - trying alternative approaches...'
-
-            # Try reinstalling PyMuPDF with different options
-            echo 'Attempting PyMuPDF reinstall with system libraries...'
-            pip uninstall -y PyMuPDF 2>/dev/null || echo 'Uninstall failed'
-
-            # Try installing with system MuPDF
-            echo 'Installing system MuPDF development packages...'
-            apt-get update -qq 2>/dev/null || echo 'apt update failed'
-            apt-get install -y -qq libmupdf-dev mupdf-tools 2>/dev/null || echo 'System MuPDF install failed'
-
-            # Try building PyMuPDF from source with system libraries
-            echo 'Attempting PyMuPDF build from source...'
-            pip install --no-binary PyMuPDF PyMuPDF==1.23.26 2>&1 | tee -a /tmp/pip-install.log || echo 'Source build failed'
-
-            # Test again
-            if python -c 'import fitz; print(\"PyMuPDF test after rebuild:\", fitz.__version__)' 2>&1; then
-              echo '✅ PyMuPDF working after rebuild - installing pymupdf4llm...'
-              pip install pymupdf4llm==0.0.12 2>&1 | tee -a /tmp/pip-install.log || echo 'pymupdf4llm still failed'
-            else
-              echo '❌ PyMuPDF still not working - trying alternative PDF libraries...'
-              echo 'Installing alternative PDF processing libraries as fallback...'
-
-              # Install alternative PDF libraries
-              pip install pdfplumber==0.10.3 2>/dev/null || echo 'pdfplumber failed'
-              pip install pypdf2==3.0.1 2>/dev/null || echo 'pypdf2 failed'
-              pip install pdfminer.six==20231228 2>/dev/null || echo 'pdfminer failed'
-
-              echo 'Alternative PDF libraries installed - application may work with reduced functionality'
-              echo 'PyMuPDF functionality will be disabled until library issues are resolved'
-            fi
-          fi
+          # Test final installation
+          echo 'Testing final pymupdf4llm installation...'
+          python -c 'import pymupdf4llm; print(\"✅ pymupdf4llm working:\", pymupdf4llm.__version__ if hasattr(pymupdf4llm, \"__version__\") else \"version unknown\")'
           pip install --no-deps supabase==2.3.0
           pip install --no-deps postgrest==0.13.0
           pip install --no-deps gotrue==2.9.1
