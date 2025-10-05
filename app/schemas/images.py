@@ -32,7 +32,7 @@ class ImageAnalysisRequest(BaseModel):
     )
     
     # Processing parameters
-    quality: str = Field("standard", regex="^(fast|standard|high)$", description="Analysis quality")
+    quality: str = Field("standard", pattern="^(fast|standard|high)$", description="Analysis quality")
     language: Optional[str] = Field("auto", description="Language hint for OCR")
     confidence_threshold: float = Field(0.7, ge=0.0, le=1.0, description="Minimum confidence for results")
     
@@ -227,10 +227,10 @@ class ImageBatchRequest(BaseModel):
     
     # Batch processing options
     parallel_processing: bool = Field(True, description="Process images in parallel")
-    priority: str = Field("normal", regex="^(low|normal|high)$", description="Processing priority")
+    priority: str = Field("normal", pattern="^(low|normal|high)$", description="Processing priority")
     
     # Common parameters for all images
-    quality: str = Field("standard", regex="^(fast|standard|high)$", description="Analysis quality")
+    quality: str = Field("standard", pattern="^(fast|standard|high)$", description="Analysis quality")
     confidence_threshold: float = Field(0.7, ge=0.0, le=1.0, description="Minimum confidence threshold")
     
     class Config:

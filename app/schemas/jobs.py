@@ -312,7 +312,7 @@ class JobUpdateRequest(BaseModel):
 class JobActionRequest(BaseModel):
     """Request model for job actions (pause, resume, cancel)."""
     
-    action: str = Field(..., regex="^(pause|resume|cancel|retry)$", description="Action to perform")
+    action: str = Field(..., pattern="^(pause|resume|cancel|retry)$", description="Action to perform")
     reason: Optional[str] = Field(None, description="Reason for the action")
     
     class Config:

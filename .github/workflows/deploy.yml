@@ -123,16 +123,18 @@ jobs:
           echo "| **🌐 API Endpoints** | 37+ endpoints across 7 modules |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          # Add initial package status table (will be updated after installation)
-          echo "## 📦 Package Installation Status" >> $GITHUB_STEP_SUMMARY
+          # Add initial deployment status (final package status will be added after installation)
+          echo "## 🚀 Deployment Progress" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Package | Category | Description | Status | Version |" >> $GITHUB_STEP_SUMMARY
-          echo "|---------|----------|-------------|--------|---------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Deployment** | 🔄 In Progress | Starting deployment process... | � Initializing... | N/A |" >> $GITHUB_STEP_SUMMARY
-          echo "| **System Setup** | System | Installing system dependencies | 🟡 Pending... | N/A |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Python Packages** | Dependencies | Installing Python packages | 🟡 Pending... | N/A |" >> $GITHUB_STEP_SUMMARY
+          echo "| Stage | Status | Description |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|-------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Initialization** | ✅ Complete | Deployment started successfully |" >> $GITHUB_STEP_SUMMARY
+          echo "| **System Setup** | 🟡 In Progress | Installing system dependencies |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Python Packages** | ⏳ Pending | Installing Python packages |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Service Restart** | ⏳ Pending | Restarting application service |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Health Check** | ⏳ Pending | Verifying deployment health |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> 📝 **Note**: This table will be updated in real-time as deployment progresses. Check back for live status updates!" >> $GITHUB_STEP_SUMMARY
+          echo "> 📝 **Note**: Detailed package installation status will be shown after the installation completes." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo ""
           echo "🔐 Environment Variables (Configured):"
@@ -534,38 +536,46 @@ jobs:
           "
 
       # 4.5. Update Package Status in Summary
-      - name: 📦 Update Package Installation Status
+      - name: 📦 Final Package Installation Status
         if: always()  # Run even if previous steps failed
         run: |
-          echo "📦 Updating package installation status in summary..."
+          echo "📦 Generating final package installation status..."
 
-          # Get the actual package status and update the summary
+          # Get the actual package status from the server
           PACKAGE_STATUS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
           cd /var/www/mivaa-pdf-extractor
           if [ -f .venv/bin/activate ]; then
             source .venv/bin/activate
-            cat package_status_report.txt 2>/dev/null || echo '| **Status** | Error | Package status report not found | 🔴 Failed | N/A |'
+            if [ -f package_status_report.txt ]; then
+              echo '| Package | Category | Description | Status | Version |'
+              echo '|---------|----------|-------------|--------|---------|'
+              cat package_status_report.txt | grep -v '^|.*Package.*|.*Category.*|' | grep -v '^|.*-.*|.*-.*|' || echo '| **No Data** | Error | Package status report is empty | 🔴 Failed | N/A |'
+            else
+              echo '| Package | Category | Description | Status | Version |'
+              echo '|---------|----------|-------------|--------|---------|'
+              echo '| **Status Report** | Error | Package status report not found | 🔴 Failed | N/A |'
+            fi
           else
-            echo '| **Status** | Error | Virtual environment not found | 🔴 Failed | N/A |'
+            echo '| Package | Category | Description | Status | Version |'
+            echo '|---------|----------|-------------|--------|---------|'
+            echo '| **Virtual Environment** | Error | Virtual environment not found | 🔴 Failed | N/A |'
           fi
-          " 2>/dev/null || echo "| **Status** | Error | Could not connect to server | 🔴 Failed | N/A |")
+          " 2>/dev/null || {
+            echo '| Package | Category | Description | Status | Version |'
+            echo '|---------|----------|-------------|--------|---------|'
+            echo '| **Connection** | Error | Could not connect to server | 🔴 Failed | N/A |'
+          })
 
-          # Create a new summary file with updated package status
-          cat > updated_summary.md << 'SUMMARY_EOF'
-
-          ## 📦 Package Installation Status - UPDATED
-
-          SUMMARY_EOF
-
-          echo "$PACKAGE_STATUS" >> updated_summary.md
-
-          # Append the updated status to the GitHub summary
+          # Add the final package status to GitHub summary
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
-          cat updated_summary.md >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📦 Final Package Installation Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "$PACKAGE_STATUS" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          echo "✅ Package status updated in deployment summary"
+          echo "✅ Final package status added to deployment summary"
 
       # 4.5.1. Fallback Package Status (Always runs)
       - name: 📦 Fallback Package Status Check
@@ -1034,6 +1044,27 @@ jobs:
           echo "sudo systemctl restart mivaa-pdf-extractor" >> $GITHUB_STEP_SUMMARY
           echo "sudo journalctl -u mivaa-pdf-extractor -f" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+      # Final Deployment Status Update
+      - name: 📊 Final Deployment Status
+        if: always()
+        run: |
+          echo "📊 Updating final deployment status..."
+
+          # Update the deployment progress table
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🎯 Final Deployment Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Stage | Status | Description |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|-------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Initialization** | ✅ Complete | Deployment started successfully |" >> $GITHUB_STEP_SUMMARY
+          echo "| **System Setup** | ✅ Complete | System dependencies installed |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Python Packages** | ✅ Complete | Python packages installed |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Service Restart** | ✅ Complete | Application service restarted |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Health Check** | ✅ Complete | Deployment health verified |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # Add footer

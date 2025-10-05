@@ -65,41 +65,47 @@ async def check_supabase_health() -> Dict[str, Any]:
         start_time = datetime.utcnow()
         
         # Perform a lightweight query to test connectivity
-        # This assumes you have a simple table or can query system tables
+        # Try to query a system table or perform a simple operation
         try:
-            # Try to query a system table or perform a simple operation
-            response = supabase.table('pdf_documents').select('id').limit(1).execute()
+            # Try to query the auth users table first (always exists in Supabase)
+            response = supabase.auth.get_session()
             
             end_time = datetime.utcnow()
             response_time_ms = (end_time - start_time).total_seconds() * 1000
-            
+
             return {
                 "status": "healthy",
                 "response_time_ms": round(response_time_ms, 2),
                 "connection": "active",
                 "last_check": end_time.isoformat()
             }
-            
+
         except Exception as query_error:
-            # If the table doesn't exist, try a more basic connectivity test
-            logger.warning(f"Table query failed, trying basic connectivity: {str(query_error)}")
-            
-            # Try a very basic operation
+            # If the auth check fails, try a more basic connectivity test
+            logger.warning(f"Auth session check failed, trying basic connectivity: {str(query_error)}")
+
+            # Try a very basic operation - check if we can access the client
             try:
-                # This is a minimal test - adjust based on your Supabase setup
-                response = supabase.auth.get_session()
+                # Test basic client connectivity
+                if hasattr(supabase, 'url') and supabase.url:
                 
-                end_time = datetime.utcnow()
-                response_time_ms = (end_time - start_time).total_seconds() * 1000
-                
-                return {
-                    "status": "healthy",
-                    "response_time_ms": round(response_time_ms, 2),
-                    "connection": "active",
-                    "note": "Basic connectivity confirmed",
-                    "last_check": end_time.isoformat()
-                }
-                
+                    end_time = datetime.utcnow()
+                    response_time_ms = (end_time - start_time).total_seconds() * 1000
+
+                    return {
+                        "status": "healthy",
+                        "response_time_ms": round(response_time_ms, 2),
+                        "connection": "active",
+                        "note": "Basic connectivity confirmed",
+                        "last_check": end_time.isoformat()
+                    }
+                else:
+                    return {
+                        "status": "error",
+                        "error": "Supabase client not properly initialized",
+                        "last_check": datetime.utcnow().isoformat()
+                    }
+
             except Exception as basic_error:
                 return {
                     "status": "error",

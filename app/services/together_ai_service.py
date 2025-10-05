@@ -26,7 +26,7 @@ from tenacity import (
 )
 
 from ..config import get_settings
-from ..core.exceptions import ServiceError, ConfigurationError, ExternalServiceError
+from ..utils.exceptions import ServiceError, ExternalServiceError, PDFConfigurationError
 
 # Import enhanced material property extraction capabilities
 from .enhanced_material_property_extractor import (
@@ -136,13 +136,13 @@ class TogetherAIService:
     def _validate_config(self) -> None:
         """Validate the TogetherAI configuration."""
         if not self.config.api_key:
-            raise ConfigurationError("TogetherAI API key is required")
-        
+            raise PDFConfigurationError("TogetherAI API key is required")
+
         if not self.config.base_url:
-            raise ConfigurationError("TogetherAI base URL is required")
-        
+            raise PDFConfigurationError("TogetherAI base URL is required")
+
         if not self.config.model:
-            raise ConfigurationError("TogetherAI model is required")
+            raise PDFConfigurationError("TogetherAI model is required")
         
         logger.debug("TogetherAI configuration validated successfully")
     

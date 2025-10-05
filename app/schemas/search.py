@@ -29,7 +29,7 @@ class SearchRequest(BaseModel):
     # Search parameters
     limit: int = Field(10, ge=1, le=100, description="Maximum number of results")
     similarity_threshold: float = Field(0.7, ge=0.0, le=1.0, description="Minimum similarity score")
-    search_type: str = Field("hybrid", regex="^(semantic|keyword|hybrid|multimodal)$", description="Type of search")
+    search_type: str = Field("hybrid", pattern="^(semantic|keyword|hybrid|multimodal)$", description="Type of search")
     
     # Multi-modal search parameters
     include_images: bool = Field(False, description="Include image analysis in search results")
@@ -144,13 +144,13 @@ class QueryRequest(BaseModel):
     include_image_context: bool = Field(False, description="Include image analysis in context retrieval")
     include_ocr_context: bool = Field(True, description="Include OCR-extracted text in context")
     multimodal_llm_model: Optional[str] = Field(None, description="Specific multi-modal LLM model to use")
-    image_analysis_depth: str = Field("standard", regex="^(basic|standard|detailed)$", description="Level of image analysis")
+    image_analysis_depth: str = Field("standard", pattern="^(basic|standard|detailed)$", description="Level of image analysis")
     
     # Response options
     include_sources: bool = Field(True, description="Include source citations in response")
     include_confidence: bool = Field(True, description="Include confidence score")
     include_image_references: bool = Field(False, description="Include image references in response")
-    response_format: str = Field("markdown", regex="^(text|markdown|json)$", description="Response format")
+    response_format: str = Field("markdown", pattern="^(text|markdown|json)$", description="Response format")
     
     class Config:
         schema_extra = {
@@ -181,10 +181,10 @@ class ImageSearchRequest(BaseModel):
     
     # Visual similarity parameters
     visual_similarity_threshold: float = Field(0.75, ge=0.0, le=1.0, description="Minimum visual similarity threshold")
-    search_type: str = Field("visual_similarity", regex="^(visual_similarity|semantic_analysis|hybrid|material_properties)$", description="Type of visual search")
+    search_type: str = Field("visual_similarity", pattern="^(visual_similarity|semantic_analysis|hybrid|material_properties)$", description="Type of visual search")
     
     # Image analysis parameters
-    analysis_depth: str = Field("standard", regex="^(basic|standard|detailed)$", description="Level of image analysis")
+    analysis_depth: str = Field("standard", pattern="^(basic|standard|detailed)$", description="Level of image analysis")
     include_visual_features: bool = Field(True, description="Include visual feature analysis")
     image_analysis_model: Optional[str] = Field(None, description="Specific image analysis model to use")
     
@@ -327,7 +327,7 @@ class MultiModalAnalysisRequest(BaseModel):
     ocr_confidence_threshold: float = Field(0.5, ge=0.0, le=1.0, description="Minimum OCR confidence")
     
     # Image analysis parameters
-    image_analysis_depth: str = Field("standard", regex="^(basic|standard|detailed)$", description="Image analysis depth")
+    image_analysis_depth: str = Field("standard", pattern="^(basic|standard|detailed)$", description="Image analysis depth")
     detect_objects: bool = Field(True, description="Detect objects in images")
     extract_visual_features: bool = Field(True, description="Extract visual features")
     
@@ -348,7 +348,7 @@ class MultiModalAnalysisRequest(BaseModel):
     cross_modal_analysis: bool = Field(False, description="Analyze relationships between different modalities")
     
     # Processing options
-    analysis_depth: str = Field("standard", regex="^(basic|standard|detailed|comprehensive)$", description="Overall analysis depth")
+    analysis_depth: str = Field("standard", pattern="^(basic|standard|detailed|comprehensive)$", description="Overall analysis depth")
     prioritize_materials: bool = Field(False, description="Prioritize material-related content in analysis")
     
     class Config:

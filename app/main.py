@@ -588,7 +588,8 @@ Legacy endpoints (`/extract/*`) are still supported for backward compatibility.
     
     # Add performance monitoring middleware
     from app.monitoring.performance_monitor import PerformanceMiddleware
-    app.add_middleware(PerformanceMiddleware)
+    from app.monitoring import global_performance_monitor
+    app.add_middleware(PerformanceMiddleware, collector=global_performance_monitor.collector)
     
     # Add logging middleware
     app.add_middleware(LoggingMiddleware)

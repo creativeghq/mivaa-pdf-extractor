@@ -784,6 +784,8 @@ async def get_basic_package_status():
                         import_name = 'pythonjsonlogger'
                     elif package_name == 'email-validator':
                         import_name = 'email_validator'
+                    elif package_name == 'llama-index':
+                        import_name = 'llama_index'
 
                     packages_from_requirements[package_name] = {
                         'import_name': import_name,
@@ -797,7 +799,8 @@ async def get_basic_package_status():
     package_status = {}
     critical_packages = {
         'fastapi', 'uvicorn', 'pydantic', 'supabase', 'pymupdf4llm',
-        'numpy', 'pandas', 'opencv-python-headless', 'pillow'
+        'numpy', 'pandas', 'opencv-python-headless', 'pillow', 'llama-index',
+        'openai', 'anthropic', 'torch'
     }
 
     for package_name, info in packages_from_requirements.items():

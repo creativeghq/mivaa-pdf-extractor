@@ -66,7 +66,7 @@ class PaginationParams(BaseModel):
     page: int = Field(1, ge=1, description="Page number (1-based)")
     page_size: int = Field(20, ge=1, le=100, description="Number of items per page")
     sort_by: Optional[str] = Field(None, description="Field to sort by")
-    sort_order: Optional[str] = Field("desc", regex="^(asc|desc)$", description="Sort order")
+    sort_order: Optional[str] = Field("desc", pattern="^(asc|desc)$", description="Sort order")
     
     @validator('sort_order')
     def validate_sort_order(cls, v):
@@ -181,7 +181,7 @@ class ProcessingOptions(BaseModel):
     extract_tables: bool = Field(True, description="Whether to extract tables")
     page_number: Optional[int] = Field(None, description="Process specific page only")
     timeout_seconds: Optional[int] = Field(300, description="Processing timeout")
-    quality: Optional[str] = Field("standard", regex="^(fast|standard|high)$", description="Processing quality")
+    quality: Optional[str] = Field("standard", pattern="^(fast|standard|high)$", description="Processing quality")
     language: Optional[str] = Field("auto", description="Document language hint")
     
     @validator('timeout_seconds')
