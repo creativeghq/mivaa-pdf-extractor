@@ -12,7 +12,12 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, validator
+try:
+    # Try Pydantic v2 first
+    from pydantic import BaseModel, Field, field_validator as validator
+except ImportError:
+    # Fall back to Pydantic v1
+    from pydantic import BaseModel, Field, validator
 
 from app.config import get_settings
 from app.services.llamaindex_service import LlamaIndexService

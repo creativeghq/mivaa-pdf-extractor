@@ -38,7 +38,8 @@ postgrest==0.13.0
 
 # Configuration and environment management
 python-dotenv==1.0.0
-pydantic>=1.10.0,<2.0.0
+pydantic>=1.10.0
+pydantic-settings>=2.0.0; python_version>="3.8"
 
 # HTTP client for external API calls
 httpx>=0.24.0,<0.25.0

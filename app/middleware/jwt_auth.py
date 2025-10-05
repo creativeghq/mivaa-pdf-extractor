@@ -32,7 +32,14 @@ try:
 except ImportError:
     # Fallback if schemas not available yet - define minimal classes
     from enum import Enum
-    from pydantic import BaseModel
+    try:
+        from pydantic import BaseModel
+    except ImportError:
+        # Minimal BaseModel fallback
+        class BaseModel:
+            def __init__(self, **kwargs):
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
     
     class UserRole(str, Enum):
         MEMBER = "member"

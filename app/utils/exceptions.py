@@ -13,6 +13,36 @@ class MaterialKaiIntegrationError(Exception):
     """Custom exception for Material Kai integration errors."""
     pass
 
+
+class ServiceError(Exception):
+    """Base exception for service-related errors."""
+
+    def __init__(
+        self,
+        message: str,
+        error_code: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(message)
+        self.message = message
+        self.error_code = error_code or "SERVICE_ERROR"
+        self.details = details or {}
+
+
+class ExternalServiceError(ServiceError):
+    """Exception for external service integration errors."""
+
+    def __init__(
+        self,
+        message: str,
+        service_name: Optional[str] = None,
+        error_code: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(message, error_code, details)
+        self.service_name = service_name
+        self.error_code = error_code or "EXTERNAL_SERVICE_ERROR"
+
 class PDFProcessingError(Exception):
     """
     Base exception class for all PDF processing related errors.

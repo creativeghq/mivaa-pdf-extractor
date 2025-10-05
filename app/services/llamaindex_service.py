@@ -43,7 +43,7 @@ try:
     from llama_index.core.response_synthesizers import get_response_synthesizer
     from llama_index.readers.file import PDFReader, DocxReader, MarkdownReader
     from llama_index.vector_stores.supabase import SupabaseVectorStore
-    
+
     # Multi-modal imports for Phase 8
     from llama_index.multi_modal_llms.openai import OpenAIMultiModal
     from llama_index.multi_modal_llms.anthropic import AnthropicMultiModal
@@ -51,12 +51,37 @@ try:
     from llama_index.readers.file import ImageReader
     from llama_index.core.multi_modal_llms import MultiModalLLM
     from llama_index.core.schema import ImageDocument, ImageNode
-    
+
     import vecs
     LLAMAINDEX_AVAILABLE = True
 except ImportError as e:
     logging.warning(f"LlamaIndex not available: {e}")
     LLAMAINDEX_AVAILABLE = False
+
+    # Define fallback classes when LlamaIndex is not available
+    class Document:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class ImageDocument:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class ImageNode:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class VectorStoreIndex:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class Settings:
+        pass
+
+    # Define other fallback classes as needed
+    BaseEmbedding = object
+    LLM = object
+    MultiModalLLM = object
 
 
 class LlamaIndexService:
@@ -123,14 +148,14 @@ class LlamaIndexService:
         self.document_readers = self._initialize_document_readers()
         
         # Index cache
-        self.indices: Dict[str, VectorStoreIndex] = {}
+        self.indices: Dict[str, Any] = {}
         
         # Initialize advanced search service
         self.advanced_search_service = None
         self._initialize_advanced_search_service()
         
         # Initialize multi-modal components if enabled
-        if self.config.enable_multimodal:
+        if self.enable_multimodal:
             self._initialize_multimodal_components()
         
         # Conversation memory management
@@ -470,7 +495,7 @@ class LlamaIndexService:
             self.image_embeddings = None
             self.image_reader = None
     
-    def process_images_with_ocr(self, image_paths: List[str]) -> List[ImageDocument]:
+    def process_images_with_ocr(self, image_paths: List[str]) -> List[Any]:
         """Process images with OCR to extract text for Phase 8 multi-modal capabilities."""
         if not self.available or not self.enable_multimodal:
             self.logger.warning("Multi-modal capabilities not available for OCR processing")
@@ -530,7 +555,7 @@ class LlamaIndexService:
         self.logger.info(f"Processed {len(image_documents)} image documents with OCR")
         return image_documents
     
-    def create_multimodal_index(self, text_documents: List[Document], image_documents: List[ImageDocument]) -> Optional[VectorStoreIndex]:
+    def create_multimodal_index(self, text_documents: List[Any], image_documents: List[Any]) -> Optional[Any]:
         """Create a multi-modal index combining text and image documents for Phase 8."""
         if not self.available or not self.enable_multimodal:
             self.logger.warning("Multi-modal capabilities not available for index creation")
@@ -578,7 +603,7 @@ class LlamaIndexService:
             self.logger.error(f"Failed to create multi-modal index: {e}")
             return None
     
-    def multimodal_query(self, query: str, index: VectorStoreIndex, include_images: bool = True) -> Optional[str]:
+    def multimodal_query(self, query: str, index: Any, include_images: bool = True) -> Optional[str]:
         """Perform multi-modal query using both text and image understanding for Phase 8."""
         if not self.available or not self.enable_multimodal:
             self.logger.warning("Multi-modal capabilities not available for querying")
