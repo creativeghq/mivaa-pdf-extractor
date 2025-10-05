@@ -12,7 +12,7 @@ from .llamaindex_service import LlamaIndexService
 
 __all__ = [
     "SupabaseClient",
-    "get_supabase_client", 
+    "get_supabase_client",
     "initialize_supabase",
     "PDFProcessor",
     "LlamaIndexService"

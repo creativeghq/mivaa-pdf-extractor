@@ -21,13 +21,27 @@ import aiofiles
 import httpx
 from dataclasses import dataclass
 
-# Import image processing libraries
-import cv2
+# Import image processing libraries (headless OpenCV)
+try:
+    import cv2
+    CV2_AVAILABLE = True
+    logging.info("OpenCV (headless) loaded successfully")
+except ImportError as e:
+    logging.error(f"OpenCV (headless) not available: {e}. Image processing features will be limited.")
+    CV2_AVAILABLE = False
+    cv2 = None
+
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
 from PIL.ExifTags import TAGS
 import imageio
-from skimage import filters, morphology, measure
+
+try:
+    from skimage import filters, morphology, measure
+    SKIMAGE_AVAILABLE = True
+except ImportError as e:
+    logging.warning(f"scikit-image not available: {e}. Some advanced image processing features will be disabled.")
+    SKIMAGE_AVAILABLE = False
 from scipy import ndimage
 
 # Import existing extraction functions
@@ -512,23 +526,34 @@ class PDFProcessor:
                 # Extract EXIF metadata if available
                 exif_data = self._extract_exif_metadata(pil_image)
                 
-                # Load with OpenCV for advanced analysis
-                cv_image = cv2.imread(image_path)
-                if cv_image is not None:
-                    # Calculate quality metrics
-                    quality_metrics = self._calculate_image_quality(cv_image)
-                    
-                    # Calculate image hash for duplicate detection
-                    image_hash = self._calculate_image_hash(cv_image)
-                    
-                    # Apply enhancements if requested
-                    enhanced_path = None
-                    if processing_options.get('enhance_images', False):
-                        enhanced_path = self._enhance_image(
-                            cv_image,
-                            image_path,
-                            processing_options
-                        )
+                # Load with OpenCV for advanced analysis (if available)
+                quality_metrics = {'overall_score': 0.5}  # Default fallback
+                image_hash = 'unavailable'
+                enhanced_path = None
+
+                if CV2_AVAILABLE:
+                    try:
+                        cv_image = cv2.imread(image_path)
+                        if cv_image is not None:
+                            # Calculate quality metrics
+                            quality_metrics = self._calculate_image_quality(cv_image)
+
+                            # Calculate image hash for duplicate detection
+                            image_hash = self._calculate_image_hash(cv_image)
+
+                            # Apply enhancements if requested
+                            if processing_options.get('enhance_images', False):
+                                enhanced_path = self._enhance_image(
+                                    cv_image,
+                                    image_path,
+                                    processing_options
+                                )
+                        else:
+                            self.logger.warning("Could not load image with OpenCV: %s", image_path)
+                    except Exception as e:
+                        self.logger.warning(f"OpenCV analysis failed for {image_path}: {e}")
+                else:
+                    self.logger.debug("OpenCV not available, using basic image analysis")
                     
                     # Convert format if requested
                     converted_path = None
@@ -582,14 +607,23 @@ class PDFProcessor:
         """
         Calculate various image quality metrics using OpenCV and scikit-image.
         """
+        if not CV2_AVAILABLE:
+            return {
+                'sharpness': 0.5,
+                'contrast': 0.5,
+                'brightness': 0.5,
+                'noise_level': 0.5,
+                'overall_score': 0.5
+            }
+
         try:
             # Convert to grayscale for analysis
             gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
-            
+
             # Calculate sharpness using Laplacian variance
             laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
             sharpness_score = min(laplacian_var / 1000.0, 1.0)  # Normalize
-            
+
             # Calculate contrast using standard deviation
             contrast_score = min(gray.std() / 128.0, 1.0)  # Normalize
             
@@ -629,6 +663,9 @@ class PDFProcessor:
     
     def _calculate_image_hash(self, cv_image: np.ndarray) -> str:
         """Calculate perceptual hash for duplicate detection."""
+        if not CV2_AVAILABLE:
+            return 'opencv_unavailable'
+
         try:
             # Resize to 8x8 for hash calculation
             small = cv2.resize(cv_image, (8, 8))
@@ -658,6 +695,10 @@ class PDFProcessor:
         processing_options: Dict[str, Any]
     ) -> Optional[str]:
         """Apply image enhancements and save enhanced version."""
+        if not CV2_AVAILABLE:
+            self.logger.warning("OpenCV not available, cannot enhance image")
+            return None
+
         try:
             enhanced = cv_image.copy()
             
