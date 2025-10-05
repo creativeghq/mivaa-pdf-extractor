@@ -237,7 +237,7 @@ jobs:
 
           # Step 4: Computer vision with exact versions
           echo 'Step 4: Installing computer vision...'
-          pip install --no-deps opencv-python-headless==4.8.0
+          pip install --no-deps opencv-python-headless==4.8.0.76
           pip install --no-deps Pillow==10.4.0
           pip install --no-deps scikit-image==0.21.0
           pip install --no-deps imageio==2.31.6
