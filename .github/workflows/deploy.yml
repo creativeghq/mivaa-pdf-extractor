@@ -210,10 +210,13 @@ jobs:
           python -c \"import fastapi; print('FastAPI OK')\"
           python -c \"import pymupdf; print('PyMuPDF OK')\"
           python -c \"import pymupdf4llm; print('pymupdf4llm OK')\"
+          "
 
-          # --- Create/Update systemd service file ---
-          echo \"🔧 Creating/updating systemd service file...\"
-          sudo tee /etc/systemd/system/mivaa-pdf-extractor.service > /dev/null << 'SERVICE_EOF'
+      # 4.5. Create/Update systemd service file
+      - name: 🔧 Create/Update systemd service file
+        run: |
+          echo "🔧 Creating/updating systemd service file..."
+          ssh -o StrictHostKeyChecking=no root@104.248.68.3 'sudo tee /etc/systemd/system/mivaa-pdf-extractor.service > /dev/null' << 'SERVICE_EOF'
 [Unit]
 Description=Mivaa PDF Extractor FastAPI service
 After=network.target
@@ -234,6 +237,11 @@ StandardError=journal
 WantedBy=multi-user.target
 SERVICE_EOF
 
+      # 4.6. Restart service
+      - name: 🔄 Restart service
+        run: |
+          echo "🔄 Reloading systemd and restarting service..."
+          ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
           # Reload systemd and enable service
           sudo systemctl daemon-reload
           sudo systemctl enable mivaa-pdf-extractor
@@ -245,7 +253,7 @@ SERVICE_EOF
           sudo systemctl status mivaa-pdf-extractor --no-pager
           "
 
-      # 5. Health Check & Diagnostics
+      # 6. Health Check & Diagnostics
       - name: 🏥 Health Check & Diagnostics
         run: |
           echo "🏥 Performing comprehensive health checks..."
@@ -480,7 +488,7 @@ SERVICE_EOF
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
-      # 6. Post-Deployment Summary
+      # 7. Post-Deployment Summary
       - name: 📊 Final Deployment Summary
         run: |
           echo ""
