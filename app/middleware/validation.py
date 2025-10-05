@@ -33,11 +33,26 @@ from pydantic import BaseModel, ValidationError, validator
 from pydantic.error_wrappers import ErrorWrapper
 
 from app.schemas.common import BaseResponse, ErrorResponse
-from app.core.config import settings
+from app.config import settings
 
 
 # Configure logger for validation middleware
 logger = logging.getLogger("validation_middleware")
+
+class ValidationResult:
+    """Result of validation operation."""
+    
+    def __init__(
+        self,
+        is_valid: bool,
+        error_message: Optional[str] = None,
+        details: Optional[List[Dict[str, Any]]] = None,
+        validated_data: Optional[Any] = None
+    ):
+        self.is_valid = is_valid
+        self.error_message = error_message
+        self.details = details
+        self.validated_data = validated_data
 
 
 class ValidationConfig(BaseModel):
@@ -1251,20 +1266,6 @@ class ValidationMiddleware(BaseHTTPMiddleware):
         logger.info("ValidationMiddleware configuration updated")
 
 
-class ValidationResult:
-    """Result of validation operation."""
-    
-    def __init__(
-        self,
-        is_valid: bool,
-        error_message: Optional[str] = None,
-        details: Optional[List[Dict[str, Any]]] = None,
-        validated_data: Optional[Any] = None
-    ):
-        self.is_valid = is_valid
-        self.error_message = error_message
-        self.details = details
-        self.validated_data = validated_data
 
 
 # Utility functions for easy integration

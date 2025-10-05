@@ -11,7 +11,7 @@ from functools import lru_cache
 import re
 
 from pydantic import BaseModel, Field, validator
-from app.core.config import settings
+from app.config import settings
 
 
 class SecurityConfig(BaseModel):
