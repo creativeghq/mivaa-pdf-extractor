@@ -213,7 +213,7 @@ jobs:
 
           # --- Create/Update systemd service file ---
           echo \"🔧 Creating/updating systemd service file...\"
-          sudo tee /etc/systemd/system/mivaa-pdf-extractor.service > /dev/null <<EOF
+          sudo tee /etc/systemd/system/mivaa-pdf-extractor.service > /dev/null << 'SERVICE_EOF'
 [Unit]
 Description=Mivaa PDF Extractor FastAPI service
 After=network.target
@@ -232,7 +232,7 @@ StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
-EOF
+SERVICE_EOF
 
           # Reload systemd and enable service
           sudo systemctl daemon-reload
