@@ -554,36 +554,28 @@ class PDFProcessor:
                         self.logger.warning(f"OpenCV analysis failed for {image_path}: {e}")
                 else:
                     self.logger.debug("OpenCV not available, using basic image analysis")
-                    
-                    # Convert format if requested
-                    converted_path = None
-                    target_format = processing_options.get('target_format')
-                    if target_format and target_format.upper() != basic_info['format']:
-                        converted_path = self._convert_image_format(
-                            pil_image,
-                            image_path,
-                            target_format
-                        )
-                    
-                    # Combine all metadata
-                    return {
-                        **basic_info,
-                        'exif': exif_data,
-                        'quality_score': quality_metrics['overall_score'],
-                        'quality_metrics': quality_metrics,
-                        'image_hash': image_hash,
-                        'enhanced_path': enhanced_path,
-                        'converted_path': converted_path,
-                        'processing_timestamp': datetime.utcnow().isoformat()
-                    }
-                else:
-                    self.logger.warning("Could not load image with OpenCV: %s", image_path)
-                    return {
-                        **basic_info,
-                        'exif': exif_data,
-                        'quality_score': 0.5,  # Default for images we can't analyze
-                        'processing_timestamp': datetime.utcnow().isoformat()
-                    }
+
+                # Convert format if requested (common for both CV2 available and not available)
+                converted_path = None
+                target_format = processing_options.get('target_format')
+                if target_format and target_format.upper() != basic_info['format']:
+                    converted_path = self._convert_image_format(
+                        pil_image,
+                        image_path,
+                        target_format
+                    )
+
+                # Combine all metadata
+                return {
+                    **basic_info,
+                    'exif': exif_data,
+                    'quality_score': quality_metrics['overall_score'],
+                    'quality_metrics': quality_metrics,
+                    'image_hash': image_hash,
+                    'enhanced_path': enhanced_path,
+                    'converted_path': converted_path,
+                    'processing_timestamp': datetime.utcnow().isoformat()
+                }
                     
         except Exception as e:
             self.logger.error("Error processing image %s: %s", image_path, str(e))

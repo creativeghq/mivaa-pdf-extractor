@@ -7,6 +7,7 @@ Checks if all required packages are properly installed
 import sys
 import importlib
 import logging
+from datetime import datetime
 from typing import Dict, List, Tuple
 
 # Configure logging
@@ -153,5 +154,22 @@ def main():
             print("   Application startup failed.")
         return 1
 
+def get_package_status_json():
+    """Return package status as JSON for API consumption"""
+    import json
+
+    results = verify_packages()
+    startup_success = test_application_startup()
+
+    return json.dumps({
+        'packages': results,
+        'startup_success': startup_success,
+        'timestamp': datetime.utcnow().isoformat(),
+        'deployment_ready': results['summary']['critical_missing'] == 0 and startup_success
+    }, indent=2)
+
 if __name__ == "__main__":
-    sys.exit(main())
+    if len(sys.argv) > 1 and sys.argv[1] == '--json':
+        print(get_package_status_json())
+    else:
+        sys.exit(main())

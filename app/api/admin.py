@@ -723,3 +723,94 @@ async def export_system_data(
     except Exception as e:
         logger.error(f"Error exporting data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to export data: {str(e)}")
+
+
+@router.get("/packages/status")
+async def get_package_status():
+    """
+    Get the status of all system packages and dependencies.
+
+    Returns package information for both critical and optional dependencies,
+    including version information and availability status.
+    """
+    try:
+        import subprocess
+        import json
+
+        # Run the deployment verification script
+        result = subprocess.run(
+            ["python3", "verify_deployment.py", "--json"],
+            capture_output=True,
+            text=True,
+            cwd="/var/www/mivaa-pdf-extractor"
+        )
+
+        if result.returncode == 0:
+            package_data = json.loads(result.stdout)
+            return {
+                "success": True,
+                "data": package_data,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        else:
+            # Fallback to basic package check
+            return await get_basic_package_status()
+
+    except Exception as e:
+        logger.error(f"Error getting package status: {str(e)}")
+        # Fallback to basic package check
+        return await get_basic_package_status()
+
+
+async def get_basic_package_status():
+    """Fallback method for basic package status checking"""
+    import importlib
+
+    critical_packages = {
+        'fastapi': 'FastAPI web framework',
+        'uvicorn': 'ASGI server',
+        'pydantic': 'Data validation',
+        'supabase': 'Database client',
+        'pymupdf4llm': 'PDF processing',
+        'numpy': 'Numerical computing',
+        'pandas': 'Data manipulation',
+        'cv2': 'OpenCV (headless)',
+    }
+
+    package_status = {}
+
+    for package, description in critical_packages.items():
+        try:
+            module = importlib.import_module(package)
+            version = getattr(module, '__version__', 'unknown')
+            package_status[package] = {
+                'available': True,
+                'version': version,
+                'description': description,
+                'critical': True
+            }
+        except ImportError:
+            package_status[package] = {
+                'available': False,
+                'version': None,
+                'description': description,
+                'critical': True,
+                'error': 'Package not found'
+            }
+
+    return {
+        "success": True,
+        "data": {
+            "packages": {
+                "critical": package_status,
+                "optional": {}
+            },
+            "summary": {
+                "critical_missing": sum(1 for p in package_status.values() if not p['available']),
+                "total_critical": len(critical_packages)
+            },
+            "deployment_ready": all(p['available'] for p in package_status.values())
+        },
+        "timestamp": datetime.utcnow().isoformat(),
+        "method": "basic_check"
+    }
