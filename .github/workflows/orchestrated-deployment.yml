@@ -998,7 +998,17 @@ jobs:
           echo "### ⚡ Performance Summary" >> $GITHUB_STEP_SUMMARY
           echo "| Metric | Value | Target | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|--------|-------|--------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Total Pipeline Time** | ${TOTAL_TIME}s | <180s | ${{ TOTAL_TIME <= 180 && '🚀 Excellent' || TOTAL_TIME <= 300 && '⚡ Good' || '👍 Acceptable' }} |" >> $GITHUB_STEP_SUMMARY
+
+          # Calculate performance status using bash logic
+          if [ "$TOTAL_TIME" -le 180 ]; then
+            PERFORMANCE_STATUS="🚀 Excellent"
+          elif [ "$TOTAL_TIME" -le 300 ]; then
+            PERFORMANCE_STATUS="⚡ Good"
+          else
+            PERFORMANCE_STATUS="👍 Acceptable"
+          fi
+
+          echo "| **Total Pipeline Time** | ${TOTAL_TIME}s | <180s | $PERFORMANCE_STATUS |" >> $GITHUB_STEP_SUMMARY
           echo "| **Deployment Strategy** | ${{ needs.phase-1-analysis.outputs.deployment_strategy || 'N/A' }} | Intelligent | ✅ |" >> $GITHUB_STEP_SUMMARY
           echo "| **Risk Assessment** | ${{ needs.phase-1-analysis.outputs.risk_level == 'low' && '🟢 Low' || needs.phase-1-analysis.outputs.risk_level == 'medium' && '🟡 Medium' || '🔴 High' }} | Managed | ✅ |" >> $GITHUB_STEP_SUMMARY
           echo "| **Dependencies** | ${{ needs.phase-2-dependencies.outputs.dependency_count || 'N/A' }} packages | Optimized | ${{ needs.phase-2-dependencies.outputs.security_hashes_added == 'true' && '🔐 Secured' || '✅ Ready' }} |" >> $GITHUB_STEP_SUMMARY
