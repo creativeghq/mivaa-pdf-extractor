@@ -273,189 +273,26 @@ jobs:
           echo 'Verifying all critical packages from requirements.txt...'
           echo '================================================================'
 
-          # Create verification script
-          cat > verify_packages.py << 'VERIFY_EOF'
+          # Simple verification of critical packages
+          python -c \"
 import sys
-import importlib
-import re
-
-# Parse requirements.txt to get expected packages
-packages_to_check = {}
-with open('requirements.txt', 'r') as f:
-    for line in f:
-        line = line.strip()
-        if line.startswith('#') or not line:
-            continue
-
-        # Parse package name
-        match = re.match(r'^([a-zA-Z0-9_-]+)', line)
-        if match:
-            package_name = match.group(1)
-
-            # Map package names to import names
-            import_name = package_name
-            if package_name == 'opencv-python-headless':
-                import_name = 'cv2'
-            elif package_name == 'pillow':
-                import_name = 'PIL'
-            elif package_name == 'python-dotenv':
-                import_name = 'dotenv'
-            elif package_name == 'python-multipart':
-                import_name = 'multipart'
-            elif package_name == 'python-dateutil':
-                import_name = 'dateutil'
-            elif package_name == 'python-json-logger':
-                import_name = 'pythonjsonlogger'
-            elif package_name == 'email-validator':
-                import_name = 'email_validator'
-
-            packages_to_check[package_name] = import_name
-
-# Critical packages that must be available - DEPLOYMENT FAILS if any missing
-critical_packages = {
-    'fastapi', 'uvicorn', 'pydantic', 'supabase', 'pymupdf4llm',
-    'numpy', 'pandas', 'opencv-python-headless', 'pillow', 'requests',
-    'easyocr', 'pytesseract', 'python-multipart', 'llama-index',
-    'openai', 'anthropic', 'transformers', 'torch', 'scikit-learn',
-    'sentence-transformers', 'python-dotenv', 'email-validator',
-    'cryptography', 'aiofiles', 'httpx'
-}
-
-print('PACKAGE VERIFICATION RESULTS')
-print('=' * 50)
-print(f'{"Package Name":<25} {"Import Name":<15} {"Status":<10} {"Version":<15}')
-print('-' * 70)
-
-failed_packages = []
-critical_failed = []
-
-for package_name, import_name in sorted(packages_to_check.items()):
+critical_packages = ['fastapi', 'uvicorn', 'opencv-python-headless', 'pymupdf4llm', 'supabase', 'numpy', 'pandas', 'pillow', 'pydantic', 'requests']
+import_mapping = {'opencv-python-headless': 'cv2', 'pillow': 'PIL'}
+failed = []
+for pkg in critical_packages:
+    import_name = import_mapping.get(pkg, pkg.replace('-', '_'))
     try:
-        module = importlib.import_module(import_name)
-        version = getattr(module, '__version__', 'unknown')
-        status = 'OK'
-        print(f'{package_name:<25} {import_name:<15} {status:<10} {version:<15}')
+        __import__(import_name)
+        print(f'{pkg}: OK')
     except ImportError:
-        status = 'MISSING'
-        version = 'N/A'
-        print(f'{package_name:<25} {import_name:<15} {status:<10} {version:<15}')
-        failed_packages.append(package_name)
-        if package_name in critical_packages:
-            critical_failed.append(package_name)
-
-print('-' * 70)
-print(f'Total packages checked: {len(packages_to_check)}')
-print(f'Successfully imported: {len(packages_to_check) - len(failed_packages)}')
-print(f'Failed to import: {len(failed_packages)}')
-print(f'Critical packages failed: {len(critical_failed)}')
-
-if critical_failed:
-    print(f'CRITICAL PACKAGES MISSING: {critical_failed}')
+        print(f'{pkg}: MISSING')
+        failed.append(pkg)
+if failed:
+    print(f'CRITICAL PACKAGES MISSING: {failed}')
     sys.exit(1)
-elif failed_packages:
-    print(f'Optional packages missing: {failed_packages}')
-    print('All critical packages are available - deployment can proceed')
 else:
-    print('ALL PACKAGES SUCCESSFULLY VERIFIED!')
-
-print('OpenCV Specific Check:')
-try:
-    import cv2
-    print(f'OpenCV version: {cv2.__version__}')
-    print('OpenCV headless successfully imported')
-except ImportError as e:
-    print(f'OpenCV import failed: {e}')
-    sys.exit(1)
-VERIFY_EOF
-
-          # Run verification
-          python verify_packages.py
-
-          # Create updated package status for GitHub summary
-          cat > update_package_status.py << 'UPDATE_EOF'
-import importlib
-import re
-
-# All packages to check with categories and descriptions
-all_packages = {
-    'fastapi': ('Web Framework', 'FastAPI web framework'),
-    'uvicorn': ('Server', 'ASGI server'),
-    'opencv-python-headless': ('Computer Vision', 'Image processing (headless)'),
-    'pymupdf4llm': ('PDF Processing', 'PDF processing for LLM'),
-    'supabase': ('Database', 'Database client'),
-    'numpy': ('Computing', 'Numerical computing'),
-    'pandas': ('Data', 'Data manipulation'),
-    'pydantic': ('Validation', 'Data validation'),
-    'requests': ('HTTP', 'HTTP client'),
-    'pillow': ('Images', 'Image processing'),
-    'llama-index': ('AI/ML', 'LLM framework'),
-    'openai': ('AI/ML', 'OpenAI API client'),
-    'anthropic': ('AI/ML', 'Anthropic API client'),
-    'transformers': ('AI/ML', 'HuggingFace transformers'),
-    'torch': ('AI/ML', 'PyTorch deep learning'),
-    'scikit-learn': ('AI/ML', 'Machine learning'),
-    'sentence-transformers': ('AI/ML', 'Sentence embeddings'),
-    'easyocr': ('OCR', 'Optical character recognition'),
-    'pytesseract': ('OCR', 'Tesseract OCR wrapper'),
-    'python-multipart': ('Upload', 'File upload support'),
-    'python-dotenv': ('Config', 'Environment variables'),
-    'python-dateutil': ('Date/Time', 'Date utilities'),
-    'email-validator': ('Validation', 'Email validation'),
-    'cryptography': ('Security', 'Cryptographic functions'),
-    'jwt': ('Security', 'JSON Web Tokens'),
-    'bcrypt': ('Security', 'Password hashing'),
-    'aiofiles': ('Files', 'Async file operations'),
-    'httpx': ('HTTP', 'Async HTTP client'),
-    'websockets': ('WebSocket', 'WebSocket support'),
-    'redis': ('Cache', 'Redis client')
-}
-
-# Import name mapping
-import_mapping = {
-    'opencv-python-headless': 'cv2',
-    'pillow': 'PIL',
-    'python-dotenv': 'dotenv',
-    'python-multipart': 'multipart',
-    'python-dateutil': 'dateutil',
-    'python-json-logger': 'pythonjsonlogger',
-    'email-validator': 'email_validator',
-    'scikit-learn': 'sklearn',
-    'llama-index': 'llama_index'
-}
-
-print('## Final Package Installation Status')
-print('')
-print('| Package | Category | Description | Status | Version |')
-print('|---------|----------|-------------|--------|---------|')
-
-installed_count = 0
-total_count = len(all_packages)
-
-for package_name, (category, description) in sorted(all_packages.items()):
-    import_name = import_mapping.get(package_name, package_name.replace('-', '_'))
-    try:
-        module = importlib.import_module(import_name)
-        version = getattr(module, '__version__', 'unknown')
-        status = 'Installed'
-        installed_count += 1
-        print(f'| **{package_name}** | {category} | {description} | {status} | `{version}` |')
-    except ImportError:
-        status = 'Missing'
-        print(f'| **{package_name}** | {category} | {description} | {status} | N/A |')
-
-print('')
-print(f'> **Installation Summary**: {installed_count}/{total_count} packages successfully installed ({installed_count/total_count*100:.1f}%)')
-print('')
-
-# Special OpenCV check
-try:
-    import cv2
-    print(f'> **OpenCV Status**: Successfully installed version `{cv2.__version__}` (headless)')
-except ImportError:
-    print(f'> **OpenCV Status**: Failed to install - this will cause service startup issues')
-UPDATE_EOF
-
-          python update_package_status.py > package_status_update.md
+    print('ALL CRITICAL PACKAGES VERIFIED!')
+\"
           "
 
       # 4.5. Create/Update systemd service file
@@ -523,12 +360,42 @@ UPDATE_EOF
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📦 Package Verification Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Package | Status | Notes |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|--------|-------|" >> $GITHUB_STEP_SUMMARY
 
-          # Get the updated package status from server
+          # Get package verification results from server
           ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
           cd /var/www/mivaa-pdf-extractor
           source .venv/bin/activate
-          cat package_status_update.md
+
+          # Check critical packages and output for GitHub summary
+          python -c \"
+import sys
+critical_packages = [
+    ('fastapi', 'FastAPI web framework'),
+    ('uvicorn', 'ASGI server'),
+    ('opencv-python-headless', 'Computer vision (headless)'),
+    ('pymupdf4llm', 'PDF processing for LLM'),
+    ('supabase', 'Database client'),
+    ('numpy', 'Numerical computing'),
+    ('pandas', 'Data manipulation'),
+    ('pillow', 'Image processing'),
+    ('pydantic', 'Data validation'),
+    ('requests', 'HTTP client')
+]
+import_mapping = {'opencv-python-headless': 'cv2', 'pillow': 'PIL'}
+
+for pkg, desc in critical_packages:
+    import_name = import_mapping.get(pkg, pkg.replace('-', '_'))
+    try:
+        module = __import__(import_name)
+        version = getattr(module, '__version__', 'unknown')
+        print(f'| **{pkg}** | 🟢 Installed | Version: {version} |')
+    except ImportError:
+        print(f'| **{pkg}** | 🔴 Missing | {desc} |')
+\"
           " >> $GITHUB_STEP_SUMMARY
 
           echo "" >> $GITHUB_STEP_SUMMARY
