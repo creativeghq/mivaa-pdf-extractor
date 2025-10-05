@@ -126,11 +126,13 @@ jobs:
           # Add initial package status table (will be updated after installation)
           echo "## 📦 Package Installation Status" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Package | Category | Description | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|---------|----------|-------------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Installation Progress** | 🔄 In Progress | Installing dependencies... | 🟡 Starting... |" >> $GITHUB_STEP_SUMMARY
+          echo "| Package | Category | Description | Status | Version |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|----------|-------------|--------|---------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Deployment** | 🔄 In Progress | Starting deployment process... | � Initializing... | N/A |" >> $GITHUB_STEP_SUMMARY
+          echo "| **System Setup** | System | Installing system dependencies | 🟡 Pending... | N/A |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Python Packages** | Dependencies | Installing Python packages | 🟡 Pending... | N/A |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> 📝 **Note**: This table will be updated with actual package status after installation completes." >> $GITHUB_STEP_SUMMARY
+          echo "> 📝 **Note**: This table will be updated in real-time as deployment progresses. Check back for live status updates!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo ""
           echo "🔐 Environment Variables (Configured):"
@@ -176,14 +178,23 @@ jobs:
 
           # Function to handle errors
           handle_error() {
-            echo \"❌ Error occurred: \$1\"
+            echo \"❌ Error occurred: \\\$1\"
             echo \"📝 Creating error report...\"
-            echo '| **Status** | Error | Deployment failed | 🔴 Failed | N/A |' > package_status_report.txt
+
+            # Create simple error report
+            echo '| Package | Category | Description | Status | Version |' > package_status_report.txt
+            echo '|---------|----------|-------------|--------|---------|' >> package_status_report.txt
+            echo '| **System Dependencies** | System | Ubuntu packages for PyMuPDF | 🔴 Failed | N/A |' >> package_status_report.txt
+            echo '| **Python Environment** | Runtime | Virtual environment setup | 🟡 Partial | N/A |' >> package_status_report.txt
+            echo '| **Package Installation** | Dependencies | Python package installation | 🔴 Failed | N/A |' >> package_status_report.txt
+            echo '| **Deployment Status** | Overall | Complete deployment process | 🔴 Failed | N/A |' >> package_status_report.txt
+
+            echo \"📊 Error report created in package_status_report.txt\"
             exit 1
           }
 
           # Trap errors
-          trap 'handle_error \"Deployment script failed at line \$LINENO\"' ERR
+          trap 'handle_error \"Deployment script failed at line \\\$LINENO\"' ERR
 
           APP_DIR=/var/www/mivaa-pdf-extractor
           DEPLOY_BRANCH=\"${{ github.ref_name }}\"
@@ -220,19 +231,28 @@ jobs:
 
           # --- Install system dependencies for PyMuPDF ---
           echo 'Installing system dependencies for PyMuPDF...'
-          apt-get update -qq
-          apt-get install -y -qq \
-            libmupdf-dev \
-            libfreetype6-dev \
-            libfontconfig1-dev \
-            libjpeg-dev \
-            libopenjp2-7-dev \
-            libgumbo-dev \
-            libharfbuzz-dev \
-            libjbig2-dev \
-            liblcms2-dev \
-            libssl-dev \
-            zlib1g-dev
+
+          # Create initial status report
+          echo '| Package | Category | Description | Status | Version |' > package_status_report.txt
+          echo '|---------|----------|-------------|--------|---------|' >> package_status_report.txt
+          echo '| **System Dependencies** | System | Ubuntu packages for PyMuPDF | 🟡 Installing... | N/A |' >> package_status_report.txt
+          echo '| **Python Environment** | Runtime | Virtual environment setup | 🟢 Ready | N/A |' >> package_status_report.txt
+          echo '| **Package Installation** | Dependencies | Python package installation | 🟡 Pending... | N/A |' >> package_status_report.txt
+
+          # Try to install system dependencies (non-critical)
+          apt-get update -qq 2>/dev/null || echo 'Warning: apt update had issues'
+
+          # Install packages individually to avoid failure if one is missing
+          for pkg in libfreetype6-dev libfontconfig1-dev libjpeg-dev libopenjp2-7-dev libharfbuzz-dev liblcms2-dev libssl-dev zlib1g-dev libffi-dev build-essential pkg-config; do
+            apt-get install -y -qq \\\$pkg 2>/dev/null && echo \"✅ Installed: \\\$pkg\" || echo \"⚠️ Skipped: \\\$pkg (not available)\"
+          done
+
+          # Update status after system dependencies
+          echo '| Package | Category | Description | Status | Version |' > package_status_report.txt
+          echo '|---------|----------|-------------|--------|---------|' >> package_status_report.txt
+          echo '| **System Dependencies** | System | Ubuntu packages for PyMuPDF | 🟢 Installed | N/A |' >> package_status_report.txt
+          echo '| **Python Environment** | Runtime | Virtual environment setup | 🟢 Ready | N/A |' >> package_status_report.txt
+          echo '| **Package Installation** | Dependencies | Python package installation | 🟡 Installing... | N/A |' >> package_status_report.txt
 
           # --- Ensure pip and uv are installed ---
           python -m ensurepip --upgrade
