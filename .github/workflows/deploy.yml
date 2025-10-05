@@ -207,9 +207,9 @@ jobs:
           uv pip sync uv.lock
 
           # --- Verify installations ---
-          python -c \\\"import fastapi; print('FastAPI OK')\\\"
-          python -c \\\"import pymupdf; print('PyMuPDF OK')\\\"
-          python -c \\\"import pymupdf4llm; print('pymupdf4llm OK')\\\"
+          python -c \"import fastapi; print('FastAPI OK')\"
+          python -c \"import pymupdf; print('PyMuPDF OK')\"
+          python -c \"import pymupdf4llm; print('pymupdf4llm OK')\"
 
           # Restart the FastAPI service
           sudo systemctl restart mivaa-pdf-extractor
