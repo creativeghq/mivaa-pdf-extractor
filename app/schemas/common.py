@@ -156,6 +156,33 @@ class HealthResponse(BaseResponse):
         }
 
 
+class HealthCheckResponse(BaseModel):
+    """Document service health check response model."""
+
+    status: str = Field(..., description="Service health status")
+    timestamp: str = Field(..., description="Health check timestamp")
+    service: str = Field(..., description="Service name")
+    version: str = Field(..., description="Service version")
+    dependencies: Optional[Dict[str, bool]] = Field(None, description="Status of service dependencies")
+    error: Optional[str] = Field(None, description="Error message if unhealthy")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status": "healthy",
+                "timestamp": "2024-07-26T18:00:00Z",
+                "service": "Document Processing API",
+                "version": "1.0.0",
+                "dependencies": {
+                    "pdf_processor": True,
+                    "temp_directory": True,
+                    "job_storage": True
+                },
+                "error": None
+            }
+        }
+
+
 class FileUploadInfo(BaseModel):
     """Information about uploaded file."""
     
