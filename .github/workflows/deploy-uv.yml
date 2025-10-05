@@ -42,7 +42,13 @@ jobs:
           # Create deployment script
           cat > deploy_script.sh << 'SCRIPT_EOF'
           #!/bin/bash
-          set -e
+          set -euo pipefail
+
+          # Enable better error reporting
+          trap 'echo "❌ Deployment failed at line $LINENO. Exit code: $?" >&2' ERR
+
+          # Keep SSH connection alive
+          echo "🔄 Starting deployment process..."
           
           # Environment variables passed via SSH
           GH_TOKEN="$1"
@@ -118,8 +124,10 @@ jobs:
           if [ "$REQUIREMENTS_CHANGED" = true ]; then
               echo "📦 Requirements changed - installing dependencies..."
 
-              # Upgrade pip
+              # Upgrade pip with progress
+              echo "🔧 Upgrading pip..."
               python -m pip install --upgrade pip
+              echo "✅ Pip upgraded"
 
               # Install dependencies from requirements.txt
               if [ ! -f "requirements.txt" ]; then
@@ -127,7 +135,10 @@ jobs:
                   exit 1
               fi
 
-              python -m pip install -r requirements.txt
+              echo "📦 Installing packages (this may take a few minutes)..."
+              # Install with progress and keep connection alive
+              python -m pip install -r requirements.txt --progress-bar on
+              echo "✅ All packages installed"
 
               # Store hash of requirements.txt for future comparisons
               sha256sum requirements.txt | cut -d' ' -f1 > .requirements_hash
@@ -212,11 +223,16 @@ jobs:
           
           SCRIPT_EOF
           
-          # Copy script to server and execute
-          scp -o StrictHostKeyChecking=no deploy_script.sh ${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}:/tmp/deploy_script.sh
-          
-          ssh -o StrictHostKeyChecking=no ${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }} \
-            "chmod +x /tmp/deploy_script.sh && /tmp/deploy_script.sh \
+          # Copy script to server and execute with better SSH handling
+          echo "📤 Copying deployment script to server..."
+          scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 -o ServerAliveInterval=60 -o ServerAliveCountMax=3 \
+            deploy_script.sh ${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}:/tmp/deploy_script.sh
+
+          echo "🚀 Executing deployment script on server..."
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 -o ServerAliveInterval=60 -o ServerAliveCountMax=3 \
+            -o TCPKeepAlive=yes -o BatchMode=yes \
+            ${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }} \
+            "chmod +x /tmp/deploy_script.sh && timeout 600 /tmp/deploy_script.sh \
             '${{ env.GH_TOKEN }}' \
             '${{ github.actor }}' \
             '${{ github.sha }}' \
