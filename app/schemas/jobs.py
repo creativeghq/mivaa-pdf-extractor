@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, validator
 from .common import BaseResponse, ProcessingStatus, PaginationParams
 
 
-class JobStatus(ProcessingStatus):
+class JobStatus(str, Enum):
     """Extended job status enumeration."""
     
     QUEUED = "queued"
