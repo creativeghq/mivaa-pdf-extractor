@@ -706,7 +706,7 @@ jobs:
                 echo ""
                 echo "📋 Recent Logs (last 10 lines):"
                 sudo journalctl -u mivaa-pdf-extractor --no-pager --lines=10 --since "5 minutes ago" 2>/dev/null || echo "No logs available"
-HEALTH_DIAG_EOF
+                HEALTH_DIAG_EOF
               fi
             fi
 
@@ -723,7 +723,7 @@ HEALTH_DIAG_EOF
             sleep 10
             echo "  • New status: $(sudo systemctl is-active mivaa-pdf-extractor)"
             echo "  • Port check: $(ss -tlnp | grep :8000 | head -1 || echo 'not listening')"
-RESTART_EOF
+            RESTART_EOF
 
             # Re-test after restart
             sleep 10
@@ -876,7 +876,7 @@ RESTART_EOF
             echo ""
             echo "• Post-restart logs (last 10 lines):"
             sudo journalctl -u mivaa-pdf-extractor --no-pager --lines=10 --since "1 minute ago"
-VERIFY_DIAG_EOF
+            VERIFY_DIAG_EOF
 
             # Test endpoints again after diagnostics
             echo ""
