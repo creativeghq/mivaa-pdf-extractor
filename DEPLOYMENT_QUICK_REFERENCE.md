@@ -82,7 +82,8 @@ git push origin main
 | **Deployment Speed** | 🟢 Fast (2-3 min) | 🟡 Variable (15s-60s) |
 | **Validation** | 🟡 Basic | 🟢 Comprehensive |
 | **Analysis** | 🟡 Standard | 🟢 Advanced |
-| **Reporting** | 🟢 Good | 🟢 Excellent |
+| **Reporting** | 🟢 Good + Summary Tables | 🟢 Excellent + Summary Tables |
+| **Summary Page** | ✅ Yes | ✅ Yes |
 | **Configuration** | 🟡 Limited | 🟢 Extensive |
 | **Risk Assessment** | ❌ No | ✅ Yes |
 | **Multi-Phase** | ❌ No | ✅ Yes |
@@ -174,11 +175,14 @@ sudo journalctl -u mivaa-pdf-extractor -f
 ### Best Practices:
 1. Let default deployment handle regular pushes automatically
 2. Use orchestrated deployment for planned releases
-3. Always check deployment overview for system status
-4. Monitor health endpoints after deployment
-5. Keep deployment reasons descriptive for audit trail
+3. **Check the Action Summary page** for organized deployment details
+4. Always review deployment overview for system status
+5. Monitor health endpoints after deployment
+6. Keep deployment reasons descriptive for audit trail
+7. **Use the summary tables** for quick status verification
 
 ---
 
 🚀 **Quick Start**: Just push to main branch for automatic deployment!
 🔧 **Advanced**: Use GitHub Actions → "Orchestrated MIVAA Deployment Pipeline (On-Demand)" for complex deployments.
+📋 **NEW**: Check the Action Summary page for organized deployment details in easy-to-read tables!

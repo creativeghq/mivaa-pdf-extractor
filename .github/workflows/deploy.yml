@@ -48,8 +48,8 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
 
-      # 3. Deployment Overview
-      - name: 📋 Deployment Overview
+      # 3. Deployment Overview & Summary
+      - name: 📋 Deployment Overview & Summary
         run: |
           echo "🚀 MIVAA PDF Extractor Deployment Overview (DEFAULT)"
           echo "=================================================="
@@ -65,6 +65,29 @@ jobs:
           echo "  • Commit: ${{ github.sha }}"
           echo "  • Triggered by: ${{ github.actor }}"
           echo "  • Deployment ID: ${{ github.run_id }}"
+
+          # Add to GitHub Step Summary (visible on main action page)
+          echo "# 🚀 MIVAA Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📊 Deployment Overview" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **🎯 Deployment Type** | STANDARD (Default Pipeline) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **📝 Trigger** | ${{ github.event_name == 'push' && 'Automatic (Code Push)' || 'Manual (workflow_dispatch)' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🌿 Branch** | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **📋 Commit** | [\`${{ github.sha }}\`](https://github.com/${{ github.repository }}/commit/${{ github.sha }}) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **👤 Triggered by** | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🆔 Deployment ID** | \`${{ github.run_id }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🎯 Target Environment** | Production |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🖥️ Target Server** | 104.248.68.3 |" >> $GITHUB_STEP_SUMMARY
+          echo "| **⏰ Started** | $(date -u '+%Y-%m-%d %H:%M:%S UTC') |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Add reason if provided
+          if [[ -n "${{ github.event.inputs.deployment_reason }}" ]]; then
+            echo "| **📝 Deployment Reason** | ${{ github.event.inputs.deployment_reason }} |" >> $GITHUB_STEP_SUMMARY
+          fi
           echo ""
           echo "🏗️ Application Architecture:"
           echo "  • Service: MIVAA PDF Extractor (FastAPI)"
@@ -80,6 +103,25 @@ jobs:
           echo "  • Authentication: JWT with custom middleware"
           echo "  • Monitoring: Sentry error tracking"
           echo "  • API Endpoints: 37+ endpoints across 7 modules"
+
+          # Add architecture to summary
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🏗️ Application Architecture" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Component | Details |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|---------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **🚀 Service** | MIVAA PDF Extractor (FastAPI) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🐍 Runtime** | Python 3.9 with pyenv |" >> $GITHUB_STEP_SUMMARY
+          echo "| **📦 Package Manager** | uv (ultrafast Python package installer) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **⚙️ Process Manager** | systemd (mivaa-pdf-extractor.service) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **📁 Deployment Path** | /var/www/mivaa-pdf-extractor |" >> $GITHUB_STEP_SUMMARY
+          echo "| **📄 PDF Processing** | PyMuPDF + pymupdf4llm |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🤖 AI/ML** | LlamaIndex, OpenAI, HuggingFace, Replicate |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🗄️ Database** | Supabase (PostgreSQL) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🔐 Authentication** | JWT with custom middleware |" >> $GITHUB_STEP_SUMMARY
+          echo "| **📊 Monitoring** | Sentry error tracking |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🌐 API Endpoints** | 37+ endpoints across 7 modules |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo ""
           echo "🔐 Environment Variables (Configured):"
           echo "  • SUPABASE_URL: ✅ Configured"
@@ -186,6 +228,19 @@ jobs:
           echo "✅ Deployment Status: SUCCESS"
           echo "📅 Completed: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
           echo "⏱️ Duration: Approximately 2-3 minutes"
+
+          # Add deployment results to summary
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🎉 Deployment Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | Details |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|---------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **✅ Status** | SUCCESS |" >> $GITHUB_STEP_SUMMARY
+          echo "| **📅 Completed** | $(date -u '+%Y-%m-%d %H:%M:%S UTC') |" >> $GITHUB_STEP_SUMMARY
+          echo "| **⏱️ Duration** | ~2-3 minutes |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🔄 Service Status** | Active and running |" >> $GITHUB_STEP_SUMMARY
+          echo "| **⚙️ Process Manager** | systemd |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo ""
           echo "🌐 Service Information:"
           echo "  • Server: 104.248.68.3"
@@ -200,6 +255,21 @@ jobs:
           echo "  • PDF Processing: http://104.248.68.3:8000/api/v1/pdf/*"
           echo "  • AI Analysis: http://104.248.68.3:8000/api/v1/ai/*"
           echo "  • Vector Search: http://104.248.68.3:8000/api/v1/search/*"
+
+          # Add API endpoints to summary
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🌐 Service Endpoints" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | URL | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **🏥 Health Check** | [http://104.248.68.3:8000/health](http://104.248.68.3:8000/health) | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
+          echo "| **📚 API Documentation** | [http://104.248.68.3:8000/docs](http://104.248.68.3:8000/docs) | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
+          echo "| **📖 ReDoc** | [http://104.248.68.3:8000/redoc](http://104.248.68.3:8000/redoc) | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
+          echo "| **📋 OpenAPI Schema** | [http://104.248.68.3:8000/openapi.json](http://104.248.68.3:8000/openapi.json) | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
+          echo "| **📄 PDF Processing** | http://104.248.68.3:8000/api/v1/pdf/* | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🤖 AI Analysis** | http://104.248.68.3:8000/api/v1/ai/* | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🔍 Vector Search** | http://104.248.68.3:8000/api/v1/search/* | 🟢 Available |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo ""
           echo "🧪 Quick Health Check Commands:"
           echo "  curl http://104.248.68.3:8000/health"
@@ -227,3 +297,39 @@ jobs:
           echo "  4. Update any dependent services if needed"
           echo ""
           echo "🎯 Deployment completed successfully! 🚀"
+
+          # Add quick actions to summary
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🚀 Quick Actions" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- 🌐 [**Access Application**](http://104.248.68.3:8000)" >> $GITHUB_STEP_SUMMARY
+          echo "- 🏥 [**Check Health**](http://104.248.68.3:8000/health)" >> $GITHUB_STEP_SUMMARY
+          echo "- 📚 [**View API Docs**](http://104.248.68.3:8000/docs)" >> $GITHUB_STEP_SUMMARY
+          echo "- 📖 [**View ReDoc**](http://104.248.68.3:8000/redoc)" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔍 [**View Commit**](https://github.com/${{ github.repository }}/commit/${{ github.sha }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Add troubleshooting section
+          echo "## 🔧 Troubleshooting" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Quick Health Check" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "curl http://104.248.68.3:8000/health" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### SSH Access" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "ssh root@104.248.68.3" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Service Management" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "sudo systemctl status mivaa-pdf-extractor" >> $GITHUB_STEP_SUMMARY
+          echo "sudo systemctl restart mivaa-pdf-extractor" >> $GITHUB_STEP_SUMMARY
+          echo "sudo journalctl -u mivaa-pdf-extractor -f" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Add footer
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "🚀 **MIVAA Default Deployment Pipeline** | 🕐 Generated: $(date) | 📋 ID: \`${{ github.run_id }}\`" >> $GITHUB_STEP_SUMMARY

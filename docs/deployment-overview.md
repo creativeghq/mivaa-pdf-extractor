@@ -29,6 +29,7 @@ The MIVAA PDF Extractor now includes comprehensive deployment overviews in all G
 - **Environment Variables**: Verification of all required secrets and configurations
 - **Deployment Process**: Step-by-step breakdown of the deployment pipeline
 - **Expected Outcomes**: Clear expectations for deployment results
+- **📋 Summary Table**: All key information displayed on the main action page
 
 ### 📈 Post-Deployment Summary
 - **Deployment Status**: Success/failure with timestamps and duration
@@ -37,6 +38,16 @@ The MIVAA PDF Extractor now includes comprehensive deployment overviews in all G
 - **Verification Checklist**: Confirmation of all deployment steps
 - **Troubleshooting Guide**: Quick access to logs, status commands, and common fixes
 - **Next Steps**: Recommended actions after deployment
+- **📋 Results Table**: Deployment results and service status on the main action page
+
+### 🎯 GitHub Action Summary
+**NEW FEATURE**: All deployment details are now displayed on the main GitHub Action page as organized tables, including:
+- **Deployment Overview Table**: Configuration, branch, commit, trigger information
+- **Application Architecture Table**: Service details, runtime, components
+- **Deployment Results Table**: Status, completion time, service health
+- **Service Endpoints Table**: Direct links to all API endpoints
+- **Quick Actions**: One-click access to health checks, documentation, and troubleshooting
+- **Troubleshooting Commands**: Copy-paste ready commands for debugging
 
 ## 🔧 Implementation
 

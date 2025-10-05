@@ -470,7 +470,7 @@ jobs:
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
 
-      - name: 📋 Orchestrated Deployment Overview
+      - name: 📋 Orchestrated Deployment Overview & Summary
         run: |
           echo "🚀 MIVAA Orchestrated Deployment Overview (ON-DEMAND)"
           echo "===================================================="
@@ -486,6 +486,26 @@ jobs:
           echo "  • Commit: ${{ github.sha }}"
           echo "  • Deployment ID: ${{ env.DEPLOYMENT_ID }}"
           echo "  • Triggered By: ${{ github.actor }} (Manual)"
+
+          # Add to GitHub Step Summary (visible on main action page)
+          echo "# 🚀 MIVAA Orchestrated Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📊 Deployment Overview" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **🎯 Deployment Type** | ORCHESTRATED (Advanced Pipeline) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **📝 Trigger** | Manual (On-Demand) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **📝 Reason** | ${{ github.event.inputs.deployment_reason || 'Manual deployment with advanced orchestration' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **⚡ Strategy** | ${{ needs.phase-1-analysis.outputs.deployment_strategy }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🎛️ Mode** | ${{ github.event.inputs.deployment_mode || 'intelligent' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🌿 Target Branch** | \`${{ github.event.inputs.target_branch || github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **📋 Commit** | [\`${{ github.sha }}\`](https://github.com/${{ github.repository }}/commit/${{ github.sha }}) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **👤 Triggered by** | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🆔 Deployment ID** | \`${{ env.DEPLOYMENT_ID }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🖥️ Target Server** | ${{ env.DEPLOY_HOST }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **⏰ Started** | $(date -u '+%Y-%m-%d %H:%M:%S UTC') |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo ""
           echo "🏗️ Phase Completion Status:"
           echo "  • Phase 1 (Analysis): ✅ Complete"
@@ -503,18 +523,45 @@ jobs:
           case "${{ needs.phase-1-analysis.outputs.deployment_strategy }}" in
             "fast-track")
               echo "  • Estimated: ~15 seconds (Fast Track)"
+              ESTIMATED_TIME="~15 seconds (Fast Track)"
               ;;
             "optimized")
               echo "  • Estimated: ~30 seconds (Optimized)"
+              ESTIMATED_TIME="~30 seconds (Optimized)"
               ;;
             "standard")
               echo "  • Estimated: ~45 seconds (Standard)"
+              ESTIMATED_TIME="~45 seconds (Standard)"
               ;;
             "comprehensive")
               echo "  • Estimated: ~60 seconds (Comprehensive)"
+              ESTIMATED_TIME="~60 seconds (Comprehensive)"
               ;;
           esac
           echo ""
+
+          # Add phase status to summary
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🏗️ Pipeline Phases" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Phase | Status | Description |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|-------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **🧠 Phase 1: Analysis** | ✅ Complete | Code analysis and strategy selection |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🔧 Phase 2: Dependencies** | ✅ Complete | Dependency resolution and optimization |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🔬 Phase 3: Validation** | ✅ Complete | System validation and diagnostics |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🚀 Phase 4: Deployment** | 🔄 In Progress | Actual deployment execution |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🔍 Phase 5: Verification** | ⏳ Pending | Comprehensive health checks |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Add optimization features
+          echo "## ⚡ Optimization Features" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Smart dependency resolution**" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Pre-validated environment**" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Intelligent deployment strategy**" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Automated rollback on failure**" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Expected Time**: ${ESTIMATED_TIME}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
 
       - name: 🚀 Execute deployment
         id: deploy
