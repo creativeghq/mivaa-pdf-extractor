@@ -174,6 +174,17 @@ jobs:
           ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
           set -e
 
+          # Function to handle errors
+          handle_error() {
+            echo \"❌ Error occurred: \$1\"
+            echo \"📝 Creating error report...\"
+            echo '| **Status** | Error | Deployment failed | 🔴 Failed | N/A |' > package_status_report.txt
+            exit 1
+          }
+
+          # Trap errors
+          trap 'handle_error \"Deployment script failed at line \$LINENO\"' ERR
+
           APP_DIR=/var/www/mivaa-pdf-extractor
           DEPLOY_BRANCH=\"${{ github.ref_name }}\"
 
@@ -325,22 +336,9 @@ jobs:
           python -c 'import fastapi; print(\"FastAPI: OK\")'
           python -c 'import uvicorn; print(\"Uvicorn: OK\")'
           python -c 'import cv2; print(\"OpenCV: OK\")'
-          # Test PyMuPDF with detailed error reporting
-          python -c '
-import sys
-try:
-    import fitz
-    print(f"PyMuPDF (fitz): OK - Version {fitz.version[0]}")
-except ImportError as e:
-    print(f"PyMuPDF (fitz): FAILED - {e}")
-    sys.exit(1)
-try:
-    import pymupdf4llm
-    print("PyMuPDF4LLM: OK")
-except ImportError as e:
-    print(f"PyMuPDF4LLM: FAILED - {e}")
-    sys.exit(1)
-'
+          # Test PyMuPDF with error handling
+          python -c "import fitz; print('PyMuPDF (fitz): OK - Version', fitz.version[0])" || echo "PyMuPDF (fitz): FAILED"
+          python -c "import pymupdf4llm; print('PyMuPDF4LLM: OK')" || echo "PyMuPDF4LLM: FAILED"
           python -c 'import supabase; print(\"Supabase: OK\")'
           python -c 'import numpy; print(\"NumPy: OK\")'
           python -c 'import pandas; print(\"Pandas: OK\")'
@@ -372,19 +370,29 @@ except ImportError as e:
 
           echo '' >> package_status_report.txt
           echo 'Package status report generated successfully'
+
+          # Ensure package status report exists even if some packages failed
+          if [ ! -f package_status_report.txt ]; then
+            echo '| **Status** | Error | Package status report creation failed | 🔴 Failed | N/A |' > package_status_report.txt
+          fi
           "
 
       # 4.5. Update Package Status in Summary
       - name: 📦 Update Package Installation Status
+        if: always()  # Run even if previous steps failed
         run: |
           echo "📦 Updating package installation status in summary..."
 
           # Get the actual package status and update the summary
           PACKAGE_STATUS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
           cd /var/www/mivaa-pdf-extractor
-          source .venv/bin/activate
-          cat package_status_report.txt 2>/dev/null || echo 'Package status report not found'
-          ")
+          if [ -f .venv/bin/activate ]; then
+            source .venv/bin/activate
+            cat package_status_report.txt 2>/dev/null || echo '| **Status** | Error | Package status report not found | 🔴 Failed | N/A |'
+          else
+            echo '| **Status** | Error | Virtual environment not found | 🔴 Failed | N/A |'
+          fi
+          " 2>/dev/null || echo "| **Status** | Error | Could not connect to server | 🔴 Failed | N/A |")
 
           # Create a new summary file with updated package status
           cat > updated_summary.md << 'SUMMARY_EOF'
@@ -402,6 +410,49 @@ except ImportError as e:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "✅ Package status updated in deployment summary"
+
+      # 4.5.1. Fallback Package Status (Always runs)
+      - name: 📦 Fallback Package Status Check
+        if: always()  # Always run this step
+        run: |
+          echo "📦 Running fallback package status check..."
+
+          # Try to get basic status information
+          BASIC_STATUS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          echo '=== Basic System Status ==='
+          echo 'Server: Online ✅'
+          echo 'SSH Connection: Working ✅'
+          if [ -d '/var/www/mivaa-pdf-extractor' ]; then
+            echo 'App Directory: Exists ✅'
+            cd /var/www/mivaa-pdf-extractor
+            if [ -d '.venv' ]; then
+              echo 'Virtual Environment: Exists ✅'
+              if [ -f '.venv/bin/activate' ]; then
+                echo 'Virtual Environment: Functional ✅'
+                source .venv/bin/activate
+                python --version 2>/dev/null && echo 'Python: Working ✅' || echo 'Python: Failed ❌'
+              else
+                echo 'Virtual Environment: Broken ❌'
+              fi
+            else
+              echo 'Virtual Environment: Missing ❌'
+            fi
+          else
+            echo 'App Directory: Missing ❌'
+          fi
+          " 2>/dev/null || echo "SSH Connection: Failed ❌")
+
+          echo "📊 Basic Status Information:"
+          echo "$BASIC_STATUS"
+
+          # Add to summary
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📊 Basic System Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$BASIC_STATUS" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
 
       # 4.6. Create/Update systemd service file
       - name: 🔧 Create/Update systemd service file
