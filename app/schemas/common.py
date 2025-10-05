@@ -12,10 +12,10 @@ from uuid import UUID
 
 try:
     # Try Pydantic v2 first
-    from pydantic import BaseModel, Field, field_validator as validator
+    from pydantic import BaseModel, Field, field_validator, model_validator
 except ImportError:
     # Fall back to Pydantic v1
-    from pydantic import BaseModel, Field, validator
+    from pydantic import BaseModel, Field, validator as field_validator, root_validator as model_validator
 
 
 # Generic type for paginated responses
@@ -68,7 +68,8 @@ class PaginationParams(BaseModel):
     sort_by: Optional[str] = Field(None, description="Field to sort by")
     sort_order: Optional[str] = Field("desc", pattern="^(asc|desc)$", description="Sort order")
     
-    @validator('sort_order')
+    @field_validator('sort_order')
+    @classmethod
     def validate_sort_order(cls, v):
         if v and v not in ['asc', 'desc']:
             raise ValueError('sort_order must be either "asc" or "desc"')
@@ -86,22 +87,21 @@ class PaginationResponse(BaseModel, Generic[T]):
     has_next: bool = Field(..., description="Whether there are more pages")
     has_previous: bool = Field(..., description="Whether there are previous pages")
     
-    @validator('total_pages', always=True)
-    def calculate_total_pages(cls, v, values):
-        total_count = values.get('total_count', 0)
-        page_size = values.get('page_size', 1)
-        return max(1, (total_count + page_size - 1) // page_size)
-    
-    @validator('has_next', always=True)
-    def calculate_has_next(cls, v, values):
-        page = values.get('page', 1)
-        total_pages = values.get('total_pages', 1)
-        return page < total_pages
-    
-    @validator('has_previous', always=True)
-    def calculate_has_previous(cls, v, values):
-        page = values.get('page', 1)
-        return page > 1
+    @model_validator(mode='after')
+    def calculate_pagination_fields(self):
+        # Calculate total_pages
+        total_count = getattr(self, 'total_count', 0)
+        page_size = getattr(self, 'page_size', 1)
+        self.total_pages = max(1, (total_count + page_size - 1) // page_size)
+
+        # Calculate has_next
+        page = getattr(self, 'page', 1)
+        self.has_next = page < self.total_pages
+
+        # Calculate has_previous
+        self.has_previous = page > 1
+
+        return self
 
 
 class ProcessingStatus(str, Enum):
@@ -184,7 +184,8 @@ class ProcessingOptions(BaseModel):
     quality: Optional[str] = Field("standard", pattern="^(fast|standard|high)$", description="Processing quality")
     language: Optional[str] = Field("auto", description="Document language hint")
     
-    @validator('timeout_seconds')
+    @field_validator('timeout_seconds')
+    @classmethod
     def validate_timeout(cls, v):
         if v is not None and (v < 10 or v > 3600):
             raise ValueError('timeout_seconds must be between 10 and 3600')

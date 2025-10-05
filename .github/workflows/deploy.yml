@@ -577,6 +577,39 @@ jobs:
 
           echo "✅ Final package status added to deployment summary"
 
+          # Add collapsible installation logs section
+          INSTALLATION_LOGS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          cd /var/www/mivaa-pdf-extractor
+          echo '=== Package Installation Logs ==='
+          if [ -f /tmp/pip-install.log ]; then
+            echo 'Recent pip installation output:'
+            tail -100 /tmp/pip-install.log 2>/dev/null || echo 'Could not read pip install log'
+          else
+            echo 'No pip install log found'
+          fi
+          echo ''
+          echo '=== Virtual Environment Status ==='
+          if [ -f .venv/bin/activate ]; then
+            source .venv/bin/activate
+            echo 'Python version:' \$(python --version)
+            echo 'Pip version:' \$(pip --version)
+            echo 'Installed packages (sample):'
+            pip list | head -20 || echo 'Could not list packages'
+          else
+            echo 'Virtual environment not found'
+          fi
+          " 2>/dev/null || echo "Could not retrieve installation logs")
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "<details>" >> $GITHUB_STEP_SUMMARY
+          echo "<summary>📦 Installation Logs (Click to expand)</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$INSTALLATION_LOGS" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+
       # 4.5.1. Fallback Package Status (Always runs)
       - name: 📦 Fallback Package Status Check
         if: always()  # Always run this step
@@ -619,6 +652,55 @@ jobs:
           echo "$BASIC_STATUS" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Add comprehensive deployment logs section
+          DEPLOYMENT_LOGS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          echo '=== Comprehensive Deployment Logs ==='
+          echo 'Timestamp:' \$(date)
+          echo ''
+          echo '=== Service Status ==='
+          systemctl status mivaa-pdf-extractor --no-pager --lines=10 2>/dev/null || echo 'Service status not available'
+          echo ''
+          echo '=== Recent Service Logs (Last 30 lines) ==='
+          journalctl -u mivaa-pdf-extractor --no-pager -n 30 --since='30 minutes ago' 2>/dev/null || echo 'Service logs not available'
+          echo ''
+          echo '=== System Resource Usage ==='
+          echo 'Memory:' \$(free -h | grep Mem)
+          echo 'Disk:' \$(df -h /var/www/mivaa-pdf-extractor | tail -1)
+          echo 'Load:' \$(cat /proc/loadavg)
+          echo ''
+          echo '=== Network Status ==='
+          echo 'Port 8000:' \$(ss -tlnp | grep :8000 || echo 'Not listening')
+          echo 'Process on 8000:' \$(lsof -i :8000 2>/dev/null || echo 'No process')
+          echo ''
+          echo '=== Application Files ==='
+          if [ -d /var/www/mivaa-pdf-extractor ]; then
+            echo 'App directory exists: YES'
+            echo 'Recent files:'
+            ls -la /var/www/mivaa-pdf-extractor/ | head -10
+            if [ -f /var/www/mivaa-pdf-extractor/.venv/bin/activate ]; then
+              echo 'Virtual environment: EXISTS'
+              cd /var/www/mivaa-pdf-extractor
+              source .venv/bin/activate
+              echo 'Python:' \$(python --version 2>/dev/null || echo 'Not working')
+              echo 'FastAPI:' \$(python -c 'import fastapi; print(fastapi.__version__)' 2>/dev/null || echo 'Not installed')
+            else
+              echo 'Virtual environment: MISSING'
+            fi
+          else
+            echo 'App directory exists: NO'
+          fi
+          " 2>/dev/null || echo "Could not retrieve comprehensive deployment logs")
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "<details>" >> $GITHUB_STEP_SUMMARY
+          echo "<summary>📋 Comprehensive Deployment Logs (Click to expand)</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$DEPLOYMENT_LOGS" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
 
       # 4.6. Create/Update systemd service file
       - name: 🔧 Create/Update systemd service file
@@ -705,6 +787,17 @@ jobs:
           free -h 2>/dev/null || echo 'Memory info not available'
           " 2>/dev/null || echo "Could not retrieve service logs and system information")
 
+          # Add collapsible Errors & Logs section to GitHub summary
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "<details>" >> $GITHUB_STEP_SUMMARY
+          echo "<summary>🚨 Errors & Logs (Click to expand)</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$SERVICE_LOGS" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+
           # Package status is already updated in the main status section above
 
 
@@ -764,7 +857,7 @@ jobs:
             echo "====================================="
 
             # SSH into server and gather diagnostics
-            ssh -o StrictHostKeyChecking=no root@104.248.68.3 '
+            DIAGNOSTIC_LOGS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 '
             echo "🔍 AUTOMATIC DIAGNOSTICS - Service Health Check Failed"
             echo "======================================================"
             echo ""
@@ -831,7 +924,18 @@ jobs:
             echo "📋 Post-Restart Logs (Last 20 lines):"
             echo "====================================="
             sudo journalctl -u mivaa-pdf-extractor --no-pager --lines=20 --since "1 minute ago"
-            '
+            ' 2>/dev/null || echo "Could not retrieve diagnostic information")
+
+            # Add collapsible diagnostic logs section to GitHub summary
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "<details>" >> $GITHUB_STEP_SUMMARY
+            echo "<summary>🔧 Diagnostic Logs (Click to expand)</summary>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "$DIAGNOSTIC_LOGS" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "</details>" >> $GITHUB_STEP_SUMMARY
 
             echo ""
             echo "🔄 Re-testing health endpoint after diagnostics..."

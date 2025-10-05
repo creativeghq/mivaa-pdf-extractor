@@ -12,10 +12,10 @@ from uuid import UUID
 
 try:
     # Try Pydantic v2 first
-    from pydantic import BaseModel, Field, field_validator as validator
+    from pydantic import BaseModel, Field, field_validator, model_validator
 except ImportError:
     # Fall back to Pydantic v1
-    from pydantic import BaseModel, Field, validator
+    from pydantic import BaseModel, Field, validator as field_validator, root_validator as model_validator
 
 from .common import BaseResponse, ProcessingStatus, PaginationParams
 
@@ -98,11 +98,12 @@ class JobProgress(BaseModel):
     step_details: Optional[Dict[str, Any]] = Field(None, description="Step-specific details")
     estimated_remaining_seconds: Optional[int] = Field(None, description="Estimated time remaining")
     
-    @validator('progress_percentage', always=True)
-    def calculate_progress(cls, v, values):
-        completed = values.get('completed_steps', 0)
-        total = values.get('total_steps', 1)
-        return (completed / total) * 100 if total > 0 else 0
+    @model_validator(mode='after')
+    def calculate_progress(self):
+        completed = getattr(self, 'completed_steps', 0)
+        total = getattr(self, 'total_steps', 1)
+        self.progress_percentage = (completed / total) * 100 if total > 0 else 0
+        return self
 
 
 class JobResult(BaseModel):

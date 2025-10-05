@@ -10,10 +10,10 @@ from uuid import UUID
 
 try:
     # Try Pydantic v2 first
-    from pydantic import BaseModel, Field, field_validator as validator
+    from pydantic import BaseModel, Field, field_validator, model_validator
 except ImportError:
     # Fall back to Pydantic v1
-    from pydantic import BaseModel, Field, validator
+    from pydantic import BaseModel, Field, validator as field_validator, root_validator as model_validator
 
 from .common import BaseResponse, PaginationParams
 from .documents import DocumentChunk
@@ -510,14 +510,15 @@ class SimilaritySearchRequest(BaseModel):
     tags: Optional[List[str]] = Field(None, description="Filter by document tags")
     document_types: Optional[List[str]] = Field(None, description="Filter by document types")
     
-    @validator('reference_text')
-    def validate_reference(cls, v, values):
-        reference_doc = values.get('reference_document_id')
-        if not reference_doc and not v:
+    @model_validator(mode='after')
+    def validate_reference(self):
+        reference_doc = getattr(self, 'reference_document_id', None)
+        reference_text = getattr(self, 'reference_text', None)
+        if not reference_doc and not reference_text:
             raise ValueError('Either reference_document_id or reference_text must be provided')
-        if reference_doc and v:
+        if reference_doc and reference_text:
             raise ValueError('Provide either reference_document_id or reference_text, not both')
-        return v
+        return self
     
     class Config:
         schema_extra = {

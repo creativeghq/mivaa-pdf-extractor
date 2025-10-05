@@ -10,10 +10,10 @@ from uuid import UUID
 
 try:
     # Try Pydantic v2 first
-    from pydantic import BaseModel, Field, HttpUrl, field_validator as validator
+    from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 except ImportError:
     # Fall back to Pydantic v1
-    from pydantic import BaseModel, Field, HttpUrl, validator
+    from pydantic import BaseModel, Field, HttpUrl, validator as field_validator, root_validator as model_validator
 
 from .common import BaseResponse, ProcessingStatus
 
@@ -40,7 +40,8 @@ class ImageAnalysisRequest(BaseModel):
     document_context: Optional[str] = Field(None, description="Document context for better analysis")
     page_context: Optional[str] = Field(None, description="Page context around the image")
     
-    @validator('analysis_types')
+    @field_validator('analysis_types')
+    @classmethod
     def validate_analysis_types(cls, v):
         valid_types = ["description", "ocr", "objects", "faces", "landmarks", "logos", "text_detection"]
         for analysis_type in v:
@@ -48,14 +49,15 @@ class ImageAnalysisRequest(BaseModel):
                 raise ValueError(f'Invalid analysis type: {analysis_type}. Valid types: {valid_types}')
         return v
     
-    @validator('image_url')
-    def validate_image_source(cls, v, values):
-        image_id = values.get('image_id')
-        if not image_id and not v:
+    @model_validator(mode='after')
+    def validate_image_source(self):
+        image_id = getattr(self, 'image_id', None)
+        image_url = getattr(self, 'image_url', None)
+        if not image_id and not image_url:
             raise ValueError('Either image_id or image_url must be provided')
-        if image_id and v:
+        if image_id and image_url:
             raise ValueError('Provide either image_id or image_url, not both')
-        return v
+        return self
     
     class Config:
         schema_extra = {
@@ -78,7 +80,8 @@ class BoundingBox(BaseModel):
     width: float = Field(..., description="Width (normalized 0-1)")
     height: float = Field(..., description="Height (normalized 0-1)")
     
-    @validator('x', 'y', 'width', 'height')
+    @field_validator('x', 'y', 'width', 'height')
+    @classmethod
     def validate_coordinates(cls, v):
         if not 0 <= v <= 1:
             raise ValueError('Coordinates must be normalized between 0 and 1')
@@ -318,12 +321,13 @@ class ImageSearchRequest(BaseModel):
     image_types: Optional[List[str]] = Field(None, description="Filter by image types (diagram, photo, etc.)")
     tags: Optional[List[str]] = Field(None, description="Filter by image tags")
     
-    @validator('query_description')
-    def validate_query(cls, v, values):
-        query_image_id = values.get('query_image_id')
-        if not query_image_id and not v:
+    @model_validator(mode='after')
+    def validate_query(self):
+        query_image_id = getattr(self, 'query_image_id', None)
+        query_description = getattr(self, 'query_description', None)
+        if not query_image_id and not query_description:
             raise ValueError('Either query_image_id or query_description must be provided')
-        return v
+        return self
     
     class Config:
         schema_extra = {

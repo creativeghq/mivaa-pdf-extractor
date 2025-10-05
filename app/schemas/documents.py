@@ -11,10 +11,10 @@ from uuid import UUID
 
 try:
     # Try Pydantic v2 first
-    from pydantic import BaseModel, Field, HttpUrl, field_validator as validator
+    from pydantic import BaseModel, Field, HttpUrl, field_validator
 except ImportError:
     # Fall back to Pydantic v1
-    from pydantic import BaseModel, Field, HttpUrl, validator
+    from pydantic import BaseModel, Field, HttpUrl, validator as field_validator
 
 from .common import (
     BaseResponse,
@@ -40,8 +40,9 @@ class DocumentProcessRequest(BaseModel):
     tags: List[str] = Field(default_factory=list, description="Document tags for organization")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
     
-    @validator('source_url')
-    def validate_source(cls, v, values):
+    @field_validator('source_url')
+    @classmethod
+    def validate_source(cls, v):
         # Note: File upload validation will be handled at the endpoint level
         # since FastAPI handles file uploads separately from Pydantic models
         return v
