@@ -783,8 +783,8 @@ jobs:
           echo '=== Service Status ===' >> /tmp/service_logs.txt
           systemctl status mivaa-pdf-extractor --no-pager --lines=20 >> /tmp/service_logs.txt 2>&1 || echo 'Service status not available' >> /tmp/service_logs.txt
           echo '' >> /tmp/service_logs.txt
-          echo '=== Last 500 Service Log Entries ===' >> /tmp/service_logs.txt
-          journalctl -u mivaa-pdf-extractor --no-pager -n 500 --since='1 hour ago' >> /tmp/service_logs.txt 2>&1 || echo 'Service logs not available' >> /tmp/service_logs.txt
+          echo '=== Last 200 Service Log Entries ===' >> /tmp/service_logs.txt
+          journalctl -u mivaa-pdf-extractor --no-pager -n 200 --since='1 hour ago' >> /tmp/service_logs.txt 2>&1 || echo 'Service logs not available' >> /tmp/service_logs.txt
           echo '' >> /tmp/service_logs.txt
           echo '=== Recent System Errors ===' >> /tmp/service_logs.txt
           journalctl --no-pager -p err -n 10 --since='1 hour ago' >> /tmp/service_logs.txt 2>&1 || echo 'System error logs not available' >> /tmp/service_logs.txt
@@ -971,9 +971,9 @@ jobs:
             fi
             echo ""
 
-            echo "📋 Recent Service Logs (Last 500 lines):"
+            echo "📋 Recent Service Logs (Last 200 lines):"
             echo "========================================"
-            sudo journalctl -u mivaa-pdf-extractor --no-pager --lines=500 --since "10 minutes ago"
+            sudo journalctl -u mivaa-pdf-extractor --no-pager --lines=200 --since "10 minutes ago"
             echo ""
 
             echo "🌐 Network & Port Status:"
