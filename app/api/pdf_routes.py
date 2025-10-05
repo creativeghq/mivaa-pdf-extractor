@@ -20,7 +20,11 @@ from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status
 from fastapi.responses import StreamingResponse
 
 # Import existing extractor functions
-from extractor import extract_pdf_to_markdown, extract_pdf_tables, extract_json_and_images
+try:
+    from app.core.extractor import extract_pdf_to_markdown, extract_pdf_tables, extract_json_and_images
+except ImportError:
+    # Fallback to root level extractor if core module not available
+    from extractor import extract_pdf_to_markdown, extract_pdf_tables, extract_json_and_images
 
 from app.utils.exceptions import (
     PDFProcessingError,

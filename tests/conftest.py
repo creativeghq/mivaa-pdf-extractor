@@ -20,7 +20,7 @@ from httpx import AsyncClient
 # Import application components
 from app.main import create_app
 from app.config import get_settings
-from app.database.connection import get_supabase_client
+from app.services.supabase_client import get_supabase_client
 
 
 @pytest.fixture(scope="session")

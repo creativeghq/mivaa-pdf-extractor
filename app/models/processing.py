@@ -9,7 +9,12 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, validator
+try:
+    # Try Pydantic v2 first
+    from pydantic import BaseModel, Field, field_validator as validator
+except ImportError:
+    # Fall back to Pydantic v1
+    from pydantic import BaseModel, Field, validator
 
 
 class ImageFormat(str, Enum):
