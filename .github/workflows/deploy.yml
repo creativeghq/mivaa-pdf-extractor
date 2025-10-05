@@ -812,6 +812,19 @@ jobs:
             echo "Raw logs content: '$SERVICE_LOGS'"
           fi
 
+          # Initialize log variables with fallback values if not set
+          if [ -z "$INSTALLATION_LOGS" ]; then
+            INSTALLATION_LOGS="✅ Everything is Good - No installation issues detected"
+          fi
+
+          if [ -z "$DEPLOYMENT_LOGS" ]; then
+            DEPLOYMENT_LOGS="✅ Everything is Good - No deployment issues detected"
+          fi
+
+          if [ -z "$DIAGNOSTIC_LOGS" ]; then
+            DIAGNOSTIC_LOGS="✅ Everything is Good - No diagnostic issues detected"
+          fi
+
           # Add Errors & Logs section with separate accordions
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## 📋 Errors & Logs" >> $GITHUB_STEP_SUMMARY

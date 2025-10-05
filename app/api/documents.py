@@ -72,6 +72,12 @@ logger = logging.getLogger(__name__)
 # Create router instance
 router = APIRouter(prefix="/api/v1/documents", tags=["Document Processing"])
 
+# Dependency function for Supabase client
+async def get_supabase_client():
+    """Dependency to get Supabase client instance."""
+    from app.services.supabase_client import SupabaseClient
+    return SupabaseClient()
+
 # Initialize PDF processor service
 pdf_processor = PDFProcessor()
 
@@ -1054,9 +1060,3 @@ async def delete_document(
             detail=f"Failed to delete document: {str(e)}"
         )
 
-
-# Dependency function for Supabase client
-async def get_supabase_client() -> SupabaseClient:
-    """Dependency to get Supabase client instance."""
-    from app.services.supabase_client import SupabaseClient
-    return SupabaseClient()
