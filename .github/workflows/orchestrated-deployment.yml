@@ -698,7 +698,7 @@ jobs:
                 echo "🔧 Gathering diagnostics for failed health check..."
 
                 # SSH and get service status
-                ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 root@$DEPLOY_HOST << 'HEALTH_DIAG_EOF' || echo "SSH connection failed"
+                ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 root@$DEPLOY_HOST << 'HEALTH_DIAG_EOF'
                 echo "📊 Service Diagnostics:"
                 echo "  • Service Status: $(sudo systemctl is-active mivaa-pdf-extractor 2>/dev/null || echo 'unknown')"
                 echo "  • Service Enabled: $(sudo systemctl is-enabled mivaa-pdf-extractor 2>/dev/null || echo 'unknown')"
@@ -706,7 +706,11 @@ jobs:
                 echo ""
                 echo "📋 Recent Logs (last 10 lines):"
                 sudo journalctl -u mivaa-pdf-extractor --no-pager --lines=10 --since "5 minutes ago" 2>/dev/null || echo "No logs available"
-                HEALTH_DIAG_EOF
+HEALTH_DIAG_EOF
+
+                if [ $? -ne 0 ]; then
+                  echo "SSH connection failed for diagnostics"
+                fi
               fi
             fi
 
@@ -723,7 +727,7 @@ jobs:
             sleep 10
             echo "  • New status: $(sudo systemctl is-active mivaa-pdf-extractor)"
             echo "  • Port check: $(ss -tlnp | grep :8000 | head -1 || echo 'not listening')"
-            RESTART_EOF
+RESTART_EOF
 
             # Re-test after restart
             sleep 10
@@ -859,7 +863,7 @@ jobs:
             if [ -d "/var/www/mivaa-pdf-extractor/.venv" ]; then
               echo "  ✅ Virtual environment exists"
               echo "  • Python version: $(cd /var/www/mivaa-pdf-extractor && source .venv/bin/activate && python --version)"
-              echo "  • FastAPI status: $(cd /var/www/mivaa-pdf-extractor && source .venv/bin/activate && python -c 'import fastapi; print("OK")' 2>/dev/null || echo 'FAILED')"
+              echo "  • FastAPI status: $(cd /var/www/mivaa-pdf-extractor && source .venv/bin/activate && python -c 'import fastapi; print(\"OK\")' 2>/dev/null || echo 'FAILED')"
             else
               echo "  ❌ Virtual environment missing"
             fi
@@ -876,7 +880,7 @@ jobs:
             echo ""
             echo "• Post-restart logs (last 10 lines):"
             sudo journalctl -u mivaa-pdf-extractor --no-pager --lines=10 --since "1 minute ago"
-            VERIFY_DIAG_EOF
+VERIFY_DIAG_EOF
 
             # Test endpoints again after diagnostics
             echo ""

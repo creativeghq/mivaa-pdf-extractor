@@ -216,7 +216,7 @@ jobs:
 
           # Check service status
           sudo systemctl status mivaa-pdf-extractor --no-pager
-          EOF
+EOF
 
       # 5. Health Check & Diagnostics
       - name: 🏥 Health Check & Diagnostics
@@ -349,7 +349,7 @@ jobs:
             echo "📋 Post-Restart Logs (Last 20 lines):"
             echo "====================================="
             sudo journalctl -u mivaa-pdf-extractor --no-pager --lines=20 --since "1 minute ago"
-            DIAG_EOF
+DIAG_EOF
 
             echo ""
             echo "🔄 Re-testing health endpoint after diagnostics..."
