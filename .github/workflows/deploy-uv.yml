@@ -1,4 +1,4 @@
-name: Deploy MIVAA FastAPI App (UV Optimized)
+name: Deploy MIVAA FastAPI App (Direct Deployment)
 
 on:
   push:
@@ -57,7 +57,7 @@ jobs:
           MATERIAL_KAI_API_KEY="${10}"
           SENTRY_DSN="${11}"
           
-          echo "🚀 Starting MIVAA UV-Optimized Deployment"
+          echo "🚀 Starting MIVAA Direct Deployment"
           echo "📋 Commit: $COMMIT_SHA"
           echo "📋 Branch: $BRANCH_NAME"
           echo "📋 Repository: $GITHUB_REPOSITORY"
@@ -89,28 +89,33 @@ jobs:
               git reset --hard origin/$BRANCH_NAME
           fi
           
-          echo "🐍 Setting up Python environment with UV..."
-          # Install UV if not present
-          if ! command -v uv &> /dev/null; then
-              echo "Installing UV..."
-              curl -LsSf https://astral.sh/uv/install.sh | sh
-              # Source the cargo environment to get UV in PATH
-              source "$HOME/.cargo/env" || true
-              export PATH="$HOME/.cargo/bin:$PATH"
-              # Verify UV installation
-              if ! command -v uv &> /dev/null; then
-                  echo "UV installation failed, trying alternative method..."
-                  # Alternative: install via pip
-                  python3 -m pip install uv
-              fi
+          echo "🐍 Setting up Python environment..."
+          # Ensure Python and pip are installed
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-pip python3-venv
+
+          # Create virtual environment if it doesn't exist
+          if [ ! -d ".venv" ]; then
+              echo "Creating virtual environment..."
+              python3 -m venv .venv
           fi
 
-          # Verify UV is available
-          echo "UV version: $(uv --version)"
+          # Activate virtual environment
+          source .venv/bin/activate
 
-          # Create/update virtual environment and install dependencies
-          echo "📦 Installing dependencies with UV (super fast!)..."
-          uv sync --frozen
+          # Upgrade pip
+          python -m pip install --upgrade pip
+
+          # Install dependencies
+          echo "📦 Installing dependencies..."
+          if [ -f "pyproject.toml" ]; then
+              python -m pip install -e .
+          elif [ -f "requirements.txt" ]; then
+              python -m pip install -r requirements.txt
+          else
+              echo "No dependency file found!"
+              exit 1
+          fi
           
           echo "🔧 Setting up systemd service..."
           # Create systemd service file with all environment variables
