@@ -471,7 +471,8 @@ class QueryResponse(BaseResponse):
     multimodal_model_used: Optional[str] = Field(None, description="Multi-modal model used for analysis")
     
     class Config:
-        schema_extra = {
+        model_config = {"protected_namespaces": ()}
+        json_schema_extra = {
             "example": {
                 "success": True,
                 "question": "What are the main benefits of transformer architectures?",

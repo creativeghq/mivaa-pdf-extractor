@@ -578,27 +578,33 @@ jobs:
           echo "✅ Final package status added to deployment summary"
 
           # Add collapsible installation logs section
-          INSTALLATION_LOGS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
           cd /var/www/mivaa-pdf-extractor
-          echo '=== Package Installation Logs ==='
+          echo '=== Package Installation Logs ===' > /tmp/installation_logs.txt
+          echo 'Timestamp: \$(date)' >> /tmp/installation_logs.txt
+          echo '' >> /tmp/installation_logs.txt
           if [ -f /tmp/pip-install.log ]; then
-            echo 'Recent pip installation output:'
-            tail -100 /tmp/pip-install.log 2>/dev/null || echo 'Could not read pip install log'
+            echo 'Recent pip installation output (last 100 lines):' >> /tmp/installation_logs.txt
+            tail -100 /tmp/pip-install.log >> /tmp/installation_logs.txt 2>&1 || echo 'Could not read pip install log' >> /tmp/installation_logs.txt
           else
-            echo 'No pip install log found'
+            echo 'No pip install log found at /tmp/pip-install.log' >> /tmp/installation_logs.txt
           fi
-          echo ''
-          echo '=== Virtual Environment Status ==='
+          echo '' >> /tmp/installation_logs.txt
+          echo '=== Virtual Environment Status ===' >> /tmp/installation_logs.txt
           if [ -f .venv/bin/activate ]; then
             source .venv/bin/activate
-            echo 'Python version:' \$(python --version)
-            echo 'Pip version:' \$(pip --version)
-            echo 'Installed packages (sample):'
-            pip list | head -20 || echo 'Could not list packages'
+            echo 'Python version:' >> /tmp/installation_logs.txt
+            python --version >> /tmp/installation_logs.txt 2>&1 || echo 'Python not working' >> /tmp/installation_logs.txt
+            echo 'Pip version:' >> /tmp/installation_logs.txt
+            pip --version >> /tmp/installation_logs.txt 2>&1 || echo 'Pip not working' >> /tmp/installation_logs.txt
+            echo 'Installed packages (first 20):' >> /tmp/installation_logs.txt
+            pip list | head -20 >> /tmp/installation_logs.txt 2>&1 || echo 'Could not list packages' >> /tmp/installation_logs.txt
           else
-            echo 'Virtual environment not found'
+            echo 'Virtual environment not found at .venv/bin/activate' >> /tmp/installation_logs.txt
           fi
-          " 2>/dev/null || echo "Could not retrieve installation logs")
+          " 2>/dev/null || echo "Could not create installation logs file"
+
+          INSTALLATION_LOGS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "cat /tmp/installation_logs.txt 2>/dev/null" || echo "Could not retrieve installation logs")
 
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "<details>" >> $GITHUB_STEP_SUMMARY
@@ -654,43 +660,52 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # Add comprehensive deployment logs section
-          DEPLOYMENT_LOGS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
-          echo '=== Comprehensive Deployment Logs ==='
-          echo 'Timestamp:' \$(date)
-          echo ''
-          echo '=== Service Status ==='
-          systemctl status mivaa-pdf-extractor --no-pager --lines=10 2>/dev/null || echo 'Service status not available'
-          echo ''
-          echo '=== Recent Service Logs (Last 30 lines) ==='
-          journalctl -u mivaa-pdf-extractor --no-pager -n 30 --since='30 minutes ago' 2>/dev/null || echo 'Service logs not available'
-          echo ''
-          echo '=== System Resource Usage ==='
-          echo 'Memory:' \$(free -h | grep Mem)
-          echo 'Disk:' \$(df -h /var/www/mivaa-pdf-extractor | tail -1)
-          echo 'Load:' \$(cat /proc/loadavg)
-          echo ''
-          echo '=== Network Status ==='
-          echo 'Port 8000:' \$(ss -tlnp | grep :8000 || echo 'Not listening')
-          echo 'Process on 8000:' \$(lsof -i :8000 2>/dev/null || echo 'No process')
-          echo ''
-          echo '=== Application Files ==='
+          ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          echo '=== Comprehensive Deployment Logs ===' > /tmp/deployment_logs.txt
+          echo 'Timestamp: \$(date)' >> /tmp/deployment_logs.txt
+          echo '' >> /tmp/deployment_logs.txt
+          echo '=== Service Status ===' >> /tmp/deployment_logs.txt
+          systemctl status mivaa-pdf-extractor --no-pager --lines=10 >> /tmp/deployment_logs.txt 2>&1 || echo 'Service status not available' >> /tmp/deployment_logs.txt
+          echo '' >> /tmp/deployment_logs.txt
+          echo '=== Recent Service Logs (Last 30 lines) ===' >> /tmp/deployment_logs.txt
+          journalctl -u mivaa-pdf-extractor --no-pager -n 30 --since='30 minutes ago' >> /tmp/deployment_logs.txt 2>&1 || echo 'Service logs not available' >> /tmp/deployment_logs.txt
+          echo '' >> /tmp/deployment_logs.txt
+          echo '=== System Resource Usage ===' >> /tmp/deployment_logs.txt
+          echo 'Memory:' >> /tmp/deployment_logs.txt
+          free -h | grep Mem >> /tmp/deployment_logs.txt 2>&1 || echo 'Memory info not available' >> /tmp/deployment_logs.txt
+          echo 'Disk:' >> /tmp/deployment_logs.txt
+          df -h /var/www/mivaa-pdf-extractor | tail -1 >> /tmp/deployment_logs.txt 2>&1 || echo 'Disk info not available' >> /tmp/deployment_logs.txt
+          echo 'Load:' >> /tmp/deployment_logs.txt
+          cat /proc/loadavg >> /tmp/deployment_logs.txt 2>&1 || echo 'Load info not available' >> /tmp/deployment_logs.txt
+          echo '' >> /tmp/deployment_logs.txt
+          echo '=== Network Status ===' >> /tmp/deployment_logs.txt
+          echo 'Port 8000:' >> /tmp/deployment_logs.txt
+          ss -tlnp | grep :8000 >> /tmp/deployment_logs.txt 2>&1 || echo 'Port 8000 not listening' >> /tmp/deployment_logs.txt
+          echo 'Process on 8000:' >> /tmp/deployment_logs.txt
+          lsof -i :8000 >> /tmp/deployment_logs.txt 2>&1 || echo 'No process on port 8000' >> /tmp/deployment_logs.txt
+          echo '' >> /tmp/deployment_logs.txt
+          echo '=== Application Files ===' >> /tmp/deployment_logs.txt
           if [ -d /var/www/mivaa-pdf-extractor ]; then
-            echo 'App directory exists: YES'
-            echo 'Recent files:'
-            ls -la /var/www/mivaa-pdf-extractor/ | head -10
+            echo 'App directory exists: YES' >> /tmp/deployment_logs.txt
+            echo 'Recent files:' >> /tmp/deployment_logs.txt
+            ls -la /var/www/mivaa-pdf-extractor/ | head -10 >> /tmp/deployment_logs.txt 2>&1 || echo 'Could not list files' >> /tmp/deployment_logs.txt
             if [ -f /var/www/mivaa-pdf-extractor/.venv/bin/activate ]; then
-              echo 'Virtual environment: EXISTS'
+              echo 'Virtual environment: EXISTS' >> /tmp/deployment_logs.txt
               cd /var/www/mivaa-pdf-extractor
               source .venv/bin/activate
-              echo 'Python:' \$(python --version 2>/dev/null || echo 'Not working')
-              echo 'FastAPI:' \$(python -c 'import fastapi; print(fastapi.__version__)' 2>/dev/null || echo 'Not installed')
+              echo 'Python version:' >> /tmp/deployment_logs.txt
+              python --version >> /tmp/deployment_logs.txt 2>&1 || echo 'Python not working' >> /tmp/deployment_logs.txt
+              echo 'FastAPI version:' >> /tmp/deployment_logs.txt
+              python -c 'import fastapi; print(fastapi.__version__)' >> /tmp/deployment_logs.txt 2>&1 || echo 'FastAPI not installed' >> /tmp/deployment_logs.txt
             else
-              echo 'Virtual environment: MISSING'
+              echo 'Virtual environment: MISSING' >> /tmp/deployment_logs.txt
             fi
           else
-            echo 'App directory exists: NO'
+            echo 'App directory exists: NO' >> /tmp/deployment_logs.txt
           fi
-          " 2>/dev/null || echo "Could not retrieve comprehensive deployment logs")
+          " 2>/dev/null || echo "Could not create deployment logs file"
+
+          DEPLOYMENT_LOGS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "cat /tmp/deployment_logs.txt 2>/dev/null" || echo "Could not retrieve deployment logs")
 
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "<details>" >> $GITHUB_STEP_SUMMARY
@@ -765,32 +780,48 @@ jobs:
 
           # Capture service logs and system information for debugging
           echo "📋 Capturing service logs and system information..."
-          SERVICE_LOGS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
-          echo '=== MIVAA PDF Extractor Service Logs ==='
-          echo 'Last 50 log entries:'
-          echo ''
-          journalctl -u mivaa-pdf-extractor --no-pager -n 50 --since='1 hour ago' 2>/dev/null || echo 'Service logs not available'
-          echo ''
-          echo '=== Service Status ==='
-          systemctl status mivaa-pdf-extractor --no-pager --lines=20 2>/dev/null || echo 'Service status not available'
-          echo ''
-          echo '=== Live Service Logs (Last 10 seconds) ==='
-          timeout 10s journalctl -u mivaa-pdf-extractor -f --no-pager 2>/dev/null || echo 'Live logs not available'
-          echo ''
-          echo '=== Recent System Logs (Errors) ==='
-          journalctl --no-pager -p err -n 10 --since='1 hour ago' 2>/dev/null || echo 'System error logs not available'
-          echo ''
-          echo '=== Disk Space ==='
-          df -h /var/www/mivaa-pdf-extractor 2>/dev/null || echo 'Disk space info not available'
-          echo ''
-          echo '=== Memory Usage ==='
-          free -h 2>/dev/null || echo 'Memory info not available'
-          " 2>/dev/null || echo "Could not retrieve service logs and system information")
+
+          # Create a temporary file to store logs
+          ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          echo '=== MIVAA PDF Extractor Service Logs ===' > /tmp/service_logs.txt
+          echo 'Timestamp: \$(date)' >> /tmp/service_logs.txt
+          echo '' >> /tmp/service_logs.txt
+          echo '=== Service Status ===' >> /tmp/service_logs.txt
+          systemctl status mivaa-pdf-extractor --no-pager --lines=20 >> /tmp/service_logs.txt 2>&1 || echo 'Service status not available' >> /tmp/service_logs.txt
+          echo '' >> /tmp/service_logs.txt
+          echo '=== Last 50 Service Log Entries ===' >> /tmp/service_logs.txt
+          journalctl -u mivaa-pdf-extractor --no-pager -n 50 --since='1 hour ago' >> /tmp/service_logs.txt 2>&1 || echo 'Service logs not available' >> /tmp/service_logs.txt
+          echo '' >> /tmp/service_logs.txt
+          echo '=== Recent System Errors ===' >> /tmp/service_logs.txt
+          journalctl --no-pager -p err -n 10 --since='1 hour ago' >> /tmp/service_logs.txt 2>&1 || echo 'System error logs not available' >> /tmp/service_logs.txt
+          echo '' >> /tmp/service_logs.txt
+          echo '=== System Resources ===' >> /tmp/service_logs.txt
+          echo 'Disk Space:' >> /tmp/service_logs.txt
+          df -h /var/www/mivaa-pdf-extractor >> /tmp/service_logs.txt 2>&1 || echo 'Disk space info not available' >> /tmp/service_logs.txt
+          echo 'Memory Usage:' >> /tmp/service_logs.txt
+          free -h >> /tmp/service_logs.txt 2>&1 || echo 'Memory info not available' >> /tmp/service_logs.txt
+          echo '' >> /tmp/service_logs.txt
+          echo '=== Network Status ===' >> /tmp/service_logs.txt
+          echo 'Port 8000 Status:' >> /tmp/service_logs.txt
+          ss -tlnp | grep :8000 >> /tmp/service_logs.txt 2>&1 || echo 'Port 8000 not listening' >> /tmp/service_logs.txt
+          echo 'Process on Port 8000:' >> /tmp/service_logs.txt
+          lsof -i :8000 >> /tmp/service_logs.txt 2>&1 || echo 'No process on port 8000' >> /tmp/service_logs.txt
+          " 2>/dev/null || echo "Could not create service logs file"
+
+          # Retrieve the logs
+          SERVICE_LOGS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "cat /tmp/service_logs.txt 2>/dev/null" || echo "Could not retrieve service logs")
+
+          # Debug: Show log length
+          echo "📊 Service logs captured: ${#SERVICE_LOGS} characters"
+          if [ ${#SERVICE_LOGS} -lt 50 ]; then
+            echo "⚠️ Warning: Service logs seem too short, might be empty"
+            echo "Raw logs content: '$SERVICE_LOGS'"
+          fi
 
           # Add collapsible Errors & Logs section to GitHub summary
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "<details>" >> $GITHUB_STEP_SUMMARY
-          echo "<summary>🚨 Errors & Logs (Click to expand)</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "<summary>🚨 Service Status & Logs (Click to expand)</summary>" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "$SERVICE_LOGS" >> $GITHUB_STEP_SUMMARY

@@ -45,7 +45,7 @@ class ErrorResponse(BaseResponse):
     trace_id: Optional[str] = Field(None, description="Request trace ID for debugging")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "success": False,
                 "message": "PDF processing failed",
@@ -131,7 +131,7 @@ class HealthResponse(BaseResponse):
     services: Dict[str, Dict[str, Any]] = Field(..., description="Status of individual services")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "success": True,
                 "status": "healthy",

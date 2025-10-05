@@ -69,7 +69,7 @@ class JobCreateRequest(BaseModel):
     tags: List[str] = Field(default_factory=list, description="Job tags for organization")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "job_type": "document_processing",
                 "priority": "normal",
@@ -156,7 +156,7 @@ class JobResponse(BaseResponse):
     tags: List[str] = Field(default_factory=list, description="Job tags")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "success": True,
                 "job_id": "job_123e4567-e89b-12d3-a456-426614174000",
@@ -205,7 +205,7 @@ class JobListRequest(BaseModel):
     search_query: Optional[str] = Field(None, description="Search in job descriptions")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "pagination": {
                     "page": 1,
@@ -261,7 +261,7 @@ class JobListResponse(BaseResponse):
     type_counts: Dict[str, int] = Field(default_factory=dict, description="Count by type")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "success": True,
                 "jobs": [
@@ -301,7 +301,7 @@ class JobUpdateRequest(BaseModel):
     tags: Optional[List[str]] = Field(None, description="Update job tags")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "priority": "high",
                 "description": "Updated: High priority research paper processing",
@@ -317,7 +317,7 @@ class JobActionRequest(BaseModel):
     reason: Optional[str] = Field(None, description="Reason for the action")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "action": "pause",
                 "reason": "System maintenance scheduled"
@@ -334,7 +334,7 @@ class JobActionResponse(BaseResponse):
     new_status: JobStatus = Field(..., description="New job status")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "success": True,
                 "message": "Job paused successfully",
@@ -355,7 +355,7 @@ class BatchJobRequest(BaseModel):
     batch_tags: List[str] = Field(default_factory=list, description="Additional tags for all jobs")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "jobs": [
                     {
@@ -387,7 +387,7 @@ class BatchJobResponse(BaseResponse):
     batch_priority: JobPriority = Field(..., description="Batch priority level")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "success": True,
                 "message": "Batch jobs created successfully",
@@ -426,7 +426,7 @@ class JobStatsResponse(BaseResponse):
     worker_count: int = Field(..., description="Number of active workers")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "success": True,
                 "total_jobs": 150,

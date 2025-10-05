@@ -60,7 +60,7 @@ class ImageAnalysisRequest(BaseModel):
         return self
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "image_id": "img_123e4567-e89b-12d3-a456-426614174000",
                 "analysis_types": ["description", "ocr", "objects"],
@@ -169,7 +169,8 @@ class ImageAnalysisResponse(BaseResponse):
     error_details: Optional[Dict[str, Any]] = Field(None, description="Error details if analysis failed")
     
     class Config:
-        schema_extra = {
+        model_config = {"protected_namespaces": ()}
+        json_schema_extra = {
             "example": {
                 "success": True,
                 "image_id": "img_123e4567-e89b-12d3-a456-426614174000",
@@ -237,7 +238,7 @@ class ImageBatchRequest(BaseModel):
     confidence_threshold: float = Field(0.7, ge=0.0, le=1.0, description="Minimum confidence threshold")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "image_ids": [
                     "img_123e4567-e89b-12d3-a456-426614174000",
@@ -279,7 +280,7 @@ class ImageBatchResponse(BaseResponse):
     average_time_per_image_ms: float = Field(..., description="Average processing time per image")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "success": True,
                 "batch_id": "batch_789e0123-e89b-12d3-a456-426614174000",
@@ -330,7 +331,7 @@ class ImageSearchRequest(BaseModel):
         return self
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "query_description": "neural network diagram",
                 "limit": 15,
@@ -371,7 +372,7 @@ class ImageSearchResponse(BaseResponse):
     search_time_ms: float = Field(..., description="Search execution time")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "success": True,
                 "query_info": {

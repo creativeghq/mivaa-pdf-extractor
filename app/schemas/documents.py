@@ -48,7 +48,7 @@ class DocumentProcessRequest(BaseModel):
         return v
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "source_url": "https://example.com/document.pdf",
                 "options": {
@@ -161,7 +161,7 @@ class DocumentProcessResponse(BaseResponse):
     error_details: Optional[Dict[str, Any]] = Field(None, description="Error details if processing failed")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "success": True,
                 "document_id": "doc_123e4567-e89b-12d3-a456-426614174000",
@@ -226,7 +226,7 @@ class DocumentListResponse(BaseResponse):
     page_size: int = Field(..., description="Items per page")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "success": True,
                 "documents": [
@@ -252,15 +252,45 @@ class DocumentListResponse(BaseResponse):
         }
 
 
+class URLProcessRequest(BaseModel):
+    """Request model for processing PDF from URL."""
+
+    url: HttpUrl = Field(..., description="URL to PDF document")
+    async_processing: bool = Field(False, description="Whether to process asynchronously")
+
+    # Processing options
+    options: ProcessingOptions = Field(default_factory=ProcessingOptions, description="Processing configuration")
+
+    # Metadata
+    document_name: Optional[str] = Field(None, description="Custom document name")
+    tags: List[str] = Field(default_factory=list, description="Document tags for organization")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "url": "https://example.com/document.pdf",
+                "async_processing": False,
+                "document_name": "Sample Document",
+                "tags": ["research", "analysis"],
+                "options": {
+                    "extract_images": True,
+                    "extract_tables": True,
+                    "quality": "standard"
+                }
+            }
+        }
+
+
 class DocumentUpdateRequest(BaseModel):
     """Request model for updating document metadata."""
-    
+
     document_name: Optional[str] = Field(None, description="Updated document name")
     tags: Optional[List[str]] = Field(None, description="Updated tags")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Updated metadata fields")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "document_name": "Updated Research Paper Title",
                 "tags": ["research", "ai", "2024", "updated"],
@@ -272,14 +302,103 @@ class DocumentUpdateRequest(BaseModel):
         }
 
 
+class BatchProcessRequest(BaseModel):
+    """Request model for batch processing multiple documents."""
+
+    urls: List[HttpUrl] = Field(..., description="List of PDF URLs to process")
+    async_processing: bool = Field(True, description="Whether to process asynchronously")
+
+    # Processing options (applied to all documents)
+    options: ProcessingOptions = Field(default_factory=ProcessingOptions, description="Processing configuration")
+
+    # Metadata (applied to all documents)
+    tags: List[str] = Field(default_factory=list, description="Tags for all documents")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Metadata for all documents")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "urls": [
+                    "https://example.com/doc1.pdf",
+                    "https://example.com/doc2.pdf"
+                ],
+                "async_processing": True,
+                "tags": ["batch", "research"],
+                "options": {
+                    "extract_images": True,
+                    "extract_tables": True
+                }
+            }
+        }
+
+
+class BatchProcessResponse(BaseResponse):
+    """Response model for batch processing."""
+
+    job_ids: List[str] = Field(..., description="List of job IDs for tracking")
+    total_documents: int = Field(..., description="Total number of documents to process")
+    estimated_completion: Optional[str] = Field(None, description="Estimated completion time")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Batch processing started",
+                "job_ids": ["job_123", "job_456"],
+                "total_documents": 2,
+                "estimated_completion": "2024-07-26T18:30:00Z"
+            }
+        }
+
+
+class DocumentAnalysisRequest(BaseModel):
+    """Request model for document analysis."""
+
+    analyze_content: bool = Field(True, description="Whether to analyze content structure")
+    analyze_images: bool = Field(False, description="Whether to analyze images")
+    generate_summary: bool = Field(False, description="Whether to generate summary")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "analyze_content": True,
+                "analyze_images": False,
+                "generate_summary": True
+            }
+        }
+
+
+class DocumentAnalysisResponse(BaseResponse):
+    """Response model for document analysis."""
+
+    document_id: str = Field(..., description="Document identifier")
+    analysis: Dict[str, Any] = Field(..., description="Analysis results")
+    processing_time: float = Field(..., description="Processing time in seconds")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Document analysis completed",
+                "document_id": "doc_123",
+                "analysis": {
+                    "structure": {"pages": 10, "sections": 5},
+                    "content": {"word_count": 2500, "topics": ["AI", "ML"]},
+                    "summary": "This document discusses AI and ML concepts..."
+                },
+                "processing_time": 15.5
+            }
+        }
+
+
 class DocumentDeleteResponse(BaseResponse):
     """Response model for document deletion."""
-    
+
     document_id: str = Field(..., description="ID of deleted document")
     deleted_files: List[str] = Field(default_factory=list, description="List of deleted file paths")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "success": True,
                 "message": "Document deleted successfully",

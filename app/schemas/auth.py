@@ -73,7 +73,7 @@ class User(BaseModel):
         json_encoders = {
             datetime: lambda v: v.isoformat()
         }
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "id": "user_123",
                 "email": "user@example.com",
@@ -96,7 +96,7 @@ class WorkspaceContext(BaseModel):
     
     class Config:
         use_enum_values = True
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "workspace_id": "workspace_123",
                 "user_id": "user_123",
@@ -196,7 +196,7 @@ class AuthResponse(BaseModel):
     workspace_context: WorkspaceContext = Field(..., description="Workspace context")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
                 "token_type": "bearer",
