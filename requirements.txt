@@ -28,14 +28,14 @@ imageio>=2.31.0
 openai==1.51.0
 anthropic==0.20.0
 
-# LlamaIndex for RAG capabilities - updated compatible versions
-llama-index==0.13.0
-llama-index-core==0.13.0
-llama-index-llms-openai==0.2.0
-llama-index-embeddings-openai==0.2.0
-llama-index-vector-stores-supabase==0.2.0
-llama-index-embeddings-clip==0.2.0
-llama-index-multi-modal-llms-openai==0.2.0
+# LlamaIndex for RAG capabilities - compatible versions (fixed conflicts)
+llama-index==0.11.20
+llama-index-core==0.11.20
+llama-index-llms-openai==0.1.29
+llama-index-embeddings-openai==0.1.11
+llama-index-vector-stores-supabase==0.1.4
+llama-index-embeddings-clip==0.1.5
+llama-index-multi-modal-llms-openai==0.1.9
 llama-index-multi-modal-llms-anthropic==0.1.4
 llama-index-agent-openai==0.2.9
 llama-index-program-openai==0.1.6
@@ -53,7 +53,7 @@ realtime==1.0.6
 
 # Configuration and environment management
 python-dotenv==1.0.0
-pydantic>=1.10.0
+pydantic>=2.8.0
 pydantic-settings>=2.0.0; python_version>="3.8"
 
 # HTTP client for external API calls
