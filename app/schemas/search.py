@@ -370,6 +370,63 @@ class EntityExtractionResponse(BaseResponse):
         }
 
 
+class DocumentComparisonRequest(BaseModel):
+    """Request model for comparing multiple documents."""
+
+    document_ids: List[str] = Field(..., min_items=2, max_items=10, description="List of document IDs to compare")
+    comparison_aspect: str = Field("content", description="Aspect to compare (content, structure, themes, etc.)")
+    include_similarities: bool = Field(True, description="Whether to include similarity analysis")
+    include_differences: bool = Field(True, description="Whether to include difference analysis")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "document_ids": ["doc_123", "doc_456", "doc_789"],
+                "comparison_aspect": "content",
+                "include_similarities": True,
+                "include_differences": True
+            }
+        }
+
+
+class DocumentComparisonResponse(BaseResponse):
+    """Response model for document comparison analysis."""
+
+    document_ids: List[str] = Field(..., description="List of compared document IDs")
+    comparison_aspect: str = Field(..., description="Aspect that was compared")
+    comparison_result: str = Field(..., description="Detailed comparison analysis")
+    documents_info: List[Dict[str, Any]] = Field(default_factory=list, description="Information about compared documents")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Comparison metadata and analysis details")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "document_ids": ["doc_123", "doc_456"],
+                "comparison_aspect": "content",
+                "comparison_result": "The documents share similar themes around AI and machine learning, but differ in their technical depth...",
+                "documents_info": [
+                    {
+                        "document_id": "doc_123",
+                        "title": "AI Research Paper",
+                        "content_type": "academic"
+                    },
+                    {
+                        "document_id": "doc_456",
+                        "title": "ML Implementation Guide",
+                        "content_type": "technical"
+                    }
+                ],
+                "metadata": {
+                    "comparison_method": "llm_based_analysis",
+                    "similarity_score": 0.75,
+                    "analysis_time": 3.2
+                },
+                "timestamp": "2024-07-26T18:00:00Z"
+            }
+        }
+
+
 class QueryRequest(BaseModel):
     """Request model for RAG-based question answering."""
     
