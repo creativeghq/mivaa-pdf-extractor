@@ -651,7 +651,6 @@ class EnhancedMaterialPropertyExtractor:
                     result["confidence"] = 0.8
 
         return result
-        """
         
     async def extract_comprehensive_properties(
         self, 
