@@ -313,6 +313,63 @@ class DocumentSummaryResponse(BaseResponse):
         }
 
 
+class EntityExtractionRequest(BaseModel):
+    """Request model for entity extraction from documents."""
+
+    entity_types: List[str] = Field(default=["PERSON", "ORG", "DATE", "LOCATION"], description="Types of entities to extract")
+    include_confidence: bool = Field(True, description="Whether to include confidence scores for extracted entities")
+    min_confidence: float = Field(0.7, ge=0.0, le=1.0, description="Minimum confidence threshold for entity extraction")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "entity_types": ["PERSON", "ORG", "DATE", "LOCATION", "MONEY"],
+                "include_confidence": True,
+                "min_confidence": 0.8
+            }
+        }
+
+
+class EntityExtractionResponse(BaseResponse):
+    """Response model for entity extraction from documents."""
+
+    document_id: str = Field(..., description="ID of the processed document")
+    entity_types: List[str] = Field(..., description="Types of entities that were extracted")
+    entities: List[Dict[str, Any]] = Field(default_factory=list, description="Extracted entities with their details")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Extraction metadata and document information")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "document_id": "doc_123",
+                "entity_types": ["PERSON", "ORG", "DATE"],
+                "entities": [
+                    {
+                        "text": "John Smith",
+                        "type": "PERSON",
+                        "confidence": 0.95,
+                        "start_pos": 45,
+                        "end_pos": 55
+                    },
+                    {
+                        "text": "Microsoft Corporation",
+                        "type": "ORG",
+                        "confidence": 0.92,
+                        "start_pos": 120,
+                        "end_pos": 141
+                    }
+                ],
+                "metadata": {
+                    "document_title": "Business Report 2024",
+                    "extraction_method": "llm_based",
+                    "total_entities": 15
+                },
+                "timestamp": "2024-07-26T18:00:00Z"
+            }
+        }
+
+
 class QueryRequest(BaseModel):
     """Request model for RAG-based question answering."""
     

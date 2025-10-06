@@ -25,6 +25,8 @@ from ..schemas.search import (
     RelatedDocumentsResponse,
     DocumentSummaryRequest,
     DocumentSummaryResponse,
+    EntityExtractionRequest,
+    EntityExtractionResponse,
     QueryRequest,
     QueryResponse,
     SourceCitation,
