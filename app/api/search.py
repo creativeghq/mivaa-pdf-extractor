@@ -23,6 +23,8 @@ from ..schemas.search import (
     SimilaritySearchRequest,
     SimilaritySearchResponse,
     RelatedDocumentsResponse,
+    DocumentSummaryRequest,
+    DocumentSummaryResponse,
     QueryRequest,
     QueryResponse,
     SourceCitation,

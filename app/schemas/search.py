@@ -270,6 +270,49 @@ class RelatedDocumentsResponse(BaseResponse):
         }
 
 
+class DocumentSummaryRequest(BaseModel):
+    """Request model for document summarization."""
+
+    summary_type: str = Field("brief", description="Type of summary to generate (brief, comprehensive, key_points)")
+    max_length: Optional[int] = Field(None, ge=50, le=2000, description="Maximum length of summary in words")
+    include_metadata: bool = Field(True, description="Whether to include document metadata in response")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "summary_type": "brief",
+                "max_length": 200,
+                "include_metadata": True
+            }
+        }
+
+
+class DocumentSummaryResponse(BaseResponse):
+    """Response model for document summarization."""
+
+    document_id: str = Field(..., description="ID of the summarized document")
+    summary_type: str = Field(..., description="Type of summary generated")
+    summary: str = Field(..., description="Generated summary text")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Summary metadata and document information")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "document_id": "doc_123",
+                "summary_type": "brief",
+                "summary": "This document discusses the implementation of AI-powered PDF processing systems...",
+                "metadata": {
+                    "document_title": "AI PDF Processing Research",
+                    "document_length": 5000,
+                    "summary_length": 200,
+                    "processing_time": 2.5
+                },
+                "timestamp": "2024-07-26T18:00:00Z"
+            }
+        }
+
+
 class QueryRequest(BaseModel):
     """Request model for RAG-based question answering."""
     
