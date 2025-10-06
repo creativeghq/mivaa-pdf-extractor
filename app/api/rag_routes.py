@@ -87,7 +87,7 @@ class ChatResponse(BaseModel):
 class SearchRequest(BaseModel):
     """Request model for semantic search."""
     query: str = Field(..., min_length=1, max_length=1000, description="Search query")
-    search_type: str = Field("semantic", regex="^(semantic|hybrid|keyword)$", description="Search type")
+    search_type: str = Field("semantic", pattern="^(semantic|hybrid|keyword)$", description="Search type")
     top_k: Optional[int] = Field(10, ge=1, le=50, description="Number of results to return")
     similarity_threshold: Optional[float] = Field(0.6, ge=0.0, le=1.0, description="Similarity threshold")
     document_ids: Optional[List[str]] = Field(None, description="Filter by document IDs")
@@ -135,14 +135,14 @@ class MMRSearchResponse(BaseModel):
 class AdvancedQueryRequest(BaseModel):
     """Request model for advanced query with optimization."""
     query: str = Field(..., min_length=1, max_length=2000, description="Query text")
-    query_type: str = Field("semantic", regex="^(factual|analytical|conversational|boolean|fuzzy|semantic)$", description="Type of query")
+    query_type: str = Field("semantic", pattern="^(factual|analytical|conversational|boolean|fuzzy|semantic)$", description="Type of query")
     top_k: Optional[int] = Field(10, ge=1, le=50, description="Number of results to retrieve")
     enable_expansion: bool = Field(True, description="Enable query expansion")
     enable_rewriting: bool = Field(True, description="Enable query rewriting")
     similarity_threshold: Optional[float] = Field(0.6, ge=0.0, le=1.0, description="Similarity threshold")
     document_ids: Optional[List[str]] = Field(None, description="Filter by specific document IDs")
     metadata_filters: Optional[Dict[str, Any]] = Field(None, description="Metadata-based filters")
-    search_operator: str = Field("AND", regex="^(AND|OR|NOT)$", description="Search operator for multiple terms")
+    search_operator: str = Field("AND", pattern="^(AND|OR|NOT)$", description="Search operator for multiple terms")
 
 class AdvancedQueryResponse(BaseModel):
     """Response model for advanced query."""
