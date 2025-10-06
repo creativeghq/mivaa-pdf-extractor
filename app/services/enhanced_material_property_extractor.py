@@ -853,43 +853,6 @@ def convert_to_legacy_format(extraction_result: PropertyExtractionResult) -> Dic
     }
     
     return legacy_format
-                        category, analysis_text, document_context
-                    )
-                    
-                    if category_result and category_result.get("confidence", 0) >= self.confidence_threshold:
-                        self._apply_category_result(enhanced_properties, category, category_result)
-                        category_confidences.append(category_result["confidence"])
-                        successful_extractions += 1
-                        
-                        logger.debug(f"Successfully extracted {category.value} properties")
-                    else:
-                        logger.warning(f"Low confidence extraction for {category.value}")
-                        category_confidences.append(0.0)
-                        
-                except Exception as e:
-                    logger.error(f"Failed to extract {category.value} properties: {e}")
-                    category_confidences.append(0.0)
-                    
-            # Calculate overall metrics
-            processing_time = time.time() - start_time
-            overall_confidence = sum(category_confidences) / len(category_confidences) if category_confidences else 0.0
-            coverage_percentage = (successful_extractions / total_expected_properties) * 100
-            
-            logger.info(f"Enhanced extraction completed: {coverage_percentage:.1f}% coverage, {overall_confidence:.3f} confidence")
-            
-            return PropertyExtractionResult(
-                enhanced_properties=enhanced_properties,
-                extraction_confidence=overall_confidence,
-                property_coverage_percentage=coverage_percentage,
-                processing_time=processing_time,
-                extraction_method="llm_semantic_analysis",
-                raw_llm_response=analysis_text[:1000] + "..." if len(analysis_text) > 1000 else analysis_text
-            )
-            
-        except Exception as e:
-            processing_time = time.time() - start_time
-            logger.error(f"Enhanced property extraction failed after {processing_time:.2f}s: {e}")
-            raise
             
     async def _extract_category_properties(
         self, 
