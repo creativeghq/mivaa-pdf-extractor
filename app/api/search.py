@@ -22,6 +22,7 @@ from ..schemas.search import (
     SemanticSearchResponse,
     SimilaritySearchRequest,
     SimilaritySearchResponse,
+    RelatedDocumentsResponse,
     QueryRequest,
     QueryResponse,
     SourceCitation,

@@ -235,6 +235,41 @@ class SemanticSearchResponse(BaseResponse):
         }
 
 
+class RelatedDocumentsResponse(BaseResponse):
+    """Response model for finding related documents."""
+
+    source_document_id: str = Field(..., description="ID of the source document")
+    related_documents: List[Dict[str, Any]] = Field(default_factory=list, description="List of related documents with similarity scores")
+    total_found: int = Field(..., description="Total number of related documents found")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Search metadata and parameters")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "source_document_id": "doc_123",
+                "related_documents": [
+                    {
+                        "document_id": "doc_456",
+                        "title": "Related Research Paper",
+                        "similarity_score": 0.85,
+                        "content_preview": "This document discusses similar topics...",
+                        "metadata": {
+                            "author": "Dr. Smith",
+                            "date": "2024-07-26"
+                        }
+                    }
+                ],
+                "total_found": 3,
+                "metadata": {
+                    "similarity_threshold": 0.7,
+                    "analysis_method": "content_summary_similarity"
+                },
+                "timestamp": "2024-07-26T18:00:00Z"
+            }
+        }
+
+
 class QueryRequest(BaseModel):
     """Request model for RAG-based question answering."""
     
