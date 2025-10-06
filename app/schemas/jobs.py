@@ -455,3 +455,138 @@ class JobStatsResponse(BaseResponse):
                 "timestamp": "2024-07-26T18:00:00Z"
             }
         }
+
+
+class JobStatusResponse(BaseResponse):
+    """Response model for job status queries."""
+
+    data: JobResponse = Field(..., description="Job details")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Job status retrieved successfully",
+                "data": {
+                    "job_id": "job_123",
+                    "job_type": "document_processing",
+                    "status": "running",
+                    "priority": "normal",
+                    "progress": {
+                        "current_step": "Processing page 5",
+                        "total_steps": 10,
+                        "completed_steps": 5,
+                        "progress_percentage": 50.0
+                    }
+                },
+                "timestamp": "2024-07-26T18:00:00Z"
+            }
+        }
+
+
+class BulkProcessingRequest(BaseModel):
+    """Request model for bulk document processing."""
+
+    urls: List[str] = Field(..., min_items=1, max_items=100, description="List of document URLs to process")
+    batch_size: int = Field(5, ge=1, le=20, description="Number of documents to process concurrently")
+    options: Optional[Dict[str, Any]] = Field(None, description="Processing options")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "urls": [
+                    "https://example.com/doc1.pdf",
+                    "https://example.com/doc2.pdf"
+                ],
+                "batch_size": 5,
+                "options": {
+                    "extract_images": True,
+                    "generate_summary": True,
+                    "extract_text": True
+                }
+            }
+        }
+
+
+class BulkProcessingResponse(BaseResponse):
+    """Response model for bulk processing operations."""
+
+    data: Dict[str, Any] = Field(..., description="Bulk processing details")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Bulk processing started successfully",
+                "data": {
+                    "job_id": "bulk_20240726_180000",
+                    "total_documents": 10,
+                    "estimated_completion_time": "2024-07-26T18:20:00Z"
+                },
+                "timestamp": "2024-07-26T18:00:00Z"
+            }
+        }
+
+
+class JobStatistics(BaseModel):
+    """Model for job statistics and metrics."""
+
+    total_jobs: int = Field(..., description="Total number of jobs")
+    active_jobs: int = Field(..., description="Currently active jobs")
+    completed_jobs: int = Field(..., description="Successfully completed jobs")
+    failed_jobs: int = Field(..., description="Failed jobs")
+    cancelled_jobs: int = Field(..., description="Cancelled jobs")
+    status_distribution: Dict[str, int] = Field(..., description="Distribution of job statuses")
+    type_distribution: Dict[str, int] = Field(..., description="Distribution of job types")
+    recent_jobs_24h: int = Field(..., description="Jobs created in last 24 hours")
+    average_processing_time_seconds: Optional[float] = Field(None, description="Average processing time")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "total_jobs": 150,
+                "active_jobs": 5,
+                "completed_jobs": 140,
+                "failed_jobs": 3,
+                "cancelled_jobs": 2,
+                "status_distribution": {
+                    "completed": 140,
+                    "running": 3,
+                    "queued": 2,
+                    "failed": 3,
+                    "cancelled": 2
+                },
+                "type_distribution": {
+                    "document_processing": 120,
+                    "image_analysis": 20,
+                    "batch_processing": 10
+                },
+                "recent_jobs_24h": 25,
+                "average_processing_time_seconds": 45.2
+            }
+        }
+
+
+class SystemMetrics(BaseModel):
+    """Model for system performance metrics."""
+
+    cpu_usage_percent: float = Field(..., description="CPU usage percentage")
+    memory_usage_percent: float = Field(..., description="Memory usage percentage")
+    memory_available_gb: float = Field(..., description="Available memory in GB")
+    disk_usage_percent: float = Field(..., description="Disk usage percentage")
+    disk_free_gb: float = Field(..., description="Free disk space in GB")
+    active_jobs_count: int = Field(..., description="Number of active jobs")
+    uptime_seconds: Optional[float] = Field(None, description="System uptime in seconds")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "cpu_usage_percent": 45.2,
+                "memory_usage_percent": 68.5,
+                "memory_available_gb": 2.4,
+                "disk_usage_percent": 35.8,
+                "disk_free_gb": 125.6,
+                "active_jobs_count": 3,
+                "uptime_seconds": 86400.0
+            }
+        }
