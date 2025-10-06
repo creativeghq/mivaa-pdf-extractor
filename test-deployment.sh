@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# MIVAA PDF Extractor - Deployment Test Script
+# MIVAA PDF Extractor - Deployment Test
 # This script tests that the comprehensive API is working properly
 
 set -euo pipefail
