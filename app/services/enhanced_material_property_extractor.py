@@ -645,7 +645,12 @@ class EnhancedMaterialPropertyExtractor:
             pei_pattern = r'pei[:\s]+(?:rating[:\s]+)?(?:class[:\s]+)?([0-5])'
             pei_matches = re.findall(pei_pattern, text_lower)
             if pei_matches:
-                pei_values = [int(m) for m in p
+                pei_values = [int(m) for m in pei_matches if 0 <= int(m) <= 5]
+                if pei_values:
+                    result["peiRating"] = max(pei_values)  # Use highest PEI rating found
+                    result["confidence"] = 0.8
+
+        return result
         """
         
     async def extract_comprehensive_properties(
