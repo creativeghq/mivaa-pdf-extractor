@@ -608,23 +608,24 @@ async def cleanup_old_data(
     - **dry_run**: Preview what would be deleted without actually deleting (default: true)
     """
     try:
+        global job_history  # Declare global at the beginning of the function
+
         cutoff_date = datetime.utcnow() - timedelta(days=days_old)
-        
+
         # Find old job history entries
         old_jobs = [
             job for job in job_history
             if datetime.fromisoformat(job["created_at"].replace('Z', '+00:00')) < cutoff_date
         ]
-        
+
         cleanup_summary = {
             "old_jobs_count": len(old_jobs),
             "cutoff_date": cutoff_date.isoformat(),
             "dry_run": dry_run
         }
-        
+
         if not dry_run:
             # Actually remove old jobs from history
-            global job_history
             job_history = [
                 job for job in job_history
                 if datetime.fromisoformat(job["created_at"].replace('Z', '+00:00')) >= cutoff_date
