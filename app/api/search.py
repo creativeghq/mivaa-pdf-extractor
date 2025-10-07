@@ -260,7 +260,7 @@ async def similarity_search(
         # In a more advanced implementation, we could use dedicated vector search
         semantic_request = SemanticSearchRequest(
             query=request.reference_text,
-            document_ids=request.document_ids,
+            document_ids=None,  # SimilaritySearchRequest doesn't have document_ids field
             limit=request.limit,
             similarity_threshold=request.similarity_threshold
         )

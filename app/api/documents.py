@@ -385,7 +385,7 @@ async def process_document(
                     status=ProcessingStatus.COMPLETED,
                     source_info=FileUploadInfo(
                         filename=file.filename,
-                        file_size=len(pdf_bytes),
+                        size_bytes=len(pdf_bytes),
                         content_type=file.content_type or "application/pdf"
                     ),
                     content=DocumentContent(
@@ -636,7 +636,7 @@ async def analyze_document(
 
             analysis_result = await pdf_processor.process_pdf_from_bytes(
                 pdf_bytes=pdf_bytes,
-                document_id=f"analysis_{temp_path.split('/')[-1]}",
+                document_id=f"analysis_{temp_path.name}",
                 processing_options=processing_options
             )
             
@@ -868,8 +868,10 @@ async def list_documents(
             "ETag": f'"{hash(str(result.data))}"'
         }
         
+        # Use safe JSON response to handle datetime serialization
+        from app.utils.json_encoder import safe_json_response
         return JSONResponse(
-            content=response.dict(),
+            content=safe_json_response(response.dict()),
             headers=headers
         )
         
@@ -942,8 +944,10 @@ async def get_document_metadata(
             "ETag": f'"{hash(str(doc))}"'
         }
         
+        # Use safe JSON response to handle datetime serialization
+        from app.utils.json_encoder import safe_json_response
         return JSONResponse(
-            content=response.dict(),
+            content=safe_json_response(response.dict()),
             headers=headers
         )
         
@@ -1025,8 +1029,10 @@ async def get_document_content(
             "Content-Type": "application/json"
         }
         
+        # Use safe JSON response to handle datetime serialization
+        from app.utils.json_encoder import safe_json_response
         return JSONResponse(
-            content=response.dict(),
+            content=safe_json_response(response.dict()),
             headers=headers
         )
         
