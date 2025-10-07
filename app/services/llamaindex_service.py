@@ -118,7 +118,7 @@ class LlamaIndexService:
         # Multi-modal configuration for Phase 8
         self.enable_multimodal = self.config.get('enable_multimodal', True)
         self.multimodal_llm_model = self.config.get('multimodal_llm_model', 'gpt-4-vision-preview')
-        self.image_embedding_model = self.config.get('image_embedding_model', 'clip-ViT-B-32')
+        self.image_embedding_model = self.config.get('image_embedding_model', 'ViT-B/32')
         self.ocr_enabled = self.config.get('ocr_enabled', True)
         self.ocr_language = self.config.get('ocr_language', 'en')
         
@@ -483,8 +483,8 @@ class LlamaIndexService:
                 self.logger.info(f"✅ CLIP image embeddings initialized: {self.image_embedding_model}")
             except Exception as e:
                 self.logger.error(f"❌ CRITICAL: Failed to initialize CLIP embeddings: {e}")
+                self.logger.warning("⚠️  Service will continue without CLIP - multimodal capabilities limited")
                 self.image_embeddings = None
-                # Do not continue without CLIP - it's essential for the platform
             
             # Initialize image reader
             self.image_reader = ImageReader()
