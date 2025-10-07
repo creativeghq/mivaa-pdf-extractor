@@ -374,17 +374,43 @@ async def process_document(
                     processing_options=processing_options
                 )
                 
+                # Import required types
+                from app.schemas.common import ProcessingStatus, MetricsSummary, FileUploadInfo
+                from app.schemas.documents import DocumentMetadata, DocumentContent
+
                 return DocumentProcessResponse(
                     success=True,
                     message="Document processed successfully",
                     document_id=result.document_id,
-                    metadata=result.metadata,
-                    content={
-                        "text": result.markdown_content,
-                        "images": result.extracted_images,
-                        "metadata": result.metadata
-                    },
-                    processing_time=result.processing_time
+                    status=ProcessingStatus.COMPLETED,
+                    source_info=FileUploadInfo(
+                        filename=file.filename,
+                        file_size=len(pdf_bytes),
+                        content_type=file.content_type or "application/pdf"
+                    ),
+                    content=DocumentContent(
+                        text=result.markdown_content or "",
+                        images=result.extracted_images or [],
+                        tables=[],  # TODO: Extract from result if available
+                        metadata=result.metadata or {}
+                    ),
+                    metadata=DocumentMetadata(
+                        title=result.metadata.get("title", file.filename) if result.metadata else file.filename,
+                        author=result.metadata.get("author", "Unknown") if result.metadata else "Unknown",
+                        creation_date=result.metadata.get("creation_date") if result.metadata else None,
+                        page_count=result.metadata.get("page_count", 0) if result.metadata else 0,
+                        file_size=len(pdf_bytes),
+                        language="en",  # TODO: Detect language
+                        document_type="pdf"
+                    ),
+                    metrics=MetricsSummary(
+                        processing_time=result.processing_time,
+                        word_count=len(result.markdown_content.split()) if result.markdown_content else 0,
+                        character_count=len(result.markdown_content) if result.markdown_content else 0,
+                        image_count=len(result.extracted_images) if result.extracted_images else 0,
+                        table_count=0,  # TODO: Count tables
+                        page_count=result.metadata.get("page_count", 0) if result.metadata else 0
+                    )
                 )
                 
             finally:
@@ -596,13 +622,22 @@ async def analyze_document(
         temp_path = await save_upload_file_async(file)
         
         try:
-            # Perform analysis using PDF processor
-            analysis_result = await pdf_processor.analyze_document_async(
-                file_path=temp_path,
-                analyze_structure=analyze_structure,
-                analyze_content=analyze_content,
-                analyze_images=analyze_images,
-                generate_summary=generate_summary
+            # Read file and perform analysis using PDF processor
+            with open(temp_path, 'rb') as f:
+                pdf_bytes = f.read()
+
+            # Create processing options based on analysis parameters
+            processing_options = {
+                'extract_images': analyze_images,
+                'extract_tables': analyze_structure,
+                'generate_summary': generate_summary,
+                'timeout_seconds': 120
+            }
+
+            analysis_result = await pdf_processor.process_pdf_from_bytes(
+                pdf_bytes=pdf_bytes,
+                document_id=f"analysis_{temp_path.split('/')[-1]}",
+                processing_options=processing_options
             )
             
             return DocumentAnalysisResponse(

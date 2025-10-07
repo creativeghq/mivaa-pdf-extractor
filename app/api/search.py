@@ -259,7 +259,7 @@ async def similarity_search(
         # For now, we'll use semantic search as the underlying mechanism
         # In a more advanced implementation, we could use dedicated vector search
         semantic_request = SemanticSearchRequest(
-            query=request.text,
+            query=request.reference_text,
             document_ids=request.document_ids,
             limit=request.limit,
             similarity_threshold=request.similarity_threshold
@@ -279,7 +279,7 @@ async def similarity_search(
         
         return SimilaritySearchResponse(
             success=True,
-            text=request.text,
+            text=request.reference_text,
             similar_documents=similar_documents,
             total_found=semantic_result.total_results,
             metadata={
@@ -634,9 +634,10 @@ async def multimodal_search(
     """
     try:
         # Get configuration for multi-modal settings
-        from ..config import get_multimodal_config, get_ocr_config
-        multimodal_config = get_multimodal_config()
-        ocr_config = get_ocr_config()
+        from app.config import get_settings
+        settings = get_settings()
+        multimodal_config = settings.get_multimodal_config()
+        ocr_config = settings.get_ocr_config()
         
         # Validate multi-modal is enabled
         if not multimodal_config.get("enable_multimodal", False):
@@ -766,8 +767,9 @@ async def multimodal_query(
     """
     try:
         # Get configuration
-        from ..config import get_multimodal_config
-        multimodal_config = get_multimodal_config()
+        from app.config import get_settings
+        settings = get_settings()
+        multimodal_config = settings.get_multimodal_config()
         
         # Validate multi-modal is enabled
         if not multimodal_config.get("enable_multimodal", False):
@@ -879,9 +881,10 @@ async def image_search(
     """
     try:
         # Get configuration
-        from ..config import get_multimodal_config, get_ocr_config
-        multimodal_config = get_multimodal_config()
-        ocr_config = get_ocr_config()
+        from app.config import get_settings
+        settings = get_settings()
+        multimodal_config = settings.get_multimodal_config()
+        ocr_config = settings.get_ocr_config()
         
         # Validate image processing is enabled
         if not multimodal_config.get("image_processing_enabled", False):
@@ -1039,8 +1042,9 @@ async def multimodal_analysis(
             )
         
         # Get configuration
-        from ..config import get_multimodal_config
-        multimodal_config = get_multimodal_config()
+        from app.config import get_settings
+        settings = get_settings()
+        multimodal_config = settings.get_multimodal_config()
         
         # Validate multi-modal is enabled
         if not multimodal_config.get("enable_multimodal", False):

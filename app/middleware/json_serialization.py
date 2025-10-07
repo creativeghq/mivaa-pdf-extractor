@@ -88,13 +88,14 @@ class JSONSerializationMiddleware(BaseHTTPMiddleware):
             
         except Exception as e:
             logger.error(f"JSON Serialization Middleware error: {e}")
-            # Return a safe error response
+            # Return a safe error response with proper datetime handling
+            from datetime import datetime
             return JSONResponse(
                 status_code=500,
                 content={
                     "error": "Internal server error",
                     "type": "serialization_error",
-                    "timestamp": safe_json_response({"timestamp": "error"})["timestamp"]
+                    "timestamp": datetime.utcnow().isoformat()
                 }
             )
 

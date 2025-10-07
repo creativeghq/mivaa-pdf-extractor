@@ -177,7 +177,19 @@ async def extract_tables(
             out_dir = create_output_dir()
             
             # Use existing extractor function
-            extract_pdf_tables(tmp_path, page_number, out_dir)
+            tables_data = extract_pdf_tables(tmp_path, page_number)
+
+            # Save tables as CSV files in output directory
+            if tables_data:
+                for i, table in enumerate(tables_data):
+                    csv_filename = f"table_{i+1}.csv"
+                    csv_path = os.path.join(out_dir, csv_filename)
+                    table.to_csv(csv_path, index=False)
+            else:
+                # Create empty file if no tables found
+                empty_csv_path = os.path.join(out_dir, "no_tables_found.txt")
+                with open(empty_csv_path, 'w') as f:
+                    f.write("No tables found in the specified page(s).")
             
             # Create ZIP stream
             zip_stream = create_zip_stream(out_dir)

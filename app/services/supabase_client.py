@@ -121,7 +121,7 @@ class SupabaseClient:
 
         Args:
             limit: Maximum number of documents to return
-            status_filter: Filter by document status (e.g., "completed")
+            status_filter: Filter by document status (ignored for now - column doesn't exist)
 
         Returns:
             Dictionary containing documents list
@@ -129,8 +129,9 @@ class SupabaseClient:
         try:
             query = self._client.table('processed_documents').select('*')
 
-            if status_filter:
-                query = query.eq('status', status_filter)
+            # Note: status column doesn't exist in current schema
+            # if status_filter:
+            #     query = query.eq('status', status_filter)
 
             query = query.limit(limit)
             response = query.execute()
