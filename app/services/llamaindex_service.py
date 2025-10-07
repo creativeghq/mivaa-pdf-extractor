@@ -477,10 +477,13 @@ class LlamaIndexService:
                 self.logger.warning(f"Unsupported multi-modal LLM model: {self.multimodal_llm_model}")
                 self.multimodal_llm = None
             
-            # Initialize image embeddings
+            # Initialize image embeddings (temporarily disabled due to installation issues)
             try:
-                self.image_embeddings = ClipEmbedding(model_name=self.image_embedding_model)
-                self.logger.info(f"CLIP image embeddings initialized: {self.image_embedding_model}")
+                # TODO: Re-enable CLIP embeddings once dependencies are properly installed
+                # self.image_embeddings = ClipEmbedding(model_name=self.image_embedding_model)
+                # self.logger.info(f"CLIP image embeddings initialized: {self.image_embedding_model}")
+                self.logger.warning("CLIP embeddings temporarily disabled - installation in progress")
+                self.image_embeddings = None
             except Exception as e:
                 self.logger.warning(f"Failed to initialize CLIP embeddings: {e}")
                 self.image_embeddings = None
