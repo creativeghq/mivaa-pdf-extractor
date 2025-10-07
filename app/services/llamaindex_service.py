@@ -139,21 +139,29 @@ class LlamaIndexService:
         self._initialize_components()
         
         # Initialize vector store
+        self.logger.info("🔧 Initializing vector store...")
         self._initialize_vector_store()
+        self.logger.info("✅ Vector store initialized")
 
         # Initialize document readers
+        self.logger.info("🔧 Initializing document readers...")
         self.document_readers = self._initialize_document_readers()
+        self.logger.info("✅ Document readers initialized")
 
         # Index cache
         self.indices: Dict[str, Any] = {}
 
         # Initialize advanced search service
+        self.logger.info("🔧 Initializing advanced search service...")
         self.advanced_search_service = None
         self._initialize_advanced_search_service()
+        self.logger.info("✅ Advanced search service initialized")
 
         # Initialize multi-modal components for Phase 8 (single call)
         if self.enable_multimodal:
+            self.logger.info("🔧 Initializing multimodal components...")
             self._initialize_multimodal_components()
+            self.logger.info("✅ Multimodal components initialized")
         
         # Conversation memory management
         self.conversation_memories = {}  # Session ID -> conversation history
