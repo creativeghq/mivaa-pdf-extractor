@@ -285,7 +285,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                     "sub": "material-kai-platform",
                     "api_key": api_key,
                     "service": "mivaa",
-                    "permissions": ["material_recognition", "semantic_search", "pdf_processing"],
+                    "permissions": ["admin:all", "pdf:read", "pdf:write", "document:read", "document:write", "search:read", "image:read", "image:write"],
                     "user_id": "material-kai-platform",
                     "organization": "material-kai-vision-platform",
                     "workspace_id": self.settings.material_kai_workspace_id,
