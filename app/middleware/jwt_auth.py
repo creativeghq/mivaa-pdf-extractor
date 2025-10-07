@@ -317,14 +317,15 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             if api_key in ["test-key", "test-api-key", "development-key"]:
                 logger.info(f"Valid test API key authenticated: {api_key}")
                 return {
-                    "sub": "test-user",
+                    "sub": "00000000-0000-0000-0000-000000000001",  # Test user UUID
                     "api_key": api_key,
                     "service": "mivaa",
                     "permissions": ["admin:all", "pdf:read", "pdf:write", "document:read", "document:write", "search:read", "image:read", "image:write"],
-                    "user_id": "test-user",
+                    "user_id": "00000000-0000-0000-0000-000000000001",  # Test user UUID
                     "organization": "test-organization",
-                    "workspace_id": "test-workspace",
+                    "workspace_id": "00000000-0000-0000-0000-000000000002",  # Test workspace UUID
                     "role": "admin",
+                    "is_test_user": True,  # Flag to bypass workspace validation
                     "iat": int(datetime.now(timezone.utc).timestamp()),
                     "exp": int((datetime.now(timezone.utc) + timedelta(hours=24)).timestamp())
                 }
@@ -377,9 +378,11 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             
             permissions = claims.get("permissions", [])
             
-            # Validate workspace access via Supabase
+            # Validate workspace access via Supabase (skip for test users)
             user_id = claims.get("sub")
-            if not await self._validate_workspace_access(user_id, workspace_id):
+            is_test_user = claims.get("is_test_user", False)
+
+            if not is_test_user and not await self._validate_workspace_access(user_id, workspace_id):
                 logger.warning(f"User {user_id} does not have access to workspace {workspace_id}")
                 return None
             
