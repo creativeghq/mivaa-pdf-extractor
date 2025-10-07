@@ -25,6 +25,7 @@ from starlette.responses import JSONResponse
 
 from ..config import get_settings
 from ..database import get_supabase_client
+from ..utils.json_encoder import safe_json_response
 
 # Import auth schemas for type consistency
 try:
