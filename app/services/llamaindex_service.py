@@ -48,7 +48,6 @@ try:
     from llama_index.multi_modal_llms.openai import OpenAIMultiModal
     from llama_index.multi_modal_llms.anthropic import AnthropicMultiModal
     from llama_index.embeddings.clip import ClipEmbedding
-    from llama_index.embeddings.huggingface import HuggingFaceEmbedding
     from llama_index.readers.file import ImageReader
     from llama_index.core.multi_modal_llms import MultiModalLLM
     from llama_index.core.schema import ImageDocument, ImageNode
@@ -478,24 +477,14 @@ class LlamaIndexService:
                 self.logger.warning(f"Unsupported multi-modal LLM model: {self.multimodal_llm_model}")
                 self.multimodal_llm = None
             
-            # Initialize image embeddings using proper CLIP model for multimodal capabilities
+            # Initialize CLIP embeddings - CRITICAL for multimodal image-text association
             try:
-                # Try original ClipEmbedding first (best for multimodal image-text association)
                 self.image_embeddings = ClipEmbedding(model_name=self.image_embedding_model)
-                self.logger.info(f"CLIP image embeddings initialized: {self.image_embedding_model}")
+                self.logger.info(f"✅ CLIP image embeddings initialized: {self.image_embedding_model}")
             except Exception as e:
-                self.logger.warning(f"Failed to initialize CLIP embeddings: {e}")
-                # Fallback to HuggingFace for text-only embeddings (not ideal for multimodal)
-                try:
-                    self.image_embeddings = HuggingFaceEmbedding(
-                        model_name="sentence-transformers/clip-ViT-B-32",
-                        max_length=77,
-                        trust_remote_code=True
-                    )
-                    self.logger.warning("Using HuggingFace text embeddings as fallback - multimodal capabilities limited")
-                except Exception as e2:
-                    self.logger.error(f"All embedding initialization failed: {e2}")
-                    self.image_embeddings = None
+                self.logger.error(f"❌ CRITICAL: Failed to initialize CLIP embeddings: {e}")
+                self.image_embeddings = None
+                # Do not continue without CLIP - it's essential for the platform
             
             # Initialize image reader
             self.image_reader = ImageReader()
