@@ -848,7 +848,7 @@ from app.api.admin import router as admin_router
 from app.api.rag_routes import router as rag_router
 from app.api.together_ai_routes import router as together_ai_router
 
-app.include_router(pdf_router, prefix="/api/v1")
+app.include_router(pdf_router)  # PDF router already has /api/v1 prefix
 app.include_router(documents_router)
 app.include_router(search_router)
 app.include_router(images_router)
