@@ -274,8 +274,8 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         Returns:
             True if token appears to be a simple API key
         """
-        # Test keys for development
-        if token in ["test-key", "test-api-key", "development-key"]:
+        # Test keys for development (only if test auth is enabled)
+        if self._is_test_api_key_allowed(token):
             return True
 
         # Simple API key: starts with mk_ and is 18-20 characters
@@ -313,9 +313,9 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                     "exp": int((datetime.now(timezone.utc) + timedelta(hours=24)).timestamp())
                 }
 
-            # Allow test keys in development/testing
-            if api_key in ["test-key", "test-api-key", "development-key"]:
-                logger.info(f"Valid test API key authenticated: {api_key}")
+            # Allow test keys ONLY in development/testing environments
+            if self._is_test_api_key_allowed(api_key):
+                logger.info(f"Valid test API key authenticated: {api_key} (environment: {self.settings.environment})")
                 return {
                     "sub": "00000000-0000-0000-0000-000000000001",  # Test user UUID
                     "api_key": api_key,
@@ -326,6 +326,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                     "workspace_id": "00000000-0000-0000-0000-000000000002",  # Test workspace UUID
                     "role": "admin",
                     "is_test_user": True,  # Flag to bypass workspace validation
+                    "environment": self.settings.environment,
                     "iat": int(datetime.now(timezone.utc).timestamp()),
                     "exp": int((datetime.now(timezone.utc) + timedelta(hours=24)).timestamp())
                 }
@@ -336,6 +337,66 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         except Exception as e:
             logger.error(f"API key validation error: {str(e)}")
             return None
+
+    def _is_test_api_key_allowed(self, api_key: str) -> bool:
+        """
+        Check if test API key is allowed in current environment.
+
+        Args:
+            api_key: API key to validate
+
+        Returns:
+            True if test API key is allowed, False otherwise
+        """
+        # Test authentication must be explicitly enabled
+        if not self.settings.enable_test_authentication:
+            return False
+
+        # Only allow in development/testing environments
+        if self.settings.environment not in ["development", "testing", "dev", "test"]:
+            logger.warning(f"Test API key rejected in {self.settings.environment} environment")
+            return False
+
+        # Check against configured test API keys
+        configured_test_keys = []
+        if self.settings.test_api_keys:
+            configured_test_keys = [key.strip() for key in self.settings.test_api_keys.split(",")]
+
+        # Default test keys (only if no custom ones configured)
+        if not configured_test_keys:
+            configured_test_keys = ["test-key", "test-api-key", "development-key"]
+
+        return api_key in configured_test_keys
+
+    def _is_test_user(self, claims: Dict[str, Any]) -> bool:
+        """
+        Determine if user is a test user based on claims and environment.
+
+        Args:
+            claims: JWT claims dictionary
+
+        Returns:
+            True if user is a test user and test mode is enabled
+        """
+        # Must be explicitly marked as test user
+        if not claims.get("is_test_user", False):
+            return False
+
+        # Test authentication must be enabled
+        if not self.settings.enable_test_authentication:
+            return False
+
+        # Only allow in development/testing environments
+        if self.settings.environment not in ["development", "testing", "dev", "test"]:
+            return False
+
+        # Additional validation: check if user ID matches test user pattern
+        user_id = claims.get("user_id", "")
+        if user_id != "00000000-0000-0000-0000-000000000001":
+            logger.warning(f"Invalid test user ID: {user_id}")
+            return False
+
+        return True
     
     async def _is_token_blacklisted(self, token: str) -> bool:
         """
@@ -378,13 +439,15 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             
             permissions = claims.get("permissions", [])
             
-            # Validate workspace access via Supabase (skip for test users)
+            # Validate workspace access via Supabase (skip for test users in dev/test environments)
             user_id = claims.get("sub")
-            is_test_user = claims.get("is_test_user", False)
+            is_test_user = self._is_test_user(claims)
 
             if not is_test_user and not await self._validate_workspace_access(user_id, workspace_id):
                 logger.warning(f"User {user_id} does not have access to workspace {workspace_id}")
                 return None
+            elif is_test_user:
+                logger.info(f"Bypassing workspace validation for test user in {self.settings.environment} environment")
             
             return WorkspaceContext(
                 workspace_id=workspace_id,

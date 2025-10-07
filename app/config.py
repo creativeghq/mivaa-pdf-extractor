@@ -308,6 +308,20 @@ class Settings(BaseSettings):
         env="MATERIAL_KAI_TIMEOUT"
     )
     
+    # Development and Testing Settings
+    environment: str = Field(
+        default="production",
+        env="ENVIRONMENT"
+    )
+    enable_test_authentication: bool = Field(
+        default=False,
+        env="ENABLE_TEST_AUTHENTICATION"
+    )
+    test_api_keys: str = Field(
+        default="",
+        env="TEST_API_KEYS"  # Comma-separated list of test API keys
+    )
+
     # Sentry Error Tracking and Monitoring Settings
     sentry_dsn: str = Field(
         default="",
