@@ -277,6 +277,8 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                     "permissions": ["material_recognition", "semantic_search", "pdf_processing"],
                     "user_id": "material-kai-platform",
                     "organization": "material-kai-vision-platform",
+                    "workspace_id": self.settings.material_kai_workspace_id,
+                    "role": "admin",
                     "iat": int(datetime.now(timezone.utc).timestamp()),
                     "exp": int((datetime.now(timezone.utc) + timedelta(hours=24)).timestamp())
                 }
