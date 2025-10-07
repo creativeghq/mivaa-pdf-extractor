@@ -103,7 +103,7 @@ class SupabaseClient:
     def health_check(self) -> bool:
         """
         Perform a health check on the Supabase connection.
-        
+
         Returns:
             True if connection is healthy, False otherwise
         """
@@ -114,6 +114,34 @@ class SupabaseClient:
         except Exception as e:
             logger.warning(f"Supabase health check failed: {str(e)}")
             return False
+
+    async def list_documents(self, limit: int = 100, status_filter: str = None) -> dict:
+        """
+        List documents from the processed_documents table.
+
+        Args:
+            limit: Maximum number of documents to return
+            status_filter: Filter by document status (e.g., "completed")
+
+        Returns:
+            Dictionary containing documents list
+        """
+        try:
+            query = self._client.table('processed_documents').select('*')
+
+            if status_filter:
+                query = query.eq('status', status_filter)
+
+            query = query.limit(limit)
+            response = query.execute()
+
+            return {
+                "documents": response.data,
+                "count": len(response.data)
+            }
+        except Exception as e:
+            logger.error(f"Failed to list documents: {str(e)}")
+            return {"documents": [], "count": 0}
     
     def close(self) -> None:
         """Close the Supabase client connection."""
