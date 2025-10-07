@@ -150,7 +150,14 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             request.state.workspace_id = workspace_context.workspace_id
             request.state.workspace_role = workspace_context.role
             request.state.permissions = workspace_context.permissions
-            request.state.jwt_claims = claims
+            # Store serializable claims (convert any datetime objects to strings)
+            serializable_claims = {}
+            for key, value in claims.items():
+                if isinstance(value, datetime):
+                    serializable_claims[key] = value.isoformat()
+                else:
+                    serializable_claims[key] = value
+            request.state.jwt_claims = serializable_claims
             
             # Log authentication success
             logger.info(
