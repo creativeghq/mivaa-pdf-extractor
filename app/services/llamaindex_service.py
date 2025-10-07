@@ -138,23 +138,20 @@ class LlamaIndexService:
         # Initialize components
         self._initialize_components()
         
-        # Initialize multi-modal components for Phase 8
-        self._initialize_multimodal_components()
-        
         # Initialize vector store
         self._initialize_vector_store()
-        
+
         # Initialize document readers
         self.document_readers = self._initialize_document_readers()
-        
+
         # Index cache
         self.indices: Dict[str, Any] = {}
-        
+
         # Initialize advanced search service
         self.advanced_search_service = None
         self._initialize_advanced_search_service()
-        
-        # Initialize multi-modal components if enabled
+
+        # Initialize multi-modal components for Phase 8 (single call)
         if self.enable_multimodal:
             self._initialize_multimodal_components()
         
