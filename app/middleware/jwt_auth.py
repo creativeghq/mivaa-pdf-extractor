@@ -15,7 +15,7 @@ Key Features:
 import json
 import logging
 from typing import Optional, Dict, Any, List
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import jwt
 from fastapi import Request, HTTPException, status
@@ -192,36 +192,40 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
     
     async def _validate_token(self, token: str) -> Optional[Dict[str, Any]]:
         """
-        Validate JWT token and extract claims.
-        
+        Validate JWT token or simple API key and extract claims.
+
         Args:
-            token: JWT token string
-            
+            token: JWT token string or simple API key
+
         Returns:
             Token claims dictionary or None if invalid
         """
         try:
-            # Decode and validate JWT token
+            # First, check if this is a simple API key (20 characters, starts with mk_)
+            if self._is_simple_api_key(token):
+                return await self._validate_simple_api_key(token)
+
+            # Otherwise, try to decode as JWT token
             claims = jwt.decode(
                 token,
                 self.settings.JWT_SECRET_KEY,
                 algorithms=[self.settings.JWT_ALGORITHM],
                 options={"verify_exp": True, "verify_iat": True}
             )
-            
+
             # Validate required claims
             required_claims = ["sub", "exp", "iat"]
             for claim in required_claims:
                 if claim not in claims:
                     logger.warning(f"Missing required claim: {claim}")
                     return None
-            
+
             # Check token expiration
             exp_timestamp = claims.get("exp")
             if exp_timestamp and datetime.fromtimestamp(exp_timestamp, tz=timezone.utc) < datetime.now(timezone.utc):
                 logger.warning("Token has expired")
                 return None
-            
+
             return claims
             
         except jwt.ExpiredSignatureError:
@@ -232,6 +236,56 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             return None
         except Exception as e:
             logger.error(f"Token validation error: {str(e)}")
+            return None
+
+    def _is_simple_api_key(self, token: str) -> bool:
+        """
+        Check if the token is a simple API key format.
+
+        Args:
+            token: Token string to check
+
+        Returns:
+            True if token appears to be a simple API key
+        """
+        # Simple API key: starts with mk_ and is 18-20 characters
+        return (
+            token.startswith("mk_") and
+            len(token) >= 18 and
+            len(token) <= 20 and
+            all(c.isalnum() or c == '_' for c in token)
+        )
+
+    async def _validate_simple_api_key(self, api_key: str) -> Optional[Dict[str, Any]]:
+        """
+        Validate simple API key against configured keys.
+
+        Args:
+            api_key: Simple API key string
+
+        Returns:
+            Claims dictionary if valid, None otherwise
+        """
+        try:
+            # Check against configured Material Kai API key
+            if api_key == self.settings.material_kai_api_key:
+                logger.info(f"Valid Material Kai API key authenticated")
+                return {
+                    "sub": "material-kai-platform",
+                    "api_key": api_key,
+                    "service": "mivaa",
+                    "permissions": ["material_recognition", "semantic_search", "pdf_processing"],
+                    "user_id": "material-kai-platform",
+                    "organization": "material-kai-vision-platform",
+                    "iat": int(datetime.now(timezone.utc).timestamp()),
+                    "exp": int((datetime.now(timezone.utc) + timedelta(hours=24)).timestamp())
+                }
+
+            logger.warning(f"Invalid API key: {api_key}")
+            return None
+
+        except Exception as e:
+            logger.error(f"API key validation error: {str(e)}")
             return None
     
     async def _is_token_blacklisted(self, token: str) -> bool:
