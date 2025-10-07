@@ -310,10 +310,11 @@ async def process_document(
     Returns:
         Document processing response with extracted content
     """
+    temp_path = None  # Initialize temp_path to avoid reference errors
     try:
         # Validate file
         await validate_pdf_file(file)
-        
+
         # Save file temporarily
         temp_path = await save_upload_file_async(file)
         
@@ -418,13 +419,16 @@ async def process_document(
                 )
                 
             finally:
-                cleanup_temp_file(temp_path)
-    
+                if temp_path:
+                    cleanup_temp_file(temp_path)
+
     except HTTPException:
-        cleanup_temp_file(temp_path)
+        if temp_path:
+            cleanup_temp_file(temp_path)
         raise
     except Exception as e:
-        cleanup_temp_file(temp_path)
+        if temp_path:
+            cleanup_temp_file(temp_path)
         logger.error(f"Document processing failed: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -453,6 +457,7 @@ async def process_document_from_url(
     Returns:
         Document processing response
     """
+    temp_path = None  # Initialize temp_path to avoid reference errors
     try:
         # Download file from URL
         temp_path = await download_file_from_url(request.url)
@@ -513,13 +518,16 @@ async def process_document_from_url(
                 )
                 
             finally:
-                cleanup_temp_file(temp_path)
-    
+                if temp_path:
+                    cleanup_temp_file(temp_path)
+
     except HTTPException:
-        cleanup_temp_file(temp_path)
+        if temp_path:
+            cleanup_temp_file(temp_path)
         raise
     except Exception as e:
-        cleanup_temp_file(temp_path)
+        if temp_path:
+            cleanup_temp_file(temp_path)
         logger.error(f"URL document processing failed: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
