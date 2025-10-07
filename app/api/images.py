@@ -638,7 +638,7 @@ async def _store_analysis_results(analysis_result: ImageAnalysisResponse) -> Non
             "analysis_types_performed": analysis_result.analysis_types_performed,
             "processing_time_ms": analysis_result.processing_time_ms,
             "model_versions": analysis_result.model_versions,
-            "created_at": analysis_result.timestamp
+            "created_at": analysis_result.timestamp.isoformat() if hasattr(analysis_result.timestamp, 'isoformat') else str(analysis_result.timestamp)
         }
         
         # Store in database (implement based on your schema)

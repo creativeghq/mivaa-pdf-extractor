@@ -153,35 +153,41 @@ class MaterialKaiService:
         self.config = config or self._get_default_config()
         
         # Platform connection settings
-        self.platform_url = self.config.get("platform_url", "https://api.materialkai.vision")
+        self.platform_url = self.config.get("platform_url", "")
         self.api_key = self.config.get("api_key", "")
         self.workspace_id = self.config.get("workspace_id", "")
         self.service_name = self.config.get("service_name", "mivaa-pdf-extractor")
-        
+
         # Integration settings
-        self.sync_enabled = self.config.get("sync_enabled", True)
-        self.real_time_enabled = self.config.get("real_time_enabled", True)
+        self.sync_enabled = self.config.get("sync_enabled", False)
+        self.real_time_enabled = self.config.get("real_time_enabled", False)
         self.batch_size = self.config.get("batch_size", 10)
         self.retry_attempts = self.config.get("retry_attempts", 3)
         self.timeout = self.config.get("timeout", 30)
-        
+
         # Internal state
         self._session: Optional[aiohttp.ClientSession] = None
         self._websocket: Optional[aiohttp.ClientWebSocketResponse] = None
         self._is_connected = False
         self._last_sync = None
-        
-        logger.info(f"Material Kai service initialized for workspace: {self.workspace_id}")
+
+        # Check if platform integration is enabled
+        self.platform_enabled = bool(self.platform_url and self.api_key)
+
+        if self.platform_enabled:
+            logger.info(f"Material Kai service initialized for workspace: {self.workspace_id}")
+        else:
+            logger.info("Material Kai platform integration disabled (no platform URL or API key configured)")
     
     def _get_default_config(self) -> Dict[str, Any]:
         """Get default configuration from settings."""
         return {
-            "platform_url": getattr(self.settings, "material_kai_platform_url", "https://api.materialkai.vision"),
+            "platform_url": getattr(self.settings, "material_kai_platform_url", ""),  # Disabled by default
             "api_key": getattr(self.settings, "material_kai_api_key", ""),
             "workspace_id": getattr(self.settings, "material_kai_workspace_id", ""),
             "service_name": getattr(self.settings, "material_kai_service_name", "mivaa-pdf-extractor"),
-            "sync_enabled": getattr(self.settings, "material_kai_sync_enabled", True),
-            "real_time_enabled": getattr(self.settings, "material_kai_real_time_enabled", True),
+            "sync_enabled": getattr(self.settings, "material_kai_sync_enabled", False),  # Disabled by default
+            "real_time_enabled": getattr(self.settings, "material_kai_real_time_enabled", False),  # Disabled by default
             "batch_size": getattr(self.settings, "material_kai_batch_size", 10),
             "retry_attempts": getattr(self.settings, "material_kai_retry_attempts", 3),
             "timeout": getattr(self.settings, "material_kai_timeout", 30),
@@ -204,6 +210,11 @@ class MaterialKaiService:
             bool: True if connection successful, False otherwise
         """
         try:
+            # Skip connection if platform is disabled
+            if not self.platform_enabled:
+                logger.info("Material Kai platform integration is disabled, skipping connection")
+                return True
+
             if not self.api_key or not self.workspace_id:
                 logger.warning("Material Kai API key or workspace ID not configured")
                 return False
@@ -262,11 +273,19 @@ class MaterialKaiService:
     async def health_check(self) -> Dict[str, Any]:
         """
         Perform health check with Material Kai platform.
-        
+
         Returns:
             Dict containing health status and details
         """
         try:
+            # Return healthy status if platform is disabled
+            if not self.platform_enabled:
+                return {
+                    "status": "healthy",
+                    "message": "Platform integration disabled",
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+
             if not self._session:
                 return {
                     "status": "unhealthy",

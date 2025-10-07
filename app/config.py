@@ -270,9 +270,9 @@ class Settings(BaseSettings):
         env="TOGETHER_RETRY_DELAY"
     )
     
-    # Material Kai Vision Platform Settings
+    # Material Kai Vision Platform Settings (disabled by default)
     material_kai_platform_url: str = Field(
-        default="https://api.materialkai.vision",
+        default="",  # Disabled by default - set to enable external platform integration
         env="MATERIAL_KAI_PLATFORM_URL"
     )
     material_kai_api_key: str = Field(
@@ -288,11 +288,11 @@ class Settings(BaseSettings):
         env="MATERIAL_KAI_SERVICE_NAME"
     )
     material_kai_sync_enabled: bool = Field(
-        default=True,
+        default=False,  # Disabled by default
         env="MATERIAL_KAI_SYNC_ENABLED"
     )
     material_kai_real_time_enabled: bool = Field(
-        default=True,
+        default=False,  # Disabled by default
         env="MATERIAL_KAI_REAL_TIME_ENABLED"
     )
     material_kai_batch_size: int = Field(
