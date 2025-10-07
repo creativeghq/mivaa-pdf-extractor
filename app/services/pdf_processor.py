@@ -357,15 +357,36 @@ class PDFProcessor:
             # Get basic metadata (page count, etc.)
             import fitz  # PyMuPDF
             doc = fitz.open(pdf_path)
+
+            # Helper function to parse PDF dates
+            def parse_pdf_date(date_str):
+                """Parse PDF date string to datetime or return None."""
+                if not date_str or date_str.strip() == '':
+                    return None
+                try:
+                    # PDF dates are often in format: D:YYYYMMDDHHmmSSOHH'mm'
+                    if date_str.startswith('D:'):
+                        date_str = date_str[2:]
+                    # Extract just the date part (YYYYMMDDHHMMSS)
+                    if len(date_str) >= 14:
+                        from datetime import datetime
+                        return datetime.strptime(date_str[:14], '%Y%m%d%H%M%S')
+                    elif len(date_str) >= 8:
+                        from datetime import datetime
+                        return datetime.strptime(date_str[:8], '%Y%m%d')
+                except:
+                    pass
+                return None
+
             metadata = {
                 'page_count': doc.page_count,
-                'title': doc.metadata.get('title', ''),
-                'author': doc.metadata.get('author', ''),
-                'subject': doc.metadata.get('subject', ''),
-                'creator': doc.metadata.get('creator', ''),
-                'producer': doc.metadata.get('producer', ''),
-                'creation_date': doc.metadata.get('creationDate', ''),
-                'modification_date': doc.metadata.get('modDate', '')
+                'title': doc.metadata.get('title', '') or None,
+                'author': doc.metadata.get('author', '') or None,
+                'subject': doc.metadata.get('subject', '') or None,
+                'creator': doc.metadata.get('creator', '') or None,
+                'producer': doc.metadata.get('producer', '') or None,
+                'creation_date': parse_pdf_date(doc.metadata.get('creationDate', '')),
+                'modification_date': parse_pdf_date(doc.metadata.get('modDate', ''))
             }
             doc.close()
             

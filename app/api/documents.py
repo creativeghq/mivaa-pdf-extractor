@@ -939,19 +939,19 @@ async def get_document_metadata(
         
         doc = result.data
         
-        # Build metadata response
+        # Build metadata response - only include fields that belong to DocumentMetadata
         metadata = DocumentMetadata(
-            id=doc["id"],
-            title=doc.get("title", "Untitled"),
-            created_at=doc["created_at"],
-            updated_at=doc.get("updated_at"),
-            status=doc.get("status", "unknown"),
-            page_count=doc.get("page_count", 0),
-            word_count=doc.get("word_count", 0),
-            file_size=doc.get("file_size", 0),
+            title=doc.get("title") or None,
+            author=doc.get("author") or None,
+            subject=doc.get("subject") or None,
+            creator=doc.get("creator") or None,
+            producer=doc.get("producer") or None,
+            creation_date=doc.get("creation_date"),
+            modification_date=doc.get("modification_date"),
+            language=doc.get("language") or None,
+            confidence_score=doc.get("confidence_score"),
             tags=doc.get("tags", []),
-            processing_time=doc.get("processing_time"),
-            has_embeddings=doc.get("has_embeddings", False)
+            custom_fields=doc.get("custom_fields", {})
         )
         
         response = DocumentMetadataResponse(
