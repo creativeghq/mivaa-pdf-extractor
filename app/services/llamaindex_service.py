@@ -47,7 +47,7 @@ try:
     # Multi-modal imports for Phase 8
     from llama_index.multi_modal_llms.openai import OpenAIMultiModal
     from llama_index.multi_modal_llms.anthropic import AnthropicMultiModal
-    # from llama_index.embeddings.clip import ClipEmbedding  # Problematic dependency
+    from llama_index.embeddings.clip import ClipEmbedding
     from llama_index.embeddings.huggingface import HuggingFaceEmbedding
     from llama_index.readers.file import ImageReader
     from llama_index.core.multi_modal_llms import MultiModalLLM
@@ -478,18 +478,24 @@ class LlamaIndexService:
                 self.logger.warning(f"Unsupported multi-modal LLM model: {self.multimodal_llm_model}")
                 self.multimodal_llm = None
             
-            # Initialize image embeddings using HuggingFace CLIP model
+            # Initialize image embeddings using proper CLIP model for multimodal capabilities
             try:
-                # Use HuggingFace CLIP model as alternative to OpenAI CLIP
-                self.image_embeddings = HuggingFaceEmbedding(
-                    model_name="sentence-transformers/clip-ViT-B-32",
-                    max_length=77,  # Standard CLIP max sequence length
-                    trust_remote_code=True
-                )
-                self.logger.info(f"HuggingFace CLIP embeddings initialized: sentence-transformers/clip-ViT-B-32")
+                # Try original ClipEmbedding first (best for multimodal image-text association)
+                self.image_embeddings = ClipEmbedding(model_name=self.image_embedding_model)
+                self.logger.info(f"CLIP image embeddings initialized: {self.image_embedding_model}")
             except Exception as e:
                 self.logger.warning(f"Failed to initialize CLIP embeddings: {e}")
-                self.image_embeddings = None
+                # Fallback to HuggingFace for text-only embeddings (not ideal for multimodal)
+                try:
+                    self.image_embeddings = HuggingFaceEmbedding(
+                        model_name="sentence-transformers/clip-ViT-B-32",
+                        max_length=77,
+                        trust_remote_code=True
+                    )
+                    self.logger.warning("Using HuggingFace text embeddings as fallback - multimodal capabilities limited")
+                except Exception as e2:
+                    self.logger.error(f"All embedding initialization failed: {e2}")
+                    self.image_embeddings = None
             
             # Initialize image reader
             self.image_reader = ImageReader()
