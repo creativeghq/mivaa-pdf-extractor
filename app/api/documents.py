@@ -47,7 +47,10 @@ from app.schemas.common import (
     ErrorResponse,
     PaginationParams,
     PaginationResponse,
-    HealthCheckResponse
+    HealthCheckResponse,
+    ProcessingStatus,
+    URLInfo,
+    MetricsSummary
 )
 from app.schemas.jobs import (
     JobResponse,
@@ -504,17 +507,62 @@ async def process_document_from_url(
                     }
                 )
                 
+                # Create proper DocumentContent
+                content = DocumentContent(
+                    markdown_content=result.markdown_content or "",
+                    chunks=[],  # TODO: Implement chunking
+                    images=result.extracted_images or [],
+                    tables=[],  # TODO: Extract tables from result
+                    summary=None,
+                    key_topics=[],
+                    entities=[]
+                )
+
+                # Create URLInfo for source_info
+                source_info = URLInfo(
+                    url=str(request.url),
+                    content_type="application/pdf",
+                    size_bytes=None,  # TODO: Get actual size
+                    last_modified=None
+                )
+
+                # Create MetricsSummary
+                metrics = MetricsSummary(
+                    word_count=len(result.markdown_content.split()) if result.markdown_content else 0,
+                    character_count=len(result.markdown_content) if result.markdown_content else 0,
+                    page_count=result.metadata.get('page_count', 0) if result.metadata else 0,
+                    image_count=len(result.extracted_images) if result.extracted_images else 0,
+                    table_count=0,  # TODO: Count tables
+                    processing_time_seconds=result.processing_time or 0.0
+                )
+
+                # Create DocumentMetadata
+                metadata = DocumentMetadata(
+                    title=result.metadata.get('title') if result.metadata else None,
+                    author=result.metadata.get('author') if result.metadata else None,
+                    subject=result.metadata.get('subject') if result.metadata else None,
+                    creator=result.metadata.get('creator') if result.metadata else None,
+                    producer=result.metadata.get('producer') if result.metadata else None,
+                    creation_date=result.metadata.get('creation_date') if result.metadata else None,
+                    modification_date=result.metadata.get('modification_date') if result.metadata else None,
+                    language=None,
+                    confidence_score=None,
+                    tags=request.tags if hasattr(request, 'tags') else [],
+                    custom_fields={}
+                )
+
                 return DocumentProcessResponse(
                     success=True,
                     message="Document processed successfully",
                     document_id=result.document_id,
-                    metadata=result.metadata,
-                    content={
-                        "text": result.markdown_content,
-                        "images": result.extracted_images,
-                        "metadata": result.metadata
-                    },
-                    processing_time=result.processing_time
+                    status=ProcessingStatus.COMPLETED,
+                    source_info=source_info,
+                    content=content,
+                    metadata=metadata,
+                    metrics=metrics,
+                    storage_path=None,
+                    embeddings_generated=False,
+                    error_details=None
                 )
                 
             finally:
