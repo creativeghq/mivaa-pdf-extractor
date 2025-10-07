@@ -435,23 +435,27 @@ class LlamaIndexService:
         
         try:
             # Check if Supabase configuration is available
+            self.logger.info("🔍 Checking Supabase configuration...")
             if not self.supabase_url or not self.supabase_key:
                 self.logger.warning("Supabase configuration missing, falling back to local storage")
                 self.vector_store = None
                 return
-            
+
+            self.logger.info(f"🔍 Supabase URL: {self.supabase_url[:50]}...")
+            self.logger.info("🔧 Creating SupabaseVectorStore connection...")
+
             # Initialize Supabase vector store
             self.vector_store = SupabaseVectorStore(
                 postgres_connection_string=f"postgresql://postgres:{self.supabase_key}@{self.supabase_url.replace('https://', '').replace('http://', '')}:5432/postgres",
                 collection_name=self.table_name,
                 dimension=1536,  # Default for OpenAI text-embedding-3-small
             )
-            
-            self.logger.info(f"SupabaseVectorStore initialized with table: {self.table_name}")
-            
+
+            self.logger.info(f"✅ SupabaseVectorStore initialized with table: {self.table_name}")
+
         except Exception as e:
-            self.logger.error(f"Failed to initialize SupabaseVectorStore: {e}")
-            self.logger.warning("Falling back to local storage")
+            self.logger.error(f"❌ Failed to initialize SupabaseVectorStore: {e}")
+            self.logger.warning("⚠️  Falling back to local storage")
             self.vector_store = None
     def _initialize_multimodal_components(self):
         """Initialize multi-modal components for Phase 8."""
