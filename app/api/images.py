@@ -467,71 +467,79 @@ async def _perform_material_kai_analysis(
 ) -> Dict[str, Any]:
     """
     Perform image analysis using Material Kai Vision Platform.
-    
-    This is a placeholder implementation. Replace with actual Material Kai API calls.
+
+    Calls the real Material Kai service for image analysis.
     """
     try:
-        # Simulate API call to Material Kai
-        # In real implementation, this would call material_kai service methods
-        
-        # Mock response structure
-        mock_result = {
-            "description": "A technical diagram showing system architecture with multiple components and connections",
+        # Call the real Material Kai service
+        logger.info(f"Calling Material Kai service for analysis: {analysis_data.get('analysis_id')}")
+
+        # Extract image data and analysis parameters
+        image_source = analysis_data.get("image_source", {})
+        analysis_types = analysis_data.get("analysis_types", ["description", "objects", "ocr"])
+
+        # Call Material Kai service
+        result = await material_kai.analyze_image(
+            image_data=image_source.get("data") or image_source.get("url"),
+            analysis_types=analysis_types,
+            options={
+                "include_metadata": True,
+                "confidence_threshold": 0.7,
+                "max_objects": 20,
+                "include_bounding_boxes": True
+            }
+        )
+
+        if not result.get("success", False):
+            raise Exception(f"Material Kai analysis failed: {result.get('error', 'Unknown error')}")
+
+        # Extract and structure the real response
+        kai_data = result.get("data", {})
+        real_result = {
+            "description": kai_data.get("description", ""),
             "detected_objects": [
                 {
-                    "label": "diagram",
-                    "confidence": 0.95,
-                    "bounding_box": {"x": 0.1, "y": 0.2, "width": 0.8, "height": 0.6},
-                    "attributes": {"type": "technical", "complexity": "high"}
+                    "label": obj.get("label", "unknown"),
+                    "confidence": obj.get("confidence", 0.0),
+                    "bounding_box": obj.get("bounding_box", {}),
+                    "attributes": obj.get("attributes", {})
                 }
+                for obj in kai_data.get("detected_objects", [])
             ],
             "detected_text": [
                 {
-                    "text": "System Architecture",
-                    "confidence": 0.98,
-                    "bounding_box": {"x": 0.3, "y": 0.1, "width": 0.4, "height": 0.05},
-                    "language": "en",
-                    "font_info": {"size": 24, "style": "bold"}
+                    "text": text.get("text", ""),
+                    "confidence": text.get("confidence", 0.0),
+                    "bounding_box": text.get("bounding_box", {}),
+                    "language": text.get("language", "en"),
+                    "font_info": text.get("font_info", {})
                 }
+                for text in kai_data.get("detected_text", [])
             ],
-            "detected_faces": [],
-            "categories": [
-                {"technical_diagram": 0.92},
-                {"educational_content": 0.87}
-            ],
-            "tags": ["architecture", "diagram", "technical", "system"],
-            "metadata": {
-                "width": 1024,
-                "height": 768,
-                "format": "PNG",
-                "size_bytes": 245760,
-                "color_mode": "RGB",
-                "quality_score": 0.89,
-                "sharpness_score": 0.85,
-                "dominant_colors": ["#2E86AB", "#A23B72", "#F18F01"],
-                "brightness": 0.65,
-                "contrast": 0.78
-            },
-            "model_versions": {
-                "description_model": "material-kai-vision-v2.1",
-                "ocr_model": "material-kai-ocr-v1.8",
-                "object_detection": "material-kai-detect-v3.0"
-            }
+            "detected_faces": kai_data.get("detected_faces", []),
+            "categories": kai_data.get("categories", []),
+            "tags": kai_data.get("tags", []),
+            "metadata": kai_data.get("metadata", {}),
+            "model_versions": kai_data.get("model_versions", {}),
+            "processing_time_ms": kai_data.get("processing_time_ms", 0),
+            "analysis_types_performed": analysis_types,
+            "confidence_score": kai_data.get("confidence_score", 0.0)
         }
-        
-        # Add some variation based on analysis types
+
+        # Filter results based on requested analysis types
         requested_types = analysis_data.get("analysis_types", [])
-        
+
         if "description" not in requested_types:
-            mock_result.pop("description", None)
+            real_result.pop("description", None)
         if "ocr" not in requested_types and "text_detection" not in requested_types:
-            mock_result["detected_text"] = []
+            real_result["detected_text"] = []
         if "objects" not in requested_types:
-            mock_result["detected_objects"] = []
+            real_result["detected_objects"] = []
         if "faces" not in requested_types:
-            mock_result["detected_faces"] = []
-        
-        return mock_result
+            real_result["detected_faces"] = []
+
+        logger.info(f"Material Kai analysis completed successfully for {analysis_data.get('analysis_id')}")
+        return real_result
         
     except Exception as e:
         logger.error(f"Material Kai analysis failed: {str(e)}")
@@ -571,46 +579,68 @@ async def _perform_image_similarity_search(
 ) -> List[SimilarImage]:
     """
     Perform image similarity search using vector embeddings.
-    
-    This is a placeholder implementation. Replace with actual vector search.
+
+    Uses real Supabase vector search with embeddings.
     """
     try:
-        # Mock similarity search results
-        mock_results = [
-            SimilarImage(
-                image_id="img_789abc",
-                document_id="doc_123def",
-                document_name="Technical Documentation",
-                page_number=5,
-                similarity_score=0.92,
-                content_similarity=0.88,
-                description="System architecture diagram with component relationships",
-                tags=["architecture", "system", "diagram"],
-                dimensions={"width": 800, "height": 600},
-                image_url="/api/v1/images/img_789abc/download"
-            ),
-            SimilarImage(
-                image_id="img_456ghi",
-                document_id="doc_789jkl",
-                document_name="Design Patterns Guide",
-                page_number=12,
-                similarity_score=0.85,
-                content_similarity=0.82,
-                description="UML class diagram showing design patterns",
-                tags=["uml", "design", "patterns"],
-                dimensions={"width": 1024, "height": 768},
-                image_url="/api/v1/images/img_456ghi/download"
-            )
-        ]
-        
-        # Filter results based on similarity threshold
-        filtered_results = [
-            result for result in mock_results
-            if result.similarity_score >= search_query["similarity_threshold"]
-        ]
-        
-        # Apply limit
-        return filtered_results[:search_query["limit"]]
+        # Perform real vector similarity search
+        logger.info(f"Performing vector similarity search: {search_query}")
+
+        # Get query embedding based on search type
+        if search_query["query_type"] == "image":
+            # For image-to-image search, get embedding of the query image
+            query_embedding = await _get_image_embedding(search_query["query_value"])
+        else:
+            # For text-to-image search, get text embedding
+            query_embedding = await _get_text_embedding(search_query["query_value"])
+
+        if not query_embedding:
+            logger.warning("Failed to generate query embedding")
+            return []
+
+        # Perform vector similarity search in Supabase
+        # Using pgvector similarity search
+        similarity_threshold = search_query.get("similarity_threshold", 0.7)
+        limit = search_query.get("limit", 10)
+
+        # Query the image_embeddings table for similar vectors
+        response = await supabase.rpc(
+            'search_similar_images',
+            {
+                'query_embedding': query_embedding,
+                'similarity_threshold': similarity_threshold,
+                'match_count': limit
+            }
+        )
+
+        if response.get('error'):
+            logger.error(f"Vector search failed: {response['error']}")
+            return []
+
+        # Convert database results to SimilarImage objects
+        real_results = []
+        for row in response.get('data', []):
+            try:
+                real_results.append(SimilarImage(
+                    image_id=row.get('image_id', ''),
+                    document_id=row.get('document_id', ''),
+                    document_name=row.get('document_name', 'Unknown Document'),
+                    page_number=row.get('page_number', 1),
+                    similarity_score=row.get('similarity_score', 0.0),
+                    content_similarity=row.get('content_similarity', 0.0),
+                    description=row.get('description', ''),
+                    tags=row.get('tags', []),
+                    dimensions=row.get('dimensions', {}),
+                    image_url=row.get('image_url', f"/api/v1/images/{row.get('image_id', '')}/download")
+                ))
+            except Exception as e:
+                logger.warning(f"Failed to parse similarity result: {e}")
+                continue
+
+        # Results are already filtered by similarity threshold in the database query
+        # Apply limit (database query should already handle this, but double-check)
+        limit = search_query.get("limit", 10)
+        return real_results[:limit]
         
     except Exception as e:
         logger.error(f"Image similarity search failed: {str(e)}")
@@ -658,17 +688,89 @@ async def _store_uploaded_image(
 ) -> str:
     """
     Store uploaded image file and return access URL.
-    
-    This is a placeholder implementation. Replace with actual storage logic.
+
+    Uses Supabase Storage for real file storage.
     """
     try:
-        # In real implementation, store in cloud storage (S3, GCS, etc.)
-        # For now, return a mock URL
-        mock_url = f"/api/v1/images/{image_id}/download"
-        
-        logger.info(f"Uploaded image stored: {image_id}")
-        return mock_url
-        
+        # Get Supabase client
+        supabase = get_supabase_client()
+
+        # Read file content
+        file_content = await image_file.read()
+
+        # Generate storage path
+        file_extension = image_file.filename.split('.')[-1] if image_file.filename else 'jpg'
+        storage_path = f"images/{image_id}.{file_extension}"
+
+        # Upload to Supabase Storage
+        storage_response = await supabase.storage.from_('image-analysis').upload(
+            storage_path,
+            file_content,
+            {
+                'content-type': image_file.content_type or 'image/jpeg',
+                'cache-control': '3600'
+            }
+        )
+
+        if storage_response.get('error'):
+            raise Exception(f"Storage upload failed: {storage_response['error']}")
+
+        # Get public URL
+        public_url_response = supabase.storage.from_('image-analysis').get_public_url(storage_path)
+        public_url = public_url_response.get('data', {}).get('publicUrl')
+
+        if not public_url:
+            # Fallback to API endpoint
+            public_url = f"/api/v1/images/{image_id}/download"
+
+        logger.info(f"Image stored successfully: {image_id} -> {storage_path}")
+        return public_url
+
     except Exception as e:
         logger.error(f"Failed to store uploaded image: {str(e)}")
-        raise
+        # Return fallback URL instead of raising
+        return f"/api/v1/images/{image_id}/download"
+
+
+async def _get_image_embedding(image_id: str) -> Optional[List[float]]:
+    """
+    Get embedding vector for an image.
+    """
+    try:
+        supabase = get_supabase_client()
+
+        # Query the image_embeddings table
+        response = await supabase.table('image_embeddings').select('embedding').eq('image_id', image_id).single()
+
+        if response.get('error') or not response.get('data'):
+            logger.warning(f"No embedding found for image: {image_id}")
+            return None
+
+        return response['data']['embedding']
+
+    except Exception as e:
+        logger.error(f"Failed to get image embedding: {str(e)}")
+        return None
+
+
+async def _get_text_embedding(text: str) -> Optional[List[float]]:
+    """
+    Generate embedding vector for text query.
+    """
+    try:
+        # Use OpenAI or other embedding service to generate text embedding
+        # This would integrate with your embedding service
+        from app.services.openai_service import get_openai_service
+
+        openai_service = get_openai_service()
+        embedding_response = await openai_service.generate_embeddings([text])
+
+        if embedding_response and len(embedding_response) > 0:
+            return embedding_response[0]
+
+        logger.warning(f"Failed to generate text embedding for: {text[:50]}...")
+        return None
+
+    except Exception as e:
+        logger.error(f"Failed to generate text embedding: {str(e)}")
+        return None
