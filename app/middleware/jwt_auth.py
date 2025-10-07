@@ -371,6 +371,11 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             True if user has access, False otherwise
         """
         try:
+            # Special case: Material Kai platform service always has access
+            if user_id == "material-kai-platform":
+                logger.info(f"Granting workspace access to Material Kai platform service for workspace {workspace_id}")
+                return True
+
             # Ensure Supabase client is initialized
             self._ensure_supabase_client()
 
@@ -382,7 +387,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             response = self.supabase.table("workspace_members").select("*").eq(
                 "user_id", user_id
             ).eq("workspace_id", workspace_id).execute()
-            
+
             # Check if user is a member of the workspace
             return len(response.data) > 0
             
