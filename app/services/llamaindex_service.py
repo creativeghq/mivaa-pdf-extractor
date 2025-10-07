@@ -482,10 +482,11 @@ class LlamaIndexService:
             try:
                 # Use HuggingFace CLIP model as alternative to OpenAI CLIP
                 self.image_embeddings = HuggingFaceEmbedding(
-                    model_name="openai/clip-vit-base-patch32",
+                    model_name="sentence-transformers/clip-ViT-B-32",
+                    max_length=77,  # Standard CLIP max sequence length
                     trust_remote_code=True
                 )
-                self.logger.info(f"HuggingFace CLIP embeddings initialized: openai/clip-vit-base-patch32")
+                self.logger.info(f"HuggingFace CLIP embeddings initialized: sentence-transformers/clip-ViT-B-32")
             except Exception as e:
                 self.logger.warning(f"Failed to initialize CLIP embeddings: {e}")
                 self.image_embeddings = None
