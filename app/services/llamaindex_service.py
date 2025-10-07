@@ -444,12 +444,18 @@ class LlamaIndexService:
             self.logger.info(f"🔍 Supabase URL: {self.supabase_url[:50]}...")
             self.logger.info("🔧 Creating SupabaseVectorStore connection...")
 
+            # TEMPORARY: Skip vector store to get service running - will fix separately
+            self.logger.warning("⚠️  Temporarily skipping SupabaseVectorStore to get service running")
+            self.vector_store = None
+            return
+
+            # TODO: Fix SupabaseVectorStore hanging issue
             # Initialize Supabase vector store
-            self.vector_store = SupabaseVectorStore(
-                postgres_connection_string=f"postgresql://postgres:{self.supabase_key}@{self.supabase_url.replace('https://', '').replace('http://', '')}:5432/postgres",
-                collection_name=self.table_name,
-                dimension=1536,  # Default for OpenAI text-embedding-3-small
-            )
+            # self.vector_store = SupabaseVectorStore(
+            #     postgres_connection_string=f"postgresql://postgres:{self.supabase_key}@{self.supabase_url.replace('https://', '').replace('http://', '')}:5432/postgres",
+            #     collection_name=self.table_name,
+            #     dimension=1536,  # Default for OpenAI text-embedding-3-small
+            # )
 
             self.logger.info(f"✅ SupabaseVectorStore initialized with table: {self.table_name}")
 
