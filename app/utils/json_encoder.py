@@ -72,10 +72,10 @@ def json_dumps(obj: Any, **kwargs) -> str:
 def safe_json_response(data: Any) -> dict:
     """
     Safely convert data to JSON-serializable format.
-    
+
     Args:
         data: Data to make JSON-safe
-        
+
     Returns:
         JSON-serializable dictionary
     """
@@ -87,3 +87,36 @@ def safe_json_response(data: Any) -> dict:
         # Use custom encoder to make it serializable
         json_str = json_dumps(data)
         return json.loads(json_str)
+
+
+class CustomJSONResponse:
+    """
+    Custom JSON response class that uses our CustomJSONEncoder.
+
+    This can be used as a drop-in replacement for FastAPI's JSONResponse
+    to handle datetime serialization automatically.
+    """
+
+    @staticmethod
+    def create_response(content: Any, status_code: int = 200, headers: dict = None):
+        """
+        Create a JSON response with custom encoding.
+
+        Args:
+            content: Response content
+            status_code: HTTP status code
+            headers: Optional headers
+
+        Returns:
+            JSONResponse with properly serialized content
+        """
+        from fastapi.responses import JSONResponse
+
+        # Ensure content is JSON-serializable
+        safe_content = safe_json_response(content)
+
+        return JSONResponse(
+            content=safe_content,
+            status_code=status_code,
+            headers=headers
+        )

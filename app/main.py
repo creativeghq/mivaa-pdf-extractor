@@ -20,6 +20,7 @@ from pydantic import BaseModel
 # Import configuration and logging setup
 from app.config import get_settings, configure_logging
 from app.utils.logging import PDFProcessingLogger, LoggingMiddleware
+from app.utils.json_encoder import CustomJSONEncoder
 from app.services.supabase_client import initialize_supabase, get_supabase_client
 from app.monitoring import global_performance_monitor
 
@@ -582,15 +583,19 @@ Legacy endpoints (`/extract/*`) are still supported for backward compatibility.
         allow_headers=cors_config["allow_headers"],
     )
     
+    # Add JSON serialization middleware (first to catch all responses)
+    from app.middleware.json_serialization import JSONSerializationMiddleware
+    app.add_middleware(JSONSerializationMiddleware)
+
     # Add JWT authentication middleware
     from app.middleware.jwt_auth import JWTAuthMiddleware
     app.add_middleware(JWTAuthMiddleware)
-    
+
     # Add performance monitoring middleware
     from app.monitoring.performance_monitor import PerformanceMiddleware
     from app.monitoring import global_performance_monitor
     app.add_middleware(PerformanceMiddleware, collector=global_performance_monitor.collector)
-    
+
     # Add logging middleware
     app.add_middleware(LoggingMiddleware)
     
