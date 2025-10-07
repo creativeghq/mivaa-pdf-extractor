@@ -279,9 +279,13 @@ async def similarity_search(
         
         return SimilaritySearchResponse(
             success=True,
-            text=request.reference_text,
+            reference_info={
+                "reference_text": request.reference_text,
+                "type": "text"
+            },
             similar_documents=similar_documents,
             total_found=semantic_result.total_results,
+            search_time_ms=getattr(semantic_result, 'search_time_ms', 0.0),
             metadata={
                 **semantic_result.metadata,
                 "search_type": "vector_similarity"

@@ -389,10 +389,13 @@ async def process_document(
                         content_type=file.content_type or "application/pdf"
                     ),
                     content=DocumentContent(
-                        text=result.markdown_content or "",
+                        markdown_content=result.markdown_content or "",
                         images=result.extracted_images or [],
                         tables=[],  # TODO: Extract from result if available
-                        metadata=result.metadata or {}
+                        chunks=[],  # TODO: Generate chunks if needed
+                        summary=None,  # TODO: Generate summary if requested
+                        key_topics=[],  # TODO: Extract topics if needed
+                        entities=[]  # TODO: Extract entities if needed
                     ),
                     metadata=DocumentMetadata(
                         title=result.metadata.get("title", file.filename) if result.metadata else file.filename,
@@ -645,7 +648,7 @@ async def analyze_document(
                 message="Document analysis completed",
                 document_id=str(uuid.uuid4()),
                 analysis=analysis_result,
-                processing_time=analysis_result.get("processing_time", 0.0)
+                processing_time=getattr(analysis_result, 'processing_time', 0.0)
             )
             
         finally:
