@@ -726,7 +726,13 @@ jobs:
           WorkingDirectory=/var/www/mivaa-pdf-extractor
           Environment=PATH=/root/.pyenv/shims:/root/.pyenv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
           Environment=PYTHONPATH=/var/www/mivaa-pdf-extractor
+          Environment=JWT_SECRET_KEY=${{ secrets.JWT_SECRET_KEY }}
+          Environment=SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          Environment=SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           Environment=MATERIAL_KAI_API_KEY=${{ secrets.MATERIAL_KAI_API_KEY }}
+          Environment=TOGETHER_API_KEY=${{ secrets.TOGETHER_API_KEY }}
+          Environment=ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+          Environment=OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
           ExecStart=/var/www/mivaa-pdf-extractor/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
           Restart=always
           RestartSec=3
