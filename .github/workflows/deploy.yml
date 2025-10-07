@@ -728,6 +728,7 @@ jobs:
           Environment=PYTHONPATH=/var/www/mivaa-pdf-extractor
           Environment=JWT_SECRET_KEY=${{ secrets.JWT_SECRET_KEY }}
           Environment=SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          Environment=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
           Environment=SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           Environment=MATERIAL_KAI_API_KEY=${{ secrets.MATERIAL_KAI_API_KEY }}
           Environment=MATERIAL_KAI_WORKSPACE_ID=${{ secrets.MATERIAL_KAI_WORKSPACE_ID }}
