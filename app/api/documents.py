@@ -409,7 +409,7 @@ async def process_document(
                         document_type="pdf"
                     ),
                     metrics=MetricsSummary(
-                        processing_time=result.processing_time,
+                        processing_time_seconds=result.processing_time,
                         word_count=len(result.markdown_content.split()) if result.markdown_content else 0,
                         character_count=len(result.markdown_content) if result.markdown_content else 0,
                         image_count=len(result.extracted_images) if result.extracted_images else 0,
@@ -459,8 +459,8 @@ async def process_document_from_url(
     """
     temp_path = None  # Initialize temp_path to avoid reference errors
     try:
-        # Download file from URL
-        temp_path = await download_file_from_url(request.url)
+        # Download file from URL (convert Pydantic URL to string)
+        temp_path = await download_file_from_url(str(request.url))
         
         if request.async_processing:
             # Create job for async processing
@@ -495,7 +495,7 @@ async def process_document_from_url(
             try:
                 # Process document using PDF processor service
                 result: PDFProcessingResult = await pdf_processor.process_pdf_from_url(
-                    pdf_url=request.url,
+                    pdf_url=str(request.url),
                     document_id=str(uuid.uuid4()),
                     processing_options={
                         'extract_images': request.options.extract_images,
