@@ -145,11 +145,11 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             if not workspace_context:
                 return self._forbidden_response("Invalid workspace context")
             
-            # Add authentication context to request state
-            request.state.auth_user_id = claims.get("sub")
-            request.state.workspace_id = workspace_context.workspace_id
-            request.state.workspace_role = workspace_context.role
-            request.state.permissions = workspace_context.permissions
+            # Add authentication context to request state (ensure all values are JSON serializable)
+            request.state.auth_user_id = str(claims.get("sub"))
+            request.state.workspace_id = str(workspace_context.workspace_id)
+            request.state.workspace_role = str(workspace_context.role.value)  # Convert enum to string
+            request.state.permissions = list(workspace_context.permissions)  # Ensure it's a plain list
             # Store serializable claims (convert any datetime objects to strings)
             serializable_claims = {}
             for key, value in claims.items():
