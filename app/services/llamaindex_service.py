@@ -444,18 +444,40 @@ class LlamaIndexService:
             self.logger.info(f"🔍 Supabase URL: {self.supabase_url[:50]}...")
             self.logger.info("🔧 Creating SupabaseVectorStore connection...")
 
-            # TEMPORARY: Skip vector store to get service running - will fix separately
-            self.logger.warning("⚠️  Temporarily skipping SupabaseVectorStore to get service running")
-            self.vector_store = None
-            return
+            # Extract project ID from Supabase URL (e.g., bgbavxtjlbvgplozizxu from https://bgbavxtjlbvgplozizxu.supabase.co)
+            project_id = self.supabase_url.replace('https://', '').replace('http://', '').split('.')[0]
 
-            # TODO: Fix SupabaseVectorStore hanging issue
-            # Initialize Supabase vector store
-            # self.vector_store = SupabaseVectorStore(
-            #     postgres_connection_string=f"postgresql://postgres:{self.supabase_key}@{self.supabase_url.replace('https://', '').replace('http://', '')}:5432/postgres",
-            #     collection_name=self.table_name,
-            #     dimension=1536,  # Default for OpenAI text-embedding-3-small
-            # )
+            # Use proper Supabase PostgreSQL connection format with pooler
+            # Format: postgresql://postgres.[PROJECT_ID]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres
+            connection_string = f"postgresql://postgres.{project_id}:{self.supabase_key}@aws-0-eu-west-3.pooler.supabase.com:6543/postgres"
+
+            self.logger.info(f"🔍 Connection string format: postgresql://postgres.{project_id}:***@aws-0-eu-west-3.pooler.supabase.com:6543/postgres")
+
+            # Initialize Supabase vector store with timeout protection
+            import signal
+
+            def timeout_handler(signum, frame):
+                raise TimeoutError("SupabaseVectorStore initialization timed out")
+
+            # Set 10 second timeout
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(10)
+
+            try:
+                self.vector_store = SupabaseVectorStore(
+                    postgres_connection_string=connection_string,
+                    collection_name=self.table_name,
+                    dimension=1536,  # Default for OpenAI text-embedding-3-small
+                )
+                signal.alarm(0)  # Cancel timeout
+                self.logger.info(f"✅ SupabaseVectorStore initialized with table: {self.table_name}")
+            except TimeoutError:
+                signal.alarm(0)  # Cancel timeout
+                self.logger.error("❌ SupabaseVectorStore initialization timed out after 10 seconds")
+                self.vector_store = None
+            except Exception as e:
+                signal.alarm(0)  # Cancel timeout
+                raise e
 
             self.logger.info(f"✅ SupabaseVectorStore initialized with table: {self.table_name}")
 
