@@ -47,7 +47,8 @@ try:
     # Multi-modal imports for Phase 8
     from llama_index.multi_modal_llms.openai import OpenAIMultiModal
     from llama_index.multi_modal_llms.anthropic import AnthropicMultiModal
-    from llama_index.embeddings.clip import ClipEmbedding
+    # from llama_index.embeddings.clip import ClipEmbedding  # Problematic dependency
+    from llama_index.embeddings.huggingface import HuggingFaceEmbedding
     from llama_index.readers.file import ImageReader
     from llama_index.core.multi_modal_llms import MultiModalLLM
     from llama_index.core.schema import ImageDocument, ImageNode
@@ -477,13 +478,14 @@ class LlamaIndexService:
                 self.logger.warning(f"Unsupported multi-modal LLM model: {self.multimodal_llm_model}")
                 self.multimodal_llm = None
             
-            # Initialize image embeddings (temporarily disabled due to installation issues)
+            # Initialize image embeddings using HuggingFace CLIP model
             try:
-                # TODO: Re-enable CLIP embeddings once dependencies are properly installed
-                # self.image_embeddings = ClipEmbedding(model_name=self.image_embedding_model)
-                # self.logger.info(f"CLIP image embeddings initialized: {self.image_embedding_model}")
-                self.logger.warning("CLIP embeddings temporarily disabled - installation in progress")
-                self.image_embeddings = None
+                # Use HuggingFace CLIP model as alternative to OpenAI CLIP
+                self.image_embeddings = HuggingFaceEmbedding(
+                    model_name="openai/clip-vit-base-patch32",
+                    trust_remote_code=True
+                )
+                self.logger.info(f"HuggingFace CLIP embeddings initialized: openai/clip-vit-base-patch32")
             except Exception as e:
                 self.logger.warning(f"Failed to initialize CLIP embeddings: {e}")
                 self.image_embeddings = None
