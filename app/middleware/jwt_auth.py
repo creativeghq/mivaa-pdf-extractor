@@ -176,7 +176,9 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                 content={"error": e.detail, "type": "authentication_error"}
             )
         except Exception as e:
+            import traceback
             logger.error(f"Authentication middleware error: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 content={"error": "Internal authentication error", "type": "server_error"}
