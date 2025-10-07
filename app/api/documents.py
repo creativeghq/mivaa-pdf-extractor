@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Optional, List
 from urllib.parse import urlparse
+from datetime import datetime
 import aiohttp
 import aiofiles
 
@@ -400,7 +401,7 @@ async def process_document(
                     metadata=DocumentMetadata(
                         title=result.metadata.get("title", file.filename) if result.metadata else file.filename,
                         author=result.metadata.get("author", "Unknown") if result.metadata else "Unknown",
-                        creation_date=result.metadata.get("creation_date") if result.metadata else None,
+                        creation_date=result.metadata.get("creation_date") if result.metadata and result.metadata.get("creation_date") else datetime.now(),
                         page_count=result.metadata.get("page_count", 0) if result.metadata else 0,
                         file_size=len(pdf_bytes),
                         language="en",  # TODO: Detect language
@@ -643,11 +644,21 @@ async def analyze_document(
                 processing_options=processing_options
             )
             
+            # Convert PDFProcessingResult to dictionary for schema compliance
+            analysis_dict = {
+                "document_id": analysis_result.document_id,
+                "markdown_content": analysis_result.markdown_content,
+                "extracted_images": analysis_result.extracted_images or [],
+                "metadata": analysis_result.metadata or {},
+                "processing_time": analysis_result.processing_time,
+                "multimodal_enabled": getattr(analysis_result, 'multimodal_enabled', False)
+            }
+
             return DocumentAnalysisResponse(
                 success=True,
                 message="Document analysis completed",
                 document_id=str(uuid.uuid4()),
-                analysis=analysis_result,
+                analysis=analysis_dict,
                 processing_time=getattr(analysis_result, 'processing_time', 0.0)
             )
             
