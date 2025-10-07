@@ -131,7 +131,53 @@ class PDFProcessor:
         if hasattr(self, 'executor') and self.executor:
             self.executor.shutdown(wait=True)
             self.logger.debug("ThreadPoolExecutor shutdown completed")
-    
+
+    async def health_check(self) -> Dict[str, Any]:
+        """
+        Perform health check for PDF processing capabilities.
+
+        Returns:
+            Dict with health status and details
+        """
+        try:
+            # Check if required dependencies are available
+            dependencies = {
+                "pymupdf": True,  # Should be available if we got this far
+                "opencv": CV2_AVAILABLE,
+                "skimage": SKIMAGE_AVAILABLE,
+                "pil": True,  # PIL is imported successfully
+                "numpy": True,  # numpy is imported successfully
+            }
+
+            # Check if executor is available
+            executor_healthy = hasattr(self, 'executor') and self.executor is not None
+
+            # Check temp directory access
+            temp_dir_accessible = os.access(self.temp_dir_base, os.W_OK)
+
+            # Overall health status
+            all_critical_deps = dependencies["pymupdf"] and dependencies["pil"] and dependencies["numpy"]
+            overall_healthy = all_critical_deps and executor_healthy and temp_dir_accessible
+
+            return {
+                "status": "healthy" if overall_healthy else "degraded",
+                "dependencies": dependencies,
+                "executor_available": executor_healthy,
+                "temp_directory_accessible": temp_dir_accessible,
+                "max_file_size_mb": self.max_file_size // (1024 * 1024),
+                "timeout_seconds": self.default_timeout,
+                "max_workers": getattr(self.executor, '_max_workers', 'unknown') if executor_healthy else 0,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+
+        except Exception as e:
+            self.logger.error(f"Health check failed: {e}")
+            return {
+                "status": "unhealthy",
+                "error": str(e),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+
     async def process_pdf_from_bytes(
         self, 
         pdf_bytes: bytes, 

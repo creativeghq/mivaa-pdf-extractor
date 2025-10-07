@@ -398,8 +398,7 @@ class LlamaIndexService:
             else:
                 # Direct embedding initialization
                 self.embeddings = OpenAIEmbedding(
-                    model=self.embedding_model,
-                    api_key=os.getenv('OPENAI_API_KEY')
+                    model=self.embedding_model
                 )
                 self.logger.info("Using direct embedding initialization")
             
@@ -449,7 +448,9 @@ class LlamaIndexService:
 
             # Use proper Supabase PostgreSQL connection format with pooler
             # Format: postgresql://postgres.[PROJECT_ID]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres
-            connection_string = f"postgresql://postgres.{project_id}:{self.supabase_key}@aws-0-eu-west-3.pooler.supabase.com:6543/postgres"
+            # Use service role key as password for database connection
+            service_role_key = os.getenv('SUPABASE_SERVICE_ROLE_KEY', self.supabase_key)
+            connection_string = f"postgresql://postgres.{project_id}:{service_role_key}@aws-0-eu-west-3.pooler.supabase.com:6543/postgres"
 
             self.logger.info(f"🔍 Connection string format: postgresql://postgres.{project_id}:***@aws-0-eu-west-3.pooler.supabase.com:6543/postgres")
 

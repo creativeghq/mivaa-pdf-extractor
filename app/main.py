@@ -116,14 +116,14 @@ async def lifespan(app: FastAPI):
     
     # Initialize Performance Monitoring
     try:
-        # Initialize the global performance monitor
-        await global_performance_monitor.initialize()
-        
+        # Start the global performance monitor
+        await global_performance_monitor.start()
+
         # Store performance monitor in app state for access by endpoints
         app.state.performance_monitor = global_performance_monitor
-        
+
         logger.info("✅ Performance monitoring initialized successfully")
-        
+
     except Exception as e:
         logger.error(f"❌ Failed to initialize performance monitoring: {str(e)}")
         # Continue startup even if performance monitoring fails
