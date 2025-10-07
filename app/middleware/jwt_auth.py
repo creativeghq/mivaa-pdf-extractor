@@ -93,12 +93,22 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             "/redoc"
         ]
         
-        # Initialize Supabase client for token validation
-        self.supabase_wrapper = get_supabase_client()
-        self.supabase = self.supabase_wrapper.client
+        # Initialize Supabase client for token validation (lazy initialization)
+        self.supabase_wrapper = None
+        self.supabase = None
         
         logger.info("JWT Authentication Middleware initialized")
-    
+
+    def _ensure_supabase_client(self):
+        """Ensure Supabase client is initialized (lazy initialization)."""
+        if self.supabase is None:
+            try:
+                self.supabase_wrapper = get_supabase_client()
+                self.supabase = self.supabase_wrapper.client
+            except RuntimeError:
+                # Supabase client not yet initialized, will retry later
+                pass
+
     async def dispatch(self, request: Request, call_next):
         """
         Process incoming requests with JWT authentication.
@@ -361,6 +371,13 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             True if user has access, False otherwise
         """
         try:
+            # Ensure Supabase client is initialized
+            self._ensure_supabase_client()
+
+            if self.supabase is None:
+                logger.warning("Supabase client not available for workspace validation")
+                return False
+
             # Query workspace membership from Supabase
             response = self.supabase.table("workspace_members").select("*").eq(
                 "user_id", user_id
