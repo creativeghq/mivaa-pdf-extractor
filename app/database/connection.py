@@ -54,7 +54,21 @@ async def check_supabase_health() -> Dict[str, Any]:
     try:
         from app.services.supabase_client import get_supabase_client
         
-        supabase = get_supabase_client()
+        supabase_wrapper = get_supabase_client()
+        if not supabase_wrapper:
+            return {
+                "status": "unavailable",
+                "reason": "Supabase client not initialized"
+            }
+
+        try:
+            supabase = supabase_wrapper.client
+        except RuntimeError as e:
+            return {
+                "status": "unavailable",
+                "reason": f"Supabase client not properly initialized: {str(e)}"
+            }
+
         if not supabase:
             return {
                 "status": "unavailable",

@@ -94,7 +94,8 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         ]
         
         # Initialize Supabase client for token validation
-        self.supabase = get_supabase_client()
+        self.supabase_wrapper = get_supabase_client()
+        self.supabase = self.supabase_wrapper.client
         
         logger.info("JWT Authentication Middleware initialized")
     
