@@ -586,10 +586,10 @@ Legacy endpoints (`/extract/*`) are still supported for backward compatibility.
     from app.middleware.jwt_auth import JWTAuthMiddleware
     app.add_middleware(JWTAuthMiddleware)
     
-    # Add performance monitoring middleware (temporarily disabled due to datetime serialization issue)
-    # from app.monitoring.performance_monitor import PerformanceMiddleware
-    # from app.monitoring import global_performance_monitor
-    # app.add_middleware(PerformanceMiddleware, collector=global_performance_monitor.collector)
+    # Add performance monitoring middleware
+    from app.monitoring.performance_monitor import PerformanceMiddleware
+    from app.monitoring import global_performance_monitor
+    app.add_middleware(PerformanceMiddleware, collector=global_performance_monitor.collector)
     
     # Add logging middleware
     app.add_middleware(LoggingMiddleware)
