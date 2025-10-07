@@ -219,8 +219,8 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             # Otherwise, try to decode as JWT token
             claims = jwt.decode(
                 token,
-                self.settings.JWT_SECRET_KEY,
-                algorithms=[self.settings.JWT_ALGORITHM],
+                self.settings.jwt_secret_key,
+                algorithms=[self.settings.jwt_algorithm],
                 options={"verify_exp": True, "verify_iat": True}
             )
 
