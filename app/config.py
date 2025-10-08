@@ -571,12 +571,14 @@ class Settings(BaseSettings):
     def get_multimodal_config(self) -> Dict[str, Any]:
         """
         Get multi-modal processing configuration.
-        
+
         This provides all necessary configuration for multi-modal document
         processing including LLM settings, image processing, and performance tuning.
         """
         return {
             "enabled": self.enable_multimodal,
+            "enable_multimodal": self.enable_multimodal,
+            "image_processing_enabled": self.image_processing_enabled,
             "llm_model": self.multimodal_llm_model,
             "max_tokens": self.multimodal_max_tokens,
             "temperature": self.multimodal_temperature,
