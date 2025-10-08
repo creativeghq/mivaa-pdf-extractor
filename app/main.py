@@ -724,7 +724,7 @@ async def get_metrics() -> Dict[str, Any]:
     """
     try:
         if hasattr(app.state, 'performance_monitor') and app.state.performance_monitor:
-            metrics = await app.state.performance_monitor.get_metrics()
+            metrics = app.state.performance_monitor.get_metrics()
             return {"status": "success", "metrics": metrics}
         else:
             return {"status": "unavailable", "message": "Performance monitoring not initialized"}
@@ -747,7 +747,7 @@ async def get_performance_summary() -> Dict[str, Any]:
     """
     try:
         if hasattr(app.state, 'performance_monitor') and app.state.performance_monitor:
-            summary = await app.state.performance_monitor.get_performance_summary()
+            summary = app.state.performance_monitor.get_performance_summary()
             return {"status": "success", "summary": summary}
         else:
             return {"status": "unavailable", "message": "Performance monitoring not initialized"}

@@ -753,7 +753,7 @@ def _add_missing_methods():
                     "supports_streaming": True
                 }
             ],
-            "current_model": self.model_name,
+            "current_model": self.config.model,
             "service_status": "available",
             "rate_limits": {
                 "requests_per_minute": 60,
