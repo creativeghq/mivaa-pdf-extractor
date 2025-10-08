@@ -405,31 +405,22 @@ class MaterialVisualSearchService:
         """Provide fallback search results when external services are unavailable."""
         logger.info("Using fallback mode for material search")
 
-        # Generate mock results based on request matching MaterialSearchResult schema
+        # Generate mock results based on request
         mock_results = [
-            MaterialSearchResult(
-                material_id=f"material_{i}",
-                material_name=f"Material Sample {i}",
-                material_type="composite" if i % 2 == 0 else "metal",
-                visual_similarity_score=0.90 - (i * 0.03),
-                semantic_relevance_score=0.85 - (i * 0.05),
-                material_property_score=0.80 - (i * 0.04),
-                combined_score=0.85 - (i * 0.05),
-                confidence_score=0.85 - (i * 0.05),
-                visual_analysis={
-                    "color_analysis": {"dominant_colors": ["#2C3E50", "#34495E"]},
-                    "texture_analysis": {"roughness": "medium", "pattern": "woven"}
-                },
-                material_properties={
+            {
+                "id": f"material_{i}",
+                "name": f"Material Sample {i}",
+                "type": "composite" if i % 2 == 0 else "metal",
+                "confidence_score": 0.85 - (i * 0.05),
+                "similarity_score": 0.90 - (i * 0.03),
+                "properties": {
                     "density": 2.5 + (i * 0.1),
                     "hardness": 7.0 - (i * 0.2),
                     "thermal_conductivity": 150 + (i * 10)
                 },
-                source="fallback_mode",
-                created_at="2025-10-08T12:00:00Z",
-                processing_method="mock_analysis",
-                search_rank=i + 1
-            )
+                "image_url": f"https://example.com/material_{i}.jpg",
+                "description": f"High-quality {request.search_type} material sample"
+            }
             for i in range(min(request.limit, 5))
         ]
 

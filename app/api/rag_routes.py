@@ -28,7 +28,7 @@ from app.utils.logging import PDFProcessingLogger
 logger = logging.getLogger(__name__)
 
 # Initialize router
-router = APIRouter(prefix="/api/v1/rag", tags=["RAG"])
+router = APIRouter(prefix="/api/rag", tags=["RAG"])
 
 # Pydantic models for request/response validation
 class DocumentUploadRequest(BaseModel):
