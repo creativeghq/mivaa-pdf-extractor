@@ -108,6 +108,8 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             "/api/semantic-analysis",
             "/api/jobs",
             "/api/bulk/process",
+            "/api/analyze/multimodal",
+            "/api/query/multimodal",
             "/"
         ]
         

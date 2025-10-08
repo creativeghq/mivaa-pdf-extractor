@@ -188,9 +188,7 @@ async def analyze_image(
 async def analyze_images_batch(
     request: ImageBatchRequest,
     material_kai: MaterialKaiService = Depends(get_material_kai_service),
-    current_user: User = Depends(get_current_user),
-    workspace_context: WorkspaceContext = Depends(get_workspace_context),
-    _: None = Depends(require_image_read)
+
 ) -> ImageBatchResponse:
     """
     Analyze multiple images in batch using Material Kai Vision Platform.
@@ -292,9 +290,7 @@ async def analyze_images_batch(
 async def search_similar_images(
     request: ImageSearchRequest,
     supabase = Depends(get_supabase_client),
-    current_user: User = Depends(get_current_user),
-    workspace_context: WorkspaceContext = Depends(get_workspace_context),
-    _: None = Depends(require_image_read)
+
 ) -> ImageSearchResponse:
     """
     Search for similar images using visual similarity or description matching.
@@ -359,9 +355,7 @@ async def upload_and_analyze_image(
     confidence_threshold: float = Form(default=0.7),
     document_context: Optional[str] = Form(None),
     material_kai: MaterialKaiService = Depends(get_material_kai_service),
-    current_user: User = Depends(get_current_user),
-    workspace_context: WorkspaceContext = Depends(get_workspace_context),
-    _: None = Depends(require_image_write)
+
 ) -> ImageAnalysisResponse:
     """
     Upload an image file and analyze it using Material Kai Vision Platform.
@@ -421,9 +415,7 @@ async def upload_and_analyze_image(
 @router.get("/health", response_model=BaseResponse)
 async def health_check(
     material_kai: MaterialKaiService = Depends(get_material_kai_service),
-    current_user: User = Depends(get_current_user),
-    workspace_context: WorkspaceContext = Depends(get_workspace_context),
-    _: None = Depends(require_image_read)
+
 ) -> BaseResponse:
     """
     Health check for image analysis service and Material Kai integration.

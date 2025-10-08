@@ -856,8 +856,6 @@ async def list_documents(
     status: Optional[str] = Query(None, description="Filter by processing status"),
     sort_by: str = Query("created_at", description="Sort field"),
     sort_order: str = Query("desc", regex="^(asc|desc)$", description="Sort order"),
-    current_user: User = Depends(get_current_user),
-    workspace_context: WorkspaceContext = Depends(get_workspace_context),
     supabase_client: SupabaseClient = Depends(get_supabase_client)
 ):
     """
@@ -956,8 +954,6 @@ async def list_documents(
 @router.get("/documents/{document_id}", response_model=DocumentMetadataResponse)
 async def get_document_metadata(
     document_id: str,
-    current_user: User = Depends(get_current_user),
-    workspace_context: WorkspaceContext = Depends(get_workspace_context),
     supabase_client: SupabaseClient = Depends(get_supabase_client)
 ):
     """
@@ -1037,8 +1033,6 @@ async def get_document_content(
     include_raw: bool = Query(False, description="Include raw extracted content"),
     include_markdown: bool = Query(True, description="Include markdown formatted content"),
     include_chunks: bool = Query(False, description="Include content chunks"),
-    current_user: User = Depends(get_current_user),
-    workspace_context: WorkspaceContext = Depends(get_workspace_context),
     supabase_client: SupabaseClient = Depends(get_supabase_client)
 ):
     """

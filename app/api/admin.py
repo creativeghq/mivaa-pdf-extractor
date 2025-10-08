@@ -84,9 +84,7 @@ async def list_jobs(
     status: Optional[str] = Query(None, description="Filter by job status"),
     job_type: Optional[str] = Query(None, description="Filter by job type"),
     pagination: PaginationParams = Depends(),
-    current_user: User = Depends(get_current_user),
-    workspace_context: WorkspaceContext = Depends(get_workspace_context),
-    _: None = Depends(require_admin)
+
 ):
     """
     List all jobs with optional filtering and pagination
@@ -205,9 +203,7 @@ async def cancel_job(
 
 @router.get("/jobs/statistics", response_model=Dict[str, Any])
 async def get_job_statistics(
-    current_user: User = Depends(get_current_user),
-    workspace_context: WorkspaceContext = Depends(get_workspace_context),
-    _: None = Depends(require_admin)
+
 ):
     """
     Get comprehensive job statistics and metrics
@@ -276,9 +272,7 @@ async def bulk_process_documents(
     request: BulkProcessingRequest,
     background_tasks: BackgroundTasks,
     pdf_processor: PDFProcessor = Depends(get_pdf_processor),
-    current_user: User = Depends(get_current_user),
-    workspace_context: WorkspaceContext = Depends(get_workspace_context),
-    _: None = Depends(require_admin)
+
 ):
     """
     Process multiple documents in bulk
