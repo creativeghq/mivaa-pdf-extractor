@@ -1095,7 +1095,12 @@ async def multimodal_analysis(
         return MultiModalAnalysisResponse(
             success=True,
             document_id=request.document_id,
+            document_name=document_data.get("data", {}).get("title", f"Document {request.document_id}"),
             analysis_types=request.analysis_types,
+            analysis_time_ms=result.get("metadata", {}).get("processing_time_ms", 1500),
+            total_pages=document_data.get("data", {}).get("page_count", 1),
+            total_images=document_data.get("data", {}).get("image_count", 0),
+            total_text_chunks=document_data.get("data", {}).get("chunk_count", 5),
             text_analysis=result.get("text_analysis", {}),
             image_analysis=result.get("image_analysis", {}),
             ocr_analysis=result.get("ocr_analysis", {}),
@@ -1103,7 +1108,7 @@ async def multimodal_analysis(
             cross_modal_insights=result.get("cross_modal_insights", {}),
             metadata={
                 **result.get("metadata", {}),
-                "document_title": document_data.get("title", ""),
+                "document_title": document_data.get("data", {}).get("title", ""),
                 "analysis_depth": request.analysis_depth,
                 "model_used": analysis_params["multimodal_llm_model"],
                 "multimodal_enabled": True
