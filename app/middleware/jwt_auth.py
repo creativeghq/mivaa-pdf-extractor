@@ -103,6 +103,11 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             "/api/data/export",
             "/api/data/backup",
             "/api/data/cleanup",
+            "/api/v1/documents",
+            "/api/v1/images",
+            "/api/semantic-analysis",
+            "/api/jobs",
+            "/api/bulk/process",
             "/"
         ]
         

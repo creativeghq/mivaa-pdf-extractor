@@ -143,7 +143,54 @@ class SupabaseClient:
         except Exception as e:
             logger.error(f"Failed to list documents: {str(e)}")
             return {"documents": [], "count": 0}
-    
+
+    async def get_document_by_id(self, document_id: str) -> dict:
+        """
+        Get a specific document by ID.
+
+        Args:
+            document_id: The document ID to retrieve
+
+        Returns:
+            Dictionary containing document data or error information
+        """
+        try:
+            response = self._client.table('processed_documents').select('*').eq('id', document_id).execute()
+
+            if response.data:
+                return {
+                    "success": True,
+                    "data": response.data[0]
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Document {document_id} not found"
+                }
+        except Exception as e:
+            logger.error(f"Failed to get document {document_id}: {str(e)}")
+            return {
+                "success": False,
+                "error": f"Failed to retrieve document: {str(e)}"
+            }
+
+    async def get_document_images(self, document_id: str) -> list:
+        """
+        Get images associated with a document.
+
+        Args:
+            document_id: The document ID
+
+        Returns:
+            List of image records
+        """
+        try:
+            response = self._client.table('document_images').select('*').eq('document_id', document_id).execute()
+            return response.data or []
+        except Exception as e:
+            logger.error(f"Failed to get images for document {document_id}: {str(e)}")
+            return []
+
     def close(self) -> None:
         """Close the Supabase client connection."""
         if self._client:
