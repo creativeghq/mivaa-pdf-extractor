@@ -720,9 +720,49 @@ async def analyze_material_image_base64(
     Args:
         image_base64: Base64 encoded image data
         context: Optional context for the analysis
-        
+
     Returns:
         SemanticAnalysisResult with analysis results
     """
     service = await get_together_ai_service()
     return await service.analyze_image_from_base64(image_base64, context)
+
+
+# Add missing method to TogetherAIService class
+def _add_missing_methods():
+    """Add missing methods to TogetherAIService class."""
+
+    async def get_models_info(self) -> Dict[str, Any]:
+        """Get information about available TogetherAI models."""
+        return {
+            "available_models": [
+                {
+                    "id": "meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo",
+                    "name": "LLaMA 3.2 90B Vision Instruct Turbo",
+                    "type": "vision",
+                    "capabilities": ["image_analysis", "text_generation", "material_identification"],
+                    "max_tokens": 4096,
+                    "supports_streaming": True
+                },
+                {
+                    "id": "meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo",
+                    "name": "LLaMA 3.2 11B Vision Instruct Turbo",
+                    "type": "vision",
+                    "capabilities": ["image_analysis", "text_generation"],
+                    "max_tokens": 4096,
+                    "supports_streaming": True
+                }
+            ],
+            "current_model": self.model_name,
+            "service_status": "available",
+            "rate_limits": {
+                "requests_per_minute": 60,
+                "tokens_per_minute": 100000
+            }
+        }
+
+    # Add the method to the class
+    TogetherAIService.get_models_info = get_models_info
+
+# Apply the patch
+_add_missing_methods()

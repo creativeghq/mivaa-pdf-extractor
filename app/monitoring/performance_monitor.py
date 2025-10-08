@@ -591,6 +591,79 @@ class PerformanceMonitor:
             }
         }
 
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get current performance metrics for API endpoint."""
+        try:
+            # Get recent metrics
+            recent_metrics = {}
+            for metric_name in ["http.request.duration", "system.memory.usage", "system.cpu.usage", "system.disk.usage"]:
+                stats = self.collector.get_aggregated_stats(metric_name)
+                if stats:
+                    recent_metrics[metric_name] = stats
+
+            # Get system info
+            import psutil
+            memory = psutil.virtual_memory()
+            disk = psutil.disk_usage('/')
+
+            return {
+                "status": "healthy",
+                "timestamp": datetime.utcnow().isoformat(),
+                "metrics": recent_metrics,
+                "system": {
+                    "cpu_percent": psutil.cpu_percent(),
+                    "memory_percent": memory.percent,
+                    "memory_available_mb": memory.available / (1024 * 1024),
+                    "disk_usage_percent": (disk.used / disk.total) * 100,
+                    "disk_free_gb": disk.free / (1024 * 1024 * 1024)
+                },
+                "performance": {
+                    "total_requests": len(self.collector.metrics),
+                    "slow_operations_count": len(self.optimizer.get_slow_operations()),
+                    "health_score": self.optimizer.analyze_performance().get("health_score", 100)
+                }
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to get metrics: {str(e)}",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+
+    def get_performance_summary(self) -> Dict[str, Any]:
+        """Get performance summary for API endpoint."""
+        try:
+            analysis = self.optimizer.analyze_performance()
+            slow_ops = self.optimizer.get_slow_operations()
+
+            # Calculate uptime (mock for now)
+            uptime_hours = 24.0  # Would be calculated from service start time
+
+            return {
+                "status": "healthy",
+                "timestamp": datetime.utcnow().isoformat(),
+                "summary": {
+                    "health_score": analysis.get("health_score", 100),
+                    "total_requests": len(self.collector.metrics),
+                    "slow_operations": len(slow_ops),
+                    "uptime_hours": uptime_hours,
+                    "recommendations_count": len(analysis.get("recommendations", []))
+                },
+                "top_slow_operations": slow_ops[:5],  # Top 5 slowest
+                "recommendations": analysis.get("recommendations", [])[:3],  # Top 3 recommendations
+                "recent_performance": {
+                    name: self.collector.get_aggregated_stats(name)
+                    for name in ["http.request.duration", "system.cpu.usage", "system.memory.usage"]
+                    if name in self.collector.aggregated_metrics
+                }
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to get performance summary: {str(e)}",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+
 
 # Global performance monitor instance
 performance_monitor = PerformanceMonitor()
