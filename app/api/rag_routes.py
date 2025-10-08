@@ -175,7 +175,7 @@ async def get_embedding_service() -> EmbeddingService:
         # Create embedding config from llamaindex config
         from app.schemas.embedding import EmbeddingConfig
         embedding_config = EmbeddingConfig(
-            model_name=llamaindex_config.get('embedding_model', 'text-embedding-3-small'),
+            model_name=llamaindex_config.get("embedding_model", "text-embedding-3-small"),
             api_key=settings.openai_api_key,
             max_tokens=8191,
             batch_size=100,
@@ -491,7 +491,7 @@ async def rag_health_check(
 
         # Determine overall status
         overall_status = "healthy"
-        if llamaindex_health.get('status') != 'healthy':
+        if llamaindex_health.get("status") != "healthy":
             overall_status = "degraded"
 
         return HealthCheckResponse(
@@ -511,7 +511,7 @@ async def rag_health_check(
                 "llamaindex": {"status": "error", "error": str(e)},
                 "embedding": {"status": "unknown"}
             },
-            timestamp=datetime.utcnow()
+            timestamp=datetime.utcnow().isoformat()
         )
 
 @router.get("/stats")
