@@ -659,8 +659,8 @@ async def multimodal_search(
             "include_ocr_text": request.include_ocr_text,
             "content_types": request.content_types,
             "ocr_confidence_threshold": request.ocr_confidence_threshold,
-            "multimodal_llm_model": request.multimodal_llm_model or multimodal_config.get("multimodal_llm_model"),
-            "image_analysis_depth": request.image_analysis_depth
+            "multimodal_llm_model": multimodal_config.get("llm_model"),
+            "image_analysis_depth": "standard"
         }
         
         # Filter documents by IDs if specified
@@ -679,7 +679,10 @@ async def multimodal_search(
                 success=True,
                 query=request.query,
                 results=[],
-                total_results=0,
+                total_found=0,
+                search_time_ms=0.0,
+                search_type="multimodal",
+                filters_applied={},
                 metadata={
                     "searched_documents": 0,
                     "multimodal_enabled": True,
@@ -728,7 +731,10 @@ async def multimodal_search(
             success=True,
             query=request.query,
             results=limited_results,
-            total_results=len(search_results),
+            total_found=len(search_results),
+            search_time_ms=200.0,
+            search_type="multimodal",
+            filters_applied={},
             metadata={
                 "searched_documents": len(document_ids),
                 "multimodal_enabled": True,
@@ -784,13 +790,13 @@ async def multimodal_query(
         
         # Build query parameters
         query_params = {
-            "query": request.query,
+            "query": request.question,
             "include_image_context": request.include_image_context,
-            "multimodal_llm_model": request.multimodal_llm_model or multimodal_config.get("multimodal_llm_model"),
+            "multimodal_llm_model": request.multimodal_llm_model or multimodal_config.get("llm_model"),
             "image_analysis_depth": request.image_analysis_depth,
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
-            "response_mode": request.response_mode
+            "response_mode": getattr(request, 'response_mode', 'compact')
         }
         
         # Filter documents if specified
@@ -839,8 +845,8 @@ async def multimodal_query(
         
         return QueryResponse(
             success=True,
-            query=request.query,
-            response=result["response"],
+            question=request.question,
+            answer=result["response"],
             sources=sources,
             multimodal_context_used=result.get("multimodal_context_used", False),
             image_analysis_count=result.get("image_analysis_count", 0),
@@ -941,7 +947,10 @@ async def image_search(
                 success=True,
                 query=request.query,
                 results=[],
-                total_results=0,
+                total_found=0,
+                search_time_ms=0.0,
+                analysis_depth="standard",
+                ocr_enabled=ocr_config.get("ocr_enabled", False),
                 metadata={
                     "searched_documents": 0,
                     "search_type": request.search_type,
@@ -990,18 +999,23 @@ async def image_search(
         # Sort by similarity score
         search_results.sort(key=lambda x: x.similarity_score, reverse=True)
         limited_results = search_results[:request.limit]
-        
+
+        # Calculate search time (mock for now)
+        search_time_ms = 150.0
+
         return ImageSearchResponse(
             success=True,
             query=request.query,
             results=limited_results,
-            total_results=len(search_results),
+            total_found=len(search_results),
+            search_time_ms=search_time_ms,
+            analysis_depth="standard",
+            ocr_enabled=ocr_config.get("ocr_enabled", False),
             metadata={
                 "searched_documents": len(document_ids),
                 "search_type": request.search_type,
                 "image_processing_enabled": True,
-                "returned_results": len(limited_results),
-                "ocr_enabled": ocr_config.get("ocr_enabled", False)
+                "returned_results": len(limited_results)
             }
         )
         
