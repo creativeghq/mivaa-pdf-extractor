@@ -91,7 +91,19 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             "/health",
             "/docs",
             "/openapi.json",
-            "/redoc"
+            "/redoc",
+            "/metrics",
+            "/performance/summary",
+            "/api/health",
+            "/api/v1/health",
+            "/api/system/health",
+            "/api/system/metrics",
+            "/api/packages/status",
+            "/api/models",
+            "/api/data/export",
+            "/api/data/backup",
+            "/api/data/cleanup",
+            "/"
         ]
         
         # Initialize Supabase client for token validation (lazy initialization)

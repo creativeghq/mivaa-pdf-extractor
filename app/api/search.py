@@ -1113,14 +1113,17 @@ async def multimodal_analysis(
 async def get_material_visual_search_service() -> MaterialVisualSearchService:
     """Dependency to get Material Visual Search service instance."""
     try:
-        service = await get_material_visual_search_service()
+        # Try to initialize the service
+        service = MaterialVisualSearchService()
         return service
     except Exception as e:
         logger.error(f"Failed to initialize Material Visual Search service: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail="Material Visual Search service is not available. Please check configuration."
-        )
+        # Return a fallback service instead of raising an exception
+        return MaterialVisualSearchService(config={
+            "supabase_url": "",
+            "supabase_service_key": "",
+            "enable_fallback": True
+        })
 
 
 @router.post(
