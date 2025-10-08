@@ -115,7 +115,7 @@ class MaterialVisualSearchService:
         self.config = config or self._get_default_config()
 
         # Enable fallback mode if external services are unavailable
-        self.enable_fallback = self.config.get("enable_fallback", True)
+        self.enable_fallback = self.config.get("enable_fallback", False)
 
         # Supabase connection
         self.supabase_url = self.config.get("supabase_url", "")
@@ -459,25 +459,10 @@ class MaterialVisualSearchService:
                 return await self._get_fallback_image_analysis(image_data, analysis_types)
 
             # Use Material Kai service for image analysis
-            # First upload the image, then analyze it
-            upload_result = await self.material_kai_service.upload_image(
-                image_data=image_data,
-                filename="material_analysis.jpg"
-            )
-            
-            if not upload_result.get("success", False):
-                logger.warning("Failed to upload image to Material Kai, using fallback")
-                return await self._get_fallback_image_analysis(image_data, analysis_types)
-            
-            image_id = upload_result.get("image_id")
-            if not image_id:
-                logger.warning("No image_id returned from upload, using fallback")
-                return await self._get_fallback_image_analysis(image_data, analysis_types)
-            
             analysis_result = await self.material_kai_service.analyze_image(
-                image_id=image_id,
-                analysis_types=analysis_types,
-                options={"include_metadata": True}
+                image_data=image_data,
+                analysis_type="comprehensive",
+                include_metadata=True
             )
             
             if not analysis_result.get("success", False):
@@ -666,7 +651,6 @@ class MaterialVisualSearchService:
         logger.info("Using fallback mode for material image analysis")
 
         return {
-            "success": True,
             "analysis_id": f"fallback_{hash(image_data) % 10000}",
             "material_identification": {
                 "primary_material": "composite",
