@@ -800,8 +800,8 @@ async def multimodal_query(
         }
         
         # Filter documents if specified
-        if request.document_ids:
-            document_ids = request.document_ids
+        if request.context_documents:
+            document_ids = request.context_documents
         else:
             # Get all available documents
             documents = await supabase.list_documents(
