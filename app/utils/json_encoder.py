@@ -10,6 +10,7 @@ from datetime import datetime, date, time
 from decimal import Decimal
 from uuid import UUID
 from typing import Any
+from dataclasses import is_dataclass, asdict
 
 
 class CustomJSONEncoder(json.JSONEncoder):
@@ -47,6 +48,9 @@ class CustomJSONEncoder(json.JSONEncoder):
             return str(obj)
         elif isinstance(obj, set):
             return list(obj)
+        elif is_dataclass(obj):
+            # Handle dataclasses by converting to dict
+            return asdict(obj)
         elif hasattr(obj, '__dict__'):
             # Handle custom objects by converting to dict
             return obj.__dict__

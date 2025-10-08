@@ -107,9 +107,9 @@ class TogetherAIService:
                 max_tokens=together_config["max_tokens"],
                 temperature=together_config["temperature"],
                 timeout=together_config["timeout"],
-                max_retries=together_config["max_retries"],
-                rate_limit_requests_per_minute=together_config["rate_limit_requests_per_minute"],
-                rate_limit_burst=together_config["rate_limit_burst"]
+                max_retries=together_config.get("retry_attempts", 3),
+                rate_limit_requests_per_minute=together_config.get("rate_limit_rpm", 10),
+                rate_limit_burst=5  # Default value since not in config
             )
         
         self.config = config

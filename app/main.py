@@ -42,7 +42,7 @@ class ErrorResponse(BaseModel):
     """Standard error response model."""
     error: str
     detail: str
-    timestamp: datetime
+    timestamp: str
 
 
 @asynccontextmanager
@@ -638,7 +638,7 @@ async def http_exception_handler(request, exc: HTTPException):
         content=ErrorResponse(
             error=exc.detail,
             detail=f"HTTP {exc.status_code}",
-            timestamp=datetime.utcnow()
+            timestamp=datetime.utcnow().isoformat()
         ).dict()
     )
 
@@ -674,7 +674,7 @@ async def general_exception_handler(request, exc: Exception):
         content=ErrorResponse(
             error="Internal server error",
             detail=str(exc) if get_settings().debug else "An unexpected error occurred",
-            timestamp=datetime.utcnow()
+            timestamp=datetime.utcnow().isoformat()
         ).dict()
     )
 

@@ -20,7 +20,7 @@ import os
 from pathlib import Path
 
 from ..schemas.jobs import (
-    JobResponse, JobStatusResponse, JobListResponse,
+    JobResponse, JobStatusResponse, JobListResponse, JobListItem,
     BulkProcessingRequest, BulkProcessingResponse,
     JobStatistics, SystemMetrics
 )
@@ -111,25 +111,23 @@ async def list_jobs(
         filtered_jobs.sort(key=lambda x: x["created_at"], reverse=True)
         
         # Apply pagination
-        start_idx = pagination.offset
-        end_idx = start_idx + pagination.limit
+        start_idx = (pagination.page - 1) * pagination.page_size
+        end_idx = start_idx + pagination.page_size
         paginated_jobs = filtered_jobs[start_idx:end_idx]
         
         return JobListResponse(
             success=True,
             message="Jobs retrieved successfully",
-            data={
-                "jobs": [JobResponse(**job) for job in paginated_jobs],
-                "total_count": len(filtered_jobs),
-                "active_count": len(active_jobs),
-                "completed_count": len([j for j in job_history if j["status"] == "completed"]),
-                "failed_count": len([j for j in job_history if j["status"] == "failed"])
+            jobs=[JobListItem(**job) for job in paginated_jobs],
+            total_count=len(filtered_jobs),
+            page=pagination.page,
+            page_size=pagination.page_size,
+            status_counts={
+                "active": len(active_jobs),
+                "completed": len([j for j in job_history if j["status"] == "completed"]),
+                "failed": len([j for j in job_history if j["status"] == "failed"])
             },
-            pagination={
-                "limit": pagination.limit,
-                "offset": pagination.offset,
-                "total": len(filtered_jobs)
-            }
+            type_counts={}
         )
         
     except Exception as e:

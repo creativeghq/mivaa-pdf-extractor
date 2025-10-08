@@ -150,7 +150,7 @@ async def semantic_analysis(
     
     try:
         logger.info(
-            f"Starting semantic analysis for user {current_user.id} "
+            f"Starting semantic analysis for user {current_user.get('id', 'unknown')} "
             f"with analysis_type: {request.analysis_type}"
         )
         
@@ -194,13 +194,13 @@ async def semantic_analysis(
                 "cache_hit": result.metadata.get("cache_hit", False),
                 "request_id": result.metadata.get("request_id"),
                 "analysis_type": request.analysis_type,
-                "user_id": current_user.id,
+                "user_id": current_user.get("id", "unknown"),
                 "workspace_id": workspace_context.workspace_id
             }
         )
         
         logger.info(
-            f"Semantic analysis completed successfully for user {current_user.id}. "
+            f"Semantic analysis completed successfully for user {current_user.get('id', 'unknown')}. "
             f"Processing time: {processing_time_ms}ms, Confidence: {result.confidence}"
         )
         
@@ -210,33 +210,21 @@ async def semantic_analysis(
         logger.error(f"Service error during semantic analysis: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "error_code": "TOGETHER_AI_SERVICE_ERROR",
-                "error_type": "ServiceError",
-                "message": str(e)
-            }
+            detail=f"TogetherAI service error: {str(e)}"
         )
     
     except ExternalServiceError as e:
         logger.error(f"External service error during semantic analysis: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "error_code": "TOGETHER_AI_EXTERNAL_ERROR",
-                "error_type": "ExternalServiceError",
-                "message": str(e)
-            }
+            detail=f"TogetherAI external service error: {str(e)}"
         )
     
     except Exception as e:
         logger.error(f"Unexpected error during semantic analysis: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "error_code": "SEMANTIC_ANALYSIS_ERROR",
-                "error_type": "UnexpectedError",
-                "message": "An unexpected error occurred during semantic analysis"
-            }
+            detail="An unexpected error occurred during semantic analysis"
         )
 
 
@@ -271,22 +259,14 @@ async def health_check(
         else:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={
-                    "error_code": "TOGETHER_AI_UNHEALTHY",
-                    "error_type": "ServiceUnavailable",
-                    "message": "TogetherAI service health check failed"
-                }
+                detail="TogetherAI service health check failed"
             )
     
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "error_code": "HEALTH_CHECK_ERROR",
-                "error_type": "ServiceError",
-                "message": "Health check endpoint failed"
-            }
+            detail="Health check endpoint failed"
         )
 
 
@@ -322,9 +302,5 @@ async def get_models(
         logger.error(f"Failed to retrieve models information: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "error_code": "MODELS_INFO_ERROR",
-                "error_type": "ServiceError",
-                "message": "Failed to retrieve models information"
-            }
+            detail="Failed to retrieve models information"
         )

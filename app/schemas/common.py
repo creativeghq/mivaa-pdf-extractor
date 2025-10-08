@@ -27,7 +27,7 @@ class BaseResponse(BaseModel):
     
     success: bool = Field(True, description="Indicates if the request was successful")
     message: Optional[str] = Field(None, description="Optional message or description")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Response timestamp")
+    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat(), description="Response timestamp")
     
     class Config:
         json_encoders = {
