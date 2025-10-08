@@ -75,7 +75,7 @@ from app.utils.exceptions import (
 logger = logging.getLogger(__name__)
 
 # Create router instance
-router = APIRouter(prefix="/api/v1/documents", tags=["Document Processing"])
+router = APIRouter(prefix="/api/documents", tags=["Document Processing"])
 
 # Dependency function for Supabase client
 async def get_supabase_client() -> SupabaseClient:

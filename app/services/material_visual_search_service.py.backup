@@ -115,7 +115,7 @@ class MaterialVisualSearchService:
         self.config = config or self._get_default_config()
 
         # Enable fallback mode if external services are unavailable
-        self.enable_fallback = self.config.get("enable_fallback", True)
+        self.enable_fallback = self.config.get("enable_fallback", False)
 
         # Supabase connection
         self.supabase_url = self.config.get("supabase_url", "")
@@ -405,65 +405,34 @@ class MaterialVisualSearchService:
         """Provide fallback search results when external services are unavailable."""
         logger.info("Using fallback mode for material search")
 
-        # Generate proper MaterialSearchResult objects
+        # Generate mock results based on request
         mock_results = [
-            MaterialSearchResult(
-                material_id=f"material_{i}",
-                material_name=f"Material Sample {i}",
-                material_type="composite" if i % 2 == 0 else "metal",
-                visual_similarity_score=0.90 - (i * 0.03),
-                semantic_relevance_score=0.85 - (i * 0.05),
-                material_property_score=0.80 - (i * 0.04),
-                combined_score=0.85 - (i * 0.05),
-                confidence_score=0.85 - (i * 0.05),
-                visual_analysis={
-                    "color_analysis": {
-                        "dominant_colors": ["#2C3E50", "#34495E"],
-                        "color_distribution": {"primary": 0.6, "secondary": 0.4}
-                    },
-                    "texture_analysis": {
-                        "roughness": "medium",
-                        "pattern": "woven",
-                        "surface_quality": "smooth"
-                    }
-                },
-                material_properties={
+            {
+                "id": f"material_{i}",
+                "name": f"Material Sample {i}",
+                "type": "composite" if i % 2 == 0 else "metal",
+                "confidence_score": 0.85 - (i * 0.05),
+                "similarity_score": 0.90 - (i * 0.03),
+                "properties": {
                     "density": 2.5 + (i * 0.1),
                     "hardness": 7.0 - (i * 0.2),
-                    "thermal_conductivity": 150 + (i * 10),
-                    "tensile_strength": 500 + (i * 50)
+                    "thermal_conductivity": 150 + (i * 10)
                 },
-                clip_embedding=None,
-                llama_analysis={
-                    "material_classification": f"High-quality {request.search_type} material",
-                    "confidence": 0.85 - (i * 0.05),
-                    "properties_detected": ["durable", "lightweight", "corrosion_resistant"]
-                },
-                source="fallback_mode",
-                created_at="2025-10-08T12:00:00Z",
-                processing_method="mock_analysis",
-                search_rank=i + 1
-            )
+                "image_url": f"https://example.com/material_{i}.jpg",
+                "description": f"High-quality {request.search_type} material sample"
+            }
             for i in range(min(request.limit, 5))
         ]
 
         return MaterialSearchResponse(
             success=True,
+            message="Material search completed (fallback mode)",
             results=mock_results,
             total_results=len(mock_results),
             search_metadata={
                 "search_type": request.search_type,
-                "processing_time_ms": 50.0,
-                "fallback_mode": True,
-                "limit": request.limit,
-                "fusion_weights": self.default_fusion_weights
-            },
-            analytics={
-                "search_performance": {
-                    "total_candidates": len(mock_results),
-                    "filtered_results": len(mock_results),
-                    "avg_confidence": sum(r.confidence_score for r in mock_results) / len(mock_results)
-                }
+                "processing_time": 0.1,
+                "fallback_mode": True
             }
         )
     
@@ -490,23 +459,10 @@ class MaterialVisualSearchService:
                 return await self._get_fallback_image_analysis(image_data, analysis_types)
 
             # Use Material Kai service for image analysis
-            # First upload the image, then analyze it
-            upload_result = await self.material_kai_service.upload_image(
-                image_data=image_data,
-                filename="material_analysis.jpg"
-            )
-            if not upload_result.get("success", False):
-                logger.warning("Failed to upload image to Material Kai, using fallback")
-                return await self._get_fallback_image_analysis(image_data, analysis_types)
-            image_id = upload_result.get("image_id")
-            if not image_id:
-                logger.warning("No image_id returned from upload, using fallback")
-                return await self._get_fallback_image_analysis(image_data, analysis_types)
-
             analysis_result = await self.material_kai_service.analyze_image(
-                image_id=image_id,
-                analysis_types=analysis_types,
-                options={"include_metadata": True}
+                image_data=image_data,
+                analysis_type="comprehensive",
+                include_metadata=True
             )
             
             if not analysis_result.get("success", False):
@@ -541,59 +497,24 @@ class MaterialVisualSearchService:
             }
     
     async def generate_material_embeddings(
-        self,
-        image_data: str,
+        self, 
+        image_data: str, 
         embedding_types: List[str] = None
     ) -> Dict[str, Any]:
         """
         Generate embeddings for material images.
-
+        
         Args:
             image_data: Base64 encoded image or image URL
             embedding_types: Types of embeddings to generate (clip, llama, custom)
-
+            
         Returns:
             Dict containing embedding vectors
         """
         try:
             embedding_types = embedding_types or ["clip"]
             embeddings = {}
-
-            # Check if fallback mode is enabled or service is unavailable
-            if self.enable_fallback or not self.material_kai_service:
-                logger.info("Using fallback mode for embedding generation")
-
-                # Generate mock embeddings based on requested types
-                if "clip" in embedding_types:
-                    # CLIP embeddings are typically 512-dimensional
-                    embeddings["clip"] = [0.1 + (i * 0.001) for i in range(512)]
-
-                if "custom" in embedding_types:
-                    # Custom material embeddings might be 256-dimensional
-                    embeddings["custom"] = [0.2 + (i * 0.002) for i in range(256)]
-
-                if "llama" in embedding_types:
-                    # LLaMA embeddings might be 4096-dimensional
-                    embeddings["llama"] = [0.05 + (i * 0.0001) for i in range(1024)]  # Reduced for performance
-
-                return {
-                    "success": True,
-                    "embeddings": embeddings,
-                    "embedding_metadata": {
-                        "embedding_types": embedding_types,
-                        "dimensions": {k: len(v) for k, v in embeddings.items()},
-                        "generation_timestamp": datetime.utcnow().isoformat(),
-                        "processing_time_ms": 25,
-                        "fallback_mode": True,
-                        "model_versions": {
-                            "clip": "clip-vit-base-patch32-fallback",
-                            "custom": "material-encoder-v1-fallback",
-                            "llama": "llama-vision-fallback"
-                        }
-                    }
-                }
-
-            # Normal processing with actual service
+            
             # Generate CLIP embeddings
             if "clip" in embedding_types:
                 clip_result = await self.material_kai_service.generate_image_embeddings(
@@ -602,37 +523,31 @@ class MaterialVisualSearchService:
                 )
                 if clip_result.get("success"):
                     embeddings["clip"] = clip_result.get("embeddings", [])
-
+            
             # Generate custom material embeddings if available
             if "custom" in embedding_types:
+                # Use material-specific embedding models if available
                 custom_result = await self.material_kai_service.generate_image_embeddings(
                     image_data=image_data,
                     embedding_model="material-specific-encoder"
                 )
                 if custom_result.get("success"):
                     embeddings["custom"] = custom_result.get("embeddings", [])
-
+            
             return {
                 "success": True,
                 "embeddings": embeddings,
                 "embedding_metadata": {
                     "embedding_types": embedding_types,
-                    "dimensions": {k: len(v) for k, v in embeddings.items()},
-                    "generation_timestamp": datetime.utcnow().isoformat(),
-                    "processing_time_ms": 150,
-                    "fallback_mode": False
+                    "generation_timestamp": datetime.utcnow().isoformat()
                 }
             }
-
+            
         except Exception as e:
             logger.error(f"Embedding generation failed: {e}")
             return {
                 "success": False,
-                "error": str(e),
-                "embedding_metadata": {
-                    "error_timestamp": datetime.utcnow().isoformat(),
-                    "requested_types": embedding_types or []
-                }
+                "error": str(e)
             }
     
     async def search_similar_materials(
@@ -736,7 +651,6 @@ class MaterialVisualSearchService:
         logger.info("Using fallback mode for material image analysis")
 
         return {
-            "success": True,
             "analysis_id": f"fallback_{hash(image_data) % 10000}",
             "material_identification": {
                 "primary_material": "composite",

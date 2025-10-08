@@ -132,6 +132,75 @@ async def list_jobs(
         logger.error(f"Error listing jobs: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to list jobs: {str(e)}")
 
+@router.get("/jobs/{job_id}", response_model=JobStatusResponse)
+async def get_job_status(
+    job_id: str,
+    current_user: User = Depends(get_current_user),
+    workspace_context: WorkspaceContext = Depends(get_workspace_context),
+    _: None = Depends(require_admin)
+):
+    """
+    Get detailed status information for a specific job
+    
+    - **job_id**: Unique identifier for the job
+    """
+    try:
+        # Check active jobs first
+        if job_id in active_jobs:
+            job_info = active_jobs[job_id]
+        else:
+            # Check job history
+            job_info = next((job for job in job_history if job["job_id"] == job_id), None)
+            
+        if not job_info:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+        
+        return JobStatusResponse(
+            success=True,
+            message="Job status retrieved successfully",
+            data=JobResponse(**job_info)
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting job status: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get job status: {str(e)}")
+
+@router.delete("/jobs/{job_id}")
+async def cancel_job(
+    job_id: str,
+    current_user: User = Depends(get_current_user),
+    workspace_context: WorkspaceContext = Depends(get_workspace_context),
+    _: None = Depends(require_admin)
+):
+    """
+    Cancel a running job
+    
+    - **job_id**: Unique identifier for the job to cancel
+    """
+    try:
+        if job_id not in active_jobs:
+            raise HTTPException(status_code=404, detail=f"Active job {job_id} not found")
+        
+        job_info = active_jobs[job_id]
+        if job_info["status"] in ["completed", "failed", "cancelled"]:
+            raise HTTPException(status_code=400, detail=f"Job {job_id} is already {job_info['status']}")
+        
+        # Update job status to cancelled
+        await track_job(job_id, job_info["job_type"], "cancelled", job_info["details"])
+        
+        return BaseResponse(
+            success=True,
+            message=f"Job {job_id} cancelled successfully"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error cancelling job: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to cancel job: {str(e)}")
+
 @router.get("/jobs/statistics", response_model=Dict[str, Any])
 async def get_job_statistics():
     """
@@ -195,71 +264,6 @@ async def get_job_statistics():
         raise HTTPException(status_code=500, detail=f"Failed to get job statistics: {str(e)}")
 
 # Bulk Operations
-
-@router.get("/jobs/{job_id}", response_model=JobStatusResponse)
-async def get_job_status(
-    job_id: str,
-
-):
-    """
-    Get detailed status information for a specific job
-    
-    - **job_id**: Unique identifier for the job
-    """
-    try:
-        # Check active jobs first
-        if job_id in active_jobs:
-            job_info = active_jobs[job_id]
-        else:
-            # Check job history
-            job_info = next((job for job in job_history if job["job_id"] == job_id), None)
-            
-        if not job_info:
-            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-        
-        return JobStatusResponse(
-            success=True,
-            message="Job status retrieved successfully",
-            data=JobResponse(**job_info)
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting job status: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get job status: {str(e)}")
-
-@router.delete("/jobs/{job_id}")
-async def cancel_job(
-    job_id: str,
-
-):
-    """
-    Cancel a running job
-    
-    - **job_id**: Unique identifier for the job to cancel
-    """
-    try:
-        if job_id not in active_jobs:
-            raise HTTPException(status_code=404, detail=f"Active job {job_id} not found")
-        
-        job_info = active_jobs[job_id]
-        if job_info["status"] in ["completed", "failed", "cancelled"]:
-            raise HTTPException(status_code=400, detail=f"Job {job_id} is already {job_info['status']}")
-        
-        # Update job status to cancelled
-        await track_job(job_id, job_info["job_type"], "cancelled", job_info["details"])
-        
-        return BaseResponse(
-            success=True,
-            message=f"Job {job_id} cancelled successfully"
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error cancelling job: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to cancel job: {str(e)}")
 
 @router.post("/bulk/process", response_model=BulkProcessingResponse)
 async def bulk_process_documents(
@@ -414,7 +418,9 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
 
 @router.get("/system/health")
 async def get_system_health(
-
+    current_user: User = Depends(get_current_user),
+    workspace_context: WorkspaceContext = Depends(get_workspace_context),
+    _: None = Depends(require_admin)
 ):
     """
     Get comprehensive system health status

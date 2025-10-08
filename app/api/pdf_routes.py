@@ -38,7 +38,7 @@ from app.schemas.auth import User, WorkspaceContext
 logger = logging.getLogger(__name__)
 
 # Create router instance
-router = APIRouter(prefix="/api/v1", tags=["PDF Processing"])
+router = APIRouter(prefix="/api/pdf", tags=["PDF Processing"])
 
 
 def save_upload_file_tmp(upload_file: UploadFile) -> Path:

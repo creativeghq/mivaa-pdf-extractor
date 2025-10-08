@@ -44,7 +44,7 @@ from ..config import get_settings
 logger = logging.getLogger(__name__)
 
 # Create router
-router = APIRouter(prefix="/api/v1/images", tags=["Image Analysis"])
+router = APIRouter(prefix="/api/images", tags=["Image Analysis"])
 
 # Get settings
 settings = get_settings()
@@ -629,7 +629,7 @@ async def _perform_image_similarity_search(
                     description=row.get('description', ''),
                     tags=row.get('tags', []),
                     dimensions=row.get('dimensions', {}),
-                    image_url=row.get('image_url', f"/api/v1/images/{row.get('image_id', '')}/download")
+                    image_url=row.get('image_url', f"/api/images/{row.get('image_id', '')}/download")
                 ))
             except Exception as e:
                 logger.warning(f"Failed to parse similarity result: {e}")
@@ -719,7 +719,7 @@ async def _store_uploaded_image(
 
         if not public_url:
             # Fallback to API endpoint
-            public_url = f"/api/v1/images/{image_id}/download"
+            public_url = f"/api/images/{image_id}/download"
 
         logger.info(f"Image stored successfully: {image_id} -> {storage_path}")
         return public_url
@@ -727,7 +727,7 @@ async def _store_uploaded_image(
     except Exception as e:
         logger.error(f"Failed to store uploaded image: {str(e)}")
         # Return fallback URL instead of raising
-        return f"/api/v1/images/{image_id}/download"
+        return f"/api/images/{image_id}/download"
 
 
 async def _get_image_embedding(image_id: str) -> Optional[List[float]]:

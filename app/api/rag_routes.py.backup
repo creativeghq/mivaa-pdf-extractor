@@ -28,7 +28,7 @@ from app.utils.logging import PDFProcessingLogger
 logger = logging.getLogger(__name__)
 
 # Initialize router
-router = APIRouter(prefix="/api/rag", tags=["RAG"])
+router = APIRouter(prefix="/api/v1/rag", tags=["RAG"])
 
 # Pydantic models for request/response validation
 class DocumentUploadRequest(BaseModel):
@@ -284,13 +284,14 @@ async def query_documents(
     start_time = datetime.utcnow()
     
     try:
-        # Perform RAG query using advanced_rag_query
-        result = await llamaindex_service.advanced_rag_query(
+        # Perform RAG query
+        result = await llamaindex_service.query(
             query=request.query,
-            max_results=request.top_k,
+            top_k=request.top_k,
             similarity_threshold=request.similarity_threshold,
+            include_metadata=request.include_metadata,
             enable_reranking=request.enable_reranking,
-            query_type="factual"
+            document_ids=request.document_ids
         )
         
         processing_time = (datetime.utcnow() - start_time).total_seconds()
@@ -328,11 +329,13 @@ async def chat_with_documents(
         # Generate conversation ID if not provided
         conversation_id = request.conversation_id or str(uuid4())
         
-        # Process chat message using advanced_rag_query
-        result = await llamaindex_service.advanced_rag_query(
-            query=request.message,
-            max_results=request.top_k,
-            query_type="conversational"
+        # Process chat message
+        result = await llamaindex_service.chat(
+            message=request.message,
+            conversation_id=conversation_id,
+            top_k=request.top_k,
+            include_history=request.include_history,
+            document_ids=request.document_ids
         )
         
         processing_time = (datetime.utcnow() - start_time).total_seconds()
@@ -366,11 +369,14 @@ async def search_documents(
     start_time = datetime.utcnow()
     
     try:
-        # Perform search using semantic_search_with_mmr
-        results = await llamaindex_service.semantic_search_with_mmr(
+        # Perform search
+        results = await llamaindex_service.search(
             query=request.query,
-            k=request.top_k,
-            lambda_mult=0.5  # Default MMR parameter
+            search_type=request.search_type,
+            top_k=request.top_k,
+            similarity_threshold=request.similarity_threshold,
+            document_ids=request.document_ids,
+            include_content=request.include_content
         )
         
         processing_time = (datetime.utcnow() - start_time).total_seconds()
@@ -410,8 +416,13 @@ async def list_documents(
         if tags:
             tag_filter = [tag.strip() for tag in tags.split(',')]
         
-        # Get documents using list_indexed_documents
-        result = await llamaindex_service.list_indexed_documents()
+        # Get documents
+        result = await llamaindex_service.list_documents(
+            page=page,
+            page_size=page_size,
+            search=search,
+            tags=tag_filter
+        )
         
         return DocumentListResponse(
             documents=result.get('documents', []),
@@ -468,7 +479,8 @@ async def delete_document(
 
 @router.get("/health", response_model=HealthCheckResponse)
 async def rag_health_check(
-    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
+    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service),
+    
 ):
     """
     Health check for RAG services.
@@ -479,7 +491,7 @@ async def rag_health_check(
     try:
         # Check LlamaIndex service health
         llamaindex_health = await llamaindex_service.health_check()
-
+        
         # Try to check embedding service health (optional)
         embedding_health = {"status": "unknown", "message": "Embedding service not available"}
         try:
@@ -488,12 +500,13 @@ async def rag_health_check(
         except Exception as e:
             logger.warning(f"Embedding service health check failed: {e}")
             embedding_health = {"status": "error", "error": str(e)}
-
+        
         # Determine overall status
         overall_status = "healthy"
         if llamaindex_health.get("status") != "healthy":
             overall_status = "degraded"
-
+            overall_status = "degraded"
+        
         return HealthCheckResponse(
             status=overall_status,
             services={
@@ -528,7 +541,7 @@ async def get_rag_statistics(
         # Get available statistics from the service
         memory_stats = llamaindex_service.get_memory_stats()
         health_check = await llamaindex_service.health_check()
-
+        
         # Combine statistics
         stats = {
             "memory": memory_stats,
@@ -538,7 +551,7 @@ async def get_rag_statistics(
             "embedding_model": llamaindex_service.embedding_model,
             "llm_model": llamaindex_service.llm_model
         }
-
+        
         return JSONResponse(
             status_code=status.HTTP_200_OK,
             content={
