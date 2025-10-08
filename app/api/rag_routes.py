@@ -112,7 +112,7 @@ class HealthCheckResponse(BaseModel):
     """Response model for RAG health check."""
     status: str = Field(..., description="Health status")
     services: Dict[str, Dict[str, Any]] = Field(..., description="Service health details")
-    timestamp: datetime = Field(..., description="Health check timestamp")
+    timestamp: str = Field(..., description="Health check timestamp")
 
 # Advanced Search Models for Phase 7 Features
 class MMRSearchRequest(BaseModel):
@@ -170,7 +170,20 @@ async def get_embedding_service() -> EmbeddingService:
     """Get embedding service instance."""
     try:
         settings = get_settings()
-        embedding_config = settings.get_embedding_config()
+        llamaindex_config = settings.get_llamaindex_config()
+
+        # Create embedding config from llamaindex config
+        from app.schemas.embedding import EmbeddingConfig
+        embedding_config = EmbeddingConfig(
+            model_name=llamaindex_config.get("embedding_model", "text-embedding-3-small"),
+            api_key=settings.openai_api_key,
+            max_tokens=8191,
+            batch_size=100,
+            rate_limit_rpm=3000,
+            rate_limit_tpm=1000000,
+            cache_ttl=3600,
+            enable_cache=True
+        )
         return EmbeddingService(embedding_config)
     except Exception as e:
         logger.error(f"Failed to initialize embedding service: {e}")
@@ -467,7 +480,7 @@ async def delete_document(
 @router.get("/health", response_model=HealthCheckResponse)
 async def rag_health_check(
     llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service),
-    embedding_service: EmbeddingService = Depends(get_embedding_service)
+    
 ):
     """
     Health check for RAG services.
@@ -479,13 +492,19 @@ async def rag_health_check(
         # Check LlamaIndex service health
         llamaindex_health = await llamaindex_service.health_check()
         
-        # Check embedding service health
-        embedding_health = await embedding_service.health_check()
+        # Try to check embedding service health (optional)
+        embedding_health = {"status": "unknown", "message": "Embedding service not available"}
+        try:
+            embedding_service = await get_embedding_service()
+            embedding_health = await embedding_service.health_check()
+        except Exception as e:
+            logger.warning(f"Embedding service health check failed: {e}")
+            embedding_health = {"status": "error", "error": str(e)}
         
         # Determine overall status
         overall_status = "healthy"
-        if (llamaindex_health.get('status') != 'healthy' or 
-            embedding_health.get('status') != 'healthy'):
+        if llamaindex_health.get("status") != "healthy":
+            overall_status = "degraded"
             overall_status = "degraded"
         
         return HealthCheckResponse(
@@ -494,7 +513,7 @@ async def rag_health_check(
                 "llamaindex": llamaindex_health,
                 "embedding": embedding_health
             },
-            timestamp=datetime.utcnow()
+            timestamp=datetime.utcnow().isoformat()
         )
         
     except Exception as e:
@@ -505,7 +524,7 @@ async def rag_health_check(
                 "llamaindex": {"status": "error", "error": str(e)},
                 "embedding": {"status": "unknown"}
             },
-            timestamp=datetime.utcnow()
+            timestamp=datetime.utcnow().isoformat()
         )
 
 @router.get("/stats")
@@ -519,7 +538,19 @@ async def get_rag_statistics(
     document counts, embedding statistics, and performance metrics.
     """
     try:
-        stats = await llamaindex_service.get_statistics()
+        # Get available statistics from the service
+        memory_stats = llamaindex_service.get_memory_stats()
+        health_check = await llamaindex_service.health_check()
+        
+        # Combine statistics
+        stats = {
+            "memory": memory_stats,
+            "health": health_check,
+            "indices_count": len(llamaindex_service.indices),
+            "storage_dir": llamaindex_service.storage_dir,
+            "embedding_model": llamaindex_service.embedding_model,
+            "llm_model": llamaindex_service.llm_model
+        }
         
         return JSONResponse(
             status_code=status.HTTP_200_OK,

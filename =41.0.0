@@ -1,0 +1,4 @@
+Requirement already satisfied: cryptography in ./.venv/lib/python3.9/site-packages (46.0.2)
+Requirement already satisfied: cffi>=2.0.0 in ./.venv/lib/python3.9/site-packages (from cryptography) (2.0.0)
+Requirement already satisfied: typing-extensions>=4.13.2 in ./.venv/lib/python3.9/site-packages (from cryptography) (4.15.0)
+Requirement already satisfied: pycparser in ./.venv/lib/python3.9/site-packages (from cffi>=2.0.0->cryptography) (2.23)

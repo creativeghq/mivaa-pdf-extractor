@@ -1,0 +1,96 @@
+Requirement already satisfied: fastapi[standard] in ./.venv/lib/python3.9/site-packages (0.115.14)
+Collecting fastapi[standard]
+  Downloading fastapi-0.118.0-py3-none-any.whl.metadata (28 kB)
+Requirement already satisfied: starlette<0.49.0,>=0.40.0 in ./.venv/lib/python3.9/site-packages (from fastapi[standard]) (0.46.2)
+Requirement already satisfied: pydantic!=1.8,!=1.8.1,!=2.0.0,!=2.0.1,!=2.1.0,<3.0.0,>=1.7.4 in ./.venv/lib/python3.9/site-packages (from fastapi[standard]) (2.9.2)
+Requirement already satisfied: typing-extensions>=4.8.0 in ./.venv/lib/python3.9/site-packages (from fastapi[standard]) (4.8.0)
+Collecting fastapi-cli>=0.0.8 (from fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard])
+  Downloading fastapi_cli-0.0.13-py3-none-any.whl.metadata (6.3 kB)
+Requirement already satisfied: httpx<1.0.0,>=0.23.0 in ./.venv/lib/python3.9/site-packages (from fastapi[standard]) (0.24.1)
+Requirement already satisfied: jinja2>=3.1.5 in ./.venv/lib/python3.9/site-packages (from fastapi[standard]) (3.1.6)
+Requirement already satisfied: python-multipart>=0.0.18 in ./.venv/lib/python3.9/site-packages (from fastapi[standard]) (0.0.20)
+Requirement already satisfied: email-validator>=2.0.0 in ./.venv/lib/python3.9/site-packages (from fastapi[standard]) (2.3.0)
+Requirement already satisfied: uvicorn>=0.12.0 in ./.venv/lib/python3.9/site-packages (from uvicorn[standard]>=0.12.0; extra == "standard"->fastapi[standard]) (0.37.0)
+Requirement already satisfied: certifi in ./.venv/lib/python3.9/site-packages (from httpx<1.0.0,>=0.23.0->fastapi[standard]) (2025.8.3)
+Requirement already satisfied: httpcore<0.18.0,>=0.15.0 in ./.venv/lib/python3.9/site-packages (from httpx<1.0.0,>=0.23.0->fastapi[standard]) (0.17.3)
+Requirement already satisfied: idna in ./.venv/lib/python3.9/site-packages (from httpx<1.0.0,>=0.23.0->fastapi[standard]) (3.10)
+Requirement already satisfied: sniffio in ./.venv/lib/python3.9/site-packages (from httpx<1.0.0,>=0.23.0->fastapi[standard]) (1.3.1)
+Requirement already satisfied: h11<0.15,>=0.13 in ./.venv/lib/python3.9/site-packages (from httpcore<0.18.0,>=0.15.0->httpx<1.0.0,>=0.23.0->fastapi[standard]) (0.14.0)
+Requirement already satisfied: anyio<5.0,>=3.0 in ./.venv/lib/python3.9/site-packages (from httpcore<0.18.0,>=0.15.0->httpx<1.0.0,>=0.23.0->fastapi[standard]) (4.11.0)
+Requirement already satisfied: exceptiongroup>=1.0.2 in ./.venv/lib/python3.9/site-packages (from anyio<5.0,>=3.0->httpcore<0.18.0,>=0.15.0->httpx<1.0.0,>=0.23.0->fastapi[standard]) (1.3.0)
+Requirement already satisfied: annotated-types>=0.6.0 in ./.venv/lib/python3.9/site-packages (from pydantic!=1.8,!=1.8.1,!=2.0.0,!=2.0.1,!=2.1.0,<3.0.0,>=1.7.4->fastapi[standard]) (0.7.0)
+Requirement already satisfied: pydantic-core==2.23.4 in ./.venv/lib/python3.9/site-packages (from pydantic!=1.8,!=1.8.1,!=2.0.0,!=2.0.1,!=2.1.0,<3.0.0,>=1.7.4->fastapi[standard]) (2.23.4)
+Requirement already satisfied: dnspython>=2.0.0 in ./.venv/lib/python3.9/site-packages (from email-validator>=2.0.0->fastapi[standard]) (2.7.0)
+Requirement already satisfied: typer>=0.15.1 in ./.venv/lib/python3.9/site-packages (from fastapi-cli>=0.0.8->fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard]) (0.19.2)
+Collecting rich-toolkit>=0.14.8 (from fastapi-cli>=0.0.8->fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard])
+  Downloading rich_toolkit-0.15.1-py3-none-any.whl.metadata (1.0 kB)
+Collecting fastapi-cloud-cli>=0.1.1 (from fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard])
+  Downloading fastapi_cloud_cli-0.3.0-py3-none-any.whl.metadata (3.2 kB)
+Collecting rignore>=0.5.1 (from fastapi-cloud-cli>=0.1.1->fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard])
+  Downloading rignore-0.7.0-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (3.8 kB)
+Collecting httpx<1.0.0,>=0.23.0 (from fastapi[standard])
+  Using cached httpx-0.28.1-py3-none-any.whl.metadata (7.1 kB)
+Collecting sentry-sdk>=2.20.0 (from fastapi-cloud-cli>=0.1.1->fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard])
+  Downloading sentry_sdk-2.39.0-py2.py3-none-any.whl.metadata (10 kB)
+Collecting httpcore==1.* (from httpx<1.0.0,>=0.23.0->fastapi[standard])
+  Downloading httpcore-1.0.9-py3-none-any.whl.metadata (21 kB)
+Collecting h11>=0.16 (from httpcore==1.*->httpx<1.0.0,>=0.23.0->fastapi[standard])
+  Downloading h11-0.16.0-py3-none-any.whl.metadata (8.3 kB)
+Requirement already satisfied: MarkupSafe>=2.0 in ./.venv/lib/python3.9/site-packages (from jinja2>=3.1.5->fastapi[standard]) (3.0.3)
+Requirement already satisfied: click>=8.1.7 in ./.venv/lib/python3.9/site-packages (from rich-toolkit>=0.14.8->fastapi-cli>=0.0.8->fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard]) (8.1.8)
+Requirement already satisfied: rich>=13.7.1 in ./.venv/lib/python3.9/site-packages (from rich-toolkit>=0.14.8->fastapi-cli>=0.0.8->fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard]) (14.1.0)
+Collecting typing-extensions>=4.8.0 (from fastapi[standard])
+  Downloading typing_extensions-4.15.0-py3-none-any.whl.metadata (3.3 kB)
+Requirement already satisfied: markdown-it-py>=2.2.0 in ./.venv/lib/python3.9/site-packages (from rich>=13.7.1->rich-toolkit>=0.14.8->fastapi-cli>=0.0.8->fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard]) (3.0.0)
+Requirement already satisfied: pygments<3.0.0,>=2.13.0 in ./.venv/lib/python3.9/site-packages (from rich>=13.7.1->rich-toolkit>=0.14.8->fastapi-cli>=0.0.8->fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard]) (2.19.2)
+Requirement already satisfied: mdurl~=0.1 in ./.venv/lib/python3.9/site-packages (from markdown-it-py>=2.2.0->rich>=13.7.1->rich-toolkit>=0.14.8->fastapi-cli>=0.0.8->fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard]) (0.1.2)
+Requirement already satisfied: urllib3>=1.26.11 in ./.venv/lib/python3.9/site-packages (from sentry-sdk>=2.20.0->fastapi-cloud-cli>=0.1.1->fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard]) (2.5.0)
+Requirement already satisfied: shellingham>=1.3.0 in ./.venv/lib/python3.9/site-packages (from typer>=0.15.1->fastapi-cli>=0.0.8->fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard]) (1.5.4)
+Requirement already satisfied: httptools>=0.6.3 in ./.venv/lib/python3.9/site-packages (from uvicorn[standard]>=0.12.0; extra == "standard"->fastapi[standard]) (0.6.4)
+Requirement already satisfied: python-dotenv>=0.13 in ./.venv/lib/python3.9/site-packages (from uvicorn[standard]>=0.12.0; extra == "standard"->fastapi[standard]) (1.0.0)
+Requirement already satisfied: pyyaml>=5.1 in ./.venv/lib/python3.9/site-packages (from uvicorn[standard]>=0.12.0; extra == "standard"->fastapi[standard]) (6.0.3)
+Requirement already satisfied: uvloop>=0.15.1 in ./.venv/lib/python3.9/site-packages (from uvicorn[standard]>=0.12.0; extra == "standard"->fastapi[standard]) (0.21.0)
+Requirement already satisfied: watchfiles>=0.13 in ./.venv/lib/python3.9/site-packages (from uvicorn[standard]>=0.12.0; extra == "standard"->fastapi[standard]) (1.1.0)
+Requirement already satisfied: websockets>=10.4 in ./.venv/lib/python3.9/site-packages (from uvicorn[standard]>=0.12.0; extra == "standard"->fastapi[standard]) (12.0)
+Downloading fastapi-0.118.0-py3-none-any.whl (97 kB)
+Downloading fastapi_cli-0.0.13-py3-none-any.whl (11 kB)
+Downloading fastapi_cloud_cli-0.3.0-py3-none-any.whl (19 kB)
+Downloading httpx-0.28.1-py3-none-any.whl (73 kB)
+Downloading httpcore-1.0.9-py3-none-any.whl (78 kB)
+Downloading h11-0.16.0-py3-none-any.whl (37 kB)
+Downloading rich_toolkit-0.15.1-py3-none-any.whl (29 kB)
+Downloading rignore-0.7.0-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (952 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 952.3/952.3 kB 61.5 MB/s  0:00:00
+Downloading sentry_sdk-2.39.0-py2.py3-none-any.whl (370 kB)
+Downloading typing_extensions-4.15.0-py3-none-any.whl (44 kB)
+Installing collected packages: typing-extensions, sentry-sdk, rignore, h11, httpcore, rich-toolkit, httpx, fastapi, fastapi-cloud-cli, fastapi-cli
+  Attempting uninstall: typing-extensions
+    Found existing installation: typing_extensions 4.8.0
+    Uninstalling typing_extensions-4.8.0:
+      Successfully uninstalled typing_extensions-4.8.0
+  Attempting uninstall: sentry-sdk
+    Found existing installation: sentry-sdk 1.40.6
+    Uninstalling sentry-sdk-1.40.6:
+      Successfully uninstalled sentry-sdk-1.40.6
+  Attempting uninstall: h11
+    Found existing installation: h11 0.14.0
+    Uninstalling h11-0.14.0:
+      Successfully uninstalled h11-0.14.0
+  Attempting uninstall: httpcore
+    Found existing installation: httpcore 0.17.3
+    Uninstalling httpcore-0.17.3:
+      Successfully uninstalled httpcore-0.17.3
+  Attempting uninstall: httpx
+    Found existing installation: httpx 0.24.1
+    Uninstalling httpx-0.24.1:
+      Successfully uninstalled httpx-0.24.1
+  Attempting uninstall: fastapi
+    Found existing installation: fastapi 0.115.14
+    Uninstalling fastapi-0.115.14:
+      Successfully uninstalled fastapi-0.115.14
+  Attempting uninstall: fastapi-cli
+    Found existing installation: fastapi-cli 0.0.5
+    Uninstalling fastapi-cli-0.0.5:
+      Successfully uninstalled fastapi-cli-0.0.5
+
+Successfully installed fastapi-0.118.0 fastapi-cli-0.0.13 fastapi-cloud-cli-0.3.0 h11-0.16.0 httpcore-1.0.9 httpx-0.28.1 rich-toolkit-0.15.1 rignore-0.7.0 sentry-sdk-2.39.0 typing-extensions-4.15.0
