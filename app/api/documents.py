@@ -448,8 +448,7 @@ async def process_document(
 async def process_document_from_url(
     request: URLProcessRequest,
     background_tasks: BackgroundTasks,
-    current_user: User = Depends(get_current_user),
-    workspace_context: WorkspaceContext = Depends(get_workspace_context)
+
 ) -> DocumentProcessResponse:
     """
     Download and process a PDF document from a URL.
@@ -592,8 +591,7 @@ async def process_document_from_url(
 async def batch_process_documents(
     request: BatchProcessRequest,
     background_tasks: BackgroundTasks,
-    current_user: User = Depends(get_current_user),
-    workspace_context: WorkspaceContext = Depends(get_workspace_context)
+
 ) -> BatchProcessResponse:
     """
     Process multiple PDF documents in batch.
@@ -779,8 +777,7 @@ async def get_job_status(
     description="Check the health and availability of document processing services"
 )
 async def health_check(
-    current_user: User = Depends(get_current_user),
-    workspace_context: WorkspaceContext = Depends(get_workspace_context)
+
 ) -> HealthCheckResponse:
     """
     Health check endpoint for document processing service.

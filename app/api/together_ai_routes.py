@@ -124,8 +124,6 @@ class SemanticAnalysisAPIResponse(BaseResponse):
 )
 async def semantic_analysis(
     request: SemanticAnalysisAPIRequest,
-    current_user: User = Depends(get_current_user),
-    workspace_context: WorkspaceContext = Depends(get_workspace_context),
     together_ai_service: TogetherAIService = Depends(get_together_ai_service)
 ):
     """

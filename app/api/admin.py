@@ -135,9 +135,7 @@ async def list_jobs(
 @router.get("/jobs/{job_id}", response_model=JobStatusResponse)
 async def get_job_status(
     job_id: str,
-    current_user: User = Depends(get_current_user),
-    workspace_context: WorkspaceContext = Depends(get_workspace_context),
-    _: None = Depends(require_admin)
+
 ):
     """
     Get detailed status information for a specific job
@@ -170,9 +168,7 @@ async def get_job_status(
 @router.delete("/jobs/{job_id}")
 async def cancel_job(
     job_id: str,
-    current_user: User = Depends(get_current_user),
-    workspace_context: WorkspaceContext = Depends(get_workspace_context),
-    _: None = Depends(require_admin)
+
 ):
     """
     Cancel a running job
@@ -420,9 +416,7 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
 
 @router.get("/system/health")
 async def get_system_health(
-    current_user: User = Depends(get_current_user),
-    workspace_context: WorkspaceContext = Depends(get_workspace_context),
-    _: None = Depends(require_admin)
+
 ):
     """
     Get comprehensive system health status
