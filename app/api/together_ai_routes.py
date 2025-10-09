@@ -180,7 +180,7 @@ async def semantic_analysis(
             processing_time_ms = int((time.time() - start_time) * 1000)
 
             # Perform database-based analysis
-            analysis_text = await self._get_database_analysis(request.analysis_type)
+            analysis_text = await _get_database_analysis(request.analysis_type)
 
             response = SemanticAnalysisAPIResponse(
                 success=True,
@@ -201,7 +201,7 @@ async def semantic_analysis(
 
         return response
 
-    async def _get_database_analysis(self, analysis_type: str) -> str:
+async def _get_database_analysis(analysis_type: str) -> str:
         """Get analysis from database based on analysis type."""
         try:
             from app.dependencies import get_supabase_client
