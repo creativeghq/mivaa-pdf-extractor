@@ -201,38 +201,30 @@ async def semantic_analysis(
 
         return response
 
+
 async def _get_database_analysis(analysis_type: str) -> str:
-        """Get analysis from database based on analysis type."""
-        try:
-            from app.dependencies import get_supabase_client
-            supabase = get_supabase_client()
+    """Get analysis from database based on analysis type."""
+    try:
+        from app.dependencies import get_supabase_client
+        supabase = get_supabase_client()
 
-            # Query analysis templates from database
-            result = supabase.table('analysis_templates').select('*').eq('analysis_type', analysis_type).execute()
+        # Query analysis templates from database
+        result = supabase.table('analysis_templates').select('*').eq('analysis_type', analysis_type).execute()
 
-            if result.data:
-                return result.data[0].get('template_text', 'Analysis completed using database template')
+        if result.data:
+            return result.data[0].get('template_text', 'Analysis completed using database template')
+        else:
+            # Return type-specific analysis
+            if analysis_type == "material_identification":
+                return "Material identification analysis completed using database patterns and historical data."
+            elif analysis_type == "surface_analysis":
+                return "Surface analysis completed using database-stored material characteristics and properties."
             else:
-                # Return type-specific analysis
-                if analysis_type == "material_identification":
-                    return "Material identification analysis completed using database patterns and historical data."
-                elif analysis_type == "surface_analysis":
-                    return "Surface analysis completed using database-stored material characteristics and properties."
-                else:
-                    return "Semantic analysis completed using database-stored material knowledge and patterns."
+                return "Semantic analysis completed using database-stored material knowledge and patterns."
 
-        except Exception as e:
-            logger.warning(f"Database analysis failed: {str(e)}")
-            return "Analysis completed using available data sources."
-        
     except Exception as e:
-        processing_time_ms = int((time.time() - start_time) * 1000)
-        logger.error(f"Unexpected error during semantic analysis: {str(e)}")
-        
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An unexpected error occurred during semantic analysis"
-        )
+        logger.warning(f"Database analysis failed: {str(e)}")
+        return "Analysis completed using available data sources."
 
 
 @router.get(
