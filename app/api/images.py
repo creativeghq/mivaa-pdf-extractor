@@ -65,7 +65,7 @@ async def analyze_image(
         
         # Get image data from Supabase
         supabase = get_supabase_client()
-        result = supabase.table("images").select("*").eq("id", request.image_id).execute()
+        result = supabase.client.table("images").select("*").eq("id", request.image_id).execute()
         
         if not result.data:
             raise HTTPException(
@@ -152,7 +152,7 @@ async def analyze_batch_images(
         for image_id in request.image_ids:
             try:
                 # Get image data from database
-                result = supabase.table("images").select("*").eq("id", image_id).execute()
+                result = supabase.client.table("images").select("*").eq("id", image_id).execute()
                 
                 if result.data:
                     img_data = result.data[0]
@@ -271,7 +271,7 @@ async def search_similar_images(
 
         try:
             # Query images from database based on search criteria
-            query = supabase.table('images').select('*')
+            query = supabase.client.table('images').select('*')
 
             # Apply filters if provided
             if request.document_ids:
@@ -440,7 +440,7 @@ async def health_check() -> BaseResponse:
         supabase = get_supabase_client()
         db_healthy = False
         try:
-            result = supabase.table('health_check').select('*').limit(1).execute()
+            result = supabase.client.table('health_check').select('*').limit(1).execute()
             db_healthy = True
         except Exception as db_error:
             logger.warning(f"Database health check failed: {str(db_error)}")
