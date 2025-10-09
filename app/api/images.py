@@ -53,9 +53,7 @@ settings = get_settings()
 @router.post("/analyze", response_model=ImageAnalysisResponse)
 async def analyze_image(
     request: ImageAnalysisRequest,
-    material_kai: MaterialKaiService = Depends(get_material_kai_service),
-    current_user: User = Depends(get_current_user),
-    workspace: WorkspaceContext = Depends(get_workspace_context)
+    material_kai: MaterialKaiService = Depends(get_material_kai_service)
 ) -> ImageAnalysisResponse:
     """
     Analyze a single image using Material Kai Vision Platform.
@@ -132,9 +130,7 @@ async def analyze_image(
 @router.post("/analyze/batch", response_model=ImageBatchResponse)
 async def analyze_batch_images(
     request: ImageBatchRequest,
-    material_kai: MaterialKaiService = Depends(get_material_kai_service),
-    current_user: User = Depends(get_current_user),
-    workspace: WorkspaceContext = Depends(get_workspace_context)
+    material_kai: MaterialKaiService = Depends(get_material_kai_service)
 ) -> ImageBatchResponse:
     """
     Analyze multiple images in batch using Material Kai Vision Platform.
@@ -253,9 +249,7 @@ async def analyze_batch_images(
 
 @router.post("/search", response_model=ImageSearchResponse)
 async def search_similar_images(
-    request: ImageSearchRequest,
-    current_user: User = Depends(get_current_user),
-    workspace: WorkspaceContext = Depends(get_workspace_context)
+    request: ImageSearchRequest
 ) -> ImageSearchResponse:
     """
     Search for similar images using visual similarity or description matching.
@@ -341,9 +335,7 @@ async def upload_and_analyze_image(
     file: UploadFile = File(...),
     analysis_types: str = Form(default="description,ocr"),
     confidence_threshold: float = Form(default=0.5),
-    material_kai: MaterialKaiService = Depends(get_material_kai_service),
-    current_user: User = Depends(get_current_user),
-    workspace: WorkspaceContext = Depends(get_workspace_context)
+    material_kai: MaterialKaiService = Depends(get_material_kai_service)
 ) -> ImageAnalysisResponse:
     """
     Upload and analyze an image file in a single request.
