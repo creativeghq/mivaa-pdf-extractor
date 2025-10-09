@@ -201,6 +201,15 @@ async def semantic_analysis(
 
         return response
 
+    except Exception as e:
+        processing_time_ms = int((time.time() - start_time) * 1000)
+        logger.error(f"Unexpected error during semantic analysis: {str(e)}")
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred during semantic analysis"
+        )
+
 
 async def _get_database_analysis(analysis_type: str) -> str:
     """Get analysis from database based on analysis type."""
