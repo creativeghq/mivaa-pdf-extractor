@@ -22,11 +22,15 @@ from .common import BaseResponse, ProcessingStatus, PaginationParams
 
 class JobStatus(str, Enum):
     """Extended job status enumeration."""
-    
+
+    PENDING = "pending"
     QUEUED = "queued"
     RUNNING = "running"
     PAUSED = "paused"
     RETRYING = "retrying"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class JobPriority(str, Enum):
@@ -40,10 +44,11 @@ class JobPriority(str, Enum):
 
 class JobType(str, Enum):
     """Types of background jobs."""
-    
+
     DOCUMENT_PROCESSING = "document_processing"
     IMAGE_ANALYSIS = "image_analysis"
     BATCH_PROCESSING = "batch_processing"
+    BULK_PROCESSING = "bulk_processing"
     EMBEDDING_GENERATION = "embedding_generation"
     SEARCH_INDEXING = "search_indexing"
     DATA_EXPORT = "data_export"

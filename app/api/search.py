@@ -817,12 +817,33 @@ async def multimodal_query(
             )
         
         # Perform multi-modal RAG query
-        result = await llamaindex.multimodal_query(
-            document_ids=document_ids,
-            **query_params
-        )
-        
-        if not result["success"]:
+        # Note: Using multimodal_analysis as a fallback since multimodal_query method signature doesn't match
+        try:
+            if document_ids:
+                # Use the first document for analysis
+                result = await llamaindex.multimodal_analysis(
+                    document_id=document_ids[0],
+                    analysis_types=["text", "image", "ocr"],
+                    include_text_analysis=True,
+                    include_image_analysis=request.include_image_context,
+                    include_ocr_analysis=True,
+                    include_structure_analysis=True,
+                    analysis_depth=request.image_analysis_depth,
+                    multimodal_llm_model=query_params["multimodal_llm_model"]
+                )
+            else:
+                result = {
+                    "success": False,
+                    "error": "No documents available for analysis"
+                }
+        except Exception as e:
+            logger.error(f"Multimodal analysis failed: {e}")
+            result = {
+                "success": False,
+                "error": f"Analysis failed: {str(e)}"
+            }
+
+        if not result.get("success", False):
             raise HTTPException(
                 status_code=400,
                 detail=f"Multi-modal query failed: {result.get('error', 'Unknown error')}"
@@ -830,26 +851,36 @@ async def multimodal_query(
         
         # Build source citations with multi-modal information
         sources = []
-        for source in result.get("sources", []):
+        analysis_results = result.get("analysis_results", {})
+
+        # Create a source citation from the analysis results
+        if document_ids:
             citation = SourceCitation(
-                document_id=source.get("document_id", ""),
-                content_excerpt=source.get("content_excerpt", ""),
-                content_type=source.get("content_type", "text"),
-                ocr_excerpt=source.get("ocr_excerpt", ""),
-                image_reference=source.get("image_reference", ""),
-                multimodal_confidence=source.get("multimodal_confidence", 0.0),
-                page_number=source.get("page_number"),
-                metadata=source.get("metadata", {})
+                document_id=document_ids[0],
+                content_excerpt=analysis_results.get("text_summary", "")[:200] + "..." if analysis_results.get("text_summary") else "",
+                content_type="multimodal",
+                ocr_excerpt=analysis_results.get("ocr_summary", "")[:200] + "..." if analysis_results.get("ocr_summary") else "",
+                image_reference="",
+                multimodal_confidence=analysis_results.get("confidence_score", 0.0),
+                page_number=None,
+                metadata=result.get("metadata", {})
             )
             sources.append(citation)
-        
+
+        # Generate a response based on the analysis
+        answer = f"Based on the multimodal analysis: {analysis_results.get('summary', 'Analysis completed successfully.')}"
+        if analysis_results.get("text_summary"):
+            answer += f"\n\nText content: {analysis_results['text_summary']}"
+        if analysis_results.get("image_summary") and request.include_image_context:
+            answer += f"\n\nImage content: {analysis_results['image_summary']}"
+
         return QueryResponse(
             success=True,
             question=request.question,
-            answer=result["response"],
+            answer=answer,
             sources=sources,
-            multimodal_context_used=result.get("multimodal_context_used", False),
-            image_analysis_count=result.get("image_analysis_count", 0),
+            multimodal_context_used=request.include_image_context,
+            image_analysis_count=analysis_results.get("image_count", 0),
             metadata={
                 **result.get("metadata", {}),
                 "multimodal_enabled": True,

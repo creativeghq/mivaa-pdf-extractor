@@ -309,7 +309,7 @@ class BatchProcessRequest(BaseModel):
     async_processing: bool = Field(True, description="Whether to process asynchronously")
 
     # Processing options (applied to all documents)
-    options: ProcessingOptions = Field(default_factory=ProcessingOptions, description="Processing configuration")
+    options: Optional[ProcessingOptions] = Field(None, description="Processing configuration")
 
     # Metadata (applied to all documents)
     tags: List[str] = Field(default_factory=list, description="Tags for all documents")

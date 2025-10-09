@@ -42,6 +42,51 @@ router = APIRouter(prefix="/api", tags=["Health & Monitoring"])
 active_jobs: Dict[str, Dict[str, Any]] = {}
 job_history: List[Dict[str, Any]] = []
 
+def migrate_job_data():
+    """Migrate existing job data to match JobListItem schema"""
+    global job_history, active_jobs
+
+    # Migrate job_history
+    for job in job_history:
+        if "priority" not in job:
+            job["priority"] = "normal"
+        if "started_at" not in job:
+            job["started_at"] = None
+        if "completed_at" not in job:
+            job["completed_at"] = None
+        if "progress_percentage" not in job:
+            job["progress_percentage"] = 100.0 if job.get("status") == "completed" else 0.0
+        if "current_step" not in job:
+            job["current_step"] = None
+        if "description" not in job:
+            job["description"] = None
+        if "success" not in job:
+            job["success"] = job.get("status") == "completed"
+        if "error_message" not in job:
+            job["error_message"] = None
+
+    # Migrate active_jobs
+    for job in active_jobs.values():
+        if "priority" not in job:
+            job["priority"] = "normal"
+        if "started_at" not in job:
+            job["started_at"] = None
+        if "completed_at" not in job:
+            job["completed_at"] = None
+        if "progress_percentage" not in job:
+            job["progress_percentage"] = 50.0 if job.get("status") == "running" else 0.0
+        if "current_step" not in job:
+            job["current_step"] = None
+        if "description" not in job:
+            job["description"] = None
+        if "success" not in job:
+            job["success"] = None
+        if "error_message" not in job:
+            job["error_message"] = None
+
+# Run migration on startup
+migrate_job_data()
+
 def get_pdf_processor():
     """Dependency to get PDF processor instance"""
     return PDFProcessor()
@@ -64,8 +109,16 @@ async def track_job(job_id: str, job_type: str, status: str, details: Dict[str, 
         "job_id": job_id,
         "job_type": job_type,
         "status": status,
+        "priority": "normal",  # Default priority
         "created_at": datetime.utcnow().isoformat(),
         "updated_at": datetime.utcnow().isoformat(),
+        "started_at": None,
+        "completed_at": None,
+        "progress_percentage": 0.0,
+        "current_step": None,
+        "description": None,
+        "success": None,
+        "error_message": None,
         "details": details or {}
     }
     
@@ -430,11 +483,15 @@ async def get_system_health(
         
         # Check Supabase connection
         try:
+            import time
+            start_time = time.time()
             supabase_client = SupabaseClient()
             # Simple health check query
+            result = supabase_client.table('health_check').select('*').limit(1).execute()
+            response_time_ms = int((time.time() - start_time) * 1000)
             services_health["supabase"] = {
                 "status": "healthy",
-                "response_time_ms": 50  # Placeholder
+                "response_time_ms": response_time_ms
             }
         except Exception as e:
             services_health["supabase"] = {
@@ -476,6 +533,11 @@ async def get_system_health(
             for service in services_health.values()
         )
         
+        # Get real system uptime
+        import time
+        boot_time = psutil.boot_time()
+        uptime_seconds = time.time() - boot_time
+
         system_metrics = SystemMetrics(
             cpu_usage_percent=cpu_percent,
             memory_usage_percent=memory.percent,
@@ -483,7 +545,7 @@ async def get_system_health(
             disk_usage_percent=disk.percent,
             disk_free_gb=disk.free / (1024**3),
             active_jobs_count=len(active_jobs),
-            uptime_seconds=None  # Would need to track application start time
+            uptime_seconds=uptime_seconds
         )
         
         return {

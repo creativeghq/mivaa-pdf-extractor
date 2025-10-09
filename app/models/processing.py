@@ -201,7 +201,7 @@ class ProcessingStatus(str, Enum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
-    TIMEOUT = "timeout"
+    CANCELLED = "cancelled"
 
 
 class PDFProcessingJob(BaseModel):

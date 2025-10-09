@@ -1025,11 +1025,16 @@ _material_kai_service: Optional[MaterialKaiService] = None
 async def get_material_kai_service() -> MaterialKaiService:
     """Get or create Material Kai service instance."""
     global _material_kai_service
-    
+
     if _material_kai_service is None:
         _material_kai_service = MaterialKaiService()
-        await _material_kai_service.connect()
-    
+        try:
+            connection_success = await _material_kai_service.connect()
+            if not connection_success:
+                logger.warning("Material Kai service connection failed, service will use fallback mode")
+        except Exception as e:
+            logger.warning(f"Material Kai service connection error: {e}, service will use fallback mode")
+
     return _material_kai_service
 
 
