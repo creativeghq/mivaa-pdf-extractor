@@ -102,15 +102,23 @@ async def analyze_image(
                 confidence_threshold=request.confidence_threshold
             )
             
+            # Create proper metadata
+            metadata = ImageMetadata(
+                width=image_data.get("width", 0),
+                height=image_data.get("height", 0),
+                format=image_data.get("format", "JPEG"),
+                size_bytes=analysis_result.get("metadata", {}).get("size_bytes", 0)
+            )
+
             return ImageAnalysisResponse(
                 success=True,
                 message="Image analysis completed successfully",
-                image_id=request.image_id,
+                image_id=request.image_id or image_data.get("id", "external"),
                 status=ProcessingStatus.COMPLETED,
                 description=analysis_result.get("description", ""),
                 detected_objects=analysis_result.get("detected_objects", []),
                 detected_text=analysis_result.get("detected_text", []),
-                metadata=analysis_result.get("metadata", {}),
+                metadata=metadata,
                 analysis_types_performed=request.analysis_types,
                 processing_time_ms=analysis_result.get("processing_time_ms", 0)
             )
@@ -119,19 +127,23 @@ async def analyze_image(
             logger.warning(f"Material Kai service failed: {str(service_error)}, using database fallback")
             
             # Fallback to database data
+            # Create proper metadata
+            metadata = ImageMetadata(
+                width=image_data.get("width", 0),
+                height=image_data.get("height", 0),
+                format=image_data.get("format", "JPEG"),
+                size_bytes=0
+            )
+
             return ImageAnalysisResponse(
                 success=True,
                 message="Image analysis completed using database fallback",
-                image_id=request.image_id,
+                image_id=request.image_id or image_data.get("id", "external"),
                 status=ProcessingStatus.COMPLETED,
                 description=image_data.get("description", "No description available"),
                 detected_objects=image_data.get("detected_objects", []),
                 detected_text=image_data.get("detected_text", []),
-                metadata={
-                    "width": image_data.get("width", 0),
-                    "height": image_data.get("height", 0),
-                    "format": image_data.get("format", "JPEG")
-                },
+                metadata=metadata,
                 analysis_types_performed=request.analysis_types,
                 processing_time_ms=100.0
             )
