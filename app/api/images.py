@@ -272,6 +272,9 @@ async def analyze_batch_images(
         completed_count = sum(1 for r in batch_results if r.status == ProcessingStatus.COMPLETED)
         failed_count = len(batch_results) - completed_count
         
+        # Calculate average processing time
+        average_time = total_processing_time / len(request.image_ids) if request.image_ids else 0
+
         response = ImageBatchResponse(
             success=True,
             message=f"Batch analysis completed: {completed_count} successful, {failed_count} failed",
@@ -280,7 +283,8 @@ async def analyze_batch_images(
             completed_count=completed_count,
             failed_count=failed_count,
             results=batch_results,
-            processing_time_ms=total_processing_time
+            total_processing_time_ms=total_processing_time,
+            average_time_per_image_ms=average_time
         )
         
         logger.info(f"Batch image analysis completed: {completed_count}/{len(request.image_ids)} successful")
