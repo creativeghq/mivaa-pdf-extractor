@@ -196,6 +196,14 @@ async def analyze_batch_images(
                             confidence_threshold=request.confidence_threshold
                         )
                         
+                        # Create proper metadata
+                        metadata = ImageMetadata(
+                            width=img_data.get("width", 0),
+                            height=img_data.get("height", 0),
+                            format=img_data.get("format", "JPEG"),
+                            size_bytes=analysis_result.get("metadata", {}).get("size_bytes", 0)
+                        )
+
                         batch_results.append(ImageBatchResult(
                             image_id=image_id,
                             status=ProcessingStatus.COMPLETED,
@@ -207,14 +215,23 @@ async def analyze_batch_images(
                                 description=analysis_result.get("description", ""),
                                 detected_objects=analysis_result.get("detected_objects", []),
                                 detected_text=analysis_result.get("detected_text", []),
-                                metadata=analysis_result.get("metadata", {}),
+                                metadata=metadata,
                                 analysis_types_performed=request.analysis_types,
                                 processing_time_ms=analysis_result.get("processing_time_ms", 0)
-                            )
+                            ),
+                            processing_time_ms=analysis_result.get("processing_time_ms", 100.0)
                         ))
                         
                     except Exception as service_error:
                         # Fallback to database data
+                        # Create proper metadata
+                        metadata = ImageMetadata(
+                            width=img_data.get("width", 0),
+                            height=img_data.get("height", 0),
+                            format=img_data.get("format", "JPEG"),
+                            size_bytes=0
+                        )
+
                         batch_results.append(ImageBatchResult(
                             image_id=image_id,
                             status=ProcessingStatus.COMPLETED,
@@ -226,21 +243,19 @@ async def analyze_batch_images(
                                 description=img_data.get("description", "No description available"),
                                 detected_objects=img_data.get("detected_objects", []),
                                 detected_text=img_data.get("detected_text", []),
-                                metadata={
-                                    "width": img_data.get("width", 0),
-                                    "height": img_data.get("height", 0),
-                                    "format": img_data.get("format", "JPEG")
-                                },
+                                metadata=metadata,
                                 analysis_types_performed=request.analysis_types,
                                 processing_time_ms=100.0
-                            )
+                            ),
+                            processing_time_ms=100.0
                         ))
                 else:
                     # Image not found
                     batch_results.append(ImageBatchResult(
                         image_id=image_id,
                         status=ProcessingStatus.FAILED,
-                        error_message=f"Image {image_id} not found in database"
+                        error=f"Image {image_id} not found in database",
+                        processing_time_ms=0.0
                     ))
                     
             except Exception as img_error:
@@ -248,7 +263,8 @@ async def analyze_batch_images(
                 batch_results.append(ImageBatchResult(
                     image_id=image_id,
                     status=ProcessingStatus.FAILED,
-                    error_message=f"Processing failed: {str(img_error)}"
+                    error=f"Processing failed: {str(img_error)}",
+                    processing_time_ms=0.0
                 ))
         
         # Calculate processing statistics
