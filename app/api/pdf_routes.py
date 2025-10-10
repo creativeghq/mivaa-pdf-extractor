@@ -87,9 +87,7 @@ def create_zip_stream(output_dir):
 )
 async def extract_markdown(
     file: UploadFile = File(..., description="PDF file to process"),
-    page_number: Optional[int] = None,
-    current_user: User = Depends(get_current_user),
-    workspace_context: WorkspaceContext = Depends(get_workspace_context)
+    page_number: Optional[int] = None
 ):
     """
     Extract markdown content from a PDF file.
@@ -145,9 +143,7 @@ async def extract_markdown(
 )
 async def extract_tables(
     file: UploadFile = File(..., description="PDF file to process"),
-    page_number: Optional[int] = None,
-    current_user: User = Depends(get_current_user),
-    workspace_context: WorkspaceContext = Depends(get_workspace_context)
+    page_number: Optional[int] = None
 ) -> StreamingResponse:
     """
     Extract tables from a PDF file and return as ZIP archive.
@@ -230,9 +226,7 @@ async def extract_tables(
 )
 async def extract_images(
     file: UploadFile = File(..., description="PDF file to process"),
-    page_number: Optional[int] = None,
-    current_user: User = Depends(get_current_user),
-    workspace_context: WorkspaceContext = Depends(get_workspace_context)
+    page_number: Optional[int] = None
 ) -> StreamingResponse:
     """
     Extract images from a PDF file and return as ZIP archive.

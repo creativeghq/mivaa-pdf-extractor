@@ -379,8 +379,6 @@ async def process_document_from_url_background(
 )
 async def process_document(
     background_tasks: BackgroundTasks,
-    current_user: User = Depends(get_current_user),
-    workspace_context: WorkspaceContext = Depends(get_workspace_context),
     file: UploadFile = File(..., description="PDF file to process"),
     extract_text: bool = True,
     extract_images: bool = False,
@@ -834,9 +832,7 @@ async def analyze_document(
     analyze_structure: bool = True,
     analyze_content: bool = True,
     analyze_images: bool = False,
-    generate_summary: bool = False,
-    current_user: User = Depends(get_current_user),
-    workspace_context: WorkspaceContext = Depends(get_workspace_context)
+    generate_summary: bool = False
 ) -> DocumentAnalysisResponse:
     """
     Perform advanced analysis of document structure and content.
