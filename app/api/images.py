@@ -61,24 +61,43 @@ async def analyze_image(
     Supports various analysis types including OCR, object detection, and material recognition.
     """
     try:
-        logger.info(f"Starting image analysis for image: {request.image_id}")
-        
-        # Get image data from Supabase
-        supabase = get_supabase_client()
-        result = supabase.client.table("images").select("*").eq("id", request.image_id).execute()
-        
-        if not result.data:
+        logger.info(f"Starting image analysis for image: {request.image_id or request.image_url}")
+
+        # Handle both image_id and image_url cases
+        if request.image_id:
+            # Get image data from Supabase by ID
+            supabase = get_supabase_client()
+            result = supabase.client.table("images").select("*").eq("id", request.image_id).execute()
+
+            if not result.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Image {request.image_id} not found"
+                )
+
+            image_data = result.data[0]
+            image_url = image_data.get("image_url")
+        elif request.image_url:
+            # Use provided image URL directly
+            image_url = str(request.image_url)
+            image_data = {
+                "id": "external",
+                "image_url": image_url,
+                "description": "External image",
+                "width": 0,
+                "height": 0,
+                "format": "JPEG"
+            }
+        else:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Image {request.image_id} not found"
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Either image_id or image_url must be provided"
             )
-        
-        image_data = result.data[0]
         
         # Perform real analysis using Material Kai service
         try:
             analysis_result = await material_kai.analyze_image(
-                image_url=image_data.get("image_url"),
+                image_url=image_url,
                 analysis_types=request.analysis_types,
                 confidence_threshold=request.confidence_threshold
             )
