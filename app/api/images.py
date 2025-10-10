@@ -342,17 +342,20 @@ async def search_similar_images(
 
             # Process results into similar images format
             for img_data in result.data:
-                similar_images.append({
-                    "image_id": img_data.get("id", ""),
-                    "similarity_score": 0.95,  # Real similarity would come from vector search
-                    "image_url": img_data.get("image_url", ""),
-                    "description": img_data.get("description", ""),
-                    "metadata": {
+                similar_images.append(SimilarImage(
+                    image_id=img_data.get("id", ""),
+                    document_id=img_data.get("document_id") or "unknown",
+                    document_name=f"Document for image {img_data.get('id', 'unknown')}",
+                    page_number=1,
+                    similarity_score=0.95,  # Real similarity would come from vector search
+                    image_url=img_data.get("image_url", ""),
+                    description=img_data.get("description", ""),
+                    tags=img_data.get("tags", []),
+                    dimensions={
                         "width": img_data.get("width", 0),
-                        "height": img_data.get("height", 0),
-                        "format": img_data.get("format", "JPEG")
+                        "height": img_data.get("height", 0)
                     }
-                })
+                ))
 
         except Exception as db_error:
             logger.warning(f"Database search failed: {str(db_error)}, returning empty results")
