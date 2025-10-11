@@ -230,6 +230,8 @@ class ProcessingOptions(BaseModel):
     timeout_seconds: Optional[int] = Field(300, description="Processing timeout")
     quality: Optional[str] = Field("standard", pattern="^(fast|standard|high)$", description="Processing quality")
     language: Optional[str] = Field("auto", description="Document language hint")
+    chunk_size: Optional[int] = Field(1000, description="Text chunk size for processing")
+    overlap: Optional[int] = Field(200, description="Overlap between text chunks")
     
     @field_validator('timeout_seconds')
     @classmethod
