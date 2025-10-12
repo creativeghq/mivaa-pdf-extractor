@@ -388,18 +388,41 @@ class PDFProcessor:
             raise PDFExtractionError(f"Failed to parse PDF content: {str(e)}") from e
     
     def _extract_markdown_sync(
-        self, 
-        pdf_path: str, 
+        self,
+        pdf_path: str,
         processing_options: Dict[str, Any]
     ) -> Tuple[str, Dict[str, Any]]:
         """
-        Synchronous wrapper for existing markdown extraction function.
+        Enhanced markdown extraction with OCR fallback for text-as-images PDFs.
+
+        Features:
+        - Primary extraction using PyMuPDF4LLM
+        - OCR fallback for PDFs with text-as-images (like WIFI MOMO lookbook)
+        - Advanced text processing and cleaning
+        - Metadata extraction and analysis
         """
         try:
             # Use existing extractor function
             page_number = processing_options.get('page_number')
             markdown_content = extract_pdf_to_markdown(pdf_path, page_number)
-            
+
+            # Check if we got meaningful text content
+            clean_content = markdown_content.replace('-', '').replace('\n', '').strip()
+
+            # If we only got page separators or very little content, try OCR
+            if len(clean_content) < 100:  # Less than 100 chars of actual content
+                self.logger.info("Standard extraction yielded minimal text, attempting OCR extraction")
+                try:
+                    ocr_content = self._extract_text_with_ocr(pdf_path, processing_options)
+
+                    if len(ocr_content.strip()) > len(clean_content):
+                        self.logger.info(f"OCR extraction successful: {len(ocr_content)} characters vs {len(clean_content)} from standard")
+                        markdown_content = ocr_content
+                    else:
+                        self.logger.info("OCR did not improve text extraction, using standard result")
+                except Exception as ocr_error:
+                    self.logger.warning(f"OCR extraction failed: {ocr_error}, using standard result")
+
             # Get basic metadata (page count, etc.)
             import fitz  # PyMuPDF
             doc = fitz.open(pdf_path)
@@ -440,7 +463,88 @@ class PDFProcessor:
             
         except Exception as e:
             raise PDFExtractionError(f"Markdown extraction failed: {str(e)}") from e
-    
+
+    def _extract_text_with_ocr(
+        self,
+        pdf_path: str,
+        processing_options: Dict[str, Any]
+    ) -> str:
+        """
+        Extract text from PDF using OCR for text-as-images PDFs.
+
+        This method renders PDF pages as images and uses OCR to extract text.
+        Useful for PDFs where text is embedded as images or paths.
+        """
+        try:
+            import fitz  # PyMuPDF
+            from app.services.ocr_service import get_ocr_service, OCRConfig
+
+            # Initialize OCR service
+            ocr_languages = processing_options.get('ocr_languages', ['en'])
+            ocr_config = OCRConfig(
+                languages=ocr_languages,
+                confidence_threshold=0.3,  # Lower threshold for better recall
+                preprocessing_enabled=True,
+                fallback_to_tesseract=True
+            )
+            ocr_service = get_ocr_service(ocr_config)
+
+            doc = fitz.open(pdf_path)
+            all_text = []
+
+            # Process specific page or all pages
+            page_number = processing_options.get('page_number')
+            if page_number is not None:
+                page_range = [page_number - 1] if page_number > 0 else [0]
+            else:
+                page_range = range(min(20, len(doc)))  # Limit to first 20 pages for performance
+
+            self.logger.info(f"Processing {len(page_range)} pages with OCR")
+
+            for page_num in page_range:
+                if page_num < len(doc):
+                    page = doc.load_page(page_num)
+
+                    # Render page as high-quality image
+                    mat = fitz.Matrix(2.5, 2.5)  # 2.5x zoom for good OCR quality
+                    pix = page.get_pixmap(matrix=mat)
+                    img_data = pix.tobytes('png')
+
+                    # Extract text with OCR
+                    try:
+                        from PIL import Image
+                        import io
+
+                        img = Image.open(io.BytesIO(img_data))
+                        ocr_results = ocr_service.extract_text_from_image(img)
+
+                        # Combine all OCR results for this page
+                        page_text = []
+                        for result in ocr_results:
+                            if result.text.strip() and result.confidence > 0.3:
+                                page_text.append(result.text.strip())
+
+                        if page_text:
+                            combined_page_text = ' '.join(page_text)
+                            all_text.append(f"## Page {page_num + 1}\n\n{combined_page_text}\n")
+                            self.logger.debug(f"Page {page_num + 1}: Extracted {len(combined_page_text)} characters")
+
+                    except Exception as page_error:
+                        self.logger.warning(f"OCR failed for page {page_num + 1}: {page_error}")
+                        continue
+
+            doc.close()
+
+            # Combine all extracted text
+            final_text = '\n'.join(all_text)
+            self.logger.info(f"OCR extraction complete: {len(final_text)} total characters from {len(page_range)} pages")
+
+            return final_text
+
+        except Exception as e:
+            self.logger.error(f"OCR text extraction failed: {str(e)}")
+            raise PDFExtractionError(f"OCR text extraction failed: {str(e)}") from e
+
     def _extract_images_sync(
         self,
         pdf_path: str,

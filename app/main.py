@@ -659,7 +659,7 @@ try:
                 error="Material Kai Vision Platform is not available",
                 detail="HTTP 503",
                 timestamp=datetime.utcnow().isoformat()
-            ).dict()
+            ).model_dump()
         )
 except ImportError:
     logger.warning("MaterialKaiIntegrationError not available for exception handling")
@@ -693,10 +693,11 @@ async def http_exception_handler(request, exc: HTTPException):
     return JSONResponse(
         status_code=exc.status_code,
         content=ErrorResponse(
-            error=exc.detail,
-            detail=f"HTTP {exc.status_code}",
+            message=exc.detail,
+            error_code=f"HTTP_{exc.status_code}",
+            error_type="HTTPException",
             timestamp=datetime.utcnow().isoformat()
-        ).dict()
+        ).model_dump()
     )
 
 
@@ -729,10 +730,12 @@ async def general_exception_handler(request, exc: Exception):
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content=ErrorResponse(
-            error="Internal server error",
-            detail=str(exc) if get_settings().debug else "An unexpected error occurred",
+            message="Internal server error",
+            error_code="INTERNAL_SERVER_ERROR",
+            error_type="Exception",
+            details={"error": str(exc)} if get_settings().debug else None,
             timestamp=datetime.utcnow().isoformat()
-        ).dict()
+        ).model_dump()
     )
 
 

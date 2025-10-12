@@ -59,6 +59,9 @@ from app.schemas.jobs import (
     JobProgress
 )
 
+# Import text chunking utility
+from app.utils.text_chunking import smart_chunk_text
+
 # Import existing services
 from app.services.pdf_processor import PDFProcessor, PDFProcessingResult
 from app.services.supabase_client import SupabaseClient
@@ -487,7 +490,12 @@ async def process_document(
                         markdown_content=result.markdown_content or "",
                         images=result.extracted_images or [],
                         tables=[],  # TODO: Extract from result if available
-                        chunks=[],  # TODO: Generate chunks if needed
+                        chunks=smart_chunk_text(
+                            result.markdown_content or "",
+                            chunk_size=options.chunk_size or 1000,
+                            overlap=options.overlap or 200,
+                            min_chunk_size=10
+                        ) if result.markdown_content else [],
                         summary=None,  # TODO: Generate summary if requested
                         key_topics=[],  # TODO: Extract topics if needed
                         entities=[]  # TODO: Extract entities if needed
@@ -597,9 +605,19 @@ async def process_document_from_url(
                 )
                 
                 # Create proper DocumentContent
+                markdown_text = result.markdown_content or ""
+
+                # Generate text chunks using smart chunking
+                text_chunks = smart_chunk_text(
+                    markdown_text,
+                    chunk_size=request.options.chunk_size or 1000,
+                    overlap=request.options.overlap or 200,
+                    min_chunk_size=10
+                ) if markdown_text else []
+
                 content = DocumentContent(
-                    markdown_content=result.markdown_content or "",
-                    chunks=[],  # TODO: Implement chunking
+                    markdown_content=markdown_text,
+                    chunks=text_chunks,
                     images=result.extracted_images or [],
                     tables=[],  # TODO: Extract tables from result
                     summary=None,
@@ -1111,7 +1129,7 @@ async def list_documents(
         # Use safe JSON response to handle datetime serialization
         from app.utils.json_encoder import safe_json_response
         return JSONResponse(
-            content=safe_json_response(response.dict()),
+            content=safe_json_response(response.model_dump()),
             headers=headers
         )
         
@@ -1185,7 +1203,7 @@ async def get_document_metadata(
         # Use safe JSON response to handle datetime serialization
         from app.utils.json_encoder import safe_json_response
         return JSONResponse(
-            content=safe_json_response(response.dict()),
+            content=safe_json_response(response.model_dump()),
             headers=headers
         )
         
@@ -1268,7 +1286,7 @@ async def get_document_content(
         # Use safe JSON response to handle datetime serialization
         from app.utils.json_encoder import safe_json_response
         return JSONResponse(
-            content=safe_json_response(response.dict()),
+            content=safe_json_response(response.model_dump()),
             headers=headers
         )
         

@@ -239,7 +239,7 @@ async def get_job_statistics():
         return {
             "success": True,
             "message": "Job statistics retrieved successfully",
-            "data": statistics.dict(),
+            "data": statistics.model_dump(),
             "timestamp": datetime.utcnow().isoformat()
         }
         
@@ -314,59 +314,75 @@ async def cancel_job(
         logger.error(f"Error cancelling job: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to cancel job: {str(e)}")
 
-@router.post("/bulk/process", response_model=BulkProcessingResponse)
+@router.post("/bulk/process")
 async def bulk_process_documents(
     request: BulkProcessingRequest,
     background_tasks: BackgroundTasks,
     pdf_processor: PDFProcessor = Depends(get_pdf_processor),
-
 ):
+    logger.info(f"🔍 ENTRY DEBUG: request type: {type(request)}")
+    logger.info(f"🔍 ENTRY DEBUG: request: {request}")
     """
     Process multiple documents in bulk
-    
+
     - **urls**: List of document URLs to process
     - **options**: Processing options (extract_images, generate_summary, etc.)
     - **batch_size**: Number of documents to process concurrently (default: 5)
     """
     try:
+        # Extract request data from Pydantic model
+        logger.info(f"🔍 DEBUG: request type: {type(request)}")
+        logger.info(f"🔍 DEBUG: request.urls type: {type(request.urls)}")
+        logger.info(f"🔍 DEBUG: request.options type: {type(request.options)}")
+
+        urls = request.urls
+        batch_size = request.batch_size
+        options = request.options or {}
+
+        if not urls:
+            raise HTTPException(status_code=400, detail="No URLs provided")
+
         job_id = f"bulk_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
-        
+
         # Track the bulk job
         await track_job(
-            job_id, 
-            "bulk_processing", 
+            job_id,
+            "bulk_processing",
             "pending",
             {
-                "total_documents": len(request.urls),
-                "batch_size": request.batch_size,
-                "options": request.options.dict() if request.options else {}
+                "total_documents": len(urls),
+                "batch_size": batch_size,
+                "options": options
             }
         )
-        
+
         # Start background processing
         background_tasks.add_task(
             process_bulk_documents,
             job_id,
-            request.urls,
-            request.options,
-            request.batch_size,
+            urls,
+            options,
+            batch_size,
             pdf_processor
         )
-        
-        return BulkProcessingResponse(
-            success=True,
-            message="Bulk processing started successfully",
-            data={
+
+        return {
+            "success": True,
+            "message": "Bulk processing started successfully",
+            "data": {
                 "job_id": job_id,
-                "total_documents": len(request.urls),
-                "estimated_completion_time": datetime.utcnow() + timedelta(
-                    minutes=len(request.urls) * 2  # Rough estimate
-                )
-            }
-        )
-        
+                "total_documents": len(urls),
+                "estimated_completion_time": (datetime.utcnow() + timedelta(
+                    minutes=len(urls) * 2  # Rough estimate
+                )).isoformat()
+            },
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
     except Exception as e:
+        import traceback
         logger.error(f"Error starting bulk processing: {str(e)}")
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Failed to start bulk processing: {str(e)}")
 
 async def process_bulk_documents(
@@ -450,15 +466,31 @@ async def process_bulk_documents(
 async def process_single_document(url: str, options: Any, pdf_processor: PDFProcessor):
     """Process a single document as part of bulk processing"""
     try:
-        # This would integrate with the existing document processing logic
-        # For now, we'll simulate processing
-        await asyncio.sleep(1)  # Simulate processing time
-        
+        # Use the actual PDF processor to process the document
+        document_id = f"doc_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+        result = await pdf_processor.process_pdf_from_url(url, document_id, options or {})
+
+        # Create chunks from markdown content (simple text splitting for now)
+        chunks = []
+        if result.markdown_content:
+            # Split by double newlines to create basic chunks
+            text_chunks = result.markdown_content.split('\n\n')
+            chunks = [chunk.strip() for chunk in text_chunks if chunk.strip()]
+
         return {
-            "document_id": f"doc_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}",
-            "status": "completed"
+            "document_id": result.document_id,
+            "status": "completed",
+            "chunks": len(chunks),
+            "images": len(result.extracted_images),
+            "text_content": result.markdown_content,
+            "metadata": {
+                "pages": result.page_count,
+                "word_count": result.word_count,
+                "character_count": result.character_count,
+                "processing_time": result.processing_time
+            }
         }
-        
+
     except Exception as e:
         logger.error(f"Error processing document {url}: {str(e)}")
         raise
@@ -553,7 +585,7 @@ async def get_system_health(
             "message": "System health retrieved successfully",
             "data": {
                 "overall_status": "healthy" if all_services_healthy and cpu_percent < 80 and memory.percent < 80 else "degraded",
-                "system_metrics": system_metrics.dict(),
+                "system_metrics": system_metrics.model_dump(),
                 "services": services_health,
                 "active_jobs": len(active_jobs),
                 "timestamp": datetime.utcnow().isoformat()

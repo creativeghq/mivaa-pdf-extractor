@@ -521,7 +521,7 @@ class ValidationErrorHandler:
         
         return JSONResponse(
             status_code=validation_error.status_code,
-            content=error_response.dict(exclude_none=True)
+            content=error_response.model_dump(exclude_none=True)
         )
     
     def _truncate_message(self, message: str) -> str:

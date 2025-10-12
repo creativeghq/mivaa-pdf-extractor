@@ -378,7 +378,7 @@ class MaterialKaiService:
             if not self._session:
                 raise MaterialKaiIntegrationError("Not connected to platform")
             
-            document_data = document.dict()
+            document_data = document.model_dump()
             document_data["service_source"] = self.service_name
             document_data["workspace_id"] = self.workspace_id
             
@@ -419,7 +419,7 @@ class MaterialKaiService:
             for i in range(0, len(documents), self.batch_size):
                 batch = documents[i:i + self.batch_size]
                 batch_data = {
-                    "documents": [doc.dict() for doc in batch],
+                    "documents": [doc.model_dump() for doc in batch],
                     "service_source": self.service_name,
                     "workspace_id": self.workspace_id,
                     "batch_id": f"batch_{i//self.batch_size + 1}"
@@ -468,7 +468,7 @@ class MaterialKaiService:
             if not self._session:
                 raise MaterialKaiIntegrationError("Not connected to platform")
             
-            workflow_data = workflow.dict()
+            workflow_data = workflow.model_dump()
             workflow_data["service_source"] = self.service_name
             workflow_data["workspace_id"] = self.workspace_id
             

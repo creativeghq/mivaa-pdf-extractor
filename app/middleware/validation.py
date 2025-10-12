@@ -327,7 +327,7 @@ class ValidationMiddleware(BaseHTTPMiddleware):
         
         self.security_validator = SecurityValidator(self.config)
         
-        logger.info("ValidationMiddleware initialized with config: %s", self.config.dict())
+        logger.info("ValidationMiddleware initialized with config: %s", self.config.model_dump())
     
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """Main middleware dispatch method."""
@@ -928,7 +928,7 @@ class ValidationMiddleware(BaseHTTPMiddleware):
                 # Update response with error
                 response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
                 response.headers["content-type"] = "application/json"
-                response._content = json.dumps(error_response.dict()).encode()
+                response._content = json.dumps(error_response.model_dump()).encode()
                 
         except Exception as e:
             self.metrics.response_validation_errors += 1
@@ -946,7 +946,7 @@ class ValidationMiddleware(BaseHTTPMiddleware):
                 
                 response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
                 response.headers["content-type"] = "application/json"
-                response._content = json.dumps(error_response.dict()).encode()
+                response._content = json.dumps(error_response.model_dump()).encode()
     
     async def _validate_response_size(self, response: Response):
         """Validate response size against configured limits."""
@@ -1031,7 +1031,7 @@ class ValidationMiddleware(BaseHTTPMiddleware):
                 validated_data = schema_class(**response_data)
                 
                 # Update response with validated data (ensures consistency)
-                response._content = json.dumps(validated_data.dict()).encode()
+                response._content = json.dumps(validated_data.model_dump()).encode()
                 
             except ValidationError as e:
                 # Log validation details
@@ -1227,7 +1227,7 @@ class ValidationMiddleware(BaseHTTPMiddleware):
         
         return JSONResponse(
             status_code=status_code,
-            content=error_response.dict(exclude_none=True)
+            content=error_response.model_dump(exclude_none=True)
         )
     
     def get_metrics(self) -> Dict[str, Any]:

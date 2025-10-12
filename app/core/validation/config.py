@@ -296,7 +296,7 @@ class ValidationConfig(BaseModel):
         Returns:
             Dictionary containing the effective configuration for the endpoint
         """
-        base_config = self.dict()
+        base_config = self.model_dump()
         
         # Check for endpoint-specific overrides
         endpoint_key = f"{method.upper()}:{endpoint}"
