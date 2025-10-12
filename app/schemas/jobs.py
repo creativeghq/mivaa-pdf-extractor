@@ -95,7 +95,6 @@ class JobProgressDetail(BaseModel):
     ocr_pages_processed: int = Field(default=0, description="Number of pages processed with OCR")
     total_text_extracted: int = Field(default=0, description="Total characters of text extracted")
     total_images_extracted: int = Field(default=0, description="Total number of images extracted")
-    CANCELLED = "cancelled"
 
 
 class JobPriority(str, Enum):
