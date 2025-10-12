@@ -393,35 +393,82 @@ class PDFProcessor:
         processing_options: Dict[str, Any]
     ) -> Tuple[str, Dict[str, Any]]:
         """
-        Enhanced markdown extraction with OCR fallback for text-as-images PDFs.
+        Enhanced markdown extraction with intelligent OCR-first approach for image-based PDFs.
 
         Features:
-        - Primary extraction using PyMuPDF4LLM
-        - OCR fallback for PDFs with text-as-images (like WIFI MOMO lookbook)
+        - Smart detection of image-based vs text-based PDFs
+        - OCR-first approach for image-heavy PDFs (like WIFI MOMO lookbook)
+        - PyMuPDF4LLM fallback for text-based PDFs
         - Advanced text processing and cleaning
         - Metadata extraction and analysis
         """
         try:
-            # Use existing extractor function
-            page_number = processing_options.get('page_number')
-            markdown_content = extract_pdf_to_markdown(pdf_path, page_number)
+            # First, analyze the PDF to determine if it's image-based
+            import fitz
+            doc = fitz.open(pdf_path)
+            total_pages = len(doc)
 
-            # Check if we got meaningful text content
-            clean_content = markdown_content.replace('-', '').replace('\n', '').strip()
+            # Sample first few pages to determine PDF type
+            sample_pages = min(3, total_pages)
+            total_text_chars = 0
+            total_images = 0
 
-            # If we only got page separators or very little content, try OCR
-            if len(clean_content) < 100:  # Less than 100 chars of actual content
-                self.logger.info("Standard extraction yielded minimal text, attempting OCR extraction")
+            for page_num in range(sample_pages):
+                page = doc[page_num]
+                text = page.get_text()
+                images = page.get_images()
+                total_text_chars += len(text.strip())
+                total_images += len(images)
+
+            doc.close()
+
+            # Determine if this is an image-based PDF
+            avg_text_per_page = total_text_chars / sample_pages
+            avg_images_per_page = total_images / sample_pages
+
+            is_image_based = (avg_text_per_page < 50 and avg_images_per_page >= 1)
+
+            self.logger.info(f"PDF analysis: {total_pages} pages, avg {avg_text_per_page:.1f} text chars/page, "
+                           f"avg {avg_images_per_page:.1f} images/page, image-based: {is_image_based}")
+
+            if is_image_based:
+                # Use OCR-first approach for image-based PDFs
+                self.logger.info("Detected image-based PDF, using OCR-first extraction")
                 try:
-                    ocr_content = self._extract_text_with_ocr(pdf_path, processing_options)
-
-                    if len(ocr_content.strip()) > len(clean_content):
-                        self.logger.info(f"OCR extraction successful: {len(ocr_content)} characters vs {len(clean_content)} from standard")
-                        markdown_content = ocr_content
-                    else:
-                        self.logger.info("OCR did not improve text extraction, using standard result")
+                    markdown_content = self._extract_text_with_ocr(pdf_path, processing_options)
+                    if len(markdown_content.strip()) < 100:
+                        # If OCR also fails, try PyMuPDF4LLM as fallback
+                        self.logger.info("OCR yielded minimal content, trying PyMuPDF4LLM fallback")
+                        page_number = processing_options.get('page_number')
+                        fallback_content = extract_pdf_to_markdown(pdf_path, page_number)
+                        if len(fallback_content.strip()) > len(markdown_content.strip()):
+                            markdown_content = fallback_content
                 except Exception as ocr_error:
-                    self.logger.warning(f"OCR extraction failed: {ocr_error}, using standard result")
+                    self.logger.error(f"OCR extraction failed: {ocr_error}, trying PyMuPDF4LLM fallback")
+                    page_number = processing_options.get('page_number')
+                    markdown_content = extract_pdf_to_markdown(pdf_path, page_number)
+            else:
+                # Use PyMuPDF4LLM first for text-based PDFs
+                self.logger.info("Detected text-based PDF, using PyMuPDF4LLM extraction")
+                page_number = processing_options.get('page_number')
+                markdown_content = extract_pdf_to_markdown(pdf_path, page_number)
+
+                # Check if we got meaningful text content
+                clean_content = markdown_content.replace('-', '').replace('\n', '').strip()
+
+                # If we only got page separators or very little content, try OCR
+                if len(clean_content) < 100:  # Less than 100 chars of actual content
+                    self.logger.info("Standard extraction yielded minimal text, attempting OCR extraction")
+                    try:
+                        ocr_content = self._extract_text_with_ocr(pdf_path, processing_options)
+
+                        if len(ocr_content.strip()) > len(clean_content):
+                            self.logger.info(f"OCR extraction successful: {len(ocr_content)} characters vs {len(clean_content)} from standard")
+                            markdown_content = ocr_content
+                        else:
+                            self.logger.info("OCR did not improve text extraction, using standard result")
+                    except Exception as ocr_error:
+                        self.logger.warning(f"OCR extraction failed: {ocr_error}, using standard result")
 
             # Get basic metadata (page count, etc.)
             import fitz  # PyMuPDF

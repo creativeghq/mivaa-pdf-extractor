@@ -106,30 +106,76 @@ def get_material_kai_service():
 
 async def track_job(job_id: str, job_type: str, status: str, details: Dict[str, Any] = None):
     """Track job status and update global job tracking"""
-    job_info = {
-        "job_id": job_id,
-        "job_type": job_type,
-        "status": status,
-        "priority": "normal",  # Default priority
-        "created_at": datetime.utcnow().isoformat(),
-        "updated_at": datetime.utcnow().isoformat(),
-        "started_at": None,
-        "completed_at": None,
-        "progress_percentage": 0.0,
-        "current_step": None,
-        "description": None,
-        "success": None,
-        "error_message": None,
-        "details": details or {}
-    }
-    
+    current_time = datetime.utcnow().isoformat()
+
+    # Check if job already exists
+    existing_job = active_jobs.get(job_id)
+
+    if existing_job:
+        # Update existing job
+        job_info = existing_job.copy()
+        job_info["status"] = status
+        job_info["updated_at"] = current_time
+
+        # Set started_at when job starts running
+        if status == "running" and job_info.get("started_at") is None:
+            job_info["started_at"] = current_time
+            logger.info(f"🚀 Job {job_id} started at {current_time}")
+
+        # Set completed_at when job finishes
+        if status in ["completed", "failed", "cancelled", "error"]:
+            job_info["completed_at"] = current_time
+            if status == "completed":
+                job_info["success"] = True
+                job_info["progress_percentage"] = 100.0
+            elif status in ["failed", "error"]:
+                job_info["success"] = False
+            logger.info(f"🏁 Job {job_id} finished with status: {status}")
+
+        # Update progress from details if provided
+        if details:
+            if "progress_percentage" in details:
+                job_info["progress_percentage"] = details["progress_percentage"]
+                logger.info(f"📊 Job {job_id} progress: {details['progress_percentage']}%")
+            if "current_step" in details:
+                job_info["current_step"] = details["current_step"]
+                logger.info(f"📋 Job {job_id} step: {details['current_step']}")
+            if "error" in details:
+                job_info["error_message"] = details["error"]
+
+            # Merge details
+            existing_details = job_info.get("details", {})
+            existing_details.update(details)
+            job_info["details"] = existing_details
+    else:
+        # Create new job
+        job_info = {
+            "job_id": job_id,
+            "job_type": job_type,
+            "status": status,
+            "priority": "normal",
+            "created_at": current_time,
+            "updated_at": current_time,
+            "started_at": current_time if status == "running" else None,
+            "completed_at": None,
+            "progress_percentage": 5.0 if status == "running" else 0.0,
+            "current_step": details.get("current_step") if details else None,
+            "description": None,
+            "tags": [],
+            "success": None,
+            "error_message": None,
+            "details": details or {}
+        }
+        logger.info(f"📝 Created new job {job_id} with status: {status}")
+
     active_jobs[job_id] = job_info
-    
+
     # Add to history if completed or failed
     if status in ["completed", "failed", "cancelled"]:
         job_history.append(job_info.copy())
         if job_id in active_jobs:
             del active_jobs[job_id]
+        logger.info(f"📚 Job {job_id} moved to history")
 
 # Job Management Endpoints
 
@@ -283,6 +329,39 @@ async def get_job_status(
         logger.error(f"Error getting job status: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get job status: {str(e)}")
 
+@router.get("/jobs/{job_id}/status", response_model=JobStatusResponse)
+async def get_job_status_alt(
+    job_id: str,
+):
+    """
+    Get detailed status information for a specific job (alternative endpoint)
+
+    - **job_id**: Unique identifier for the job
+    """
+    try:
+        # Check active jobs first
+        if job_id in active_jobs:
+            job_info = active_jobs[job_id]
+        else:
+            # Check job history
+            job_info = next((job for job in job_history if job["job_id"] == job_id), None)
+
+        if not job_info:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+        return {
+            "success": True,
+            "message": f"Job {job_id} status retrieved successfully",
+            "data": job_info,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting job status: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get job status: {str(e)}")
+
 @router.delete("/jobs/{job_id}")
 async def cancel_job(
     job_id: str,
@@ -393,13 +472,20 @@ async def process_bulk_documents(
     batch_size: int,
     pdf_processor: PDFProcessor
 ):
-    """Background task for bulk document processing"""
+    """Background task for bulk document processing with comprehensive error handling"""
     try:
-        await track_job(job_id, "bulk_processing", "running")
-        
+        logger.info(f"🚀 Background task starting for job {job_id}")
+        await track_job(job_id, "bulk_processing", "running", {
+            "current_step": "Background processing started",
+            "progress_percentage": 5.0
+        })
+        logger.info(f"✅ Job {job_id} status updated to running")
+
         processed_count = 0
         failed_count = 0
         results = []
+        total_chunks = 0
+        total_images = 0
         
         # Process documents in batches
         for i in range(0, len(urls), batch_size):
@@ -416,6 +502,7 @@ async def process_bulk_documents(
             for j, result in enumerate(batch_results):
                 if isinstance(result, Exception):
                     failed_count += 1
+                    logger.error(f"Document processing failed for {batch_urls[j]}: {str(result)}")
                     results.append({
                         "url": batch_urls[j],
                         "status": "failed",
@@ -423,45 +510,75 @@ async def process_bulk_documents(
                     })
                 else:
                     processed_count += 1
+                    # Extract metrics from result
+                    chunks_count = result.get("chunks", 0)
+                    images_count = result.get("images", 0)
+                    total_chunks += chunks_count
+                    total_images += images_count
+
+                    logger.info(f"✅ Document processed: {batch_urls[j]} - {chunks_count} chunks, {images_count} images")
                     results.append({
                         "url": batch_urls[j],
                         "status": "completed",
-                        "document_id": result.get("document_id")
+                        "document_id": result.get("document_id"),
+                        "chunks": chunks_count,
+                        "images": images_count
                     })
-            
-            # Update job progress
+
+            # Update job progress with detailed metrics
             progress = (processed_count + failed_count) / len(urls) * 100
+            current_step = f"Processed {processed_count + failed_count}/{len(urls)} documents"
+
+            logger.info(f"📊 Progress update: {progress:.1f}% - {current_step}")
             await track_job(
-                job_id, 
-                "bulk_processing", 
+                job_id,
+                "bulk_processing",
                 "running",
                 {
                     "progress_percentage": progress,
+                    "current_step": current_step,
                     "processed_count": processed_count,
                     "failed_count": failed_count,
+                    "total_documents": len(urls),
+                    "chunks_created": total_chunks,
+                    "images_extracted": total_images,
                     "results": results
                 }
             )
         
         # Mark job as completed
+        logger.info(f"🎉 Job {job_id} completed successfully: {processed_count} processed, {failed_count} failed")
         await track_job(
-            job_id, 
-            "bulk_processing", 
+            job_id,
+            "bulk_processing",
             "completed",
             {
+                "progress_percentage": 100.0,
+                "current_step": "Processing completed",
                 "total_processed": processed_count,
                 "total_failed": failed_count,
+                "total_documents": len(urls),
+                "chunks_created": total_chunks,
+                "images_extracted": total_images,
                 "results": results
             }
         )
-        
+
     except Exception as e:
-        logger.error(f"Error in bulk processing job {job_id}: {str(e)}")
+        import traceback
+        error_details = traceback.format_exc()
+        logger.error(f"❌ Critical error in bulk processing job {job_id}: {str(e)}")
+        logger.error(f"Full traceback: {error_details}")
         await track_job(
-            job_id, 
-            "bulk_processing", 
+            job_id,
+            "bulk_processing",
             "failed",
-            {"error": str(e)}
+            {
+                "error": str(e),
+                "error_details": error_details,
+                "processed_count": processed_count,
+                "failed_count": failed_count
+            }
         )
 
 async def process_single_document(url: str, options: Any, pdf_processor: PDFProcessor, job_id: str = None):
@@ -502,43 +619,82 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
 
         # Save PDF processing result
         try:
+            logger.info(f"💾 Starting PDF processing result save for {original_filename}")
             record_id = await supabase_client.save_pdf_processing_result(
                 result,
                 original_filename=original_filename,
                 file_url=url
             )
-            logger.info(f"Saved PDF processing result with ID: {record_id}")
+            logger.info(f"✅ Saved PDF processing result with ID: {record_id}")
 
             # Update progress tracking
             if tracker:
                 tracker.update_database_stats(records_created=1)
                 tracker.update_stage(ProcessingStage.SAVING_TO_DATABASE)
 
+            # Update job progress
+            await track_job(
+                job_id,
+                "bulk_processing",
+                "running",
+                {
+                    "current_step": "PDF processing result saved",
+                    "progress_percentage": 80.0,
+                    "database_records_created": 1
+                }
+            )
+
         except Exception as db_error:
-            logger.error(f"Failed to save PDF processing result: {db_error}")
+            import traceback
+            error_details = traceback.format_exc()
+            logger.error(f"❌ Failed to save PDF processing result: {db_error}")
+            logger.error(f"Full traceback: {error_details}")
             # Track database save error
             if tracker:
                 tracker.add_error("Database Save Failed", str(db_error), {"operation": "save_pdf_result"})
 
         # Save knowledge base entries (chunks and images)
         try:
+            logger.info(f"💾 Starting knowledge base save: {len(chunks)} chunks, {len(result.extracted_images)} images")
             kb_result = await supabase_client.save_knowledge_base_entries(
                 result.document_id,
                 chunks,
                 result.extracted_images
             )
-            logger.info(f"Saved to knowledge base: {kb_result}")
+            logger.info(f"✅ Saved to knowledge base: {kb_result}")
 
             # Update progress tracking with knowledge base results
+            chunks_saved = kb_result.get('chunks_saved', 0)
+            images_saved = kb_result.get('images_saved', 0)
+
             if tracker:
                 tracker.update_database_stats(
-                    kb_entries=kb_result.get('chunks_saved', 0),
-                    images_stored=kb_result.get('images_saved', 0)
+                    kb_entries=chunks_saved,
+                    images_stored=images_saved
                 )
                 tracker.update_stage(ProcessingStage.COMPLETED)
 
+            # Update job progress with final results
+            await track_job(
+                job_id,
+                "bulk_processing",
+                "running",
+                {
+                    "current_step": "Knowledge base entries saved",
+                    "progress_percentage": 95.0,
+                    "chunks_created": chunks_saved,
+                    "images_extracted": images_saved,
+                    "kb_entries_saved": chunks_saved
+                }
+            )
+
+            logger.info(f"🎉 Document processing completed: {chunks_saved} chunks, {images_saved} images saved")
+
         except Exception as kb_error:
-            logger.error(f"Failed to save knowledge base entries: {kb_error}")
+            import traceback
+            error_details = traceback.format_exc()
+            logger.error(f"❌ Failed to save knowledge base entries: {kb_error}")
+            logger.error(f"Full traceback: {error_details}")
             # Track knowledge base save error
             if tracker:
                 tracker.add_error("Knowledge Base Save Failed", str(kb_error), {"operation": "save_kb_entries"})
@@ -559,7 +715,15 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
         }
 
     except Exception as e:
-        logger.error(f"Error processing document {url}: {str(e)}")
+        import traceback
+        error_details = traceback.format_exc()
+        logger.error(f"❌ Error processing document {url}: {str(e)}")
+        logger.error(f"Full traceback: {error_details}")
+
+        # Update tracker with error if available
+        if tracker:
+            tracker.add_error("Document Processing Failed", str(e), {"url": url, "traceback": error_details})
+
         raise
 
 # System Monitoring
