@@ -473,21 +473,19 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
         # Use the actual PDF processor to process the document
         document_id = f"doc_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
 
-        # Create progress tracker if job_id is provided
+        # Initialize progress tracking
         progress_service = get_progress_service()
         tracker = None
         if job_id:
-            # We'll update this with actual page count after initial PDF analysis
             tracker = progress_service.create_tracker(job_id, document_id, 1)
             tracker.start_processing()
-            tracker.update_stage(ProcessingStage.DOWNLOADING)
 
         result = await pdf_processor.process_pdf_from_url(url, document_id, options or {})
 
-        # Update tracker with actual page count
+        # Update progress tracking with actual page count
         if tracker:
             tracker.total_pages = result.page_count
-            tracker.update_stage(ProcessingStage.SAVING_TO_DATABASE)
+            tracker.update_stage(ProcessingStage.EXTRACTING_TEXT)
 
         # Create chunks from markdown content (simple text splitting for now)
         chunks = []
@@ -511,11 +509,14 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
             )
             logger.info(f"Saved PDF processing result with ID: {record_id}")
 
+            # Update progress tracking
             if tracker:
                 tracker.update_database_stats(records_created=1)
+                tracker.update_stage(ProcessingStage.SAVING_TO_DATABASE)
 
         except Exception as db_error:
             logger.error(f"Failed to save PDF processing result: {db_error}")
+            # Track database save error
             if tracker:
                 tracker.add_error("Database Save Failed", str(db_error), {"operation": "save_pdf_result"})
 
@@ -528,6 +529,7 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
             )
             logger.info(f"Saved to knowledge base: {kb_result}")
 
+            # Update progress tracking with knowledge base results
             if tracker:
                 tracker.update_database_stats(
                     kb_entries=kb_result.get('chunks_saved', 0),
@@ -537,6 +539,7 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
 
         except Exception as kb_error:
             logger.error(f"Failed to save knowledge base entries: {kb_error}")
+            # Track knowledge base save error
             if tracker:
                 tracker.add_error("Knowledge Base Save Failed", str(kb_error), {"operation": "save_kb_entries"})
 
