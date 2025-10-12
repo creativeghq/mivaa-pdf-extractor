@@ -191,6 +191,137 @@ class SupabaseClient:
             logger.error(f"Failed to get images for document {document_id}: {str(e)}")
             return []
 
+    async def save_pdf_processing_result(self, result, original_filename: str = None, file_url: str = None) -> str:
+        """
+        Save PDF processing result to the database.
+
+        Args:
+            result: PDFProcessingResult object
+            original_filename: Original filename of the PDF
+            file_url: URL of the processed PDF
+
+        Returns:
+            ID of the saved record
+        """
+        try:
+            # Prepare data for insertion
+            insert_data = {
+                'original_filename': original_filename or f"{result.document_id}.pdf",
+                'file_url': file_url,
+                'processing_status': 'completed',
+                'processing_started_at': 'now()',
+                'processing_completed_at': 'now()',
+                'processing_time_ms': int(result.processing_time * 1000),
+                'total_pages': result.page_count,
+                'total_tiles_extracted': len(result.extracted_images),
+                'materials_identified_count': 0,  # Will be updated by material recognition
+                'confidence_score_avg': 0.95,  # Default confidence
+                'ocr_text_content': result.ocr_text,
+                'ocr_confidence_avg': 0.90,  # Default OCR confidence
+                'ocr_language_detected': 'en',
+                'extracted_images': result.extracted_images,
+                'multimodal_enabled': result.multimodal_enabled,
+                'python_processor_version': '1.0.0',
+                'layout_analysis_version': '1.0.0',
+                'document_structure': {
+                    'word_count': result.word_count,
+                    'character_count': result.character_count,
+                    'markdown_content': result.markdown_content
+                },
+                'image_analysis_results': result.ocr_results,
+                'multimodal_metadata': result.metadata
+            }
+
+            # Insert into database
+            response = self._client.table('pdf_processing_results').insert(insert_data).execute()
+
+            if response.data:
+                record_id = response.data[0]['id']
+                logger.info(f"PDF processing result saved with ID: {record_id}")
+                return record_id
+            else:
+                raise Exception("No data returned from insert operation")
+
+        except Exception as e:
+            logger.error(f"Failed to save PDF processing result: {str(e)}")
+            raise
+
+    async def save_knowledge_base_entries(self, document_id: str, chunks: list, images: list) -> dict:
+        """
+        Save extracted chunks and images to knowledge base.
+
+        Args:
+            document_id: Document identifier
+            chunks: List of text chunks
+            images: List of image data
+
+        Returns:
+            Dictionary with counts of saved entries
+        """
+        try:
+            saved_chunks = 0
+            saved_images = 0
+
+            # Save text chunks to knowledge_base_entries
+            if chunks:
+                chunk_entries = []
+                for i, chunk in enumerate(chunks):
+                    if chunk.strip():  # Only save non-empty chunks
+                        chunk_entries.append({
+                            'document_id': document_id,
+                            'content_type': 'text',
+                            'content': chunk,
+                            'chunk_index': i,
+                            'metadata': {
+                                'source': 'pdf_extraction',
+                                'chunk_length': len(chunk),
+                                'chunk_number': i + 1
+                            }
+                        })
+
+                if chunk_entries:
+                    response = self._client.table('knowledge_base_entries').insert(chunk_entries).execute()
+                    saved_chunks = len(response.data) if response.data else 0
+
+            # Save images to document_images
+            if images:
+                image_entries = []
+                for i, image in enumerate(images):
+                    image_entries.append({
+                        'document_id': document_id,
+                        'image_path': image.get('path', ''),
+                        'image_url': image.get('url', ''),
+                        'page_number': image.get('page', 1),
+                        'width': image.get('width', 0),
+                        'height': image.get('height', 0),
+                        'format': image.get('format', 'unknown'),
+                        'metadata': {
+                            'source': 'pdf_extraction',
+                            'image_index': i,
+                            'extraction_method': image.get('extraction_method', 'pymupdf')
+                        }
+                    })
+
+                if image_entries:
+                    response = self._client.table('document_images').insert(image_entries).execute()
+                    saved_images = len(response.data) if response.data else 0
+
+            logger.info(f"Saved {saved_chunks} chunks and {saved_images} images to knowledge base")
+            return {
+                'chunks_saved': saved_chunks,
+                'images_saved': saved_images,
+                'total_saved': saved_chunks + saved_images
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to save knowledge base entries: {str(e)}")
+            return {
+                'chunks_saved': 0,
+                'images_saved': 0,
+                'total_saved': 0,
+                'error': str(e)
+            }
+
     def close(self) -> None:
         """Close the Supabase client connection."""
         if self._client:

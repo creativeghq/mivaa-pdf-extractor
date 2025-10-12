@@ -22,13 +22,14 @@ from pathlib import Path
 from ..schemas.jobs import (
     JobResponse, JobStatusResponse, JobListResponse, JobListItem,
     BulkProcessingRequest, BulkProcessingResponse,
-    JobStatistics, SystemMetrics
+    JobStatistics, SystemMetrics, JobProgressDetail
 )
 from ..schemas.common import BaseResponse, PaginationParams
 from ..services.pdf_processor import PDFProcessor
 from ..services.supabase_client import SupabaseClient
 from ..services.llamaindex_service import LlamaIndexService
 from ..services.material_kai_service import MaterialKaiService
+from ..services.progress_tracker import get_progress_service
 from ..dependencies import get_current_user, get_workspace_context, require_admin
 from ..middleware.jwt_auth import WorkspaceContext, User
 
@@ -406,7 +407,7 @@ async def process_bulk_documents(
             batch_tasks = []
             
             for url in batch_urls:
-                task = asyncio.create_task(process_single_document(url, options, pdf_processor))
+                task = asyncio.create_task(process_single_document(url, options, pdf_processor, job_id))
                 batch_tasks.append(task)
             
             # Wait for batch completion
@@ -463,12 +464,30 @@ async def process_bulk_documents(
             {"error": str(e)}
         )
 
-async def process_single_document(url: str, options: Any, pdf_processor: PDFProcessor):
-    """Process a single document as part of bulk processing"""
+async def process_single_document(url: str, options: Any, pdf_processor: PDFProcessor, job_id: str = None):
+    """Process a single document as part of bulk processing with progress tracking"""
     try:
+        from app.services.supabase_client import get_supabase_client
+        from app.schemas.jobs import ProcessingStage
+
         # Use the actual PDF processor to process the document
         document_id = f"doc_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+
+        # Create progress tracker if job_id is provided
+        progress_service = get_progress_service()
+        tracker = None
+        if job_id:
+            # We'll update this with actual page count after initial PDF analysis
+            tracker = progress_service.create_tracker(job_id, document_id, 1)
+            tracker.start_processing()
+            tracker.update_stage(ProcessingStage.DOWNLOADING)
+
         result = await pdf_processor.process_pdf_from_url(url, document_id, options or {})
+
+        # Update tracker with actual page count
+        if tracker:
+            tracker.total_pages = result.page_count
+            tracker.update_stage(ProcessingStage.SAVING_TO_DATABASE)
 
         # Create chunks from markdown content (simple text splitting for now)
         chunks = []
@@ -477,12 +496,57 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
             text_chunks = result.markdown_content.split('\n\n')
             chunks = [chunk.strip() for chunk in text_chunks if chunk.strip()]
 
+        # Save to database
+        supabase_client = get_supabase_client()
+
+        # Extract filename from URL
+        original_filename = url.split('/')[-1] if url else f"{document_id}.pdf"
+
+        # Save PDF processing result
+        try:
+            record_id = await supabase_client.save_pdf_processing_result(
+                result,
+                original_filename=original_filename,
+                file_url=url
+            )
+            logger.info(f"Saved PDF processing result with ID: {record_id}")
+
+            if tracker:
+                tracker.update_database_stats(records_created=1)
+
+        except Exception as db_error:
+            logger.error(f"Failed to save PDF processing result: {db_error}")
+            if tracker:
+                tracker.add_error("Database Save Failed", str(db_error), {"operation": "save_pdf_result"})
+
+        # Save knowledge base entries (chunks and images)
+        try:
+            kb_result = await supabase_client.save_knowledge_base_entries(
+                result.document_id,
+                chunks,
+                result.extracted_images
+            )
+            logger.info(f"Saved to knowledge base: {kb_result}")
+
+            if tracker:
+                tracker.update_database_stats(
+                    kb_entries=kb_result.get('chunks_saved', 0),
+                    images_stored=kb_result.get('images_saved', 0)
+                )
+                tracker.update_stage(ProcessingStage.COMPLETED)
+
+        except Exception as kb_error:
+            logger.error(f"Failed to save knowledge base entries: {kb_error}")
+            if tracker:
+                tracker.add_error("Knowledge Base Save Failed", str(kb_error), {"operation": "save_kb_entries"})
+
         return {
             "document_id": result.document_id,
             "status": "completed",
             "chunks": len(chunks),
             "images": len(result.extracted_images),
             "text_content": result.markdown_content,
+            "ocr_text": result.ocr_text,
             "metadata": {
                 "pages": result.page_count,
                 "word_count": result.word_count,
@@ -926,3 +990,201 @@ async def get_basic_package_status():
         "timestamp": datetime.utcnow().isoformat(),
         "source": "requirements.txt"
     }
+
+
+@router.get("/jobs/{job_id}/progress", response_model=JobProgressDetail)
+async def get_job_progress(job_id: str):
+    """
+    Get detailed progress information for a specific job.
+
+    This endpoint provides real-time progress tracking including:
+    - Current processing stage
+    - Page-by-page status
+    - OCR progress and confidence scores
+    - Database integration status
+    - Error and warning details
+    - Performance metrics
+    """
+    try:
+        progress_service = get_progress_service()
+        tracker = progress_service.get_tracker(job_id)
+
+        if not tracker:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Progress tracking not found for job {job_id}"
+            )
+
+        return tracker.to_progress_detail()
+
+    except Exception as e:
+        logger.error(f"Error getting job progress for {job_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get job progress: {str(e)}"
+        )
+
+
+@router.get("/jobs/progress/active")
+async def get_all_active_progress():
+    """
+    Get progress information for all currently active jobs.
+
+    Returns a summary of all jobs currently being processed,
+    useful for monitoring multiple concurrent operations.
+    """
+    try:
+        progress_service = get_progress_service()
+        active_trackers = progress_service.get_all_active_trackers()
+
+        progress_summaries = []
+        for job_id, tracker in active_trackers.items():
+            progress_detail = tracker.to_progress_detail()
+            progress_summaries.append({
+                "job_id": job_id,
+                "document_id": tracker.document_id,
+                "current_stage": tracker.current_stage.value,
+                "progress_percentage": progress_detail.progress_percentage,
+                "pages_completed": tracker.pages_completed,
+                "total_pages": tracker.total_pages,
+                "current_page": tracker.current_page,
+                "errors_count": len(tracker.errors),
+                "warnings_count": len(tracker.warnings),
+                "estimated_completion": progress_detail.estimated_completion_time
+            })
+
+        return {
+            "success": True,
+            "message": f"Retrieved progress for {len(active_trackers)} active jobs",
+            "data": {
+                "active_jobs_count": len(active_trackers),
+                "jobs": progress_summaries
+            },
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting active job progress: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get active job progress: {str(e)}"
+        )
+
+
+@router.get("/jobs/{job_id}/progress/pages")
+async def get_job_page_progress(job_id: str):
+    """
+    Get detailed page-by-page progress for a specific job.
+
+    This endpoint provides granular information about each page:
+    - Processing status (pending, processing, success, failed, skipped)
+    - Text and image extraction results
+    - OCR application and confidence scores
+    - Processing time per page
+    - Error messages for failed pages
+    - Database save status
+    """
+    try:
+        progress_service = get_progress_service()
+        tracker = progress_service.get_tracker(job_id)
+
+        if not tracker:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Progress tracking not found for job {job_id}"
+            )
+
+        # Group pages by status for easier analysis
+        pages_by_status = {
+            "pending": [],
+            "processing": [],
+            "success": [],
+            "failed": [],
+            "skipped": []
+        }
+
+        for page_status in tracker.page_statuses.values():
+            status_key = page_status.status
+            if status_key in pages_by_status:
+                pages_by_status[status_key].append(page_status.model_dump())
+
+        return {
+            "success": True,
+            "message": f"Retrieved page progress for job {job_id}",
+            "data": {
+                "job_id": job_id,
+                "total_pages": tracker.total_pages,
+                "summary": {
+                    "pending": len(pages_by_status["pending"]),
+                    "processing": len(pages_by_status["processing"]),
+                    "success": len(pages_by_status["success"]),
+                    "failed": len(pages_by_status["failed"]),
+                    "skipped": len(pages_by_status["skipped"])
+                },
+                "pages_by_status": pages_by_status,
+                "current_page": tracker.current_page,
+                "current_stage": tracker.current_stage.value
+            },
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting page progress for {job_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get page progress: {str(e)}"
+        )
+
+
+@router.get("/jobs/{job_id}/progress/stream")
+async def stream_job_progress(job_id: str):
+    """
+    Stream real-time progress updates for a job.
+
+    This endpoint provides server-sent events (SSE) for real-time monitoring.
+    Useful for frontend applications that need live progress updates.
+    """
+    try:
+        from fastapi.responses import StreamingResponse
+        import json
+
+        progress_service = get_progress_service()
+
+        async def generate_progress_stream():
+            """Generate progress updates as server-sent events."""
+            while True:
+                tracker = progress_service.get_tracker(job_id)
+
+                if not tracker:
+                    # Job not found or completed
+                    yield f"data: {json.dumps({'error': 'Job not found or completed'})}\n\n"
+                    break
+
+                progress_detail = tracker.to_progress_detail()
+                progress_data = progress_detail.model_dump()
+
+                yield f"data: {json.dumps(progress_data)}\n\n"
+
+                # Check if job is completed
+                if tracker.current_stage.value in ["completed", "failed"]:
+                    break
+
+                # Wait before next update
+                await asyncio.sleep(2)  # Update every 2 seconds
+
+        return StreamingResponse(
+            generate_progress_stream(),
+            media_type="text/plain",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "Content-Type": "text/event-stream"
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Error streaming progress for {job_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to stream progress: {str(e)}"
+        )

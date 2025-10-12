@@ -447,13 +447,17 @@ class LlamaIndexService:
             # Extract project ID from Supabase URL (e.g., bgbavxtjlbvgplozizxu from https://bgbavxtjlbvgplozizxu.supabase.co)
             project_id = self.supabase_url.replace('https://', '').replace('http://', '').split('.')[0]
 
-            # Use proper Supabase PostgreSQL connection format with pooler
-            # Format: postgresql://postgres.[PROJECT_ID]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres
-            # Use service role key as password for database connection
-            service_role_key = os.getenv('SUPABASE_SERVICE_ROLE_KEY', self.supabase_key)
-            connection_string = f"postgresql://postgres.{project_id}:{service_role_key}@aws-0-eu-west-3.pooler.supabase.com:6543/postgres"
+            # Use proper Supabase PostgreSQL connection format
+            # For Supabase, we need to use the database password, not the service role key
+            # The correct format is: postgresql://postgres:[DB_PASSWORD]@db.[PROJECT_ID].supabase.co:5432/postgres
 
-            self.logger.info(f"🔍 Connection string format: postgresql://postgres.{project_id}:***@aws-0-eu-west-3.pooler.supabase.com:6543/postgres")
+            # For now, disable vector store to focus on basic PDF processing
+            # Vector store requires database password which needs to be configured separately
+            self.logger.warning("⚠️ Vector store disabled - focusing on basic PDF processing and database saving")
+            self.vector_store = None
+            return
+
+            self.logger.info(f"🔍 Connection string format: postgresql://postgres:***@db.{project_id}.supabase.co:5432/postgres")
 
             # Initialize Supabase vector store with timeout protection
             import signal

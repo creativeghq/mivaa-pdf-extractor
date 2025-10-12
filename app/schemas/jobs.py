@@ -28,6 +28,73 @@ class JobStatus(str, Enum):
     RUNNING = "running"
     PAUSED = "paused"
     RETRYING = "retrying"
+
+
+class ProcessingStage(str, Enum):
+    """Processing stage enumeration for detailed progress tracking."""
+
+    INITIALIZING = "initializing"
+    DOWNLOADING = "downloading"
+    ANALYZING_STRUCTURE = "analyzing_structure"
+    EXTRACTING_TEXT = "extracting_text"
+    EXTRACTING_IMAGES = "extracting_images"
+    OCR_PROCESSING = "ocr_processing"
+    SAVING_TO_DATABASE = "saving_to_database"
+    GENERATING_EMBEDDINGS = "generating_embeddings"
+    FINALIZING = "finalizing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class PageProcessingStatus(BaseModel):
+    """Status of individual page processing."""
+
+    page_number: int = Field(..., description="Page number being processed")
+    stage: ProcessingStage = Field(..., description="Current processing stage for this page")
+    status: str = Field(..., description="Status: success, failed, skipped, processing")
+    text_extracted: bool = Field(default=False, description="Whether text was extracted")
+    images_extracted: int = Field(default=0, description="Number of images extracted from this page")
+    ocr_applied: bool = Field(default=False, description="Whether OCR was applied to this page")
+    ocr_confidence: Optional[float] = Field(default=None, description="OCR confidence score (0-1)")
+    processing_time_ms: Optional[int] = Field(default=None, description="Time taken to process this page")
+    error_message: Optional[str] = Field(default=None, description="Error message if processing failed")
+    database_saved: bool = Field(default=False, description="Whether page data was saved to database")
+
+
+class JobProgressDetail(BaseModel):
+    """Detailed progress information for a job."""
+
+    job_id: str = Field(..., description="Job identifier")
+    document_id: str = Field(..., description="Document being processed")
+    current_stage: ProcessingStage = Field(..., description="Current overall processing stage")
+    total_pages: int = Field(..., description="Total number of pages in document")
+    pages_completed: int = Field(default=0, description="Number of pages completed")
+    pages_failed: int = Field(default=0, description="Number of pages that failed")
+    pages_skipped: int = Field(default=0, description="Number of pages skipped")
+    current_page: Optional[int] = Field(default=None, description="Currently processing page number")
+
+    # Detailed page status
+    page_statuses: List[PageProcessingStatus] = Field(default_factory=list, description="Status of each page")
+
+    # Overall progress metrics
+    progress_percentage: float = Field(default=0.0, description="Overall progress percentage (0-100)")
+    estimated_completion_time: Optional[datetime] = Field(default=None, description="Estimated completion time")
+    processing_start_time: Optional[datetime] = Field(default=None, description="When processing started")
+
+    # Database integration status
+    database_records_created: int = Field(default=0, description="Number of database records created")
+    knowledge_base_entries: int = Field(default=0, description="Number of knowledge base entries created")
+    images_stored: int = Field(default=0, description="Number of images stored")
+
+    # Error tracking
+    errors: List[Dict[str, Any]] = Field(default_factory=list, description="List of errors encountered")
+    warnings: List[Dict[str, Any]] = Field(default_factory=list, description="List of warnings")
+
+    # Performance metrics
+    average_page_processing_time: Optional[float] = Field(default=None, description="Average time per page in seconds")
+    ocr_pages_processed: int = Field(default=0, description="Number of pages processed with OCR")
+    total_text_extracted: int = Field(default=0, description="Total characters of text extracted")
+    total_images_extracted: int = Field(default=0, description="Total number of images extracted")
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
