@@ -2235,33 +2235,43 @@ Summary:"""
                             # Generate embedding for the chunk
                             embedding_response = await self.embedding_service.generate_embedding(node.text)
 
+                            # Extract the actual embedding vector from the response
                             if embedding_response:
-                                # Store embedding in embeddings table
-                                embedding_data = {
-                                    'chunk_id': chunk_id,
-                                    'workspace_id': metadata.get('workspace_id'),
-                                    'embedding': embedding_response,
-                                    'model_name': 'text-embedding-3-small',
-                                    'dimensions': 1536
-                                }
+                                # Handle different response types
+                                if hasattr(embedding_response, 'embedding'):
+                                    embedding_vector = embedding_response.embedding
+                                elif isinstance(embedding_response, list):
+                                    embedding_vector = embedding_response
+                                else:
+                                    embedding_vector = embedding_response
 
-                                embedding_result = supabase_client.client.table('embeddings').insert(embedding_data).execute()
-
-                                if embedding_result.data:
-                                    embeddings_stored += 1
-
-                                    # Also store in document_vectors table for comprehensive search
-                                    vector_data = {
-                                        'document_id': document_id,
+                                if embedding_vector:
+                                    # Store embedding in embeddings table
+                                    embedding_data = {
                                         'chunk_id': chunk_id,
                                         'workspace_id': metadata.get('workspace_id'),
-                                        'content': node.text,
-                                        'embedding': embedding_response,
-                                        'metadata': chunk_data['metadata'],
-                                        'model_name': 'text-embedding-3-small'
+                                        'embedding': embedding_vector,
+                                        'model_name': 'text-embedding-3-small',
+                                        'dimensions': 1536
                                     }
 
-                                    supabase_client.client.table('document_vectors').insert(vector_data).execute()
+                                    embedding_result = supabase_client.client.table('embeddings').insert(embedding_data).execute()
+
+                                    if embedding_result.data:
+                                        embeddings_stored += 1
+
+                                        # Also store in document_vectors table for comprehensive search
+                                        vector_data = {
+                                            'document_id': document_id,
+                                            'chunk_id': chunk_id,
+                                            'workspace_id': metadata.get('workspace_id'),
+                                            'content': node.text,
+                                            'embedding': embedding_vector,
+                                            'metadata': chunk_data['metadata'],
+                                            'model_name': 'text-embedding-3-small'
+                                        }
+
+                                        supabase_client.client.table('document_vectors').insert(vector_data).execute()
 
                         except Exception as embedding_error:
                             self.logger.warning(f"Failed to generate/store embedding for chunk {i}: {embedding_error}")
