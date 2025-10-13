@@ -351,10 +351,14 @@ class LlamaIndexService:
         
         class EmbeddingServiceWrapper(BaseEmbedding):
             """Wrapper to integrate our centralized embedding service with LlamaIndex."""
-            
+
+            # Declare the field for Pydantic validation
+            embedding_service: EmbeddingService
+
             def __init__(self, embedding_service: EmbeddingService):
                 super().__init__()
-                self.embedding_service = embedding_service
+                # Use object.__setattr__ to bypass Pydantic validation if needed
+                object.__setattr__(self, 'embedding_service', embedding_service)
                 self._model_name = embedding_service.config.model_name
                 self._embed_batch_size = embedding_service.config.batch_size
             
