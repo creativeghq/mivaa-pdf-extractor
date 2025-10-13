@@ -353,10 +353,13 @@ class LlamaIndexService:
             """Wrapper to integrate our centralized embedding service with LlamaIndex."""
 
             def __init__(self, embedding_service: EmbeddingService):
-                # Initialize with the embedding_service field for Pydantic
-                super().__init__(embedding_service=embedding_service)
-                self._model_name = embedding_service.config.model_name
-                self._embed_batch_size = embedding_service.config.batch_size
+                # Initialize with proper BaseEmbedding fields
+                super().__init__(
+                    model_name=embedding_service.config.model_name,
+                    embed_batch_size=embedding_service.config.batch_size
+                )
+                # Store the embedding service
+                object.__setattr__(self, 'embedding_service', embedding_service)
             
             def _get_query_embedding(self, query: str) -> List[float]:
                 """Get embedding for a single query."""
