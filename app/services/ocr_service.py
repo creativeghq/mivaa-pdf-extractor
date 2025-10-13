@@ -18,6 +18,10 @@ import easyocr
 import pytesseract
 from dataclasses import dataclass
 
+# Fix for Pillow 10.0+ compatibility with EasyOCR
+if not hasattr(Image, 'ANTIALIAS'):
+    Image.ANTIALIAS = Image.LANCZOS
+
 logger = logging.getLogger(__name__)
 
 

@@ -151,11 +151,11 @@ async def save_upload_file_async(upload_file: UploadFile) -> Path:
     """Save uploaded file to temporary location asynchronously."""
     suffix = Path(upload_file.filename).suffix
     temp_file = tempfile.NamedTemporaryFile(
-        delete=False, 
-        prefix=f"{upload_file.filename}_", 
+        delete=False,
+        prefix=f"{upload_file.filename}_",
         suffix=suffix
     )
-    
+
     try:
         async with aiofiles.open(temp_file.name, 'wb') as f:
             content = await upload_file.read()
@@ -163,6 +163,47 @@ async def save_upload_file_async(upload_file: UploadFile) -> Path:
         return Path(temp_file.name)
     finally:
         temp_file.close()
+
+
+async def upload_pdf_to_storage(upload_file: UploadFile, document_id: str = None) -> Dict[str, Any]:
+    """
+    Upload PDF file to Supabase Storage and return storage information.
+
+    Args:
+        upload_file: FastAPI UploadFile object
+        document_id: Optional document ID for organizing files
+
+    Returns:
+        Dictionary with upload result and storage information
+    """
+    try:
+        # Read file content
+        content = await upload_file.read()
+        upload_file.file.seek(0)  # Reset file pointer for potential reuse
+
+        # Get Supabase client
+        supabase_client = get_supabase_client()
+
+        # Upload to Supabase Storage
+        upload_result = await supabase_client.upload_pdf_file(
+            file_data=content,
+            filename=upload_file.filename,
+            document_id=document_id
+        )
+
+        if upload_result.get('success'):
+            logger.info(f"Successfully uploaded PDF to storage: {upload_result.get('public_url')}")
+        else:
+            logger.warning(f"Failed to upload PDF to storage: {upload_result.get('error')}")
+
+        return upload_result
+
+    except Exception as e:
+        logger.error(f"Error uploading PDF to storage: {str(e)}")
+        return {
+            'success': False,
+            'error': str(e)
+        }
 
 
 async def download_file_from_url(url: str) -> Path:
@@ -410,7 +451,13 @@ async def process_document(
         # Validate file
         await validate_pdf_file(file)
 
-        # Save file temporarily
+        # Generate document ID
+        document_id = str(uuid.uuid4())
+
+        # Upload PDF to Supabase Storage
+        storage_result = await upload_pdf_to_storage(file, document_id)
+
+        # Save file temporarily for processing
         temp_path = await save_upload_file_async(file)
         
         # Create processing options
@@ -467,7 +514,7 @@ async def process_document(
                 # Process document using PDF processor service
                 result: PDFProcessingResult = await pdf_processor.process_pdf_from_bytes(
                     pdf_bytes=pdf_bytes,
-                    document_id=str(uuid.uuid4()),
+                    document_id=document_id,  # Use the same document_id for consistency
                     processing_options=processing_options
                 )
                 
@@ -484,7 +531,9 @@ async def process_document(
                     source_info=FileUploadInfo(
                         filename=file.filename,
                         size_bytes=len(pdf_bytes),
-                        content_type=file.content_type or "application/pdf"
+                        content_type=file.content_type or "application/pdf",
+                        storage_url=storage_result.get('public_url') if storage_result.get('success') else None,
+                        storage_path=storage_result.get('storage_path') if storage_result.get('success') else None
                     ),
                     content=DocumentContent(
                         markdown_content=result.markdown_content or "",

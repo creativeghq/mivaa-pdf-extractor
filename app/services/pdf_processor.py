@@ -73,6 +73,9 @@ except ImportError:
 # Import OCR service
 from app.services.ocr_service import get_ocr_service, OCRConfig
 
+# Import Supabase client for storage
+from app.services.supabase_client import get_supabase_client
+
 # Import custom exceptions
 from app.utils.exceptions import (
     PDFProcessingError,
@@ -329,9 +332,7 @@ class PDFProcessor:
             # Extract images if requested
             extracted_images = []
             if processing_options.get('extract_images', True):
-                extracted_images = await loop.run_in_executor(
-                    None,
-                    self._extract_images_sync,
+                extracted_images = await self._extract_images_async(
                     pdf_path,
                     document_id,
                     processing_options
@@ -714,59 +715,77 @@ class PDFProcessor:
             self.logger.warning(f"Multimodal detection failed: {e}, defaulting to False")
             return False
 
-    def _extract_images_sync(
+    async def _extract_images_async(
         self,
         pdf_path: str,
         document_id: str,
         processing_options: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
         """
-        Enhanced image extraction with advanced processing capabilities.
-        
+        Enhanced async image extraction with Supabase Storage upload.
+
         Features:
         - Basic extraction using existing PyMuPDF functionality
         - Image format conversion and optimization
         - Advanced metadata extraction (EXIF, dimensions, quality metrics)
         - Image enhancement and filtering options
+        - Upload to Supabase Storage instead of local storage
         - Quality assessment and duplicate detection
         """
         try:
             # Create output directory for images
             output_dir = self._create_temp_directory(f"{document_id}_images")
-            
-            # Use existing extractor function for basic extraction
+
+            # Use existing extractor function for basic extraction (run in executor for sync function)
+            loop = asyncio.get_event_loop()
             page_number = processing_options.get('page_number')
-            extract_json_and_images(pdf_path, output_dir, page_number)
-            
+
+            await loop.run_in_executor(
+                None,
+                extract_json_and_images,
+                pdf_path,
+                output_dir,
+                page_number
+            )
+
             # Process extracted images with advanced capabilities
             images = []
             image_dir = os.path.join(output_dir, 'images')
-            
+
             if os.path.exists(image_dir):
                 for image_file in os.listdir(image_dir):
                     if image_file.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp')):
                         image_path = os.path.join(image_dir, image_file)
-                        
-                        # Process each image with advanced capabilities
-                        processed_image_info = self._process_extracted_image(
+
+                        # Process each image with advanced capabilities (now async)
+                        processed_image_info = await self._process_extracted_image(
                             image_path,
                             document_id,
                             processing_options
                         )
-                        
+
                         if processed_image_info:
                             images.append(processed_image_info)
-            
+
+            # Clean up temporary directory after processing
+            try:
+                import shutil
+                shutil.rmtree(output_dir)
+                self.logger.debug(f"Cleaned up temporary directory: {output_dir}")
+            except Exception as cleanup_error:
+                self.logger.warning(f"Failed to clean up temporary directory: {cleanup_error}")
+
             # Apply post-processing filters if requested
             if processing_options.get('remove_duplicates', True):
                 images = self._remove_duplicate_images(images)
-            
+
             if processing_options.get('quality_filter', True):
                 min_quality = processing_options.get('min_quality_score', 0.3)
                 images = [img for img in images if img.get('quality_score', 1.0) >= min_quality]
-            
+
+            self.logger.info(f"Successfully extracted and uploaded {len(images)} images to Supabase Storage")
             return images
-            
+
         except Exception as e:
             raise PDFExtractionError(f"Enhanced image extraction failed: {str(e)}") from e
     
@@ -832,20 +851,21 @@ class PDFProcessor:
             'line_count': len(lines)
         }
     
-    def _process_extracted_image(
+    async def _process_extracted_image(
         self,
         image_path: str,
         document_id: str,
         processing_options: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
         """
-        Process a single extracted image with advanced capabilities.
-        
+        Process a single extracted image with advanced capabilities and upload to Supabase Storage.
+
         Features:
         - Format conversion and optimization
         - Metadata extraction (EXIF, technical specs)
         - Quality assessment
         - Image enhancement options
+        - Upload to Supabase Storage instead of local storage
         - Duplicate detection preparation
         """
         try:
@@ -854,7 +874,7 @@ class PDFProcessor:
                 # Extract basic metadata
                 basic_info = {
                     'filename': os.path.basename(image_path),
-                    'path': image_path,
+                    'local_path': image_path,  # Keep local path for processing
                     'size_bytes': os.path.getsize(image_path),
                     'format': pil_image.format or 'UNKNOWN',
                     'mode': pil_image.mode,
@@ -862,7 +882,7 @@ class PDFProcessor:
                     'width': pil_image.width,
                     'height': pil_image.height
                 }
-                
+
                 # Extract EXIF metadata if available
                 exif_data = self._extract_exif_metadata(pil_image)
                 
@@ -905,7 +925,20 @@ class PDFProcessor:
                         target_format
                     )
 
-                # Combine all metadata
+                # Upload image to Supabase Storage
+                upload_result = await self._upload_image_to_storage(
+                    image_path,
+                    document_id,
+                    basic_info,
+                    converted_path or enhanced_path
+                )
+
+                if not upload_result.get('success'):
+                    self.logger.warning(f"Failed to upload image to storage: {upload_result.get('error')}")
+                    # Continue processing even if upload fails, but mark it
+                    upload_result = {'success': False, 'error': 'Upload failed', 'public_url': None}
+
+                # Combine all metadata with storage information
                 return {
                     **basic_info,
                     'exif': exif_data,
@@ -914,13 +947,88 @@ class PDFProcessor:
                     'image_hash': image_hash,
                     'enhanced_path': enhanced_path,
                     'converted_path': converted_path,
-                    'processing_timestamp': datetime.utcnow().isoformat()
+                    'processing_timestamp': datetime.utcnow().isoformat(),
+                    # Storage information
+                    'storage_uploaded': upload_result.get('success', False),
+                    'storage_url': upload_result.get('public_url'),
+                    'storage_path': upload_result.get('storage_path'),
+                    'storage_bucket': upload_result.get('bucket', 'pdf-tiles')
                 }
                     
         except Exception as e:
             self.logger.error("Error processing image %s: %s", image_path, str(e))
             return None
-    
+
+    async def _upload_image_to_storage(
+        self,
+        image_path: str,
+        document_id: str,
+        image_info: Dict[str, Any],
+        processed_path: str = None
+    ) -> Dict[str, Any]:
+        """
+        Upload extracted image to Supabase Storage.
+
+        Args:
+            image_path: Path to the original image file
+            document_id: Document ID for organizing images
+            image_info: Basic image information
+            processed_path: Path to processed/enhanced image (if available)
+
+        Returns:
+            Dictionary with upload result
+        """
+        try:
+            # Use processed image if available, otherwise use original
+            upload_path = processed_path if processed_path and os.path.exists(processed_path) else image_path
+
+            # Read image file as bytes
+            with open(upload_path, 'rb') as f:
+                image_data = f.read()
+
+            # Get Supabase client
+            supabase_client = get_supabase_client()
+
+            # Extract page number from filename if possible
+            filename = os.path.basename(upload_path)
+            page_number = None
+
+            # Try to extract page number from filename patterns like "page_1_image_0.png"
+            import re
+            page_match = re.search(r'page[_-]?(\d+)', filename, re.IGNORECASE)
+            if page_match:
+                page_number = int(page_match.group(1))
+
+            # Upload to Supabase Storage
+            upload_result = await supabase_client.upload_image_file(
+                image_data=image_data,
+                filename=filename,
+                document_id=document_id,
+                page_number=page_number
+            )
+
+            if upload_result.get('success'):
+                self.logger.info(f"Successfully uploaded image to storage: {upload_result.get('public_url')}")
+
+                # Clean up local files after successful upload
+                try:
+                    if os.path.exists(image_path):
+                        os.unlink(image_path)
+                    if processed_path and os.path.exists(processed_path) and processed_path != image_path:
+                        os.unlink(processed_path)
+                    self.logger.debug(f"Cleaned up local image files: {image_path}")
+                except Exception as cleanup_error:
+                    self.logger.warning(f"Failed to clean up local files: {cleanup_error}")
+
+            return upload_result
+
+        except Exception as e:
+            self.logger.error(f"Failed to upload image to storage: {str(e)}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
     def _extract_exif_metadata(self, pil_image: Image.Image) -> Dict[str, Any]:
         """Extract EXIF metadata from PIL Image."""
         exif_data = {}

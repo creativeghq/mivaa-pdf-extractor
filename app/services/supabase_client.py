@@ -322,6 +322,190 @@ class SupabaseClient:
                 'error': str(e)
             }
 
+    async def upload_file(self, bucket_name: str, file_path: str, file_data: bytes,
+                         content_type: str = None, upsert: bool = False) -> dict:
+        """
+        Upload file to Supabase Storage.
+
+        Args:
+            bucket_name: Name of the storage bucket
+            file_path: Path where the file should be stored
+            file_data: File content as bytes
+            content_type: MIME type of the file
+            upsert: Whether to overwrite existing files
+
+        Returns:
+            Dictionary with upload result
+        """
+        try:
+            if not self._client:
+                raise Exception("Supabase client not initialized")
+
+            # Upload file to storage
+            response = self._client.storage.from_(bucket_name).upload(
+                file_path,
+                file_data,
+                file_options={
+                    "content-type": content_type,
+                    "upsert": upsert
+                }
+            )
+
+            if response.error:
+                raise Exception(f"Upload failed: {response.error}")
+
+            # Get public URL
+            url_response = self._client.storage.from_(bucket_name).get_public_url(file_path)
+
+            logger.info(f"File uploaded successfully to {bucket_name}/{file_path}")
+            return {
+                "success": True,
+                "data": response.data,
+                "public_url": url_response,
+                "bucket": bucket_name,
+                "path": file_path
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to upload file: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def upload_pdf_file(self, file_data: bytes, filename: str,
+                             document_id: str = None) -> dict:
+        """
+        Upload PDF file to the pdf-documents bucket.
+
+        Args:
+            file_data: PDF file content as bytes
+            filename: Original filename
+            document_id: Optional document ID for organizing files
+
+        Returns:
+            Dictionary with upload result including public URL
+        """
+        try:
+            # Generate unique file path
+            import uuid
+            from datetime import datetime
+
+            if not document_id:
+                document_id = str(uuid.uuid4())
+
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            file_extension = filename.split('.')[-1] if '.' in filename else 'pdf'
+            storage_path = f"documents/{document_id}/{timestamp}_{filename}"
+
+            # Upload to pdf-documents bucket
+            result = await self.upload_file(
+                bucket_name="pdf-documents",
+                file_path=storage_path,
+                file_data=file_data,
+                content_type="application/pdf",
+                upsert=False
+            )
+
+            if result["success"]:
+                result["document_id"] = document_id
+                result["storage_path"] = storage_path
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to upload PDF file: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def upload_image_file(self, image_data: bytes, filename: str,
+                               document_id: str, page_number: int = None) -> dict:
+        """
+        Upload extracted image to the pdf-tiles bucket.
+
+        Args:
+            image_data: Image content as bytes
+            filename: Image filename
+            document_id: Document ID for organizing images
+            page_number: Page number where image was extracted
+
+        Returns:
+            Dictionary with upload result including public URL
+        """
+        try:
+            # Generate storage path for extracted images
+            from datetime import datetime
+
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            page_suffix = f"_page{page_number}" if page_number else ""
+            file_extension = filename.split('.')[-1] if '.' in filename else 'png'
+            storage_path = f"extracted/{document_id}/{timestamp}{page_suffix}_{filename}"
+
+            # Determine content type
+            content_type = "image/png"
+            if file_extension.lower() in ['jpg', 'jpeg']:
+                content_type = "image/jpeg"
+            elif file_extension.lower() == 'webp':
+                content_type = "image/webp"
+
+            # Upload to pdf-tiles bucket
+            result = await self.upload_file(
+                bucket_name="pdf-tiles",
+                file_path=storage_path,
+                file_data=image_data,
+                content_type=content_type,
+                upsert=False
+            )
+
+            if result["success"]:
+                result["document_id"] = document_id
+                result["page_number"] = page_number
+                result["storage_path"] = storage_path
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to upload image file: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def delete_file(self, bucket_name: str, file_path: str) -> dict:
+        """
+        Delete file from Supabase Storage.
+
+        Args:
+            bucket_name: Name of the storage bucket
+            file_path: Path of the file to delete
+
+        Returns:
+            Dictionary with deletion result
+        """
+        try:
+            if not self._client:
+                raise Exception("Supabase client not initialized")
+
+            response = self._client.storage.from_(bucket_name).remove([file_path])
+
+            if response.error:
+                raise Exception(f"Delete failed: {response.error}")
+
+            logger.info(f"File deleted successfully from {bucket_name}/{file_path}")
+            return {
+                "success": True,
+                "data": response.data
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to delete file: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
     def close(self) -> None:
         """Close the Supabase client connection."""
         if self._client:

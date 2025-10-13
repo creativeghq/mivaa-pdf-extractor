@@ -205,11 +205,13 @@ class HealthCheckResponse(BaseModel):
 
 class FileUploadInfo(BaseModel):
     """Information about uploaded file."""
-    
+
     filename: str = Field(..., description="Original filename")
     content_type: str = Field(..., description="MIME content type")
     size_bytes: int = Field(..., description="File size in bytes")
     checksum: Optional[str] = Field(None, description="File checksum (MD5/SHA256)")
+    storage_url: Optional[str] = Field(None, description="Supabase Storage public URL")
+    storage_path: Optional[str] = Field(None, description="Supabase Storage file path")
 
 
 class URLInfo(BaseModel):
