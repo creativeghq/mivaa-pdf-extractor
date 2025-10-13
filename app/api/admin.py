@@ -712,7 +712,7 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
             )
 
             # Get LlamaIndex service for RAG upload
-            llamaindex_service = get_llamaindex_service()
+            llamaindex_service = await get_llamaindex_service()
 
             # Index the document content for RAG search
             rag_result = await llamaindex_service.index_document_content(
