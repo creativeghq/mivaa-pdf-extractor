@@ -247,9 +247,9 @@ class LlamaIndexService:
             self.logger.info(f"🔍 Processing MMR result: {type(mmr_result)}")
             self.logger.info(f"🔍 MMR result attributes: {dir(mmr_result)}")
 
-            if hasattr(mmr_result, 'results') and mmr_result.results:
-                self.logger.info(f"🔍 Found {len(mmr_result.results)} MMR results")
-                for i, node in enumerate(mmr_result.results):
+            if hasattr(mmr_result, 'selected_nodes') and mmr_result.selected_nodes:
+                self.logger.info(f"🔍 Found {len(mmr_result.selected_nodes)} MMR results")
+                for i, node in enumerate(mmr_result.selected_nodes):
                     self.logger.info(f"🔍 Processing node {i}: {type(node)}")
                     result_item = {
                         "content": getattr(node, 'text', str(node)),
@@ -261,7 +261,7 @@ class LlamaIndexService:
                     results.append(result_item)
                     self.logger.info(f"🔍 Added result: {result_item['content'][:50]}...")
             else:
-                self.logger.warning(f"🔍 No results in MMR result or results attribute missing")
+                self.logger.warning(f"🔍 No results in MMR result or selected_nodes attribute missing")
 
             return {
                 "results": results,
