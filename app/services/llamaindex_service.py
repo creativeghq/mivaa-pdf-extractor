@@ -365,10 +365,15 @@ class LlamaIndexService:
                 """Get embedding for a single query."""
                 try:
                     import asyncio
-                    loop = asyncio.get_event_loop()
-                    result = loop.run_until_complete(
-                        self.embedding_service.generate_embedding(query)
-                    )
+                    import concurrent.futures
+
+                    # Run the async function in a separate thread to avoid event loop conflicts
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(
+                            lambda: asyncio.run(self.embedding_service.generate_embedding(query))
+                        )
+                        result = future.result()
+
                     return result.embedding
                 except Exception as e:
                     self.embedding_service.logger.error(f"Query embedding failed: {e}")
@@ -387,10 +392,15 @@ class LlamaIndexService:
                 """Get embedding for a single text."""
                 try:
                     import asyncio
-                    loop = asyncio.get_event_loop()
-                    result = loop.run_until_complete(
-                        self.embedding_service.generate_embedding(text)
-                    )
+                    import concurrent.futures
+
+                    # Run the async function in a separate thread to avoid event loop conflicts
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(
+                            lambda: asyncio.run(self.embedding_service.generate_embedding(text))
+                        )
+                        result = future.result()
+
                     return result.embedding
                 except Exception as e:
                     self.embedding_service.logger.error(f"Text embedding failed: {e}")
@@ -408,12 +418,16 @@ class LlamaIndexService:
             def _get_text_embeddings(self, texts: List[str]) -> List[List[float]]:
                 """Get embeddings for multiple texts using batch processing."""
                 try:
-                    # Use asyncio to run the async method
                     import asyncio
-                    loop = asyncio.get_event_loop()
-                    batch_result = loop.run_until_complete(
-                        self.embedding_service.generate_embeddings_batch(texts)
-                    )
+                    import concurrent.futures
+
+                    # Run the async function in a separate thread to avoid event loop conflicts
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(
+                            lambda: asyncio.run(self.embedding_service.generate_embeddings_batch(texts))
+                        )
+                        batch_result = future.result()
+
                     return [result.embedding for result in batch_result.results]
                 except Exception as e:
                     self.embedding_service.logger.error(f"Batch embedding failed: {e}")
