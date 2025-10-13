@@ -216,8 +216,8 @@ class LlamaIndexService:
             if document_id and document_id in self.indices:
                 search_index = self.indices[document_id]
             elif self.indices:
-                # Use the first available index if no specific document requested
-                search_index = next(iter(self.indices.values()))
+                # Create a combined index from all documents for comprehensive search
+                search_index = await self._get_combined_index()
 
             if not search_index:
                 self.logger.warning("No vector index available for search")
@@ -1005,6 +1005,57 @@ class LlamaIndexService:
 
         except Exception as e:
             self.logger.error(f"Failed to load existing documents: {e}")
+
+    async def _get_combined_index(self):
+        """Create or return a combined index that searches across all documents."""
+        try:
+            # Check if we already have a combined index
+            if hasattr(self, '_combined_index') and self._combined_index:
+                return self._combined_index
+
+            if not self.indices:
+                return None
+
+            self.logger.info(f"🔗 Creating combined index from {len(self.indices)} document indices...")
+
+            # Get all documents from all indices
+            all_documents = []
+            for document_id, index in self.indices.items():
+                try:
+                    # Get the documents from this index
+                    docstore = index.docstore
+                    for doc_id in docstore.docs:
+                        doc = docstore.get_document(doc_id)
+                        all_documents.append(doc)
+                except Exception as e:
+                    self.logger.warning(f"Failed to get documents from index {document_id}: {e}")
+                    continue
+
+            if not all_documents:
+                self.logger.warning("No documents found in any index")
+                return None
+
+            # Create combined index
+            if self.vector_store:
+                # Use SupabaseVectorStore for combined index
+                storage_context = StorageContext.from_defaults(vector_store=self.vector_store)
+                combined_index = VectorStoreIndex.from_documents(all_documents, storage_context=storage_context)
+            else:
+                # Use in-memory storage for combined index
+                combined_index = VectorStoreIndex.from_documents(all_documents)
+
+            # Cache the combined index
+            self._combined_index = combined_index
+
+            self.logger.info(f"✅ Created combined index with {len(all_documents)} total documents")
+            return combined_index
+
+        except Exception as e:
+            self.logger.error(f"Failed to create combined index: {e}")
+            # Fallback to first available index
+            if self.indices:
+                return next(iter(self.indices.values()))
+            return None
     
     async def health_check(self) -> Dict[str, Any]:
         """Check the health of the LlamaIndex service."""
