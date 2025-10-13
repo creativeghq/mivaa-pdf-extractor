@@ -714,6 +714,15 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
             # Get LlamaIndex service for RAG upload
             llamaindex_service = await get_llamaindex_service()
 
+            # Download PDF bytes for RAG indexing
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        pdf_bytes = await response.read()
+                    else:
+                        raise Exception(f"Failed to download PDF: HTTP {response.status}")
+
             # Index the document content for RAG search
             rag_result = await llamaindex_service.index_document_content(
                 file_content=pdf_bytes,
