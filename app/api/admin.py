@@ -27,7 +27,7 @@ from ..schemas.jobs import (
 from ..schemas.common import BaseResponse, PaginationParams
 from ..services.pdf_processor import PDFProcessor
 from ..services.supabase_client import SupabaseClient
-from ..services.llamaindex_service import LlamaIndexService, get_llamaindex_service
+from ..services.llamaindex_service import LlamaIndexService
 from ..services.material_kai_service import MaterialKaiService
 from ..services.progress_tracker import get_progress_service
 from ..dependencies import get_current_user, get_workspace_context, require_admin
@@ -96,9 +96,16 @@ def get_supabase_client():
     """Dependency to get Supabase client instance"""
     return SupabaseClient()
 
-def get_llamaindex_service():
-    """Dependency to get LlamaIndex service instance"""
-    return LlamaIndexService()
+async def get_llamaindex_service() -> LlamaIndexService:
+    """Get LlamaIndex service instance from app state."""
+    from fastapi import HTTPException
+    from app.main import app
+    if not hasattr(app.state, 'llamaindex_service') or app.state.llamaindex_service is None:
+        raise HTTPException(
+            status_code=503,
+            detail="LlamaIndex service is not available"
+        )
+    return app.state.llamaindex_service
 
 def get_material_kai_service():
     """Dependency to get Material Kai service instance"""
