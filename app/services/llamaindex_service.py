@@ -530,11 +530,11 @@ class LlamaIndexService:
             # For Supabase, we need to use the database password, not the service role key
             # The correct format is: postgresql://postgres:[DB_PASSWORD]@db.[PROJECT_ID].supabase.co:5432/postgres
 
-            # For now, disable vector store to focus on basic PDF processing
-            # Vector store requires database password which needs to be configured separately
-            self.logger.warning("⚠️ Vector store disabled - focusing on basic PDF processing and database saving")
-            self.vector_store = None
-            return
+            # Create a simple in-memory vector store for now
+            # This will enable search functionality while we work on Supabase integration
+            self.logger.info("🔧 Creating in-memory vector store for search functionality...")
+            self.vector_store = None  # Use default in-memory storage
+            self.logger.info("✅ In-memory vector store enabled for search")
 
             self.logger.info(f"🔍 Connection string format: postgresql://postgres:***@db.{project_id}.supabase.co:5432/postgres")
 
