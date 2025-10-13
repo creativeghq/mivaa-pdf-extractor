@@ -2194,7 +2194,7 @@ Summary:"""
             Dict with storage statistics
         """
         try:
-            from app.services.supabase_service import SupabaseClient
+            from app.services.supabase_client import SupabaseClient
             supabase_client = SupabaseClient()
 
             chunks_stored = 0
