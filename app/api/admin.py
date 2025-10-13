@@ -27,7 +27,7 @@ from ..schemas.jobs import (
 from ..schemas.common import BaseResponse, PaginationParams
 from ..services.pdf_processor import PDFProcessor
 from ..services.supabase_client import SupabaseClient
-from ..services.llamaindex_service import LlamaIndexService
+from ..services.llamaindex_service import LlamaIndexService, get_llamaindex_service
 from ..services.material_kai_service import MaterialKaiService
 from ..services.progress_tracker import get_progress_service
 from ..dependencies import get_current_user, get_workspace_context, require_admin
@@ -164,7 +164,11 @@ async def track_job(job_id: str, job_type: str, status: str, details: Dict[str, 
             "tags": [],
             "success": None,
             "error_message": None,
-            "details": details or {}
+            "details": details or {},
+            "parameters": details or {},
+            "retry_count": 3,
+            "current_retry": 0,
+            "result": None
         }
         logger.info(f"📝 Created new job {job_id} with status: {status}")
 
@@ -329,7 +333,7 @@ async def get_job_status(
         logger.error(f"Error getting job status: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get job status: {str(e)}")
 
-@router.get("/jobs/{job_id}/status", response_model=JobStatusResponse)
+@router.get("/jobs/{job_id}/status")
 async def get_job_status_alt(
     job_id: str,
 ):
@@ -597,19 +601,136 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
             tracker = progress_service.create_tracker(job_id, document_id, 1)
             tracker.start_processing()
 
-        result = await pdf_processor.process_pdf_from_url(url, document_id, options or {})
+        # Create progress callback for PDF processor
+        def progress_callback(progress_percentage: float, current_step: str, details: dict = None):
+            """Callback to update job progress during PDF processing"""
+            try:
+                if job_id:
+                    # Update job tracking directly in active_jobs (sync operation)
+                    if job_id in active_jobs:
+                        job_info = active_jobs[job_id]
+                        job_info["progress_percentage"] = progress_percentage
+                        job_info["current_step"] = current_step
+                        job_info["updated_at"] = datetime.utcnow().isoformat()
+
+                        # Update details
+                        if details:
+                            if "details" not in job_info:
+                                job_info["details"] = {}
+                            job_info["details"].update(details)
+
+                        logger.info(f"📊 Job {job_id} progress updated: {progress_percentage}% - {current_step}")
+                    else:
+                        logger.warning(f"Job {job_id} not found in active_jobs for progress update")
+            except Exception as e:
+                logger.warning(f"Failed to update job progress: {e}")
+
+        result = await pdf_processor.process_pdf_from_url(url, document_id, options or {}, progress_callback)
 
         # Update progress tracking with actual page count
         if tracker:
             tracker.total_pages = result.page_count
             tracker.update_stage(ProcessingStage.EXTRACTING_TEXT)
 
-        # Create chunks from markdown content (simple text splitting for now)
+        # Create chunks from markdown content using LlamaIndex
         chunks = []
+        chunks_created = 0
         if result.markdown_content:
-            # Split by double newlines to create basic chunks
-            text_chunks = result.markdown_content.split('\n\n')
-            chunks = [chunk.strip() for chunk in text_chunks if chunk.strip()]
+            try:
+                # Update progress for chunking
+                await track_job(
+                    job_id,
+                    "bulk_processing",
+                    "running",
+                    {
+                        "current_step": "Creating text chunks for RAG pipeline",
+                        "progress_percentage": 85.0,
+                        "text_length": len(result.markdown_content)
+                    }
+                )
+
+                # Use LlamaIndex for intelligent chunking
+                llamaindex_service = get_llamaindex_service()
+
+                # Create a temporary text file for chunking
+                import tempfile
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as temp_file:
+                    temp_file.write(result.markdown_content)
+                    temp_file_path = temp_file.name
+
+                try:
+                    # Index the document with chunking
+                    chunk_result = await llamaindex_service.index_document_enhanced(
+                        document_id=document_id,
+                        file_path=temp_file_path,
+                        metadata={
+                            "source_url": url,
+                            "original_filename": original_filename,
+                            "processing_timestamp": datetime.utcnow().isoformat(),
+                            "page_count": result.page_count,
+                            "image_count": len(result.images) if result.images else 0
+                        },
+                        chunk_strategy="semantic",
+                        chunk_size=1000,
+                        chunk_overlap=200
+                    )
+
+                    chunks_created = chunk_result.get("statistics", {}).get("total_chunks", 0)
+                    logger.info(f"✅ Created {chunks_created} chunks for document {document_id}")
+
+                finally:
+                    # Clean up temp file
+                    os.unlink(temp_file_path)
+
+            except Exception as chunk_error:
+                logger.warning(f"Chunking failed, using simple text splitting: {chunk_error}")
+                # Fallback to simple text splitting
+                text_chunks = result.markdown_content.split('\n\n')
+                chunks = [chunk.strip() for chunk in text_chunks if chunk.strip()]
+                chunks_created = len(chunks)
+
+        # ✅ NEW: Upload processed document to RAG system for indexing
+        try:
+            logger.info(f"🔍 Starting RAG upload for document {document_id}")
+            await track_job(
+                job_id,
+                "bulk_processing",
+                "running",
+                {
+                    "current_step": "Uploading document to RAG system for search indexing",
+                    "progress_percentage": 90.0,
+                    "chunks_created": chunks_created,
+                    "document_id": document_id
+                }
+            )
+
+            # Get LlamaIndex service for RAG upload
+            llamaindex_service = get_llamaindex_service()
+
+            # Index the document content for RAG search
+            rag_result = await llamaindex_service.index_document_content(
+                file_content=pdf_bytes,
+                document_id=document_id,
+                file_path=f"{document_id}.pdf",
+                metadata={
+                    "filename": url.split('/')[-1] if url else f"{document_id}.pdf",
+                    "total_pages": result.total_pages,
+                    "chunks_created": chunks_created,
+                    "images_extracted": len(result.extracted_images or []),
+                    "processing_method": result.processing_method,
+                    "file_url": url
+                },
+                chunk_size=1000,
+                chunk_overlap=200
+            )
+
+            logger.info(f"✅ Document {document_id} successfully indexed in RAG system")
+            logger.info(f"📊 RAG indexing result: {rag_result}")
+
+        except Exception as rag_error:
+            logger.error(f"⚠️ Failed to index document in RAG system: {rag_error}")
+            # Don't fail the entire job if RAG indexing fails - this is optional
+            logger.info("📄 Continuing with database save despite RAG indexing failure")
 
         # Save to database
         supabase_client = get_supabase_client()
@@ -632,15 +753,19 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
                 tracker.update_database_stats(records_created=1)
                 tracker.update_stage(ProcessingStage.SAVING_TO_DATABASE)
 
-            # Update job progress
+            # Update job progress with chunk and image counts
             await track_job(
                 job_id,
                 "bulk_processing",
                 "running",
                 {
-                    "current_step": "PDF processing result saved",
-                    "progress_percentage": 80.0,
-                    "database_records_created": 1
+                    "current_step": "PDF processing completed successfully",
+                    "progress_percentage": 95.0,
+                    "database_records_created": 1,
+                    "chunks_created": chunks_created,
+                    "images_extracted": len(result.images) if result.images else 0,
+                    "pages_processed": result.page_count,
+                    "total_pages": result.page_count
                 }
             )
 
