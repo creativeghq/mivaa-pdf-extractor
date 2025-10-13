@@ -116,7 +116,7 @@ class PDFProcessor:
         self.logger = logging.getLogger(__name__)
         
         # Default processing options
-        self.default_timeout = self.config.get('timeout_seconds', 300)
+        self.default_timeout = self.config.get('timeout_seconds', 900)  # 15 minutes for large PDFs
         self.max_file_size = self.config.get('max_file_size_mb', 50) * 1024 * 1024  # Convert to bytes
         self.temp_dir_base = self.config.get('temp_dir', tempfile.gettempdir())
         
@@ -179,10 +179,11 @@ class PDFProcessor:
             }
 
     async def process_pdf_from_bytes(
-        self, 
-        pdf_bytes: bytes, 
+        self,
+        pdf_bytes: bytes,
         document_id: Optional[str] = None,
-        processing_options: Optional[Dict[str, Any]] = None
+        processing_options: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[callable] = None
     ) -> PDFProcessingResult:
         """
         Process PDF from bytes and return markdown + images.
@@ -224,7 +225,7 @@ class PDFProcessor:
             
             try:
                 result = await asyncio.wait_for(
-                    self._process_pdf_file(temp_pdf_path, document_id, processing_options),
+                    self._process_pdf_file(temp_pdf_path, document_id, processing_options, progress_callback),
                     timeout=timeout
                 )
                 
@@ -253,10 +254,11 @@ class PDFProcessor:
                 self._cleanup_temp_files(temp_dir)
     
     async def process_pdf_from_url(
-        self, 
-        pdf_url: str, 
+        self,
+        pdf_url: str,
         document_id: Optional[str] = None,
-        processing_options: Optional[Dict[str, Any]] = None
+        processing_options: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[callable] = None
     ) -> PDFProcessingResult:
         """
         Process PDF from URL and return markdown + images.
@@ -297,13 +299,14 @@ class PDFProcessor:
             raise PDFDownloadError(f"Unexpected error downloading PDF: {str(e)}") from e
         
         # Process the downloaded PDF
-        return await self.process_pdf_from_bytes(pdf_bytes, document_id, processing_options)
+        return await self.process_pdf_from_bytes(pdf_bytes, document_id, processing_options, progress_callback)
     
     async def _process_pdf_file(
         self,
         pdf_path: str,
         document_id: str,
-        processing_options: Dict[str, Any]
+        processing_options: Dict[str, Any],
+        progress_callback: Optional[callable] = None
     ) -> PDFProcessingResult:
         """
         Internal method to process PDF file using existing extractor functions.
@@ -316,10 +319,11 @@ class PDFProcessor:
         try:
             # Extract markdown content using existing function
             markdown_content, metadata = await loop.run_in_executor(
-                None, 
-                self._extract_markdown_sync, 
-                pdf_path, 
-                processing_options
+                None,
+                self._extract_markdown_sync,
+                pdf_path,
+                processing_options,
+                progress_callback
             )
             
             # Extract images if requested
@@ -339,12 +343,26 @@ class PDFProcessor:
             # Initialize OCR results
             ocr_text = ""
             ocr_results = []
-            multimodal_enabled = processing_options.get('enable_multimodal', False)
-            
+
+            # Intelligent multimodal detection
+            manual_multimodal = processing_options.get('enable_multimodal', None)
+            if manual_multimodal is not None:
+                # User explicitly set multimodal preference
+                multimodal_enabled = manual_multimodal
+                multimodal_reason = "manual_override"
+            else:
+                # Auto-detect if multimodal processing would be beneficial
+                multimodal_enabled = self._should_use_multimodal(extracted_images, markdown_content)
+                multimodal_reason = "auto_detected"
+
+            ocr_languages = processing_options.get('ocr_languages', ['en'])  # Define outside conditional
+
+            self.logger.info(f"🔍 Multimodal: {'enabled' if multimodal_enabled else 'disabled'} "
+                           f"({multimodal_reason}, {len(extracted_images)} images available)")
+
             # Process images with OCR if multimodal is enabled
             if multimodal_enabled and extracted_images:
                 self.logger.info(f"Processing {len(extracted_images)} images with OCR")
-                ocr_languages = processing_options.get('ocr_languages', ['en'])
                 ocr_text, ocr_results = await self._process_images_with_ocr(
                     extracted_images, ocr_languages
                 )
@@ -390,7 +408,8 @@ class PDFProcessor:
     def _extract_markdown_sync(
         self,
         pdf_path: str,
-        processing_options: Dict[str, Any]
+        processing_options: Dict[str, Any],
+        progress_callback: Optional[callable] = None
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Enhanced markdown extraction with intelligent OCR-first approach for image-based PDFs.
@@ -422,20 +441,48 @@ class PDFProcessor:
 
             doc.close()
 
-            # Determine if this is an image-based PDF
+            # Enhanced PDF type detection with multiple criteria
             avg_text_per_page = total_text_chars / sample_pages
             avg_images_per_page = total_images / sample_pages
 
-            is_image_based = (avg_text_per_page < 50 and avg_images_per_page >= 1)
+            # Multiple detection criteria for better accuracy
+            criteria = {
+                'low_text': avg_text_per_page < 50,
+                'very_low_text': avg_text_per_page < 10,  # More restrictive threshold
+                'has_images': avg_images_per_page >= 1,
+                'many_images': avg_images_per_page >= 3,
+                'text_to_image_ratio': (avg_text_per_page / max(avg_images_per_page, 1)) < 30,
+                'no_images': avg_images_per_page == 0
+            }
 
-            self.logger.info(f"PDF analysis: {total_pages} pages, avg {avg_text_per_page:.1f} text chars/page, "
-                           f"avg {avg_images_per_page:.1f} images/page, image-based: {is_image_based}")
+            # Smart detection logic - prioritize text-first for text-only PDFs
+            is_image_based = (
+                (criteria['very_low_text'] and criteria['has_images']) or  # Very little text + images → OCR
+                (criteria['low_text'] and criteria['many_images']) or  # Low text + many images → OCR
+                (criteria['many_images'] and criteria['text_to_image_ratio'])  # Many images + low text ratio → OCR
+            ) and not criteria['no_images']  # Never use OCR for PDFs with no images
+
+            # Enhanced logging with detection criteria
+            detection_reason = []
+            if criteria['very_low_text'] and criteria['has_images']:
+                detection_reason.append("very_low_text_with_images")
+            if criteria['low_text'] and criteria['many_images']:
+                detection_reason.append("low_text_many_images")
+            if criteria['many_images'] and criteria['text_to_image_ratio']:
+                detection_reason.append("many_images_low_ratio")
+            if criteria['no_images']:
+                detection_reason.append("text_only_pdf")
+
+            self.logger.info(f"📊 PDF Analysis: {total_pages} pages, {avg_text_per_page:.1f} chars/page, "
+                           f"{avg_images_per_page:.1f} images/page")
+            self.logger.info(f"🎯 Detection: {'OCR-first' if is_image_based else 'Text-first'} "
+                           f"(reason: {', '.join(detection_reason) if detection_reason else 'text_dominant'})")
 
             if is_image_based:
                 # Use OCR-first approach for image-based PDFs
                 self.logger.info("Detected image-based PDF, using OCR-first extraction")
                 try:
-                    markdown_content = self._extract_text_with_ocr(pdf_path, processing_options)
+                    markdown_content = self._extract_text_with_ocr(pdf_path, processing_options, progress_callback)
                     if len(markdown_content.strip()) < 100:
                         # If OCR also fails, try PyMuPDF4LLM as fallback
                         self.logger.info("OCR yielded minimal content, trying PyMuPDF4LLM fallback")
@@ -460,7 +507,7 @@ class PDFProcessor:
                 if len(clean_content) < 100:  # Less than 100 chars of actual content
                     self.logger.info("Standard extraction yielded minimal text, attempting OCR extraction")
                     try:
-                        ocr_content = self._extract_text_with_ocr(pdf_path, processing_options)
+                        ocr_content = self._extract_text_with_ocr(pdf_path, processing_options, progress_callback)
 
                         if len(ocr_content.strip()) > len(clean_content):
                             self.logger.info(f"OCR extraction successful: {len(ocr_content)} characters vs {len(clean_content)} from standard")
@@ -514,7 +561,8 @@ class PDFProcessor:
     def _extract_text_with_ocr(
         self,
         pdf_path: str,
-        processing_options: Dict[str, Any]
+        processing_options: Dict[str, Any],
+        progress_callback: Optional[callable] = None
     ) -> str:
         """
         Extract text from PDF using OCR for text-as-images PDFs.
@@ -544,11 +592,12 @@ class PDFProcessor:
             if page_number is not None:
                 page_range = [page_number - 1] if page_number > 0 else [0]
             else:
-                page_range = range(min(20, len(doc)))  # Limit to first 20 pages for performance
+                # Process all pages for complete extraction
+                page_range = range(len(doc))
 
             self.logger.info(f"Processing {len(page_range)} pages with OCR")
 
-            for page_num in page_range:
+            for i, page_num in enumerate(page_range):
                 if page_num < len(doc):
                     page = doc.load_page(page_num)
 
@@ -580,17 +629,90 @@ class PDFProcessor:
                         self.logger.warning(f"OCR failed for page {page_num + 1}: {page_error}")
                         continue
 
+                # Log progress every 5 pages
+                if (i + 1) % 5 == 0 or (i + 1) == len(page_range):
+                    progress = ((i + 1) / len(page_range)) * 80  # OCR is 80% of total processing
+                    self.logger.info(f"📄 OCR Progress: {i + 1}/{len(page_range)} pages ({progress:.1f}%)")
+
+                    # Update job progress if callback provided
+                    if progress_callback:
+                        try:
+                            progress_callback(
+                                progress_percentage=progress,
+                                current_step=f"OCR processing: {i + 1}/{len(page_range)} pages",
+                                details={
+                                    "pages_processed": i + 1,
+                                    "total_pages": len(page_range),
+                                    "ocr_stage": "extracting_text"
+                                }
+                            )
+                        except Exception as callback_error:
+                            self.logger.warning(f"Progress callback failed: {callback_error}")
+
             doc.close()
 
             # Combine all extracted text
             final_text = '\n'.join(all_text)
             self.logger.info(f"OCR extraction complete: {len(final_text)} total characters from {len(page_range)} pages")
 
+            # Update progress for chunk creation
+            if progress_callback:
+                try:
+                    progress_callback(
+                        progress_percentage=85,
+                        current_step="Creating text chunks for RAG pipeline",
+                        details={
+                            "pages_processed": len(page_range),
+                            "total_pages": len(page_range),
+                            "text_length": len(final_text),
+                            "ocr_stage": "creating_chunks"
+                        }
+                    )
+                except Exception as callback_error:
+                    self.logger.warning(f"Progress callback failed: {callback_error}")
+
             return final_text
 
         except Exception as e:
             self.logger.error(f"OCR text extraction failed: {str(e)}")
             raise PDFExtractionError(f"OCR text extraction failed: {str(e)}") from e
+
+    def _should_use_multimodal(self, extracted_images: List[Dict], markdown_content: str) -> bool:
+        """
+        Intelligent detection of whether multimodal processing would be beneficial.
+
+        Args:
+            extracted_images: List of extracted images
+            markdown_content: Extracted text content
+
+        Returns:
+            bool: True if multimodal processing is recommended
+        """
+        try:
+            # Criteria for multimodal processing
+            has_images = len(extracted_images) > 0
+            many_images = len(extracted_images) >= 3
+            low_text_content = len(markdown_content.strip()) < 500
+            moderate_text_content = len(markdown_content.strip()) < 2000
+
+            # Decision logic
+            if not has_images:
+                return False  # No images → no multimodal needed
+
+            if many_images and low_text_content:
+                return True  # Many images + little text → likely visual document
+
+            if has_images and moderate_text_content:
+                return True  # Some images + moderate text → could benefit from multimodal
+
+            if len(extracted_images) >= 1 and low_text_content:
+                return True  # Any images + very little text → likely needs OCR
+
+            return False  # Text-heavy document → multimodal not needed
+
+        except Exception as e:
+            self.logger.warning(f"Multimodal detection failed: {e}, defaulting to False")
+            return False
 
     def _extract_images_sync(
         self,
