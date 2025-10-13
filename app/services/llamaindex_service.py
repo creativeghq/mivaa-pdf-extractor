@@ -3258,58 +3258,52 @@ Summary:"""
             # Extract material properties from analysis
             properties = material_analysis.get('properties', {})
 
-            # Create comprehensive material catalog entry
+            # Create comprehensive material catalog entry with proper metafields
             material_record = {
                 'id': str(uuid.uuid4()),
-                'document_id': document_id,
-                'image_id': image_record.get('id'),
-                'name': f"{properties.get('material_type', 'Unknown')} - {image_record.get('contextual_name', 'Material')}",
+                'name': f"{material_analysis.get('material_type', 'Unknown')} - {image_record.get('contextual_name', 'Material')}",
                 'description': f"Material extracted from document analysis: {material_analysis.get('material_type', 'Unknown material')}",
                 'category': self._determine_material_category(material_analysis.get('material_type', '')),
-                'subcategory': properties.get('subcategory', ''),
-                'material_type': material_analysis.get('material_type', 'unknown'),
 
-                # Visual properties
-                'color': properties.get('color', 'unknown'),
-                'finish': properties.get('finish', 'unknown'),
-                'pattern': properties.get('pattern', 'unknown'),
-                'texture': properties.get('texture', 'unknown'),
-
-                # Technical properties
+                # Core properties as JSONB
                 'properties': properties,
-                'mechanical_properties': properties.get('mechanical_properties', {}),
-                'thermal_properties': properties.get('thermal_properties', {}),
                 'chemical_composition': properties.get('composition', {}),
+                'safety_data': properties.get('safety_ratings', {}),
+                'standards': self._extract_standards_from_analysis(material_analysis),
 
-                # Safety and performance ratings
-                'slip_safety_ratings': properties.get('safety_ratings', {}).get('slip_resistance', {}),
-                'surface_gloss_reflectivity': properties.get('surface_properties', {}).get('gloss', 0.0),
-                'water_moisture_resistance': properties.get('resistance_properties', {}).get('water', {}),
-                'chemical_hygiene_resistance': properties.get('resistance_properties', {}).get('chemical', {}),
+                # Specific metafields (arrays and specific types)
+                'finish': [properties.get('finish', 'unknown')] if properties.get('finish') else [],
+                'size': self._extract_size_array(properties),
+                'installation_method': self._extract_installation_methods(properties),
+                'application': self._extract_applications(properties),
+                'metal_types': self._extract_metal_types(material_analysis),
 
-                # Embeddings
+                # Performance and safety metafields (JSONB)
+                'slip_safety_ratings': self._format_slip_safety_ratings(properties),
+                'surface_gloss_reflectivity': self._format_surface_gloss(properties),
+                'mechanical_properties': self._format_mechanical_properties(properties),
+                'thermal_properties': self._format_thermal_properties(properties),
+                'water_moisture_resistance': self._format_water_resistance(properties),
+                'chemical_hygiene_resistance': self._format_chemical_resistance(properties),
+                'acoustic_electrical_properties': self._format_acoustic_electrical(properties),
+                'environmental_sustainability': self._format_environmental_properties(properties),
+                'dimensional_aesthetic': self._format_dimensional_aesthetic(properties),
+
+                # Visual embeddings
                 'visual_embedding_512': clip_embeddings.get('embedding_512'),
                 'visual_embedding_1536': clip_embeddings.get('embedding_1536'),
 
                 # Analysis metadata
                 'llama_analysis': material_analysis,
                 'visual_analysis_confidence': material_analysis.get('confidence', 0.0),
-                'extraction_method': 'multimodal_rag_processing',
                 'extracted_properties': properties,
                 'confidence_scores': {
                     'material_identification': material_analysis.get('confidence', 0.0),
                     'property_extraction': properties.get('extraction_confidence', 0.0),
                     'visual_analysis': clip_embeddings.get('confidence_score', 0.0)
                 },
-
-                # Source information
-                'source_document': document_id,
-                'source_image': image_record.get('image_url'),
-                'extraction_context': {
-                    'heading': image_record.get('nearest_heading'),
-                    'page_number': image_record.get('page_number'),
-                    'processing_method': 'enhanced_multimodal_rag'
-                }
+                'last_ai_extraction_at': 'now()',
+                'extracted_entities': self._extract_entities_from_analysis(material_analysis, properties)
             }
 
             # Insert into materials_catalog table
@@ -3357,3 +3351,390 @@ Summary:"""
                 return category
 
         return 'Other Materials'  # Default category
+
+    def _extract_standards_from_analysis(self, material_analysis: Dict[str, Any]) -> List[str]:
+        """Extract standards and certifications from material analysis."""
+        standards = []
+
+        # Look for standards in various places
+        if 'standards' in material_analysis:
+            if isinstance(material_analysis['standards'], list):
+                standards.extend(material_analysis['standards'])
+            elif isinstance(material_analysis['standards'], str):
+                standards.append(material_analysis['standards'])
+
+        # Look for common standards patterns in text
+        properties = material_analysis.get('properties', {})
+        text_content = str(material_analysis) + str(properties)
+
+        common_standards = [
+            'ISO 13006', 'EN 14411', 'ANSI A137.1', 'ASTM C648', 'ISO 10545',
+            'BS 7976', 'DIN 51130', 'DIN 51097', 'EN 12004', 'ISO 9001',
+            'ISO 14001', 'GREENGUARD', 'LEED'
+        ]
+
+        for standard in common_standards:
+            if standard in text_content and standard not in standards:
+                standards.append(standard)
+
+        return standards[:5]  # Limit to 5 standards
+
+    def _extract_size_array(self, properties: Dict[str, Any]) -> List[str]:
+        """Extract size information as array."""
+        sizes = []
+
+        if 'size' in properties:
+            if isinstance(properties['size'], list):
+                sizes.extend([str(s) for s in properties['size']])
+            else:
+                sizes.append(str(properties['size']))
+
+        # Look for dimensional information
+        if 'dimensions' in properties:
+            sizes.append(str(properties['dimensions']))
+
+        # Look for common size patterns
+        if 'width' in properties and 'height' in properties:
+            sizes.append(f"{properties['width']}x{properties['height']}")
+
+        return sizes[:3]  # Limit to 3 sizes
+
+    def _extract_installation_methods(self, properties: Dict[str, Any]) -> List[str]:
+        """Extract installation methods as array."""
+        methods = []
+
+        if 'installation_method' in properties:
+            if isinstance(properties['installation_method'], list):
+                methods.extend(properties['installation_method'])
+            else:
+                methods.append(str(properties['installation_method']))
+
+        # Look for installation-related keywords
+        text_content = str(properties).lower()
+        installation_keywords = [
+            'adhesive', 'mechanical', 'nail down', 'floating', 'glue down',
+            'click lock', 'tongue and groove', 'mortar', 'cement', 'epoxy'
+        ]
+
+        for keyword in installation_keywords:
+            if keyword in text_content and keyword not in methods:
+                methods.append(keyword)
+
+        return methods[:3]  # Limit to 3 methods
+
+    def _extract_applications(self, properties: Dict[str, Any]) -> List[str]:
+        """Extract application areas as array."""
+        applications = []
+
+        if 'application' in properties:
+            if isinstance(properties['application'], list):
+                applications.extend(properties['application'])
+            else:
+                applications.append(str(properties['application']))
+
+        # Look for application keywords
+        text_content = str(properties).lower()
+        application_keywords = [
+            'interior', 'exterior', 'commercial', 'residential', 'industrial',
+            'floor', 'wall', 'ceiling', 'backsplash', 'countertop', 'wet areas'
+        ]
+
+        for keyword in application_keywords:
+            if keyword in text_content and keyword not in applications:
+                applications.append(keyword)
+
+        return applications[:4]  # Limit to 4 applications
+
+    def _extract_metal_types(self, material_analysis: Dict[str, Any]) -> List[str]:
+        """Extract metal types if material is metal."""
+        metal_types = []
+
+        material_type = material_analysis.get('material_type', '').lower()
+        if 'metal' not in material_type and 'steel' not in material_type and 'aluminum' not in material_type:
+            return metal_types
+
+        # Look for specific metal types
+        text_content = str(material_analysis).lower()
+        metal_keywords = [
+            'stainless steel', 'carbon steel', 'aluminum', 'copper', 'brass',
+            'bronze', 'titanium', 'zinc', 'nickel', 'chrome'
+        ]
+
+        for metal in metal_keywords:
+            if metal in text_content:
+                metal_types.append(metal)
+
+        return metal_types[:3]  # Limit to 3 metal types
+
+    def _format_slip_safety_ratings(self, properties: Dict[str, Any]) -> Dict[str, Any]:
+        """Format slip safety ratings as JSONB."""
+        slip_ratings = {}
+
+        safety_ratings = properties.get('safety_ratings', {})
+        if 'slip_resistance' in safety_ratings:
+            slip_ratings = safety_ratings['slip_resistance']
+
+        # Look for R-ratings and other slip resistance values
+        text_content = str(properties).upper()
+
+        # Extract R-ratings (R9, R10, R11, R12, R13)
+        import re
+        r_ratings = re.findall(r'R(\d{1,2})', text_content)
+        if r_ratings:
+            slip_ratings['r_rating'] = f"R{max(r_ratings)}"
+
+        # Extract pendulum test values
+        pendulum_matches = re.findall(r'(\d+)\+?\s*(?:PTV|pendulum)', text_content.lower())
+        if pendulum_matches:
+            slip_ratings['pendulum_test_value'] = int(pendulum_matches[0])
+
+        # Extract ramp test values
+        ramp_matches = re.findall(r'(\d+)°?\s*(?:ramp|slope)', text_content.lower())
+        if ramp_matches:
+            slip_ratings['ramp_test_degrees'] = int(ramp_matches[0])
+
+        return slip_ratings
+
+    def _format_surface_gloss(self, properties: Dict[str, Any]) -> Dict[str, Any]:
+        """Format surface gloss and reflectivity as JSONB."""
+        surface_props = {}
+
+        if 'surface_properties' in properties:
+            surface_props = properties['surface_properties'].copy()
+
+        # Extract gloss values
+        if 'gloss' in properties:
+            surface_props['gloss_level'] = properties['gloss']
+
+        # Look for gloss units (GU)
+        text_content = str(properties)
+        import re
+        gloss_matches = re.findall(r'(\d+(?:\.\d+)?)\s*(?:GU|gloss\s*units?)', text_content.lower())
+        if gloss_matches:
+            surface_props['gloss_units'] = float(gloss_matches[0])
+
+        # Extract finish type
+        if 'finish' in properties:
+            surface_props['finish_type'] = properties['finish']
+
+        return surface_props
+
+    def _format_mechanical_properties(self, properties: Dict[str, Any]) -> Dict[str, Any]:
+        """Format mechanical properties as JSONB."""
+        mechanical = {}
+
+        if 'mechanical_properties' in properties:
+            mechanical = properties['mechanical_properties'].copy()
+
+        # Extract common mechanical properties
+        prop_mappings = {
+            'flexural_strength': ['flexural strength', 'bending strength'],
+            'tensile_strength': ['tensile strength', 'ultimate tensile'],
+            'compressive_strength': ['compressive strength', 'compression'],
+            'breaking_strength': ['breaking strength', 'break strength'],
+            'modulus_of_rupture': ['modulus of rupture', 'mor'],
+            'elastic_modulus': ['elastic modulus', 'young\'s modulus']
+        }
+
+        text_content = str(properties).lower()
+        import re
+
+        for prop_key, keywords in prop_mappings.items():
+            for keyword in keywords:
+                # Look for values like "35 MPa", "1300 N", etc.
+                pattern = rf'{keyword}[:\s]*(\d+(?:\.\d+)?)\s*(mpa|n|psi|ksi)'
+                matches = re.findall(pattern, text_content)
+                if matches and prop_key not in mechanical:
+                    value, unit = matches[0]
+                    mechanical[prop_key] = {
+                        'value': float(value),
+                        'unit': unit.upper()
+                    }
+
+        return mechanical
+
+    def _format_thermal_properties(self, properties: Dict[str, Any]) -> Dict[str, Any]:
+        """Format thermal properties as JSONB."""
+        thermal = {}
+
+        if 'thermal_properties' in properties:
+            thermal = properties['thermal_properties'].copy()
+
+        # Extract thermal properties
+        text_content = str(properties).lower()
+        import re
+
+        # Thermal conductivity
+        thermal_cond_matches = re.findall(r'thermal\s*conductivity[:\s]*(\d+(?:\.\d+)?)\s*(w/mk|w/m·k)', text_content)
+        if thermal_cond_matches:
+            value, unit = thermal_cond_matches[0]
+            thermal['thermal_conductivity'] = {
+                'value': float(value),
+                'unit': unit
+            }
+
+        # Thermal expansion
+        expansion_matches = re.findall(r'thermal\s*expansion[:\s]*(\d+(?:\.\d+)?)\s*×?\s*10[⁻-](\d+)\s*/°?c', text_content)
+        if expansion_matches:
+            value, exponent = expansion_matches[0]
+            thermal['thermal_expansion'] = {
+                'value': float(value),
+                'exponent': int(exponent),
+                'unit': '/°C'
+            }
+
+        # Temperature resistance
+        temp_matches = re.findall(r'(\d+)°?c\s*(?:temperature|thermal|heat)', text_content)
+        if temp_matches:
+            thermal['max_temperature'] = {
+                'value': int(temp_matches[0]),
+                'unit': '°C'
+            }
+
+        return thermal
+
+    def _format_water_resistance(self, properties: Dict[str, Any]) -> Dict[str, Any]:
+        """Format water and moisture resistance as JSONB."""
+        water_resistance = {}
+
+        if 'resistance_properties' in properties and 'water' in properties['resistance_properties']:
+            water_resistance = properties['resistance_properties']['water'].copy()
+
+        # Extract water absorption values
+        text_content = str(properties).lower()
+        import re
+
+        # Water absorption percentage
+        absorption_matches = re.findall(r'water\s*absorption[:\s]*[<≤]?\s*(\d+(?:\.\d+)?)\s*%', text_content)
+        if absorption_matches:
+            water_resistance['water_absorption'] = {
+                'value': float(absorption_matches[0]),
+                'unit': '%'
+            }
+
+        # Frost resistance
+        if 'frost' in text_content and 'resistant' in text_content:
+            water_resistance['frost_resistant'] = True
+
+        return water_resistance
+
+    def _format_chemical_resistance(self, properties: Dict[str, Any]) -> Dict[str, Any]:
+        """Format chemical and hygiene resistance as JSONB."""
+        chemical_resistance = {}
+
+        if 'resistance_properties' in properties and 'chemical' in properties['resistance_properties']:
+            chemical_resistance = properties['resistance_properties']['chemical'].copy()
+
+        # Extract chemical resistance class
+        text_content = str(properties).upper()
+        import re
+
+        # Chemical resistance class (A, B, C)
+        class_matches = re.findall(r'class\s*([ABC])\s*(?:chemical|resistance)', text_content)
+        if class_matches:
+            chemical_resistance['resistance_class'] = class_matches[0]
+
+        # Stain resistance class
+        stain_matches = re.findall(r'stain\s*resistance[:\s]*class\s*(\d+)', text_content.lower())
+        if stain_matches:
+            chemical_resistance['stain_resistance_class'] = int(stain_matches[0])
+
+        return chemical_resistance
+
+    def _format_acoustic_electrical(self, properties: Dict[str, Any]) -> Dict[str, Any]:
+        """Format acoustic and electrical properties as JSONB."""
+        acoustic_electrical = {}
+
+        # Extract any acoustic or electrical properties
+        text_content = str(properties).lower()
+
+        if 'acoustic' in text_content or 'sound' in text_content:
+            acoustic_electrical['has_acoustic_properties'] = True
+
+        if 'electrical' in text_content or 'conductivity' in text_content:
+            acoustic_electrical['has_electrical_properties'] = True
+
+        return acoustic_electrical
+
+    def _format_environmental_properties(self, properties: Dict[str, Any]) -> Dict[str, Any]:
+        """Format environmental and sustainability properties as JSONB."""
+        environmental = {}
+
+        text_content = str(properties).lower()
+
+        # Look for sustainability keywords
+        sustainability_keywords = [
+            'sustainable', 'eco-friendly', 'recycled', 'renewable', 'green',
+            'leed', 'greenguard', 'carbon neutral', 'low voc'
+        ]
+
+        for keyword in sustainability_keywords:
+            if keyword in text_content:
+                environmental['sustainability_features'] = environmental.get('sustainability_features', [])
+                environmental['sustainability_features'].append(keyword)
+
+        # Fire rating
+        import re
+        fire_ratings = re.findall(r'fire\s*rating[:\s]*([a-z0-9]+)', text_content)
+        if fire_ratings:
+            environmental['fire_rating'] = fire_ratings[0].upper()
+
+        return environmental
+
+    def _format_dimensional_aesthetic(self, properties: Dict[str, Any]) -> Dict[str, Any]:
+        """Format dimensional and aesthetic properties as JSONB."""
+        dimensional = {}
+
+        # Extract color, pattern, texture information
+        if 'color' in properties:
+            dimensional['color'] = properties['color']
+
+        if 'pattern' in properties:
+            dimensional['pattern'] = properties['pattern']
+
+        if 'texture' in properties:
+            dimensional['texture'] = properties['texture']
+
+        # Extract dimensional information
+        text_content = str(properties).lower()
+        import re
+
+        # Thickness
+        thickness_matches = re.findall(r'thickness[:\s]*(\d+(?:\.\d+)?)\s*(mm|cm|inch)', text_content)
+        if thickness_matches:
+            value, unit = thickness_matches[0]
+            dimensional['thickness'] = {
+                'value': float(value),
+                'unit': unit
+            }
+
+        # Warpage tolerance
+        warpage_matches = re.findall(r'warpage[:\s]*[≤<±]?\s*(\d+(?:\.\d+)?)\s*%', text_content)
+        if warpage_matches:
+            dimensional['warpage_tolerance'] = {
+                'value': float(warpage_matches[0]),
+                'unit': '%'
+            }
+
+        return dimensional
+
+    def _extract_entities_from_analysis(self, material_analysis: Dict[str, Any], properties: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract named entities from material analysis."""
+        entities = {
+            'material_type': material_analysis.get('material_type', 'unknown'),
+            'confidence': material_analysis.get('confidence', 0.0),
+            'extraction_timestamp': 'now()',
+            'processing_method': 'enhanced_multimodal_rag'
+        }
+
+        # Add key properties as entities
+        if 'color' in properties:
+            entities['color'] = properties['color']
+
+        if 'finish' in properties:
+            entities['finish'] = properties['finish']
+
+        if 'application' in properties:
+            entities['application'] = properties['application']
+
+        return entities
