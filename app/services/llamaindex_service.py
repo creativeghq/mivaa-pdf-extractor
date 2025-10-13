@@ -1018,18 +1018,30 @@ class LlamaIndexService:
 
             self.logger.info(f"🔗 Creating combined index from {len(self.indices)} document indices...")
 
-            # Get all documents from all indices
+            # Get all documents from database instead of trying to extract from indices
+            from .supabase_client import get_supabase_client
+            supabase_client = get_supabase_client()
+
+            # Get all chunks from all completed documents
+            chunks_response = supabase_client.client.table('document_chunks').select('*').execute()
+
+            if not chunks_response.data:
+                self.logger.warning("No chunks found in database")
+                return None
+
+            # Create Document objects from all chunks
             all_documents = []
-            for document_id, index in self.indices.items():
-                try:
-                    # Get the documents from this index
-                    docstore = index.docstore
-                    for doc_id in docstore.docs:
-                        doc = docstore.get_document(doc_id)
-                        all_documents.append(doc)
-                except Exception as e:
-                    self.logger.warning(f"Failed to get documents from index {document_id}: {e}")
-                    continue
+            for chunk in chunks_response.data:
+                doc_obj = Document(
+                    text=chunk['content'],
+                    metadata={
+                        'document_id': chunk['document_id'],
+                        'chunk_id': chunk['id'],
+                        'chunk_index': chunk.get('chunk_index', 0),
+                        **chunk.get('metadata', {})
+                    }
+                )
+                all_documents.append(doc_obj)
 
             if not all_documents:
                 self.logger.warning("No documents found in any index")
