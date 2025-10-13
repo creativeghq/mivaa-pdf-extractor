@@ -364,7 +364,11 @@ class LlamaIndexService:
             def _get_query_embedding(self, query: str) -> List[float]:
                 """Get embedding for a single query."""
                 try:
-                    result = self.embedding_service.get_embedding(query)
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    result = loop.run_until_complete(
+                        self.embedding_service.generate_embedding(query)
+                    )
                     return result.embedding
                 except Exception as e:
                     self.embedding_service.logger.error(f"Query embedding failed: {e}")
@@ -373,16 +377,20 @@ class LlamaIndexService:
             async def _aget_query_embedding(self, query: str) -> List[float]:
                 """Get embedding for a single query (async version)."""
                 try:
-                    result = self.embedding_service.get_embedding(query)
+                    result = await self.embedding_service.generate_embedding(query)
                     return result.embedding
                 except Exception as e:
                     self.embedding_service.logger.error(f"Async query embedding failed: {e}")
                     raise
-            
+
             def _get_text_embedding(self, text: str) -> List[float]:
                 """Get embedding for a single text."""
                 try:
-                    result = self.embedding_service.get_embedding(text)
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    result = loop.run_until_complete(
+                        self.embedding_service.generate_embedding(text)
+                    )
                     return result.embedding
                 except Exception as e:
                     self.embedding_service.logger.error(f"Text embedding failed: {e}")
@@ -391,7 +399,7 @@ class LlamaIndexService:
             async def _aget_text_embedding(self, text: str) -> List[float]:
                 """Get embedding for a single text (async version)."""
                 try:
-                    result = self.embedding_service.get_embedding(text)
+                    result = await self.embedding_service.generate_embedding(text)
                     return result.embedding
                 except Exception as e:
                     self.embedding_service.logger.error(f"Async text embedding failed: {e}")
@@ -400,7 +408,12 @@ class LlamaIndexService:
             def _get_text_embeddings(self, texts: List[str]) -> List[List[float]]:
                 """Get embeddings for multiple texts using batch processing."""
                 try:
-                    batch_result = self.embedding_service.get_embeddings_batch(texts)
+                    # Use asyncio to run the async method
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    batch_result = loop.run_until_complete(
+                        self.embedding_service.generate_embeddings_batch(texts)
+                    )
                     return [result.embedding for result in batch_result.results]
                 except Exception as e:
                     self.embedding_service.logger.error(f"Batch embedding failed: {e}")
