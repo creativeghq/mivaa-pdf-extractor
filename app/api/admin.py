@@ -657,7 +657,7 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
                 )
 
                 # Use LlamaIndex for intelligent chunking
-                llamaindex_service = get_llamaindex_service()
+                llamaindex_service = await get_llamaindex_service()
 
                 # Create a temporary text file for chunking
                 import tempfile
@@ -730,10 +730,10 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
                 file_path=f"{document_id}.pdf",
                 metadata={
                     "filename": url.split('/')[-1] if url else f"{document_id}.pdf",
-                    "total_pages": result.total_pages,
+                    "total_pages": result.page_count,
                     "chunks_created": chunks_created,
                     "images_extracted": len(result.extracted_images or []),
-                    "processing_method": result.processing_method,
+                    "processing_method": getattr(result, 'processing_method', 'unknown'),
                     "file_url": url
                 },
                 chunk_size=1000,
