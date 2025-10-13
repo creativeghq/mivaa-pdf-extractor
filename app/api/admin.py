@@ -712,18 +712,23 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
             )
 
             # Get LlamaIndex service for RAG upload
+            logger.info(f"🔧 Getting LlamaIndex service for RAG upload...")
             llamaindex_service = await get_llamaindex_service()
+            logger.info(f"✅ LlamaIndex service obtained: {type(llamaindex_service)}")
 
             # Download PDF bytes for RAG indexing
+            logger.info(f"📥 Downloading PDF bytes from: {url}")
             import aiohttp
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as response:
                     if response.status == 200:
                         pdf_bytes = await response.read()
+                        logger.info(f"✅ PDF downloaded: {len(pdf_bytes)} bytes")
                     else:
                         raise Exception(f"Failed to download PDF: HTTP {response.status}")
 
             # Index the document content for RAG search
+            logger.info(f"🚀 Calling index_document_content for document {document_id}")
             rag_result = await llamaindex_service.index_document_content(
                 file_content=pdf_bytes,
                 document_id=document_id,
@@ -745,6 +750,9 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
 
         except Exception as rag_error:
             logger.error(f"⚠️ Failed to index document in RAG system: {rag_error}")
+            logger.error(f"🔍 RAG error details: {type(rag_error).__name__}: {str(rag_error)}")
+            import traceback
+            logger.error(f"🔍 RAG error traceback: {traceback.format_exc()}")
             # Don't fail the entire job if RAG indexing fails - this is optional
             logger.info("📄 Continuing with database save despite RAG indexing failure")
 
