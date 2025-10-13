@@ -366,6 +366,15 @@ class LlamaIndexService:
                 except Exception as e:
                     self.embedding_service.logger.error(f"Query embedding failed: {e}")
                     raise
+
+            async def _aget_query_embedding(self, query: str) -> List[float]:
+                """Get embedding for a single query (async version)."""
+                try:
+                    result = self.embedding_service.get_embedding(query)
+                    return result.embedding
+                except Exception as e:
+                    self.embedding_service.logger.error(f"Async query embedding failed: {e}")
+                    raise
             
             def _get_text_embedding(self, text: str) -> List[float]:
                 """Get embedding for a single text."""
@@ -374,6 +383,15 @@ class LlamaIndexService:
                     return result.embedding
                 except Exception as e:
                     self.embedding_service.logger.error(f"Text embedding failed: {e}")
+                    raise
+
+            async def _aget_text_embedding(self, text: str) -> List[float]:
+                """Get embedding for a single text (async version)."""
+                try:
+                    result = self.embedding_service.get_embedding(text)
+                    return result.embedding
+                except Exception as e:
+                    self.embedding_service.logger.error(f"Async text embedding failed: {e}")
                     raise
             
             def _get_text_embeddings(self, texts: List[str]) -> List[List[float]]:
