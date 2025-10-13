@@ -171,6 +171,9 @@ class LlamaIndexService:
         self.conversation_summary_threshold = 8  # Summarize when exceeding this
         
         self.logger.info(f"LlamaIndex service initialized with storage: {self.storage_dir}")
+
+        # Load existing documents from database into indices
+        asyncio.create_task(self._load_existing_documents())
     
     async def semantic_search_with_mmr(
         self,
@@ -920,6 +923,75 @@ class LlamaIndexService:
         except Exception as e:
             self.logger.error(f"Failed to initialize advanced search service: {e}")
             self.advanced_search_service = None
+
+    async def _load_existing_documents(self):
+        """Load existing documents from database and create indices for search."""
+        if not self.available:
+            return
+
+        try:
+            self.logger.info("🔄 Loading existing documents from database...")
+
+            # Get Supabase client
+            from .supabase_client import get_supabase_client
+            supabase_client = get_supabase_client()
+
+            # Get all completed documents
+            documents_response = supabase_client.client.table('documents').select('*').eq('processing_status', 'completed').execute()
+
+            if not documents_response.data:
+                self.logger.info("No existing documents found in database")
+                return
+
+            self.logger.info(f"Found {len(documents_response.data)} existing documents")
+
+            # For each document, get its chunks and create an index
+            for doc in documents_response.data:
+                document_id = doc['id']
+
+                try:
+                    # Get chunks for this document
+                    chunks_response = supabase_client.client.table('document_chunks').select('*').eq('document_id', document_id).execute()
+
+                    if not chunks_response.data:
+                        self.logger.warning(f"No chunks found for document {document_id}")
+                        continue
+
+                    # Create Document objects from chunks
+                    documents = []
+                    for chunk in chunks_response.data:
+                        doc_obj = Document(
+                            text=chunk['content'],
+                            metadata={
+                                'document_id': document_id,
+                                'chunk_id': chunk['id'],
+                                'chunk_index': chunk.get('chunk_index', 0),
+                                **chunk.get('metadata', {})
+                            }
+                        )
+                        documents.append(doc_obj)
+
+                    # Create index from documents
+                    if self.vector_store:
+                        # Use SupabaseVectorStore
+                        storage_context = StorageContext.from_defaults(vector_store=self.vector_store)
+                        index = VectorStoreIndex.from_documents(documents, storage_context=storage_context)
+                    else:
+                        # Use in-memory storage
+                        index = VectorStoreIndex.from_documents(documents)
+
+                    # Store index reference
+                    self.indices[document_id] = index
+                    self.logger.info(f"✅ Loaded index for document {document_id} with {len(documents)} chunks")
+
+                except Exception as e:
+                    self.logger.error(f"Failed to load document {document_id}: {e}")
+                    continue
+
+            self.logger.info(f"✅ Loaded {len(self.indices)} document indices for search")
+
+        except Exception as e:
+            self.logger.error(f"Failed to load existing documents: {e}")
     
     async def health_check(self) -> Dict[str, Any]:
         """Check the health of the LlamaIndex service."""
