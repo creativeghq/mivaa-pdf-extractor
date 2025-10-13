@@ -24,6 +24,7 @@ class EmbeddingConfig(BaseModel):
         description="OpenAI embedding model name"
     )
     api_key: str = Field(
+        default="",
         description="OpenAI API key"
     )
     max_tokens: int = Field(

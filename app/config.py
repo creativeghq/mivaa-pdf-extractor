@@ -103,6 +103,14 @@ class Settings(BaseSettings):
     database_pool_size: int = Field(default=10, env="DATABASE_POOL_SIZE")
     database_max_overflow: int = Field(default=20, env="DATABASE_MAX_OVERFLOW")
     database_timeout: int = Field(default=30, env="DATABASE_TIMEOUT")
+
+    # OpenAI API Settings
+    openai_api_key: str = Field(default="", env="OPENAI_API_KEY")
+    openai_model: str = Field(default="gpt-3.5-turbo", env="OPENAI_MODEL")
+    openai_embedding_model: str = Field(default="text-embedding-3-small", env="OPENAI_EMBEDDING_MODEL")
+    openai_max_tokens: int = Field(default=4096, env="OPENAI_MAX_TOKENS")
+    openai_temperature: float = Field(default=0.1, env="OPENAI_TEMPERATURE")
+    openai_timeout: int = Field(default=30, env="OPENAI_TIMEOUT")
     
     # LlamaIndex RAG Settings
     llamaindex_embedding_model: str = Field(
