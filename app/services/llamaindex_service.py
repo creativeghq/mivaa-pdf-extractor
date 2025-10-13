@@ -1191,11 +1191,18 @@ class LlamaIndexService:
                 
                 # Store index reference
                 self.indices[document_id] = index
-                
+
+                # ✅ NEW: Store chunks and embeddings in database tables
+                database_stats = await self._store_chunks_in_database(
+                    document_id=document_id,
+                    nodes=nodes,
+                    metadata=extracted_metadata
+                )
+
                 # Calculate statistics
                 total_chars = sum(len(node.text) for node in nodes)
                 avg_chunk_size = total_chars / len(nodes) if nodes else 0
-                
+
                 result = {
                     "status": "success",
                     "document_id": document_id,
@@ -1206,13 +1213,16 @@ class LlamaIndexService:
                         "total_characters": total_chars,
                         "average_chunk_size": avg_chunk_size,
                         "embedding_dimension": 1536,
-                        "documents_processed": len(documents)
+                        "documents_processed": len(documents),
+                        "database_chunks_stored": database_stats.get("chunks_stored", 0),
+                        "database_embeddings_stored": database_stats.get("embeddings_stored", 0)
                     },
                     "metadata": extracted_metadata,
-                    "message": f"Successfully indexed {document_format.upper()} document with {len(nodes)} chunks using {chunk_strategy} strategy"
+                    "database_integration": database_stats,
+                    "message": f"Successfully indexed {document_format.upper()} document with {len(nodes)} chunks using {chunk_strategy} strategy and stored in database"
                 }
-                
-                self.logger.info(f"Successfully indexed document {document_id}: {len(nodes)} chunks, {total_chars} characters")
+
+                self.logger.info(f"Successfully indexed document {document_id}: {len(nodes)} chunks, {total_chars} characters, {database_stats.get('chunks_stored', 0)} chunks stored in database")
                 return result
                 
             finally:
@@ -2165,3 +2175,148 @@ Summary:"""
             }
         
         return stats
+
+    async def _store_chunks_in_database(
+        self,
+        document_id: str,
+        nodes: List,
+        metadata: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Store document chunks and embeddings in the database tables.
+
+        Args:
+            document_id: Document identifier
+            nodes: LlamaIndex nodes containing chunks
+            metadata: Document metadata
+
+        Returns:
+            Dict with storage statistics
+        """
+        try:
+            from app.services.supabase_service import SupabaseClient
+            supabase_client = SupabaseClient()
+
+            chunks_stored = 0
+            embeddings_stored = 0
+            failed_chunks = 0
+
+            self.logger.info(f"🔄 Starting database storage for {len(nodes)} chunks from document {document_id}")
+
+            # First, ensure the document exists in the documents table
+            await self._ensure_document_exists(supabase_client, document_id, metadata)
+
+            for i, node in enumerate(nodes):
+                try:
+                    # Store chunk in document_chunks table
+                    chunk_data = {
+                        'document_id': document_id,
+                        'workspace_id': metadata.get('workspace_id'),
+                        'content': node.text,
+                        'chunk_index': i,
+                        'metadata': {
+                            'chunk_id': node.metadata.get('chunk_id', f"{document_id}_chunk_{i}"),
+                            'chunk_strategy': node.metadata.get('chunk_strategy', 'semantic'),
+                            'chunk_size_actual': len(node.text),
+                            'total_chunks': len(nodes),
+                            **node.metadata
+                        }
+                    }
+
+                    # Insert chunk into database
+                    chunk_result = await supabase_client.client.table('document_chunks').insert(chunk_data).execute()
+
+                    if chunk_result.data:
+                        chunk_id = chunk_result.data[0]['id']
+                        chunks_stored += 1
+
+                        # Generate and store embedding
+                        try:
+                            # Generate embedding for the chunk
+                            embedding_response = await self.embeddings.aget_text_embedding(node.text)
+
+                            if embedding_response:
+                                # Store embedding in embeddings table
+                                embedding_data = {
+                                    'chunk_id': chunk_id,
+                                    'workspace_id': metadata.get('workspace_id'),
+                                    'embedding': embedding_response,
+                                    'model_name': 'text-embedding-3-small',
+                                    'dimensions': 1536
+                                }
+
+                                embedding_result = await supabase_client.client.table('embeddings').insert(embedding_data).execute()
+
+                                if embedding_result.data:
+                                    embeddings_stored += 1
+
+                                    # Also store in document_vectors table for comprehensive search
+                                    vector_data = {
+                                        'document_id': document_id,
+                                        'chunk_id': chunk_id,
+                                        'workspace_id': metadata.get('workspace_id'),
+                                        'content': node.text,
+                                        'embedding': embedding_response,
+                                        'metadata': chunk_data['metadata'],
+                                        'model_name': 'text-embedding-3-small'
+                                    }
+
+                                    await supabase_client.client.table('document_vectors').insert(vector_data).execute()
+
+                        except Exception as embedding_error:
+                            self.logger.warning(f"Failed to generate/store embedding for chunk {i}: {embedding_error}")
+
+                except Exception as chunk_error:
+                    self.logger.error(f"Failed to store chunk {i}: {chunk_error}")
+                    failed_chunks += 1
+
+            result = {
+                "chunks_stored": chunks_stored,
+                "embeddings_stored": embeddings_stored,
+                "failed_chunks": failed_chunks,
+                "total_processed": len(nodes),
+                "success_rate": (chunks_stored / len(nodes)) * 100 if nodes else 0
+            }
+
+            self.logger.info(f"✅ Database storage completed: {chunks_stored}/{len(nodes)} chunks stored, {embeddings_stored} embeddings generated")
+            return result
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to store chunks in database: {e}")
+            return {
+                "chunks_stored": 0,
+                "embeddings_stored": 0,
+                "failed_chunks": len(nodes),
+                "total_processed": len(nodes),
+                "success_rate": 0,
+                "error": str(e)
+            }
+
+    async def _ensure_document_exists(
+        self,
+        supabase_client,
+        document_id: str,
+        metadata: Dict[str, Any]
+    ):
+        """Ensure the document exists in the documents table."""
+        try:
+            # Check if document exists
+            existing = await supabase_client.client.table('documents').select('id').eq('id', document_id).execute()
+
+            if not existing.data:
+                # Create document record
+                document_data = {
+                    'id': document_id,
+                    'workspace_id': metadata.get('workspace_id'),
+                    'filename': metadata.get('filename', f"{document_id}.pdf"),
+                    'content_type': 'application/pdf',
+                    'metadata': metadata,
+                    'processing_status': 'completed'
+                }
+
+                await supabase_client.client.table('documents').insert(document_data).execute()
+                self.logger.info(f"✅ Created document record for {document_id}")
+
+        except Exception as e:
+            self.logger.warning(f"Failed to ensure document exists: {e}")
+            # Continue anyway - chunks can still be stored
