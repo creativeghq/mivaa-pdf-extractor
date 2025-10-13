@@ -199,7 +199,7 @@ class EmbeddingService:
         # Initialize components
         self.embedding_model: Optional[BaseEmbedding] = None
         self.tokenizer = None
-        self.cache = EmbeddingCache(ttl_hours=self.config.cache_ttl_hours) if self.config.cache_enabled else None
+        self.cache = EmbeddingCache(ttl_hours=self.config.cache_ttl // 3600) if self.config.enable_cache else None
         self.rate_limiter = RateLimiter(
             requests_per_minute=self.config.rate_limit_rpm,
             tokens_per_minute=self.config.rate_limit_tpm
@@ -482,7 +482,7 @@ class EmbeddingService:
                     "max_tokens": self.config.max_tokens
                 },
                 "cache": {
-                    "enabled": self.config.cache_enabled,
+                    "enabled": self.config.enable_cache,
                     "stats": cache_stats
                 },
                 "metrics": self.metrics,
@@ -502,7 +502,7 @@ class EmbeddingService:
                     "name": self.config.model_name,
                     "type": self.config.model_type
                 },
-                "cache": {"enabled": self.config.cache_enabled}
+                "cache": {"enabled": self.config.enable_cache}
             }
     
     def get_metrics(self) -> Dict[str, Any]:
