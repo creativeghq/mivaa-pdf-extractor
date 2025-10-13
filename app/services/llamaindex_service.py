@@ -203,32 +203,57 @@ class LlamaIndexService:
             }
         
         try:
-            # Use the advanced search service for MMR
+            # Get the appropriate index for search
+            search_index = None
+            if document_id and document_id in self.indices:
+                search_index = self.indices[document_id]
+            elif self.indices:
+                # Use the first available index if no specific document requested
+                search_index = next(iter(self.indices.values()))
+
+            if not search_index:
+                self.logger.warning("No vector index available for search")
+                return {
+                    "results": [],
+                    "message": "No indexed documents available for search",
+                    "total_results": 0
+                }
+
+            # Convert query_type string to QueryType enum
+            from .advanced_search_service import QueryType
+            query_type_enum = getattr(QueryType, query_type.upper(), QueryType.SEMANTIC)
+
+            # Use the advanced search service for MMR with correct parameters
             mmr_result = await self.advanced_search_service.semantic_search_with_mmr(
                 query=query,
-                document_id=document_id,
-                k=k,
-                lambda_mult=lambda_mult,
-                query_type=query_type,
-                filters=filters
+                index=search_index,
+                top_k=k * 2,  # Get more candidates for MMR
+                mmr_top_k=k,  # Final number of results
+                lambda_param=lambda_mult,
+                metadata_filters=None,  # TODO: Convert filters format if needed
+                query_type=query_type_enum
             )
             
-            return {
-                "results": [
-                    {
-                        "content": result.content,
-                        "score": result.score,
-                        "diversity_score": result.diversity_score,
-                        "metadata": result.metadata,
-                        "document_id": result.document_id
+            # Process MMR results
+            results = []
+            if hasattr(mmr_result, 'results') and mmr_result.results:
+                for i, node in enumerate(mmr_result.results):
+                    result_item = {
+                        "content": getattr(node, 'text', str(node)),
+                        "score": mmr_result.relevance_scores[i] if i < len(mmr_result.relevance_scores) else 0.0,
+                        "diversity_score": mmr_result.diversity_scores[i] if i < len(mmr_result.diversity_scores) else 0.0,
+                        "metadata": getattr(node, 'metadata', {}),
+                        "document_id": getattr(node, 'metadata', {}).get('document_id', document_id)
                     }
-                    for result in mmr_result.results
-                ],
-                "query_expansion": mmr_result.query_expansion.__dict__ if mmr_result.query_expansion else None,
-                "total_results": len(mmr_result.results),
-                "processing_time": mmr_result.processing_time,
+                    results.append(result_item)
+
+            return {
+                "results": results,
+                "total_results": len(results),
+                "processing_time": getattr(mmr_result, 'processing_time', 0.0),
                 "lambda_mult": lambda_mult,
-                "query_type": query_type
+                "query_type": query_type,
+                "mmr_applied": True
             }
             
         except Exception as e:
@@ -879,18 +904,19 @@ class LlamaIndexService:
             return
         
         try:
-            # Initialize advanced search service with embedding service
+            # Initialize advanced search service with config
             if hasattr(self, 'embedding_service') and self.embedding_service:
-                self.advanced_search_service = AdvancedSearchService(
-                    embedding_service=self.embedding_service,
-                    vector_store=self.vector_store,
-                    logger=self.logger
-                )
+                search_config = {
+                    'mmr_lambda': 0.7,
+                    'max_query_expansion_terms': 10,
+                    'similarity_threshold': 0.7
+                }
+                self.advanced_search_service = AdvancedSearchService(config=search_config)
                 self.logger.info("Advanced search service initialized successfully")
             else:
                 self.logger.warning("Embedding service not available, advanced search service disabled")
                 self.advanced_search_service = None
-                
+
         except Exception as e:
             self.logger.error(f"Failed to initialize advanced search service: {e}")
             self.advanced_search_service = None
