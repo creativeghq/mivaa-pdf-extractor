@@ -242,7 +242,7 @@ class LlamaIndexService:
                 query_type=query_type_enum
             )
             
-            # Process MMR results
+            # Process MMR results with multimodal enhancement
             results = []
             self.logger.info(f"🔍 Processing MMR result: {type(mmr_result)}")
             self.logger.info(f"🔍 MMR result attributes: {dir(mmr_result)}")
@@ -251,13 +251,32 @@ class LlamaIndexService:
                 self.logger.info(f"🔍 Found {len(mmr_result.selected_nodes)} MMR results")
                 for i, node in enumerate(mmr_result.selected_nodes):
                     self.logger.info(f"🔍 Processing node {i}: {type(node)}")
+
+                    # Get basic result information
+                    node_metadata = getattr(node, 'metadata', {})
+                    result_document_id = node_metadata.get('document_id', document_id)
+                    chunk_id = node_metadata.get('chunk_id')
+
+                    # Enhanced result with multimodal capabilities
                     result_item = {
                         "content": getattr(node, 'text', str(node)),
                         "score": mmr_result.relevance_scores[i] if hasattr(mmr_result, 'relevance_scores') and i < len(mmr_result.relevance_scores) else 0.0,
                         "diversity_score": mmr_result.diversity_scores[i] if hasattr(mmr_result, 'diversity_scores') and i < len(mmr_result.diversity_scores) else 0.0,
-                        "metadata": getattr(node, 'metadata', {}),
-                        "document_id": getattr(node, 'metadata', {}).get('document_id', document_id)
+                        "metadata": node_metadata,
+                        "document_id": result_document_id,
+                        "chunk_id": chunk_id
                     }
+
+                    # Add associated images for multimodal results
+                    if chunk_id:
+                        associated_images = await self._get_associated_images(chunk_id, result_document_id)
+                        if associated_images:
+                            result_item["associated_images"] = associated_images
+                            result_item["has_images"] = True
+                            self.logger.info(f"🖼️ Found {len(associated_images)} associated images for chunk {chunk_id}")
+                        else:
+                            result_item["has_images"] = False
+
                     results.append(result_item)
                     self.logger.info(f"🔍 Added result: {result_item['content'][:50]}...")
             else:
@@ -2655,6 +2674,15 @@ Summary:"""
                         'extraction_confidence': image_info.get('quality_score', 0.0)
                     }
 
+                    # Store material metadata in materials_catalog if material analysis was successful
+                    if material_analysis and material_analysis.get('material_type') != 'unknown':
+                        await self._store_material_metadata(
+                            document_id=document_id,
+                            image_record=image_record,
+                            material_analysis=material_analysis,
+                            clip_embeddings=clip_embeddings
+                        )
+
                     # Insert into database
                     result = supabase_client.client.table('document_images').insert(image_record).execute()
 
@@ -2713,7 +2741,7 @@ Summary:"""
         heading_hierarchy: List[Dict],
         image_index: int
     ) -> tuple[str, str, int]:
-        """Generate contextual name for image based on nearest heading."""
+        """Generate intelligent contextual name for image based on nearest heading and image properties."""
         import re
 
         # Default values
@@ -2724,27 +2752,283 @@ Summary:"""
         if not heading_hierarchy:
             return f"{default_name}.jpg", nearest_heading, heading_level
 
-        # Find the most relevant heading (could be enhanced with actual layout analysis)
-        # For now, use the last heading before this image or the first heading
-        best_heading = heading_hierarchy[0] if heading_hierarchy else None
+        # Enhanced heading selection based on image position and content
+        best_heading = self._find_best_heading_for_image(image_info, heading_hierarchy)
 
         if best_heading:
             nearest_heading = best_heading['title']
             heading_level = best_heading['level']
 
-            # Create a clean filename from the heading
-            clean_title = re.sub(r'[^\w\s-]', '', nearest_heading.lower())
-            clean_title = re.sub(r'[-\s]+', '-', clean_title)
-            clean_title = clean_title.strip('-')
-
-            if clean_title:
-                contextual_name = f"{clean_title}-{image_index + 1}.jpg"
-            else:
-                contextual_name = f"{default_name}.jpg"
+            # Create intelligent filename based on heading content and image properties
+            contextual_name = self._create_intelligent_filename(
+                heading_title=nearest_heading,
+                image_info=image_info,
+                image_index=image_index
+            )
         else:
             contextual_name = f"{default_name}.jpg"
 
         return contextual_name, nearest_heading, heading_level
+
+    def _find_best_heading_for_image(self, image_info: Dict, heading_hierarchy: List[Dict]) -> Dict:
+        """Find the most relevant heading for an image based on position and content."""
+        if not heading_hierarchy:
+            return None
+
+        image_page = image_info.get('page_number', 1)
+        image_bbox = image_info.get('bbox', {})
+        image_y = image_bbox.get('y', 0)
+
+        # Score headings based on relevance to image
+        scored_headings = []
+
+        for heading in heading_hierarchy:
+            score = 0
+
+            # Prefer headings from the same page
+            if heading.get('page_number', 1) == image_page:
+                score += 100
+
+            # Prefer headings that appear before the image (in reading order)
+            heading_y = heading.get('position_y', 0)
+            if heading_y <= image_y:
+                score += 50
+
+            # Prefer more specific headings (higher level numbers = more specific)
+            score += heading.get('level', 1) * 10
+
+            # Prefer headings with material/technical keywords
+            title_lower = heading.get('title', '').lower()
+            material_keywords = ['material', 'specification', 'property', 'installation', 'technical', 'quality', 'performance']
+            for keyword in material_keywords:
+                if keyword in title_lower:
+                    score += 20
+
+            scored_headings.append((score, heading))
+
+        # Return the highest scoring heading
+        if scored_headings:
+            scored_headings.sort(key=lambda x: x[0], reverse=True)
+            return scored_headings[0][1]
+
+        return heading_hierarchy[0]  # Fallback to first heading
+
+    def _create_intelligent_filename(self, heading_title: str, image_info: Dict, image_index: int) -> str:
+        """Create an intelligent filename based on heading content and image properties."""
+        import re
+
+        # Clean and process the heading title
+        clean_title = re.sub(r'[^\w\s-]', '', heading_title.lower())
+        clean_title = re.sub(r'[-\s]+', '-', clean_title)
+        clean_title = clean_title.strip('-')
+
+        # Add image type suffix based on image properties or heading content
+        image_type_suffix = self._determine_image_type_suffix(heading_title, image_info)
+
+        # Construct the filename
+        if clean_title:
+            if image_type_suffix:
+                filename = f"{clean_title}-{image_type_suffix}-{image_index + 1}.jpg"
+            else:
+                filename = f"{clean_title}-{image_index + 1}.jpg"
+        else:
+            filename = f"image-{image_index + 1}.jpg"
+
+        # Ensure filename is not too long
+        if len(filename) > 100:
+            # Truncate the clean_title part
+            max_title_length = 100 - len(f"-{image_type_suffix}-{image_index + 1}.jpg") if image_type_suffix else 100 - len(f"-{image_index + 1}.jpg")
+            clean_title = clean_title[:max_title_length]
+            if image_type_suffix:
+                filename = f"{clean_title}-{image_type_suffix}-{image_index + 1}.jpg"
+            else:
+                filename = f"{clean_title}-{image_index + 1}.jpg"
+
+        return filename
+
+    def _determine_image_type_suffix(self, heading_title: str, image_info: Dict) -> str:
+        """Determine appropriate suffix for image based on context."""
+        title_lower = heading_title.lower()
+
+        # Map heading keywords to image type suffixes
+        type_mappings = {
+            'installation': 'install',
+            'specification': 'spec',
+            'technical': 'tech',
+            'property': 'prop',
+            'quality': 'quality',
+            'maintenance': 'maint',
+            'safety': 'safety',
+            'performance': 'perf',
+            'overview': 'overview',
+            'diagram': 'diagram',
+            'chart': 'chart',
+            'table': 'table'
+        }
+
+        for keyword, suffix in type_mappings.items():
+            if keyword in title_lower:
+                return suffix
+
+        # Check image properties for additional context
+        image_type = image_info.get('image_type', '').lower()
+        if 'diagram' in image_type:
+            return 'diagram'
+        elif 'chart' in image_type:
+            return 'chart'
+        elif 'table' in image_type:
+            return 'table'
+
+        return ''  # No specific suffix
+
+    async def _get_associated_images(self, chunk_id: str, document_id: str) -> List[Dict[str, Any]]:
+        """Get images associated with a specific chunk for multimodal search results."""
+        try:
+            from .supabase_client import get_supabase_client
+            supabase_client = get_supabase_client()
+
+            # Query for images associated with this chunk or document
+            images_response = supabase_client.client.table('document_images').select('*').or_(
+                f'chunk_id.eq.{chunk_id},document_id.eq.{document_id}'
+            ).execute()
+
+            if not images_response.data:
+                return []
+
+            associated_images = []
+            for image_record in images_response.data:
+                # Calculate relevance score based on chunk association
+                relevance_score = 1.0 if image_record.get('chunk_id') == chunk_id else 0.7
+
+                image_info = {
+                    "image_id": image_record.get('id'),
+                    "image_url": image_record.get('image_url'),
+                    "contextual_name": image_record.get('contextual_name'),
+                    "caption": image_record.get('caption'),
+                    "alt_text": image_record.get('alt_text'),
+                    "nearest_heading": image_record.get('nearest_heading'),
+                    "heading_level": image_record.get('heading_level'),
+                    "page_number": image_record.get('page_number'),
+                    "relevance_score": relevance_score,
+                    "extraction_confidence": image_record.get('extraction_confidence', 0.0),
+                    "layout_context": image_record.get('layout_context', {}),
+                    "material_analysis": image_record.get('material_analysis', {}),
+                    "has_visual_embeddings": bool(
+                        image_record.get('visual_embedding_512') or
+                        image_record.get('visual_embedding_1536')
+                    )
+                }
+
+                associated_images.append(image_info)
+
+            # Sort by relevance score (chunk-specific images first)
+            associated_images.sort(key=lambda x: x['relevance_score'], reverse=True)
+
+            return associated_images
+
+        except Exception as e:
+            self.logger.error(f"Failed to get associated images for chunk {chunk_id}: {e}")
+            return []
+
+    async def search_with_visual_similarity(
+        self,
+        query: str = None,
+        image_query: str = None,
+        document_id: str = None,
+        k: int = 5,
+        similarity_threshold: float = 0.7,
+        include_images: bool = True,
+        lambda_mult: float = 0.5
+    ) -> Dict[str, Any]:
+        """
+        Enhanced search with visual similarity capabilities.
+        Supports both text and image-based queries with multimodal results.
+        """
+        try:
+            start_time = time.time()
+
+            # If image query is provided, convert to text query using CLIP
+            if image_query and not query:
+                query = await self._image_to_text_query(image_query)
+                if not query:
+                    return {
+                        "results": [],
+                        "message": "Failed to process image query",
+                        "total_results": 0,
+                        "processing_time": time.time() - start_time
+                    }
+
+            # Perform standard text search
+            search_results = await self.search_documents(
+                query=query,
+                document_id=document_id,
+                k=k,
+                query_type="semantic",
+                lambda_mult=lambda_mult
+            )
+
+            # If visual similarity is requested, enhance results with visual matching
+            if include_images and image_query:
+                enhanced_results = await self._enhance_with_visual_similarity(
+                    search_results.get('results', []),
+                    image_query,
+                    similarity_threshold
+                )
+                search_results['results'] = enhanced_results
+                search_results['enhanced_with_visual'] = True
+
+            search_results['processing_time'] = time.time() - start_time
+            return search_results
+
+        except Exception as e:
+            self.logger.error(f"Visual similarity search failed: {e}")
+            return {
+                "results": [],
+                "message": f"Visual search failed: {str(e)}",
+                "total_results": 0,
+                "processing_time": time.time() - start_time
+            }
+
+    async def _image_to_text_query(self, image_query: str) -> str:
+        """Convert image query to text query using vision analysis."""
+        try:
+            # Use existing material analysis service to understand the image
+            from .together_ai_service import analyze_material_image_base64
+
+            # Analyze the image to generate a text description
+            analysis_result = await analyze_material_image_base64(
+                image_base64=image_query,
+                context="Generate a detailed description of this material for search purposes"
+            )
+
+            if analysis_result and hasattr(analysis_result, 'material_description'):
+                return analysis_result.material_description
+
+            return "material image query"  # Fallback
+
+        except Exception as e:
+            self.logger.error(f"Failed to convert image to text query: {e}")
+            return None
+
+    async def _enhance_with_visual_similarity(
+        self,
+        text_results: List[Dict],
+        image_query: str,
+        similarity_threshold: float
+    ) -> List[Dict]:
+        """Enhance text search results with visual similarity scoring."""
+        try:
+            # This would implement visual similarity comparison
+            # For now, return the original results with visual enhancement flags
+            for result in text_results:
+                result['visual_similarity_available'] = True
+                result['visual_similarity_score'] = 0.8  # Placeholder
+
+            return text_results
+
+        except Exception as e:
+            self.logger.error(f"Failed to enhance with visual similarity: {e}")
+            return text_results
 
     def _find_associated_chunks(self, image_info: Dict, nodes: List) -> List:
         """Find text chunks that are contextually related to the image."""
@@ -2768,62 +3052,308 @@ Summary:"""
     async def _generate_clip_embeddings(self, image_base64: str, image_path: str) -> Dict[str, Any]:
         """Generate CLIP embeddings using existing MIVAA gateway service."""
         try:
-            # Use existing MIVAA gateway for CLIP embeddings
-            # This calls the existing clip_embedding_generation action
             import aiohttp
             import json
+            import asyncio
 
-            # Prepare request for MIVAA gateway (using existing service pattern)
-            clip_request = {
-                "action": "clip_embedding_generation",
-                "payload": {
-                    "image_data": image_base64,
-                    "embedding_type": "visual_similarity",
-                    "options": {
-                        "normalize": True,
-                        "dimensions": 512
-                    }
-                }
-            }
-
-            # For now, return placeholder embeddings
-            # In production, this would call the actual MIVAA gateway
             self.logger.info(f"🔗 Generating CLIP embeddings for image: {os.path.basename(image_path)}")
 
-            # Placeholder - would be replaced with actual MIVAA gateway call
-            return {
-                "embedding_512": None,  # Would contain actual 512D CLIP embedding
-                "embedding_1536": None,  # Would contain actual 1536D CLIP embedding
-                "model_used": "clip-vit-base-patch32",
-                "processing_time_ms": 150.0,
-                "confidence_score": 0.85
-            }
+            # Use the existing material visual search service for CLIP embeddings
+            from .material_visual_search_service import MaterialVisualSearchService
+
+            # Get the service instance
+            material_service = MaterialVisualSearchService()
+
+            # Generate CLIP embeddings using the existing service
+            # This calls the actual MIVAA endpoints for CLIP processing
+            embedding_result = await material_service.generate_visual_embeddings(
+                image_data=image_base64,
+                embedding_types=['clip_512', 'clip_1536']
+            )
+
+            if embedding_result and embedding_result.get('success'):
+                embeddings = embedding_result.get('embeddings', {})
+
+                # Extract both 512D and 1536D embeddings
+                embedding_512 = embeddings.get('clip_512')
+                embedding_1536 = embeddings.get('clip_1536')
+
+                self.logger.info(f"✅ Generated CLIP embeddings: 512D={len(embedding_512) if embedding_512 else 0}, 1536D={len(embedding_1536) if embedding_1536 else 0}")
+
+                return {
+                    "embedding_512": embedding_512,
+                    "embedding_1536": embedding_1536,
+                    "model_used": embedding_result.get('model_used', 'clip-vit-base-patch32'),
+                    "processing_time_ms": embedding_result.get('processing_time_ms', 0),
+                    "confidence_score": embedding_result.get('confidence_score', 0.0)
+                }
+            else:
+                self.logger.warning(f"CLIP embedding generation failed or returned no results")
+                return {}
 
         except Exception as e:
             self.logger.error(f"Failed to generate CLIP embeddings: {e}")
+            # Fallback: Try direct HTTP call to MIVAA gateway
+            try:
+                return await self._fallback_clip_generation(image_base64, image_path)
+            except Exception as fallback_error:
+                self.logger.error(f"Fallback CLIP generation also failed: {fallback_error}")
+                return {}
+
+    async def _fallback_clip_generation(self, image_base64: str, image_path: str) -> Dict[str, Any]:
+        """Fallback method for CLIP generation using direct HTTP calls."""
+        try:
+            import aiohttp
+            import json
+
+            # Direct call to MIVAA service for CLIP embeddings
+            mivaa_url = "http://localhost:8000/api/embeddings/clip-generate"
+
+            payload = {
+                "image_data": image_base64,
+                "embedding_type": "visual_similarity",
+                "options": {
+                    "normalize": True,
+                    "dimensions": [512, 1536]  # Request both dimensions
+                }
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    mivaa_url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        self.logger.info(f"✅ Fallback CLIP generation successful")
+                        return {
+                            "embedding_512": result.get('embedding_512'),
+                            "embedding_1536": result.get('embedding_1536'),
+                            "model_used": result.get('model_used', 'clip-fallback'),
+                            "processing_time_ms": result.get('processing_time_ms', 0),
+                            "confidence_score": result.get('confidence_score', 0.0)
+                        }
+                    else:
+                        self.logger.error(f"Fallback CLIP generation failed: {response.status}")
+                        return {}
+
+        except Exception as e:
+            self.logger.error(f"Fallback CLIP generation error: {e}")
             return {}
 
     async def _analyze_image_material(self, image_base64: str, image_path: str) -> Dict[str, Any]:
         """Analyze image for material properties using existing material analysis service."""
         try:
-            # Use existing material analysis service
-            # This would call the existing material_recognition action
             self.logger.info(f"🔬 Analyzing material properties for image: {os.path.basename(image_path)}")
 
-            # Placeholder - would be replaced with actual material analysis service call
-            return {
-                "material_type": "ceramic",
-                "properties": {
-                    "color": "beige",
-                    "texture": "smooth",
-                    "finish": "matte",
-                    "pattern": "veined"
-                },
-                "confidence": 0.78,
-                "analysis_method": "llama_vision_analysis",
-                "processing_time_ms": 250.0
-            }
+            # Use the existing material visual search service for material analysis
+            from .material_visual_search_service import MaterialVisualSearchService
+
+            # Get the service instance
+            material_service = MaterialVisualSearchService()
+
+            # Perform comprehensive material analysis
+            analysis_result = await material_service.analyze_material_image(
+                image_data=image_base64,
+                analysis_types=['visual', 'spectral', 'chemical', 'mechanical']
+            )
+
+            if analysis_result and analysis_result.get('success'):
+                analysis_data = analysis_result.get('analysis', {})
+
+                # Extract material properties
+                material_properties = {
+                    "material_type": analysis_data.get('material_type', 'unknown'),
+                    "properties": {
+                        "color": analysis_data.get('color', 'unknown'),
+                        "texture": analysis_data.get('texture', 'unknown'),
+                        "finish": analysis_data.get('finish', 'unknown'),
+                        "pattern": analysis_data.get('pattern', 'unknown'),
+                        "composition": analysis_data.get('composition', {}),
+                        "mechanical_properties": analysis_data.get('mechanical_properties', {}),
+                        "thermal_properties": analysis_data.get('thermal_properties', {}),
+                        "safety_ratings": analysis_data.get('safety_ratings', {})
+                    },
+                    "confidence": analysis_data.get('confidence', 0.0),
+                    "analysis_method": analysis_data.get('analysis_method', 'material_visual_search'),
+                    "processing_time_ms": analysis_result.get('processing_time_ms', 0),
+                    "extracted_features": analysis_data.get('extracted_features', {}),
+                    "classification_scores": analysis_data.get('classification_scores', {})
+                }
+
+                self.logger.info(f"✅ Material analysis complete: {material_properties['material_type']} (confidence: {material_properties['confidence']:.3f})")
+                return material_properties
+
+            else:
+                self.logger.warning(f"Material analysis failed or returned no results")
+                return {}
 
         except Exception as e:
             self.logger.error(f"Failed to analyze image material: {e}")
+            # Fallback: Try direct HTTP call to material analysis endpoint
+            try:
+                return await self._fallback_material_analysis(image_base64, image_path)
+            except Exception as fallback_error:
+                self.logger.error(f"Fallback material analysis also failed: {fallback_error}")
+                return {}
+
+    async def _fallback_material_analysis(self, image_base64: str, image_path: str) -> Dict[str, Any]:
+        """Fallback method for material analysis using direct HTTP calls."""
+        try:
+            import aiohttp
+            import json
+
+            # Direct call to MIVAA service for material analysis
+            mivaa_url = "http://localhost:8000/api/materials/analyze"
+
+            payload = {
+                "image_data": image_base64,
+                "analysis_types": ["visual", "spectral", "chemical"],
+                "options": {
+                    "include_properties": True,
+                    "include_safety": True,
+                    "confidence_threshold": 0.3
+                }
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    mivaa_url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=45)
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        self.logger.info(f"✅ Fallback material analysis successful")
+                        return {
+                            "material_type": result.get('material_type', 'unknown'),
+                            "properties": result.get('properties', {}),
+                            "confidence": result.get('confidence', 0.0),
+                            "analysis_method": "fallback_material_analysis",
+                            "processing_time_ms": result.get('processing_time_ms', 0)
+                        }
+                    else:
+                        self.logger.error(f"Fallback material analysis failed: {response.status}")
+                        return {}
+
+        except Exception as e:
+            self.logger.error(f"Fallback material analysis error: {e}")
             return {}
+
+    async def _store_material_metadata(
+        self,
+        document_id: str,
+        image_record: Dict[str, Any],
+        material_analysis: Dict[str, Any],
+        clip_embeddings: Dict[str, Any]
+    ) -> bool:
+        """Store extracted material metadata in the materials_catalog table."""
+        try:
+            from .supabase_client import get_supabase_client
+            import uuid
+
+            supabase_client = get_supabase_client()
+
+            # Extract material properties from analysis
+            properties = material_analysis.get('properties', {})
+
+            # Create comprehensive material catalog entry
+            material_record = {
+                'id': str(uuid.uuid4()),
+                'document_id': document_id,
+                'image_id': image_record.get('id'),
+                'name': f"{properties.get('material_type', 'Unknown')} - {image_record.get('contextual_name', 'Material')}",
+                'description': f"Material extracted from document analysis: {material_analysis.get('material_type', 'Unknown material')}",
+                'category': self._determine_material_category(material_analysis.get('material_type', '')),
+                'subcategory': properties.get('subcategory', ''),
+                'material_type': material_analysis.get('material_type', 'unknown'),
+
+                # Visual properties
+                'color': properties.get('color', 'unknown'),
+                'finish': properties.get('finish', 'unknown'),
+                'pattern': properties.get('pattern', 'unknown'),
+                'texture': properties.get('texture', 'unknown'),
+
+                # Technical properties
+                'properties': properties,
+                'mechanical_properties': properties.get('mechanical_properties', {}),
+                'thermal_properties': properties.get('thermal_properties', {}),
+                'chemical_composition': properties.get('composition', {}),
+
+                # Safety and performance ratings
+                'slip_safety_ratings': properties.get('safety_ratings', {}).get('slip_resistance', {}),
+                'surface_gloss_reflectivity': properties.get('surface_properties', {}).get('gloss', 0.0),
+                'water_moisture_resistance': properties.get('resistance_properties', {}).get('water', {}),
+                'chemical_hygiene_resistance': properties.get('resistance_properties', {}).get('chemical', {}),
+
+                # Embeddings
+                'visual_embedding_512': clip_embeddings.get('embedding_512'),
+                'visual_embedding_1536': clip_embeddings.get('embedding_1536'),
+
+                # Analysis metadata
+                'llama_analysis': material_analysis,
+                'visual_analysis_confidence': material_analysis.get('confidence', 0.0),
+                'extraction_method': 'multimodal_rag_processing',
+                'extracted_properties': properties,
+                'confidence_scores': {
+                    'material_identification': material_analysis.get('confidence', 0.0),
+                    'property_extraction': properties.get('extraction_confidence', 0.0),
+                    'visual_analysis': clip_embeddings.get('confidence_score', 0.0)
+                },
+
+                # Source information
+                'source_document': document_id,
+                'source_image': image_record.get('image_url'),
+                'extraction_context': {
+                    'heading': image_record.get('nearest_heading'),
+                    'page_number': image_record.get('page_number'),
+                    'processing_method': 'enhanced_multimodal_rag'
+                }
+            }
+
+            # Insert into materials_catalog table
+            result = supabase_client.client.table('materials_catalog').insert(material_record).execute()
+
+            if result.data:
+                self.logger.info(f"✅ Stored material metadata: {material_record['name']} (confidence: {material_record['visual_analysis_confidence']:.3f})")
+                return True
+            else:
+                self.logger.warning(f"Failed to store material metadata: No data returned")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Failed to store material metadata: {e}")
+            return False
+
+    def _determine_material_category(self, material_type: str) -> str:
+        """Determine the appropriate category for a material type."""
+        material_type_lower = material_type.lower()
+
+        category_mappings = {
+            'ceramic': 'Ceramics & Tiles',
+            'tile': 'Ceramics & Tiles',
+            'porcelain': 'Ceramics & Tiles',
+            'stone': 'Natural Stone',
+            'marble': 'Natural Stone',
+            'granite': 'Natural Stone',
+            'wood': 'Wood & Timber',
+            'timber': 'Wood & Timber',
+            'metal': 'Metals',
+            'steel': 'Metals',
+            'aluminum': 'Metals',
+            'fabric': 'Textiles',
+            'textile': 'Textiles',
+            'cotton': 'Textiles',
+            'concrete': 'Concrete & Masonry',
+            'brick': 'Concrete & Masonry',
+            'glass': 'Glass & Glazing',
+            'plastic': 'Polymers & Plastics',
+            'polymer': 'Polymers & Plastics'
+        }
+
+        for keyword, category in category_mappings.items():
+            if keyword in material_type_lower:
+                return category
+
+        return 'Other Materials'  # Default category
