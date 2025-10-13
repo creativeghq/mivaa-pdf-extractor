@@ -16,7 +16,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 # Import the new embedding service
-from .embedding_service import EmbeddingService, EmbeddingConfig
+from .embedding_service import EmbeddingService
+from ..schemas.embedding import EmbeddingConfig
 from .advanced_search_service import (
     AdvancedSearchService,
     QueryType,
