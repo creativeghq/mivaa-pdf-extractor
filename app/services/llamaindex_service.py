@@ -2204,7 +2204,7 @@ Summary:"""
             self.logger.info(f"🔄 Starting database storage for {len(nodes)} chunks from document {document_id}")
 
             # First, ensure the document exists in the documents table
-            await self._ensure_document_exists(supabase_client, document_id, metadata)
+            self._ensure_document_exists(supabase_client, document_id, metadata)
 
             for i, node in enumerate(nodes):
                 try:
@@ -2224,7 +2224,7 @@ Summary:"""
                     }
 
                     # Insert chunk into database
-                    chunk_result = await supabase_client.client.table('document_chunks').insert(chunk_data).execute()
+                    chunk_result = supabase_client.client.table('document_chunks').insert(chunk_data).execute()
 
                     if chunk_result.data:
                         chunk_id = chunk_result.data[0]['id']
@@ -2233,7 +2233,7 @@ Summary:"""
                         # Generate and store embedding
                         try:
                             # Generate embedding for the chunk
-                            embedding_response = await self.embeddings.aget_text_embedding(node.text)
+                            embedding_response = await self.embedding_service.generate_embedding(node.text)
 
                             if embedding_response:
                                 # Store embedding in embeddings table
@@ -2245,7 +2245,7 @@ Summary:"""
                                     'dimensions': 1536
                                 }
 
-                                embedding_result = await supabase_client.client.table('embeddings').insert(embedding_data).execute()
+                                embedding_result = supabase_client.client.table('embeddings').insert(embedding_data).execute()
 
                                 if embedding_result.data:
                                     embeddings_stored += 1
@@ -2261,7 +2261,7 @@ Summary:"""
                                         'model_name': 'text-embedding-3-small'
                                     }
 
-                                    await supabase_client.client.table('document_vectors').insert(vector_data).execute()
+                                    supabase_client.client.table('document_vectors').insert(vector_data).execute()
 
                         except Exception as embedding_error:
                             self.logger.warning(f"Failed to generate/store embedding for chunk {i}: {embedding_error}")
@@ -2292,7 +2292,7 @@ Summary:"""
                 "error": str(e)
             }
 
-    async def _ensure_document_exists(
+    def _ensure_document_exists(
         self,
         supabase_client,
         document_id: str,
@@ -2301,7 +2301,7 @@ Summary:"""
         """Ensure the document exists in the documents table."""
         try:
             # Check if document exists
-            existing = await supabase_client.client.table('documents').select('id').eq('id', document_id).execute()
+            existing = supabase_client.client.table('documents').select('id').eq('id', document_id).execute()
 
             if not existing.data:
                 # Create document record
@@ -2314,7 +2314,7 @@ Summary:"""
                     'processing_status': 'completed'
                 }
 
-                await supabase_client.client.table('documents').insert(document_data).execute()
+                supabase_client.client.table('documents').insert(document_data).execute()
                 self.logger.info(f"✅ Created document record for {document_id}")
 
         except Exception as e:
