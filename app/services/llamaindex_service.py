@@ -330,12 +330,17 @@ class LlamaIndexService:
             )
             
             # Initialize embedding service
+            self.logger.info(f"About to initialize EmbeddingService with config: {type(embedding_config)}")
+            self.logger.info(f"EmbeddingService class: {EmbeddingService}")
+            self.logger.info(f"EmbeddingService.__init__ signature: {EmbeddingService.__init__}")
             self.embedding_service = EmbeddingService(embedding_config)
-            
+
             self.logger.info(f"Centralized embedding service initialized with model: {self.embedding_model}")
-            
+
         except Exception as e:
+            import traceback
             self.logger.error(f"Failed to initialize embedding service: {e}")
+            self.logger.error(f"Full traceback: {traceback.format_exc()}")
             self.embedding_service = None
     
     def _create_embedding_wrapper(self):
