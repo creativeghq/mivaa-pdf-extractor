@@ -23,6 +23,14 @@ class EmbeddingConfig(BaseModel):
         default="text-embedding-3-small",
         description="OpenAI embedding model name"
     )
+    model_type: str = Field(
+        default="openai",
+        description="Model type: 'openai' or 'huggingface'"
+    )
+    dimension: int = Field(
+        default=1536,
+        description="Embedding dimension"
+    )
     api_key: str = Field(
         default="",
         description="OpenAI API key"
