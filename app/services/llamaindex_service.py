@@ -172,8 +172,8 @@ class LlamaIndexService:
         
         self.logger.info(f"LlamaIndex service initialized with storage: {self.storage_dir}")
 
-        # Load existing documents from database into indices
-        asyncio.create_task(self._load_existing_documents())
+        # Mark that we need to load existing documents (will be done after full initialization)
+        self._documents_loaded = False
     
     async def semantic_search_with_mmr(
         self,
@@ -206,6 +206,11 @@ class LlamaIndexService:
             }
         
         try:
+            # Load existing documents if not already loaded
+            if not self._documents_loaded:
+                await self._load_existing_documents()
+                self._documents_loaded = True
+
             # Get the appropriate index for search
             search_index = None
             if document_id and document_id in self.indices:
