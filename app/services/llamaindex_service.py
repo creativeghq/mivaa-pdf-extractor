@@ -244,16 +244,24 @@ class LlamaIndexService:
             
             # Process MMR results
             results = []
+            self.logger.info(f"🔍 Processing MMR result: {type(mmr_result)}")
+            self.logger.info(f"🔍 MMR result attributes: {dir(mmr_result)}")
+
             if hasattr(mmr_result, 'results') and mmr_result.results:
+                self.logger.info(f"🔍 Found {len(mmr_result.results)} MMR results")
                 for i, node in enumerate(mmr_result.results):
+                    self.logger.info(f"🔍 Processing node {i}: {type(node)}")
                     result_item = {
                         "content": getattr(node, 'text', str(node)),
-                        "score": mmr_result.relevance_scores[i] if i < len(mmr_result.relevance_scores) else 0.0,
-                        "diversity_score": mmr_result.diversity_scores[i] if i < len(mmr_result.diversity_scores) else 0.0,
+                        "score": mmr_result.relevance_scores[i] if hasattr(mmr_result, 'relevance_scores') and i < len(mmr_result.relevance_scores) else 0.0,
+                        "diversity_score": mmr_result.diversity_scores[i] if hasattr(mmr_result, 'diversity_scores') and i < len(mmr_result.diversity_scores) else 0.0,
                         "metadata": getattr(node, 'metadata', {}),
                         "document_id": getattr(node, 'metadata', {}).get('document_id', document_id)
                     }
                     results.append(result_item)
+                    self.logger.info(f"🔍 Added result: {result_item['content'][:50]}...")
+            else:
+                self.logger.warning(f"🔍 No results in MMR result or results attribute missing")
 
             return {
                 "results": results,
