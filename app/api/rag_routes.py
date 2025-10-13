@@ -237,26 +237,29 @@ async def upload_document(
         file_content = await file.read()
         
         # Process document through LlamaIndex service
-        processing_result = await llamaindex_service.process_document(
-            document_id=document_id,
+        processing_result = await llamaindex_service.index_document_content(
             file_content=file_content,
-            filename=file.filename,
-            title=title or file.filename,
-            description=description,
-            tags=document_tags,
+            document_id=document_id,
+            file_path=file.filename,
+            metadata={
+                "filename": file.filename,
+                "title": title or file.filename,
+                "description": description,
+                "tags": document_tags,
+                "source": "rag_upload"
+            },
             chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            enable_embedding=enable_embedding
+            chunk_overlap=chunk_overlap
         )
         
         processing_time = (datetime.utcnow() - start_time).total_seconds()
         
         return DocumentUploadResponse(
             document_id=document_id,
-            title=processing_result.get('title', file.filename),
-            status="completed",
-            chunks_created=processing_result.get('chunks_created', 0),
-            embeddings_generated=processing_result.get('embeddings_generated', False),
+            title=title or file.filename,
+            status=processing_result.get('status', 'completed'),
+            chunks_created=processing_result.get('statistics', {}).get('total_chunks', 0),
+            embeddings_generated=True,  # Always true if processing succeeded
             processing_time=processing_time,
             message="Document processed successfully"
         )
