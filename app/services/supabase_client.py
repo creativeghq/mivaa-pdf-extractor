@@ -204,46 +204,61 @@ class SupabaseClient:
             ID of the saved record
         """
         try:
+            # Generate a default user_id (required field)
+            # TODO: Get actual user_id from authentication context
+            default_user_id = "00000000-0000-0000-0000-000000000000"  # System user
+
             # Prepare data for insertion
             insert_data = {
+                'user_id': default_user_id,  # Required field
                 'original_filename': original_filename or f"{result.document_id}.pdf",
-                'file_url': file_url,
+                'file_url': file_url or f"https://example.com/{result.document_id}.pdf",  # Required field
                 'processing_status': 'completed',
                 'processing_started_at': 'now()',
                 'processing_completed_at': 'now()',
-                'processing_time_ms': int(result.processing_time * 1000),
-                'total_pages': result.page_count,
-                'total_tiles_extracted': len(result.extracted_images),
+                'processing_time_ms': int(result.processing_time * 1000) if result.processing_time else 0,
+                'total_pages': result.page_count or 0,
+                'total_tiles_extracted': len(result.extracted_images) if result.extracted_images else 0,
                 'materials_identified_count': 0,  # Will be updated by material recognition
                 'confidence_score_avg': 0.95,  # Default confidence
-                'ocr_text_content': result.ocr_text,
+                'ocr_text_content': result.ocr_text or "",
                 'ocr_confidence_avg': 0.90,  # Default OCR confidence
                 'ocr_language_detected': 'en',
-                'extracted_images': result.extracted_images,
-                'multimodal_enabled': result.multimodal_enabled,
+                'extracted_images': result.extracted_images or [],
+                'multimodal_enabled': getattr(result, 'multimodal_enabled', False),
                 'python_processor_version': '1.0.0',
                 'layout_analysis_version': '1.0.0',
                 'document_structure': {
-                    'word_count': result.word_count,
-                    'character_count': result.character_count,
-                    'markdown_content': result.markdown_content
+                    'word_count': result.word_count or 0,
+                    'character_count': result.character_count or 0,
+                    'markdown_content': result.markdown_content or ""
                 },
-                'image_analysis_results': result.ocr_results,
-                'multimodal_metadata': result.metadata
+                'image_analysis_results': getattr(result, 'ocr_results', {}),
+                'multimodal_metadata': result.metadata or {}
             }
+
+            logger.info(f"💾 Attempting to save PDF processing result to database")
+            logger.info(f"   Document ID: {result.document_id}")
+            logger.info(f"   Filename: {insert_data['original_filename']}")
+            logger.info(f"   Pages: {insert_data['total_pages']}")
+            logger.info(f"   Images: {insert_data['total_tiles_extracted']}")
 
             # Insert into database
             response = self._client.table('pdf_processing_results').insert(insert_data).execute()
 
             if response.data:
                 record_id = response.data[0]['id']
-                logger.info(f"PDF processing result saved with ID: {record_id}")
+                logger.info(f"✅ PDF processing result saved with ID: {record_id}")
                 return record_id
             else:
+                logger.error(f"❌ No data returned from insert operation")
+                logger.error(f"   Response: {response}")
                 raise Exception("No data returned from insert operation")
 
         except Exception as e:
-            logger.error(f"Failed to save PDF processing result: {str(e)}")
+            logger.error(f"❌ Failed to save PDF processing result: {str(e)}")
+            logger.error(f"   Error type: {type(e).__name__}")
+            logger.error(f"   Insert data keys: {list(insert_data.keys()) if 'insert_data' in locals() else 'N/A'}")
             raise
 
     async def save_knowledge_base_entries(self, document_id: str, chunks: list, images: list) -> dict:
@@ -262,51 +277,106 @@ class SupabaseClient:
             saved_chunks = 0
             saved_images = 0
 
-            # Save text chunks to knowledge_base_entries
+            logger.info(f"💾 Starting knowledge base save for document: {document_id}")
+            logger.info(f"   Chunks to save: {len(chunks)}")
+            logger.info(f"   Images to save: {len(images)}")
+
+            # First, ensure document exists in documents table
+            try:
+                # Check if document already exists
+                doc_check = self._client.table('documents').select('id').eq('id', document_id).execute()
+
+                if not doc_check.data:
+                    # Create document record
+                    doc_data = {
+                        'id': document_id,
+                        'filename': f"{document_id}.pdf",
+                        'content_type': 'application/pdf',
+                        'content': "",  # Will be updated with markdown content
+                        'processing_status': 'completed',
+                        'metadata': {
+                            'source': 'mivaa_processing',
+                            'chunks_count': len(chunks),
+                            'images_count': len(images)
+                        }
+                    }
+
+                    doc_response = self._client.table('documents').insert(doc_data).execute()
+                    if doc_response.data:
+                        logger.info(f"✅ Created document record: {document_id}")
+                    else:
+                        logger.warning(f"⚠️ Failed to create document record: {document_id}")
+                else:
+                    logger.info(f"✅ Document already exists: {document_id}")
+
+            except Exception as doc_error:
+                logger.warning(f"⚠️ Document creation failed: {doc_error}")
+
+            # Save text chunks to document_chunks table
             if chunks:
                 chunk_entries = []
                 for i, chunk in enumerate(chunks):
-                    if chunk.strip():  # Only save non-empty chunks
+                    if isinstance(chunk, str) and chunk.strip():  # Only save non-empty string chunks
                         chunk_entries.append({
                             'document_id': document_id,
-                            'content_type': 'text',
                             'content': chunk,
                             'chunk_index': i,
                             'metadata': {
-                                'source': 'pdf_extraction',
+                                'source': 'mivaa_pdf_extraction',
                                 'chunk_length': len(chunk),
-                                'chunk_number': i + 1
+                                'chunk_number': i + 1,
+                                'page_number': 1  # Default page number
                             }
                         })
 
                 if chunk_entries:
-                    response = self._client.table('knowledge_base_entries').insert(chunk_entries).execute()
+                    logger.info(f"💾 Saving {len(chunk_entries)} chunks to document_chunks table")
+                    response = self._client.table('document_chunks').insert(chunk_entries).execute()
                     saved_chunks = len(response.data) if response.data else 0
+                    logger.info(f"✅ Saved {saved_chunks} chunks to database")
+                else:
+                    logger.warning("⚠️ No valid chunks to save")
 
-            # Save images to document_images
+            # Save images to document_images table
             if images:
                 image_entries = []
                 for i, image in enumerate(images):
+                    # Handle different image data formats
+                    if isinstance(image, dict):
+                        image_url = image.get('url') or image.get('path') or f"image_{i}.jpg"
+                        page_num = image.get('page') or image.get('page_number') or 1
+                        caption = image.get('caption') or image.get('description') or f"Image {i+1}"
+                    else:
+                        # Handle string or other formats
+                        image_url = str(image) if image else f"image_{i}.jpg"
+                        page_num = 1
+                        caption = f"Image {i+1}"
+
                     image_entries.append({
                         'document_id': document_id,
-                        'image_path': image.get('path', ''),
-                        'image_url': image.get('url', ''),
-                        'page_number': image.get('page', 1),
-                        'width': image.get('width', 0),
-                        'height': image.get('height', 0),
-                        'format': image.get('format', 'unknown'),
+                        'image_url': image_url,
+                        'image_type': 'material_sample',
+                        'caption': caption,
+                        'page_number': page_num,
+                        'confidence': 0.95,  # Default confidence
+                        'processing_status': 'completed',
                         'metadata': {
-                            'source': 'pdf_extraction',
+                            'source': 'mivaa_pdf_extraction',
                             'image_index': i,
-                            'extraction_method': image.get('extraction_method', 'pymupdf')
+                            'extraction_method': 'pymupdf',
+                            'original_data': image if isinstance(image, dict) else {'url': str(image)}
                         }
                     })
 
                 if image_entries:
+                    logger.info(f"💾 Saving {len(image_entries)} images to document_images table")
                     response = self._client.table('document_images').insert(image_entries).execute()
                     saved_images = len(response.data) if response.data else 0
+                    logger.info(f"✅ Saved {saved_images} images to database")
+                else:
+                    logger.warning("⚠️ No valid images to save")
 
-            logger.info(f"Saved {saved_chunks} chunks and {saved_images} images to knowledge base")
+            logger.info(f"✅ Knowledge base save completed: {saved_chunks} chunks, {saved_images} images")
             return {
                 'chunks_saved': saved_chunks,
                 'images_saved': saved_images,
@@ -314,7 +384,10 @@ class SupabaseClient:
             }
 
         except Exception as e:
-            logger.error(f"Failed to save knowledge base entries: {str(e)}")
+            logger.error(f"❌ Failed to save knowledge base entries: {str(e)}")
+            logger.error(f"   Error type: {type(e).__name__}")
+            import traceback
+            logger.error(f"   Traceback: {traceback.format_exc()}")
             return {
                 'chunks_saved': 0,
                 'images_saved': 0,
