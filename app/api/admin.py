@@ -762,20 +762,46 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
         # Save to database
         supabase_client = get_supabase_client()
 
-        # TEMPORARILY DISABLE DATABASE SAVES TO DEBUG SERIALIZATION ISSUE
-        logger.info(f"⚠️ SKIPPING PDF processing result save to debug serialization issue")
-        logger.info(f"   Would save: {original_filename}")
+        # Save PDF processing result to database
+        try:
+            pdf_result = await supabase_client.save_pdf_processing_result(
+                original_filename=original_filename,
+                document_id=result.document_id,
+                chunks_created=len(chunks),
+                images_extracted=len(result.extracted_images),
+                processing_status="completed",
+                metadata={
+                    "pages": result.page_count,
+                    "word_count": result.word_count,
+                    "character_count": result.character_count,
+                    "processing_time": result.processing_time
+                }
+            )
+            logger.info(f"✅ PDF processing result saved to database: {pdf_result}")
 
-        # Update progress tracking without database save
-        if tracker:
-            tracker.update_database_stats(records_created=1)
-            tracker.update_stage(ProcessingStage.SAVING_TO_DATABASE)
+            # Update progress tracking
+            if tracker:
+                tracker.update_database_stats(records_created=1)
+                tracker.update_stage(ProcessingStage.SAVING_TO_DATABASE)
 
-        # TEMPORARILY DISABLE KNOWLEDGE BASE SAVES TO DEBUG SERIALIZATION ISSUE
-        logger.info(f"⚠️ SKIPPING knowledge base save to debug serialization issue")
-        logger.info(f"   Would save: {len(chunks)} chunks, {len(result.extracted_images)} images")
+        except Exception as e:
+            logger.error(f"❌ Failed to save PDF processing result: {str(e)}")
+            # Continue processing even if database save fails
 
-        # Simulate successful save for progress tracking
+        # Save knowledge base entries
+        try:
+            kb_entries_saved = await supabase_client.save_knowledge_base_entries(
+                document_id=result.document_id,
+                chunks=chunks,
+                images=result.extracted_images,
+                workspace_id="default"
+            )
+            logger.info(f"✅ Knowledge base entries saved: {kb_entries_saved}")
+
+        except Exception as e:
+            logger.error(f"❌ Failed to save knowledge base entries: {str(e)}")
+            # Continue processing even if knowledge base save fails
+        # Final progress tracking update
         chunks_saved = len(chunks)
         images_saved = len(result.extracted_images)
 
@@ -786,7 +812,7 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
             )
             tracker.update_stage(ProcessingStage.COMPLETED)
 
-        logger.info(f"🎉 Document processing completed (simulated): {chunks_saved} chunks, {images_saved} images")
+        logger.info(f"🎉 Document processing completed: {chunks_saved} chunks, {images_saved} images")
 
         return {
             "document_id": result.document_id,
