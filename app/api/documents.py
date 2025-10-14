@@ -12,7 +12,7 @@ import tempfile
 import os
 import uuid
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from urllib.parse import urlparse
 from datetime import datetime
 import aiohttp
