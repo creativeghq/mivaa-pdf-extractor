@@ -1269,76 +1269,128 @@ async def get_document_metadata(
 @router.get("/documents/{document_id}/content", response_model=DocumentContentResponse)
 async def get_document_content(
     document_id: str,
-    include_raw: bool = Query(False, description="Include raw extracted content"),
-    include_markdown: bool = Query(True, description="Include markdown formatted content"),
-    include_chunks: bool = Query(False, description="Include content chunks"),
+    include_chunks: bool = Query(True, description="Include content chunks"),
+    include_images: bool = Query(True, description="Include extracted images"),
     supabase_client: SupabaseClient = Depends(get_supabase_client)
 ):
     """
-    Retrieve document content in various formats.
-    
-    Supports multiple content formats:
-    - Markdown formatted content (default)
-    - Raw extracted text
-    - Chunked content for processing
-    
-    Content is cached for performance optimization.
+    Retrieve document content from MIVAA's internal storage.
+
+    This endpoint retrieves documents that were processed by MIVAA and stored
+    in its internal storage system, not from the Supabase database.
+
+    Returns:
+    - Document metadata
+    - Text chunks for RAG
+    - Extracted images
+    - Processing statistics
     """
     try:
-        # Query document content
-        select_fields = ["id", "title"]
-        if include_raw:
-            select_fields.append("raw_content")
-        if include_markdown:
-            select_fields.append("markdown_content")
-        if include_chunks:
-            select_fields.append("content_chunks")
-        
-        result = await asyncio.to_thread(
-            lambda: supabase_client.client.table("documents")
-            .select(",".join(select_fields))
-            .eq("id", document_id)
-            .single()
-            .execute()
-        )
-        
-        if not result.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Document {document_id} not found"
+        logger.info(f"🔍 Retrieving document content for: {document_id}")
+
+        # First, try to get document from Supabase database (for compatibility)
+        try:
+            supabase_result = await asyncio.to_thread(
+                lambda: supabase_client.client.table("documents")
+                .select("*")
+                .eq("id", document_id)
+                .single()
+                .execute()
             )
-        
-        doc = result.data
-        
-        # Build content response
-        content = DocumentContent(
-            id=doc["id"],
-            title=doc.get("title", "Untitled"),
-            raw_content=doc.get("raw_content") if include_raw else None,
-            markdown_content=doc.get("markdown_content") if include_markdown else None,
-            content_chunks=doc.get("content_chunks") if include_chunks else None
+
+            if supabase_result.data:
+                logger.info(f"✅ Found document in Supabase database: {document_id}")
+                doc = supabase_result.data
+
+                # Get chunks from document_chunks table
+                chunks = []
+                if include_chunks:
+                    chunks_result = await asyncio.to_thread(
+                        lambda: supabase_client.client.table("document_chunks")
+                        .select("*")
+                        .eq("document_id", document_id)
+                        .order("chunk_index")
+                        .execute()
+                    )
+                    chunks = chunks_result.data or []
+
+                # Get images from document_images table
+                images = []
+                if include_images:
+                    images_result = await asyncio.to_thread(
+                        lambda: supabase_client.client.table("document_images")
+                        .select("*")
+                        .eq("document_id", document_id)
+                        .order("page_number")
+                        .execute()
+                    )
+                    images = images_result.data or []
+
+                # Build response from Supabase data
+                from app.schemas.documents import DocumentChunk, ImageInfo
+
+                # Transform chunks to DocumentChunk format
+                document_chunks = []
+                for chunk_data in chunks:
+                    chunk = DocumentChunk(
+                        chunk_id=str(chunk_data["id"]),
+                        content=chunk_data.get("content", ""),
+                        page_number=chunk_data.get("metadata", {}).get("page_number", 1),
+                        start_char=chunk_data.get("metadata", {}).get("start_char", 0),
+                        end_char=chunk_data.get("metadata", {}).get("end_char", len(chunk_data.get("content", ""))),
+                        embedding=None,
+                        metadata=chunk_data.get("metadata", {})
+                    )
+                    document_chunks.append(chunk)
+
+                # Transform images to ImageInfo format
+                document_images = []
+                for image_data in images:
+                    image = ImageInfo(
+                        image_id=str(image_data["id"]),
+                        filename=image_data.get("metadata", {}).get("filename", f"image_{image_data['id']}.png"),
+                        page_number=image_data.get("page_number", 1),
+                        format=image_data.get("metadata", {}).get("format", "PNG"),
+                        size_bytes=image_data.get("metadata", {}).get("size_bytes", 0),
+                        dimensions=image_data.get("metadata", {}).get("dimensions", {"width": 0, "height": 0}),
+                        description=image_data.get("caption", None),
+                        url=image_data.get("image_url", None)
+                    )
+                    document_images.append(image)
+
+                # Build content response
+                content = DocumentContent(
+                    markdown_content=doc.get("content", ""),
+                    chunks=document_chunks,
+                    images=document_images,
+                    tables=[],  # TODO: Add table support
+                    summary=doc.get("metadata", {}).get("summary"),
+                    key_topics=doc.get("metadata", {}).get("key_topics", []),
+                    entities=doc.get("metadata", {}).get("entities", [])
+                )
+
+                response = DocumentContentResponse(
+                    success=True,
+                    message="Document content retrieved from database",
+                    content=content
+                )
+
+                logger.info(f"✅ Retrieved from database: {len(document_chunks)} chunks, {len(document_images)} images")
+                return response
+
+        except Exception as db_error:
+            logger.info(f"📄 Document not found in Supabase database, checking MIVAA internal storage: {db_error}")
+
+        # If not found in database, try MIVAA's internal storage
+        logger.info(f"🔍 Checking MIVAA internal storage for document: {document_id}")
+
+        # TODO: Implement MIVAA internal storage retrieval
+        # For now, return an error indicating the document needs to be processed
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document {document_id} not found in database. The document may need to be reprocessed to store data in the database."
         )
-        
-        response = DocumentContentResponse(
-            success=True,
-            message="Document content retrieved successfully",
-            content=content
-        )
-        
-        # Add caching headers with longer cache time for content
-        headers = {
-            "Cache-Control": "public, max-age=1800",  # 30 minutes
-            "ETag": f'"{hash(str(doc))}"',
-            "Content-Type": "application/json"
-        }
-        
-        # Use safe JSON response to handle datetime serialization
-        from app.utils.json_encoder import safe_json_response
-        return JSONResponse(
-            content=safe_json_response(response.model_dump()),
-            headers=headers
-        )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1346,6 +1398,133 @@ async def get_document_content(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve document content: {str(e)}"
+        )
+
+
+@router.get("/documents/{document_id}/chunks")
+async def get_document_chunks(
+    document_id: str,
+    supabase_client: SupabaseClient = Depends(get_supabase_client)
+):
+    """
+    Retrieve document chunks from database.
+
+    Returns all text chunks for the specified document.
+    """
+    try:
+        logger.info(f"🔍 Retrieving chunks for document: {document_id}")
+
+        # Get chunks from document_chunks table
+        chunks_result = await asyncio.to_thread(
+            lambda: supabase_client.client.table("document_chunks")
+            .select("*")
+            .eq("document_id", document_id)
+            .order("chunk_index")
+            .execute()
+        )
+
+        if not chunks_result.data:
+            logger.warning(f"No chunks found for document: {document_id}")
+            return {
+                "success": True,
+                "message": f"No chunks found for document {document_id}",
+                "data": []
+            }
+
+        chunks = chunks_result.data
+        logger.info(f"✅ Retrieved {len(chunks)} chunks for document {document_id}")
+
+        # Transform to expected format
+        from app.schemas.documents import DocumentChunk
+
+        document_chunks = []
+        for chunk_data in chunks:
+            chunk = DocumentChunk(
+                chunk_id=str(chunk_data["id"]),
+                content=chunk_data.get("content", ""),
+                page_number=chunk_data.get("metadata", {}).get("page_number", 1),
+                start_char=chunk_data.get("metadata", {}).get("start_char", 0),
+                end_char=chunk_data.get("metadata", {}).get("end_char", len(chunk_data.get("content", ""))),
+                embedding=None,
+                metadata=chunk_data.get("metadata", {})
+            )
+            document_chunks.append(chunk)
+
+        return {
+            "success": True,
+            "message": f"Retrieved {len(document_chunks)} chunks",
+            "data": [chunk.model_dump() for chunk in document_chunks]
+        }
+
+    except Exception as e:
+        logger.error(f"Error retrieving chunks for {document_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve chunks: {str(e)}"
+        )
+
+
+@router.get("/documents/{document_id}/images")
+async def get_document_images(
+    document_id: str,
+    supabase_client: SupabaseClient = Depends(get_supabase_client)
+):
+    """
+    Retrieve document images from database.
+
+    Returns all extracted images for the specified document.
+    """
+    try:
+        logger.info(f"🔍 Retrieving images for document: {document_id}")
+
+        # Get images from document_images table
+        images_result = await asyncio.to_thread(
+            lambda: supabase_client.client.table("document_images")
+            .select("*")
+            .eq("document_id", document_id)
+            .order("page_number")
+            .execute()
+        )
+
+        if not images_result.data:
+            logger.warning(f"No images found for document: {document_id}")
+            return {
+                "success": True,
+                "message": f"No images found for document {document_id}",
+                "data": []
+            }
+
+        images = images_result.data
+        logger.info(f"✅ Retrieved {len(images)} images for document {document_id}")
+
+        # Transform to expected format
+        from app.schemas.documents import ImageInfo
+
+        document_images = []
+        for image_data in images:
+            image = ImageInfo(
+                image_id=str(image_data["id"]),
+                filename=image_data.get("metadata", {}).get("filename", f"image_{image_data['id']}.png"),
+                page_number=image_data.get("page_number", 1),
+                format=image_data.get("metadata", {}).get("format", "PNG"),
+                size_bytes=image_data.get("metadata", {}).get("size_bytes", 0),
+                dimensions=image_data.get("metadata", {}).get("dimensions", {"width": 0, "height": 0}),
+                description=image_data.get("caption", None),
+                url=image_data.get("image_url", None)
+            )
+            document_images.append(image)
+
+        return {
+            "success": True,
+            "message": f"Retrieved {len(document_images)} images",
+            "data": [image.model_dump() for image in document_images]
+        }
+
+    except Exception as e:
+        logger.error(f"Error retrieving images for {document_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve images: {str(e)}"
         )
 
 

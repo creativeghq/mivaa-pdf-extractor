@@ -601,6 +601,9 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
         # Use the actual PDF processor to process the document
         document_id = f"doc_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
 
+        # Extract filename from URL
+        original_filename = url.split('/')[-1] if url else f"{document_id}.pdf"
+
         # Initialize progress tracking
         progress_service = get_progress_service()
         tracker = None
@@ -758,9 +761,6 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
 
         # Save to database
         supabase_client = get_supabase_client()
-
-        # Extract filename from URL
-        original_filename = url.split('/')[-1] if url else f"{document_id}.pdf"
 
         # Save PDF processing result
         try:
