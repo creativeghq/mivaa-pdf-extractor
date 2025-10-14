@@ -1444,3 +1444,48 @@ async def stream_job_progress(job_id: str):
             status_code=500,
             detail=f"Failed to stream progress: {str(e)}"
         )
+
+@router.post("/jobs/clear-problematic")
+async def clear_problematic_jobs():
+    """
+    Clear jobs that cause serialization errors.
+
+    This endpoint clears any jobs from the active_jobs dictionary that cannot be serialized to JSON.
+    Useful for fixing serialization errors that prevent job endpoints from working.
+    """
+    try:
+        import json
+        global active_jobs, job_history
+
+        original_count = len(active_jobs)
+        problematic_jobs = []
+
+        # Test each job for serializability
+        for job_id, job_info in list(active_jobs.items()):
+            try:
+                json.dumps(job_info)  # Test serialization
+            except (TypeError, ValueError) as e:
+                problematic_jobs.append(job_id)
+                logger.warning(f"Removing problematic job {job_id}: {str(e)}")
+                del active_jobs[job_id]
+
+        cleared_count = len(problematic_jobs)
+        remaining_count = len(active_jobs)
+
+        return {
+            "success": True,
+            "message": f"Cleared {cleared_count} problematic jobs",
+            "data": {
+                "original_job_count": original_count,
+                "cleared_jobs": problematic_jobs,
+                "cleared_count": cleared_count,
+                "remaining_count": remaining_count
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Error clearing problematic jobs: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to clear problematic jobs: {str(e)}"
+        )
