@@ -43,27 +43,6 @@ router = APIRouter(prefix="/api", tags=["Health & Monitoring"])
 active_jobs: Dict[str, Dict[str, Any]] = {}
 job_history: List[Dict[str, Any]] = []
 
-def clear_problematic_jobs():
-    """Clear any jobs that might cause serialization issues"""
-    import json
-    global active_jobs
-
-    problematic_jobs = []
-    for job_id, job_info in list(active_jobs.items()):
-        try:
-            json.dumps(job_info)  # Test serialization
-        except (TypeError, ValueError):
-            problematic_jobs.append(job_id)
-            del active_jobs[job_id]
-
-    if problematic_jobs:
-        logger.warning(f"🧹 Cleared {len(problematic_jobs)} problematic jobs: {problematic_jobs}")
-    else:
-        logger.info("✅ No problematic jobs found")
-
-# Clear any existing problematic jobs on startup
-clear_problematic_jobs()
-
 def migrate_job_data():
     """Migrate existing job data to match JobListItem schema"""
     global job_history, active_jobs
@@ -132,38 +111,9 @@ def get_material_kai_service():
     """Dependency to get Material Kai service instance"""
     return MaterialKaiService()
 
-def ensure_serializable(obj):
-    """Ensure an object is JSON serializable by converting problematic types"""
-    import json
-    from datetime import datetime
-
-    if obj is None:
-        return None
-    elif isinstance(obj, (str, int, float, bool)):
-        return obj
-    elif isinstance(obj, datetime):
-        return obj.isoformat()
-    elif isinstance(obj, dict):
-        return {k: ensure_serializable(v) for k, v in obj.items()}
-    elif isinstance(obj, (list, tuple)):
-        return [ensure_serializable(item) for item in obj]
-    else:
-        # Convert complex objects to string representation
-        try:
-            # Try to serialize to test if it's already serializable
-            json.dumps(obj)
-            return obj
-        except (TypeError, ValueError):
-            # If not serializable, convert to string
-            return str(obj)
-
 async def track_job(job_id: str, job_type: str, status: str, details: Dict[str, Any] = None):
     """Track job status and update global job tracking"""
     current_time = datetime.utcnow().isoformat()
-
-    # Ensure all details are JSON serializable
-    if details:
-        details = ensure_serializable(details)
 
     # Check if job already exists
     existing_job = active_jobs.get(job_id)
@@ -229,27 +179,7 @@ async def track_job(job_id: str, job_type: str, status: str, details: Dict[str, 
         }
         logger.info(f"📝 Created new job {job_id} with status: {status}")
 
-    # Ensure the job_info is serializable before storing
-    try:
-        import json
-        json.dumps(job_info)  # Test serialization
-        active_jobs[job_id] = job_info
-        logger.info(f"📊 Job {job_id} tracked with status: {status}")
-    except (TypeError, ValueError) as e:
-        logger.error(f"❌ Job {job_id} data is not serializable: {e}")
-        # Store a simplified version
-        simplified_job = {
-            "job_id": job_id,
-            "job_type": job_type,
-            "status": status,
-            "created_at": current_time,
-            "updated_at": current_time,
-            "progress_percentage": job_info.get("progress_percentage", 0.0),
-            "current_step": str(job_info.get("current_step", "")),
-            "error_message": "Serialization error - simplified job data"
-        }
-        active_jobs[job_id] = simplified_job
-        logger.warning(f"⚠️ Stored simplified job data for {job_id}")
+    active_jobs[job_id] = job_info
 
     # Add to history if completed or failed
     if status in ["completed", "failed", "cancelled"]:
