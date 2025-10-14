@@ -863,14 +863,19 @@ async def get_system_health(
         try:
             import time
             start_time = time.time()
-            supabase_client = SupabaseClient()
-            # Simple health check query
-            result = supabase_client.table('health_check').select('*').limit(1).execute()
-            response_time_ms = int((time.time() - start_time) * 1000)
-            services_health["supabase"] = {
-                "status": "healthy",
-                "response_time_ms": response_time_ms
-            }
+            supabase_client = get_supabase_client()
+            # Simple health check query using the health_check method
+            if supabase_client.health_check():
+                response_time_ms = int((time.time() - start_time) * 1000)
+                services_health["supabase"] = {
+                    "status": "healthy",
+                    "response_time_ms": response_time_ms
+                }
+            else:
+                services_health["supabase"] = {
+                    "status": "unhealthy",
+                    "error": "Health check failed"
+                }
         except Exception as e:
             services_health["supabase"] = {
                 "status": "unhealthy",
