@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     # Application Settings
     app_name: str = Field(default="PDF Processing Service", env="APP_NAME")
     app_version: str = Field(default="1.0.0", env="APP_VERSION")
-    debug: bool = Field(default=True, env="DEBUG")  # Enable docs by default
+    debug: bool = Field(default=False, env="DEBUG")
     
     # Server Settings
     host: str = Field(default="0.0.0.0", env="HOST")

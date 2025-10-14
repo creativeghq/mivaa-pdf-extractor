@@ -515,8 +515,8 @@ Authorization: Bearer your-jwt-token
 ## 📚 **Legacy Support**
 Legacy endpoints (`/extract/*`) are still supported for backward compatibility.
         """,
-        docs_url="/docs" if settings.debug else None,
-        redoc_url="/redoc" if settings.debug else None,
+        docs_url="/docs",  # Always enable docs
+        redoc_url="/redoc",  # Always enable redoc
         openapi_tags=[
             {
                 "name": "PDF Processing",
