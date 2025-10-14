@@ -150,9 +150,32 @@ async def track_job(job_id: str, job_type: str, status: str, details: Dict[str, 
             if "error" in details:
                 job_info["error_message"] = details["error"]
 
-            # Merge details
+            # Merge details - ensure serializable
             existing_details = job_info.get("details", {})
-            existing_details.update(details)
+            if details:
+                # Filter out non-serializable objects
+                serializable_details = {}
+                for key, value in details.items():
+                    try:
+                        import json
+                        json.dumps(value)  # Test if serializable
+                        serializable_details[key] = value
+                    except (TypeError, ValueError):
+                        # Convert non-serializable objects to strings
+                        if isinstance(value, list) and len(value) > 0:
+                            # For lists, try to serialize each item
+                            serializable_list = []
+                            for item in value:
+                                try:
+                                    json.dumps(item)
+                                    serializable_list.append(item)
+                                except (TypeError, ValueError):
+                                    serializable_list.append(str(item))
+                            serializable_details[key] = serializable_list
+                        else:
+                            serializable_details[key] = str(value)
+
+                existing_details.update(serializable_details)
             job_info["details"] = existing_details
     else:
         # Create new job
@@ -171,12 +194,39 @@ async def track_job(job_id: str, job_type: str, status: str, details: Dict[str, 
             "tags": [],
             "success": None,
             "error_message": None,
-            "details": details or {},
-            "parameters": details or {},
+            "details": {},
+            "parameters": {},
             "retry_count": 3,
             "current_retry": 0,
             "result": None
         }
+
+        # Add serializable details to new job
+        if details:
+            serializable_details = {}
+            for key, value in details.items():
+                try:
+                    import json
+                    json.dumps(value)  # Test if serializable
+                    serializable_details[key] = value
+                except (TypeError, ValueError):
+                    # Convert non-serializable objects to strings
+                    if isinstance(value, list) and len(value) > 0:
+                        # For lists, try to serialize each item
+                        serializable_list = []
+                        for item in value:
+                            try:
+                                json.dumps(item)
+                                serializable_list.append(item)
+                            except (TypeError, ValueError):
+                                serializable_list.append(str(item))
+                        serializable_details[key] = serializable_list
+                    else:
+                        serializable_details[key] = str(value)
+
+            job_info["details"] = serializable_details
+            job_info["parameters"] = serializable_details
+
         logger.info(f"📝 Created new job {job_id} with status: {status}")
 
     active_jobs[job_id] = job_info
