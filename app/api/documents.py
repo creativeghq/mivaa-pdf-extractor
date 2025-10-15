@@ -1355,7 +1355,17 @@ async def get_document_content(
                         )
 
                         if embedding_result.data and embedding_result.data.get("embedding"):
-                            embedding = embedding_result.data["embedding"]
+                            embedding_data = embedding_result.data["embedding"]
+                            # Parse embedding if it's stored as a string
+                            if isinstance(embedding_data, str):
+                                import json
+                                try:
+                                    embedding = json.loads(embedding_data)
+                                except json.JSONDecodeError:
+                                    logger.warning(f"Failed to parse embedding JSON for chunk {chunk_id}")
+                                    embedding = None
+                            else:
+                                embedding = embedding_data
 
                     except Exception as embedding_error:
                         logger.warning(f"Failed to fetch embedding for chunk {chunk_id}: {embedding_error}")
@@ -1482,8 +1492,19 @@ async def get_document_chunks(
                 )
 
                 if embedding_result.data and embedding_result.data.get("embedding"):
-                    embedding = embedding_result.data["embedding"]
-                    logger.debug(f"✅ Found embedding for chunk {chunk_id}: {len(embedding)} dimensions")
+                    embedding_data = embedding_result.data["embedding"]
+                    # Parse embedding if it's stored as a string
+                    if isinstance(embedding_data, str):
+                        import json
+                        try:
+                            embedding = json.loads(embedding_data)
+                            logger.debug(f"✅ Found embedding for chunk {chunk_id}: {len(embedding)} dimensions")
+                        except json.JSONDecodeError:
+                            logger.warning(f"Failed to parse embedding JSON for chunk {chunk_id}")
+                            embedding = None
+                    else:
+                        embedding = embedding_data
+                        logger.debug(f"✅ Found embedding for chunk {chunk_id}: {len(embedding)} dimensions")
                 else:
                     logger.debug(f"⚠️ No embedding found for chunk {chunk_id}")
 
