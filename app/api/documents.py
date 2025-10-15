@@ -1146,15 +1146,24 @@ async def list_documents(
         # Transform results to DocumentListItem format
         documents = []
         for doc in result.data:
+            # Map database status to ProcessingStatus enum
+            db_status = doc.get("status", "unknown")
+            if db_status == "unknown":
+                mapped_status = "pending"  # Default to pending for unknown status
+            elif db_status in ["pending", "processing", "completed", "failed", "cancelled"]:
+                mapped_status = db_status
+            else:
+                mapped_status = "pending"  # Default fallback
+
             documents.append({
-                "id": doc["id"],
-                "title": doc.get("title", "Untitled"),
+                "document_id": doc["id"],  # Map 'id' to 'document_id'
+                "document_name": doc.get("title", "Untitled"),  # Map 'title' to 'document_name'
                 "created_at": doc["created_at"],
-                "updated_at": doc.get("updated_at"),
-                "status": doc.get("status", "unknown"),
+                "updated_at": doc.get("updated_at", doc["created_at"]),  # Use created_at as fallback
+                "status": mapped_status,  # Use mapped status
                 "page_count": doc.get("page_count", 0),
                 "word_count": doc.get("word_count", 0),
-                "file_size": doc.get("file_size", 0),
+                "file_size": doc.get("file_size") or 0,  # Convert None to 0
                 "tags": doc.get("tags", []),
                 "processing_time": doc.get("processing_time"),
                 "has_embeddings": doc.get("has_embeddings", False)
