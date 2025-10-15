@@ -87,7 +87,11 @@ class JSONSerializationMiddleware(BaseHTTPMiddleware):
             return response
             
         except Exception as e:
+            import traceback
             logger.error(f"JSON Serialization Middleware error: {e}")
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            logger.error(f"Request URL: {request.url}")
+            logger.error(f"Request method: {request.method}")
             # Return a safe error response with proper datetime handling
             from datetime import datetime
             return JSONResponse(
@@ -95,7 +99,8 @@ class JSONSerializationMiddleware(BaseHTTPMiddleware):
                 content={
                     "error": "Internal server error",
                     "type": "serialization_error",
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "debug_error": str(e)  # Add actual error for debugging
                 }
             )
 
