@@ -381,13 +381,14 @@ class LlamaIndexService:
             # Configure embedding service
             embedding_config = EmbeddingConfig(
                 model_name=self.embedding_model,
-                api_key=openai_api_key,
+                model_type="openai",
+                dimension=1536,
                 max_tokens=8191,  # OpenAI text-embedding-3-small limit
                 batch_size=100,
                 rate_limit_rpm=3000,
                 rate_limit_tpm=1000000,
-                cache_ttl=3600,  # 1 hour cache
-                enable_cache=True
+                cache_ttl_hours=24,  # 24 hour cache
+                cache_enabled=True
             )
             
             # Initialize embedding service
@@ -2486,6 +2487,11 @@ Summary:"""
 
                         # Generate and store embedding
                         try:
+                            # Check if embedding service is available
+                            if self.embedding_service is None:
+                                self.logger.warning(f"Embedding service not available (OpenAI API key missing), skipping embedding for chunk {i}")
+                                continue
+
                             # Generate embedding for the chunk
                             embedding_response = await self.embedding_service.generate_embedding(node.text)
 

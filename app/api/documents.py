@@ -1341,14 +1341,33 @@ async def get_document_content(
                 # Transform chunks to DocumentChunk format
                 document_chunks = []
                 for i, chunk_data in enumerate(chunks):
+                    chunk_id = str(chunk_data["id"])
+
+                    # Fetch embedding for this chunk from embeddings table
+                    embedding = None
+                    try:
+                        embedding_result = await asyncio.to_thread(
+                            lambda: supabase_client.client.table("embeddings")
+                            .select("embedding")
+                            .eq("chunk_id", chunk_id)
+                            .single()
+                            .execute()
+                        )
+
+                        if embedding_result.data and embedding_result.data.get("embedding"):
+                            embedding = embedding_result.data["embedding"]
+
+                    except Exception as embedding_error:
+                        logger.warning(f"Failed to fetch embedding for chunk {chunk_id}: {embedding_error}")
+
                     chunk = DocumentChunk(
-                        chunk_id=str(chunk_data["id"]),
+                        chunk_id=chunk_id,
                         content=chunk_data.get("content", ""),
                         page_number=chunk_data.get("metadata", {}).get("page_number", 1),
                         chunk_index=chunk_data.get("chunk_index", i),  # Use database chunk_index or fallback to enumeration index
                         start_char=chunk_data.get("metadata", {}).get("start_char", 0),
                         end_char=chunk_data.get("metadata", {}).get("end_char", len(chunk_data.get("content", ""))),
-                        embedding=None,
+                        embedding=embedding,  # Include the actual embedding
                         metadata=chunk_data.get("metadata", {})
                     )
                     document_chunks.append(chunk)
@@ -1449,14 +1468,36 @@ async def get_document_chunks(
 
         document_chunks = []
         for i, chunk_data in enumerate(chunks):
+            chunk_id = str(chunk_data["id"])
+
+            # Fetch embedding for this chunk from embeddings table
+            embedding = None
+            try:
+                embedding_result = await asyncio.to_thread(
+                    lambda: supabase_client.client.table("embeddings")
+                    .select("embedding")
+                    .eq("chunk_id", chunk_id)
+                    .single()
+                    .execute()
+                )
+
+                if embedding_result.data and embedding_result.data.get("embedding"):
+                    embedding = embedding_result.data["embedding"]
+                    logger.debug(f"✅ Found embedding for chunk {chunk_id}: {len(embedding)} dimensions")
+                else:
+                    logger.debug(f"⚠️ No embedding found for chunk {chunk_id}")
+
+            except Exception as embedding_error:
+                logger.warning(f"Failed to fetch embedding for chunk {chunk_id}: {embedding_error}")
+
             chunk = DocumentChunk(
-                chunk_id=str(chunk_data["id"]),
+                chunk_id=chunk_id,
                 content=chunk_data.get("content", ""),
                 page_number=chunk_data.get("metadata", {}).get("page_number", 1),
                 chunk_index=chunk_data.get("chunk_index", i),  # Use database chunk_index or fallback to enumeration index
                 start_char=chunk_data.get("metadata", {}).get("start_char", 0),
                 end_char=chunk_data.get("metadata", {}).get("end_char", len(chunk_data.get("content", ""))),
-                embedding=None,
+                embedding=embedding,  # Include the actual embedding
                 metadata=chunk_data.get("metadata", {})
             )
             document_chunks.append(chunk)
