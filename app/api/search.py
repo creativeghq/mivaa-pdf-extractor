@@ -256,8 +256,32 @@ async def semantic_search(
                         # Parse embedding
                         embedding = row.get('embedding')
 
+                        # Debug: Log embedding format
+                        logger.info(f"Raw embedding type: {type(embedding)}")
+                        if hasattr(embedding, '__len__'):
+                            logger.info(f"Raw embedding length: {len(embedding)}")
+                        if isinstance(embedding, str):
+                            logger.info(f"Raw embedding string sample: {embedding[:100]}...")
+
                         # Handle different embedding formats
-                        if embedding and isinstance(embedding, list) and len(embedding) == 1536:
+                        if embedding:
+                            # Convert vector string to list if needed
+                            if isinstance(embedding, str):
+                                # Parse vector string format like "[1.0, 2.0, 3.0]"
+                                try:
+                                    if embedding.startswith('[') and embedding.endswith(']'):
+                                        # Remove brackets and split by comma
+                                        embedding_str = embedding[1:-1]
+                                        embedding = [float(x.strip()) for x in embedding_str.split(',')]
+                                        logger.info(f"Converted string to list with {len(embedding)} elements")
+                                    else:
+                                        logger.warning(f"Unexpected embedding string format: {embedding[:50]}...")
+                                        continue
+                                except Exception as e:
+                                    logger.warning(f"Failed to parse embedding string: {e}")
+                                    continue
+
+                            if isinstance(embedding, list) and len(embedding) == 1536:
                                 # Calculate cosine similarity
                                 embedding_array = np.array(embedding, dtype=np.float32)
                                 query_array = np.array(query_embedding, dtype=np.float32)
