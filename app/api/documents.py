@@ -1092,7 +1092,7 @@ async def list_documents(
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     search: Optional[str] = Query(None, description="Search query for document content"),
     tags: Optional[List[str]] = Query(None, description="Filter by tags"),
-    status: Optional[str] = Query(None, description="Filter by processing status"),
+    processing_status: Optional[str] = Query(None, description="Filter by processing status"),
     sort_by: str = Query("created_at", description="Sort field"),
     sort_order: str = Query("desc", regex="^(asc|desc)$", description="Sort order"),
     supabase_client: SupabaseClient = Depends(get_supabase_client)
@@ -1121,8 +1121,8 @@ async def list_documents(
             query = query.contains("tags", tags)
         
         # Apply status filter
-        if status:
-            query = query.eq("status", status)
+        if processing_status:
+            query = query.eq("status", processing_status)
         
         # Apply sorting
         if sort_order == "desc":
