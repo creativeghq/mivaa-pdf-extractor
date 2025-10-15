@@ -188,9 +188,10 @@ async def semantic_search(
         
         # Generate embedding for the query
         try:
-            query_embedding = await llamaindex.embedding_service.generate_embedding(request.query)
-            if not query_embedding:
+            embedding_result = await llamaindex.embedding_service.generate_embedding(request.query)
+            if not embedding_result or not embedding_result.embedding:
                 raise Exception("Failed to generate query embedding")
+            query_embedding = embedding_result.embedding  # Extract the actual embedding list
         except Exception as e:
             logger.error(f"Failed to generate query embedding: {e}")
             raise HTTPException(
