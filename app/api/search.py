@@ -246,13 +246,20 @@ async def semantic_search(
                 # Calculate similarity in Python (less efficient but works)
                 import numpy as np
 
+                logger.info(f"Found {len(table_result.data)} rows in document_vectors table")
+
                 for row in table_result.data:
+                    logger.debug(f"Processing row: document_id={row.get('document_id')}, has_embedding={row.get('embedding') is not None}")
+
                     if request.document_ids and row['document_id'] not in request.document_ids:
+                        logger.debug(f"Skipping document {row['document_id']} - not in requested documents")
                         continue
 
                     # Parse embedding
                     embedding = row.get('embedding')
                     if embedding and isinstance(embedding, list):
+                        logger.debug(f"Processing embedding with {len(embedding)} dimensions")
+
                         # Calculate cosine similarity
                         embedding_array = np.array(embedding)
                         query_array = np.array(query_embedding)
@@ -264,13 +271,22 @@ async def semantic_search(
                         # Calculate cosine similarity
                         similarity = np.dot(embedding_norm, query_norm)
 
+                        logger.info(f"Calculated similarity: {similarity:.4f} for document {row.get('document_id')}")
+
                         if similarity >= request.similarity_threshold:
+                            logger.info(f"Adding result with similarity {similarity:.4f} (threshold: {request.similarity_threshold})")
                             search_results.append({
                                 "document_id": row.get("document_id", ""),
                                 "score": float(similarity),
                                 "content": row.get("content", ""),
                                 "metadata": row.get("metadata", {})
                             })
+                        else:
+                            logger.debug(f"Similarity {similarity:.4f} below threshold {request.similarity_threshold}")
+                    else:
+                        logger.warning(f"Row has no valid embedding: {type(embedding)}")
+
+                logger.info(f"Final search results: {len(search_results)} matches found")
 
         except Exception as e:
             logger.error(f"Vector search error: {e}")
