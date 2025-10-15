@@ -64,7 +64,7 @@ from app.utils.text_chunking import smart_chunk_text
 
 # Import existing services
 from app.services.pdf_processor import PDFProcessor, PDFProcessingResult
-from app.services.supabase_client import SupabaseClient
+from app.services.supabase_client import SupabaseClient, get_supabase_client as get_global_supabase_client
 from app.utils.exceptions import (
     PDFProcessingError,
     PDFValidationError,
@@ -83,7 +83,7 @@ router = APIRouter(prefix="/api/documents", tags=["Document Processing"])
 # Dependency function for Supabase client
 async def get_supabase_client() -> SupabaseClient:
     """Dependency to get Supabase client instance."""
-    return SupabaseClient()
+    return get_global_supabase_client()
 
 # Initialize PDF processor service
 pdf_processor = PDFProcessor()
