@@ -269,7 +269,7 @@ async def semantic_search(
                                     continue
 
                             if isinstance(embedding, list) and len(embedding) == 1536:
-                            try:
+                                try:
                                 # Calculate cosine similarity
                                 embedding_array = np.array(embedding, dtype=np.float32)
                                 query_array = np.array(query_embedding, dtype=np.float32)
