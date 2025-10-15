@@ -207,48 +207,84 @@ async def semantic_search(
                 doc_ids_str = "', '".join(document_ids)
                 doc_filter = f"AND dv.document_id IN ('{doc_ids_str}')"
 
-            # Direct SQL query for vector similarity search
+            # Convert embedding to PostgreSQL vector format
+            embedding_str = f"[{','.join(map(str, query_embedding))}]"
+
+            # Direct SQL query for vector similarity search using document_vectors table
             query_sql = f"""
             SELECT
                 dv.document_id,
                 dv.chunk_id,
                 dv.content,
                 dv.metadata,
-                1 - (dv.embedding <=> %s) as similarity_score
+                1 - (dv.embedding <=> '{embedding_str}'::vector) as similarity_score
             FROM document_vectors dv
             WHERE dv.embedding IS NOT NULL
                 {doc_filter}
-                AND (1 - (dv.embedding <=> %s)) >= %s
-            ORDER BY dv.embedding <=> %s
-            LIMIT %s
+                AND (1 - (dv.embedding <=> '{embedding_str}'::vector)) >= {request.similarity_threshold}
+            ORDER BY dv.embedding <=> '{embedding_str}'::vector
+            LIMIT {request.max_results}
             """
 
-            # Execute the query
+            # Execute the query directly
             import asyncio
             from ..core.database import get_supabase_client
 
             supabase_client = get_supabase_client()
 
-            # Convert embedding to PostgreSQL vector format
-            embedding_str = f"[{','.join(map(str, query_embedding))}]"
-
-            # Use Supabase RPC for vector search
-            rpc_result = await asyncio.to_thread(
-                lambda: supabase_client.client.rpc('vector_similarity_search', {
-                    'query_embedding_text': embedding_str,
-                    'match_threshold': request.similarity_threshold,
-                    'match_count': request.max_results
+            # Execute direct SQL query
+            sql_result = await asyncio.to_thread(
+                lambda: supabase_client.client.rpc('exec_sql', {
+                    'sql': query_sql
                 }).execute()
             )
 
-            if rpc_result.data:
-                for row in rpc_result.data:
+            if sql_result.data:
+                for row in sql_result.data:
                     search_results.append({
                         "document_id": row.get("document_id", ""),
                         "score": row.get("similarity_score", 0.0),
-                        "content": row.get("content_snippet", ""),
+                        "content": row.get("content", ""),
                         "metadata": row.get("metadata", {})
                     })
+            else:
+                # Fallback: Use table query with select
+                table_result = await asyncio.to_thread(
+                    lambda: supabase_client.client.table('document_vectors')
+                    .select('document_id, chunk_id, content, metadata, embedding')
+                    .not_.is_('embedding', 'null')
+                    .execute()
+                )
+
+                if table_result.data:
+                    # Calculate similarity in Python (less efficient but works)
+                    import numpy as np
+
+                    for row in table_result.data:
+                        if request.document_ids and row['document_id'] not in request.document_ids:
+                            continue
+
+                        # Parse embedding
+                        embedding = row.get('embedding')
+                        if embedding and isinstance(embedding, list):
+                            # Calculate cosine similarity
+                            embedding_array = np.array(embedding)
+                            query_array = np.array(query_embedding)
+
+                            # Normalize vectors
+                            embedding_norm = embedding_array / np.linalg.norm(embedding_array)
+                            query_norm = query_array / np.linalg.norm(query_array)
+
+                            # Calculate cosine similarity
+                            similarity = np.dot(embedding_norm, query_norm)
+
+                            if similarity >= request.similarity_threshold:
+                                search_results.append({
+                                    "document_id": row.get("document_id", ""),
+                                    "score": float(similarity),
+                                    "content": row.get("content", ""),
+                                    "metadata": row.get("metadata", {})
+                                })
 
         except Exception as e:
             logger.error(f"Vector search error: {e}")
