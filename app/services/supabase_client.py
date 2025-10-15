@@ -117,21 +117,21 @@ class SupabaseClient:
 
     async def list_documents(self, limit: int = 100, status_filter: str = None) -> dict:
         """
-        List documents from the processed_documents table.
+        List documents from the documents table.
 
         Args:
             limit: Maximum number of documents to return
-            status_filter: Filter by document status (ignored for now - column doesn't exist)
+            status_filter: Filter by document processing status
 
         Returns:
             Dictionary containing documents list
         """
         try:
-            query = self._client.table('processed_documents').select('*')
+            query = self._client.table('documents').select('*')
 
-            # Note: status column doesn't exist in current schema
-            # if status_filter:
-            #     query = query.eq('status', status_filter)
+            # Filter by processing status if provided
+            if status_filter:
+                query = query.eq('processing_status', status_filter)
 
             query = query.limit(limit)
             response = query.execute()
