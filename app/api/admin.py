@@ -681,8 +681,13 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
                     temp_file_path = temp_file.name
 
                 try:
-                    # Index the document with chunking
-                    chunk_result = await llamaindex_service.index_document_enhanced(
+                    # Read the temp file content
+                    with open(temp_file_path, 'rb') as f:
+                        file_content = f.read()
+
+                    # Index the document with chunking and embedding generation
+                    chunk_result = await llamaindex_service.index_document_content(
+                        file_content=file_content,
                         document_id=document_id,
                         file_path=temp_file_path,
                         metadata={
@@ -690,11 +695,9 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
                             "original_filename": original_filename,
                             "processing_timestamp": datetime.utcnow().isoformat(),
                             "page_count": result.page_count,
-                            "image_count": len(result.extracted_images) if result.extracted_images else 0
-                        },
-                        chunk_strategy="semantic",
-                        chunk_size=1000,
-                        chunk_overlap=200
+                            "image_count": len(result.extracted_images) if result.extracted_images else 0,
+                            "workspace_id": "default"
+                        }
                     )
 
                     chunks_created = chunk_result.get("statistics", {}).get("total_chunks", 0)
