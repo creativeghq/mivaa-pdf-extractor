@@ -693,9 +693,8 @@ async def http_exception_handler(request, exc: HTTPException):
     return JSONResponse(
         status_code=exc.status_code,
         content=ErrorResponse(
-            message=exc.detail,
-            error_code=f"HTTP_{exc.status_code}",
-            error_type="HTTPException",
+            error=f"HTTP_{exc.status_code}",
+            detail=exc.detail,
             timestamp=datetime.utcnow().isoformat()
         ).model_dump()
     )
@@ -730,10 +729,8 @@ async def general_exception_handler(request, exc: Exception):
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content=ErrorResponse(
-            message="Internal server error",
-            error_code="INTERNAL_SERVER_ERROR",
-            error_type="Exception",
-            details={"error": str(exc)} if get_settings().debug else None,
+            error="INTERNAL_SERVER_ERROR",
+            detail="Internal server error" + (f": {str(exc)}" if get_settings().debug else ""),
             timestamp=datetime.utcnow().isoformat()
         ).model_dump()
     )
