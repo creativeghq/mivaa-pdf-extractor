@@ -1275,7 +1275,7 @@ async def list_documents(
         
         # Apply status filter
         if processing_status:
-            query = query.eq("status", processing_status)
+            query = query.eq("processing_status", processing_status)
         
         # Apply sorting
         if sort_order == "desc":
@@ -1300,7 +1300,8 @@ async def list_documents(
         documents = []
         for doc in result.data:
             # Map database status to ProcessingStatus enum
-            db_status = doc.get("status", "unknown")
+            # Use processing_status field from database
+            db_status = doc.get("processing_status", "unknown")
             if db_status == "unknown":
                 mapped_status = "pending"  # Default to pending for unknown status
             elif db_status in ["pending", "processing", "completed", "failed", "cancelled"]:
