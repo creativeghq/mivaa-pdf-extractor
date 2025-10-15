@@ -696,7 +696,7 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
                             "processing_timestamp": datetime.utcnow().isoformat(),
                             "page_count": result.page_count,
                             "image_count": len(result.extracted_images) if result.extracted_images else 0,
-                            "workspace_id": "default"
+                            "workspace_id": None  # Use None instead of "default" to avoid UUID validation error
                         }
                     )
 
