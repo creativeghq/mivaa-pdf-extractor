@@ -28,6 +28,9 @@ class JobStatus(str, Enum):
     RUNNING = "running"
     PAUSED = "paused"
     RETRYING = "retrying"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class ProcessingStage(str, Enum):
