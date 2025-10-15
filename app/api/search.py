@@ -331,16 +331,81 @@ async def semantic_search(
         # Sort by score and apply limit
         search_results.sort(key=lambda x: x["score"], reverse=True)
         limited_results = search_results[:request.max_results]
-        
+
+        # Enrich results with document metadata
+        enriched_results = []
+        for result in limited_results:
+            document_id = result.get("document_id")
+
+            # Get document metadata from database
+            try:
+                doc_result = await asyncio.to_thread(
+                    lambda: supabase.client.table("documents")
+                    .select("filename, content_type, metadata, created_at, processing_status")
+                    .eq("id", document_id)
+                    .single()
+                    .execute()
+                )
+
+                if doc_result.data:
+                    doc = doc_result.data
+                    # Get document name from multiple possible sources
+                    document_name = (
+                        doc.get("filename") or  # Primary: filename field
+                        doc.get("metadata", {}).get("filename") or  # Secondary: filename in metadata
+                        doc.get("metadata", {}).get("title") or     # Tertiary: title in metadata
+                        f"Document {document_id[:8]}"  # Fallback: use document ID
+                    )
+
+                    enriched_result = {
+                        **result,
+                        "document_name": document_name,
+                        "filename": doc.get("filename"),
+                        "content_type": doc.get("content_type"),
+                        "created_at": doc.get("created_at"),
+                        "processing_status": doc.get("processing_status"),
+                        "source_metadata": {
+                            "filename": doc.get("filename"),
+                            "content_type": doc.get("content_type"),
+                            "file_size": doc.get("metadata", {}).get("file_size"),
+                            "page_count": doc.get("metadata", {}).get("page_count"),
+                            **doc.get("metadata", {})
+                        }
+                    }
+                    enriched_results.append(enriched_result)
+                else:
+                    # If document not found, use original result with placeholder
+                    enriched_result = {
+                        **result,
+                        "document_name": f"Document {document_id[:8]}",
+                        "filename": "Unknown",
+                        "content_type": "application/pdf",
+                        "source_metadata": {"error": "Document metadata not found"}
+                    }
+                    enriched_results.append(enriched_result)
+
+            except Exception as e:
+                logger.warning(f"Failed to get metadata for document {document_id}: {e}")
+                # Use original result with error indication
+                enriched_result = {
+                    **result,
+                    "document_name": f"Document {document_id[:8]}",
+                    "filename": "Error loading metadata",
+                    "content_type": "application/pdf",
+                    "source_metadata": {"error": str(e)}
+                }
+                enriched_results.append(enriched_result)
+
         return SemanticSearchResponse(
             success=True,
             query=request.query,
-            results=limited_results,
+            results=enriched_results,
             total_results=len(search_results),
             metadata={
                 "searched_documents": len(document_ids),
                 "similarity_threshold": request.similarity_threshold,
-                "returned_results": len(limited_results)
+                "returned_results": len(enriched_results),
+                "metadata_enriched": True
             }
         )
         
@@ -842,11 +907,59 @@ async def multimodal_search(
             reverse=True
         )
         limited_results = search_results[:request.limit]
-        
+
+        # Enrich results with document metadata
+        enriched_results = []
+        for result in limited_results:
+            document_id = result.document_id
+
+            # Get document metadata from database
+            try:
+                doc_result = await asyncio.to_thread(
+                    lambda: supabase.client.table("documents")
+                    .select("filename, content_type, metadata, created_at, processing_status")
+                    .eq("id", document_id)
+                    .single()
+                    .execute()
+                )
+
+                if doc_result.data:
+                    doc = doc_result.data
+                    # Get document name from multiple possible sources
+                    document_name = (
+                        doc.get("filename") or  # Primary: filename field
+                        doc.get("metadata", {}).get("filename") or  # Secondary: filename in metadata
+                        doc.get("metadata", {}).get("title") or     # Tertiary: title in metadata
+                        f"Document {document_id[:8]}"  # Fallback: use document ID
+                    )
+
+                    # Update result with metadata
+                    result.document_name = document_name
+                    result.filename = doc.get("filename")
+                    result.processing_status = doc.get("processing_status")
+                    result.created_at = doc.get("created_at")
+                    result.source_metadata = {
+                        "filename": doc.get("filename"),
+                        "content_type": doc.get("content_type"),
+                        "file_size": doc.get("metadata", {}).get("file_size"),
+                        "page_count": doc.get("metadata", {}).get("page_count"),
+                        **doc.get("metadata", {})
+                    }
+
+                enriched_results.append(result)
+
+            except Exception as e:
+                logger.warning(f"Failed to get metadata for document {document_id}: {e}")
+                # Use original result with error indication
+                result.document_name = f"Document {document_id[:8]}"
+                result.filename = "Error loading metadata"
+                result.source_metadata = {"error": str(e)}
+                enriched_results.append(result)
+
         return SearchResponse(
             success=True,
             query=request.query,
-            results=limited_results,
+            results=enriched_results,
             total_found=len(search_results),
             search_time_ms=200.0,
             search_type="multimodal",
@@ -855,9 +968,10 @@ async def multimodal_search(
                 "searched_documents": len(document_ids),
                 "multimodal_enabled": True,
                 "search_type": "multimodal",
-                "returned_results": len(limited_results),
+                "returned_results": len(enriched_results),
                 "ocr_enabled": ocr_config.get("ocr_enabled", False),
-                "image_analysis_enabled": request.include_images
+                "image_analysis_enabled": request.include_images,
+                "metadata_enriched": True
             }
         )
         

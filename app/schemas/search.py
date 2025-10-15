@@ -89,6 +89,12 @@ class SearchResult(BaseModel):
     document_tags: List[str] = Field(default_factory=list, description="Document tags")
     chunk_metadata: Dict[str, Any] = Field(default_factory=dict, description="Chunk metadata")
 
+    # Document source information
+    filename: Optional[str] = Field(None, description="Original filename of the document")
+    processing_status: Optional[str] = Field(None, description="Document processing status")
+    created_at: Optional[str] = Field(None, description="Document creation timestamp")
+    source_metadata: Dict[str, Any] = Field(default_factory=dict, description="Complete document metadata including file info")
+
 
 class SearchResponse(BaseResponse):
     """Response model for search operations."""

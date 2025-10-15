@@ -261,7 +261,7 @@ async def process_document_background(
 ) -> None:
     """Background task for document processing."""
     try:
-        # Update job status
+        # Update job status in memory
         job_storage[job_id]["status"] = "running"
         job_storage[job_id]["progress"] = {
             "current_step": "Processing document",
@@ -269,6 +269,25 @@ async def process_document_background(
             "completed_steps": 1,
             "percentage": 25.0
         }
+
+        # Update in database
+        try:
+            from app.services.supabase_client import SupabaseClient
+            supabase_client = SupabaseClient()
+            await asyncio.to_thread(
+                lambda: supabase_client.client.table("processing_queue")
+                .update({
+                    "status": "running",
+                    "current_step": "Processing document",
+                    "progress_percentage": 25.0,
+                    "completed_steps": 1,
+                    "total_steps": 4
+                })
+                .eq("id", job_id)
+                .execute()
+            )
+        except Exception as db_error:
+            logger.warning(f"Failed to update job status in database: {db_error}")
         
         # Read PDF file as bytes
         async with aiofiles.open(file_path, 'rb') as f:
@@ -310,14 +329,49 @@ async def process_document_background(
             "character_count": result.character_count
         }
         
-        # Store result
+        # Store result in memory
         job_storage[job_id]["status"] = "completed"
         job_storage[job_id]["result"] = response_result
+
+        # Update in database
+        try:
+            from app.services.supabase_client import SupabaseClient
+            supabase_client = SupabaseClient()
+            await asyncio.to_thread(
+                lambda: supabase_client.client.table("processing_queue")
+                .update({
+                    "status": "completed",
+                    "progress_percentage": 100.0,
+                    "result_data": response_result,
+                    "completed_at": datetime.utcnow().isoformat() + "Z"
+                })
+                .eq("id", job_id)
+                .execute()
+            )
+        except Exception as db_error:
+            logger.warning(f"Failed to update job completion in database: {db_error}")
         
     except Exception as e:
         logger.error(f"Background processing failed for job {job_id}: {e}")
         job_storage[job_id]["status"] = "failed"
         job_storage[job_id]["error"] = str(e)
+
+        # Update error in database
+        try:
+            from app.services.supabase_client import SupabaseClient
+            supabase_client = SupabaseClient()
+            await asyncio.to_thread(
+                lambda: supabase_client.client.table("processing_queue")
+                .update({
+                    "status": "failed",
+                    "error_message": str(e),
+                    "completed_at": datetime.utcnow().isoformat() + "Z"
+                })
+                .eq("id", job_id)
+                .execute()
+            )
+        except Exception as db_error:
+            logger.warning(f"Failed to update job error in database: {db_error}")
     
     finally:
         # Cleanup temp file
@@ -472,15 +526,42 @@ async def process_document(
         if async_processing:
             # Create job for async processing
             job_id = str(uuid.uuid4())
-            job_storage[job_id] = {
+            job_data = {
                 "id": job_id,
                 "type": "document_processing",
                 "status": "pending",
-                "created_at": "2025-07-26T18:10:00Z",
+                "created_at": datetime.utcnow().isoformat() + "Z",
                 "progress": None,
                 "result": None,
                 "error": None
             }
+
+            # Store in memory for immediate access
+            job_storage[job_id] = job_data
+
+            # Also store in database for persistence
+            try:
+                await asyncio.to_thread(
+                    lambda: supabase_client.client.table("processing_queue")
+                    .insert({
+                        "id": job_id,
+                        "user_id": current_user.id,
+                        "job_type": "document_processing",
+                        "status": "pending",
+                        "input_data": {
+                            "filename": file.filename,
+                            "content_type": file.content_type,
+                            "async_processing": True
+                        },
+                        "priority": 5,
+                        "created_at": job_data["created_at"]
+                    })
+                    .execute()
+                )
+                logger.info(f"Job {job_id} stored in database")
+            except Exception as db_error:
+                logger.warning(f"Failed to store job in database: {db_error}")
+                # Continue with in-memory storage
             
             # Start background processing
             background_tasks.add_task(
@@ -982,34 +1063,101 @@ async def analyze_document(
 async def get_job_status(
     job_id: str,
     current_user: User = Depends(get_current_user),
-    workspace_context: WorkspaceContext = Depends(get_workspace_context)
+    workspace_context: WorkspaceContext = Depends(get_workspace_context),
+    supabase_client: SupabaseClient = Depends(get_supabase_client)
 ) -> JobResponse:
     """
     Get the status and result of a processing job.
-    
+
     Args:
         job_id: The job ID to check
-        
+
     Returns:
         Job status and result
     """
-    if job_id not in job_storage:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Job not found"
+    try:
+        # First check in-memory storage for active jobs
+        if job_id in job_storage:
+            job_data = job_storage[job_id]
+            return JobResponse(
+                id=job_data["id"],
+                type=job_data["type"],
+                status=job_data["status"],
+                created_at=job_data["created_at"],
+                progress=job_data.get("progress"),
+                result=job_data.get("result"),
+                error=job_data.get("error")
+            )
+
+        # Check database for completed or historical jobs
+        result = await asyncio.to_thread(
+            lambda: supabase_client.client.table("processing_queue")
+            .select("*")
+            .eq("id", job_id)
+            .single()
+            .execute()
         )
-    
-    job_data = job_storage[job_id]
-    
-    return JobResponse(
-        id=job_data["id"],
-        type=job_data["type"],
-        status=job_data["status"],
-        created_at=job_data["created_at"],
-        progress=job_data.get("progress"),
-        result=job_data.get("result"),
-        error=job_data.get("error")
-    )
+
+        if not result.data:
+            # Also check documents table for document processing jobs
+            doc_result = await asyncio.to_thread(
+                lambda: supabase_client.client.table("documents")
+                .select("*")
+                .eq("id", job_id)
+                .single()
+                .execute()
+            )
+
+            if doc_result.data:
+                # Convert document record to job format
+                doc = doc_result.data
+                return JobResponse(
+                    id=doc["id"],
+                    type="document_processing",
+                    status=doc.get("processing_status", "unknown"),
+                    created_at=doc["created_at"],
+                    progress={
+                        "current_step": f"Document processing: {doc.get('processing_status', 'unknown')}",
+                        "progress_percentage": 100 if doc.get("processing_status") == "completed" else 50
+                    },
+                    result={
+                        "document_id": doc["id"],
+                        "filename": doc.get("filename"),
+                        "content_type": doc.get("content_type"),
+                        "metadata": doc.get("metadata", {})
+                    } if doc.get("processing_status") == "completed" else None,
+                    error=None
+                )
+
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Job {job_id} not found in processing queue or documents"
+            )
+
+        job_data = result.data
+
+        # Convert database job to JobResponse format
+        return JobResponse(
+            id=job_data["id"],
+            type=job_data.get("job_type", "unknown"),
+            status=job_data.get("status", "unknown"),
+            created_at=job_data["created_at"],
+            progress={
+                "current_step": job_data.get("current_step", "Processing..."),
+                "progress_percentage": job_data.get("progress_percentage", 0),
+                "completed_steps": job_data.get("completed_steps", 0),
+                "total_steps": job_data.get("total_steps", 1)
+            },
+            result=job_data.get("result_data"),
+            error=job_data.get("error_message")
+        )
+
+    except Exception as e:
+        logger.error(f"Error retrieving job status for {job_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve job status: {str(e)}"
+        )
 
 
 @router.get(
@@ -1112,9 +1260,14 @@ async def list_documents(
         # Build the query
         query = supabase_client.client.table("documents").select("*")
         
-        # Apply search filter
+        # Apply search filter - search in filename, content, and metadata
         if search:
-            query = query.ilike("title", f"%{search}%").or_("content", "ilike", f"%{search}%")
+            query = query.or_(
+                f"filename.ilike.%{search}%,"
+                f"content.ilike.%{search}%,"
+                f"metadata->>filename.ilike.%{search}%,"
+                f"metadata->>title.ilike.%{search}%"
+            )
         
         # Apply tag filter
         if tags:
@@ -1155,9 +1308,25 @@ async def list_documents(
             else:
                 mapped_status = "pending"  # Default fallback
 
+            # Get document name from multiple possible sources
+            document_name = (
+                doc.get("filename") or  # Primary: filename field
+                doc.get("title") or     # Secondary: title field
+                doc.get("metadata", {}).get("filename") or  # Tertiary: filename in metadata
+                doc.get("metadata", {}).get("title") or     # Quaternary: title in metadata
+                f"Document {doc['id'][:8]}"  # Fallback: use document ID
+            )
+
+            # Clean up the document name (remove file extensions for display)
+            if document_name and '.' in document_name:
+                display_name = document_name.rsplit('.', 1)[0]  # Remove extension for display
+            else:
+                display_name = document_name
+
             documents.append({
                 "document_id": doc["id"],  # Map 'id' to 'document_id'
-                "document_name": doc.get("title", "Untitled"),  # Map 'title' to 'document_name'
+                "document_name": display_name,  # Use cleaned display name
+                "filename": document_name,  # Keep original filename with extension
                 "created_at": doc["created_at"],
                 "updated_at": doc.get("updated_at", doc["created_at"]),  # Use created_at as fallback
                 "status": mapped_status,  # Use mapped status
@@ -1166,7 +1335,9 @@ async def list_documents(
                 "file_size": doc.get("file_size") or 0,  # Convert None to 0
                 "tags": doc.get("tags", []),
                 "processing_time": doc.get("processing_time"),
-                "has_embeddings": doc.get("has_embeddings", False)
+                "has_embeddings": doc.get("has_embeddings", False),
+                "content_type": doc.get("content_type", "application/pdf"),
+                "processing_status": doc.get("processing_status", mapped_status)
             })
         
         response = DocumentListResponse(
@@ -1231,19 +1402,36 @@ async def get_document_metadata(
         
         doc = result.data
         
+        # Get document name from multiple possible sources
+        document_name = (
+            doc.get("filename") or  # Primary: filename field
+            doc.get("title") or     # Secondary: title field
+            doc.get("metadata", {}).get("filename") or  # Tertiary: filename in metadata
+            doc.get("metadata", {}).get("title") or     # Quaternary: title in metadata
+            f"Document {doc['id'][:8]}"  # Fallback: use document ID
+        )
+
         # Build metadata response - only include fields that belong to DocumentMetadata
         metadata = DocumentMetadata(
-            title=doc.get("title") or None,
-            author=doc.get("author") or None,
-            subject=doc.get("subject") or None,
-            creator=doc.get("creator") or None,
-            producer=doc.get("producer") or None,
-            creation_date=doc.get("creation_date"),
-            modification_date=doc.get("modification_date"),
-            language=doc.get("language") or None,
-            confidence_score=doc.get("confidence_score"),
+            title=document_name,  # Use the resolved document name as title
+            author=doc.get("author") or doc.get("metadata", {}).get("author") or None,
+            subject=doc.get("subject") or doc.get("metadata", {}).get("subject") or None,
+            creator=doc.get("creator") or doc.get("metadata", {}).get("creator") or None,
+            producer=doc.get("producer") or doc.get("metadata", {}).get("producer") or None,
+            creation_date=doc.get("creation_date") or doc.get("created_at"),
+            modification_date=doc.get("modification_date") or doc.get("updated_at"),
+            language=doc.get("language") or doc.get("metadata", {}).get("language") or None,
+            confidence_score=doc.get("confidence_score") or doc.get("metadata", {}).get("confidence_score"),
             tags=doc.get("tags", []),
-            custom_fields=doc.get("custom_fields", {})
+            custom_fields={
+                **doc.get("custom_fields", {}),
+                "filename": doc.get("filename"),
+                "content_type": doc.get("content_type"),
+                "processing_status": doc.get("processing_status"),
+                "file_size": doc.get("file_size"),
+                "page_count": doc.get("page_count"),
+                "word_count": doc.get("word_count")
+            }
         )
         
         response = DocumentMetadataResponse(
