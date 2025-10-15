@@ -599,7 +599,8 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
         from app.schemas.jobs import ProcessingStage
 
         # Use the actual PDF processor to process the document
-        document_id = f"doc_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+        import uuid
+        document_id = str(uuid.uuid4())  # Generate proper UUID for database compatibility
 
         # Extract filename from URL
         original_filename = url.split('/')[-1] if url else f"{document_id}.pdf"

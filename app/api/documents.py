@@ -81,7 +81,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/documents", tags=["Document Processing"])
 
 # Dependency function for Supabase client
-async def get_supabase_client() -> SupabaseClient:
+def get_supabase_client() -> SupabaseClient:
     """Dependency to get Supabase client instance."""
     return get_global_supabase_client()
 
@@ -1340,11 +1340,12 @@ async def get_document_content(
 
                 # Transform chunks to DocumentChunk format
                 document_chunks = []
-                for chunk_data in chunks:
+                for i, chunk_data in enumerate(chunks):
                     chunk = DocumentChunk(
                         chunk_id=str(chunk_data["id"]),
                         content=chunk_data.get("content", ""),
                         page_number=chunk_data.get("metadata", {}).get("page_number", 1),
+                        chunk_index=chunk_data.get("chunk_index", i),  # Use database chunk_index or fallback to enumeration index
                         start_char=chunk_data.get("metadata", {}).get("start_char", 0),
                         end_char=chunk_data.get("metadata", {}).get("end_char", len(chunk_data.get("content", ""))),
                         embedding=None,
@@ -1447,11 +1448,12 @@ async def get_document_chunks(
         from app.schemas.documents import DocumentChunk
 
         document_chunks = []
-        for chunk_data in chunks:
+        for i, chunk_data in enumerate(chunks):
             chunk = DocumentChunk(
                 chunk_id=str(chunk_data["id"]),
                 content=chunk_data.get("content", ""),
                 page_number=chunk_data.get("metadata", {}).get("page_number", 1),
+                chunk_index=chunk_data.get("chunk_index", i),  # Use database chunk_index or fallback to enumeration index
                 start_char=chunk_data.get("metadata", {}).get("start_char", 0),
                 end_char=chunk_data.get("metadata", {}).get("end_char", len(chunk_data.get("content", ""))),
                 embedding=None,
