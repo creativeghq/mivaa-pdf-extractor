@@ -584,8 +584,9 @@ Legacy endpoints (`/extract/*`) are still supported for backward compatibility.
     )
     
     # Add JSON serialization middleware (first to catch all responses)
-    from app.middleware.json_serialization import JSONSerializationMiddleware
-    app.add_middleware(JSONSerializationMiddleware)
+    # TEMPORARILY DISABLED to debug serialization errors
+    # from app.middleware.json_serialization import JSONSerializationMiddleware
+    # app.add_middleware(JSONSerializationMiddleware)
 
     # Add JWT authentication middleware
     from app.middleware.jwt_auth import JWTAuthMiddleware
