@@ -229,63 +229,48 @@ async def semantic_search(
 
             # Execute the query directly
             import asyncio
-            from ..core.database import get_supabase_client
+            from ..services.supabase_client import SupabaseClient
 
-            supabase_client = get_supabase_client()
+            # Use the existing supabase client from dependencies
+            # supabase_client is already available from the function parameter
 
-            # Execute direct SQL query
-            sql_result = await asyncio.to_thread(
-                lambda: supabase_client.client.rpc('exec_sql', {
-                    'sql': query_sql
-                }).execute()
+            # Use table query with select (simpler and more reliable)
+            table_result = await asyncio.to_thread(
+                lambda: supabase.client.table('document_vectors')
+                .select('document_id, chunk_id, content, metadata, embedding')
+                .not_.is_('embedding', 'null')
+                .execute()
             )
 
-            if sql_result.data:
-                for row in sql_result.data:
-                    search_results.append({
-                        "document_id": row.get("document_id", ""),
-                        "score": row.get("similarity_score", 0.0),
-                        "content": row.get("content", ""),
-                        "metadata": row.get("metadata", {})
-                    })
-            else:
-                # Fallback: Use table query with select
-                table_result = await asyncio.to_thread(
-                    lambda: supabase_client.client.table('document_vectors')
-                    .select('document_id, chunk_id, content, metadata, embedding')
-                    .not_.is_('embedding', 'null')
-                    .execute()
-                )
+            if table_result.data:
+                # Calculate similarity in Python (less efficient but works)
+                import numpy as np
 
-                if table_result.data:
-                    # Calculate similarity in Python (less efficient but works)
-                    import numpy as np
+                for row in table_result.data:
+                    if request.document_ids and row['document_id'] not in request.document_ids:
+                        continue
 
-                    for row in table_result.data:
-                        if request.document_ids and row['document_id'] not in request.document_ids:
-                            continue
+                    # Parse embedding
+                    embedding = row.get('embedding')
+                    if embedding and isinstance(embedding, list):
+                        # Calculate cosine similarity
+                        embedding_array = np.array(embedding)
+                        query_array = np.array(query_embedding)
 
-                        # Parse embedding
-                        embedding = row.get('embedding')
-                        if embedding and isinstance(embedding, list):
-                            # Calculate cosine similarity
-                            embedding_array = np.array(embedding)
-                            query_array = np.array(query_embedding)
+                        # Normalize vectors
+                        embedding_norm = embedding_array / np.linalg.norm(embedding_array)
+                        query_norm = query_array / np.linalg.norm(query_array)
 
-                            # Normalize vectors
-                            embedding_norm = embedding_array / np.linalg.norm(embedding_array)
-                            query_norm = query_array / np.linalg.norm(query_array)
+                        # Calculate cosine similarity
+                        similarity = np.dot(embedding_norm, query_norm)
 
-                            # Calculate cosine similarity
-                            similarity = np.dot(embedding_norm, query_norm)
-
-                            if similarity >= request.similarity_threshold:
-                                search_results.append({
-                                    "document_id": row.get("document_id", ""),
-                                    "score": float(similarity),
-                                    "content": row.get("content", ""),
-                                    "metadata": row.get("metadata", {})
-                                })
+                        if similarity >= request.similarity_threshold:
+                            search_results.append({
+                                "document_id": row.get("document_id", ""),
+                                "score": float(similarity),
+                                "content": row.get("content", ""),
+                                "metadata": row.get("metadata", {})
+                            })
 
         except Exception as e:
             logger.error(f"Vector search error: {e}")
