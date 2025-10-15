@@ -214,7 +214,7 @@ async def semantic_search(
         
         # Sort by score and apply limit
         search_results.sort(key=lambda x: x["score"], reverse=True)
-        limited_results = search_results[:request.limit]
+        limited_results = search_results[:request.max_results]
         
         return SemanticSearchResponse(
             success=True,
@@ -261,7 +261,7 @@ async def similarity_search(
         semantic_request = SemanticSearchRequest(
             query=request.reference_text,
             document_ids=None,  # SimilaritySearchRequest doesn't have document_ids field
-            limit=request.limit,
+            max_results=request.limit,
             similarity_threshold=request.similarity_threshold
         )
         
