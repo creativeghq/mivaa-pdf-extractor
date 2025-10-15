@@ -256,13 +256,6 @@ async def semantic_search(
                         # Parse embedding
                         embedding = row.get('embedding')
 
-                        # Debug: Log embedding format
-                        logger.info(f"Raw embedding type: {type(embedding)}")
-                        if hasattr(embedding, '__len__'):
-                            logger.info(f"Raw embedding length: {len(embedding)}")
-                        if isinstance(embedding, str):
-                            logger.info(f"Raw embedding string sample: {embedding[:100]}...")
-
                         # Handle different embedding formats
                         if embedding:
                             # Convert vector string to list if needed
@@ -273,12 +266,9 @@ async def semantic_search(
                                         # Remove brackets and split by comma
                                         embedding_str = embedding[1:-1]
                                         embedding = [float(x.strip()) for x in embedding_str.split(',')]
-                                        logger.info(f"Converted string to list with {len(embedding)} elements")
                                     else:
-                                        logger.warning(f"Unexpected embedding string format: {embedding[:50]}...")
                                         continue
-                                except Exception as e:
-                                    logger.warning(f"Failed to parse embedding string: {e}")
+                                except Exception:
                                     continue
 
                             if isinstance(embedding, list) and len(embedding) == 1536:
