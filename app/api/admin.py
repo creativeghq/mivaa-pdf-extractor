@@ -678,7 +678,7 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
                             "original_filename": original_filename,
                             "processing_timestamp": datetime.utcnow().isoformat(),
                             "page_count": result.page_count,
-                            "image_count": len(result.images) if result.images else 0
+                            "image_count": len(result.extracted_images) if result.extracted_images else 0
                         },
                         chunk_strategy="semantic",
                         chunk_size=1000,
@@ -686,7 +686,19 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
                     )
 
                     chunks_created = chunk_result.get("statistics", {}).get("total_chunks", 0)
-                    logger.info(f"✅ Created {chunks_created} chunks for document {document_id}")
+
+                    # CRITICAL FIX: Extract actual chunks from the result
+                    if chunk_result.get("chunks"):
+                        chunks = chunk_result["chunks"]
+                        logger.info(f"✅ Extracted {len(chunks)} chunks from LlamaIndex result")
+                    else:
+                        # Fallback: Use simple text splitting if chunks not in result
+                        text_chunks = result.markdown_content.split('\n\n')
+                        chunks = [chunk.strip() for chunk in text_chunks if chunk.strip()]
+                        chunks_created = len(chunks)
+                        logger.info(f"✅ Fallback chunking created {chunks_created} chunks")
+
+                    logger.info(f"✅ Total chunks ready for database: {len(chunks)}")
 
                 finally:
                     # Clean up temp file
@@ -765,17 +777,9 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
         # Save PDF processing result to database
         try:
             pdf_result = await supabase_client.save_pdf_processing_result(
+                result=result,  # Pass the PDFProcessingResult object
                 original_filename=original_filename,
-                document_id=result.document_id,
-                chunks_created=len(chunks),
-                images_extracted=len(result.extracted_images),
-                processing_status="completed",
-                metadata={
-                    "pages": result.page_count,
-                    "word_count": result.word_count,
-                    "character_count": result.character_count,
-                    "processing_time": result.processing_time
-                }
+                file_url=url  # Pass the source URL
             )
             logger.info(f"✅ PDF processing result saved to database: {pdf_result}")
 
@@ -793,8 +797,7 @@ async def process_single_document(url: str, options: Any, pdf_processor: PDFProc
             kb_entries_saved = await supabase_client.save_knowledge_base_entries(
                 document_id=result.document_id,
                 chunks=chunks,
-                images=result.extracted_images,
-                workspace_id="default"
+                images=result.extracted_images
             )
             logger.info(f"✅ Knowledge base entries saved: {kb_entries_saved}")
 
