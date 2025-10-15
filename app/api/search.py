@@ -244,49 +244,50 @@ async def semantic_search(
 
             if table_result.data:
                 # Calculate similarity in Python (less efficient but works)
-                import numpy as np
+                try:
+                    import numpy as np
 
-                logger.info(f"Found {len(table_result.data)} rows in document_vectors table")
+                    logger.info(f"Found {len(table_result.data)} rows in document_vectors table")
 
-                for row in table_result.data:
-                    logger.debug(f"Processing row: document_id={row.get('document_id')}, has_embedding={row.get('embedding') is not None}")
+                    for row in table_result.data:
+                        if request.document_ids and row['document_id'] not in request.document_ids:
+                            continue
 
-                    if request.document_ids and row['document_id'] not in request.document_ids:
-                        logger.debug(f"Skipping document {row['document_id']} - not in requested documents")
-                        continue
+                        # Parse embedding
+                        embedding = row.get('embedding')
+                        if embedding and isinstance(embedding, list) and len(embedding) == 1536:
+                            try:
+                                # Calculate cosine similarity
+                                embedding_array = np.array(embedding, dtype=np.float32)
+                                query_array = np.array(query_embedding, dtype=np.float32)
 
-                    # Parse embedding
-                    embedding = row.get('embedding')
-                    if embedding and isinstance(embedding, list):
-                        logger.debug(f"Processing embedding with {len(embedding)} dimensions")
+                                # Normalize vectors
+                                embedding_norm = embedding_array / np.linalg.norm(embedding_array)
+                                query_norm = query_array / np.linalg.norm(query_array)
 
-                        # Calculate cosine similarity
-                        embedding_array = np.array(embedding)
-                        query_array = np.array(query_embedding)
+                                # Calculate cosine similarity
+                                similarity = float(np.dot(embedding_norm, query_norm))
 
-                        # Normalize vectors
-                        embedding_norm = embedding_array / np.linalg.norm(embedding_array)
-                        query_norm = query_array / np.linalg.norm(query_array)
+                                logger.info(f"Similarity: {similarity:.4f} for doc {row.get('document_id')}")
 
-                        # Calculate cosine similarity
-                        similarity = np.dot(embedding_norm, query_norm)
+                                if similarity >= request.similarity_threshold:
+                                    search_results.append({
+                                        "document_id": row.get("document_id", ""),
+                                        "score": similarity,
+                                        "content": row.get("content", ""),
+                                        "metadata": row.get("metadata", {})
+                                    })
 
-                        logger.info(f"Calculated similarity: {similarity:.4f} for document {row.get('document_id')}")
+                            except Exception as calc_error:
+                                logger.warning(f"Similarity calculation error: {calc_error}")
+                                continue
 
-                        if similarity >= request.similarity_threshold:
-                            logger.info(f"Adding result with similarity {similarity:.4f} (threshold: {request.similarity_threshold})")
-                            search_results.append({
-                                "document_id": row.get("document_id", ""),
-                                "score": float(similarity),
-                                "content": row.get("content", ""),
-                                "metadata": row.get("metadata", {})
-                            })
-                        else:
-                            logger.debug(f"Similarity {similarity:.4f} below threshold {request.similarity_threshold}")
-                    else:
-                        logger.warning(f"Row has no valid embedding: {type(embedding)}")
+                    logger.info(f"Final search results: {len(search_results)} matches found")
 
-                logger.info(f"Final search results: {len(search_results)} matches found")
+                except ImportError:
+                    logger.error("NumPy not available for similarity calculation")
+                except Exception as e:
+                    logger.error(f"Error in similarity calculation: {e}")
 
         except Exception as e:
             logger.error(f"Vector search error: {e}")
