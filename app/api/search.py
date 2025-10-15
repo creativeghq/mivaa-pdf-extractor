@@ -255,21 +255,9 @@ async def semantic_search(
 
                         # Parse embedding
                         embedding = row.get('embedding')
-                        logger.info(f"Row embedding type: {type(embedding)}, length: {len(embedding) if hasattr(embedding, '__len__') else 'N/A'}")
 
                         # Handle different embedding formats
-                        if embedding:
-                            if isinstance(embedding, str):
-                                # Try to parse JSON string
-                                try:
-                                    import json
-                                    embedding = json.loads(embedding)
-                                except:
-                                    logger.warning(f"Failed to parse embedding string")
-                                    continue
-
-                            if isinstance(embedding, list) and len(embedding) == 1536:
-                                try:
+                        if embedding and isinstance(embedding, list) and len(embedding) == 1536:
                                 # Calculate cosine similarity
                                 embedding_array = np.array(embedding, dtype=np.float32)
                                 query_array = np.array(query_embedding, dtype=np.float32)
@@ -291,11 +279,6 @@ async def semantic_search(
                                         "metadata": row.get("metadata", {})
                                     })
 
-                            except Exception as calc_error:
-                                logger.warning(f"Similarity calculation error: {calc_error}")
-                                continue
-                        else:
-                            logger.warning(f"Row has no valid embedding or wrong dimensions")
 
                     logger.info(f"Final search results: {len(search_results)} matches found")
 
