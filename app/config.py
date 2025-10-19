@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
 from pydantic_settings import BaseSettings
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, validator
 
 
 class Settings(BaseSettings):
