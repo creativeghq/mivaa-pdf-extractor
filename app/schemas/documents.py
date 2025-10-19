@@ -9,12 +9,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 from uuid import UUID
 
-try:
-    # Try Pydantic v2 first
-    from pydantic import BaseModel, Field, HttpUrl, field_validator
-except ImportError:
-    # Fall back to Pydantic v1
-    from pydantic import BaseModel, Field, HttpUrl, validator as field_validator
+from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 from .common import (
     BaseResponse,

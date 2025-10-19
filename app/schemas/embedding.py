@@ -6,14 +6,7 @@ and request/response handling.
 """
 
 from typing import Optional, List, Dict, Any
-try:
-    # Try Pydantic v2 first
-    from pydantic import BaseModel, Field, field_validator as validator
-    PYDANTIC_V2 = True
-except ImportError:
-    # Fall back to Pydantic v1
-    from pydantic import BaseModel, Field, validator
-    PYDANTIC_V2 = False
+from pydantic import BaseModel, Field, field_validator
 
 
 class EmbeddingConfig(BaseModel):

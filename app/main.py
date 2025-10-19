@@ -512,8 +512,6 @@ Authorization: Bearer your-jwt-token
 - **💬 Chat APIs**: `/api/chat/*` - Chat completions, contextual responses
 - **🏥 Health & Monitoring**: `/health`, `/metrics`, `/performance/summary`
 
-## 📚 **Legacy Support**
-Legacy endpoints (`/extract/*`) are still supported for backward compatibility.
         """,
         docs_url="/docs",  # Always enable docs
         redoc_url="/redoc",  # Always enable redoc
@@ -875,11 +873,6 @@ async def root() -> Dict[str, Any]:
             # Chat APIs
             "chat_completions": "/api/chat/completions",
             "contextual_response": "/api/chat/contextual",
-
-            # Legacy APIs (Still Supported)
-            "legacy_markdown": "/extract/markdown",
-            "legacy_tables": "/extract/tables",
-            "legacy_images": "/extract/images"
         },
         "api_info": {
             "total_endpoints": 37,

@@ -42,8 +42,6 @@ class OCRConfig:
     use_gpu: bool = False
     confidence_threshold: float = 0.5
     preprocessing_enabled: bool = True
-    fallback_to_tesseract: bool = True
-    tesseract_config: str = '--oem 3 --psm 6'
     
     def __post_init__(self):
         if self.languages is None:
@@ -172,16 +170,7 @@ class OCRService:
                 self.config.languages,
                 gpu=self.config.use_gpu
             )
-            
-            # Validate Tesseract installation
-            try:
-                pytesseract.get_tesseract_version()
-                logger.info("Tesseract OCR validated successfully")
-            except Exception as e:
-                logger.warning(f"Tesseract validation failed: {str(e)}")
-                if not self.config.fallback_to_tesseract:
-                    raise RuntimeError("Tesseract required but not available")
-            
+
             self._initialized = True
             logger.info("OCR Service initialized successfully")
             
@@ -230,53 +219,7 @@ class OCRService:
             logger.error(f"EasyOCR extraction failed: {str(e)}")
             raise
     
-    def extract_text_tesseract(self, image: np.ndarray) -> List[OCRResult]:
-        """
-        Extract text using Pytesseract.
-        
-        Args:
-            image: Input image as numpy array
-            
-        Returns:
-            List of OCR results with text and confidence
-        """
-        try:
-            # Get detailed data from Tesseract
-            data = pytesseract.image_to_data(
-                image, 
-                config=self.config.tesseract_config,
-                output_type=pytesseract.Output.DICT
-            )
-            
-            ocr_results = []
-            n_boxes = len(data['level'])
-            
-            for i in range(n_boxes):
-                confidence = int(data['conf'][i])
-                text = data['text'][i].strip()
-                
-                if confidence > (self.config.confidence_threshold * 100) and text:
-                    bbox = [
-                        data['left'][i],
-                        data['top'][i],
-                        data['left'][i] + data['width'][i],
-                        data['top'][i] + data['height'][i]
-                    ]
-                    
-                    ocr_results.append(OCRResult(
-                        text=text,
-                        confidence=confidence / 100.0,  # Convert to 0-1 scale
-                        bbox=bbox,
-                        method='tesseract'
-                    ))
-            
-            logger.debug(f"Tesseract extracted {len(ocr_results)} text regions")
-            return ocr_results
-            
-        except Exception as e:
-            logger.error(f"Tesseract extraction failed: {str(e)}")
-            raise
-    
+
     def extract_text_from_image(
         self, 
         image_input: Union[str, Path, np.ndarray, Image.Image],
@@ -307,32 +250,14 @@ class OCRService:
             image = self.preprocessor.enhance_image(image)
             image = self.preprocessor.preprocess_for_ocr(image)
         
-        all_results = []
-        errors = []
-        
-        # Try EasyOCR first
+        # Use EasyOCR for text extraction
         try:
             easyocr_results = self.extract_text_easyocr(image)
-            all_results.extend(easyocr_results)
             logger.info(f"EasyOCR extracted {len(easyocr_results)} text regions")
+            return easyocr_results
         except Exception as e:
-            error_msg = f"EasyOCR failed: {str(e)}"
-            errors.append(error_msg)
-            logger.warning(error_msg)
-        
-        # Try Tesseract as fallback or additional source
-        if self.config.fallback_to_tesseract:
-            try:
-                tesseract_results = self.extract_text_tesseract(image)
-                all_results.extend(tesseract_results)
-                logger.info(f"Tesseract extracted {len(tesseract_results)} text regions")
-            except Exception as e:
-                error_msg = f"Tesseract failed: {str(e)}"
-                errors.append(error_msg)
-                logger.warning(error_msg)
-        
-        if not all_results and errors:
-            raise RuntimeError(f"All OCR engines failed: {'; '.join(errors)}")
+            logger.error(f"EasyOCR extraction failed: {str(e)}")
+            raise
         
         # Sort results by confidence (highest first)
         all_results.sort(key=lambda x: x.confidence, reverse=True)

@@ -773,22 +773,18 @@ class LlamaIndexService:
             return None
         
         try:
-            # Create query engine with multi-modal LLM if available
-            if self.multimodal_llm and include_images:
-                query_engine = index.as_query_engine(
-                    llm=self.multimodal_llm,
-                    similarity_top_k=5,
-                    response_mode="tree_summarize"
-                )
-                self.logger.info("Using multi-modal LLM for query processing")
-            else:
-                # Fallback to regular LLM
-                query_engine = index.as_query_engine(
-                    llm=self.llm,
-                    similarity_top_k=5,
-                    response_mode="tree_summarize"
-                )
-                self.logger.info("Using text-only LLM for query processing")
+            # Require multi-modal LLM when images are included
+            if include_images and not self.multimodal_llm:
+                raise ValueError("Multi-modal LLM required for image processing but not available")
+
+            # Create query engine with appropriate LLM
+            llm = self.multimodal_llm if (self.multimodal_llm and include_images) else self.llm
+            query_engine = index.as_query_engine(
+                llm=llm,
+                similarity_top_k=5,
+                response_mode="tree_summarize"
+            )
+            self.logger.info(f"Using {'multi-modal' if include_images else 'text-only'} LLM for query processing")
             
             # Execute query
             response = query_engine.query(query)

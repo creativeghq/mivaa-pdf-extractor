@@ -281,10 +281,11 @@ class SupabaseClient:
             logger.info(f"   Chunks to save: {len(chunks)}")
             logger.info(f"   Images to save: {len(images)}")
 
-            # First, ensure document exists in documents table
+            # First, ensure document exists in documents table and get workspace_id
+            workspace_id = None
             try:
-                # Check if document already exists
-                doc_check = self._client.table('documents').select('id').eq('id', document_id).execute()
+                # Check if document already exists and get its workspace_id
+                doc_check = self._client.table('documents').select('id, workspace_id').eq('id', document_id).execute()
 
                 if not doc_check.data:
                     # Create document record
@@ -304,10 +305,13 @@ class SupabaseClient:
                     doc_response = self._client.table('documents').insert(doc_data).execute()
                     if doc_response.data:
                         logger.info(f"✅ Created document record: {document_id}")
+                        workspace_id = doc_response.data[0].get('workspace_id') if doc_response.data else None
                     else:
                         logger.warning(f"⚠️ Failed to create document record: {document_id}")
                 else:
                     logger.info(f"✅ Document already exists: {document_id}")
+                    workspace_id = doc_check.data[0].get('workspace_id') if doc_check.data else None
+                    logger.info(f"   Workspace ID: {workspace_id}")
 
             except Exception as doc_error:
                 logger.warning(f"⚠️ Document creation failed: {doc_error}")
@@ -317,7 +321,7 @@ class SupabaseClient:
                 chunk_entries = []
                 for i, chunk in enumerate(chunks):
                     if isinstance(chunk, str) and chunk.strip():  # Only save non-empty string chunks
-                        chunk_entries.append({
+                        chunk_entry = {
                             'document_id': document_id,
                             'content': chunk,
                             'chunk_index': i,
@@ -327,10 +331,14 @@ class SupabaseClient:
                                 'chunk_number': i + 1,
                                 'page_number': 1  # Default page number
                             }
-                        })
+                        }
+                        # Add workspace_id if available
+                        if workspace_id:
+                            chunk_entry['workspace_id'] = workspace_id
+                        chunk_entries.append(chunk_entry)
 
                 if chunk_entries:
-                    logger.info(f"💾 Saving {len(chunk_entries)} chunks to document_chunks table")
+                    logger.info(f"💾 Saving {len(chunk_entries)} chunks to document_chunks table (workspace_id: {workspace_id})")
                     response = self._client.table('document_chunks').insert(chunk_entries).execute()
                     saved_chunks = len(response.data) if response.data else 0
                     logger.info(f"✅ Saved {saved_chunks} chunks to database")
@@ -343,38 +351,73 @@ class SupabaseClient:
                 for i, image in enumerate(images):
                     # Handle different image data formats
                     if isinstance(image, dict):
-                        image_url = image.get('url') or image.get('path') or f"image_{i}.jpg"
+                        # Try multiple possible keys for image URL
+                        image_url = (
+                            image.get('storage_url') or  # From _process_extracted_image
+                            image.get('url') or
+                            image.get('path') or
+                            image.get('public_url') or
+                            f"placeholder_image_{i}.jpg"
+                        )
                         page_num = image.get('page') or image.get('page_number') or 1
                         caption = image.get('caption') or image.get('description') or f"Image {i+1}"
+
+                        # Log if we're using a placeholder
+                        if image_url.startswith('placeholder_'):
+                            logger.warning(f"⚠️ Image {i} has no valid URL. Available keys: {list(image.keys())}")
+                            logger.warning(f"   Image data sample: {str(image)[:200]}")
                     else:
                         # Handle string or other formats
-                        image_url = str(image) if image else f"image_{i}.jpg"
+                        image_url = str(image) if image else f"placeholder_image_{i}.jpg"
                         page_num = 1
                         caption = f"Image {i+1}"
+                        logger.warning(f"⚠️ Image {i} is not a dict, type: {type(image)}")
 
-                    image_entries.append({
-                        'document_id': document_id,
-                        'image_url': image_url,
-                        'image_type': 'material_sample',
-                        'caption': caption,
-                        'page_number': page_num,
-                        'confidence': 0.95,  # Default confidence
-                        'processing_status': 'completed',
-                        'metadata': {
-                            'source': 'mivaa_pdf_extraction',
-                            'image_index': i,
-                            'extraction_method': 'pymupdf',
-                            'original_data': image if isinstance(image, dict) else {'url': str(image)}
+                    # Only add images with valid URLs (not placeholders)
+                    if not image_url.startswith('placeholder_'):
+                        image_entry = {
+                            'document_id': document_id,
+                            'image_url': image_url,
+                            'image_type': 'material_sample',
+                            'caption': caption,
+                            'page_number': page_num,
+                            'confidence': 0.95,  # Default confidence
+                            'processing_status': 'completed',
+                            'metadata': {
+                                'source': 'mivaa_pdf_extraction',
+                                'image_index': i,
+                                'extraction_method': 'pymupdf',
+                                'storage_uploaded': image.get('storage_uploaded', False) if isinstance(image, dict) else False,
+                                'storage_bucket': image.get('storage_bucket', 'pdf-tiles') if isinstance(image, dict) else 'pdf-tiles',
+                                'original_data': image if isinstance(image, dict) else {'url': str(image)}
+                            }
                         }
-                    })
+                        # Add workspace_id if available
+                        if workspace_id:
+                            image_entry['workspace_id'] = workspace_id
+                        image_entries.append(image_entry)
+                    else:
+                        logger.warning(f"⚠️ Skipping image {i} - no valid URL found")
 
                 if image_entries:
-                    logger.info(f"💾 Saving {len(image_entries)} images to document_images table")
-                    response = self._client.table('document_images').insert(image_entries).execute()
-                    saved_images = len(response.data) if response.data else 0
-                    logger.info(f"✅ Saved {saved_images} images to database")
+                    logger.info(f"💾 Saving {len(image_entries)} images to document_images table (out of {len(images)} total, workspace_id: {workspace_id})")
+                    logger.info(f"   Sample image URLs: {[img['image_url'][:100] for img in image_entries[:3]]}")
+                    try:
+                        response = self._client.table('document_images').insert(image_entries).execute()
+                        saved_images = len(response.data) if response.data else 0
+                        logger.info(f"✅ Saved {saved_images} images to database")
+
+                        if saved_images < len(image_entries):
+                            logger.warning(f"⚠️ Only {saved_images}/{len(image_entries)} images were saved")
+                    except Exception as insert_error:
+                        logger.error(f"❌ Failed to insert images: {str(insert_error)}")
+                        logger.error(f"   Error type: {type(insert_error).__name__}")
+                        logger.error(f"   Sample image entry: {image_entries[0] if image_entries else 'N/A'}")
+                        import traceback
+                        logger.error(f"   Traceback: {traceback.format_exc()}")
+                        raise
                 else:
-                    logger.warning("⚠️ No valid images to save")
+                    logger.warning(f"⚠️ No valid images to save (0 out of {len(images)} had valid URLs)")
 
             logger.info(f"✅ Knowledge base save completed: {saved_chunks} chunks, {saved_images} images")
             return {

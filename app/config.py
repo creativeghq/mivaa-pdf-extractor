@@ -9,23 +9,8 @@ import os
 import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
-try:
-    # Try Pydantic v2 first
-    from pydantic_settings import BaseSettings
-    from pydantic import Field, field_validator
-    PYDANTIC_V2 = True
-    # For v2, we need to use different decorator syntax
-    def validator(*fields, **kwargs):
-        if 'pre' in kwargs:
-            kwargs['mode'] = 'before'
-            del kwargs['pre']
-        return field_validator(*fields, **kwargs)
-except ImportError:
-    # Fall back to Pydantic v1
-    from pydantic import BaseSettings, Field, validator
-    PYDANTIC_V2 = False
-    # For v1, field_validator doesn't exist, so create alias
-    field_validator = validator
+from pydantic_settings import BaseSettings
+from pydantic import Field, field_validator
 
 
 class Settings(BaseSettings):

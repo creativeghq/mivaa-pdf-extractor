@@ -8,12 +8,7 @@ and Material Kai Vision Platform integration.
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-try:
-    # Try Pydantic v2 first
-    from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
-except ImportError:
-    # Fall back to Pydantic v1
-    from pydantic import BaseModel, Field, HttpUrl, validator as field_validator, root_validator as model_validator
+from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
 from .common import BaseResponse, ProcessingStatus
 

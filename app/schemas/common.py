@@ -10,12 +10,7 @@ from enum import Enum
 from typing import Any, Dict, Generic, List, Optional, TypeVar, Union
 from uuid import UUID
 
-try:
-    # Try Pydantic v2 first
-    from pydantic import BaseModel, Field, field_validator, model_validator
-except ImportError:
-    # Fall back to Pydantic v1
-    from pydantic import BaseModel, Field, validator as field_validator, root_validator as model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # Generic type for paginated responses
