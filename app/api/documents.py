@@ -59,9 +59,6 @@ from app.schemas.jobs import (
     JobProgress
 )
 
-# Import text chunking utility
-from app.utils.text_chunking import smart_chunk_text
-
 # Import existing services
 from app.services.pdf_processor import PDFProcessor, PDFProcessingResult
 from app.services.supabase_client import SupabaseClient, get_supabase_client as get_global_supabase_client
@@ -620,12 +617,7 @@ async def process_document(
                         markdown_content=result.markdown_content or "",
                         images=result.extracted_images or [],
                         tables=[],  # TODO: Extract from result if available
-                        chunks=smart_chunk_text(
-                            result.markdown_content or "",
-                            chunk_size=options.chunk_size or 1000,
-                            overlap=options.overlap or 200,
-                            min_chunk_size=10
-                        ) if result.markdown_content else [],
+                        chunks=[],  # ✅ Chunks are now created by HierarchicalNodeParser in LlamaIndex
                         summary=None,  # TODO: Generate summary if requested
                         key_topics=[],  # TODO: Extract topics if needed
                         entities=[]  # TODO: Extract entities if needed
@@ -737,17 +729,9 @@ async def process_document_from_url(
                 # Create proper DocumentContent
                 markdown_text = result.markdown_content or ""
 
-                # Generate text chunks using smart chunking
-                text_chunks = smart_chunk_text(
-                    markdown_text,
-                    chunk_size=request.options.chunk_size or 1000,
-                    overlap=request.options.overlap or 200,
-                    min_chunk_size=10
-                ) if markdown_text else []
-
                 content = DocumentContent(
                     markdown_content=markdown_text,
-                    chunks=text_chunks,
+                    chunks=[],  # ✅ Chunks are now created by HierarchicalNodeParser in LlamaIndex
                     images=result.extracted_images or [],
                     tables=[],  # TODO: Extract tables from result
                     summary=None,

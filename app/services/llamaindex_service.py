@@ -33,14 +33,14 @@ try:
         StorageContext,
         load_index_from_storage
     )
-    from llama_index.core.node_parser import SentenceSplitter, SemanticSplitterNodeParser
+    from llama_index.core.node_parser import HierarchicalNodeParser
     from llama_index.core.embeddings import BaseEmbedding
     from llama_index.embeddings.openai import OpenAIEmbedding
     from llama_index.embeddings.huggingface import HuggingFaceEmbedding
     from llama_index.core.llms import LLM
     from llama_index.llms.openai import OpenAI
     from llama_index.core.query_engine import RetrieverQueryEngine
-    from llama_index.core.retrievers import VectorIndexRetriever
+    from llama_index.core.retrievers import VectorIndexRetriever, AutoMergingRetriever
     from llama_index.core.response_synthesizers import ResponseMode
     from llama_index.core.response_synthesizers import get_response_synthesizer
     from llama_index.readers.file import PDFReader, DocxReader, MarkdownReader
@@ -530,13 +530,14 @@ class LlamaIndexService:
             Settings.llm = self.llm
             Settings.chunk_size = self.chunk_size
             Settings.chunk_overlap = self.chunk_overlap
-            
-            # Initialize node parser
-            self.node_parser = SentenceSplitter(
-                chunk_size=self.chunk_size,
-                chunk_overlap=self.chunk_overlap
+
+            # Initialize hierarchical node parser for multi-level chunking
+            # Chunk sizes: 2048 (full sections), 512 (subsections), 128 (atomic facts)
+            self.node_parser = HierarchicalNodeParser.from_defaults(
+                chunk_sizes=[2048, 512, 128]
             )
-            
+
+            self.logger.info("✅ HierarchicalNodeParser initialized with chunk sizes: [2048, 512, 128]")
             self.logger.info("LlamaIndex components initialized successfully")
             
         except Exception as e:
@@ -1182,41 +1183,7 @@ class LlamaIndexService:
         self.logger.info(f"Detected document format: {detected_format} for file: {file_path}")
         return detected_format
     
-    def _get_enhanced_node_parser(self, chunk_strategy: str = "semantic", chunk_size: int = 1000, chunk_overlap: int = 200):
-        """
-        Get the appropriate node parser based on strategy with enhanced chunking capabilities.
-        
-        Args:
-            chunk_strategy: Strategy for chunking ('sentence', 'semantic')
-            chunk_size: Target chunk size in characters
-            chunk_overlap: Overlap between chunks in characters
-            
-        Returns:
-            Configured node parser
-        """
-        if chunk_strategy.lower() == "semantic":
-            # Use semantic splitter for intelligent chunking
-            try:
-                return SemanticSplitterNodeParser(
-                    buffer_size=1,
-                    breakpoint_percentile_threshold=95,
-                    embed_model=self.embeddings
-                )
-            except Exception as e:
-                self.logger.warning(f"Failed to initialize semantic splitter: {e}. Falling back to sentence splitter.")
-                return SentenceSplitter(
-                    chunk_size=chunk_size,
-                    chunk_overlap=chunk_overlap,
-                    separator=" "
-                )
-        else:
-            # Default to sentence splitter with optimized settings for 1536-dimensional embeddings
-            return SentenceSplitter(
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-                separator=" "
-            )
-    
+
     def _extract_document_metadata(self, file_path: str, document_format: str) -> Dict[str, Any]:
         """
         Extract metadata from document based on format.
@@ -1238,7 +1205,8 @@ class LlamaIndexService:
             'file_format': document_format,
             'file_size': os.path.getsize(file_path) if os.path.exists(file_path) else 0,
             'processed_at': datetime.utcnow().isoformat(),
-            'chunk_strategy': 'semantic',  # Default strategy for Phase 3
+            'chunk_strategy': 'hierarchical',  # Using HierarchicalNodeParser
+            'chunk_sizes': [2048, 512, 128],  # Hierarchical chunk sizes
             'embedding_model': self.embedding_model,
             'embedding_dimension': 1536  # OpenAI text-embedding-3-small dimension
         }
@@ -1275,26 +1243,25 @@ class LlamaIndexService:
         return metadata
     
     async def index_document_content(
-        self, 
-        file_content: bytes, 
+        self,
+        file_content: bytes,
         document_id: str,
         file_path: str,
         metadata: Optional[Dict[str, Any]] = None,
-        chunk_strategy: str = "semantic",
-        chunk_size: int = 1000,
+        chunk_size: int = 2048,
         chunk_overlap: int = 200
     ) -> Dict[str, Any]:
         """
         Enhanced document indexing supporting multiple formats (PDF, TXT, DOCX, MD).
-        
+        Uses HierarchicalNodeParser for automatic parent-child chunk relationships.
+
         Args:
             file_content: Raw document bytes
             document_id: Unique identifier for the document
             file_path: Original file path (used for format detection)
             metadata: Optional metadata to associate with the document
-            chunk_strategy: Chunking strategy ('sentence' or 'semantic')
-            chunk_size: Target chunk size optimized for 1536-dimensional embeddings
-            chunk_overlap: Overlap between chunks
+            chunk_size: Target chunk size (note: HierarchicalNodeParser uses [2048, 512, 128])
+            chunk_overlap: Overlap between chunks (deprecated - HierarchicalNodeParser manages this)
             
         Returns:
             Dict containing indexing results and statistics
@@ -1393,16 +1360,12 @@ class LlamaIndexService:
                     doc.metadata.update(extracted_metadata)
                     doc.metadata['document_id'] = document_id
                 
-                # Get enhanced node parser with intelligent chunking
-                node_parser = self._get_enhanced_node_parser(
-                    chunk_strategy=chunk_strategy,
-                    chunk_size=chunk_size,
-                    chunk_overlap=chunk_overlap
-                )
-                
-                # Parse documents into nodes with enhanced chunking
-                nodes = node_parser.get_nodes_from_documents(documents)
-                
+                # Parse documents into nodes with hierarchical chunking
+                # HierarchicalNodeParser automatically creates parent-child relationships
+                nodes = self.node_parser.get_nodes_from_documents(documents)
+
+                self.logger.info(f"📊 Created {len(nodes)} hierarchical nodes from {len(documents)} documents")
+
                 # Add chunk-specific metadata
                 for i, node in enumerate(nodes):
                     if node.metadata is None:
@@ -1411,8 +1374,9 @@ class LlamaIndexService:
                         'chunk_id': f"{document_id}_chunk_{i}",
                         'chunk_index': i,
                         'total_chunks': len(nodes),
-                        'chunk_strategy': chunk_strategy,
-                        'chunk_size_actual': len(node.text)
+                        'chunk_size_actual': len(node.text),
+                        'has_parent': node.parent_node is not None,
+                        'has_children': len(node.child_nodes) > 0 if hasattr(node, 'child_nodes') else False
                     })
                 
                 # Create or get index for this document
@@ -1619,17 +1583,24 @@ class LlamaIndexService:
                 }
             
             index = self.indices[document_id]
-            
-            # Create query engine
-            retriever = VectorIndexRetriever(
+
+            # Create query engine with AutoMergingRetriever for hierarchical context
+            # AutoMergingRetriever automatically merges child nodes with their parents
+            # to provide better context for search results
+            base_retriever = VectorIndexRetriever(
                 index=index,
                 similarity_top_k=self.similarity_top_k
             )
-            
+
+            retriever = AutoMergingRetriever(
+                base_retriever=base_retriever,
+                verbose=True
+            )
+
             response_synthesizer = get_response_synthesizer(
                 response_mode=ResponseMode(response_mode)
             )
-            
+
             query_engine = RetrieverQueryEngine(
                 retriever=retriever,
                 response_synthesizer=response_synthesizer
@@ -1848,18 +1819,24 @@ class LlamaIndexService:
         """
         try:
             index = self.indices[document_id]
-            
-            # Create retriever with enhanced parameters
-            retriever = VectorIndexRetriever(
+
+            # Create base retriever with enhanced parameters
+            base_retriever = VectorIndexRetriever(
                 index=index,
                 similarity_top_k=max_results * 2,  # Retrieve more for better filtering
                 doc_ids=None,
                 filters=metadata_filters
             )
-            
-            # Retrieve nodes
+
+            # Wrap with AutoMergingRetriever for hierarchical context
+            retriever = AutoMergingRetriever(
+                base_retriever=base_retriever,
+                verbose=False
+            )
+
+            # Retrieve nodes with automatic parent-child merging
             retrieved_nodes = retriever.retrieve(query)
-            
+
             # Filter by similarity threshold and add document context
             filtered_nodes = []
             for node in retrieved_nodes:
@@ -1868,7 +1845,7 @@ class LlamaIndexService:
                     if hasattr(node, 'node') and hasattr(node.node, 'metadata'):
                         node.node.metadata['source_document_id'] = document_id
                     filtered_nodes.append(node)
-            
+
             return filtered_nodes[:max_results]
             
         except Exception as e:
@@ -2467,9 +2444,11 @@ Summary:"""
                         'chunk_index': i,
                         'metadata': {
                             'chunk_id': node.metadata.get('chunk_id', f"{document_id}_chunk_{i}"),
-                            'chunk_strategy': node.metadata.get('chunk_strategy', 'semantic'),
+                            'chunk_strategy': 'hierarchical',
                             'chunk_size_actual': len(node.text),
                             'total_chunks': len(nodes),
+                            'has_parent': node.parent_node is not None,
+                            'has_children': len(node.child_nodes) > 0 if hasattr(node, 'child_nodes') else False,
                             **node.metadata
                         }
                     }
