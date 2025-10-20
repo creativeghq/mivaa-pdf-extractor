@@ -752,8 +752,15 @@ class PDFProcessor:
             images = []
             image_dir = os.path.join(output_dir, 'images')
 
+            self.logger.info(f"🔍 Checking for extracted images in: {image_dir}")
+            self.logger.info(f"   Image directory exists: {os.path.exists(image_dir)}")
+
             if os.path.exists(image_dir):
-                for image_file in os.listdir(image_dir):
+                image_files = os.listdir(image_dir)
+                self.logger.info(f"   Found {len(image_files)} files in image directory")
+
+                for image_file in image_files:
+                    self.logger.debug(f"   Processing file: {image_file}")
                     if image_file.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp')):
                         image_path = os.path.join(image_dir, image_file)
 
@@ -766,6 +773,12 @@ class PDFProcessor:
 
                         if processed_image_info:
                             images.append(processed_image_info)
+                            self.logger.info(f"   ✅ Processed image: {image_file}")
+                        else:
+                            self.logger.warning(f"   ⚠️ Failed to process image: {image_file}")
+            else:
+                self.logger.warning(f"⚠️ Image directory does not exist: {image_dir}")
+                self.logger.warning(f"   Output directory contents: {os.listdir(output_dir) if os.path.exists(output_dir) else 'N/A'}")
 
             # Clean up temporary directory after processing
             try:

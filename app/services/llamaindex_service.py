@@ -369,12 +369,19 @@ class LlamaIndexService:
         """Initialize the centralized embedding service."""
         if not self.available:
             return
-        
+
         try:
             # Get OpenAI API key from environment
             openai_api_key = os.getenv('OPENAI_API_KEY')
+            self.logger.info(f"🔍 Checking for OPENAI_API_KEY environment variable...")
+            self.logger.info(f"   OPENAI_API_KEY set: {bool(openai_api_key)}")
+            if openai_api_key:
+                self.logger.info(f"   OPENAI_API_KEY length: {len(openai_api_key)} characters")
+
             if not openai_api_key:
-                self.logger.warning("OpenAI API key not found, embedding service will be limited")
+                self.logger.error("❌ CRITICAL: OpenAI API key not found in environment variables!")
+                self.logger.error("   Embeddings will NOT be generated for any documents")
+                self.logger.error("   Please set OPENAI_API_KEY environment variable in MIVAA deployment")
                 self.embedding_service = None
                 return
             
@@ -2430,6 +2437,9 @@ Summary:"""
             failed_chunks = 0
 
             self.logger.info(f"🔄 Starting database storage for {len(nodes)} chunks from document {document_id}")
+            self.logger.info(f"   Embedding service available: {self.embedding_service is not None}")
+            if self.embedding_service is None:
+                self.logger.error("   ⚠️ WARNING: Embedding service is None - embeddings will NOT be generated!")
 
             # First, ensure the document exists in the documents table
             self._ensure_document_exists(supabase_client, document_id, metadata)
@@ -2464,7 +2474,9 @@ Summary:"""
                         try:
                             # Check if embedding service is available
                             if self.embedding_service is None:
-                                self.logger.warning(f"Embedding service not available (OpenAI API key missing), skipping embedding for chunk {i}")
+                                self.logger.error(f"❌ Embedding service is None for chunk {i} - OPENAI_API_KEY not set in environment")
+                                if i == 0:
+                                    self.logger.error("   This will affect ALL chunks - no embeddings will be generated!")
                                 continue
 
                             # Generate embedding for the chunk
@@ -2523,7 +2535,17 @@ Summary:"""
                 "success_rate": (chunks_stored / len(nodes)) * 100 if nodes else 0
             }
 
-            self.logger.info(f"✅ Database storage completed: {chunks_stored}/{len(nodes)} chunks stored, {embeddings_stored} embeddings generated")
+            # Log detailed statistics
+            self.logger.info(f"✅ Database storage completed:")
+            self.logger.info(f"   Chunks stored: {chunks_stored}/{len(nodes)}")
+            self.logger.info(f"   Embeddings generated: {embeddings_stored}/{len(nodes)}")
+            self.logger.info(f"   Failed chunks: {failed_chunks}")
+            self.logger.info(f"   Success rate: {result['success_rate']:.1f}%")
+
+            if embeddings_stored == 0 and chunks_stored > 0:
+                self.logger.error(f"   ⚠️ CRITICAL: No embeddings were generated despite {chunks_stored} chunks being stored!")
+                self.logger.error(f"   This indicates OPENAI_API_KEY is not set in the MIVAA environment")
+
             return result
 
         except Exception as e:
