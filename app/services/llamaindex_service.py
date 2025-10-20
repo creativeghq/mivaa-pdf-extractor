@@ -112,14 +112,14 @@ class LlamaIndexService:
         
         # Configuration
         self.embedding_model = self.config.get('embedding_model', 'text-embedding-3-small')
-        self.llm_model = self.config.get('llm_model', 'gpt-3.5-turbo')
+        self.llm_model = self.config.get('llm_model', 'gpt-4o')
         self.chunk_size = self.config.get('chunk_size', 1024)
         self.chunk_overlap = self.config.get('chunk_overlap', 200)
         self.similarity_top_k = self.config.get('similarity_top_k', 5)
-        
+
         # Multi-modal configuration for Phase 8
         self.enable_multimodal = self.config.get('enable_multimodal', True)
-        self.multimodal_llm_model = self.config.get('multimodal_llm_model', 'gpt-4-vision-preview')
+        self.multimodal_llm_model = self.config.get('multimodal_llm_model', 'gpt-4o')
         self.image_embedding_model = self.config.get('image_embedding_model', 'ViT-B/32')
         self.ocr_enabled = self.config.get('ocr_enabled', True)
         self.ocr_language = self.config.get('ocr_language', 'en')

@@ -91,19 +91,19 @@ class Settings(BaseSettings):
 
     # OpenAI API Settings
     openai_api_key: str = Field(default="", env="OPENAI_API_KEY")
-    openai_model: str = Field(default="gpt-3.5-turbo", env="OPENAI_MODEL")
+    openai_model: str = Field(default="gpt-4o", env="OPENAI_MODEL")
     openai_embedding_model: str = Field(default="text-embedding-3-small", env="OPENAI_EMBEDDING_MODEL")
     openai_max_tokens: int = Field(default=4096, env="OPENAI_MAX_TOKENS")
     openai_temperature: float = Field(default=0.1, env="OPENAI_TEMPERATURE")
     openai_timeout: int = Field(default=30, env="OPENAI_TIMEOUT")
-    
+
     # LlamaIndex RAG Settings
     llamaindex_embedding_model: str = Field(
         default="text-embedding-3-small",
         env="LLAMAINDEX_EMBEDDING_MODEL"
     )
     llamaindex_llm_model: str = Field(
-        default="gpt-3.5-turbo",
+        default="gpt-4o",
         env="LLAMAINDEX_LLM_MODEL"
     )
     llamaindex_chunk_size: int = Field(
@@ -133,7 +133,7 @@ class Settings(BaseSettings):
         env="ENABLE_MULTIMODAL"
     )
     multimodal_llm_model: str = Field(
-        default="gpt-4-vision-preview",
+        default="gpt-4o",
         env="MULTIMODAL_LLM_MODEL"
     )
     multimodal_max_tokens: int = Field(
@@ -197,7 +197,7 @@ class Settings(BaseSettings):
         env="IMAGE_PROCESSING_ENABLED"
     )
     image_analysis_model: str = Field(
-        default="gpt-4-vision-preview",
+        default="gpt-4o",
         env="IMAGE_ANALYSIS_MODEL"
     )
     image_resize_max_width: int = Field(
@@ -262,7 +262,41 @@ class Settings(BaseSettings):
         default=1.0,
         env="TOGETHER_RETRY_DELAY"
     )
-    
+
+    # Anthropic Claude Settings
+    anthropic_api_key: str = Field(
+        default="",
+        env="ANTHROPIC_API_KEY"
+    )
+    anthropic_model_classification: str = Field(
+        default="claude-4-5-haiku-20250514",
+        env="ANTHROPIC_MODEL_CLASSIFICATION"
+    )
+    anthropic_model_validation: str = Field(
+        default="claude-4-5-sonnet-20250514",
+        env="ANTHROPIC_MODEL_VALIDATION"
+    )
+    anthropic_model_enrichment: str = Field(
+        default="claude-4-5-sonnet-20250514",
+        env="ANTHROPIC_MODEL_ENRICHMENT"
+    )
+    anthropic_max_tokens: int = Field(
+        default=4096,
+        env="ANTHROPIC_MAX_TOKENS"
+    )
+    anthropic_temperature: float = Field(
+        default=0.1,
+        env="ANTHROPIC_TEMPERATURE"
+    )
+    anthropic_timeout: int = Field(
+        default=60,
+        env="ANTHROPIC_TIMEOUT"
+    )
+    anthropic_enabled: bool = Field(
+        default=True,
+        env="ANTHROPIC_ENABLED"
+    )
+
     # Material Kai Vision Platform Settings (disabled by default)
     material_kai_platform_url: str = Field(
         default="",  # Disabled by default - set to enable external platform integration
