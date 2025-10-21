@@ -2569,6 +2569,7 @@ Summary:"""
         metadata: Dict[str, Any]
     ):
         """Ensure the document exists in the documents table."""
+        self.logger.info(f"🔍 Checking if document {document_id} exists in documents table...")
         try:
             # Check if document exists
             existing = supabase_client.client.table('documents').select('id').eq('id', document_id).execute()
@@ -2586,9 +2587,11 @@ Summary:"""
 
                 supabase_client.client.table('documents').insert(document_data).execute()
                 self.logger.info(f"✅ Created document record for {document_id}")
+            else:
+                self.logger.info(f"✅ Document {document_id} already exists")
 
         except Exception as e:
-            self.logger.warning(f"Failed to ensure document exists: {e}")
+            self.logger.error(f"❌ Failed to ensure document exists: {e}")
             # Continue anyway - chunks can still be stored
 
     async def _process_extracted_images_with_context(

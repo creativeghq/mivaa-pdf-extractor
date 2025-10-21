@@ -1372,6 +1372,7 @@ class LlamaIndexService:
                 nodes = self.node_parser.get_nodes_from_documents(documents)
 
                 self.logger.info(f"📊 Created {len(nodes)} hierarchical nodes from {len(documents)} documents")
+                chunk_strategy = "hierarchical"  # Using HierarchicalNodeParser
 
                 # Add chunk-specific metadata
                 for i, node in enumerate(nodes):
@@ -1383,7 +1384,7 @@ class LlamaIndexService:
                         'total_chunks': len(nodes),
                         'chunk_size_actual': len(node.text),
                         'has_parent': node.parent_node is not None,
-                        'has_children': len(node.child_nodes) > 0 if hasattr(node, 'child_nodes') else False
+                        'has_children': len(node.child_nodes) > 0 if hasattr(node, 'child_nodes') and node.child_nodes is not None else False
                     })
                 
                 # Create or get index for this document
@@ -1455,7 +1456,9 @@ class LlamaIndexService:
                     self.logger.warning(f"Failed to clean up temporary file: {e}")
                     
         except Exception as e:
+            import traceback
             self.logger.error(f"Failed to index document {document_id}: {e}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
             return {
                 "status": "error",
                 "document_id": document_id,
@@ -2458,7 +2461,7 @@ Summary:"""
                             'chunk_size_actual': len(node.text),
                             'total_chunks': len(nodes),
                             'has_parent': node.parent_node is not None,
-                            'has_children': len(node.child_nodes) > 0 if hasattr(node, 'child_nodes') else False,
+                            'has_children': len(node.child_nodes) > 0 if hasattr(node, 'child_nodes') and node.child_nodes is not None else False,
                             **node.metadata
                         }
                     }
