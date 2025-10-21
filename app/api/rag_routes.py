@@ -411,9 +411,16 @@ async def process_document_background(
     """
     start_time = datetime.utcnow()
 
+    logger.info(f"📋 BACKGROUND JOB STARTED: {job_id}")
+    logger.info(f"   Document ID: {document_id}")
+    logger.info(f"   Filename: {filename}")
+    logger.info(f"   Started at: {start_time.isoformat()}")
+
     try:
         # Update status
         job_storage[job_id]["status"] = "processing"
+        job_storage[job_id]["started_at"] = start_time.isoformat()
+        job_storage[job_id]["document_id"] = document_id
         job_storage[job_id]["progress"] = 10
 
         # Process document through LlamaIndex service
@@ -482,11 +489,42 @@ async def process_document_background(
                 "message": f"Document processed successfully: {chunks_created} chunks created, {products_created} products created"
             }
 
+    except asyncio.CancelledError:
+        # Job was cancelled (likely due to service shutdown)
+        logger.error(f"🛑 JOB INTERRUPTED: {job_id}")
+        logger.error(f"   Document ID: {document_id}")
+        logger.error(f"   Filename: {filename}")
+        logger.error(f"   Reason: Service shutdown or task cancellation")
+        logger.error(f"   Duration before interruption: {(datetime.utcnow() - start_time).total_seconds():.2f}s")
+
+        job_storage[job_id]["status"] = "interrupted"
+        job_storage[job_id]["error"] = "Job interrupted due to service shutdown"
+        job_storage[job_id]["progress"] = job_storage[job_id].get("progress", 0)
+        job_storage[job_id]["interrupted_at"] = datetime.utcnow().isoformat()
+
+        # Re-raise to allow proper cleanup
+        raise
+
     except Exception as e:
-        logger.error(f"Background processing failed for job {job_id}: {e}", exc_info=True)
+        logger.error(f"❌ BACKGROUND JOB FAILED: {job_id}")
+        logger.error(f"   Document ID: {document_id}")
+        logger.error(f"   Error: {e}", exc_info=True)
+        logger.error(f"   Duration before failure: {(datetime.utcnow() - start_time).total_seconds():.2f}s")
+
         job_storage[job_id]["status"] = "failed"
         job_storage[job_id]["error"] = str(e)
         job_storage[job_id]["progress"] = 100
+        job_storage[job_id]["failed_at"] = datetime.utcnow().isoformat()
+
+    finally:
+        end_time = datetime.utcnow()
+        total_duration = (end_time - start_time).total_seconds()
+        final_status = job_storage[job_id].get("status", "unknown")
+
+        logger.info(f"📋 BACKGROUND JOB FINISHED: {job_id}")
+        logger.info(f"   Final status: {final_status}")
+        logger.info(f"   Total duration: {total_duration:.2f}s")
+        logger.info(f"   Ended at: {end_time.isoformat()}")
 
 
 @router.post("/query", response_model=QueryResponse)

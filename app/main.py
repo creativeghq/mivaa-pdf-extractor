@@ -8,6 +8,8 @@ and structured API endpoints.
 
 import logging
 import sys
+import signal
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Dict, Any
@@ -28,6 +30,61 @@ from app.monitoring import global_performance_monitor
 configure_logging()
 
 logger = logging.getLogger(__name__)
+
+# Global flag to track shutdown state
+_shutdown_initiated = False
+
+def signal_handler(signum, frame):
+    """
+    Handle system signals (SIGTERM, SIGINT, SIGKILL) and log interruptions.
+
+    Args:
+        signum: Signal number
+        frame: Current stack frame
+    """
+    global _shutdown_initiated
+
+    signal_names = {
+        signal.SIGTERM: "SIGTERM (graceful shutdown)",
+        signal.SIGINT: "SIGINT (Ctrl+C)",
+        signal.SIGKILL: "SIGKILL (force kill)",
+        signal.SIGHUP: "SIGHUP (terminal closed)"
+    }
+
+    signal_name = signal_names.get(signum, f"Signal {signum}")
+
+    if not _shutdown_initiated:
+        _shutdown_initiated = True
+        logger.warning(f"🛑 SERVICE INTERRUPTION DETECTED: {signal_name}")
+        logger.warning(f"🛑 Received signal {signum} at {datetime.now().isoformat()}")
+        logger.warning("🛑 Initiating graceful shutdown...")
+        logger.warning("🛑 Any ongoing PDF processing jobs will be interrupted!")
+
+        # Log active background tasks
+        try:
+            from app.api.rag_routes import job_storage
+            active_jobs = [job_id for job_id, job in job_storage.items() if job.get("status") == "processing"]
+            if active_jobs:
+                logger.error(f"🛑 INTERRUPTED JOBS: {len(active_jobs)} active jobs will be terminated:")
+                for job_id in active_jobs:
+                    job = job_storage[job_id]
+                    logger.error(f"   - Job {job_id}: Document {job.get('document_id', 'unknown')}")
+            else:
+                logger.info("✅ No active jobs to interrupt")
+        except Exception as e:
+            logger.error(f"Failed to log active jobs: {e}")
+
+    # Re-raise the signal to allow default handling
+    sys.exit(0)
+
+# Register signal handlers
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
+try:
+    signal.signal(signal.SIGHUP, signal_handler)
+except AttributeError:
+    # SIGHUP not available on Windows
+    pass
 
 # Pydantic models for API responses
 class HealthResponse(BaseModel):
@@ -209,10 +266,33 @@ async def lifespan(app: FastAPI):
     await perform_comprehensive_health_checks(app, logger)
     
     yield
-    
+
     # Shutdown
+    logger.warning("=" * 80)
+    logger.warning("🛑 SHUTDOWN INITIATED")
+    logger.warning(f"🛑 Shutdown time: {datetime.now().isoformat()}")
+    logger.warning("=" * 80)
+
+    # Log active jobs before shutdown
+    try:
+        from app.api.rag_routes import job_storage
+        active_jobs = [job_id for job_id, job in job_storage.items() if job.get("status") == "processing"]
+        if active_jobs:
+            logger.error(f"🛑 SHUTDOWN WARNING: {len(active_jobs)} jobs still processing:")
+            for job_id in active_jobs:
+                job = job_storage[job_id]
+                logger.error(f"   - Job {job_id}: Document {job.get('document_id', 'unknown')}, Started: {job.get('started_at', 'unknown')}")
+        else:
+            logger.info("✅ No active jobs during shutdown")
+    except Exception as e:
+        logger.error(f"Failed to check active jobs during shutdown: {e}")
+
     logger.info("Shutting down PDF2Markdown Microservice...")
     await cleanup_resources(app, logger)
+
+    logger.warning("=" * 80)
+    logger.warning("🛑 SHUTDOWN COMPLETE")
+    logger.warning("=" * 80)
 
 
 async def perform_comprehensive_health_checks(app: FastAPI, logger):
