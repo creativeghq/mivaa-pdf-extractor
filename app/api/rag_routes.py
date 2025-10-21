@@ -25,6 +25,7 @@ from app.services.llamaindex_service import LlamaIndexService
 from app.services.embedding_service import EmbeddingService
 from app.services.advanced_search_service import QueryType, SearchOperator
 from app.services.product_creation_service import ProductCreationService
+from app.services.job_recovery_service import JobRecoveryService
 from app.services.supabase_client import get_supabase_client
 from app.utils.logging import PDFProcessingLogger
 
@@ -33,8 +34,49 @@ logger = logging.getLogger(__name__)
 # Initialize router
 router = APIRouter(prefix="/api/rag", tags=["RAG"])
 
-# Job storage for async processing
+# Job storage for async processing (in-memory cache)
 job_storage: Dict[str, Dict[str, Any]] = {}
+
+# Job recovery service (initialized on startup)
+job_recovery_service: Optional[JobRecoveryService] = None
+
+
+async def initialize_job_recovery():
+    """
+    Initialize job recovery service and mark any interrupted jobs.
+    This should be called on application startup.
+    """
+    global job_recovery_service
+
+    try:
+        logger.info("🔄 Initializing job recovery service...")
+
+        supabase_client = get_supabase_client()
+        job_recovery_service = JobRecoveryService(supabase_client)
+
+        # Mark all processing jobs as interrupted (they were interrupted by restart)
+        interrupted_count = await job_recovery_service.mark_all_processing_as_interrupted(
+            reason="Service restart detected"
+        )
+
+        if interrupted_count > 0:
+            logger.warning(f"🛑 Marked {interrupted_count} jobs as interrupted due to service restart")
+
+        # Get statistics
+        stats = await job_recovery_service.get_job_statistics()
+        logger.info(f"📊 Job statistics: {stats}")
+
+        # Cleanup old jobs (older than 7 days)
+        cleaned = await job_recovery_service.cleanup_old_jobs(days=7)
+        if cleaned > 0:
+            logger.info(f"🧹 Cleaned up {cleaned} old jobs")
+
+        logger.info("✅ Job recovery service initialized successfully")
+
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize job recovery service: {e}", exc_info=True)
+        # Don't fail startup if job recovery fails
+        job_recovery_service = None
 
 # Pydantic models for request/response validation
 class DocumentUploadRequest(BaseModel):
@@ -334,7 +376,7 @@ async def upload_document_async(
         # Read file content
         file_content = await file.read()
 
-        # Initialize job storage
+        # Initialize job storage (in-memory)
         job_storage[job_id] = {
             "status": "pending",
             "document_id": document_id,
@@ -342,6 +384,23 @@ async def upload_document_async(
             "created_at": datetime.utcnow().isoformat(),
             "progress": 0
         }
+
+        # Persist job to database for recovery
+        if job_recovery_service:
+            await job_recovery_service.persist_job(
+                job_id=job_id,
+                document_id=document_id,
+                filename=file.filename,
+                status="pending",
+                metadata={
+                    "title": title,
+                    "description": description,
+                    "tags": document_tags,
+                    "chunk_size": chunk_size,
+                    "chunk_overlap": chunk_overlap
+                },
+                progress=0
+            )
 
         # Start background processing
         background_tasks.add_task(
@@ -417,11 +476,21 @@ async def process_document_background(
     logger.info(f"   Started at: {start_time.isoformat()}")
 
     try:
-        # Update status
+        # Update status (in-memory)
         job_storage[job_id]["status"] = "processing"
         job_storage[job_id]["started_at"] = start_time.isoformat()
         job_storage[job_id]["document_id"] = document_id
         job_storage[job_id]["progress"] = 10
+
+        # Persist status change to database
+        if job_recovery_service:
+            await job_recovery_service.persist_job(
+                job_id=job_id,
+                document_id=document_id,
+                filename=filename,
+                status="processing",
+                progress=10
+            )
 
         # Process document through LlamaIndex service
         processing_result = await llamaindex_service.index_document_content(
@@ -478,6 +547,7 @@ async def process_document_background(
 
             job_storage[job_id]["status"] = "completed"
             job_storage[job_id]["progress"] = 100
+            job_storage[job_id]["completed_at"] = datetime.utcnow().isoformat()
             job_storage[job_id]["result"] = {
                 "document_id": document_id,
                 "title": title or filename,
@@ -488,6 +558,21 @@ async def process_document_background(
                 "processing_time": processing_time,
                 "message": f"Document processed successfully: {chunks_created} chunks created, {products_created} products created"
             }
+
+            # Persist completion to database
+            if job_recovery_service:
+                await job_recovery_service.persist_job(
+                    job_id=job_id,
+                    document_id=document_id,
+                    filename=filename,
+                    status="completed",
+                    progress=100,
+                    metadata={
+                        "chunks_created": chunks_created,
+                        "products_created": products_created,
+                        "processing_time": processing_time
+                    }
+                )
 
     except asyncio.CancelledError:
         # Job was cancelled (likely due to service shutdown)
@@ -502,6 +587,13 @@ async def process_document_background(
         job_storage[job_id]["progress"] = job_storage[job_id].get("progress", 0)
         job_storage[job_id]["interrupted_at"] = datetime.utcnow().isoformat()
 
+        # Persist interruption to database
+        if job_recovery_service:
+            await job_recovery_service.mark_job_interrupted(
+                job_id=job_id,
+                reason="Service shutdown or task cancellation"
+            )
+
         # Re-raise to allow proper cleanup
         raise
 
@@ -515,6 +607,17 @@ async def process_document_background(
         job_storage[job_id]["error"] = str(e)
         job_storage[job_id]["progress"] = 100
         job_storage[job_id]["failed_at"] = datetime.utcnow().isoformat()
+
+        # Persist failure to database
+        if job_recovery_service:
+            await job_recovery_service.persist_job(
+                job_id=job_id,
+                document_id=document_id,
+                filename=filename,
+                status="failed",
+                progress=100,
+                error=str(e)
+            )
 
     finally:
         end_time = datetime.utcnow()

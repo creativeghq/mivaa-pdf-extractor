@@ -264,7 +264,14 @@ async def lifespan(app: FastAPI):
     
     # Comprehensive system health validation
     await perform_comprehensive_health_checks(app, logger)
-    
+
+    # Initialize job recovery service
+    try:
+        from app.api.rag_routes import initialize_job_recovery
+        await initialize_job_recovery()
+    except Exception as e:
+        logger.error(f"Failed to initialize job recovery: {e}", exc_info=True)
+
     yield
 
     # Shutdown
