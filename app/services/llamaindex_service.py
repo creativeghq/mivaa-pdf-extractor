@@ -1313,8 +1313,8 @@ class LlamaIndexService:
                     }
 
                     self.logger.info(f"🔄 Processing PDF with advanced processor: {temp_file_path}")
-                    pdf_result = await pdf_processor.process_pdf_file(
-                        pdf_path=temp_file_path,
+                    pdf_result = await pdf_processor.process_pdf_from_bytes(
+                        pdf_bytes=file_content,
                         document_id=document_id,
                         processing_options=processing_options
                     )

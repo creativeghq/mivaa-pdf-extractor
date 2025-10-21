@@ -217,11 +217,14 @@ class PDFProcessor:
         try:
             # Create temporary directory for processing
             temp_dir = self._create_temp_directory(document_id)
+            self.logger.info(f"📁 Created temp directory: {temp_dir}")
             
             # Save PDF bytes to temporary file
             temp_pdf_path = os.path.join(temp_dir, f"{document_id}.pdf")
+            self.logger.info(f"💾 Saving PDF to: {temp_pdf_path}")
             async with aiofiles.open(temp_pdf_path, 'wb') as f:
                 await f.write(pdf_bytes)
+            self.logger.info(f"✅ PDF saved successfully, file size: {os.path.getsize(temp_pdf_path)} bytes")
             
             # Process with timeout
             timeout = processing_options.get('timeout_seconds', self.default_timeout)
