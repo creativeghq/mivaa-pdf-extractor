@@ -10,8 +10,9 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, status
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, status, BackgroundTasks
 from fastapi.responses import JSONResponse
+import asyncio
 try:
     # Try Pydantic v2 first
     from pydantic import BaseModel, Field, field_validator as validator
@@ -29,6 +30,9 @@ logger = logging.getLogger(__name__)
 
 # Initialize router
 router = APIRouter(prefix="/api/rag", tags=["RAG"])
+
+# Job storage for async processing
+job_storage: Dict[str, Dict[str, Any]] = {}
 
 # Pydantic models for request/response validation
 class DocumentUploadRequest(BaseModel):
@@ -285,6 +289,177 @@ async def upload_document(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Document processing failed: {str(e)}"
         )
+
+@router.post("/documents/upload-async")
+async def upload_document_async(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    title: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
+    tags: Optional[str] = Form(None),
+    chunk_size: int = Form(1000),
+    chunk_overlap: int = Form(200),
+    enable_embedding: bool = Form(True),
+    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
+):
+    """
+    Upload and process a document asynchronously for RAG functionality.
+
+    Returns immediately with a job_id that can be used to check processing status.
+    Use GET /documents/job/{job_id} to check the status and get results.
+    """
+    try:
+        # Validate file type
+        if not file.content_type or not file.content_type.startswith(('application/pdf', 'text/', 'application/msword')):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Unsupported file type. Please upload PDF, text, or Word documents."
+            )
+
+        # Generate IDs
+        job_id = str(uuid4())
+        document_id = str(uuid4())
+
+        # Parse tags if provided
+        document_tags = []
+        if tags:
+            try:
+                import json
+                document_tags = json.loads(tags)
+            except json.JSONDecodeError:
+                document_tags = [tag.strip() for tag in tags.split(',')]
+
+        # Read file content
+        file_content = await file.read()
+
+        # Initialize job storage
+        job_storage[job_id] = {
+            "status": "pending",
+            "document_id": document_id,
+            "filename": file.filename,
+            "created_at": datetime.utcnow().isoformat(),
+            "progress": 0
+        }
+
+        # Start background processing
+        background_tasks.add_task(
+            process_document_background,
+            job_id=job_id,
+            document_id=document_id,
+            file_content=file_content,
+            filename=file.filename,
+            title=title,
+            description=description,
+            document_tags=document_tags,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            llamaindex_service=llamaindex_service
+        )
+
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={
+                "job_id": job_id,
+                "document_id": document_id,
+                "status": "pending",
+                "message": "Document upload accepted. Processing in background.",
+                "status_url": f"/api/rag/documents/job/{job_id}"
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Document upload failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Document upload failed: {str(e)}"
+        )
+
+
+@router.get("/documents/job/{job_id}")
+async def get_job_status(job_id: str):
+    """
+    Get the status of an async document processing job.
+    """
+    if job_id not in job_storage:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found"
+        )
+
+    job_data = job_storage[job_id]
+    return JSONResponse(content=job_data)
+
+
+async def process_document_background(
+    job_id: str,
+    document_id: str,
+    file_content: bytes,
+    filename: str,
+    title: Optional[str],
+    description: Optional[str],
+    document_tags: List[str],
+    chunk_size: int,
+    chunk_overlap: int,
+    llamaindex_service: LlamaIndexService
+):
+    """
+    Background task to process document.
+    """
+    start_time = datetime.utcnow()
+
+    try:
+        # Update status
+        job_storage[job_id]["status"] = "processing"
+        job_storage[job_id]["progress"] = 10
+
+        # Process document through LlamaIndex service
+        processing_result = await llamaindex_service.index_document_content(
+            file_content=file_content,
+            document_id=document_id,
+            file_path=filename,
+            metadata={
+                "filename": filename,
+                "title": title or filename,
+                "description": description,
+                "tags": document_tags,
+                "source": "rag_upload_async"
+            },
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap
+        )
+
+        processing_time = (datetime.utcnow() - start_time).total_seconds()
+
+        # Check if processing succeeded
+        result_status = processing_result.get('status', 'completed')
+        chunks_created = processing_result.get('statistics', {}).get('total_chunks', 0)
+
+        if result_status == 'error':
+            error_message = processing_result.get('error', 'Unknown error during document processing')
+            job_storage[job_id]["status"] = "failed"
+            job_storage[job_id]["error"] = error_message
+            job_storage[job_id]["progress"] = 100
+        else:
+            job_storage[job_id]["status"] = "completed"
+            job_storage[job_id]["progress"] = 100
+            job_storage[job_id]["result"] = {
+                "document_id": document_id,
+                "title": title or filename,
+                "status": result_status,
+                "chunks_created": chunks_created,
+                "embeddings_generated": chunks_created > 0,
+                "processing_time": processing_time,
+                "message": f"Document processed successfully: {chunks_created} chunks created"
+            }
+
+    except Exception as e:
+        logger.error(f"Background processing failed for job {job_id}: {e}", exc_info=True)
+        job_storage[job_id]["status"] = "failed"
+        job_storage[job_id]["error"] = str(e)
+        job_storage[job_id]["progress"] = 100
+
 
 @router.post("/query", response_model=QueryResponse)
 async def query_documents(
