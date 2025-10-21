@@ -2631,6 +2631,7 @@ Summary:"""
             for i, image_info in enumerate(extracted_images):
                 try:
                     image_path = image_info.get('path')
+                    self.logger.info(f"🔍 DEBUG - Image {i}: path={image_path}, exists={os.path.exists(image_path)}")
                     if not image_path or not os.path.exists(image_path):
                         continue
 
