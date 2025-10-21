@@ -471,7 +471,7 @@ class SupabaseClient:
                 }
             )
 
-            logger.info(f"🔍 DEBUG - Upload response type: {type(response)}, hasattr error: {hasattr(response, "error")}")
+            logger.info(f"🔍 DEBUG - Upload response type: {type(response)}, hasattr error: {hasattr(response, 'error')}")
             # Check if upload was successful
             # The response object structure varies by supabase-py version
             if hasattr(response, 'error') and response.error:
