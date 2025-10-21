@@ -431,10 +431,8 @@ class PDFProcessor:
             doc = fitz.open(pdf_path)
             total_pages = len(doc)
 
-            # Sample first few pages to determine PDF type
             # Sample pages strategically to determine PDF type
             # Sample first 3, middle 2, and last 2 pages for better detection
-            sample_pages = min(7, total_pages)
             pages_to_sample = []
             
             # Always sample first 3 pages
@@ -461,12 +459,30 @@ class PDFProcessor:
                 images = page.get_images()
                 total_text_chars += len(text.strip())
                 total_images += len(images)
-            doc.close()
+
             doc.close()
 
             # Enhanced PDF type detection with multiple criteria
             avg_text_per_page = total_text_chars / len(pages_to_sample)
             avg_images_per_page = total_images / len(pages_to_sample)
+
+            # Multiple detection criteria for better accuracy
+            criteria = {
+                'low_text': avg_text_per_page < 50,
+                'very_low_text': avg_text_per_page < 10,  # More restrictive threshold
+                'has_images': avg_images_per_page >= 1,
+                'many_images': avg_images_per_page >= 3,
+                'text_to_image_ratio': (avg_text_per_page / max(avg_images_per_page, 1)) < 30,
+                'no_images': avg_images_per_page == 0
+            }
+
+            # Smart detection logic - prioritize text-first for text-only PDFs
+            is_image_based = (
+                (criteria['very_low_text'] and criteria['has_images']) or  # Very little text + images → OCR
+                (criteria['low_text'] and criteria['many_images']) or  # Low text + many images → OCR
+                (criteria['many_images'] and criteria['text_to_image_ratio'])  # Many images + low text ratio → OCR
+            ) and not criteria['no_images']  # Never use OCR for PDFs with no images
+
             # Enhanced logging with detection criteria
             detection_reason = []
             if criteria['very_low_text'] and criteria['has_images']:
