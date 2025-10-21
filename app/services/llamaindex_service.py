@@ -2618,6 +2618,7 @@ Summary:"""
                 "images_stored": 0,
                 "layout_links_created": 0
             }
+            workspace_id = metadata.get("workspace_id", "ffafc28b-1b8b-4b0d-b226-9f9a6154004e")
 
             if not extracted_images:
                 return stats
