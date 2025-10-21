@@ -1455,7 +1455,9 @@ class LlamaIndexService:
                     self.logger.warning(f"Failed to clean up temporary file: {e}")
                     
         except Exception as e:
+            import traceback
             self.logger.error(f"Failed to index document {document_id}: {e}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
             return {
                 "status": "error",
                 "document_id": document_id,
