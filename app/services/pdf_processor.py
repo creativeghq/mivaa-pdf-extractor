@@ -432,40 +432,41 @@ class PDFProcessor:
             total_pages = len(doc)
 
             # Sample first few pages to determine PDF type
-            sample_pages = min(3, total_pages)
+            # Sample pages strategically to determine PDF type
+            # Sample first 3, middle 2, and last 2 pages for better detection
+            sample_pages = min(7, total_pages)
+            pages_to_sample = []
+            
+            # Always sample first 3 pages
+            pages_to_sample.extend(range(min(3, total_pages)))
+            
+            # Sample middle pages if document is long enough
+            if total_pages > 5:
+                mid_page = total_pages // 2
+                pages_to_sample.extend([mid_page - 1, mid_page])
+            
+            # Sample last pages if document is long enough
+            if total_pages > 3:
+                pages_to_sample.extend([total_pages - 2, total_pages - 1])
+            
+            # Remove duplicates and sort
+            pages_to_sample = sorted(set(pages_to_sample))
+            
             total_text_chars = 0
             total_images = 0
 
-            for page_num in range(sample_pages):
+            for page_num in pages_to_sample:
                 page = doc[page_num]
                 text = page.get_text()
                 images = page.get_images()
                 total_text_chars += len(text.strip())
                 total_images += len(images)
-
+            doc.close()
             doc.close()
 
             # Enhanced PDF type detection with multiple criteria
-            avg_text_per_page = total_text_chars / sample_pages
-            avg_images_per_page = total_images / sample_pages
-
-            # Multiple detection criteria for better accuracy
-            criteria = {
-                'low_text': avg_text_per_page < 50,
-                'very_low_text': avg_text_per_page < 10,  # More restrictive threshold
-                'has_images': avg_images_per_page >= 1,
-                'many_images': avg_images_per_page >= 3,
-                'text_to_image_ratio': (avg_text_per_page / max(avg_images_per_page, 1)) < 30,
-                'no_images': avg_images_per_page == 0
-            }
-
-            # Smart detection logic - prioritize text-first for text-only PDFs
-            is_image_based = (
-                (criteria['very_low_text'] and criteria['has_images']) or  # Very little text + images → OCR
-                (criteria['low_text'] and criteria['many_images']) or  # Low text + many images → OCR
-                (criteria['many_images'] and criteria['text_to_image_ratio'])  # Many images + low text ratio → OCR
-            ) and not criteria['no_images']  # Never use OCR for PDFs with no images
-
+            avg_text_per_page = total_text_chars / len(pages_to_sample)
+            avg_images_per_page = total_images / len(pages_to_sample)
             # Enhanced logging with detection criteria
             detection_reason = []
             if criteria['very_low_text'] and criteria['has_images']:
