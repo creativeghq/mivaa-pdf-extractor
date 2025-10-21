@@ -2655,34 +2655,58 @@ Summary:"""
                     material_analysis = await self._analyze_image_material(image_base64, image_path)
 
                     # Store image with context in database
+                    # Map to actual database columns
                     image_record = {
                         'document_id': document_id,
-                        'image_url': f"/images/{document_id}/{contextual_name}",
-                        'image_path': image_path,
-                        'original_filename': os.path.basename(image_path),
-                        'contextual_name': contextual_name,
+                        'workspace_id': workspace_id,
+                        'chunk_id': associated_chunks[0].metadata.get('chunk_id') if associated_chunks else None,
+                        'image_url': image_info.get('storage_url', ''),
+                        'image_type': image_info.get('image_type', 'extracted'),
+                        'caption': contextual_name,
+                        'alt_text': f"Image from {nearest_heading}" if nearest_heading else None,
+                        'bbox': image_info.get('bbox', {}),
                         'page_number': image_info.get('page_number', 1),
-                        'position_x': image_info.get('bbox', {}).get('x', 0),
-                        'position_y': image_info.get('bbox', {}).get('y', 0),
-                        'width': image_info.get('width', 0),
-                        'height': image_info.get('height', 0),
+                        'proximity_score': 1.0 if associated_chunks else 0.0,
+                        'confidence': image_info.get('quality_score', 0.0),
+                        'contextual_name': contextual_name,
                         'nearest_heading': nearest_heading,
                         'heading_level': heading_level,
-                        'associated_chunks': [chunk.metadata.get('chunk_id') for chunk in associated_chunks],
-                        'layout_context': {
-                            'bbox': image_info.get('bbox', {}),
-                            'quality_score': image_info.get('quality_score', 0.0),
-                            'image_type': image_info.get('image_type', 'unknown')
+                        'quality_score': image_info.get('quality_score', 0.0),
+                        'quality_metrics': image_info.get('quality_metrics', {}),
+                        'ocr_extracted_text': image_info.get('ocr_result', {}).get('text', ''),
+                        'ocr_confidence_score': image_info.get('ocr_result', {}).get('confidence', 0.0),
+                        'image_analysis_results': material_analysis or {},
+                        'image_embedding': clip_embeddings.get('embedding_512'),  # pgvector column
+                        'visual_features': {
+                            'clip_512': clip_embeddings.get('embedding_512'),
+                            'clip_1536': clip_embeddings.get('embedding_1536'),
+                            'model_used': clip_embeddings.get('model_used', 'clip-vit-base-patch32')
                         },
-                        'image_metadata': {
-                            'format': image_info.get('format', 'unknown'),
-                            'size_bytes': len(image_data),
-                            'dimensions': f"{image_info.get('width', 0)}x{image_info.get('height', 0)}"
+                        'processing_status': 'completed',
+                        'multimodal_metadata': {
+                            'associated_chunks': [chunk.metadata.get('chunk_id') for chunk in associated_chunks],
+                            'layout_context': {
+                                'bbox': image_info.get('bbox', {}),
+                                'quality_score': image_info.get('quality_score', 0.0),
+                                'image_type': image_info.get('image_type', 'unknown')
+                            },
+                            'image_metadata': {
+                                'format': image_info.get('format', 'unknown'),
+                                'size_bytes': len(image_data),
+                                'dimensions': f"{image_info.get('width', 0)}x{image_info.get('height', 0)}"
+                            },
+                            'extraction_confidence': image_info.get('quality_score', 0.0)
                         },
-                        'visual_embedding_512': clip_embeddings.get('embedding_512'),
-                        'visual_embedding_1536': clip_embeddings.get('embedding_1536'),
-                        'material_analysis': material_analysis,
-                        'extraction_confidence': image_info.get('quality_score', 0.0)
+                        'metadata': {
+                            'original_filename': os.path.basename(image_path),
+                            'storage_path': image_info.get('storage_path', ''),
+                            'storage_bucket': image_info.get('storage_bucket', 'pdf-tiles'),
+                            'processing_timestamp': image_info.get('processing_timestamp', '')
+                        },
+                        'analysis_metadata': {
+                            'material_analysis': material_analysis,
+                            'clip_processing_time_ms': clip_embeddings.get('processing_time_ms', 0)
+                        }
                     }
 
                     # Store material metadata in materials_catalog if material analysis was successful
