@@ -2712,16 +2712,31 @@ Summary:"""
                     self.logger.error(f"Failed to process image {i}: {e}")
                     continue
 
-            # Clean up local image files after processing
-            self.logger.info("🧹 Cleaning up local image files...")
+            # Clean up local image files and temp directory after processing
+            self.logger.info("🧹 Cleaning up local image files and temp directory...")
+            temp_dirs_to_clean = set()
             for image_info in extracted_images:
                 try:
                     image_path = image_info.get('path')
-                    if image_path and os.path.exists(image_path):
-                        os.unlink(image_path)
-                        self.logger.debug(f"Deleted local image: {image_path}")
+                    if image_path:
+                        # Track the temp directory for cleanup
+                        # Path format: /tmp/pdf_processor_{doc_id}_images/images/{filename}
+                        import os.path
+                        temp_dir = os.path.dirname(os.path.dirname(image_path))  # Go up two levels
+                        if 'pdf_processor_' in temp_dir:
+                            temp_dirs_to_clean.add(temp_dir)
+                except Exception as e:
+                    self.logger.warning(f"Failed to track temp dir for {image_path}: {e}")
+            
+            # Clean up temp directories
+            import shutil
+            for temp_dir in temp_dirs_to_clean:
+                try:
+                    if os.path.exists(temp_dir):
+                        shutil.rmtree(temp_dir)
+                        self.logger.info(f"🧹 Cleaned up temp directory: {temp_dir}")
                 except Exception as cleanup_error:
-                    self.logger.warning(f"Failed to clean up image {image_path}: {cleanup_error}")
+                    self.logger.warning(f"Failed to clean up temp directory {temp_dir}: {cleanup_error}")
 
             self.logger.info(f"🖼️ Image processing complete: {stats}")
             return stats

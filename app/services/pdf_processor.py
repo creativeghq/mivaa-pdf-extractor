@@ -783,13 +783,10 @@ class PDFProcessor:
                 self.logger.warning(f"⚠️ Image directory does not exist: {image_dir}")
                 self.logger.warning(f"   Output directory contents: {os.listdir(output_dir) if os.path.exists(output_dir) else 'N/A'}")
 
-            # Clean up temporary directory after processing
-            try:
-                import shutil
-                shutil.rmtree(output_dir)
-                self.logger.debug(f"Cleaned up temporary directory: {output_dir}")
-            except Exception as cleanup_error:
-                self.logger.warning(f"Failed to clean up temporary directory: {cleanup_error}")
+            # NOTE: Do NOT clean up temporary directory here - images are needed for llamaindex processing
+            # The llamaindex_service will clean up image files after processing
+            # (CLIP embeddings, Anthropic analysis, database storage, etc.)
+            # Directory cleanup will happen in llamaindex_service after image processing completes
 
             # Apply post-processing filters if requested
             if processing_options.get('remove_duplicates', True):
