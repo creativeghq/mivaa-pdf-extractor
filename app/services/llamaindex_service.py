@@ -2472,11 +2472,11 @@ Summary:"""
                     if chunk_result.data:
                         chunk_id = chunk_result.data[0]['id']
                         chunks_stored += 1
+                        # Store database UUID in node metadata for later use (for image-chunk relationships)
+                        node.metadata["db_chunk_id"] = chunk_id
 
                         # Generate and store embedding
                         try:
-                        # Store database UUID in node metadata for later use
-                        node.metadata["db_chunk_id"] = chunk_id
                             # Check if embedding service is available
                             if self.embedding_service is None:
                                 self.logger.error(f"❌ Embedding service is None for chunk {i} - OPENAI_API_KEY not set in environment")
