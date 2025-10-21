@@ -471,8 +471,14 @@ class SupabaseClient:
                 }
             )
 
-            if response.error:
+            logger.info(f"🔍 DEBUG - Upload response type: {type(response)}, hasattr error: {hasattr(response, "error")}")
+            # Check if upload was successful
+            # The response object structure varies by supabase-py version
+            if hasattr(response, 'error') and response.error:
                 raise Exception(f"Upload failed: {response.error}")
+            elif isinstance(response, dict) and response.get('error'):
+                raise Exception(f"Upload failed: {response.get('error')}")
+            # If no error attribute, assume success
 
             # Get public URL
             url_response = self._client.storage.from_(bucket_name).get_public_url(file_path)
