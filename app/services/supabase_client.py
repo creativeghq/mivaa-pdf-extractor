@@ -473,12 +473,21 @@ class SupabaseClient:
 
             logger.info(f"🔍 DEBUG - Upload response type: {type(response)}, hasattr error: {hasattr(response, 'error')}")
             # Check if upload was successful
-            # The response object structure varies by supabase-py version
-            if hasattr(response, 'error') and response.error:
+            # Handle httpx.Response (newer supabase-py versions)
+            if hasattr(response, 'status_code'):
+                if response.status_code not in [200, 201]:
+                    error_msg = response.text if hasattr(response, 'text') else str(response)
+                    raise Exception(f"Upload failed with status {response.status_code}: {error_msg}")
+                response_data = response.json() if hasattr(response, 'json') else {}
+            # Handle old-style response objects
+            elif hasattr(response, 'error') and response.error:
                 raise Exception(f"Upload failed: {response.error}")
-            elif isinstance(response, dict) and response.get('error'):
-                raise Exception(f"Upload failed: {response.get('error')}")
-            # If no error attribute, assume success
+            elif isinstance(response, dict):
+                if response.get('error'):
+                    raise Exception(f"Upload failed: {response.get('error')}")
+                response_data = response
+            else:
+                response_data = {}
 
             # Get public URL
             url_response = self._client.storage.from_(bucket_name).get_public_url(file_path)
@@ -486,7 +495,7 @@ class SupabaseClient:
             logger.info(f"File uploaded successfully to {bucket_name}/{file_path}")
             return {
                 "success": True,
-                "data": response.data,
+                "data": response_data,
                 "public_url": url_response,
                 "bucket": bucket_name,
                 "path": file_path
