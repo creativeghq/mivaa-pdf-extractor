@@ -539,9 +539,9 @@ class LlamaIndexService:
             Settings.chunk_overlap = self.chunk_overlap
 
             # Initialize hierarchical node parser for multi-level chunking
-            # Chunk sizes: 2048 (full sections), 512 (subsections), 128 (atomic facts)
+            # Chunk sizes: 2048 (full sections), 1024 (subsections), 512 (paragraphs)
             self.node_parser = HierarchicalNodeParser.from_defaults(
-                chunk_sizes=[2048, 512, 128]
+                chunk_sizes=[2048, 1024, 512]
             )
 
             self.logger.info("✅ HierarchicalNodeParser initialized with chunk sizes: [2048, 512, 128]")
@@ -1213,7 +1213,7 @@ class LlamaIndexService:
             'file_size': os.path.getsize(file_path) if os.path.exists(file_path) else 0,
             'processed_at': datetime.utcnow().isoformat(),
             'chunk_strategy': 'hierarchical',  # Using HierarchicalNodeParser
-            'chunk_sizes': [2048, 512, 128],  # Hierarchical chunk sizes
+            'chunk_sizes': [2048, 1024, 512],  # Hierarchical chunk sizes
             'embedding_model': self.embedding_model,
             'embedding_dimension': 1536  # OpenAI text-embedding-3-small dimension
         }
