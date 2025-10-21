@@ -253,15 +253,28 @@ async def upload_document(
         )
         
         processing_time = (datetime.utcnow() - start_time).total_seconds()
-        
+
+        # Check if processing actually succeeded
+        result_status = processing_result.get('status', 'completed')
+        chunks_created = processing_result.get('statistics', {}).get('total_chunks', 0)
+
+        # If status is error, raise an exception with details
+        if result_status == 'error':
+            error_message = processing_result.get('error', 'Unknown error during document processing')
+            logger.error(f"Document processing failed for {document_id}: {error_message}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Document processing failed: {error_message}"
+            )
+
         return DocumentUploadResponse(
             document_id=document_id,
             title=title or file.filename,
-            status=processing_result.get('status', 'completed'),
-            chunks_created=processing_result.get('statistics', {}).get('total_chunks', 0),
-            embeddings_generated=True,  # Always true if processing succeeded
+            status=result_status,
+            chunks_created=chunks_created,
+            embeddings_generated=chunks_created > 0,  # Only true if chunks were actually created
             processing_time=processing_time,
-            message="Document processed successfully"
+            message=f"Document processed successfully: {chunks_created} chunks created"
         )
         
     except HTTPException:
