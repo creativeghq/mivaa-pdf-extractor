@@ -1383,7 +1383,7 @@ class LlamaIndexService:
                         'total_chunks': len(nodes),
                         'chunk_size_actual': len(node.text),
                         'has_parent': node.parent_node is not None,
-                        'has_children': len(node.child_nodes) > 0 if hasattr(node, 'child_nodes') else False
+                        'has_children': len(node.child_nodes) > 0 if hasattr(node, 'child_nodes') and node.child_nodes is not None else False
                     })
                 
                 # Create or get index for this document
