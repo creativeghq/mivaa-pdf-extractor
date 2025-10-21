@@ -2623,7 +2623,7 @@ Summary:"""
                 return stats
 
             self.logger.info(f"🖼️ Processing {len(extracted_images)} images with context linking...")
-            self.logger.info(f"🔍 DEBUG - First image info: {extracted_images[0] if extracted_images else "No images"}")
+            self.logger.info(f"🔍 DEBUG - First image info: {extracted_images[0] if extracted_images else 'No images'}")
 
             # Extract heading hierarchy from document text for context
             heading_hierarchy = self._extract_heading_hierarchy(nodes)
