@@ -581,32 +581,32 @@ class LlamaIndexService:
             self.logger.info("✅ In-memory vector store enabled for search")
 
             self.logger.info(f"🔍 Connection string format: postgresql://postgres:***@db.{project_id}.supabase.co:5432/postgres")
-
-            # Initialize Supabase vector store with timeout protection
-            import signal
-
-            def timeout_handler(signum, frame):
-                raise TimeoutError("SupabaseVectorStore initialization timed out")
-
-            # Set 10 second timeout
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(10)
-
-            try:
-                self.vector_store = SupabaseVectorStore(
-                    postgres_connection_string=connection_string,
-                    collection_name=self.table_name,
-                    dimension=1536,  # Default for OpenAI text-embedding-3-small
-                )
-                signal.alarm(0)  # Cancel timeout
-                self.logger.info(f"✅ SupabaseVectorStore initialized with table: {self.table_name}")
-            except TimeoutError:
-                signal.alarm(0)  # Cancel timeout
-                self.logger.error("❌ SupabaseVectorStore initialization timed out after 10 seconds")
-                self.vector_store = None
-            except Exception as e:
-                signal.alarm(0)  # Cancel timeout
-                raise e
+# 
+#             # Initialize Supabase vector store with timeout protection
+#             import signal
+# 
+#             def timeout_handler(signum, frame):
+#                 raise TimeoutError("SupabaseVectorStore initialization timed out")
+# 
+#             # Set 10 second timeout
+#             signal.signal(signal.SIGALRM, timeout_handler)
+#             signal.alarm(10)
+# 
+#             try:
+#                 self.vector_store = SupabaseVectorStore(
+#                     postgres_connection_string=connection_string,
+#                     collection_name=self.table_name,
+#                     dimension=1536,  # Default for OpenAI text-embedding-3-small
+#                 )
+#                 signal.alarm(0)  # Cancel timeout
+#                 self.logger.info(f"✅ SupabaseVectorStore initialized with table: {self.table_name}")
+#             except TimeoutError:
+#                 signal.alarm(0)  # Cancel timeout
+#                 self.logger.error("❌ SupabaseVectorStore initialization timed out after 10 seconds")
+#                 self.vector_store = None
+#             except Exception as e:
+#                 signal.alarm(0)  # Cancel timeout
+#                 raise e
 
             self.logger.info(f"✅ SupabaseVectorStore initialized with table: {self.table_name}")
 
