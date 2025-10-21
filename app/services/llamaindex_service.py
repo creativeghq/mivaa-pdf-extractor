@@ -1372,6 +1372,7 @@ class LlamaIndexService:
                 nodes = self.node_parser.get_nodes_from_documents(documents)
 
                 self.logger.info(f"📊 Created {len(nodes)} hierarchical nodes from {len(documents)} documents")
+                chunk_strategy = "hierarchical"  # Using HierarchicalNodeParser
 
                 # Add chunk-specific metadata
                 for i, node in enumerate(nodes):

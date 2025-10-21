@@ -420,7 +420,7 @@ async def process_document_background(
             document_id=document_id,
             file_path=filename,
             metadata={
-                "workspace_id": "default",
+                "workspace_id": "00000000-0000-0000-0000-000000000000",  # Default workspace UUID
                 "filename": filename,
                 "title": title or filename,
                 "description": description,
