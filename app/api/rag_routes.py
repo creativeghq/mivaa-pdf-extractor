@@ -24,6 +24,8 @@ from app.config import get_settings
 from app.services.llamaindex_service import LlamaIndexService
 from app.services.embedding_service import EmbeddingService
 from app.services.advanced_search_service import QueryType, SearchOperator
+from app.services.product_creation_service import ProductCreationService
+from app.services.supabase_client import get_supabase_client
 from app.utils.logging import PDFProcessingLogger
 
 logger = logging.getLogger(__name__)
@@ -443,6 +445,30 @@ async def process_document_background(
             job_storage[job_id]["error"] = error_message
             job_storage[job_id]["progress"] = 100
         else:
+            # ✅ AUTO-CREATE PRODUCTS FROM CHUNKS
+            products_created = 0
+            try:
+                if chunks_created > 0:
+                    logger.info(f"🏭 Starting automatic product creation for document {document_id}")
+                    supabase_client = get_supabase_client()
+                    product_service = ProductCreationService(supabase_client)
+
+                    # Create products from chunks (limit to 10 products by default)
+                    product_result = await product_service.create_products_from_chunks(
+                        document_id=document_id,
+                        workspace_id="ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+                        max_products=10,  # Limit to 10 products per document
+                        min_chunk_length=100  # Only create products from chunks with at least 100 chars
+                    )
+
+                    products_created = product_result.get('products_created', 0)
+                    logger.info(f"✅ Created {products_created} products from {chunks_created} chunks")
+                else:
+                    logger.info("⚠️ No chunks created, skipping product creation")
+            except Exception as product_error:
+                logger.error(f"❌ Product creation failed: {product_error}", exc_info=True)
+                # Don't fail the entire job if product creation fails
+
             job_storage[job_id]["status"] = "completed"
             job_storage[job_id]["progress"] = 100
             job_storage[job_id]["result"] = {
@@ -451,8 +477,9 @@ async def process_document_background(
                 "status": result_status,
                 "chunks_created": chunks_created,
                 "embeddings_generated": chunks_created > 0,
+                "products_created": products_created,
                 "processing_time": processing_time,
-                "message": f"Document processed successfully: {chunks_created} chunks created"
+                "message": f"Document processed successfully: {chunks_created} chunks created, {products_created} products created"
             }
 
     except Exception as e:
