@@ -2475,6 +2475,8 @@ Summary:"""
 
                         # Generate and store embedding
                         try:
+                        # Store database UUID in node metadata for later use
+                        node.metadata["db_chunk_id"] = chunk_id
                             # Check if embedding service is available
                             if self.embedding_service is None:
                                 self.logger.error(f"❌ Embedding service is None for chunk {i} - OPENAI_API_KEY not set in environment")
@@ -2660,7 +2662,7 @@ Summary:"""
                     image_record = {
                         'document_id': document_id,
                         'workspace_id': workspace_id,
-                        'chunk_id': associated_chunks[0].metadata.get('chunk_id') if associated_chunks else None,
+                        'chunk_id': associated_chunks[0].metadata.get('db_chunk_id') if associated_chunks else None,
                         'image_url': image_info.get('storage_url', ''),
                         'image_type': image_info.get('image_type', 'extracted'),
                         'caption': contextual_name,
@@ -2685,7 +2687,7 @@ Summary:"""
                         },
                         'processing_status': 'completed',
                         'multimodal_metadata': {
-                            'associated_chunks': [chunk.metadata.get('chunk_id') for chunk in associated_chunks],
+                            'associated_chunks': [chunk.metadata.get('db_chunk_id') for chunk in associated_chunks if chunk.metadata.get('db_chunk_id')],
                             'layout_context': {
                                 'bbox': image_info.get('bbox', {}),
                                 'quality_score': image_info.get('quality_score', 0.0),
