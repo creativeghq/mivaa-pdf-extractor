@@ -998,19 +998,9 @@ class PDFProcessor:
             # Use processed image if available, otherwise use original
             upload_path = processed_path if processed_path and os.path.exists(processed_path) else image_path
 
-            # Validate file exists
-            if not os.path.exists(upload_path):
-                raise FileNotFoundError(f"Image file not found: {upload_path}")
-
             # Read image file as bytes
             with open(upload_path, 'rb') as f:
                 image_data = f.read()
-
-            # Validate image_data is bytes
-            if not isinstance(image_data, bytes):
-                raise TypeError(f"Expected bytes, got {type(image_data).__name__}: {image_data}")
-
-            self.logger.debug(f"Read {len(image_data)} bytes from {upload_path}")
 
             # Get Supabase client
             supabase_client = get_supabase_client()
