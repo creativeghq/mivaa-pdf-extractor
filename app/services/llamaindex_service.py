@@ -3103,26 +3103,26 @@ Summary:"""
 
             # Generate CLIP embeddings using the existing service
             # This calls the actual MIVAA endpoints for CLIP processing
-            embedding_result = await material_service.generate_visual_embeddings(
+            embedding_result = await material_service.generate_material_embeddings(
                 image_data=image_base64,
-                embedding_types=['clip_512', 'clip_1536']
+                embedding_types=['clip']
             )
 
             if embedding_result and embedding_result.get('success'):
                 embeddings = embedding_result.get('embeddings', {})
+                metadata = embedding_result.get('embedding_metadata', {})
 
-                # Extract both 512D and 1536D embeddings
-                embedding_512 = embeddings.get('clip_512')
-                embedding_1536 = embeddings.get('clip_1536')
+                # Get CLIP embedding (512D by default)
+                clip_embedding = embeddings.get('clip')
 
-                self.logger.info(f"✅ Generated CLIP embeddings: 512D={len(embedding_512) if embedding_512 else 0}, 1536D={len(embedding_1536) if embedding_1536 else 0}")
+                self.logger.info(f"✅ Generated CLIP embeddings: {len(clip_embedding) if clip_embedding else 0}D")
 
                 return {
-                    "embedding_512": embedding_512,
-                    "embedding_1536": embedding_1536,
-                    "model_used": embedding_result.get('model_used', 'clip-vit-base-patch32'),
-                    "processing_time_ms": embedding_result.get('processing_time_ms', 0),
-                    "confidence_score": embedding_result.get('confidence_score', 0.0)
+                    "embedding_512": clip_embedding,  # Use 512D CLIP embedding
+                    "embedding_1536": None,  # Not available from this service
+                    "model_used": metadata.get('model_versions', {}).get('clip', 'clip-vit-base-patch32'),
+                    "processing_time_ms": metadata.get('processing_time_ms', 0),
+                    "confidence_score": 1.0  # Default confidence
                 }
             else:
                 self.logger.warning(f"CLIP embedding generation failed or returned no results")
