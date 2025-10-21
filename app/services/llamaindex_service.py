@@ -2623,6 +2623,7 @@ Summary:"""
                 return stats
 
             self.logger.info(f"🖼️ Processing {len(extracted_images)} images with context linking...")
+            self.logger.info(f"🔍 DEBUG - First image info: {extracted_images[0] if extracted_images else "No images"}")
 
             # Extract heading hierarchy from document text for context
             heading_hierarchy = self._extract_heading_hierarchy(nodes)
@@ -2709,6 +2710,17 @@ Summary:"""
                 except Exception as e:
                     self.logger.error(f"Failed to process image {i}: {e}")
                     continue
+
+            # Clean up local image files after processing
+            self.logger.info("🧹 Cleaning up local image files...")
+            for image_info in extracted_images:
+                try:
+                    image_path = image_info.get('path')
+                    if image_path and os.path.exists(image_path):
+                        os.unlink(image_path)
+                        self.logger.debug(f"Deleted local image: {image_path}")
+                except Exception as cleanup_error:
+                    self.logger.warning(f"Failed to clean up image {image_path}: {cleanup_error}")
 
             self.logger.info(f"🖼️ Image processing complete: {stats}")
             return stats

@@ -890,7 +890,7 @@ class PDFProcessor:
                 # Extract basic metadata
                 basic_info = {
                     'filename': os.path.basename(image_path),
-                    'local_path': image_path,  # Keep local path for processing
+                    'path': image_path,  # Keep local path for processing
                     'size_bytes': os.path.getsize(image_path),
                     'format': pil_image.format or 'UNKNOWN',
                     'mode': pil_image.mode,
@@ -1036,15 +1036,9 @@ class PDFProcessor:
             if upload_result.get('success'):
                 self.logger.info(f"Successfully uploaded image to storage: {upload_result.get('public_url')}")
 
-                # Clean up local files after successful upload
-                try:
-                    if os.path.exists(image_path):
-                        os.unlink(image_path)
-                    if processed_path and os.path.exists(processed_path) and processed_path != image_path:
-                        os.unlink(processed_path)
-                    self.logger.debug(f"Cleaned up local image files: {image_path}")
-                except Exception as cleanup_error:
-                    self.logger.warning(f"Failed to clean up local files: {cleanup_error}")
+                # NOTE: Do NOT clean up local files here - they're needed for llamaindex processing
+                # (CLIP embeddings, Anthropic analysis, etc.)
+                # Files will be cleaned up after llamaindex processing completes
 
             return upload_result
 
