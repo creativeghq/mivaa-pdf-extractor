@@ -457,10 +457,6 @@ class SupabaseClient:
             if not self._client:
                 raise Exception("Supabase client not initialized")
 
-            # Debug logging
-            logger.debug(f"Uploading file: bucket={bucket_name}, path={file_path}, data_type={type(file_data)}, data_len={len(file_data) if isinstance(file_data, bytes) else 'N/A'}")
-            logger.debug(f"Content type: {content_type}, Upsert: {upsert}")
-
             # Upload file to storage
             response = self._client.storage.from_(bucket_name).upload(
                 file_path,
