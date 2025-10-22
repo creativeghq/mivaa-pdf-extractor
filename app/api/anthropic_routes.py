@@ -310,3 +310,70 @@ Focus on:
             detail=f"Product enrichment failed: {str(e)}"
         )
 
+
+# ============================================================================
+# Test Endpoints
+# ============================================================================
+
+@router.post("/test/claude-integration")
+async def test_claude_integration():
+    """Test Claude Vision API integration."""
+    try:
+        import time
+        start_time = time.time()
+
+        # Test image (1x1 pixel JPEG)
+        test_image_base64 = "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/2wBDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwA/8A"
+
+        # Build prompt for material analysis
+        prompt = """Analyze this image and provide material properties in JSON format:
+{
+  "material_type": "<type>",
+  "color": "<color>",
+  "texture": "<texture>",
+  "confidence": <0-1>
+}"""
+
+        # Call Claude Vision API
+        response = anthropic_client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=1024,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/jpeg",
+                            "data": test_image_base64
+                        }
+                    },
+                    {
+                        "type": "text",
+                        "text": prompt
+                    }
+                ]
+            }]
+        )
+
+        # Parse response
+        response_text = response.content[0].text
+        processing_time = (time.time() - start_time) * 1000
+
+        return {
+            "success": True,
+            "claude_response": response_text,
+            "processing_time_ms": processing_time,
+            "api_key_available": bool(settings.anthropic_api_key),
+            "model_used": "claude-3-5-sonnet-20241022"
+        }
+
+    except Exception as e:
+        logger.error(f"Claude integration test failed: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "api_key_available": bool(settings.anthropic_api_key)
+        }
+

@@ -999,6 +999,7 @@ from app.api.admin import router as admin_router
 from app.api.rag_routes import router as rag_router
 from app.api.together_ai_routes import router as together_ai_router
 from app.api.anthropic_routes import router as anthropic_router
+from app.api.products import router as products_router
 
 app.include_router(pdf_router)  # PDF router already has /api/v1 prefix
 app.include_router(documents_router)
@@ -1008,6 +1009,7 @@ app.include_router(admin_router)
 app.include_router(rag_router)
 app.include_router(together_ai_router)
 app.include_router(anthropic_router)
+app.include_router(products_router)
 
 # Customize OpenAPI schema
 def custom_openapi():

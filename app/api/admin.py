@@ -28,6 +28,7 @@ from ..schemas.common import BaseResponse, PaginationParams
 from ..services.pdf_processor import PDFProcessor
 from ..services.supabase_client import SupabaseClient
 from ..services.llamaindex_service import LlamaIndexService
+from ..services.product_creation_service import ProductCreationService
 from ..services.material_kai_service import MaterialKaiService
 from ..services.progress_tracker import get_progress_service
 from ..dependencies import get_current_user, get_workspace_context, require_admin
@@ -1498,4 +1499,45 @@ async def stream_job_progress(job_id: str):
         raise HTTPException(
             status_code=500,
             detail=f"Failed to stream progress: {str(e)}"
+        )
+
+
+@router.post("/test-product-creation")
+async def test_product_creation(
+    document_id: str,
+    workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"
+):
+    """
+    ✅ NEW: Test endpoint for enhanced product creation.
+    Tests the improved product detection with no limits and better filtering.
+    """
+    try:
+        logger.info(f"🧪 Testing enhanced product creation for document: {document_id}")
+
+        # Initialize product creation service
+        supabase_client = SupabaseClient()
+        product_service = ProductCreationService(supabase_client)
+
+        # Test the enhanced product creation
+        result = await product_service.create_products_from_layout_candidates(
+            document_id=document_id,
+            workspace_id=workspace_id,
+            min_confidence=0.5,
+            min_quality_score=0.5
+        )
+
+        logger.info(f"✅ Product creation test completed: {result}")
+
+        return {
+            "success": True,
+            "document_id": document_id,
+            "result": result,
+            "message": "Enhanced product creation test completed"
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Product creation test failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Product creation test failed: {str(e)}"
         )

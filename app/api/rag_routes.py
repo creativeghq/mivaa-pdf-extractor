@@ -529,12 +529,13 @@ async def process_document_background(
                     supabase_client = get_supabase_client()
                     product_service = ProductCreationService(supabase_client)
 
-                    # Create products from chunks (limit to 10 products by default)
-                    product_result = await product_service.create_products_from_chunks(
+                    # ✅ NEW: Use layout-based product detection instead of chunk-based
+                    # This will filter out index pages, sustainability content, technical tables
+                    product_result = await product_service.create_products_from_layout_candidates(
                         document_id=document_id,
                         workspace_id="ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
-                        max_products=10,  # Limit to 10 products per document
-                        min_chunk_length=100  # Only create products from chunks with at least 100 chars
+                        min_confidence=0.5,  # Minimum confidence for product candidates
+                        min_quality_score=0.5  # Minimum quality score for product candidates
                     )
 
                     products_created = product_result.get('products_created', 0)

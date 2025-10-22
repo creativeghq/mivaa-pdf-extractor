@@ -24,6 +24,7 @@ from .advanced_search_service import (
     SearchFilter,
     MMRResult
 )
+from .chunk_type_classification_service import ChunkTypeClassificationService
 
 try:
     from llama_index.core import (
@@ -136,7 +137,10 @@ class LlamaIndexService:
         
         # Initialize centralized embedding service
         self._initialize_embedding_service()
-        
+
+        # Initialize chunk type classification service
+        self.chunk_classifier = ChunkTypeClassificationService()
+
         # Initialize components
         self._initialize_components()
         
@@ -2475,6 +2479,28 @@ Summary:"""
                         # Store database UUID in node metadata for later use (for image-chunk relationships)
                         node.metadata["db_chunk_id"] = chunk_id
 
+                        # Classify chunk type and extract metadata
+                        try:
+                            classification_result = await self.chunk_classifier.classify_chunk(node.text)
+
+                            # Update chunk with classification results
+                            classification_update = {
+                                'chunk_type': classification_result.chunk_type.value,
+                                'chunk_type_confidence': classification_result.confidence,
+                                'chunk_type_metadata': classification_result.metadata
+                            }
+
+                            update_result = supabase_client.client.table('document_chunks').update(classification_update).eq('id', chunk_id).execute()
+
+                            if update_result.data:
+                                self.logger.debug(f"✅ Classified chunk {i} as {classification_result.chunk_type.value} (confidence: {classification_result.confidence:.2f})")
+                            else:
+                                self.logger.warning(f"⚠️ Failed to update chunk {i} with classification")
+
+                        except Exception as classification_error:
+                            self.logger.error(f"❌ Failed to classify chunk {i}: {classification_error}")
+                            # Continue processing even if classification fails
+
                         # Generate and store embedding
                         try:
                             # Check if embedding service is available
@@ -3207,60 +3233,270 @@ Summary:"""
             return {}
 
     async def _analyze_image_material(self, image_base64: str, image_path: str) -> Dict[str, Any]:
-        """Analyze image for material properties using existing material analysis service."""
+        """Analyze image for material properties using Claude Vision API."""
         try:
             self.logger.info(f"🔬 Analyzing material properties for image: {os.path.basename(image_path)}")
 
-            # Use the existing material visual search service for material analysis
-            from .material_visual_search_service import MaterialVisualSearchService
-
-            # Get the service instance
-            material_service = MaterialVisualSearchService()
-
-            # Perform comprehensive material analysis
-            analysis_result = await material_service.analyze_material_image(
-                image_data=image_base64,
-                analysis_types=['visual', 'spectral', 'chemical', 'mechanical']
-            )
+            # Use existing Claude image validation service directly
+            analysis_result = await self._call_claude_image_analysis(image_base64, image_path)
 
             if analysis_result and analysis_result.get('success'):
-                analysis_data = analysis_result.get('analysis', {})
+                # Extract material properties from Claude analysis
+                claude_data = analysis_result.get('analysis', {})
 
-                # Extract material properties
                 material_properties = {
-                    "material_type": analysis_data.get('material_type', 'unknown'),
+                    "material_type": claude_data.get('material_type', 'unknown'),
                     "properties": {
-                        "color": analysis_data.get('color', 'unknown'),
-                        "texture": analysis_data.get('texture', 'unknown'),
-                        "finish": analysis_data.get('finish', 'unknown'),
-                        "pattern": analysis_data.get('pattern', 'unknown'),
-                        "composition": analysis_data.get('composition', {}),
-                        "mechanical_properties": analysis_data.get('mechanical_properties', {}),
-                        "thermal_properties": analysis_data.get('thermal_properties', {}),
-                        "safety_ratings": analysis_data.get('safety_ratings', {})
+                        "color": claude_data.get('color', 'unknown'),
+                        "texture": claude_data.get('texture', 'unknown'),
+                        "finish": claude_data.get('finish', 'unknown'),
+                        "pattern": claude_data.get('pattern', 'unknown'),
+                        "composition": claude_data.get('composition', {}),
+                        "mechanical_properties": claude_data.get('mechanical_properties', {}),
+                        "thermal_properties": claude_data.get('thermal_properties', {}),
+                        "safety_ratings": claude_data.get('safety_ratings', {})
                     },
-                    "confidence": analysis_data.get('confidence', 0.0),
-                    "analysis_method": analysis_data.get('analysis_method', 'material_visual_search'),
+                    "confidence": claude_data.get('confidence', 0.0),
+                    "analysis_method": "claude_vision_api",
                     "processing_time_ms": analysis_result.get('processing_time_ms', 0),
-                    "extracted_features": analysis_data.get('extracted_features', {}),
-                    "classification_scores": analysis_data.get('classification_scores', {})
+                    "extracted_features": claude_data.get('extracted_features', {}),
+                    "classification_scores": claude_data.get('classification_scores', {}),
+                    "quality_score": claude_data.get('quality_score', 0.0),
+                    "validation_status": claude_data.get('validation_status', 'unknown')
                 }
 
-                self.logger.info(f"✅ Material analysis complete: {material_properties['material_type']} (confidence: {material_properties['confidence']:.3f})")
+                self.logger.info(f"✅ Claude material analysis complete: {material_properties['material_type']} (confidence: {material_properties['confidence']:.3f})")
                 return material_properties
 
             else:
-                self.logger.warning(f"Material analysis failed or returned no results")
-                return {}
+                self.logger.warning(f"Claude material analysis failed or returned no results")
+                # Fallback to basic analysis
+                return await self._fallback_material_analysis(image_base64, image_path)
 
         except Exception as e:
-            self.logger.error(f"Failed to analyze image material: {e}")
+            self.logger.error(f"Failed to analyze image material with Claude: {e}")
             # Fallback: Try direct HTTP call to material analysis endpoint
             try:
                 return await self._fallback_material_analysis(image_base64, image_path)
             except Exception as fallback_error:
                 self.logger.error(f"Fallback material analysis also failed: {fallback_error}")
                 return {}
+
+    async def _call_claude_image_analysis(self, image_base64: str, image_path: str) -> Dict[str, Any]:
+        """Call Claude Vision API directly for comprehensive image analysis."""
+        try:
+            import anthropic
+            import json
+
+            self.logger.info(f"🤖 Calling Claude Vision API for image analysis: {os.path.basename(image_path)}")
+
+            # Initialize Anthropic client
+            anthropic_client = anthropic.Anthropic(api_key=self.config.get('anthropic_api_key', ''))
+
+            # Build prompt for material analysis
+            prompt = """You are an expert material and product analyst. Analyze this image and provide detailed material properties in JSON format:
+
+{
+  "material_type": "<primary material type>",
+  "color": "<dominant color>",
+  "texture": "<surface texture>",
+  "finish": "<surface finish>",
+  "pattern": "<visible pattern>",
+  "confidence": <0-1 confidence score>,
+  "quality_score": <0-1 image quality>,
+  "validation_status": "<valid/needs_review/invalid>",
+  "content_description": "<what you see>",
+  "materials_identified": ["<material1>", "<material2>"],
+  "issues": ["<any quality issues>"],
+  "recommendations": ["<improvement suggestions>"]
+}
+
+Focus on identifying construction materials, tiles, flooring, wall coverings, and architectural elements."""
+
+            # Call Claude Vision API directly
+            response = anthropic_client.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=2048,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": image_base64
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt
+                        }
+                    ]
+                }]
+            )
+
+            # Parse response
+            response_text = response.content[0].text
+            try:
+                analysis_result = json.loads(response_text)
+            except json.JSONDecodeError:
+                # If JSON parsing fails, extract what we can
+                analysis_result = {
+                    "material_type": "unknown",
+                    "color": "unknown",
+                    "texture": "unknown",
+                    "finish": "unknown",
+                    "pattern": "unknown",
+                    "confidence": 0.0,
+                    "quality_score": 0.5,
+                    "validation_status": "needs_review",
+                    "content_description": response_text[:200],
+                    "materials_identified": [],
+                    "issues": ["Failed to parse Claude response"],
+                    "recommendations": []
+                }
+
+            # Transform Claude response to our expected format
+            claude_analysis = {
+                "success": True,
+                "analysis": {
+                    "material_type": analysis_result.get('material_type', 'unknown'),
+                    "color": analysis_result.get('color', 'unknown'),
+                    "texture": analysis_result.get('texture', 'unknown'),
+                    "finish": analysis_result.get('finish', 'unknown'),
+                    "pattern": analysis_result.get('pattern', 'unknown'),
+                    "confidence": analysis_result.get('confidence', 0.0),
+                    "quality_score": analysis_result.get('quality_score', 0.0),
+                    "validation_status": analysis_result.get('validation_status', 'unknown'),
+                    "extracted_features": {
+                        "content_description": analysis_result.get('content_description', ''),
+                        "materials_identified": analysis_result.get('materials_identified', []),
+                        "issues": analysis_result.get('issues', []),
+                        "recommendations": analysis_result.get('recommendations', [])
+                    },
+                    "composition": {},
+                    "mechanical_properties": {},
+                    "thermal_properties": {},
+                    "safety_ratings": {}
+                },
+                "processing_time_ms": 0
+            }
+
+            self.logger.info(f"✅ Claude analysis successful: {claude_analysis['analysis']['material_type']} (confidence: {claude_analysis['analysis']['confidence']:.3f})")
+            return claude_analysis
+
+        except Exception as e:
+            self.logger.error(f"Failed to call Claude Vision API: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _call_claude_image_analysis(self, image_base64: str, image_path: str) -> Dict[str, Any]:
+        """Call Claude Vision API directly for comprehensive image analysis."""
+        try:
+            import anthropic
+            import json
+
+            self.logger.info(f"🤖 Calling Claude Vision API for image analysis: {os.path.basename(image_path)}")
+
+            # Initialize Anthropic client
+            anthropic_client = anthropic.Anthropic(api_key=self.config.get('anthropic_api_key', ''))
+
+            # Build prompt for material analysis
+            prompt = """You are an expert material and product analyst. Analyze this image and provide detailed material properties in JSON format:
+
+{
+  "material_type": "<primary material type>",
+  "color": "<dominant color>",
+  "texture": "<surface texture>",
+  "finish": "<surface finish>",
+  "pattern": "<visible pattern>",
+  "confidence": <0-1 confidence score>,
+  "quality_score": <0-1 image quality>,
+  "validation_status": "<valid/needs_review/invalid>",
+  "content_description": "<what you see>",
+  "materials_identified": ["<material1>", "<material2>"],
+  "issues": ["<any quality issues>"],
+  "recommendations": ["<improvement suggestions>"]
+}
+
+Focus on identifying construction materials, tiles, flooring, wall coverings, and architectural elements."""
+
+            # Call Claude Vision API directly
+            response = anthropic_client.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=2048,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": image_base64
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt
+                        }
+                    ]
+                }]
+            )
+
+            # Parse response
+            response_text = response.content[0].text
+            try:
+                analysis_result = json.loads(response_text)
+            except json.JSONDecodeError:
+                # If JSON parsing fails, extract what we can
+                analysis_result = {
+                    "material_type": "unknown",
+                    "color": "unknown",
+                    "texture": "unknown",
+                    "finish": "unknown",
+                    "pattern": "unknown",
+                    "confidence": 0.0,
+                    "quality_score": 0.5,
+                    "validation_status": "needs_review",
+                    "content_description": response_text[:200],
+                    "materials_identified": [],
+                    "issues": ["Failed to parse Claude response"],
+                    "recommendations": []
+                }
+
+            # Transform Claude response to our expected format
+            claude_analysis = {
+                "success": True,
+                "analysis": {
+                    "material_type": analysis_result.get('material_type', 'unknown'),
+                    "color": analysis_result.get('color', 'unknown'),
+                    "texture": analysis_result.get('texture', 'unknown'),
+                    "finish": analysis_result.get('finish', 'unknown'),
+                    "pattern": analysis_result.get('pattern', 'unknown'),
+                    "confidence": analysis_result.get('confidence', 0.0),
+                    "quality_score": analysis_result.get('quality_score', 0.0),
+                    "validation_status": analysis_result.get('validation_status', 'unknown'),
+                    "extracted_features": {
+                        "content_description": analysis_result.get('content_description', ''),
+                        "materials_identified": analysis_result.get('materials_identified', []),
+                        "issues": analysis_result.get('issues', []),
+                        "recommendations": analysis_result.get('recommendations', [])
+                    },
+                    "composition": {},
+                    "mechanical_properties": {},
+                    "thermal_properties": {},
+                    "safety_ratings": {}
+                },
+                "processing_time_ms": 0
+            }
+
+            self.logger.info(f"✅ Claude analysis successful: {claude_analysis['analysis']['material_type']} (confidence: {claude_analysis['analysis']['confidence']:.3f})")
+            return claude_analysis
+
+        except Exception as e:
+            self.logger.error(f"Failed to call Claude Vision API: {e}")
+            return {"success": False, "error": str(e)}
 
     async def _fallback_material_analysis(self, image_base64: str, image_path: str) -> Dict[str, Any]:
         """Fallback method for material analysis using direct HTTP calls."""

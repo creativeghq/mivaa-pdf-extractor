@@ -397,57 +397,77 @@ class MaterialVisualSearchService:
         }
 
     async def _get_fallback_search_results(self, request: MaterialSearchRequest) -> MaterialSearchResponse:
-        """Provide fallback search results when external services are unavailable."""
-        logger.info("Using fallback mode for material search")
+        """Get real search results from database when external services are unavailable."""
+        logger.info("Using database search for material search")
 
-        # Generate proper MaterialSearchResult objects
-        mock_results = [
-            MaterialSearchResult(
-                material_id=f"material_{i}",
-                material_name=f"Material Sample {i}",
-                material_type="composite" if i % 2 == 0 else "metal",
-                visual_similarity_score=0.90 - (i * 0.03),
-                semantic_relevance_score=0.85 - (i * 0.05),
-                material_property_score=0.80 - (i * 0.04),
-                combined_score=0.85 - (i * 0.05),
-                confidence_score=0.85 - (i * 0.05),
-                visual_analysis={
-                    "color_analysis": {
-                        "dominant_colors": ["#2C3E50", "#34495E"],
-                        "color_distribution": {"primary": 0.6, "secondary": 0.4}
-                    },
-                    "texture_analysis": {
-                        "roughness": "medium",
-                        "pattern": "woven",
-                        "surface_quality": "smooth"
-                    }
-                },
-                material_properties={
-                    "density": 2.5 + (i * 0.1),
-                    "hardness": 7.0 - (i * 0.2),
-                    "thermal_conductivity": 150 + (i * 10),
-                    "tensile_strength": 500 + (i * 50)
-                },
-                clip_embedding=None,
-                llama_analysis={
-                    "material_classification": f"High-quality {request.search_type} material",
-                    "confidence": 0.85 - (i * 0.05),
-                    "properties_detected": ["durable", "lightweight", "corrosion_resistant"]
-                },
-                source="fallback_mode",
-                created_at="2025-10-08T12:00:00Z",
-                processing_method="mock_analysis",
-                search_rank=i + 1
+        try:
+            # Query real materials from database
+            query = self.supabase.table('products').select(
+                'id, name, category, description, metadata, created_at'
             )
-            for i in range(min(request.limit, 5))
-        ]
 
-        return MaterialSearchResponse(
-            success=True,
-            results=mock_results,
-            total_results=len(mock_results),
-            search_metadata={
-                "search_type": request.search_type,
+            # Apply filters based on request
+            if request.material_types:
+                query = query.in_('category', request.material_types)
+
+            # Apply limit
+            query = query.limit(request.limit)
+
+            response = query.execute()
+
+            if not response.data:
+                logger.warning("No materials found in database")
+                return MaterialSearchResponse(
+                    success=True,
+                    results=[],
+                    total_results=0,
+                    search_metadata={
+                        "search_type": request.search_type,
+                        "source": "database_empty",
+                        "message": "No materials found in database"
+                    }
+                )
+
+            # Convert database results to MaterialSearchResult objects
+            search_results = []
+            for i, material in enumerate(response.data):
+                # Extract properties from metadata if available
+                metadata = material.get('metadata', {})
+                properties = metadata.get('properties', {})
+
+                search_result = MaterialSearchResult(
+                    material_id=material['id'],
+                    material_name=material['name'],
+                    material_type=material.get('category', 'unknown'),
+                    visual_similarity_score=0.85,  # Would be calculated by ML service
+                    semantic_relevance_score=0.80,  # Would be calculated by ML service
+                    material_property_score=0.75,   # Would be calculated by ML service
+                    combined_score=0.80,
+                    confidence_score=0.80,
+                    visual_analysis=metadata.get('visual_analysis', {
+                        "color_analysis": {"dominant_colors": [], "color_distribution": {}},
+                        "texture_analysis": {"roughness": "unknown", "pattern": "unknown"}
+                    }),
+                    material_properties=properties,
+                    clip_embedding=None,  # Would be retrieved from embeddings table
+                    llama_analysis=metadata.get('analysis', {
+                        "material_classification": material.get('category', 'unknown'),
+                        "confidence": 0.80,
+                        "properties_detected": list(properties.keys()) if properties else []
+                    }),
+                    source="database",
+                    created_at=material.get('created_at', ''),
+                    processing_method="database_query",
+                    search_rank=i + 1
+                )
+                search_results.append(search_result)
+
+            return MaterialSearchResponse(
+                success=True,
+                results=search_results,
+                total_results=len(search_results),
+                search_metadata={
+                    "search_type": request.search_type,
                 "processing_time_ms": 50.0,
                 "fallback_mode": True,
                 "limit": request.limit,
