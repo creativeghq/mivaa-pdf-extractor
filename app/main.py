@@ -628,6 +628,14 @@ Authorization: Bearer your-jwt-token
                 "description": "AI chat completions and contextual responses"
             },
             {
+                "name": "Anthropic Claude",
+                "description": "Image validation and product enrichment using Anthropic Claude 3.5 Sonnet"
+            },
+            {
+                "name": "products",
+                "description": "Product creation and management from PDF chunks using two-stage classification"
+            },
+            {
                 "name": "Health & Monitoring",
                 "description": "Service health checks, metrics, and performance monitoring"
             },
@@ -960,9 +968,19 @@ async def root() -> Dict[str, Any]:
             # Chat APIs
             "chat_completions": "/api/chat/completions",
             "contextual_response": "/api/chat/contextual",
+
+            # Anthropic Claude APIs
+            "anthropic_image_validation": "/api/v1/anthropic/validate-image",
+            "anthropic_batch_validation": "/api/v1/anthropic/validate-images-batch",
+            "anthropic_product_enrichment": "/api/v1/anthropic/enrich-product",
+            "anthropic_batch_enrichment": "/api/v1/anthropic/enrich-products-batch",
+
+            # Products APIs
+            "products_create": "/api/products/create",
+            "products_status": "/api/products/status",
         },
         "api_info": {
-            "total_endpoints": 37,
+            "total_endpoints": 43,
             "authentication": "JWT Bearer Token Required",
             "embedding_model": "text-embedding-ada-002 (1536 dimensions)",
             "recent_enhancements": "Phase 3 - Unified Vector Search System (January 2025)",
