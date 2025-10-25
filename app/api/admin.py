@@ -330,7 +330,7 @@ async def get_job_status(
             if not job_info:
                 from app.services.supabase_client import get_supabase_client
                 supabase_client = get_supabase_client()
-                response = supabase_client.table('background_jobs').select('*').eq('id', job_id).execute()
+                response = supabase_client.client.table('background_jobs').select('*').eq('id', job_id).execute()
 
                 if response.data and len(response.data) > 0:
                     db_job = response.data[0]
@@ -383,7 +383,7 @@ async def get_job_status_alt(
             if not job_info:
                 from app.services.supabase_client import get_supabase_client
                 supabase_client = get_supabase_client()
-                response = supabase_client.table('background_jobs').select('*').eq('id', job_id).execute()
+                response = supabase_client.client.table('background_jobs').select('*').eq('id', job_id).execute()
 
                 if response.data and len(response.data) > 0:
                     db_job = response.data[0]
