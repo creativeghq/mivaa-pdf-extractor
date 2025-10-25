@@ -1753,4 +1753,3 @@ async def unified_search(
     except Exception as e:
         logger.error(f"Unified search failed: {e}")
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
-        )
