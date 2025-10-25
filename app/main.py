@@ -4,6 +4,8 @@ PDF2Markdown Microservice - Main FastAPI Application
 This module serves as the main entry point for the PDF to Markdown conversion microservice.
 It provides a production-ready FastAPI application with health checks, error handling,
 and structured API endpoints.
+
+Deployment trigger: 2025-10-25 - Testing deployment after SSH issue
 """
 
 import logging
@@ -1018,6 +1020,7 @@ from app.api.rag_routes import router as rag_router
 from app.api.together_ai_routes import router as together_ai_router
 from app.api.anthropic_routes import router as anthropic_router
 from app.api.products import router as products_router
+from app.api.embeddings import router as embeddings_router
 
 app.include_router(pdf_router)  # PDF router already has /api/v1 prefix
 app.include_router(documents_router)
@@ -1028,6 +1031,7 @@ app.include_router(rag_router)
 app.include_router(together_ai_router)
 app.include_router(anthropic_router)
 app.include_router(products_router)
+app.include_router(embeddings_router)
 
 # Customize OpenAPI schema
 def custom_openapi():

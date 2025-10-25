@@ -429,14 +429,42 @@ async def get_job_status(job_id: str):
     """
     Get the status of an async document processing job.
     """
-    if job_id not in job_storage:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job {job_id} not found"
-        )
+    # Check in-memory storage first
+    if job_id in job_storage:
+        job_data = job_storage[job_id]
+        return JSONResponse(content=job_data)
 
-    job_data = job_storage[job_id]
-    return JSONResponse(content=job_data)
+    # Check database for background_jobs
+    try:
+        supabase_client = get_supabase_client()
+        response = supabase_client.table('background_jobs').select('*').eq('id', job_id).execute()
+
+        if response.data and len(response.data) > 0:
+            job = response.data[0]
+            return JSONResponse(content={
+                "job_id": job['id'],
+                "status": job['status'],
+                "document_id": job.get('document_id'),
+                "progress": job.get('progress', 0),
+                "error": job.get('error'),
+                "created_at": job.get('created_at'),
+                "updated_at": job.get('updated_at')
+            })
+    except Exception as e:
+        logger.error(f"Error checking database for job {job_id}: {e}")
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Job {job_id} not found"
+    )
+
+
+@router.get("/jobs/{job_id}/status")
+async def get_job_status_alias(job_id: str):
+    """
+    Alias endpoint for job status (matches frontend expectations).
+    """
+    return await get_job_status(job_id)
 
 
 async def process_document_background(
