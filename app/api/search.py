@@ -1674,7 +1674,8 @@ async def material_search_health_check(
         logger.error(f"Error in material search health check: {e}")
         return SuccessResponse(
             success=False,
-            message="Material visual search health check failed",
+            message="Material visual search health check failed"
+        )
 
 
 # ============================================================================
@@ -1752,10 +1753,4 @@ async def unified_search(
     except Exception as e:
         logger.error(f"Unified search failed: {e}")
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
-            data={
-                "error": str(e),
-                "service": "material_visual_search",
-                "status": "unhealthy",
-                "timestamp": datetime.utcnow().isoformat()
-            }
         )
