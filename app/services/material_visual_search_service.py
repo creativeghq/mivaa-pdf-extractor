@@ -468,19 +468,19 @@ class MaterialVisualSearchService:
                 total_results=len(search_results),
                 search_metadata={
                     "search_type": request.search_type,
-                "processing_time_ms": 50.0,
-                "fallback_mode": True,
-                "limit": request.limit,
-                "fusion_weights": self.default_fusion_weights
-            },
-            analytics={
-                "search_performance": {
-                    "total_candidates": len(mock_results),
-                    "filtered_results": len(mock_results),
-                    "avg_confidence": sum(r.confidence_score for r in mock_results) / len(mock_results)
+                    "processing_time_ms": 50.0,
+                    "fallback_mode": True,
+                    "limit": request.limit,
+                    "fusion_weights": self.default_fusion_weights
+                },
+                analytics={
+                    "search_performance": {
+                        "total_candidates": len(mock_results),
+                        "filtered_results": len(mock_results),
+                        "avg_confidence": sum(r.confidence_score for r in mock_results) / len(mock_results)
+                    }
                 }
-            }
-        )
+            )
 
     async def _perform_database_search(self, request: MaterialSearchRequest) -> MaterialSearchResponse:
         """Perform real database search for materials."""
