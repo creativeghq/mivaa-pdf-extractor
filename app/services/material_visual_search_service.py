@@ -769,13 +769,13 @@ class MaterialVisualSearchService:
             #     "success": True,
             #     "embeddings": embeddings,
             #     "embedding_metadata": {
-                    "embedding_types": embedding_types,
-                    "dimensions": {k: len(v) for k, v in embeddings.items()},
-                    "generation_timestamp": datetime.utcnow().isoformat(),
-                    "processing_time_ms": 150,
-                    "fallback_mode": False
-                }
-            }
+            #         "embedding_types": embedding_types,
+            #         "dimensions": {k: len(v) for k, v in embeddings.items()},
+            #         "generation_timestamp": datetime.utcnow().isoformat(),
+            #         "processing_time_ms": 150,
+            #         "fallback_mode": False
+            #     }
+            # }
 
         except Exception as e:
             logger.error(f"Embedding generation failed: {e}")
