@@ -469,6 +469,7 @@ async def get_job_status_alias(job_id: str):
     """
     Alias endpoint for job status (matches frontend expectations).
     """
+    logger.info(f"🔍 Job status alias called for job_id: {job_id}")
     return await get_job_status(job_id)
 
 
