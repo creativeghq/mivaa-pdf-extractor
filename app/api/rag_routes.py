@@ -490,13 +490,33 @@ async def process_document_background(
     logger.info(f"   Started at: {start_time.isoformat()}")
 
     try:
+        # Create placeholder document record FIRST (required for foreign key constraint)
+        supabase_client = get_supabase_client()
+        try:
+            supabase_client.client.table('documents').insert({
+                "id": document_id,
+                "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+                "title": title or filename,
+                "description": description,
+                "filename": filename,
+                "file_type": "application/pdf",
+                "file_size": len(file_content),
+                "status": "processing",
+                "created_at": start_time.isoformat(),
+                "updated_at": start_time.isoformat()
+            }).execute()
+            logger.info(f"✅ Created placeholder document record: {document_id}")
+        except Exception as doc_error:
+            logger.error(f"Failed to create document record: {doc_error}")
+            # Continue anyway - the document might already exist
+
         # Update status (in-memory)
         job_storage[job_id]["status"] = "processing"
         job_storage[job_id]["started_at"] = start_time.isoformat()
         job_storage[job_id]["document_id"] = document_id
         job_storage[job_id]["progress"] = 10
 
-        # Persist status change to database
+        # Persist status change to database (now document exists)
         if job_recovery_service:
             await job_recovery_service.persist_job(
                 job_id=job_id,
