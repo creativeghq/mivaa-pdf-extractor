@@ -437,10 +437,13 @@ async def get_job_status(job_id: str):
     # Check database for background_jobs
     try:
         supabase_client = get_supabase_client()
+        logger.info(f"🔍 Checking database for job {job_id}")
         response = supabase_client.table('background_jobs').select('*').eq('id', job_id).execute()
+        logger.info(f"🔍 Database response: data={response.data}, count={len(response.data) if response.data else 0}")
 
         if response.data and len(response.data) > 0:
             job = response.data[0]
+            logger.info(f"✅ Found job in database: {job['id']}, status={job['status']}")
             return JSONResponse(content={
                 "job_id": job['id'],
                 "status": job['status'],
@@ -450,8 +453,10 @@ async def get_job_status(job_id: str):
                 "created_at": job.get('created_at'),
                 "updated_at": job.get('updated_at')
             })
+        else:
+            logger.warning(f"⚠️ Job {job_id} not found in database")
     except Exception as e:
-        logger.error(f"Error checking database for job {job_id}: {e}")
+        logger.error(f"Error checking database for job {job_id}: {e}", exc_info=True)
 
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
