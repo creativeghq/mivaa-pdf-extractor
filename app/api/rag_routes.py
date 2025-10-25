@@ -496,12 +496,16 @@ async def process_document_background(
             supabase_client.client.table('documents').insert({
                 "id": document_id,
                 "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
-                "title": title or filename,
-                "description": description,
                 "filename": filename,
-                "file_type": "application/pdf",
+                "content_type": "application/pdf",
                 "file_size": len(file_content),
-                "status": "processing",
+                "processing_status": "processing",
+                "metadata": {
+                    "title": title or filename,
+                    "description": description,
+                    "tags": document_tags,
+                    "source": "rag_upload_async"
+                },
                 "created_at": start_time.isoformat(),
                 "updated_at": start_time.isoformat()
             }).execute()
