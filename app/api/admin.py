@@ -315,7 +315,7 @@ async def get_job_status(
 ):
     """
     Get detailed status information for a specific job
-    
+
     - **job_id**: Unique identifier for the job
     """
     try:
@@ -325,16 +325,37 @@ async def get_job_status(
         else:
             # Check job history
             job_info = next((job for job in job_history if job["job_id"] == job_id), None)
-            
+
+            # If not found in memory, check database
+            if not job_info:
+                from app.services.supabase_client import get_supabase_client
+                supabase_client = get_supabase_client()
+                response = supabase_client.table('background_jobs').select('*').eq('id', job_id).execute()
+
+                if response.data and len(response.data) > 0:
+                    db_job = response.data[0]
+                    # Convert database format to expected format
+                    job_info = {
+                        "job_id": db_job['id'],
+                        "job_type": "document_processing",
+                        "status": db_job['status'],
+                        "progress": db_job.get('progress', 0),
+                        "document_id": db_job.get('document_id'),
+                        "filename": db_job.get('filename'),
+                        "error": db_job.get('error'),
+                        "created_at": db_job.get('created_at'),
+                        "updated_at": db_job.get('updated_at')
+                    }
+
         if not job_info:
             raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-        
+
         return JobStatusResponse(
             success=True,
             message="Job status retrieved successfully",
             data=JobResponse(**job_info)
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:

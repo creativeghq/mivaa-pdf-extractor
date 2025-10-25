@@ -464,13 +464,8 @@ async def get_job_status(job_id: str):
     )
 
 
-@router.get("/jobs/{job_id}/status")
-async def get_job_status_alias(job_id: str):
-    """
-    Alias endpoint for job status (matches frontend expectations).
-    """
-    logger.info(f"🔍 Job status alias called for job_id: {job_id}")
-    return await get_job_status(job_id)
+# REMOVED: Duplicate endpoint - use /api/admin/jobs/{job_id}/status instead
+# This endpoint was conflicting with admin.py and never being reached due to router registration order
 
 
 async def process_document_background(
