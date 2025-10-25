@@ -482,6 +482,19 @@ class MaterialVisualSearchService:
                 }
             )
 
+        except Exception as e:
+            logger.error(f"Database search failed: {e}")
+            return MaterialSearchResponse(
+                success=False,
+                results=[],
+                total_results=0,
+                search_metadata={
+                    "search_type": request.search_type,
+                    "error": str(e),
+                    "source": "database_error"
+                }
+            )
+
     async def _perform_database_search(self, request: MaterialSearchRequest) -> MaterialSearchResponse:
         """Perform real database search for materials."""
         logger.info("Performing real database search for materials")
