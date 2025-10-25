@@ -160,39 +160,7 @@ class RealImageAnalysisService:
             response.raise_for_status()
             return response.content
     
-    def _get_mock_llama_response(self) -> Dict[str, Any]:
-        """Return mock Llama response when API is unavailable"""
-        return {
-            "model": "llama-3.2-90b-vision-mock",
-            "analysis": {
-                "description": "Material image analysis",
-                "objects_detected": ["material", "surface"],
-                "materials_identified": ["composite"],
-                "colors": ["neutral"],
-                "textures": ["smooth"],
-                "confidence": 0.75,
-                "properties": {
-                    "finish": "matte",
-                    "pattern": "solid",
-                    "composition": "unknown"
-                }
-            },
-            "success": True
-        }
 
-    def _get_mock_claude_response(self) -> Dict[str, Any]:
-        """Return mock Claude response when API is unavailable"""
-        return {
-            "model": "claude-3.5-sonnet-mock",
-            "validation": {
-                "is_valid": True,
-                "quality_score": 0.85,
-                "confidence": 0.80,
-                "issues": [],
-                "recommendations": []
-            },
-            "success": True
-        }
 
     async def _analyze_with_llama(
         self,
@@ -202,8 +170,7 @@ class RealImageAnalysisService:
         """Analyze image with Llama 3.2 90B Vision"""
         try:
             if not TOGETHER_API_KEY:
-                self.logger.warning("TOGETHER_API_KEY not set, returning mock data")
-                return self._get_mock_llama_response()
+                raise ValueError("TOGETHER_API_KEY not set - cannot perform Llama vision analysis")
 
             prompt = """Analyze this material/product image and provide detailed analysis in JSON format:
 {
@@ -258,7 +225,7 @@ Respond ONLY with valid JSON, no additional text."""
                 if response.status_code != 200:
                     error_text = response.text
                     self.logger.error(f"Llama API error {response.status_code}: {error_text}")
-                    return self._get_mock_llama_response()
+                    raise RuntimeError(f"Llama API returned error {response.status_code}: {error_text}")
 
                 result = response.json()
                 content = result["choices"][0]["message"]["content"]
@@ -282,13 +249,12 @@ Respond ONLY with valid JSON, no additional text."""
                         "success": True
                     }
                 except json.JSONDecodeError as e:
-                    self.logger.warning(f"Failed to parse Llama response as JSON: {e}. Content: {content[:200]}")
-                    return self._get_mock_llama_response()
+                    self.logger.error(f"Failed to parse Llama response as JSON: {e}. Content: {content[:200]}")
+                    raise RuntimeError(f"Llama returned invalid JSON: {e}")
 
         except Exception as e:
             self.logger.error(f"Llama analysis failed: {e}")
-            # Return mock data instead of raising error
-            return self._get_mock_llama_response()
+            raise RuntimeError(f"Llama vision analysis failed: {str(e)}") from e
     
     async def _analyze_with_claude(
         self,
@@ -298,8 +264,7 @@ Respond ONLY with valid JSON, no additional text."""
         """Analyze image with Claude 4.5 Sonnet Vision"""
         try:
             if not ANTHROPIC_API_KEY:
-                self.logger.warning("ANTHROPIC_API_KEY not set, returning mock data")
-                return self._get_mock_claude_response()
+                raise ValueError("ANTHROPIC_API_KEY not set - cannot perform Claude vision analysis")
 
             client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -358,17 +323,13 @@ Respond ONLY with valid JSON, no additional text."""
                     "validation": validation,
                     "success": True
                 }
-            except json.JSONDecodeError:
-                self.logger.warning("Failed to parse Claude response as JSON")
-                return self._get_mock_claude_response()
+            except json.JSONDecodeError as e:
+                self.logger.error(f"Failed to parse Claude response as JSON: {e}")
+                raise RuntimeError(f"Claude returned invalid JSON: {e}")
 
         except Exception as e:
             self.logger.error(f"Claude analysis failed: {e}")
-            # Don't return mock data - raise error for proper handling
-            raise RuntimeError(
-                f"Claude 4.5 Sonnet Vision analysis failed: {str(e)}. "
-                "No fallback available - image validation is required."
-            ) from e
+            raise RuntimeError(f"Claude 4.5 Sonnet Vision analysis failed: {str(e)}") from e
     
     async def _generate_clip_embedding(self, image_base64: str) -> List[float]:
         """Generate CLIP embedding for image using MIVAA gateway"""
