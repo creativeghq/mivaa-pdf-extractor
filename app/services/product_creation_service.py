@@ -106,6 +106,25 @@ class ProductCreationService:
                         products_created += 1
                         product_id = product_response.data[0]['id']
                         self.logger.info(f"✅ Created product {i+1}/{len(high_quality_candidates)}: {product_id} - {candidate.get('name', 'Unknown')}")
+
+                        # ✅ ENHANCED: Enrich product with real image data
+                        try:
+                            from .product_enrichment_service import ProductEnrichmentService
+                            enrichment_service = ProductEnrichmentService(self.supabase)
+
+                            enrichment_result = await enrichment_service.enrich_product(
+                                product_id=product_id,
+                                product_data=product_data,
+                                document_id=document_id,
+                                workspace_id=workspace_id
+                            )
+
+                            if enrichment_result.get('success'):
+                                self.logger.info(f"✅ Product enrichment complete: {product_id}")
+                            else:
+                                self.logger.warning(f"⚠️ Product enrichment skipped: {enrichment_result.get('error')}")
+                        except Exception as e:
+                            self.logger.warning(f"⚠️ Product enrichment failed: {e}")
                     else:
                         products_failed += 1
                         self.logger.warning(f"⚠️ Failed to create product from candidate {candidate.get('name', 'Unknown')}")
@@ -136,7 +155,8 @@ class ProductCreationService:
         document_id: str,
         workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
         max_products: Optional[int] = None,
-        min_chunk_length: int = 100
+        min_chunk_length: int = 100,
+        enrich_products: bool = True
     ) -> Dict[str, Any]:
         """
         ✅ ENHANCED: Create products from document chunks with two-stage classification.
@@ -213,11 +233,29 @@ class ProductCreationService:
                         if insert_response.data:
                             products_created += 1
                             chunks_processed += 1
+                            product_id = insert_response.data[0]['id']
                             self.logger.info(f"✅ Created enriched product {products_created}: {enriched_product['name']}")
 
-                            # ✅ ENHANCED: No artificial limits - process ALL valid products
-                            # Removed max_products limit to enable comprehensive product detection
-                            # Target: Find all products in document (HARMONY PDF benchmark: 14+ products)
+                            # ✅ ENHANCED: Enrich product with real image data
+                            if enrich_products:
+                                try:
+                                    from .product_enrichment_service import ProductEnrichmentService
+                                    enrichment_service = ProductEnrichmentService(self.supabase)
+
+                                    enrichment_result = await enrichment_service.enrich_product(
+                                        product_id=product_id,
+                                        product_data=enriched_product,
+                                        document_id=document_id,
+                                        workspace_id=workspace_id
+                                    )
+
+                                    if enrichment_result.get('success'):
+                                        self.logger.info(f"✅ Product enrichment complete: {product_id}")
+                                    else:
+                                        self.logger.warning(f"⚠️ Product enrichment skipped: {enrichment_result.get('error')}")
+                                except Exception as e:
+                                    self.logger.warning(f"⚠️ Product enrichment failed: {e}")
+                                    # Continue without enrichment - product is still created
                         else:
                             products_failed += 1
                             self.logger.error(f"❌ Failed to insert enriched product for candidate {i+1}")

@@ -22,7 +22,7 @@ except ImportError:
 
 from app.config import get_settings
 from app.services.llamaindex_service import LlamaIndexService
-from app.services.embedding_service import EmbeddingService
+from app.services.real_embeddings_service import RealEmbeddingsService
 from app.services.advanced_search_service import QueryType, SearchOperator
 from app.services.product_creation_service import ProductCreationService
 from app.services.job_recovery_service import JobRecoveryService
@@ -214,25 +214,11 @@ async def get_llamaindex_service() -> LlamaIndexService:
         )
     return app.state.llamaindex_service
 
-async def get_embedding_service() -> EmbeddingService:
+async def get_embedding_service() -> RealEmbeddingsService:
     """Get embedding service instance."""
     try:
-        settings = get_settings()
-        llamaindex_config = settings.get_llamaindex_config()
-
-        # Create embedding config from llamaindex config
-        from app.schemas.embedding import EmbeddingConfig
-        embedding_config = EmbeddingConfig(
-            model_name=llamaindex_config.get("embedding_model", "text-embedding-3-small"),
-            api_key=settings.openai_api_key,
-            max_tokens=8191,
-            batch_size=100,
-            rate_limit_rpm=3000,
-            rate_limit_tpm=1000000,
-            cache_ttl=3600,
-            enable_cache=True
-        )
-        return EmbeddingService(embedding_config)
+        supabase_client = get_supabase_client()
+        return RealEmbeddingsService(supabase_client=supabase_client)
     except Exception as e:
         logger.error(f"Failed to initialize embedding service: {e}")
         raise HTTPException(

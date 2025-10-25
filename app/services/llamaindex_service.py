@@ -15,8 +15,8 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
-# Import the new embedding service
-from .embedding_service import EmbeddingService
+# Import the real embeddings service (replaces old embedding_service.py)
+from .real_embeddings_service import RealEmbeddingsService
 from ..schemas.embedding import EmbeddingConfig
 from .advanced_search_service import (
     AdvancedSearchService,

@@ -50,6 +50,13 @@ from ..services.material_visual_search_service import (
     get_material_visual_search_service
 )
 
+# Import unified search service (Step 7)
+from ..services.unified_search_service import (
+    UnifiedSearchService,
+    SearchConfig,
+    SearchStrategy
+)
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -1531,31 +1538,44 @@ async def generate_material_embeddings(
     try:
         image_data = request.get("image_data")
         embedding_types = request.get("embedding_types", ["clip"])
-        
+        material_properties = request.get("material_properties")
+
         if not image_data:
             raise HTTPException(
                 status_code=400,
                 detail="image_data is required"
             )
-        
-        # Return simple success response for now
+
+        # Use RealEmbeddingsService to generate real embeddings (Step 4)
+        from app.services.real_embeddings_service import RealEmbeddingsService
+
+        embeddings_service = RealEmbeddingsService()
+
+        # Generate all real embeddings
+        result = await embeddings_service.generate_all_embeddings(
+            entity_id="temp",
+            entity_type="image",
+            text_content="",
+            image_data=image_data,
+            material_properties=material_properties
+        )
+
+        if result.get("success") is False:
+            raise HTTPException(
+                status_code=500,
+                detail=result.get("error", "Embedding generation failed")
+            )
+
+        # Return real embeddings
         return SuccessResponse(
             success=True,
             message="Material embeddings generated successfully",
             data={
-                "embeddings": {
-                    "clip": [0.1] * 512,  # Mock CLIP embedding
-                    "custom": [0.2] * 256  # Mock custom embedding
-                },
-                "embedding_metadata": {
-                    "fallback_mode": True,
-                    "embedding_types": embedding_types,
-                    "dimensions": {"clip": 512, "custom": 256},
-                    "processing_time_ms": 25
-                }
+                "embeddings": result.get("embeddings", {}),
+                "embedding_metadata": result.get("metadata", {})
             }
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1655,6 +1675,83 @@ async def material_search_health_check(
         return SuccessResponse(
             success=False,
             message="Material visual search health check failed",
+
+
+# ============================================================================
+# STEP 7: UNIFIED SEARCH ENDPOINTS
+# ============================================================================
+
+@router.post("/unified-search", response_model=Dict[str, Any])
+async def unified_search(
+    query: str = Query(..., description="Search query"),
+    strategy: str = Query("multi_vector", description="Search strategy: semantic, visual, multi_vector, hybrid, material, keyword"),
+    limit: int = Query(20, description="Maximum results to return"),
+    threshold: float = Query(0.7, description="Similarity threshold"),
+    workspace_id: Optional[str] = Query(None, description="Workspace ID for scoped search"),
+    supabase_client: SupabaseClient = Depends(get_supabase_client)
+) -> Dict[str, Any]:
+    """
+    Unified search endpoint supporting multiple search strategies.
+
+    This endpoint provides:
+    - Semantic search using text embeddings
+    - Visual search using CLIP embeddings
+    - Multi-vector search combining all embedding types
+    - Hybrid search combining semantic and keyword
+    - Material search for material properties
+    - Keyword search for exact matches
+
+    **Step 7 Implementation**: Consolidates all search strategies into a single endpoint.
+    """
+    try:
+        # Create search config
+        search_config = SearchConfig(
+            strategy=SearchStrategy(strategy),
+            max_results=limit,
+            similarity_threshold=threshold,
+            include_metadata=True,
+            include_embeddings=False,
+            enable_hybrid=True
+        )
+
+        # Initialize unified search service
+        search_service = UnifiedSearchService(search_config, supabase_client)
+
+        # Perform search
+        result = await search_service.search(
+            query=query,
+            strategy=SearchStrategy(strategy),
+            workspace_id=workspace_id
+        )
+
+        logger.info(f"✅ Unified search completed: {result.total_found} results found")
+
+        return {
+            "success": result.success,
+            "query": result.query,
+            "results": [
+                {
+                    "id": r.id,
+                    "content": r.content,
+                    "similarity_score": r.similarity_score,
+                    "metadata": r.metadata,
+                    "embedding_type": r.embedding_type,
+                    "source_type": r.source_type
+                }
+                for r in result.results
+            ],
+            "total_found": result.total_found,
+            "search_time_ms": result.search_time_ms,
+            "strategy_used": result.strategy_used,
+            "metadata": result.metadata
+        }
+
+    except ValueError as e:
+        logger.error(f"Invalid search strategy: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid search strategy: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unified search failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
             data={
                 "error": str(e),
                 "service": "material_visual_search",

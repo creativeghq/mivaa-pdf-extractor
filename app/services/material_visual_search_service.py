@@ -679,35 +679,45 @@ class MaterialVisualSearchService:
         """
         try:
             embedding_types = embedding_types or ["clip"]
-            embeddings = {}
 
-            # Check if fallback mode is enabled or service is unavailable
-            if self.enable_fallback or not self.material_kai_service:
-                logger.info("Using fallback mode for embedding generation")
+            # Use RealEmbeddingsService to generate real embeddings (Step 4 - No more mock)
+            from app.services.real_embeddings_service import RealEmbeddingsService
 
-                # Generate mock embeddings based on requested types
-                if "clip" in embedding_types:
-                    # CLIP embeddings are typically 512-dimensional
-                    embeddings["clip"] = [0.1 + (i * 0.001) for i in range(512)]
+            embeddings_service = RealEmbeddingsService()
 
-                if "custom" in embedding_types:
-                    # Custom material embeddings might be 256-dimensional
-                    embeddings["custom"] = [0.2 + (i * 0.002) for i in range(256)]
+            # Generate all real embeddings
+            result = await embeddings_service.generate_all_embeddings(
+                entity_id="temp",
+                entity_type="image",
+                text_content="",
+                image_url=image_url,
+                material_properties=material_properties
+            )
 
-                if "llama" in embedding_types:
-                    # LLaMA embeddings might be 4096-dimensional
-                    embeddings["llama"] = [0.05 + (i * 0.0001) for i in range(1024)]  # Reduced for performance
+            if result.get("success") is False:
+                logger.error(f"Real embedding generation failed: {result.get('error')}")
+                # Only use fallback if real generation fails
+                if self.enable_fallback:
+                    logger.warning("Falling back to mock embeddings")
+                    embeddings = {}
 
-                return {
-                    "success": True,
-                    "embeddings": embeddings,
-                    "embedding_metadata": {
-                        "embedding_types": embedding_types,
-                        "dimensions": {k: len(v) for k, v in embeddings.items()},
-                        "generation_timestamp": datetime.utcnow().isoformat(),
-                        "processing_time_ms": 25,
-                        "fallback_mode": True,
-                        "model_versions": {
+                    if "clip" in embedding_types:
+                        embeddings["clip"] = [0.1 + (i * 0.001) for i in range(512)]
+                    if "custom" in embedding_types:
+                        embeddings["custom"] = [0.2 + (i * 0.002) for i in range(256)]
+                    if "llama" in embedding_types:
+                        embeddings["llama"] = [0.05 + (i * 0.0001) for i in range(1024)]
+
+                    return {
+                        "success": True,
+                        "embeddings": embeddings,
+                        "embedding_metadata": {
+                            "embedding_types": embedding_types,
+                            "dimensions": {k: len(v) for k, v in embeddings.items()},
+                            "generation_timestamp": datetime.utcnow().isoformat(),
+                            "processing_time_ms": 25,
+                            "fallback_mode": True,
+                            "model_versions": {
                             "clip": "clip-vit-base-patch32-fallback",
                             "custom": "material-encoder-v1-fallback",
                             "llama": "llama-vision-fallback"
@@ -715,29 +725,37 @@ class MaterialVisualSearchService:
                     }
                 }
 
-            # Normal processing with actual service
-            # Generate CLIP embeddings
-            if "clip" in embedding_types:
-                clip_result = await self.material_kai_service.generate_image_embeddings(
-                    image_data=image_data,
-                    embedding_model="clip-vit-base-patch32"
-                )
-                if clip_result.get("success"):
-                    embeddings["clip"] = clip_result.get("embeddings", [])
-
-            # Generate custom material embeddings if available
-            if "custom" in embedding_types:
-                custom_result = await self.material_kai_service.generate_image_embeddings(
-                    image_data=image_data,
-                    embedding_model="material-specific-encoder"
-                )
-                if custom_result.get("success"):
-                    embeddings["custom"] = custom_result.get("embeddings", [])
-
+            # Return real embeddings (Step 4 - No more mock)
             return {
                 "success": True,
-                "embeddings": embeddings,
-                "embedding_metadata": {
+                "embeddings": result.get("embeddings", {}),
+                "embedding_metadata": result.get("metadata", {})
+            }
+
+            # Legacy code (kept for reference, not used)
+            # # Normal processing with actual service
+            # # Generate CLIP embeddings
+            # if "clip" in embedding_types:
+            #     clip_result = await self.material_kai_service.generate_image_embeddings(
+            #         image_data=image_data,
+            #         embedding_model="clip-vit-base-patch32"
+            #     )
+            #     if clip_result.get("success"):
+            #         embeddings["clip"] = clip_result.get("embeddings", [])
+
+            # # Generate custom material embeddings if available
+            # if "custom" in embedding_types:
+            #     custom_result = await self.material_kai_service.generate_image_embeddings(
+            #         image_data=image_data,
+            #         embedding_model="material-specific-encoder"
+            #     )
+            #     if custom_result.get("success"):
+            #         embeddings["custom"] = custom_result.get("embeddings", [])
+
+            # return {
+            #     "success": True,
+            #     "embeddings": embeddings,
+            #     "embedding_metadata": {
                     "embedding_types": embedding_types,
                     "dimensions": {k: len(v) for k, v in embeddings.items()},
                     "generation_timestamp": datetime.utcnow().isoformat(),
