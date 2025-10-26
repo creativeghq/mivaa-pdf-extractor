@@ -2753,10 +2753,19 @@ Summary:"""
                         'ocr_confidence_score': image_info.get('ocr_result', {}).get('confidence', 0.0),
                         'image_analysis_results': material_analysis or {},
                         'image_embedding': clip_embeddings.get('embedding_512'),  # pgvector column
+
+                        # AI Analysis Columns
+                        'claude_validation': material_analysis,  # Claude Haiku 4.5 material analysis
+                        'llama_analysis': None,  # Llama used for product extraction, not individual images
+                        'visual_clip_embedding_512': clip_embeddings.get('embedding_512'),  # CLIP 512D
+                        'color_embedding_256': clip_embeddings.get('color_embedding'),  # Color 256D
+                        'texture_embedding_256': clip_embeddings.get('texture_embedding'),  # Texture 256D
+                        'application_embedding_512': clip_embeddings.get('application_embedding'),  # Application 512D
+
                         'visual_features': {
                             'clip_512': clip_embeddings.get('embedding_512'),
                             'clip_1536': clip_embeddings.get('embedding_1536'),
-                            'model_used': clip_embeddings.get('model_used', 'clip-vit-base-patch32')
+                            'model_used': clip_embeddings.get('model_used', 'ViT-B/32')
                         },
                         'processing_status': 'completed',
                         'multimodal_metadata': {
@@ -3201,26 +3210,38 @@ Summary:"""
             # Get the service instance
             material_service = MaterialVisualSearchService()
 
-            # Generate CLIP embeddings using the existing service
-            # This calls the actual MIVAA endpoints for CLIP processing
-            embedding_result = await material_service.generate_material_embeddings(
-                image_data=image_base64,
-                embedding_types=['clip']
+            # Generate ALL embeddings (CLIP, color, texture, application) using the existing service
+            # This calls the RealEmbeddingsService for complete embedding generation
+            from .real_embeddings_service import RealEmbeddingsService
+            embeddings_service = RealEmbeddingsService()
+
+            embedding_result = await embeddings_service.generate_all_embeddings(
+                entity_id="temp",
+                entity_type="image",
+                text_content="",
+                image_url=image_base64,
+                material_properties={}
             )
 
             if embedding_result and embedding_result.get('success'):
                 embeddings = embedding_result.get('embeddings', {})
-                metadata = embedding_result.get('embedding_metadata', {})
+                metadata = embedding_result.get('metadata', {})
 
-                # Get CLIP embedding (512D by default)
-                clip_embedding = embeddings.get('clip')
+                # Get all embeddings
+                clip_embedding = embeddings.get('visual_512')  # CLIP 512D
+                color_embedding = embeddings.get('color_256')  # Color 256D
+                texture_embedding = embeddings.get('texture_256')  # Texture 256D
+                application_embedding = embeddings.get('application_512')  # Application 512D
 
-                self.logger.info(f"✅ Generated CLIP embeddings: {len(clip_embedding) if clip_embedding else 0}D")
+                self.logger.info(f"✅ Generated embeddings: CLIP={len(clip_embedding) if clip_embedding else 0}D, Color={len(color_embedding) if color_embedding else 0}D, Texture={len(texture_embedding) if texture_embedding else 0}D, Application={len(application_embedding) if application_embedding else 0}D")
 
                 return {
-                    "embedding_512": clip_embedding,  # Use 512D CLIP embedding
-                    "embedding_1536": None,  # Not available from this service
-                    "model_used": metadata.get('model_versions', {}).get('clip', 'clip-vit-base-patch32'),
+                    "embedding_512": clip_embedding,  # CLIP 512D
+                    "embedding_1536": None,  # Not available
+                    "color_embedding": color_embedding,  # Color 256D
+                    "texture_embedding": texture_embedding,  # Texture 256D
+                    "application_embedding": application_embedding,  # Application 512D
+                    "model_used": metadata.get('model_versions', {}).get('visual', 'ViT-B/32'),
                     "processing_time_ms": metadata.get('processing_time_ms', 0),
                     "confidence_score": 1.0  # Default confidence
                 }
