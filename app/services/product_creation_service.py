@@ -1275,19 +1275,66 @@ Be thorough and accurate. Extract all available information."""
             self.logger.error(f"Claude Sonnet call failed: {str(e)}")
             return ""
 
+    def _extract_json_from_response(self, response: str) -> Dict[str, Any]:
+        """
+        Robust JSON extraction from Claude responses.
+        Handles cases where Claude returns extra text before/after JSON.
+        """
+        import json
+        import re
+
+        if not response or not response.strip():
+            raise ValueError("Empty response from Claude")
+
+        response_clean = response.strip()
+
+        # Remove markdown code blocks
+        if response_clean.startswith('```json'):
+            response_clean = response_clean[7:]
+        elif response_clean.startswith('```'):
+            response_clean = response_clean[3:]
+
+        if response_clean.endswith('```'):
+            response_clean = response_clean[:-3]
+
+        response_clean = response_clean.strip()
+
+        # Try to find JSON object or array in the response
+        # Look for { ... } or [ ... ]
+        json_match = re.search(r'(\{.*\}|\[.*\])', response_clean, re.DOTALL)
+
+        if json_match:
+            json_str = json_match.group(1)
+            try:
+                return json.loads(json_str)
+            except json.JSONDecodeError as e:
+                # If that fails, try to extract just the first complete JSON object
+                brace_count = 0
+                start_idx = json_str.find('{')
+                if start_idx == -1:
+                    start_idx = json_str.find('[')
+                    if start_idx == -1:
+                        raise ValueError(f"No JSON object found in response")
+
+                for i in range(start_idx, len(json_str)):
+                    if json_str[i] == '{' or json_str[i] == '[':
+                        brace_count += 1
+                    elif json_str[i] == '}' or json_str[i] == ']':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            # Found complete JSON object
+                            complete_json = json_str[start_idx:i+1]
+                            return json.loads(complete_json)
+
+                raise ValueError(f"Could not extract complete JSON object: {str(e)}")
+        else:
+            # Last resort: try parsing the whole thing
+            return json.loads(response_clean)
+
     def _parse_stage1_results(self, response: str, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Parse Stage 1 classification results from Claude Haiku."""
         try:
-            import json
-
-            # Try to extract JSON from response
-            response_clean = response.strip()
-            if response_clean.startswith('```json'):
-                response_clean = response_clean[7:]
-            if response_clean.endswith('```'):
-                response_clean = response_clean[:-3]
-
-            data = json.loads(response_clean)
+            data = self._extract_json_from_response(response)
             results = []
 
             for result in data.get('results', []):
@@ -1324,16 +1371,7 @@ Be thorough and accurate. Extract all available information."""
     def _parse_stage2_results(self, response: str) -> Dict[str, Any]:
         """Parse Stage 2 enrichment results from Claude Sonnet."""
         try:
-            import json
-
-            # Try to extract JSON from response
-            response_clean = response.strip()
-            if response_clean.startswith('```json'):
-                response_clean = response_clean[7:]
-            if response_clean.endswith('```'):
-                response_clean = response_clean[:-3]
-
-            data = json.loads(response_clean)
+            data = self._extract_json_from_response(response)
 
             # Ensure required fields exist
             enrichment_data = {
