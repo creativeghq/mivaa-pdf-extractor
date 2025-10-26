@@ -388,7 +388,7 @@ class CanonicalMetadataSchemaService:
             # Call AI service
             response = await self.ai_service.generate_text(
                 prompt=prompt,
-                model="claude-4-5-haiku-20250514",
+                model="claude-haiku-4-5-20251001",
                 max_tokens=2000
             )
             

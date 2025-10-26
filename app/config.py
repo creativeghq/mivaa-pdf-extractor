@@ -269,15 +269,15 @@ class Settings(BaseSettings):
         env="ANTHROPIC_API_KEY"
     )
     anthropic_model_classification: str = Field(
-        default="claude-4-5-haiku-20250514",
+        default="claude-haiku-4-5-20251001",
         env="ANTHROPIC_MODEL_CLASSIFICATION"
     )
     anthropic_model_validation: str = Field(
-        default="claude-4-5-sonnet-20250514",
+        default="claude-sonnet-4-5-20250929",
         env="ANTHROPIC_MODEL_VALIDATION"
     )
     anthropic_model_enrichment: str = Field(
-        default="claude-4-5-sonnet-20250514",
+        default="claude-sonnet-4-5-20250929",
         env="ANTHROPIC_MODEL_ENRICHMENT"
     )
     anthropic_max_tokens: int = Field(
