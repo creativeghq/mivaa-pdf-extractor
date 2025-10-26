@@ -189,82 +189,116 @@ class RealImageAnalysisService:
 
 Respond ONLY with valid JSON, no additional text."""
 
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    "https://api.together.xyz/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {TOGETHER_API_KEY}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
-                        "messages": [
-                            {
-                                "role": "user",
-                                "content": [
-                                    {
-                                        "type": "text",
-                                        "text": prompt
-                                    },
-                                    {
-                                        "type": "image_url",
-                                        "image_url": {
-                                            "url": f"data:image/jpeg;base64,{image_base64}"
-                                        }
-                                    }
-                                ]
-                            }
-                        ],
-                        "max_tokens": 1024,
-                        "temperature": 0.1,
-                        "top_p": 0.9,
-                        "stop": ["```"]
-                    }
-                )
+            # ✅ FIX: Add retry logic for Llama empty responses
+            max_retries = 3
+            last_error = None
 
-                if response.status_code != 200:
-                    error_text = response.text
-                    self.logger.error(f"Llama API error {response.status_code}: {error_text}")
-                    raise RuntimeError(f"Llama API returned error {response.status_code}: {error_text}")
-
-                result = response.json()
-                content = result["choices"][0]["message"]["content"]
-
-                # Parse JSON from response
+            for attempt in range(1, max_retries + 1):
                 try:
-                    # Clean up response - remove markdown code blocks if present
-                    content = content.strip()
-                    if content.startswith("```json"):
-                        content = content[7:]
-                    if content.startswith("```"):
-                        content = content[3:]
-                    if content.endswith("```"):
-                        content = content[:-3]
-                    content = content.strip()
+                    async with httpx.AsyncClient(timeout=120.0) as client:
+                        response = await client.post(
+                            "https://api.together.xyz/v1/chat/completions",
+                            headers={
+                                "Authorization": f"Bearer {TOGETHER_API_KEY}",
+                                "Content-Type": "application/json"
+                            },
+                            json={
+                                "model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+                                "messages": [
+                                    {
+                                        "role": "user",
+                                        "content": [
+                                            {
+                                                "type": "text",
+                                                "text": prompt
+                                            },
+                                            {
+                                                "type": "image_url",
+                                                "image_url": {
+                                                    "url": f"data:image/jpeg;base64,{image_base64}"
+                                                }
+                                            }
+                                        ]
+                                    }
+                                ],
+                                "max_tokens": 1024,
+                                "temperature": 0.1,
+                                "top_p": 0.9,
+                                "stop": ["```"]
+                            }
+                        )
 
-                    # Check if content is empty
-                    if not content:
-                        self.logger.error("Llama returned empty response")
-                        raise RuntimeError("Llama returned empty response")
+                        if response.status_code != 200:
+                            error_text = response.text
+                            self.logger.error(f"Llama API error {response.status_code}: {error_text}")
+                            raise RuntimeError(f"Llama API returned error {response.status_code}: {error_text}")
 
-                    # Handle extra text after JSON (similar to Claude fix)
-                    last_brace = content.rfind('}')
-                    if last_brace != -1:
-                        json_text = content[:last_brace + 1]
-                        analysis = json.loads(json_text)
+                        result = response.json()
+                        content = result["choices"][0]["message"]["content"]
+
+                        # Parse JSON from response
+                        try:
+                            # Clean up response - remove markdown code blocks if present
+                            content = content.strip()
+                            if content.startswith("```json"):
+                                content = content[7:]
+                            if content.startswith("```"):
+                                content = content[3:]
+                            if content.endswith("```"):
+                                content = content[:-3]
+                            content = content.strip()
+
+                            # Check if content is empty
+                            if not content:
+                                error_msg = f"Llama returned empty response (attempt {attempt}/{max_retries})"
+                                self.logger.warning(error_msg)
+                                if attempt < max_retries:
+                                    # Exponential backoff: 2^attempt seconds
+                                    import asyncio
+                                    await asyncio.sleep(2 ** attempt)
+                                    continue
+                                else:
+                                    raise RuntimeError(f"Llama returned empty response after {max_retries} attempts")
+
+                            # Handle extra text after JSON (similar to Claude fix)
+                            last_brace = content.rfind('}')
+                            if last_brace != -1:
+                                json_text = content[:last_brace + 1]
+                                analysis = json.loads(json_text)
+                            else:
+                                # Try parsing as-is
+                                analysis = json.loads(content)
+
+                            self.logger.info(f"✅ Llama analysis successful on attempt {attempt}")
+                            return {
+                                "model": "llama-4-scout-17b-vision",
+                                "analysis": analysis,
+                                "success": True
+                            }
+                        except json.JSONDecodeError as e:
+                            error_msg = f"Failed to parse Llama response as JSON (attempt {attempt}/{max_retries}): {e}. Content: {content[:200]}"
+                            self.logger.warning(error_msg)
+                            if attempt < max_retries:
+                                import asyncio
+                                await asyncio.sleep(2 ** attempt)
+                                continue
+                            else:
+                                self.logger.error(f"Full response: {result}")
+                                raise RuntimeError(f"Llama returned invalid JSON after {max_retries} attempts: {e}")
+
+                except Exception as e:
+                    last_error = e
+                    if attempt < max_retries:
+                        self.logger.warning(f"Llama attempt {attempt}/{max_retries} failed: {e}, retrying...")
+                        import asyncio
+                        await asyncio.sleep(2 ** attempt)
+                        continue
                     else:
-                        # Try parsing as-is
-                        analysis = json.loads(content)
+                        raise
 
-                    return {
-                        "model": "llama-4-scout-17b-vision",
-                        "analysis": analysis,
-                        "success": True
-                    }
-                except json.JSONDecodeError as e:
-                    self.logger.error(f"Failed to parse Llama response as JSON: {e}. Content: {content[:200]}")
-                    self.logger.debug(f"Full response: {result}")
-                    raise RuntimeError(f"Llama returned invalid JSON: {e}")
+            # If we get here, all retries failed
+            if last_error:
+                raise last_error
 
         except Exception as e:
             self.logger.error(f"Llama analysis failed: {e}")
