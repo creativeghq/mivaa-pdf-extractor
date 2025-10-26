@@ -362,6 +362,23 @@ async def upload_document_async(
         # Read file content
         file_content = await file.read()
 
+        # Create placeholder document record FIRST (to satisfy foreign key constraint)
+        supabase_client = get_supabase_client()
+        try:
+            supabase_client.table('documents').insert({
+                'id': document_id,
+                'title': title or file.filename,
+                'description': description,
+                'filename': file.filename,
+                'file_type': file.content_type,
+                'status': 'processing',
+                'created_at': datetime.utcnow().isoformat()
+            }).execute()
+            logger.info(f"✅ Created placeholder document record: {document_id}")
+        except Exception as e:
+            logger.error(f"Failed to create placeholder document: {e}")
+            # Continue anyway - the background task will create it
+
         # Initialize job storage (in-memory)
         job_storage[job_id] = {
             "status": "pending",
@@ -371,7 +388,7 @@ async def upload_document_async(
             "progress": 0
         }
 
-        # Persist job to database for recovery
+        # Persist job to database for recovery (now document exists)
         if job_recovery_service:
             await job_recovery_service.persist_job(
                 job_id=job_id,
