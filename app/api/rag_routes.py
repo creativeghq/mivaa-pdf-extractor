@@ -468,6 +468,42 @@ async def get_job_status(job_id: str):
 # This endpoint was conflicting with admin.py and never being reached due to router registration order
 
 
+async def create_products_background(
+    document_id: str,
+    workspace_id: str,
+    job_id: str
+):
+    """
+    Background task to create products from chunks.
+    Runs separately to avoid blocking main PDF processing.
+    """
+    try:
+        logger.info(f"🏭 Starting background product creation for document {document_id}")
+        supabase_client = get_supabase_client()
+        product_service = ProductCreationService(supabase_client)
+
+        # Use layout-based product detection
+        product_result = await product_service.create_products_from_layout_candidates(
+            document_id=document_id,
+            workspace_id=workspace_id,
+            min_confidence=0.5,
+            min_quality_score=0.5
+        )
+
+        products_created = product_result.get('products_created', 0)
+        logger.info(f"✅ Background product creation completed: {products_created} products created")
+
+        # Update job metadata with product count
+        if job_id in job_storage:
+            job_storage[job_id]["progress"] = 100  # Now fully complete
+            if "result" in job_storage[job_id]:
+                job_storage[job_id]["result"]["products_created"] = products_created
+                job_storage[job_id]["result"]["message"] = f"Document processed successfully: {products_created} products created"
+
+    except Exception as e:
+        logger.error(f"❌ Background product creation failed: {e}", exc_info=True)
+
+
 async def process_document_background(
     job_id: str,
     document_id: str,
@@ -531,19 +567,56 @@ async def process_document_background(
                 progress=10
             )
 
-        # Define progress callback to update job progress
-        async def update_progress(progress: int):
-            """Update job progress in memory and database"""
+        # Define progress callback to update job progress with detailed metadata
+        async def update_progress(progress: int, details: dict = None):
+            """Update job progress in memory and database with detailed stats"""
             job_storage[job_id]["progress"] = progress
+
+            # Build detailed metadata
+            detailed_metadata = {
+                "document_id": document_id,  # ✅ FIX 1: Add document_id
+                "filename": filename,
+                "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+                "title": title or filename,
+                "description": description,
+                "tags": document_tags,
+                "source": "rag_upload_async"
+            }
+
+            # ✅ FIX 2: Add detailed progress stats
+            if details:
+                detailed_metadata.update({
+                    "current_page": details.get("current_page"),
+                    "total_pages": details.get("total_pages"),
+                    "chunks_created": details.get("chunks_created", 0),
+                    "images_extracted": details.get("images_extracted", 0),
+                    "products_created": details.get("products_created", 0),
+                    "ai_usage": {
+                        "llama_calls": details.get("llama_calls", 0),
+                        "claude_calls": details.get("claude_calls", 0),
+                        "openai_calls": details.get("openai_calls", 0),
+                        "clip_embeddings": details.get("clip_embeddings", 0)
+                    },
+                    "embeddings_generated": {
+                        "text": details.get("text_embeddings", 0),
+                        "visual": details.get("visual_embeddings", 0),
+                        "color": details.get("color_embeddings", 0),
+                        "texture": details.get("texture_embeddings", 0),
+                        "application": details.get("application_embeddings", 0)
+                    },
+                    "current_step": details.get("current_step", "Processing")
+                })
+
             if job_recovery_service:
                 await job_recovery_service.persist_job(
                     job_id=job_id,
                     document_id=document_id,
                     filename=filename,
                     status="processing",
-                    progress=progress
+                    progress=progress,
+                    metadata=detailed_metadata
                 )
-            logger.info(f"📊 Job {job_id} progress: {progress}%")
+            logger.info(f"📊 Job {job_id} progress: {progress}% - {detailed_metadata.get('current_step', 'Processing')}")
 
         # Process document through LlamaIndex service with progress tracking
         processing_result = await llamaindex_service.index_document_content(
@@ -575,33 +648,36 @@ async def process_document_background(
             job_storage[job_id]["error"] = error_message
             job_storage[job_id]["progress"] = 100
         else:
-            # ✅ AUTO-CREATE PRODUCTS FROM CHUNKS
+            # ✅ FIX 3: Run product creation in background to prevent timeout
+            # Mark main job as 90% complete, product creation runs separately
             products_created = 0
-            try:
-                if chunks_created > 0:
-                    logger.info(f"🏭 Starting automatic product creation for document {document_id}")
-                    supabase_client = get_supabase_client()
-                    product_service = ProductCreationService(supabase_client)
 
-                    # ✅ NEW: Use layout-based product detection instead of chunk-based
-                    # This will filter out index pages, sustainability content, technical tables
-                    product_result = await product_service.create_products_from_layout_candidates(
-                        document_id=document_id,
-                        workspace_id="ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
-                        min_confidence=0.5,  # Minimum confidence for product candidates
-                        min_quality_score=0.5  # Minimum quality score for product candidates
-                    )
+            if chunks_created > 0:
+                logger.info(f"🏭 Scheduling background product creation for document {document_id}")
+                # Start product creation in background (don't await)
+                import asyncio
+                asyncio.create_task(create_products_background(
+                    document_id=document_id,
+                    workspace_id="ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+                    job_id=job_id
+                ))
+                logger.info("✅ Product creation scheduled in background")
+            else:
+                logger.info("⚠️ No chunks created, skipping product creation")
 
-                    products_created = product_result.get('products_created', 0)
-                    logger.info(f"✅ Created {products_created} products from {chunks_created} chunks")
-                else:
-                    logger.info("⚠️ No chunks created, skipping product creation")
-            except Exception as product_error:
-                logger.error(f"❌ Product creation failed: {product_error}", exc_info=True)
-                # Don't fail the entire job if product creation fails
+            # ✅ FIX 4: Start background image processing
+            images_extracted = processing_result.get('statistics', {}).get('total_images', 0)
+            if images_extracted > 0:
+                logger.info(f"🖼️ Scheduling background image AI analysis for {images_extracted} images")
+                from .services.background_image_processor import start_background_image_processing
+                asyncio.create_task(start_background_image_processing(
+                    document_id=document_id,
+                    supabase_client=supabase_client
+                ))
+                logger.info("✅ Image AI analysis scheduled in background")
 
             job_storage[job_id]["status"] = "completed"
-            job_storage[job_id]["progress"] = 100
+            job_storage[job_id]["progress"] = 90  # Main processing complete, products/images running in background
             job_storage[job_id]["completed_at"] = datetime.utcnow().isoformat()
             job_storage[job_id]["result"] = {
                 "document_id": document_id,
