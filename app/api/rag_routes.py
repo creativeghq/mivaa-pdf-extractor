@@ -531,7 +531,21 @@ async def process_document_background(
                 progress=10
             )
 
-        # Process document through LlamaIndex service
+        # Define progress callback to update job progress
+        async def update_progress(progress: int):
+            """Update job progress in memory and database"""
+            job_storage[job_id]["progress"] = progress
+            if job_recovery_service:
+                await job_recovery_service.persist_job(
+                    job_id=job_id,
+                    document_id=document_id,
+                    filename=filename,
+                    status="processing",
+                    progress=progress
+                )
+            logger.info(f"📊 Job {job_id} progress: {progress}%")
+
+        # Process document through LlamaIndex service with progress tracking
         processing_result = await llamaindex_service.index_document_content(
             file_content=file_content,
             document_id=document_id,
@@ -545,7 +559,8 @@ async def process_document_background(
                 "source": "rag_upload_async"
             },
             chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap
+            chunk_overlap=chunk_overlap,
+            progress_callback=update_progress
         )
 
         processing_time = (datetime.utcnow() - start_time).total_seconds()

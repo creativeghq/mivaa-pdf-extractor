@@ -1260,7 +1260,8 @@ class LlamaIndexService:
         file_path: str,
         metadata: Optional[Dict[str, Any]] = None,
         chunk_size: int = 2048,
-        chunk_overlap: int = 200
+        chunk_overlap: int = 200,
+        progress_callback: Optional[callable] = None
     ) -> Dict[str, Any]:
         """
         Enhanced document indexing supporting multiple formats (PDF, TXT, DOCX, MD).
@@ -1273,7 +1274,8 @@ class LlamaIndexService:
             metadata: Optional metadata to associate with the document
             chunk_size: Target chunk size (note: HierarchicalNodeParser uses [2048, 512, 128])
             chunk_overlap: Overlap between chunks (deprecated - HierarchicalNodeParser manages this)
-            
+            progress_callback: Optional async callback function(progress: int) to report progress (10-90)
+
         Returns:
             Dict containing indexing results and statistics
         """
@@ -1317,6 +1319,11 @@ class LlamaIndexService:
                     }
 
                     self.logger.info(f"🔄 Processing PDF with advanced processor: {temp_file_path}")
+
+                    # Report progress: PDF extraction starting (20%)
+                    if progress_callback:
+                        await progress_callback(20)
+
                     pdf_result = await pdf_processor.process_pdf_from_bytes(
                         pdf_bytes=file_content,
                         document_id=document_id,
@@ -1371,6 +1378,10 @@ class LlamaIndexService:
                     doc.metadata.update(extracted_metadata)
                     doc.metadata['document_id'] = document_id
                 
+                # Report progress: Document parsing starting (40%)
+                if progress_callback:
+                    await progress_callback(40)
+
                 # Parse documents into nodes with hierarchical chunking
                 # HierarchicalNodeParser automatically creates parent-child relationships
                 nodes = self.node_parser.get_nodes_from_documents(documents)
@@ -1403,12 +1414,20 @@ class LlamaIndexService:
                 # Store index reference
                 self.indices[document_id] = index
 
+                # Report progress: Database storage starting (60%)
+                if progress_callback:
+                    await progress_callback(60)
+
                 # ✅ NEW: Store chunks and embeddings in database tables
                 database_stats = await self._store_chunks_in_database(
                     document_id=document_id,
                     nodes=nodes,
                     metadata=extracted_metadata
                 )
+
+                # Report progress: Image processing starting (80%)
+                if progress_callback:
+                    await progress_callback(80)
 
                 # ✅ NEW: Process extracted images with CLIP and layout analysis
                 image_processing_stats = {}
