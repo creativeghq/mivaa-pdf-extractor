@@ -190,32 +190,49 @@ class RealEmbeddingsService:
         image_url: Optional[str],
         image_data: Optional[str]
     ) -> Optional[List[float]]:
-        """Generate visual CLIP embedding."""
+        """Generate visual CLIP embedding using local PyTorch model."""
         try:
-            # Use MIVAA gateway for CLIP embeddings
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.mivaa_gateway_url}/api/mivaa/gateway",
-                    json={
-                        "action": "clip_embedding_generation",
-                        "payload": {
-                            "image_url": image_url,
-                            "image_data": image_data,
-                            "embedding_type": "visual_similarity",
-                            "options": {"normalize": True, "dimensions": 512}
-                        }
-                    },
-                    timeout=30.0
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get("success") and data.get("data", {}).get("embedding"):
-                        return data["data"]["embedding"]
-                        
+            # ✅ FIX: Use local CLIP model instead of non-existent gateway
+            from llama_index.embeddings.clip import ClipEmbedding
+            import base64
+            from PIL import Image
+            import io
+
+            # Initialize CLIP model (cached after first use)
+            if not hasattr(self, '_clip_model'):
+                self._clip_model = ClipEmbedding(model_name="clip-vit-base-patch32")
+                self.logger.info("✅ Initialized local CLIP model: clip-vit-base-patch32")
+
+            # Convert base64 image data to PIL Image
+            if image_data:
+                # Remove data URL prefix if present
+                if image_data.startswith('data:image'):
+                    image_data = image_data.split(',')[1]
+
+                image_bytes = base64.b64decode(image_data)
+                pil_image = Image.open(io.BytesIO(image_bytes))
+
+                # Generate embedding using local CLIP model
+                embedding = self._clip_model.get_image_embedding(pil_image)
+
+                self.logger.info(f"✅ Generated CLIP embedding: {len(embedding)}D")
+                return embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding)
+
+            elif image_url:
+                # Download image from URL
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.get(image_url)
+                    if response.status_code == 200:
+                        pil_image = Image.open(io.BytesIO(response.content))
+                        embedding = self._clip_model.get_image_embedding(pil_image)
+                        self.logger.info(f"✅ Generated CLIP embedding from URL: {len(embedding)}D")
+                        return embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding)
+
         except Exception as e:
             self.logger.error(f"Visual embedding generation failed: {e}")
-        
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+
         return None
     
     def _generate_multimodal_fusion(
@@ -233,37 +250,31 @@ class RealEmbeddingsService:
         image_data: Optional[str],
         material_properties: Optional[Dict[str, Any]]
     ) -> Optional[List[float]]:
-        """Generate color embedding using color analysis."""
+        """Generate color embedding using OpenAI text embeddings of color descriptions."""
         try:
+            # Extract color information
             colors = []
             if material_properties and material_properties.get("colors"):
                 colors = material_properties["colors"]
-            
-            # Use MIVAA gateway for color embeddings
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.mivaa_gateway_url}/api/mivaa/gateway",
-                    json={
-                        "action": "color_analysis",
-                        "payload": {
-                            "image_url": image_url,
-                            "image_data": image_data,
-                            "color_palette": colors,
-                            "analysis_type": "color_palette_embedding",
-                            "options": {"normalize": True, "dimensions": 256}
-                        }
-                    },
-                    timeout=30.0
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get("success") and data.get("data", {}).get("color_embedding"):
-                        return data["data"]["color_embedding"]
-                        
+
+            # Create text description of colors for embedding
+            if colors:
+                color_text = f"Material colors: {', '.join(colors)}"
+            else:
+                color_text = "Material with unknown color palette"
+
+            # Generate text embedding for color description
+            color_embedding = await self._generate_text_embedding(color_text)
+
+            if color_embedding:
+                # Reduce from 1536D to 256D by taking every 6th dimension
+                reduced_embedding = [color_embedding[i] for i in range(0, len(color_embedding), 6)][:256]
+                self.logger.info(f"✅ Generated color embedding: {len(reduced_embedding)}D")
+                return reduced_embedding
+
         except Exception as e:
             self.logger.error(f"Color embedding generation failed: {e}")
-        
+
         return None
     
     async def _generate_texture_embedding(
@@ -272,37 +283,31 @@ class RealEmbeddingsService:
         image_data: Optional[str],
         material_properties: Optional[Dict[str, Any]]
     ) -> Optional[List[float]]:
-        """Generate texture embedding using texture analysis."""
+        """Generate texture embedding using OpenAI text embeddings of texture descriptions."""
         try:
+            # Extract texture information
             texture_desc = ""
             if material_properties and material_properties.get("textures"):
                 texture_desc = ", ".join(material_properties["textures"])
-            
-            # Use MIVAA gateway for texture embeddings
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.mivaa_gateway_url}/api/mivaa/gateway",
-                    json={
-                        "action": "texture_analysis",
-                        "payload": {
-                            "image_url": image_url,
-                            "image_data": image_data,
-                            "texture_description": texture_desc,
-                            "analysis_type": "texture_pattern_embedding",
-                            "options": {"normalize": True, "dimensions": 256}
-                        }
-                    },
-                    timeout=30.0
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get("success") and data.get("data", {}).get("texture_embedding"):
-                        return data["data"]["texture_embedding"]
-                        
+
+            # Create text description of textures for embedding
+            if texture_desc:
+                texture_text = f"Material textures: {texture_desc}"
+            else:
+                texture_text = "Material with unknown texture patterns"
+
+            # Generate text embedding for texture description
+            texture_embedding = await self._generate_text_embedding(texture_text)
+
+            if texture_embedding:
+                # Reduce from 1536D to 256D by taking every 6th dimension
+                reduced_embedding = [texture_embedding[i] for i in range(0, len(texture_embedding), 6)][:256]
+                self.logger.info(f"✅ Generated texture embedding: {len(reduced_embedding)}D")
+                return reduced_embedding
+
         except Exception as e:
             self.logger.error(f"Texture embedding generation failed: {e}")
-        
+
         return None
     
     async def _generate_application_embedding(
@@ -310,36 +315,25 @@ class RealEmbeddingsService:
         text_content: str,
         material_properties: Optional[Dict[str, Any]]
     ) -> Optional[List[float]]:
-        """Generate application embedding using use-case classification."""
+        """Generate application embedding using OpenAI text embeddings of use-case descriptions."""
         try:
             # Combine text and material properties for application context
             app_context = f"{text_content}. "
             if material_properties:
                 app_context += f"Materials: {', '.join(material_properties.get('materials', []))}. "
                 app_context += f"Uses: {', '.join(material_properties.get('applications', []))}"
-            
-            # Use MIVAA gateway for application embeddings
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.mivaa_gateway_url}/api/mivaa/gateway",
-                    json={
-                        "action": "application_analysis",
-                        "payload": {
-                            "context": app_context[:2000],
-                            "analysis_type": "use_case_embedding",
-                            "options": {"normalize": True, "dimensions": 512}
-                        }
-                    },
-                    timeout=30.0
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get("success") and data.get("data", {}).get("application_embedding"):
-                        return data["data"]["application_embedding"]
-                        
+
+            # Generate text embedding for application context
+            app_embedding = await self._generate_text_embedding(app_context[:2000])
+
+            if app_embedding:
+                # Reduce from 1536D to 512D by taking every 3rd dimension
+                reduced_embedding = [app_embedding[i] for i in range(0, len(app_embedding), 3)][:512]
+                self.logger.info(f"✅ Generated application embedding: {len(reduced_embedding)}D")
+                return reduced_embedding
+
         except Exception as e:
             self.logger.error(f"Application embedding generation failed: {e}")
-        
+
         return None
 
