@@ -370,7 +370,7 @@ class LlamaIndexService:
             }
 
     def _initialize_embedding_service(self):
-        """Initialize the centralized embedding service."""
+        """Check for OpenAI API key availability."""
         if not self.available:
             return
 
@@ -386,35 +386,14 @@ class LlamaIndexService:
                 self.logger.error("❌ CRITICAL: OpenAI API key not found in environment variables!")
                 self.logger.error("   Embeddings will NOT be generated for any documents")
                 self.logger.error("   Please set OPENAI_API_KEY environment variable in MIVAA deployment")
-                self.embedding_service = None
                 return
 
-            # Configure embedding service
-            embedding_config = EmbeddingConfig(
-                model_name=self.embedding_model,
-                model_type="openai",
-                dimension=1536,
-                max_tokens=8191,  # OpenAI text-embedding-3-small limit
-                batch_size=100,
-                rate_limit_rpm=3000,
-                rate_limit_tpm=1000000,
-                cache_ttl_hours=24,  # 24 hour cache
-                cache_enabled=True
-            )
-
-            # Initialize embedding service
-            self.logger.info(f"About to initialize RealEmbeddingsService with config: {type(embedding_config)}")
-            self.logger.info(f"RealEmbeddingsService class: {RealEmbeddingsService}")
-            self.logger.info(f"RealEmbeddingsService.__init__ signature: {RealEmbeddingsService.__init__}")
-            self.embedding_service = RealEmbeddingsService(embedding_config)
-
-            self.logger.info(f"Centralized embedding service initialized with model: {self.embedding_model}")
+            self.logger.info(f"✅ OpenAI API key found, embeddings will be generated")
 
         except Exception as e:
             import traceback
-            self.logger.error(f"Failed to initialize embedding service: {e}")
+            self.logger.error(f"Failed to check OpenAI API key: {e}")
             self.logger.error(f"Full traceback: {traceback.format_exc()}")
-            self.embedding_service = None
 
     def _create_embedding_wrapper(self):
         """Create a wrapper that integrates our embedding service with LlamaIndex."""
@@ -517,17 +496,13 @@ class LlamaIndexService:
             return
 
         try:
-            # Initialize embeddings - use centralized embedding service if available
-            if hasattr(self, 'embedding_service') and self.embedding_service:
-                # Use centralized embedding service
-                self.embeddings = self._create_embedding_wrapper()
-                self.logger.info("Using centralized embedding service for LlamaIndex")
-            else:
-                # Direct embedding initialization
-                self.embeddings = OpenAIEmbedding(
-                    model=self.embedding_model
-                )
-                self.logger.info("Using direct embedding initialization")
+            # Initialize embeddings - use OpenAI directly
+            # Note: RealEmbeddingsService is for image/material embeddings, not text
+            self.embeddings = OpenAIEmbedding(
+                model=self.embedding_model,
+                api_key=os.getenv('OPENAI_API_KEY')
+            )
+            self.logger.info(f"✅ Initialized OpenAI embeddings: {self.embedding_model}")
 
             # Initialize LLM
             self.llm = OpenAI(
@@ -949,7 +924,7 @@ class LlamaIndexService:
 
         try:
             # Initialize advanced search service with config
-            if hasattr(self, 'embedding_service') and self.embedding_service:
+            if hasattr(self, 'embeddings') and self.embeddings:
                 search_config = {
                     'mmr_lambda': 0.7,
                     'max_query_expansion_terms': 10,
@@ -958,7 +933,7 @@ class LlamaIndexService:
                 self.advanced_search_service = AdvancedSearchService(config=search_config)
                 self.logger.info("Advanced search service initialized successfully")
             else:
-                self.logger.warning("Embedding service not available, advanced search service disabled")
+                self.logger.warning("Embeddings not available, advanced search service disabled")
                 self.advanced_search_service = None
 
         except Exception as e:
@@ -2463,9 +2438,9 @@ Summary:"""
             failed_chunks = 0
 
             self.logger.info(f"🔄 Starting database storage for {len(nodes)} chunks from document {document_id}")
-            self.logger.info(f"   Embedding service available: {self.embedding_service is not None}")
-            if self.embedding_service is None:
-                self.logger.error("   ⚠️ WARNING: Embedding service is None - embeddings will NOT be generated!")
+            self.logger.info(f"   OpenAI embeddings available: {self.embeddings is not None}")
+            if self.embeddings is None:
+                self.logger.error("   ⚠️ WARNING: Embeddings not initialized - embeddings will NOT be generated!")
 
             # First, ensure the document exists in the documents table
             self._ensure_document_exists(supabase_client, document_id, metadata)
@@ -2522,27 +2497,17 @@ Summary:"""
 
                         # Generate and store embedding
                         try:
-                            # Check if embedding service is available
-                            if self.embedding_service is None:
-                                self.logger.error(f"❌ Embedding service is None for chunk {i} - OPENAI_API_KEY not set in environment")
+                            # Check if embeddings are available
+                            if self.embeddings is None:
+                                self.logger.error(f"❌ Embeddings not initialized for chunk {i} - OPENAI_API_KEY not set in environment")
                                 if i == 0:
                                     self.logger.error("   This will affect ALL chunks - no embeddings will be generated!")
                                 continue
 
-                            # Generate embedding for the chunk
-                            embedding_response = await self.embedding_service.generate_embedding(node.text)
+                            # Generate embedding for the chunk using OpenAI directly
+                            embedding_vector = self.embeddings.get_text_embedding(node.text)
 
-                            # Extract the actual embedding vector from the response
-                            if embedding_response:
-                                # Handle different response types
-                                if hasattr(embedding_response, 'embedding'):
-                                    embedding_vector = embedding_response.embedding
-                                elif isinstance(embedding_response, list):
-                                    embedding_vector = embedding_response
-                                else:
-                                    embedding_vector = embedding_response
-
-                                if embedding_vector:
+                            if embedding_vector:
                                     # Store embedding in embeddings table
                                     embedding_data = {
                                         'chunk_id': chunk_id,
