@@ -403,10 +403,10 @@ class LlamaIndexService:
             )
 
             # Initialize embedding service
-            self.logger.info(f"About to initialize EmbeddingService with config: {type(embedding_config)}")
-            self.logger.info(f"EmbeddingService class: {EmbeddingService}")
-            self.logger.info(f"EmbeddingService.__init__ signature: {EmbeddingService.__init__}")
-            self.embedding_service = EmbeddingService(embedding_config)
+            self.logger.info(f"About to initialize RealEmbeddingsService with config: {type(embedding_config)}")
+            self.logger.info(f"RealEmbeddingsService class: {RealEmbeddingsService}")
+            self.logger.info(f"RealEmbeddingsService.__init__ signature: {RealEmbeddingsService.__init__}")
+            self.embedding_service = RealEmbeddingsService(embedding_config)
 
             self.logger.info(f"Centralized embedding service initialized with model: {self.embedding_model}")
 
@@ -424,7 +424,7 @@ class LlamaIndexService:
         class EmbeddingServiceWrapper(BaseEmbedding):
             """Wrapper to integrate our centralized embedding service with LlamaIndex."""
 
-            def __init__(self, embedding_service: EmbeddingService):
+            def __init__(self, embedding_service: RealEmbeddingsService):
                 # Initialize with proper BaseEmbedding fields
                 super().__init__(
                     model_name=embedding_service.config.model_name,
