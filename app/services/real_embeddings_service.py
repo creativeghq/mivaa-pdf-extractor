@@ -200,8 +200,8 @@ class RealEmbeddingsService:
 
             # Initialize CLIP model (cached after first use)
             if not hasattr(self, '_clip_model'):
-                self._clip_model = ClipEmbedding(model_name="clip-vit-base-patch32")
-                self.logger.info("✅ Initialized local CLIP model: clip-vit-base-patch32")
+                self._clip_model = ClipEmbedding(model_name="ViT-B/32")
+                self.logger.info("✅ Initialized local CLIP model: ViT-B/32")
 
             # Convert base64 image data to PIL Image
             if image_data:
