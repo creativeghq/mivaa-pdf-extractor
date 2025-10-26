@@ -2,7 +2,7 @@
 Real Image Analysis Service - Stage 4 Implementation
 
 This service provides real image analysis using:
-1. Llama 3.2 90B Vision for detailed image analysis
+1. Llama 4 Scout 17B Vision for detailed image analysis (superior OCR, table/diagram understanding)
 2. Claude 4.5 Sonnet Vision for validation
 3. CLIP embeddings for visual similarity (512D)
 4. Material property extraction
@@ -49,9 +49,9 @@ class ImageAnalysisResult:
 class RealImageAnalysisService:
     """
     Provides real image analysis using vision models and CLIP embeddings.
-    
+
     This service replaces mock data with actual AI model calls:
-    - Llama 3.2 90B Vision: Detailed image analysis
+    - Llama 4 Scout 17B Vision: Detailed image analysis (69.4% MMMU, #1 OCR)
     - Claude 4.5 Sonnet Vision: Validation and enrichment
     - CLIP: Visual embeddings for similarity search
     """
@@ -167,7 +167,7 @@ class RealImageAnalysisService:
         image_base64: str,
         context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Analyze image with Llama 3.2 90B Vision"""
+        """Analyze image with Llama 4 Scout 17B Vision (69.4% MMMU, #1 OCR)"""
         try:
             if not TOGETHER_API_KEY:
                 raise ValueError("TOGETHER_API_KEY not set - cannot perform Llama vision analysis")
@@ -197,7 +197,7 @@ Respond ONLY with valid JSON, no additional text."""
                         "Content-Type": "application/json"
                     },
                     json={
-                        "model": "meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo",
+                        "model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
                         "messages": [
                             {
                                 "role": "user",
@@ -244,7 +244,7 @@ Respond ONLY with valid JSON, no additional text."""
 
                     analysis = json.loads(content)
                     return {
-                        "model": "llama-3.2-90b-vision",
+                        "model": "llama-4-scout-17b-vision",
                         "analysis": analysis,
                         "success": True
                     }

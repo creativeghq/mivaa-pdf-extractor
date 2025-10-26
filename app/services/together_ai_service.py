@@ -1,8 +1,9 @@
 """
 TogetherAI Service for LLaMA Vision integration with MIVAA platform.
 
-This service provides semantic analysis capabilities using TogetherAI's LLaMA Vision model
-(meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo) for material identification and analysis.
+This service provides semantic analysis capabilities using TogetherAI's LLaMA 4 Scout Vision model
+(meta-llama/Llama-4-Scout-17B-16E-Instruct) for material identification and analysis.
+Superior OCR performance (#1 open source) and 69.4% MMMU benchmark score.
 """
 
 import asyncio
@@ -44,7 +45,7 @@ class TogetherAIConfig:
     """Configuration for TogetherAI service."""
     api_key: str
     base_url: str = "https://api.together.xyz/v1/chat/completions"
-    model: str = "meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo"
+    model: str = "meta-llama/Llama-4-Scout-17B-16E-Instruct"
     max_tokens: int = 1024
     temperature: float = 0.1
     timeout: int = 120

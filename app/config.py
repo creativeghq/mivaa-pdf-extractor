@@ -227,7 +227,7 @@ class Settings(BaseSettings):
         env="TOGETHER_BASE_URL"
     )
     together_model: str = Field(
-        default="meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo",
+        default="meta-llama/Llama-4-Scout-17B-16E-Instruct",
         env="TOGETHER_MODEL"
     )
     together_max_tokens: int = Field(
@@ -653,6 +653,8 @@ class Settings(BaseSettings):
     def validate_together_model(cls, v):
         """Validate TogetherAI model name."""
         valid_models = [
+            "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+            "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
             "meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo",
             "meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo",
             "meta-llama/Llama-Vision-Free"

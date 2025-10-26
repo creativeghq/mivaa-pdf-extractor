@@ -90,7 +90,7 @@ except ImportError as e:
 class LlamaIndexService:
     """
     Advanced RAG service using LlamaIndex for intelligent PDF processing.
-    
+
     Features:
     - Semantic document indexing and search
     - Question answering over PDF content
@@ -98,19 +98,19 @@ class LlamaIndexService:
     - Content extraction with context
     - Multi-document analysis
     """
-    
+
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         """Initialize the LlamaIndex service with configuration."""
         self.config = config or {}
         self.logger = logging.getLogger(__name__)
         self.executor = ThreadPoolExecutor(max_workers=2)
-        
+
         # Service availability
         self.available = LLAMAINDEX_AVAILABLE
         if not self.available:
             self.logger.warning("LlamaIndex service unavailable - dependencies not installed")
             return
-        
+
         # Configuration
         self.embedding_model = self.config.get('embedding_model', 'text-embedding-3-small')
         self.llm_model = self.config.get('llm_model', 'gpt-4o')
@@ -124,17 +124,17 @@ class LlamaIndexService:
         self.image_embedding_model = self.config.get('image_embedding_model', 'ViT-B/32')
         self.ocr_enabled = self.config.get('ocr_enabled', True)
         self.ocr_language = self.config.get('ocr_language', 'en')
-        
+
         # Supabase Configuration
         self.supabase_url = self.config.get('supabase_url', os.getenv('SUPABASE_URL'))
         self.supabase_key = self.config.get('supabase_key', os.getenv('SUPABASE_ANON_KEY'))
         self.table_name = self.config.get('table_name', 'documents')
         self.query_name = self.config.get('query_name', 'match_documents')
-        
+
         # Storage directory for LlamaIndex indices
         self.storage_dir = self.config.get('storage_dir', tempfile.mkdtemp(prefix='llamaindex_'))
         Path(self.storage_dir).mkdir(parents=True, exist_ok=True)
-        
+
         # Initialize centralized embedding service
         self._initialize_embedding_service()
 
@@ -143,7 +143,7 @@ class LlamaIndexService:
 
         # Initialize components
         self._initialize_components()
-        
+
         # Initialize vector store
         self.logger.info("🔧 Initializing vector store...")
         self._initialize_vector_store()
@@ -168,17 +168,17 @@ class LlamaIndexService:
             self.logger.info("🔧 Initializing multimodal components...")
             self._initialize_multimodal_components()
             self.logger.info("✅ Multimodal components initialized")
-        
+
         # Conversation memory management
         self.conversation_memories = {}  # Session ID -> conversation history
         self.max_conversation_turns = 10  # Maximum turns to keep in memory
         self.conversation_summary_threshold = 8  # Summarize when exceeding this
-        
+
         self.logger.info(f"LlamaIndex service initialized with storage: {self.storage_dir}")
 
         # Mark that we need to load existing documents (will be done after full initialization)
         self._documents_loaded = False
-    
+
     async def semantic_search_with_mmr(
         self,
         query: str,
@@ -190,7 +190,7 @@ class LlamaIndexService:
     ) -> Dict[str, Any]:
         """
         Perform semantic search with MMR (Maximal Marginal Relevance) for Phase 7.
-        
+
         Args:
             query: Search query
             document_id: Optional document ID to search within
@@ -198,7 +198,7 @@ class LlamaIndexService:
             lambda_mult: MMR lambda parameter (0.0 = max diversity, 1.0 = max relevance)
             query_type: Type of query (semantic, factual, analytical, etc.)
             filters: Optional metadata filters
-            
+
         Returns:
             Dictionary containing MMR results and metadata
         """
@@ -208,7 +208,7 @@ class LlamaIndexService:
                 "message": "Advanced search service not available",
                 "total_results": 0
             }
-        
+
         try:
             # Load existing documents if not already loaded
             if not self._documents_loaded:
@@ -245,7 +245,7 @@ class LlamaIndexService:
                 metadata_filters=None,  # TODO: Convert filters format if needed
                 query_type=query_type_enum
             )
-            
+
             # Process MMR results with multimodal enhancement
             results = []
             self.logger.info(f"🔍 Processing MMR result: {type(mmr_result)}")
@@ -294,7 +294,7 @@ class LlamaIndexService:
                 "query_type": query_type,
                 "mmr_applied": True
             }
-            
+
         except Exception as e:
             self.logger.error(f"MMR search failed: {e}")
             return {
@@ -302,7 +302,7 @@ class LlamaIndexService:
                 "error": str(e),
                 "total_results": 0
             }
-    
+
     async def advanced_query_with_optimization(
         self,
         query: str,
@@ -314,7 +314,7 @@ class LlamaIndexService:
     ) -> Dict[str, Any]:
         """
         Perform advanced query with optimization and expansion for Phase 7.
-        
+
         Args:
             query: Original query
             document_id: Optional document ID to search within
@@ -322,7 +322,7 @@ class LlamaIndexService:
             enable_expansion: Whether to enable query expansion
             filters: Optional metadata filters
             top_k: Number of results to return
-            
+
         Returns:
             Dictionary containing optimized query results
         """
@@ -332,7 +332,7 @@ class LlamaIndexService:
                 "message": "Advanced search service not available",
                 "total_results": 0
             }
-        
+
         try:
             # Use the advanced search service for optimized query
             search_result = await self.advanced_search_service.advanced_search(
@@ -343,7 +343,7 @@ class LlamaIndexService:
                 filters=filters,
                 top_k=top_k
             )
-            
+
             return {
                 "results": [
                     {
@@ -360,7 +360,7 @@ class LlamaIndexService:
                 "processing_time": search_result.processing_time,
                 "query_type": query_type
             }
-            
+
         except Exception as e:
             self.logger.error(f"Advanced query failed: {e}")
             return {
@@ -368,7 +368,7 @@ class LlamaIndexService:
                 "error": str(e),
                 "total_results": 0
             }
-    
+
     def _initialize_embedding_service(self):
         """Initialize the centralized embedding service."""
         if not self.available:
@@ -388,7 +388,7 @@ class LlamaIndexService:
                 self.logger.error("   Please set OPENAI_API_KEY environment variable in MIVAA deployment")
                 self.embedding_service = None
                 return
-            
+
             # Configure embedding service
             embedding_config = EmbeddingConfig(
                 model_name=self.embedding_model,
@@ -401,7 +401,7 @@ class LlamaIndexService:
                 cache_ttl_hours=24,  # 24 hour cache
                 cache_enabled=True
             )
-            
+
             # Initialize embedding service
             self.logger.info(f"About to initialize EmbeddingService with config: {type(embedding_config)}")
             self.logger.info(f"EmbeddingService class: {EmbeddingService}")
@@ -415,12 +415,12 @@ class LlamaIndexService:
             self.logger.error(f"Failed to initialize embedding service: {e}")
             self.logger.error(f"Full traceback: {traceback.format_exc()}")
             self.embedding_service = None
-    
+
     def _create_embedding_wrapper(self):
         """Create a wrapper that integrates our embedding service with LlamaIndex."""
         from llama_index.core.embeddings import BaseEmbedding
         from typing import List
-        
+
         class EmbeddingServiceWrapper(BaseEmbedding):
             """Wrapper to integrate our centralized embedding service with LlamaIndex."""
 
@@ -432,7 +432,7 @@ class LlamaIndexService:
                 )
                 # Store the embedding service
                 object.__setattr__(self, 'embedding_service', embedding_service)
-            
+
             def _get_query_embedding(self, query: str) -> List[float]:
                 """Get embedding for a single query."""
                 try:
@@ -486,7 +486,7 @@ class LlamaIndexService:
                 except Exception as e:
                     self.embedding_service.logger.error(f"Async text embedding failed: {e}")
                     raise
-            
+
             def _get_text_embeddings(self, texts: List[str]) -> List[List[float]]:
                 """Get embeddings for multiple texts using batch processing."""
                 try:
@@ -504,18 +504,18 @@ class LlamaIndexService:
                 except Exception as e:
                     self.embedding_service.logger.error(f"Batch embedding failed: {e}")
                     raise
-            
+
             @property
             def model_name(self) -> str:
                 return self._model_name
-        
+
         return EmbeddingServiceWrapper(self.embedding_service)
-    
+
     def _initialize_components(self):
         """Initialize LlamaIndex components."""
         if not self.available:
             return
-        
+
         try:
             # Initialize embeddings - use centralized embedding service if available
             if hasattr(self, 'embedding_service') and self.embedding_service:
@@ -528,14 +528,14 @@ class LlamaIndexService:
                     model=self.embedding_model
                 )
                 self.logger.info("Using direct embedding initialization")
-            
+
             # Initialize LLM
             self.llm = OpenAI(
                 model=self.llm_model,
                 api_key=os.getenv('OPENAI_API_KEY'),
                 temperature=0.1
             )
-            
+
             # Configure global settings
             Settings.embed_model = self.embeddings
             Settings.llm = self.llm
@@ -550,16 +550,16 @@ class LlamaIndexService:
 
             self.logger.info("✅ HierarchicalNodeParser initialized with chunk sizes: [2048, 512, 128]")
             self.logger.info("LlamaIndex components initialized successfully")
-            
+
         except Exception as e:
             self.logger.error(f"Failed to initialize LlamaIndex components: {e}")
             self.available = False
-    
+
     def _initialize_vector_store(self):
         """Initialize SupabaseVectorStore for pgvector integration."""
         if not self.available:
             return
-        
+
         try:
             # Check if Supabase configuration is available
             self.logger.info("🔍 Checking Supabase configuration...")
@@ -585,17 +585,17 @@ class LlamaIndexService:
             self.logger.info("✅ In-memory vector store enabled for search")
 
             self.logger.info(f"🔍 Connection string format: postgresql://postgres:***@db.{project_id}.supabase.co:5432/postgres")
-# 
+#
 #             # Initialize Supabase vector store with timeout protection
 #             import signal
-# 
+#
 #             def timeout_handler(signum, frame):
 #                 raise TimeoutError("SupabaseVectorStore initialization timed out")
-# 
+#
 #             # Set 10 second timeout
 #             signal.signal(signal.SIGALRM, timeout_handler)
 #             signal.alarm(10)
-# 
+#
 #             try:
 #                 self.vector_store = SupabaseVectorStore(
 #                     postgres_connection_string=connection_string,
@@ -626,7 +626,7 @@ class LlamaIndexService:
             self.image_embeddings = None
             self.image_reader = None
             return
-        
+
         try:
             # Initialize multi-modal LLM
             if self.multimodal_llm_model.startswith('gpt-4'):
@@ -646,7 +646,7 @@ class LlamaIndexService:
             else:
                 self.logger.warning(f"Unsupported multi-modal LLM model: {self.multimodal_llm_model}")
                 self.multimodal_llm = None
-            
+
             # Initialize CLIP embeddings - CRITICAL for multimodal image-text association
             try:
                 self.image_embeddings = ClipEmbedding(model_name=self.image_embedding_model)
@@ -655,38 +655,38 @@ class LlamaIndexService:
                 self.logger.error(f"❌ CRITICAL: Failed to initialize CLIP embeddings: {e}")
                 self.logger.warning("⚠️  Service will continue without CLIP - multimodal capabilities limited")
                 self.image_embeddings = None
-            
+
             # Initialize image reader
             self.image_reader = ImageReader()
             self.logger.info("Image reader initialized successfully")
-            
+
         except Exception as e:
             self.logger.error(f"Failed to initialize multi-modal components: {e}")
             self.multimodal_llm = None
             self.image_embeddings = None
             self.image_reader = None
-    
+
     def process_images_with_ocr(self, image_paths: List[str]) -> List[Any]:
         """Process images with OCR to extract text for Phase 8 multi-modal capabilities."""
         if not self.available or not self.enable_multimodal:
             self.logger.warning("Multi-modal capabilities not available for OCR processing")
             return []
-        
+
         if not self.image_reader:
             self.logger.error("Image reader not initialized")
             return []
-        
+
         image_documents = []
-        
+
         try:
             for image_path in image_paths:
                 if not os.path.exists(image_path):
                     self.logger.warning(f"Image file not found: {image_path}")
                     continue
-                
+
                 # Load image using LlamaIndex ImageReader
                 documents = self.image_reader.load_data(file=Path(image_path))
-                
+
                 # Process each document (usually one per image)
                 for doc in documents:
                     # Perform OCR if enabled
@@ -694,19 +694,19 @@ class LlamaIndexService:
                         try:
                             import easyocr
                             reader = easyocr.Reader([self.ocr_language])
-                            
+
                             # Extract text from image
                             ocr_results = reader.readtext(image_path)
                             ocr_text = ' '.join([result[1] for result in ocr_results])
-                            
+
                             # Combine OCR text with existing document text
                             if ocr_text.strip():
                                 doc.text = f"{doc.text}\n\nOCR Extracted Text:\n{ocr_text}"
                                 self.logger.info(f"OCR extracted {len(ocr_text)} characters from {image_path}")
-                        
+
                         except Exception as e:
                             self.logger.warning(f"OCR processing failed for {image_path}: {e}")
-                    
+
                     # Create ImageDocument with metadata
                     image_doc = ImageDocument(
                         image=doc.image,
@@ -719,26 +719,26 @@ class LlamaIndexService:
                         }
                     )
                     image_documents.append(image_doc)
-                    
+
         except Exception as e:
             self.logger.error(f"Failed to process images with OCR: {e}")
-        
+
         self.logger.info(f"Processed {len(image_documents)} image documents with OCR")
         return image_documents
-    
+
     def create_multimodal_index(self, text_documents: List[Any], image_documents: List[Any]) -> Optional[Any]:
         """Create a multi-modal index combining text and image documents for Phase 8."""
         if not self.available or not self.enable_multimodal:
             self.logger.warning("Multi-modal capabilities not available for index creation")
             return None
-        
+
         try:
             # Combine all documents
             all_documents = []
-            
+
             # Add text documents
             all_documents.extend(text_documents)
-            
+
             # Convert image documents to nodes with image embeddings
             for img_doc in image_documents:
                 # Create ImageNode for multi-modal indexing
@@ -748,7 +748,7 @@ class LlamaIndexService:
                     metadata=img_doc.metadata
                 )
                 all_documents.append(image_node)
-            
+
             # Create index with multi-modal embeddings
             if self.image_embeddings and len(image_documents) > 0:
                 # Use multi-modal embeddings for images
@@ -766,24 +766,24 @@ class LlamaIndexService:
                     storage_context=self.storage_context,
                     show_progress=True
                 )
-            
+
             self.logger.info(f"Created multi-modal index with {len(text_documents)} text docs and {len(image_documents)} image docs")
             return index
-            
+
         except Exception as e:
             self.logger.error(f"Failed to create multi-modal index: {e}")
             return None
-    
+
     def multimodal_query(self, query: str, index: Any, include_images: bool = True) -> Optional[str]:
         """Perform multi-modal query using both text and image understanding for Phase 8."""
         if not self.available or not self.enable_multimodal:
             self.logger.warning("Multi-modal capabilities not available for querying")
             return None
-        
+
         if not index:
             self.logger.error("No index provided for multi-modal query")
             return None
-        
+
         try:
             # Require multi-modal LLM when images are included
             if include_images and not self.multimodal_llm:
@@ -797,59 +797,59 @@ class LlamaIndexService:
                 response_mode="tree_summarize"
             )
             self.logger.info(f"Using {'multi-modal' if include_images else 'text-only'} LLM for query processing")
-            
+
             # Execute query
             response = query_engine.query(query)
-            
+
             self.logger.info(f"Multi-modal query completed for: {query[:50]}...")
             return str(response)
-            
+
         except Exception as e:
             self.logger.error(f"Failed to execute multi-modal query: {e}")
             return None
-    
+
     def analyze_image_with_llm(self, image_path: str, prompt: str = "Describe this image in detail") -> Optional[str]:
         """Analyze an image using multi-modal LLM for Phase 8 capabilities."""
         if not self.available or not self.enable_multimodal:
             self.logger.warning("Multi-modal capabilities not available for image analysis")
             return None
-        
+
         if not self.multimodal_llm:
             self.logger.error("Multi-modal LLM not initialized")
             return None
-        
+
         if not os.path.exists(image_path):
             self.logger.error(f"Image file not found: {image_path}")
             return None
-        
+
         try:
             # Load image using ImageReader
             if not self.image_reader:
                 self.logger.error("Image reader not initialized")
                 return None
-            
+
             documents = self.image_reader.load_data(file=Path(image_path))
-            
+
             if not documents:
                 self.logger.error(f"Failed to load image: {image_path}")
                 return None
-            
+
             # Use the first document (should be the image)
             image_doc = documents[0]
-            
+
             # Create ImageDocument for analysis
             image_document = ImageDocument(
                 image=image_doc.image,
                 text=prompt,
                 metadata={'image_path': image_path}
             )
-            
+
             # Analyze with multi-modal LLM
             response = self.multimodal_llm.complete(
                 prompt=prompt,
                 image_documents=[image_document]
             )
-            
+
             self.logger.info(f"Image analysis completed for: {image_path}")
             return str(response)
 
@@ -940,13 +940,13 @@ class LlamaIndexService:
                 "error": str(e),
                 "document_id": document_id
             }
-    
-    
+
+
     def _initialize_advanced_search_service(self):
         """Initialize the advanced search service for Phase 7 features."""
         if not self.available:
             return
-        
+
         try:
             # Initialize advanced search service with config
             if hasattr(self, 'embedding_service') and self.embedding_service:
@@ -1096,7 +1096,7 @@ class LlamaIndexService:
             if self.indices:
                 return next(iter(self.indices.values()))
             return None
-    
+
     async def health_check(self) -> Dict[str, Any]:
         """Check the health of the LlamaIndex service."""
         if not self.available:
@@ -1109,19 +1109,19 @@ class LlamaIndexService:
                     "storage": False
                 }
             }
-        
+
         try:
             # Check storage directory
             storage_ok = Path(self.storage_dir).exists() and Path(self.storage_dir).is_dir()
-            
+
             # Check embeddings (simple test)
             embeddings_ok = hasattr(self, 'embeddings') and self.embeddings is not None
-            
+
             # Check LLM
             llm_ok = hasattr(self, 'llm') and self.llm is not None
-            
+
             status = "healthy" if all([storage_ok, embeddings_ok, llm_ok]) else "degraded"
-            
+
             return {
                 "status": status,
                 "message": "LlamaIndex service operational",
@@ -1138,7 +1138,7 @@ class LlamaIndexService:
                 },
                 "indices_count": len(self.indices)
             }
-            
+
         except Exception as e:
             self.logger.error(f"Health check failed: {e}")
             return {
@@ -1150,34 +1150,34 @@ class LlamaIndexService:
                     "storage": False
                 }
             }
-    
+
     def _initialize_document_readers(self):
         """Initialize document readers for different file formats."""
         if not self.available:
             return {}
-        
+
         return {
             'pdf': PDFReader(),
             'docx': DocxReader(),
             'md': MarkdownReader(),
             'txt': None  # Will handle plain text directly
         }
-    
+
     def _detect_document_format(self, file_path: str) -> str:
         """
         Detect document format based on file extension and content analysis.
-        
+
         Args:
             file_path: Path to the document file
-            
+
         Returns:
             Document format ('pdf', 'docx', 'md', 'txt')
         """
         import os
-        
+
         # Get file extension
         _, ext = os.path.splitext(file_path.lower())
-        
+
         # Map extensions to formats
         extension_map = {
             '.pdf': 'pdf',
@@ -1188,27 +1188,27 @@ class LlamaIndexService:
             '.txt': 'txt',
             '.text': 'txt'
         }
-        
+
         detected_format = extension_map.get(ext, 'txt')  # Default to txt
-        
+
         self.logger.info(f"Detected document format: {detected_format} for file: {file_path}")
         return detected_format
-    
+
 
     def _extract_document_metadata(self, file_path: str, document_format: str) -> Dict[str, Any]:
         """
         Extract metadata from document based on format.
-        
+
         Args:
             file_path: Path to the document file
             document_format: Detected document format
-            
+
         Returns:
             Dictionary containing extracted metadata
         """
         import os
         from datetime import datetime
-        
+
         # Base metadata
         metadata = {
             'file_path': file_path,
@@ -1221,7 +1221,7 @@ class LlamaIndexService:
             'embedding_model': self.embedding_model,
             'embedding_dimension': 1536  # OpenAI text-embedding-3-small dimension
         }
-        
+
         # Format-specific metadata extraction
         try:
             if document_format == 'pdf':
@@ -1250,9 +1250,9 @@ class LlamaIndexService:
                 })
         except Exception as e:
             self.logger.warning(f"Failed to extract format-specific metadata: {e}")
-        
+
         return metadata
-    
+
     async def index_document_content(
         self,
         file_content: bytes,
@@ -1281,26 +1281,26 @@ class LlamaIndexService:
         """
         if not self.available:
             raise RuntimeError("LlamaIndex service not available")
-        
+
         try:
             # Detect document format
             document_format = self._detect_document_format(file_path)
-            
+
             # Extract metadata
             extracted_metadata = self._extract_document_metadata(file_path, document_format)
             if metadata:
                 extracted_metadata.update(metadata)
-            
+
             # Save document to temporary file for processing
             file_extension = f'.{document_format}' if document_format != 'txt' else '.txt'
             with tempfile.NamedTemporaryFile(suffix=file_extension, delete=False) as temp_file:
                 temp_file.write(file_content)
                 temp_file_path = temp_file.name
-            
+
             try:
                 # Load document using appropriate reader
                 documents = []
-                
+
                 if document_format == 'pdf':
                     # Use advanced PDF processor instead of basic PDFReader
                     from .pdf_processor import PDFProcessor
@@ -1367,17 +1367,17 @@ class LlamaIndexService:
                     documents = [Document(text=text_content, metadata=extracted_metadata)]
                 else:
                     raise ValueError(f"Unsupported document format: {document_format}")
-                
+
                 if not documents:
                     raise ValueError("No content extracted from document")
-                
+
                 # Add metadata to all documents
                 for doc in documents:
                     if doc.metadata is None:
                         doc.metadata = {}
                     doc.metadata.update(extracted_metadata)
                     doc.metadata['document_id'] = document_id
-                
+
                 # Report progress: Document parsing starting (40%)
                 if progress_callback:
                     await progress_callback(40)
@@ -1401,7 +1401,7 @@ class LlamaIndexService:
                         'has_parent': node.parent_node is not None,
                         'has_children': len(node.child_nodes) > 0 if hasattr(node, 'child_nodes') and node.child_nodes is not None else False
                     })
-                
+
                 # Create or get index for this document
                 if self.vector_store:
                     # Use SupabaseVectorStore
@@ -1410,7 +1410,7 @@ class LlamaIndexService:
                 else:
                     # Fallback to local storage
                     index = VectorStoreIndex(nodes)
-                
+
                 # Store index reference
                 self.indices[document_id] = index
 
@@ -1470,14 +1470,14 @@ class LlamaIndexService:
 
                 self.logger.info(f"Successfully indexed document {document_id}: {len(nodes)} chunks, {total_chars} characters, {database_stats.get('chunks_stored', 0)} chunks stored in database")
                 return result
-                
+
             finally:
                 # Clean up temporary file
                 try:
                     os.unlink(temp_file_path)
                 except Exception as e:
                     self.logger.warning(f"Failed to clean up temporary file: {e}")
-                    
+
         except Exception as e:
             import traceback
             self.logger.error(f"Failed to index document {document_id}: {e}")
@@ -1490,36 +1490,36 @@ class LlamaIndexService:
             }
 
     async def index_pdf_content(
-        self, 
-        pdf_content: bytes, 
+        self,
+        pdf_content: bytes,
         document_id: str,
         metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Index PDF content for RAG operations.
-        
+
         Args:
             pdf_content: Raw PDF bytes
             document_id: Unique identifier for the document
             metadata: Optional metadata to associate with the document
-            
+
         Returns:
             Dict containing indexing results and statistics
         """
         if not self.available:
             raise RuntimeError("LlamaIndex service not available")
-        
+
         try:
             # Save PDF to temporary file for processing
             with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
                 temp_file.write(pdf_content)
                 temp_path = temp_file.name
-            
+
             try:
                 # Load PDF using LlamaIndex PDFReader
                 reader = PDFReader()
                 documents = reader.load_data(file=Path(temp_path))
-                
+
                 # Add metadata to documents
                 for doc in documents:
                     doc.metadata.update({
@@ -1527,7 +1527,7 @@ class LlamaIndexService:
                         'source': 'pdf',
                         **(metadata or {})
                     })
-                
+
                 # Create index with SupabaseVectorStore if available, otherwise use local storage
                 if self.vector_store:
                     # Use SupabaseVectorStore
@@ -1544,23 +1544,23 @@ class LlamaIndexService:
                         documents,
                         node_parser=self.node_parser
                     )
-                    
+
                     # Store index locally
                     index_dir = Path(self.storage_dir) / document_id
                     index_dir.mkdir(exist_ok=True)
                     index.storage_context.persist(persist_dir=str(index_dir))
                     self.logger.info(f"Created local index for document: {document_id}")
-                
+
                 # Cache index
                 self.indices[document_id] = index
-                
+
                 # Calculate statistics
                 nodes = index.docstore.docs
                 total_nodes = len(nodes)
                 total_chars = sum(len(node.text) for node in nodes.values())
-                
+
                 self.logger.info(f"Indexed document {document_id}: {total_nodes} nodes, {total_chars} characters")
-                
+
                 return {
                     "success": True,
                     "document_id": document_id,
@@ -1571,11 +1571,11 @@ class LlamaIndexService:
                     },
                     "storage_path": str(index_dir)
                 }
-                
+
             finally:
                 # Clean up temporary file
                 os.unlink(temp_path)
-                
+
         except Exception as e:
             self.logger.error(f"Failed to index PDF content for {document_id}: {e}")
             return {
@@ -1583,7 +1583,7 @@ class LlamaIndexService:
                 "document_id": document_id,
                 "error": str(e)
             }
-    
+
     async def query_document(
         self,
         document_id: str,
@@ -1592,29 +1592,29 @@ class LlamaIndexService:
     ) -> Dict[str, Any]:
         """
         Query a specific document using RAG.
-        
+
         Args:
             document_id: ID of the document to query
             query: Natural language query
             response_mode: Response synthesis mode ('compact', 'tree_summarize', etc.)
-            
+
         Returns:
             Dict containing query response and metadata
         """
         if not self.available:
             raise RuntimeError("LlamaIndex service not available")
-        
+
         try:
             # Load index if not in cache
             if document_id not in self.indices:
                 await self._load_index(document_id)
-            
+
             if document_id not in self.indices:
                 return {
                     "success": False,
                     "error": f"Document {document_id} not found or not indexed"
                 }
-            
+
             index = self.indices[document_id]
 
             # Create query engine with AutoMergingRetriever for hierarchical context
@@ -1638,10 +1638,10 @@ class LlamaIndexService:
                 retriever=retriever,
                 response_synthesizer=response_synthesizer
             )
-            
+
             # Execute query
             response = query_engine.query(query)
-            
+
             # Extract source information
             sources = []
             if hasattr(response, 'source_nodes'):
@@ -1652,7 +1652,7 @@ class LlamaIndexService:
                         "text_snippet": node.node.text[:200] + "..." if len(node.node.text) > 200 else node.node.text,
                         "metadata": node.node.metadata
                     })
-            
+
             return {
                 "success": True,
                 "document_id": document_id,
@@ -1664,7 +1664,7 @@ class LlamaIndexService:
                     "similarity_top_k": self.similarity_top_k
                 }
             }
-            
+
         except Exception as e:
             self.logger.error(f"Failed to query document {document_id}: {e}")
             return {
@@ -1673,7 +1673,7 @@ class LlamaIndexService:
                 "query": query,
                 "error": str(e)
             }
-    
+
     async def advanced_rag_query(
         self,
         query: str,
@@ -1687,7 +1687,7 @@ class LlamaIndexService:
     ) -> Dict[str, Any]:
         """
         Advanced RAG query processing pipeline with enhanced capabilities.
-        
+
         Args:
             query: Natural language query
             document_ids: Optional list of specific documents to query (None = all indexed)
@@ -1697,34 +1697,34 @@ class LlamaIndexService:
             enable_reranking: Whether to apply relevance re-ranking
             conversation_context: Previous conversation turns for context
             metadata_filters: Optional metadata filters for retrieval
-            
+
         Returns:
             Dict containing comprehensive query results and metadata
         """
         if not self.available:
             raise RuntimeError("LlamaIndex service not available")
-        
+
         try:
             # Step 1: Query Understanding and Preprocessing
             processed_query = await self._preprocess_query(query, query_type, conversation_context)
-            
+
             # Step 2: Determine target documents
             target_documents = document_ids if document_ids else list(self.indices.keys())
-            
+
             if not target_documents:
                 return {
                     "success": False,
                     "error": "No indexed documents available for querying"
                 }
-            
+
             # Step 3: Multi-document retrieval with similarity thresholds
             all_retrieved_nodes = []
             retrieval_metadata = {}
-            
+
             for doc_id in target_documents:
                 if doc_id not in self.indices:
                     await self._load_index(doc_id)
-                    
+
                 if doc_id in self.indices:
                     nodes = await self._retrieve_from_document(
                         doc_id,
@@ -1735,7 +1735,7 @@ class LlamaIndexService:
                     )
                     all_retrieved_nodes.extend(nodes)
                     retrieval_metadata[doc_id] = len(nodes)
-            
+
             # Step 4: Apply relevance scoring and ranking
             if enable_reranking and all_retrieved_nodes:
                 all_retrieved_nodes = await self._rerank_results(
@@ -1743,13 +1743,13 @@ class LlamaIndexService:
                     processed_query,
                     query_type
                 )
-            
+
             # Step 5: Filter by similarity threshold and limit results
             filtered_nodes = [
                 node for node in all_retrieved_nodes
                 if getattr(node, 'score', 1.0) >= similarity_threshold
             ][:max_results]
-            
+
             # Step 6: Context integration and response generation
             response_data = await self._generate_contextual_response(
                 filtered_nodes,
@@ -1757,7 +1757,7 @@ class LlamaIndexService:
                 query_type,
                 conversation_context
             )
-            
+
             # Step 7: Compile comprehensive results
             return {
                 "success": True,
@@ -1784,7 +1784,7 @@ class LlamaIndexService:
                     "processing_time_ms": response_data.get("processing_time_ms", 0)
                 }
             }
-            
+
         except Exception as e:
             self.logger.error(f"Advanced RAG query failed: {e}")
             return {
@@ -1793,7 +1793,7 @@ class LlamaIndexService:
                 "error": str(e),
                 "query_type": query_type
             }
-    
+
     async def _preprocess_query(
         self,
         query: str,
@@ -1802,22 +1802,22 @@ class LlamaIndexService:
     ) -> str:
         """
         Preprocess and enhance the query based on type and context.
-        
+
         Args:
             query: Original query
             query_type: Type of query for specialized processing
             conversation_context: Previous conversation for context integration
-            
+
         Returns:
             Enhanced/processed query string
         """
         processed_query = query.strip()
-        
+
         # Add conversation context if available
         if conversation_context:
             context_summary = self._summarize_conversation_context(conversation_context)
             processed_query = f"Context: {context_summary}\n\nQuery: {processed_query}"
-        
+
         # Query type specific enhancements
         if query_type == "analytical":
             processed_query = f"Analyze and provide detailed insights about: {processed_query}"
@@ -1826,9 +1826,9 @@ class LlamaIndexService:
         elif query_type == "summarization":
             processed_query = f"Summarize the key information related to: {processed_query}"
         # 'factual' queries use the original query as-is
-        
+
         return processed_query
-    
+
     async def _retrieve_from_document(
         self,
         document_id: str,
@@ -1839,14 +1839,14 @@ class LlamaIndexService:
     ) -> List[Any]:
         """
         Retrieve relevant nodes from a specific document with filtering.
-        
+
         Args:
             document_id: Document to retrieve from
             query: Query string
             similarity_threshold: Minimum similarity score
             max_results: Maximum results per document
             metadata_filters: Optional metadata filters
-            
+
         Returns:
             List of retrieved nodes with scores
         """
@@ -1880,11 +1880,11 @@ class LlamaIndexService:
                     filtered_nodes.append(node)
 
             return filtered_nodes[:max_results]
-            
+
         except Exception as e:
             self.logger.error(f"Failed to retrieve from document {document_id}: {e}")
             return []
-    
+
     async def _rerank_results(
         self,
         nodes: List[Any],
@@ -1893,30 +1893,30 @@ class LlamaIndexService:
     ) -> List[Any]:
         """
         Re-rank retrieved results based on relevance and query type.
-        
+
         Args:
             nodes: Retrieved nodes to re-rank
             query: Original query
             query_type: Type of query for specialized ranking
-            
+
         Returns:
             Re-ranked list of nodes
         """
         try:
             # Simple relevance-based re-ranking
             # In a production system, this could use a dedicated re-ranking model
-            
+
             def calculate_relevance_score(node):
                 base_score = getattr(node, 'score', 0.5)
-                
+
                 # Query type specific scoring adjustments
                 text = node.node.text.lower() if hasattr(node, 'node') else ""
                 query_lower = query.lower()
-                
+
                 # Boost score for exact matches
                 if query_lower in text:
                     base_score += 0.1
-                
+
                 # Query type specific boosts
                 if query_type == "analytical":
                     analytical_keywords = ["analysis", "insight", "conclusion", "result", "finding"]
@@ -1926,22 +1926,22 @@ class LlamaIndexService:
                     factual_keywords = ["fact", "data", "number", "statistic", "measurement"]
                     if any(keyword in text for keyword in factual_keywords):
                         base_score += 0.05
-                
+
                 return min(base_score, 1.0)  # Cap at 1.0
-            
+
             # Re-rank nodes by calculated relevance
             ranked_nodes = sorted(nodes, key=calculate_relevance_score, reverse=True)
-            
+
             # Update scores
             for node in ranked_nodes:
                 node.score = calculate_relevance_score(node)
-            
+
             return ranked_nodes
-            
+
         except Exception as e:
             self.logger.error(f"Failed to re-rank results: {e}")
             return nodes  # Return original order on error
-    
+
     async def _generate_contextual_response(
         self,
         nodes: List[Any],
@@ -1951,19 +1951,19 @@ class LlamaIndexService:
     ) -> Dict[str, Any]:
         """
         Generate response with context integration and confidence scoring.
-        
+
         Args:
             nodes: Retrieved and ranked nodes
             query: Processed query
             query_type: Type of query
             conversation_context: Previous conversation context
-            
+
         Returns:
             Dict with response, confidence score, and metadata
         """
         import time
         start_time = time.time()
-        
+
         try:
             if not nodes:
                 return {
@@ -1971,7 +1971,7 @@ class LlamaIndexService:
                     "confidence": 0.0,
                     "processing_time_ms": int((time.time() - start_time) * 1000)
                 }
-            
+
             # Select appropriate response mode based on query type
             response_mode_map = {
                 "factual": "compact",
@@ -1980,24 +1980,24 @@ class LlamaIndexService:
                 "summarization": "tree_summarize"
             }
             response_mode = response_mode_map.get(query_type, "compact")
-            
+
             # Create response synthesizer
             response_synthesizer = get_response_synthesizer(
                 response_mode=ResponseMode(response_mode)
             )
-            
+
             # Generate response
             response = response_synthesizer.synthesize(query, nodes)
-            
+
             # Calculate confidence score based on node scores and count
             confidence = self._calculate_confidence_score(nodes, query_type)
-            
+
             return {
                 "response": str(response),
                 "confidence": confidence,
                 "processing_time_ms": int((time.time() - start_time) * 1000)
             }
-            
+
         except Exception as e:
             self.logger.error(f"Failed to generate contextual response: {e}")
             return {
@@ -2005,19 +2005,19 @@ class LlamaIndexService:
                 "confidence": 0.0,
                 "processing_time_ms": int((time.time() - start_time) * 1000)
             }
-    
+
     def _calculate_confidence_score(self, nodes: List[Any], query_type: str) -> float:
         """Calculate confidence score based on retrieved nodes and query type."""
         if not nodes:
             return 0.0
-        
+
         # Base confidence from node scores
         node_scores = [getattr(node, 'score', 0.5) for node in nodes]
         avg_score = sum(node_scores) / len(node_scores)
-        
+
         # Adjust based on number of supporting nodes
         node_count_factor = min(len(nodes) / 3.0, 1.0)  # Optimal around 3 nodes
-        
+
         # Query type adjustments
         type_multiplier = {
             "factual": 1.0,      # Factual queries need high precision
@@ -2025,10 +2025,10 @@ class LlamaIndexService:
             "conversational": 0.8, # Conversational queries are more flexible
             "summarization": 0.85  # Summarization depends on content coverage
         }.get(query_type, 0.8)
-        
+
         confidence = avg_score * node_count_factor * type_multiplier
         return round(min(confidence, 1.0), 3)
-    
+
     def _format_source_nodes(self, nodes: List[Any]) -> List[Dict[str, Any]]:
         """Format source nodes for response output."""
         sources = []
@@ -2043,109 +2043,109 @@ class LlamaIndexService:
                     "document_id": node.node.metadata.get('source_document_id', 'unknown')
                 })
         return sources
-    
+
     def _summarize_conversation_context(self, context: List[Dict[str, str]]) -> str:
         """Summarize conversation context for query enhancement."""
         if not context:
             return ""
-        
+
         # Take last few turns for context (avoid too much context)
         recent_context = context[-3:] if len(context) > 3 else context
-        
+
         summary_parts = []
         for turn in recent_context:
             if turn.get('role') == 'user':
                 summary_parts.append(f"User asked: {turn.get('content', '')}")
             elif turn.get('role') == 'assistant':
                 summary_parts.append(f"Assistant responded about: {turn.get('content', '')[:100]}...")
-        
+
         return " | ".join(summary_parts)
-    
+
     async def summarize_document(
-        self, 
+        self,
         document_id: str,
         summary_type: str = "comprehensive"
     ) -> Dict[str, Any]:
         """
         Generate a summary of the document.
-        
+
         Args:
             document_id: ID of the document to summarize
             summary_type: Type of summary ('brief', 'comprehensive', 'key_points')
-            
+
         Returns:
             Dict containing the summary and metadata
         """
         if not self.available:
             raise RuntimeError("LlamaIndex service not available")
-        
+
         # Define summary prompts
         prompts = {
             "brief": "Provide a brief 2-3 sentence summary of this document.",
             "comprehensive": "Provide a comprehensive summary of this document, including main topics, key findings, and important details.",
             "key_points": "Extract and list the key points, main arguments, and important information from this document."
         }
-        
+
         prompt = prompts.get(summary_type, prompts["comprehensive"])
-        
+
         return await self.query_document(
             document_id=document_id,
             query=prompt,
             response_mode="tree_summarize"
         )
-    
+
     async def extract_entities(
-        self, 
+        self,
         document_id: str,
         entity_types: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Extract named entities from the document.
-        
+
         Args:
             document_id: ID of the document
             entity_types: List of entity types to extract (e.g., ['PERSON', 'ORG', 'DATE'])
-            
+
         Returns:
             Dict containing extracted entities
         """
         if not self.available:
             raise RuntimeError("LlamaIndex service not available")
-        
+
         entity_types_str = ", ".join(entity_types) if entity_types else "people, organizations, dates, locations, and other important entities"
-        
+
         query = f"Extract and list all {entity_types_str} mentioned in this document. Provide them in a structured format."
-        
+
         return await self.query_document(
             document_id=document_id,
             query=query,
             response_mode="compact"
         )
-    
+
     async def compare_documents(
-        self, 
+        self,
         document_ids: List[str],
         comparison_aspect: str = "general"
     ) -> Dict[str, Any]:
         """
         Compare multiple documents.
-        
+
         Args:
             document_ids: List of document IDs to compare
             comparison_aspect: Aspect to compare ('general', 'topics', 'sentiment', etc.)
-            
+
         Returns:
             Dict containing comparison results
         """
         if not self.available:
             raise RuntimeError("LlamaIndex service not available")
-        
+
         if len(document_ids) < 2:
             return {
                 "success": False,
                 "error": "At least 2 documents required for comparison"
             }
-        
+
         try:
             # Get summaries for each document
             summaries = {}
@@ -2158,22 +2158,22 @@ class LlamaIndexService:
                         "success": False,
                         "error": f"Failed to summarize document {doc_id}: {result.get('error', 'Unknown error')}"
                     }
-            
+
             # Create comparison prompt
             comparison_text = "\n\n".join([
-                f"Document {doc_id}:\n{summary}" 
+                f"Document {doc_id}:\n{summary}"
                 for doc_id, summary in summaries.items()
             ])
-            
+
             comparison_prompts = {
                 "general": "Compare and contrast these documents. What are the similarities and differences?",
                 "topics": "What are the main topics covered in each document? How do they overlap or differ?",
                 "sentiment": "Analyze the sentiment and tone of each document. How do they compare?",
                 "key_insights": "What are the key insights from each document? How do they complement or contradict each other?"
             }
-            
+
             prompt = comparison_prompts.get(comparison_aspect, comparison_prompts["general"])
-            
+
             # Use the first document's index for the comparison query
             # (This is a limitation - ideally we'd create a combined index)
             result = await self.query_document(
@@ -2181,45 +2181,45 @@ class LlamaIndexService:
                 query=f"{prompt}\n\nDocuments to compare:\n{comparison_text}",
                 response_mode="tree_summarize"
             )
-            
+
             if result["success"]:
                 result["comparison_aspect"] = comparison_aspect
                 result["compared_documents"] = document_ids
-            
+
             return result
-            
+
         except Exception as e:
             self.logger.error(f"Failed to compare documents: {e}")
             return {
                 "success": False,
                 "error": str(e)
             }
-    
+
     async def _load_index(self, document_id: str) -> bool:
         """Load an index from storage."""
         try:
             index_dir = Path(self.storage_dir) / document_id
             if not index_dir.exists():
                 return False
-            
+
             storage_context = StorageContext.from_defaults(persist_dir=str(index_dir))
             index = load_index_from_storage(storage_context)
             self.indices[document_id] = index
-            
+
             self.logger.info(f"Loaded index for document {document_id}")
             return True
-            
+
         except Exception as e:
             self.logger.error(f"Failed to load index for {document_id}: {e}")
             return False
-    
+
     async def list_indexed_documents(self) -> Dict[str, Any]:
         """List all indexed documents."""
         try:
             storage_path = Path(self.storage_dir)
             if not storage_path.exists():
                 return {"documents": [], "count": 0}
-            
+
             documents = []
             for item in storage_path.iterdir():
                 if item.is_dir():
@@ -2231,36 +2231,36 @@ class LlamaIndexService:
                             "indexed": item.name in self.indices,
                             "size_mb": sum(f.stat().st_size for f in item.rglob('*') if f.is_file()) / (1024 * 1024)
                         })
-            
+
             return {
                 "documents": documents,
                 "count": len(documents),
                 "total_size_mb": sum(doc["size_mb"] for doc in documents)
             }
-            
+
         except Exception as e:
             self.logger.error(f"Failed to list indexed documents: {e}")
             return {"error": str(e)}
-    
+
     async def delete_document_index(self, document_id: str) -> Dict[str, Any]:
         """Delete a document index."""
         try:
             # Remove from cache
             if document_id in self.indices:
                 del self.indices[document_id]
-            
+
             # Remove from storage
             index_dir = Path(self.storage_dir) / document_id
             if index_dir.exists():
                 import shutil
                 shutil.rmtree(index_dir)
-                
+
             return {
                 "success": True,
                 "document_id": document_id,
                 "message": "Document index deleted successfully"
             }
-            
+
         except Exception as e:
             self.logger.error(f"Failed to delete index for {document_id}: {e}")
             return {
@@ -2268,23 +2268,23 @@ class LlamaIndexService:
                 "document_id": document_id,
                 "error": str(e)
             }
-    
+
     def __del__(self):
         """Cleanup resources when the service is destroyed."""
         if hasattr(self, 'executor') and self.executor:
             self.executor.shutdown(wait=True)
-    
+
     # Conversation Memory Management Methods
-    
+
     def manage_conversation_memory(
-        self, 
-        session_id: str, 
-        user_message: str, 
+        self,
+        session_id: str,
+        user_message: str,
         assistant_response: str
     ) -> None:
         """
         Manage conversation memory for a session.
-        
+
         Args:
             session_id: Unique session identifier
             user_message: User's message
@@ -2292,55 +2292,55 @@ class LlamaIndexService:
         """
         if session_id not in self.conversation_memories:
             self.conversation_memories[session_id] = []
-        
+
         # Add new conversation turn
         self.conversation_memories[session_id].append({
             "role": "user",
             "content": user_message,
             "timestamp": self._get_timestamp()
         })
-        
+
         self.conversation_memories[session_id].append({
-            "role": "assistant", 
+            "role": "assistant",
             "content": assistant_response,
             "timestamp": self._get_timestamp()
         })
-        
+
         # Manage memory size
         self._manage_memory_size(session_id)
-    
+
     def get_conversation_context(self, session_id: str) -> List[Dict[str, str]]:
         """
         Get conversation context for a session.
-        
+
         Args:
             session_id: Session identifier
-            
+
         Returns:
             List of conversation turns
         """
         return self.conversation_memories.get(session_id, [])
-    
+
     def clear_conversation_memory(self, session_id: str) -> None:
         """
         Clear conversation memory for a session.
-        
+
         Args:
             session_id: Session identifier
         """
         if session_id in self.conversation_memories:
             del self.conversation_memories[session_id]
             self.logger.info(f"Cleared conversation memory for session: {session_id}")
-    
+
     def _manage_memory_size(self, session_id: str) -> None:
         """
         Manage conversation memory size, summarizing old conversations if needed.
-        
+
         Args:
             session_id: Session identifier
         """
         memory = self.conversation_memories[session_id]
-        
+
         if len(memory) > self.max_conversation_turns:
             # Check if we should summarize
             if len(memory) > self.conversation_summary_threshold:
@@ -2349,37 +2349,37 @@ class LlamaIndexService:
                 # Simple truncation - remove oldest turns
                 excess = len(memory) - self.max_conversation_turns
                 self.conversation_memories[session_id] = memory[excess:]
-    
+
     def _summarize_old_conversations(self, session_id: str) -> None:
         """
         Summarize old conversations to preserve context while reducing memory.
-        
+
         Args:
             session_id: Session identifier
         """
         try:
             memory = self.conversation_memories[session_id]
-            
+
             # Keep recent conversations, summarize older ones
             recent_turns = 4  # Keep last 4 turns
             old_conversations = memory[:-recent_turns]
             recent_conversations = memory[-recent_turns:]
-            
+
             if not old_conversations:
                 return
-            
+
             # Create summary of old conversations
             conversation_text = "\n".join([
-                f"{turn['role']}: {turn['content']}" 
+                f"{turn['role']}: {turn['content']}"
                 for turn in old_conversations
             ])
-            
+
             summary_prompt = f"""Summarize the following conversation history concisely, preserving key context and topics discussed:
 
 {conversation_text}
 
 Summary:"""
-            
+
             # Use LLM to create summary (if available)
             if hasattr(self, 'llm') and self.llm:
                 try:
@@ -2391,33 +2391,33 @@ Summary:"""
             else:
                 # Fallback summary
                 summary = f"Previous conversation with {len(old_conversations)} turns covering various topics."
-            
+
             # Replace old conversations with summary
             summary_entry = {
                 "role": "system",
                 "content": f"[Conversation Summary]: {summary}",
                 "timestamp": self._get_timestamp()
             }
-            
+
             self.conversation_memories[session_id] = [summary_entry] + recent_conversations
-            
+
             self.logger.info(f"Summarized {len(old_conversations)} old conversation turns for session: {session_id}")
-            
+
         except Exception as e:
             self.logger.error(f"Failed to summarize conversations for session {session_id}: {e}")
             # Fallback to simple truncation
             memory = self.conversation_memories[session_id]
             self.conversation_memories[session_id] = memory[-self.max_conversation_turns:]
-    
+
     def _get_timestamp(self) -> str:
         """Get current timestamp string."""
         from datetime import datetime
         return datetime.now().isoformat()
-    
+
     def get_memory_stats(self) -> Dict[str, Any]:
         """
         Get conversation memory statistics.
-        
+
         Returns:
             Dict with memory statistics
         """
@@ -2427,14 +2427,14 @@ Summary:"""
             "summary_threshold": self.conversation_summary_threshold,
             "sessions": {}
         }
-        
+
         for session_id, memory in self.conversation_memories.items():
             stats["sessions"][session_id] = {
                 "turn_count": len(memory),
                 "has_summary": any(turn.get("role") == "system" for turn in memory),
                 "last_activity": memory[-1]["timestamp"] if memory else None
             }
-        
+
         return stats
 
     async def _store_chunks_in_database(
@@ -2649,11 +2649,17 @@ Summary:"""
         metadata: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Process extracted images with layout-aware context linking, CLIP embeddings, and material analysis.
-        Uses existing services for CLIP processing and material analysis.
+        Process extracted images with layout-aware context linking, CLIP embeddings, material analysis,
+        and Llama 4 Scout vision-based product extraction.
+
+        Enhanced with:
+        - Product detection using Llama 4 Scout Vision (69.4% MMMU, #1 OCR)
+        - Material property extraction
+        - CLIP embeddings for visual similarity
         """
         try:
             from .supabase_client import get_supabase_client
+            from .product_vision_extractor import ProductVisionExtractor
             import base64
             import os
 
@@ -2663,7 +2669,8 @@ Summary:"""
                 "clip_embeddings_generated": 0,
                 "material_analyses_completed": 0,
                 "images_stored": 0,
-                "layout_links_created": 0
+                "layout_links_created": 0,
+                "products_detected": 0  # NEW: Track product detection
             }
             workspace_id = metadata.get("workspace_id", "ffafc28b-1b8b-4b0d-b226-9f9a6154004e")
 
@@ -2672,6 +2679,35 @@ Summary:"""
 
             self.logger.info(f"🖼️ Processing {len(extracted_images)} images with context linking...")
             self.logger.info(f"🔍 DEBUG - First image info: {extracted_images[0] if extracted_images else 'No images'}")
+
+            # ✅ NEW: Initialize product vision extractor
+            product_extractor = ProductVisionExtractor()
+
+            # Build document context for product extraction
+            document_context = {
+                "catalog_name": metadata.get("filename", ""),
+                "brand": metadata.get("brand", ""),
+                "document_id": document_id
+            }
+
+            # ✅ NEW: Extract products from all images using Llama 4 Scout Vision
+            self.logger.info("🔍 Extracting products using Llama 4 Scout Vision...")
+            detected_products = await product_extractor.extract_products_from_images(
+                extracted_images=extracted_images,
+                document_context=document_context
+            )
+
+            if detected_products:
+                self.logger.info(f"✅ Detected {len(detected_products)} products via vision analysis")
+                stats["products_detected"] = len(detected_products)
+
+                # Store detected products in database
+                await self._store_detected_products(
+                    products=detected_products,
+                    document_id=document_id,
+                    workspace_id=workspace_id,
+                    supabase_client=supabase_client
+                )
 
             # Extract heading hierarchy from document text for context
             heading_hierarchy = self._extract_heading_hierarchy(nodes)
@@ -2799,7 +2835,7 @@ Summary:"""
                             temp_dirs_to_clean.add(temp_dir)
                 except Exception as e:
                     self.logger.warning(f"Failed to track temp dir for {image_path}: {e}")
-            
+
             # Clean up temp directories
             import shutil
             for temp_dir in temp_dirs_to_clean:
@@ -4057,3 +4093,54 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
             entities['application'] = properties['application']
 
         return entities
+
+    async def _store_detected_products(
+        self,
+        products: List,
+        document_id: str,
+        workspace_id: str,
+        supabase_client: Any
+    ) -> None:
+        """
+        Store vision-detected products in the database.
+
+        Products detected via Llama 4 Scout Vision are stored in the products table
+        with metadata indicating they were detected via vision analysis.
+        """
+        try:
+            for product in products:
+                # Build product record
+                product_record = {
+                    'workspace_id': workspace_id,
+                    'name': product.product_name,
+                    'product_code': product.product_code,
+                    'description': f"Detected from page {product.page_number}",
+                    'category': 'vision_detected',  # Mark as vision-detected
+                    'metadata': {
+                        'detection_method': 'llama_4_scout_vision',
+                        'confidence': product.confidence,
+                        'page_number': product.page_number,
+                        'dimensions': product.dimensions,
+                        'colors': product.colors,
+                        'materials': product.materials,
+                        'finish': product.finish,
+                        'pattern': product.pattern,
+                        'designer': product.designer,
+                        'collection': product.collection,
+                        'raw_analysis': product.raw_analysis,
+                        'source_document_id': document_id
+                    },
+                    'created_at': datetime.utcnow().isoformat(),
+                    'updated_at': datetime.utcnow().isoformat()
+                }
+
+                # Insert into products table
+                result = supabase_client.client.table('products').insert(product_record).execute()
+
+                if result.data:
+                    self.logger.info(f"✅ Stored product: {product.product_name} (confidence: {product.confidence:.2f})")
+                else:
+                    self.logger.warning(f"⚠️ Failed to store product: {product.product_name}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to store detected products: {e}")
