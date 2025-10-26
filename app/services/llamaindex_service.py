@@ -3311,7 +3311,7 @@ Summary:"""
             self.logger.info(f"🤖 Calling Claude Vision API for image analysis: {os.path.basename(image_path)}")
 
             # Initialize Anthropic client
-            anthropic_client = anthropic.Anthropic(api_key=self.config.get('anthropic_api_key', ''))
+            anthropic_client = anthropic.Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
 
             # Build prompt for material analysis
             prompt = """You are an expert material and product analyst. Analyze this image and provide detailed material properties in JSON format:
@@ -3430,7 +3430,7 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
             self.logger.info(f"🤖 Calling Claude Vision API for image analysis: {os.path.basename(image_path)}")
 
             # Initialize Anthropic client
-            anthropic_client = anthropic.Anthropic(api_key=self.config.get('anthropic_api_key', ''))
+            anthropic_client = anthropic.Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
 
             # Build prompt for material analysis
             prompt = """You are an expert material and product analyst. Analyze this image and provide detailed material properties in JSON format:
