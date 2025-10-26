@@ -242,7 +242,20 @@ Respond ONLY with valid JSON, no additional text."""
                         content = content[:-3]
                     content = content.strip()
 
-                    analysis = json.loads(content)
+                    # Check if content is empty
+                    if not content:
+                        self.logger.error("Llama returned empty response")
+                        raise RuntimeError("Llama returned empty response")
+
+                    # Handle extra text after JSON (similar to Claude fix)
+                    last_brace = content.rfind('}')
+                    if last_brace != -1:
+                        json_text = content[:last_brace + 1]
+                        analysis = json.loads(json_text)
+                    else:
+                        # Try parsing as-is
+                        analysis = json.loads(content)
+
                     return {
                         "model": "llama-4-scout-17b-vision",
                         "analysis": analysis,
@@ -250,6 +263,7 @@ Respond ONLY with valid JSON, no additional text."""
                     }
                 except json.JSONDecodeError as e:
                     self.logger.error(f"Failed to parse Llama response as JSON: {e}. Content: {content[:200]}")
+                    self.logger.debug(f"Full response: {result}")
                     raise RuntimeError(f"Llama returned invalid JSON: {e}")
 
         except Exception as e:
@@ -314,10 +328,19 @@ Respond ONLY with valid JSON, no additional text."""
                 ]
             )
 
-            content = response.content[0].text
+            content = response.content[0].text.strip()
 
             try:
-                validation = json.loads(content)
+                # Handle Claude's tendency to add extra text after JSON
+                # Find the last closing brace to extract only the JSON portion
+                last_brace = content.rfind('}')
+                if last_brace != -1:
+                    json_text = content[:last_brace + 1]
+                    validation = json.loads(json_text)
+                else:
+                    # No JSON found, raise error
+                    raise json.JSONDecodeError("No JSON object found", content, 0)
+
                 return {
                     "model": "claude-3-5-sonnet-20241022",
                     "validation": validation,
@@ -325,6 +348,7 @@ Respond ONLY with valid JSON, no additional text."""
                 }
             except json.JSONDecodeError as e:
                 self.logger.error(f"Failed to parse Claude response as JSON: {e}")
+                self.logger.debug(f"Raw response (first 500 chars): {content[:500]}")
                 raise RuntimeError(f"Claude returned invalid JSON: {e}")
 
         except Exception as e:
