@@ -884,6 +884,119 @@ async def search_documents(
             detail=f"Search processing failed: {str(e)}"
         )
 
+@router.get("/documents/documents/{document_id}/content")
+async def get_document_content(
+    document_id: str,
+    include_chunks: bool = Query(True, description="Include document chunks"),
+    include_images: bool = Query(True, description="Include document images"),
+    include_products: bool = Query(False, description="Include products created from document")
+):
+    """
+    Get complete document content with all AI analysis results.
+
+    Returns comprehensive document data including:
+    - Document metadata
+    - All chunks with embeddings
+    - All images with AI analysis (CLIP, Llama, Claude)
+    - All products created from the document
+    - Complete AI model usage statistics
+    """
+    try:
+        logger.info(f"📊 Fetching complete content for document {document_id}")
+        supabase_client = get_supabase_client()
+
+        # Get document metadata
+        doc_response = supabase_client.table('documents').select('*').eq('id', document_id).execute()
+        if not doc_response.data or len(doc_response.data) == 0:
+            raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
+
+        document = doc_response.data[0]
+        result = {
+            "id": document['id'],
+            "created_at": document['created_at'],
+            "metadata": document.get('metadata', {}),
+            "chunks": [],
+            "images": [],
+            "products": [],
+            "statistics": {}
+        }
+
+        # Get chunks with embeddings
+        if include_chunks:
+            logger.info(f"📄 Fetching chunks for document {document_id}")
+            chunks_response = supabase_client.table('document_chunks').select('*').eq('document_id', document_id).execute()
+            chunks = chunks_response.data or []
+
+            # Get embeddings for each chunk
+            for chunk in chunks:
+                embeddings_response = supabase_client.table('embeddings').select('*').eq('chunk_id', chunk['id']).execute()
+                chunk['embeddings'] = embeddings_response.data or []
+
+            result['chunks'] = chunks
+            logger.info(f"✅ Fetched {len(chunks)} chunks")
+
+        # Get images with AI analysis
+        if include_images:
+            logger.info(f"🖼️ Fetching images for document {document_id}")
+            images_response = supabase_client.table('document_images').select('*').eq('document_id', document_id).execute()
+            result['images'] = images_response.data or []
+            logger.info(f"✅ Fetched {len(result['images'])} images")
+
+        # Get products
+        if include_products:
+            logger.info(f"🏭 Fetching products for document {document_id}")
+            products_response = supabase_client.table('products').select('*').eq('source_document_id', document_id).execute()
+            result['products'] = products_response.data or []
+            logger.info(f"✅ Fetched {len(result['products'])} products")
+
+        # Calculate statistics
+        chunks_count = len(result['chunks'])
+        images_count = len(result['images'])
+        products_count = len(result['products'])
+
+        # Count embeddings
+        text_embeddings = sum(1 for chunk in result['chunks'] if chunk.get('embeddings'))
+        clip_embeddings = sum(1 for img in result['images'] if img.get('visual_clip_embedding_512'))
+        llama_analysis = sum(1 for img in result['images'] if img.get('llama_analysis'))
+        claude_validation = sum(1 for img in result['images'] if img.get('claude_validation'))
+        color_embeddings = sum(1 for img in result['images'] if img.get('color_embedding_256'))
+        texture_embeddings = sum(1 for img in result['images'] if img.get('texture_embedding_256'))
+        application_embeddings = sum(1 for img in result['images'] if img.get('application_embedding_512'))
+
+        result['statistics'] = {
+            "chunks_count": chunks_count,
+            "images_count": images_count,
+            "products_count": products_count,
+            "ai_usage": {
+                "openai_calls": text_embeddings,
+                "llama_calls": llama_analysis,
+                "claude_calls": claude_validation,
+                "clip_embeddings": clip_embeddings
+            },
+            "embeddings_generated": {
+                "text": text_embeddings,
+                "visual": clip_embeddings,
+                "color": color_embeddings,
+                "texture": texture_embeddings,
+                "application": application_embeddings,
+                "total": text_embeddings + clip_embeddings + color_embeddings + texture_embeddings + application_embeddings
+            },
+            "completion_rates": {
+                "text_embeddings": f"{(text_embeddings / chunks_count * 100) if chunks_count > 0 else 0:.1f}%",
+                "image_analysis": f"{(clip_embeddings / images_count * 100) if images_count > 0 else 0:.1f}%"
+            }
+        }
+
+        logger.info(f"✅ Document content fetched successfully: {chunks_count} chunks, {images_count} images, {products_count} products")
+        return JSONResponse(content=result)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error fetching document content: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error fetching document content: {str(e)}")
+
+
 @router.get("/documents", response_model=DocumentListResponse)
 async def list_documents(
     page: int = Query(1, ge=1, description="Page number"),
@@ -894,7 +1007,7 @@ async def list_documents(
 ):
     """
     List and filter documents in the collection.
-    
+
     This endpoint provides paginated access to the document collection
     with optional filtering by search terms and tags.
     """
