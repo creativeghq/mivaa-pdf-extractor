@@ -210,7 +210,12 @@ IMPORTANT:
                 if content.endswith("```"):
                     content = content[:-3]
                 content = content.strip()
-                
+
+                # Check if content is empty
+                if not content:
+                    self.logger.warning("Empty response from vision API")
+                    return None
+
                 analysis = json.loads(content)
                 
                 # Extract first product (or combine if multiple)

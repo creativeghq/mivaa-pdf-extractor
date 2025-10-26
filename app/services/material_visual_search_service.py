@@ -703,8 +703,8 @@ class MaterialVisualSearchService:
                 entity_id="temp",
                 entity_type="image",
                 text_content="",
-                image_url=image_url,
-                material_properties=material_properties
+                image_url=image_data,  # image_data is the parameter name
+                material_properties={}  # No material properties available at this point
             )
 
             if result.get("success") is False:

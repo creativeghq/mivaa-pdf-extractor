@@ -3690,36 +3690,53 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
             return False
 
     def _determine_material_category(self, material_type: str) -> str:
-        """Determine the appropriate category for a material type."""
+        """Determine the appropriate category for a material type.
+        Returns lowercase enum value with underscores (e.g., 'ceramic_tile', not 'Ceramics & Tiles')
+        """
         material_type_lower = material_type.lower()
 
+        # Map keywords to database enum values (lowercase with underscores)
         category_mappings = {
-            'ceramic': 'Ceramics & Tiles',
-            'tile': 'Ceramics & Tiles',
-            'porcelain': 'Ceramics & Tiles',
-            'stone': 'Natural Stone',
-            'marble': 'Natural Stone',
-            'granite': 'Natural Stone',
-            'wood': 'Wood & Timber',
-            'timber': 'Wood & Timber',
-            'metal': 'Metals',
-            'steel': 'Metals',
-            'aluminum': 'Metals',
-            'fabric': 'Textiles',
-            'textile': 'Textiles',
-            'cotton': 'Textiles',
-            'concrete': 'Concrete & Masonry',
-            'brick': 'Concrete & Masonry',
-            'glass': 'Glass & Glazing',
-            'plastic': 'Polymers & Plastics',
-            'polymer': 'Polymers & Plastics'
+            'ceramic': 'ceramic_tile',
+            'tile': 'ceramic_tile',
+            'porcelain': 'porcelain_tile',
+            'stone': 'natural_stone_tile',
+            'marble': 'marble',
+            'granite': 'granite',
+            'travertine': 'travertine',
+            'slate': 'slate',
+            'limestone': 'limestone',
+            'quartzite': 'quartzite',
+            'sandstone': 'sandstone',
+            'onyx': 'onyx',
+            'wood': 'wood',
+            'timber': 'wood',
+            'metal': 'metal_tile',
+            'steel': 'metal_tile',
+            'aluminum': 'metal_tile',
+            'fabric': 'textiles',
+            'textile': 'textiles',
+            'cotton': 'textiles',
+            'concrete': 'concrete',
+            'brick': 'concrete',
+            'glass': 'glass',
+            'plastic': 'plastics',
+            'polymer': 'plastics',
+            'vinyl': 'vinyl',
+            'laminate': 'laminate',
+            'carpet': 'carpet',
+            'cork': 'cork',
+            'bamboo': 'bamboo',
+            'terrazzo': 'terrazzo',
+            'quartz': 'quartz',
+            'mosaic': 'mosaic'
         }
 
         for keyword, category in category_mappings.items():
             if keyword in material_type_lower:
                 return category
 
-        return 'Other Materials'  # Default category
+        return 'other'  # Default category (lowercase)
 
     def _extract_standards_from_analysis(self, material_analysis: Dict[str, Any]) -> List[str]:
         """Extract standards and certifications from material analysis."""
