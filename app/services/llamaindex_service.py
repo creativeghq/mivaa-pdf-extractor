@@ -3392,11 +3392,22 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
             )
 
             # Parse response
-            response_text = response.content[0].text
+            response_text = response.content[0].text.strip()
             try:
-                analysis_result = json.loads(response_text)
-            except json.JSONDecodeError:
+                # Handle Claude's tendency to add extra text after JSON
+                # Find the last closing brace to extract only the JSON portion
+                last_brace = response_text.rfind('}')
+                if last_brace != -1:
+                    json_text = response_text[:last_brace + 1]
+                    analysis_result = json.loads(json_text)
+                else:
+                    # No JSON found, raise error to trigger fallback
+                    raise json.JSONDecodeError("No JSON object found", response_text, 0)
+
+            except json.JSONDecodeError as e:
                 # If JSON parsing fails, extract what we can
+                self.logger.warning(f"Failed to parse Claude response as JSON: {e}")
+                self.logger.debug(f"Raw response (first 500 chars): {response_text[:500]}")
                 analysis_result = {
                     "material_type": "unknown",
                     "color": "unknown",
@@ -3408,7 +3419,7 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
                     "validation_status": "needs_review",
                     "content_description": response_text[:200],
                     "materials_identified": [],
-                    "issues": ["Failed to parse Claude response"],
+                    "issues": [f"Failed to parse Claude response: {str(e)}"],
                     "recommendations": []
                 }
 
@@ -3500,11 +3511,22 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
             )
 
             # Parse response
-            response_text = response.content[0].text
+            response_text = response.content[0].text.strip()
             try:
-                analysis_result = json.loads(response_text)
-            except json.JSONDecodeError:
+                # Handle Claude's tendency to add extra text after JSON
+                # Find the last closing brace to extract only the JSON portion
+                last_brace = response_text.rfind('}')
+                if last_brace != -1:
+                    json_text = response_text[:last_brace + 1]
+                    analysis_result = json.loads(json_text)
+                else:
+                    # No JSON found, raise error to trigger fallback
+                    raise json.JSONDecodeError("No JSON object found", response_text, 0)
+
+            except json.JSONDecodeError as e:
                 # If JSON parsing fails, extract what we can
+                self.logger.warning(f"Failed to parse Claude response as JSON: {e}")
+                self.logger.debug(f"Raw response (first 500 chars): {response_text[:500]}")
                 analysis_result = {
                     "material_type": "unknown",
                     "color": "unknown",
@@ -3516,7 +3538,7 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
                     "validation_status": "needs_review",
                     "content_description": response_text[:200],
                     "materials_identified": [],
-                    "issues": ["Failed to parse Claude response"],
+                    "issues": [f"Failed to parse Claude response: {str(e)}"],
                     "recommendations": []
                 }
 
