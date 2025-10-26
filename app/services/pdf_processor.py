@@ -985,52 +985,21 @@ class PDFProcessor:
                     # Continue processing even if upload fails, but mark it
                     upload_result = {'success': False, 'error': 'Upload failed', 'public_url': None}
 
-                # Perform real image analysis using vision models
-                real_analysis_data = {}
-                if upload_result.get('public_url'):
-                    try:
-                        from .real_image_analysis_service import RealImageAnalysisService
+                # ✅ CRITICAL FIX: Skip AI analysis during extraction to prevent blocking
+                # AI analysis will be performed AFTER chunks/images are saved to database
+                # This ensures data persistence even if AI processing fails or hangs
+                real_analysis_data = {
+                    'quality_score': quality_metrics['overall_score'],
+                    'confidence_score': 0.5,
+                    'analysis_pending': True,  # Flag to indicate analysis needs to be done later
+                    'image_url': upload_result.get('public_url'),  # Store URL for later analysis
+                    'document_id': document_id
+                }
 
-                        analysis_service = RealImageAnalysisService()
-                        image_id = f"{document_id}_{basic_info['filename']}"
+                self.logger.info(f"✅ Image uploaded to storage, AI analysis deferred: {basic_info['filename']}")
 
-                        self.logger.info(f"🖼️ Starting real image analysis for {image_id}")
-
-                        # Convert image to base64 for Llama Vision
-                        with open(image_path, 'rb') as f:
-                            image_base64 = base64.b64encode(f.read()).decode('utf-8')
-
-                        # Perform real analysis
-                        analysis_result = await analysis_service.analyze_image(
-                            image_url=upload_result.get('public_url'),
-                            image_id=image_id,
-                            context={'document_id': document_id}
-                        )
-
-                        # Store analysis results
-                        real_analysis_data = {
-                            'llama_analysis': analysis_result.llama_analysis,
-                            'claude_validation': analysis_result.claude_validation,
-                            'clip_embedding': analysis_result.clip_embedding,
-                            'material_properties': analysis_result.material_properties,
-                            'quality_score': analysis_result.quality_score,
-                            'confidence_score': analysis_result.confidence_score,
-                            'analysis_processing_time_ms': analysis_result.processing_time_ms,
-                            'analysis_timestamp': analysis_result.timestamp
-                        }
-
-                        self.logger.info(f"✅ Real image analysis complete: quality={analysis_result.quality_score:.2f}, confidence={analysis_result.confidence_score:.2f}")
-
-                    except Exception as e:
-                        self.logger.error(f"❌ Real image analysis failed: {e}")
-                        # Continue without real analysis - use fallback quality score
-                        real_analysis_data = {
-                            'quality_score': quality_metrics['overall_score'],
-                            'confidence_score': 0.5,
-                            'analysis_error': str(e)
-                        }
-
-                # Combine all metadata with storage information and real analysis
+                # Combine all metadata with storage information
+                # AI analysis results will be added later via async update
                 return {
                     **basic_info,
                     'exif': exif_data,
@@ -1046,13 +1015,10 @@ class PDFProcessor:
                     'storage_url': upload_result.get('public_url'),
                     'storage_path': upload_result.get('storage_path'),
                     'storage_bucket': upload_result.get('bucket', 'pdf-tiles'),
-                    # Real analysis results
-                    'llama_analysis': real_analysis_data.get('llama_analysis'),
-                    'claude_validation': real_analysis_data.get('claude_validation'),
-                    'clip_embedding': real_analysis_data.get('clip_embedding'),
-                    'material_properties': real_analysis_data.get('material_properties'),
-                    'analysis_processing_time_ms': real_analysis_data.get('analysis_processing_time_ms'),
-                    'analysis_timestamp': real_analysis_data.get('analysis_timestamp')
+                    # Analysis status (deferred for async processing)
+                    'analysis_pending': real_analysis_data.get('analysis_pending', False),
+                    'analysis_image_url': real_analysis_data.get('image_url'),
+                    'analysis_document_id': real_analysis_data.get('document_id')
                 }
                     
         except Exception as e:
