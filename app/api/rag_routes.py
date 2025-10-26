@@ -906,7 +906,7 @@ async def get_document_content(
         supabase_client = get_supabase_client()
 
         # Get document metadata
-        doc_response = supabase_client.table('documents').select('*').eq('id', document_id).execute()
+        doc_response = supabase_client.client.table('documents').select('*').eq('id', document_id).execute()
         if not doc_response.data or len(doc_response.data) == 0:
             raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
 
@@ -924,12 +924,12 @@ async def get_document_content(
         # Get chunks with embeddings
         if include_chunks:
             logger.info(f"📄 Fetching chunks for document {document_id}")
-            chunks_response = supabase_client.table('document_chunks').select('*').eq('document_id', document_id).execute()
+            chunks_response = supabase_client.client.table('document_chunks').select('*').eq('document_id', document_id).execute()
             chunks = chunks_response.data or []
 
             # Get embeddings for each chunk
             for chunk in chunks:
-                embeddings_response = supabase_client.table('embeddings').select('*').eq('chunk_id', chunk['id']).execute()
+                embeddings_response = supabase_client.client.table('embeddings').select('*').eq('chunk_id', chunk['id']).execute()
                 chunk['embeddings'] = embeddings_response.data or []
 
             result['chunks'] = chunks
@@ -938,14 +938,14 @@ async def get_document_content(
         # Get images with AI analysis
         if include_images:
             logger.info(f"🖼️ Fetching images for document {document_id}")
-            images_response = supabase_client.table('document_images').select('*').eq('document_id', document_id).execute()
+            images_response = supabase_client.client.table('document_images').select('*').eq('document_id', document_id).execute()
             result['images'] = images_response.data or []
             logger.info(f"✅ Fetched {len(result['images'])} images")
 
         # Get products
         if include_products:
             logger.info(f"🏭 Fetching products for document {document_id}")
-            products_response = supabase_client.table('products').select('*').eq('source_document_id', document_id).execute()
+            products_response = supabase_client.client.table('products').select('*').eq('source_document_id', document_id).execute()
             result['products'] = products_response.data or []
             logger.info(f"✅ Fetched {len(result['products'])} products")
 
