@@ -607,6 +607,9 @@ async def process_document_background(
                     "current_step": details.get("current_step", "Processing")
                 })
 
+            # ✅ FIX: Store metadata in job_storage so it's returned by get_job_status
+            job_storage[job_id]["metadata"] = detailed_metadata
+
             if job_recovery_service:
                 await job_recovery_service.persist_job(
                     job_id=job_id,
