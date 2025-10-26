@@ -61,18 +61,30 @@ async def get_bucket_stats(bucket_name: str) -> Dict[str, Any]:
     """Get statistics for a storage bucket."""
     try:
         supabase = get_supabase_client()
-        
+
         # List all files in bucket
         files = supabase.client.storage.from_(bucket_name).list()
-        
+
+        # Handle None or empty response
+        if not files:
+            files = []
+
         total_size = 0
         file_count = 0
-        
+
         for file in files:
-            if not file.get('name', '').endswith('/'):
-                total_size += file.get('metadata', {}).get('size', 0)
-                file_count += 1
-        
+            # Skip if file is None or is a folder
+            if not file or not isinstance(file, dict):
+                continue
+            if file.get('name', '').endswith('/'):
+                continue
+
+            # Get file size from metadata
+            metadata = file.get('metadata', {})
+            if metadata and isinstance(metadata, dict):
+                total_size += metadata.get('size', 0)
+            file_count += 1
+
         return {
             'bucket': bucket_name,
             'files': file_count,
