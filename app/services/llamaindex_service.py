@@ -1359,8 +1359,8 @@ class LlamaIndexService:
 
                 # Report progress: Document parsing starting (40%)
                 # Get total pages from PDF result if available
-                total_pages = pdf_result.get('total_pages', 0) if document_format == 'pdf' else len(documents)
-                images_extracted = len(pdf_result.get('images', [])) if document_format == 'pdf' else 0
+                total_pages = pdf_result.page_count if document_format == 'pdf' and hasattr(pdf_result, 'page_count') else len(documents)
+                images_extracted = len(pdf_result.extracted_images) if document_format == 'pdf' and hasattr(pdf_result, 'extracted_images') else 0
 
                 if progress_callback:
                     await progress_callback(40, {
