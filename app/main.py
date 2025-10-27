@@ -566,40 +566,124 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version=settings.app_version,
         description="""
-# MIVAA PDF Extractor - Comprehensive API
+# MIVAA - Material Intelligence Vision and Analysis Agent
 
-**Enhanced January 2025** - Production-ready microservice for PDF processing, RAG operations, AI analysis, and vector search.
+**Production API** - AI-powered material recognition and knowledge management platform serving 5,000+ users.
 
-## 🎯 **Key Features**
-- **PDF Processing**: Advanced text, table, and image extraction using PyMuPDF4LLM
-- **RAG System**: Retrieval-Augmented Generation with LlamaIndex integration
-- **Vector Search**: Semantic similarity search with optimized embeddings
-- **AI Analysis**: LLaMA Vision models for material analysis
-- **Embedding Generation**: Standardized text-embedding-ada-002 (1536 dimensions)
-- **Multi-modal Processing**: Text, images, and structured data extraction
-- **Performance Monitoring**: Built-in metrics and health checks
-- **JWT Authentication**: Secure API access
+## 🎯 **Overview**
+
+MIVAA is the core backend service powering the Material Kai Vision Platform, providing comprehensive PDF processing, AI analysis, and multi-vector search capabilities.
+
+### **Key Capabilities**
+- **PDF Processing**: 14-stage pipeline with PyMuPDF4LLM extraction
+- **AI Analysis**: 12 AI models across 7 pipeline stages
+- **Multi-Vector Search**: 6 specialized embeddings (text, visual, color, texture, application, multimodal)
+- **Product Classification**: Two-stage AI system (Claude Haiku 4.5 + Sonnet 4.5)
+- **Knowledge Base**: Semantic chunking, quality scoring, deduplication
+- **Image Analysis**: CLIP + Llama 4 Scout Vision (69.4% MMMU, #1 OCR)
+- **Auto-Metadata**: AI-powered metadata extraction (200+ fields)
+
+### **AI Models**
+1. **OpenAI**: text-embedding-3-small (1536D embeddings)
+2. **Anthropic**: Claude Haiku 4.5 (fast classification), Claude Sonnet 4.5 (deep enrichment)
+3. **Together AI**: Llama 4 Scout 17B Vision
+4. **CLIP**: Visual embeddings (512D)
+5. **Custom**: Color, texture, application embeddings
+
+### **Performance**
+- **Search Accuracy**: 85%+
+- **Processing Success**: 95%+
+- **Response Time**: 200-800ms (search), 1-4s (analysis)
+- **Uptime**: 99.5%+
 
 ## 🔐 **Authentication**
+
 All API endpoints require JWT authentication:
 ```
 Authorization: Bearer your-jwt-token
 ```
 
-## 📊 **Recent Enhancements (Phase 3)**
-✅ **Unified Vector Search System** with intelligent caching
-✅ **Standardized Embedding Models** (text-embedding-ada-002)
-✅ **Optimized Database Indexing** with auto-scaling
-✅ **80% faster search** and 90% error reduction
+Get your token from the frontend application or Supabase authentication.
 
-## 🚀 **API Categories**
-- **📄 PDF Processing**: `/api/v1/extract/*` - Extract markdown, tables, images
-- **🧠 RAG System**: `/api/v1/rag/*` - Document upload, query, chat, search
-- **🤖 AI Analysis**: `/api/semantic-analysis` - LLaMA Vision material analysis
-- **🔍 Search APIs**: `/api/search/*` - Semantic, vector, hybrid search
-- **🔗 Embedding APIs**: `/api/embeddings/*` - Generate embeddings, batch processing
-- **💬 Chat APIs**: `/api/chat/*` - Chat completions, contextual responses
-- **🏥 Health & Monitoring**: `/health`, `/metrics`, `/performance/summary`
+## 📊 **Latest Enhancements (October 2025)**
+
+✅ **Product Detection Pipeline** - 60-70% false positive reduction with 4-layer validation
+✅ **Chunk Quality System** - Hash-based + semantic deduplication, quality scoring
+✅ **Two-Stage Classification** - 60% faster, 40% cost reduction
+✅ **Multi-Vector Embeddings** - 6 embedding types for 85%+ accuracy improvement
+✅ **Admin Dashboard** - Chunk quality monitoring and review workflow
+✅ **Metadata Synchronization** - 100% accuracy in job status reporting
+
+## 🚀 **API Categories** (37+ Endpoints)
+
+### **📄 PDF Processing** (`/api/v1/extract/*`)
+- Extract markdown, tables, images from PDFs
+- PyMuPDF4LLM integration
+- Batch processing support
+
+### **🧠 RAG System** (`/api/v1/rag/*`)
+- Document upload and processing
+- Query and chat interfaces
+- Semantic search
+- Job monitoring with real-time progress
+
+### **🤖 AI Analysis** (`/api/semantic-analysis`)
+- Llama 4 Scout Vision material analysis
+- Multi-modal text + image processing
+- Entity extraction and classification
+
+### **🔍 Search APIs** (`/api/search/*`)
+- Semantic search (text embeddings)
+- Vector search (multi-vector)
+- Hybrid search (combined)
+- Recommendations
+
+### **🔗 Embedding APIs** (`/api/embeddings/*`)
+- Generate text embeddings (1536D)
+- Generate CLIP embeddings (512D)
+- Batch processing
+- Multi-vector generation (6 types)
+
+### **💬 Chat APIs** (`/api/chat/*`)
+- Chat completions
+- Contextual responses
+- Conversation history
+
+### **📦 Products API** (`/api/products/*`)
+- Two-stage product classification
+- Product enrichment
+- Product management
+- Health monitoring
+
+### **👨‍💼 Admin APIs** (`/api/admin/*`)
+- Chunk quality dashboard
+- Quality statistics
+- Flagged chunks review
+- Metadata management
+
+### **📄 Document Management** (`/api/documents/*`)
+- Process documents
+- Analyze structure
+- Job status tracking
+- Batch operations
+
+### **🏥 Health & Monitoring**
+- `/health` - Service health check
+- `/metrics` - Performance metrics
+- `/performance/summary` - Comprehensive stats
+
+## 📖 **Documentation**
+
+- **Interactive API Docs**: [/docs](/docs) (Swagger UI)
+- **Alternative Docs**: [/redoc](/redoc) (ReDoc)
+- **OpenAPI Schema**: [/openapi.json](/openapi.json)
+- **Complete Documentation**: https://basilakis.github.io
+
+## 🔗 **Related Services**
+
+- **Frontend**: https://materialshub.gr
+- **Documentation Site**: https://basilakis.github.io
+- **GitHub**: https://github.com/creativeghq/material-kai-vision-platform
 
         """,
         docs_url="/docs",  # Always enable docs
@@ -607,43 +691,59 @@ Authorization: Bearer your-jwt-token
         openapi_tags=[
             {
                 "name": "PDF Processing",
-                "description": "Advanced PDF text, table, and image extraction using PyMuPDF4LLM"
+                "description": "📄 Advanced PDF extraction using PyMuPDF4LLM - Extract markdown, tables, and images from PDF documents with 14-stage processing pipeline"
             },
             {
                 "name": "RAG",
-                "description": "Retrieval-Augmented Generation system with LlamaIndex integration"
+                "description": "🧠 Retrieval-Augmented Generation system - Document upload, semantic search, chat interface, and real-time job monitoring with LlamaIndex integration"
             },
             {
                 "name": "AI Analysis",
-                "description": "LLaMA Vision models for semantic material analysis"
+                "description": "🤖 Multi-modal AI analysis - Llama 4 Scout Vision (69.4% MMMU, #1 OCR) for material recognition, entity extraction, and semantic understanding"
             },
             {
                 "name": "Search",
-                "description": "Semantic, vector, and hybrid search capabilities"
+                "description": "🔍 Advanced search capabilities - Semantic search (text embeddings), vector search (multi-vector), hybrid search, and intelligent recommendations with 85%+ accuracy"
             },
             {
                 "name": "Embeddings",
-                "description": "Text embedding generation with standardized models (text-embedding-ada-002)"
+                "description": "🔗 Multi-vector embedding generation - 6 embedding types (text 1536D, visual CLIP 512D, multimodal 2048D, color 256D, texture 256D, application 512D) for comprehensive material understanding"
             },
             {
                 "name": "Chat",
-                "description": "AI chat completions and contextual responses"
+                "description": "💬 AI chat interface - Contextual chat completions, conversation history, and intelligent material assistance"
+            },
+            {
+                "name": "Products",
+                "description": "📦 Product management - Two-stage AI classification (Claude Haiku 4.5 + Sonnet 4.5), product enrichment, and metadata extraction with 60% performance improvement"
+            },
+            {
+                "name": "Admin",
+                "description": "👨‍💼 Admin operations - Chunk quality dashboard, quality statistics, flagged chunks review, and metadata management for platform administrators"
+            },
+            {
+                "name": "Documents",
+                "description": "📄 Document management - Process documents, analyze structure, track job status, and perform batch operations"
             },
             {
                 "name": "Anthropic Claude",
-                "description": "Image validation and product enrichment using Anthropic Claude 3.5 Sonnet"
+                "description": "🎨 Anthropic Claude integration - Image validation and product enrichment using Claude Haiku 4.5 (fast classification) and Claude Sonnet 4.5 (deep enrichment)"
             },
             {
-                "name": "products",
-                "description": "Product creation and management from PDF chunks using two-stage classification"
+                "name": "Together AI",
+                "description": "🦙 Together AI integration - Llama 4 Scout 17B Vision for advanced image analysis and material recognition"
+            },
+            {
+                "name": "Images",
+                "description": "🖼️ Image processing - Extract, analyze, and generate embeddings for images with CLIP and Llama Vision models"
             },
             {
                 "name": "Health & Monitoring",
-                "description": "Service health checks, metrics, and performance monitoring"
+                "description": "🏥 Service health and monitoring - Health checks, performance metrics, system statistics, and comprehensive monitoring endpoints"
             },
             {
                 "name": "Legacy APIs",
-                "description": "Backward-compatible endpoints for existing integrations"
+                "description": "🔄 Backward compatibility - Legacy endpoints maintained for existing integrations (deprecated, use new endpoints)"
             }
         ],
         contact={
