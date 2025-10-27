@@ -510,12 +510,36 @@ async def create_products_background(
         products_created = product_result.get('products_created', 0)
         logger.info(f"✅ Background product creation completed: {products_created} products created")
 
-        # Update job metadata with product count
+        # Update job metadata with product count (in-memory)
         if job_id in job_storage:
             job_storage[job_id]["progress"] = 100  # Now fully complete
             if "result" in job_storage[job_id]:
                 job_storage[job_id]["result"]["products_created"] = products_created
                 job_storage[job_id]["result"]["message"] = f"Document processed successfully: {products_created} products created"
+
+        # ✅ FIX: Persist products_created to database background_jobs table
+        try:
+            job_recovery_service = JobRecoveryService(supabase_client)
+
+            # Get current job from database
+            current_job = await job_recovery_service.get_job(job_id)
+            if current_job:
+                # Update metadata with products_created
+                updated_metadata = current_job.get('metadata', {})
+                updated_metadata['products_created'] = products_created
+
+                # Persist updated metadata
+                await job_recovery_service.persist_job(
+                    job_id=job_id,
+                    document_id=document_id,
+                    filename=current_job.get('filename', 'unknown'),
+                    status='completed',
+                    progress=100,
+                    metadata=updated_metadata
+                )
+                logger.info(f"✅ Persisted products_created={products_created} to database for job {job_id}")
+        except Exception as persist_error:
+            logger.error(f"❌ Failed to persist products_created to database: {persist_error}")
 
     except Exception as e:
         logger.error(f"❌ Background product creation failed: {e}", exc_info=True)
