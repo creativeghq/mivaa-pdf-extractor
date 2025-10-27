@@ -2474,17 +2474,41 @@ Summary:"""
 
             for i, node in enumerate(nodes):
                 try:
+                    # ✅ NEW: Calculate quality score
+                    quality_score = self._calculate_chunk_quality(node.text)
+
+                    # ✅ NEW: Quality validation gates
+                    if not self._validate_chunk_quality(node.text, quality_score):
+                        self.logger.warning(f"⚠️ Chunk {i} rejected: Low quality (score: {quality_score:.2f})")
+                        continue
+
+                    # ✅ NEW: Generate content hash for deduplication
+                    content_hash = self._generate_content_hash(node.text)
+
+                    # ✅ NEW: Check for duplicate chunks
+                    duplicate_check = supabase_client.client.table('document_chunks')\
+                        .select('id')\
+                        .eq('content_hash', content_hash)\
+                        .eq('document_id', document_id)\
+                        .execute()
+
+                    if duplicate_check.data and len(duplicate_check.data) > 0:
+                        self.logger.warning(f"⚠️ Chunk {i} skipped: Duplicate content (hash: {content_hash[:8]}...)")
+                        continue
+
                     # Store chunk in document_chunks table
                     chunk_data = {
                         'document_id': document_id,
                         'workspace_id': metadata.get('workspace_id'),
                         'content': node.text,
                         'chunk_index': i,
+                        'content_hash': content_hash,  # ✅ NEW: Store hash
                         'metadata': {
                             'chunk_id': node.metadata.get('chunk_id', f"{document_id}_chunk_{i}"),
                             'chunk_strategy': 'hierarchical',
                             'chunk_size_actual': len(node.text),
                             'total_chunks': len(nodes),
+                            'quality_score': quality_score,  # ✅ NEW: Store quality score
                             'has_parent': node.parent_node is not None,
                             'has_children': len(node.child_nodes) > 0 if hasattr(node, 'child_nodes') and node.child_nodes is not None else False,
                             **node.metadata
@@ -2600,6 +2624,114 @@ Summary:"""
                 "success_rate": 0,
                 "error": str(e)
             }
+
+    def _generate_content_hash(self, content: str) -> str:
+        """
+        ✅ NEW: Generate SHA-256 hash of normalized content for deduplication.
+
+        Args:
+            content: Text content to hash
+
+        Returns:
+            SHA-256 hash string
+        """
+        import hashlib
+
+        # Normalize content: lowercase, strip whitespace, remove extra spaces
+        normalized = ' '.join(content.lower().strip().split())
+
+        # Generate SHA-256 hash
+        hash_object = hashlib.sha256(normalized.encode('utf-8'))
+        return hash_object.hexdigest()
+
+    def _calculate_chunk_quality(self, content: str) -> float:
+        """
+        ✅ NEW: Calculate quality score for a chunk.
+
+        Metrics:
+        - Length score (0.0-1.0): Optimal length is 500-2000 characters
+        - Boundary score (0.7 or 1.0): Ends with proper punctuation
+        - Semantic score (0.0-1.0): Has 3+ sentences
+
+        Args:
+            content: Text content to score
+
+        Returns:
+            Quality score (0.0-1.0)
+        """
+        try:
+            # Check content length (optimal: 500-2000 characters)
+            length = len(content)
+            if length < 500:
+                length_score = length / 500  # Penalize short chunks
+            elif length > 2000:
+                length_score = max(0.5, 1.0 - (length - 2000) / 3000)  # Penalize very long chunks
+            else:
+                length_score = 1.0  # Optimal length
+
+            # Check for proper boundaries (ends with punctuation)
+            ends_with_punctuation = content.strip().endswith(('.', '!', '?', ':', ';'))
+            boundary_score = 1.0 if ends_with_punctuation else 0.7
+
+            # Check for semantic completeness (3+ sentences)
+            sentences = content.count('.') + content.count('!') + content.count('?')
+            semantic_score = min(1.0, sentences / 3)
+
+            # Weighted average
+            quality_score = (
+                length_score * 0.3 +
+                boundary_score * 0.4 +
+                semantic_score * 0.3
+            )
+
+            return round(quality_score, 3)
+        except Exception as e:
+            self.logger.warning(f"Error calculating chunk quality: {e}")
+            return 0.5  # Default to medium quality
+
+    def _validate_chunk_quality(self, content: str, quality_score: float) -> bool:
+        """
+        ✅ NEW: Validate chunk quality against quality gates.
+
+        Quality Gates:
+        - Minimum quality score: 0.6
+        - Minimum content length: 50 characters
+        - Maximum content length: 5000 characters
+        - Semantic completeness: > 0.5 (at least 1-2 sentences)
+
+        Args:
+            content: Text content to validate
+            quality_score: Pre-calculated quality score
+
+        Returns:
+            True if chunk passes quality gates, False otherwise
+        """
+        try:
+            # Gate 1: Minimum quality score
+            if quality_score < 0.6:
+                self.logger.debug(f"Quality gate failed: Score {quality_score:.2f} < 0.6")
+                return False
+
+            # Gate 2: Minimum content length
+            if len(content) < 50:
+                self.logger.debug(f"Quality gate failed: Length {len(content)} < 50 characters")
+                return False
+
+            # Gate 3: Maximum content length
+            if len(content) > 5000:
+                self.logger.debug(f"Quality gate failed: Length {len(content)} > 5000 characters")
+                return False
+
+            # Gate 4: Semantic completeness (at least 1 sentence)
+            sentences = content.count('.') + content.count('!') + content.count('?')
+            if sentences < 1:
+                self.logger.debug("Quality gate failed: No complete sentences")
+                return False
+
+            return True
+        except Exception as e:
+            self.logger.warning(f"Error validating chunk quality: {e}")
+            return True  # Default to accepting chunk if validation fails
 
     def _ensure_document_exists(
         self,
