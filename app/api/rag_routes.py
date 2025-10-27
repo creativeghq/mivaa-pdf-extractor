@@ -26,6 +26,7 @@ from app.services.real_embeddings_service import RealEmbeddingsService
 from app.services.advanced_search_service import QueryType, SearchOperator
 from app.services.product_creation_service import ProductCreationService
 from app.services.job_recovery_service import JobRecoveryService
+from app.services.checkpoint_recovery_service import checkpoint_recovery_service, ProcessingStage
 from app.services.supabase_client import get_supabase_client
 from app.utils.logging import PDFProcessingLogger
 
@@ -558,7 +559,7 @@ async def process_document_background(
     llamaindex_service: LlamaIndexService
 ):
     """
-    Background task to process document.
+    Background task to process document with checkpoint recovery support.
     """
     start_time = datetime.utcnow()
 
@@ -567,30 +568,73 @@ async def process_document_background(
     logger.info(f"   Filename: {filename}")
     logger.info(f"   Started at: {start_time.isoformat()}")
 
+    # Check for existing checkpoint to resume from
+    last_checkpoint = None
+    resume_from_stage = None
+    try:
+        last_checkpoint = await checkpoint_recovery_service.get_last_checkpoint(job_id)
+        if last_checkpoint:
+            resume_from_stage = last_checkpoint.get('stage')
+            logger.info(f"🔄 RESUMING FROM CHECKPOINT: {resume_from_stage}")
+            logger.info(f"   Checkpoint created at: {last_checkpoint.get('created_at')}")
+            logger.info(f"   Checkpoint data: {last_checkpoint.get('checkpoint_data', {}).keys()}")
+
+            # Verify checkpoint data exists in database
+            can_resume = await checkpoint_recovery_service.verify_checkpoint_data(job_id, resume_from_stage)
+            if not can_resume:
+                logger.warning(f"⚠️ Checkpoint data verification failed, starting from scratch")
+                resume_from_stage = None
+                last_checkpoint = None
+        else:
+            logger.info("📝 No checkpoint found, starting fresh processing")
+    except Exception as e:
+        logger.error(f"Failed to check for checkpoint: {e}", exc_info=True)
+        resume_from_stage = None
+
     try:
         # Create placeholder document record FIRST (required for foreign key constraint)
         supabase_client = get_supabase_client()
-        try:
-            supabase_client.client.table('documents').insert({
-                "id": document_id,
-                "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
-                "filename": filename,
-                "content_type": "application/pdf",
-                "file_size": len(file_content),
-                "processing_status": "processing",
-                "metadata": {
+
+        # Skip document creation if resuming from checkpoint
+        if not resume_from_stage:
+            try:
+                supabase_client.client.table('documents').insert({
+                    "id": document_id,
+                    "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+                    "filename": filename,
+                    "content_type": "application/pdf",
+                    "file_size": len(file_content),
+                    "processing_status": "processing",
+                    "metadata": {
+                        "title": title or filename,
+                        "description": description,
+                        "tags": document_tags,
+                        "source": "rag_upload_async"
+                    },
+                    "created_at": start_time.isoformat(),
+                    "updated_at": start_time.isoformat()
+                }).execute()
+                logger.info(f"✅ Created placeholder document record: {document_id}")
+            except Exception as doc_error:
+                logger.error(f"Failed to create document record: {doc_error}")
+                # Continue anyway - the document might already exist
+
+            # Create INITIALIZED checkpoint
+            await checkpoint_recovery_service.create_checkpoint(
+                job_id=job_id,
+                stage=ProcessingStage.INITIALIZED,
+                data={
+                    "document_id": document_id,
+                    "filename": filename,
+                    "file_size": len(file_content)
+                },
+                metadata={
                     "title": title or filename,
                     "description": description,
-                    "tags": document_tags,
-                    "source": "rag_upload_async"
-                },
-                "created_at": start_time.isoformat(),
-                "updated_at": start_time.isoformat()
-            }).execute()
-            logger.info(f"✅ Created placeholder document record: {document_id}")
-        except Exception as doc_error:
-            logger.error(f"Failed to create document record: {doc_error}")
-            # Continue anyway - the document might already exist
+                    "tags": document_tags
+                }
+            )
+            logger.info(f"✅ Created INITIALIZED checkpoint for job {job_id}")
 
         # Update status (in-memory)
         job_storage[job_id]["status"] = "processing"
@@ -663,22 +707,59 @@ async def process_document_background(
             logger.info(f"📊 Job {job_id} progress: {progress}% - {detailed_metadata.get('current_step', 'Processing')}")
 
         # Process document through LlamaIndex service with progress tracking
-        processing_result = await llamaindex_service.index_document_content(
-            file_content=file_content,
-            document_id=document_id,
-            file_path=filename,
-            metadata={
-                "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",  # Default workspace UUID
-                "filename": filename,
-                "title": title or filename,
-                "description": description,
-                "tags": document_tags,
-                "source": "rag_upload_async"
-            },
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            progress_callback=update_progress
-        )
+        # Skip if resuming from a later checkpoint
+        if not resume_from_stage or resume_from_stage == ProcessingStage.INITIALIZED:
+            processing_result = await llamaindex_service.index_document_content(
+                file_content=file_content,
+                document_id=document_id,
+                file_path=filename,
+                metadata={
+                    "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",  # Default workspace UUID
+                    "filename": filename,
+                    "title": title or filename,
+                    "description": description,
+                    "tags": document_tags,
+                    "source": "rag_upload_async"
+                },
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                progress_callback=update_progress
+            )
+
+            # Create checkpoint after successful processing
+            chunks_created = processing_result.get('statistics', {}).get('total_chunks', 0)
+            images_extracted = processing_result.get('statistics', {}).get('images_extracted', 0)
+
+            if processing_result.get('status') == 'success':
+                # Create COMPLETED checkpoint with all processing data
+                await checkpoint_recovery_service.create_checkpoint(
+                    job_id=job_id,
+                    stage=ProcessingStage.COMPLETED,
+                    data={
+                        "document_id": document_id,
+                        "chunks_created": chunks_created,
+                        "images_extracted": images_extracted,
+                        "embeddings_generated": processing_result.get('statistics', {}).get('database_embeddings_stored', 0),
+                        "clip_embeddings": processing_result.get('statistics', {}).get('clip_embeddings_generated', 0)
+                    },
+                    metadata={
+                        "processing_time": (datetime.utcnow() - start_time).total_seconds(),
+                        "statistics": processing_result.get('statistics', {})
+                    }
+                )
+                logger.info(f"✅ Created COMPLETED checkpoint for job {job_id}")
+        else:
+            # Resuming from checkpoint - retrieve data from last checkpoint
+            logger.info(f"⏭️ Skipping document processing - resuming from {resume_from_stage}")
+            checkpoint_data = last_checkpoint.get('checkpoint_data', {})
+            processing_result = {
+                'status': 'success',
+                'statistics': {
+                    'total_chunks': checkpoint_data.get('chunks_created', 0),
+                    'images_extracted': checkpoint_data.get('images_extracted', 0),
+                    'database_embeddings_stored': checkpoint_data.get('embeddings_generated', 0)
+                }
+            }
 
         processing_time = (datetime.utcnow() - start_time).total_seconds()
 

@@ -274,6 +274,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to initialize job recovery: {e}", exc_info=True)
 
+    # Initialize and start job monitor service
+    try:
+        from app.services.job_monitor_service import job_monitor_service
+        # Start job monitor in background
+        asyncio.create_task(job_monitor_service.start())
+        logger.info("✅ Job monitor service started - monitoring every 60 seconds")
+    except Exception as e:
+        logger.error(f"❌ Failed to start job monitor service: {e}", exc_info=True)
+
     yield
 
     # Shutdown
@@ -281,6 +290,14 @@ async def lifespan(app: FastAPI):
     logger.warning("🛑 SHUTDOWN INITIATED")
     logger.warning(f"🛑 Shutdown time: {datetime.now().isoformat()}")
     logger.warning("=" * 80)
+
+    # Stop job monitor service
+    try:
+        from app.services.job_monitor_service import job_monitor_service
+        await job_monitor_service.stop()
+        logger.info("✅ Job monitor service stopped")
+    except Exception as e:
+        logger.error(f"❌ Failed to stop job monitor service: {e}")
 
     # Log active jobs before shutdown
     try:
