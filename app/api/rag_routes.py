@@ -614,10 +614,34 @@ async def create_products_background(
     """
     Background task to create products from chunks with checkpoint support.
     Runs separately to avoid blocking main PDF processing.
+    Creates a sub-job for tracking.
     """
+    supabase_client = get_supabase_client()
+    sub_job_id = f"{job_id}_products"
+
     try:
         logger.info(f"🏭 Starting background product creation for document {document_id}")
-        supabase_client = get_supabase_client()
+
+        # Create sub-job in database
+        try:
+            supabase_client.client.table('background_jobs').insert({
+                "id": sub_job_id,
+                "parent_job_id": job_id,
+                "job_type": "product_creation",
+                "document_id": document_id,
+                "status": "processing",
+                "progress": 0,
+                "metadata": {
+                    "workspace_id": workspace_id,
+                    "started_at": datetime.utcnow().isoformat()
+                },
+                "created_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat()
+            }).execute()
+            logger.info(f"✅ Created sub-job {sub_job_id} for product creation")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to create sub-job: {e}")
+
         product_service = ProductCreationService(supabase_client)
 
         # Create PRODUCTS_DETECTED checkpoint before detection
@@ -646,6 +670,24 @@ async def create_products_background(
 
         products_created = product_result.get('products_created', 0)
         logger.info(f"✅ Background product creation completed: {products_created} products created")
+
+        # Update sub-job status to completed
+        try:
+            supabase_client.client.table('background_jobs').update({
+                "status": "completed",
+                "progress": 100,
+                "metadata": {
+                    "workspace_id": workspace_id,
+                    "products_created": products_created,
+                    "candidates_detected": product_result.get('candidates_detected', 0),
+                    "validation_passed": product_result.get('validation_passed', 0),
+                    "completed_at": datetime.utcnow().isoformat()
+                },
+                "updated_at": datetime.utcnow().isoformat()
+            }).eq('id', sub_job_id).execute()
+            logger.info(f"✅ Marked sub-job {sub_job_id} as completed")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to update sub-job: {e}")
 
         # Create PRODUCTS_CREATED checkpoint after successful creation
         await checkpoint_recovery_service.create_checkpoint(
@@ -698,6 +740,23 @@ async def create_products_background(
 
     except Exception as e:
         logger.error(f"❌ Background product creation failed: {e}", exc_info=True)
+
+        # Mark sub-job as failed
+        try:
+            supabase_client.client.table('background_jobs').update({
+                "status": "failed",
+                "error": str(e),
+                "metadata": {
+                    "workspace_id": workspace_id,
+                    "error_message": str(e),
+                    "failed_at": datetime.utcnow().isoformat()
+                },
+                "updated_at": datetime.utcnow().isoformat()
+            }).eq('id', sub_job_id).execute()
+            logger.info(f"✅ Marked sub-job {sub_job_id} as failed")
+        except Exception as sub_error:
+            logger.warning(f"⚠️ Failed to update sub-job: {sub_error}")
+
         # Create failed checkpoint
         try:
             await checkpoint_recovery_service.create_checkpoint(
@@ -716,6 +775,111 @@ async def create_products_background(
             )
         except:
             pass  # Don't fail if checkpoint creation fails
+
+
+async def process_images_background(
+    document_id: str,
+    job_id: str,
+    images_count: int
+):
+    """
+    Background task to process image AI analysis with checkpoint support.
+    Runs separately to avoid blocking main PDF processing.
+    Creates a sub-job for tracking.
+    """
+    supabase_client = get_supabase_client()
+    sub_job_id = f"{job_id}_images"
+
+    try:
+        logger.info(f"🖼️ Starting background image AI analysis for document {document_id}")
+
+        # Create sub-job in database
+        try:
+            supabase_client.client.table('background_jobs').insert({
+                "id": sub_job_id,
+                "parent_job_id": job_id,
+                "job_type": "image_analysis",
+                "document_id": document_id,
+                "status": "processing",
+                "progress": 0,
+                "metadata": {
+                    "images_count": images_count,
+                    "started_at": datetime.utcnow().isoformat()
+                },
+                "created_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat()
+            }).execute()
+            logger.info(f"✅ Created sub-job {sub_job_id} for image analysis")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to create sub-job: {e}")
+
+        # Run background image processing
+        from app.services.background_image_processor import start_background_image_processing
+        result = await start_background_image_processing(
+            document_id=document_id,
+            supabase_client=supabase_client
+        )
+
+        images_processed = result.get('total_processed', 0)
+        images_failed = result.get('total_failed', 0)
+        logger.info(f"✅ Background image analysis completed: {images_processed} processed, {images_failed} failed")
+
+        # Update sub-job status to completed
+        try:
+            supabase_client.client.table('background_jobs').update({
+                "status": "completed",
+                "progress": 100,
+                "metadata": {
+                    "images_count": images_count,
+                    "images_processed": images_processed,
+                    "images_failed": images_failed,
+                    "batches_processed": result.get('batches_processed', 0),
+                    "completed_at": datetime.utcnow().isoformat()
+                },
+                "updated_at": datetime.utcnow().isoformat()
+            }).eq('id', sub_job_id).execute()
+            logger.info(f"✅ Marked sub-job {sub_job_id} as completed")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to update sub-job: {e}")
+
+        # Create IMAGE_ANALYSIS_COMPLETED checkpoint
+        try:
+            await checkpoint_recovery_service.create_checkpoint(
+                job_id=job_id,
+                stage=ProcessingStage.COMPLETED,  # Use COMPLETED since this is the final stage
+                data={
+                    "document_id": document_id,
+                    "images_processed": images_processed,
+                    "images_failed": images_failed
+                },
+                metadata={
+                    "current_step": "Image AI analysis completed",
+                    "images_count": images_count,
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+            )
+            logger.info(f"✅ Created IMAGE_ANALYSIS_COMPLETED checkpoint for job {job_id}")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to create checkpoint: {e}")
+
+    except Exception as e:
+        logger.error(f"❌ Background image analysis failed: {e}", exc_info=True)
+
+        # Mark sub-job as failed
+        try:
+            supabase_client.client.table('background_jobs').update({
+                "status": "failed",
+                "error": str(e),
+                "metadata": {
+                    "images_count": images_count,
+                    "error_message": str(e),
+                    "failed_at": datetime.utcnow().isoformat()
+                },
+                "updated_at": datetime.utcnow().isoformat()
+            }).eq('id', sub_job_id).execute()
+            logger.info(f"✅ Marked sub-job {sub_job_id} as failed")
+        except Exception as sub_error:
+            logger.warning(f"⚠️ Failed to update sub-job: {sub_error}")
 
 
 async def process_document_background(
@@ -1059,16 +1223,18 @@ async def process_document_background(
             else:
                 logger.info("⚠️ No chunks created, skipping product creation")
 
-            # ✅ FIX 4: Start background image processing
+            # ✅ FIX 4: Start background image processing with sub-job tracking
             images_extracted = processing_result.get('statistics', {}).get('total_images', 0)
             if images_extracted > 0:
                 logger.info(f"🖼️ Scheduling background image AI analysis for {images_extracted} images")
-                from .services.background_image_processor import start_background_image_processing
-                asyncio.create_task(start_background_image_processing(
+                asyncio.create_task(process_images_background(
                     document_id=document_id,
-                    supabase_client=supabase_client
+                    job_id=job_id,
+                    images_count=images_extracted
                 ))
                 logger.info("✅ Image AI analysis scheduled in background")
+            else:
+                logger.info("⚠️ No images extracted, skipping background image analysis")
 
             job_storage[job_id]["status"] = "completed"
             job_storage[job_id]["progress"] = 90  # Main processing complete, products/images running in background
