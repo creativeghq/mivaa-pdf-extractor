@@ -387,6 +387,31 @@ class ProductCreationService:
             self.logger.debug("Skipping: Generic descriptive content")
             return False
 
+        # ✅ NEW: Skip designer biographies - CRITICAL FIX
+        designer_bio_keywords = [
+            'biography', 'born in', 'graduated from', 'studied at',
+            'career began', 'founded in', 'established in',
+            'renowned designer', 'award-winning', 'based in',
+            'studio was founded', 'design philosophy', 'creative director',
+            'years of experience', 'portfolio includes', 'education',
+            'professional background', 'design journey', 'trained at'
+        ]
+        if any(keyword in content.lower() for keyword in designer_bio_keywords):
+            self.logger.debug("Skipping: Designer biography content")
+            return False
+
+        # ✅ NEW: Skip factory/manufacturing details - CRITICAL FIX
+        factory_keywords = [
+            'factory location', 'manufacturing facility', 'production capacity',
+            'plant location', 'headquarters', 'production site',
+            'manufacturing process', 'quality control', 'production line',
+            'factory address', 'production facility', 'manufacturing plant',
+            'industrial complex', 'production area', 'manufacturing site'
+        ]
+        if any(keyword in content.lower() for keyword in factory_keywords):
+            self.logger.debug("Skipping: Factory/manufacturing details")
+            return False
+
         # Require product indicators for valid products
         has_uppercase_name = any(word.isupper() and len(word) > 2 for word in content.split())
         has_dimensions = any(pattern in content for pattern in ['×', 'x ', 'cm', 'mm'])
@@ -394,6 +419,16 @@ class ProductCreationService:
             'designer', 'collection', 'material', 'ceramic', 'porcelain', 'tile',
             'estudi{h}ac', 'dsignio', 'alt design', 'mut', 'yonoh', 'stacy garcia'
         ])
+
+        # ✅ NEW: Skip technical specs without product name - CRITICAL FIX
+        has_technical_specs = any(keyword in content.lower() for keyword in [
+            'water absorption', 'breaking strength', 'slip resistance',
+            'frost resistance', 'chemical resistance', 'thermal shock',
+            'modulus of rupture', 'abrasion resistance', 'stain resistance'
+        ])
+        if has_technical_specs and not has_uppercase_name:
+            self.logger.debug("Skipping: Technical specifications without product name")
+            return False
 
         # ✅ ENHANCED: Require ALL 3 indicators for high confidence (was 2 of 3)
         product_score = sum([has_uppercase_name, has_dimensions, has_product_context])
@@ -1198,6 +1233,29 @@ For each chunk, determine if it contains:
 - Designer/brand information
 - Material specifications
 
+SKIP THE FOLLOWING (NOT PRODUCTS):
+- Index pages, table of contents, signature books
+- Sustainability content, environmental certifications, LEED info
+- Technical tables without product names (just specs/data)
+- Designer biographies (e.g., "John Doe was born in...", "Studio founded in...")
+- Factory details (e.g., "Factory location: Spain...", "Production capacity...")
+- Standalone technical specifications (water absorption, breaking strength without product)
+- Moodboards, inspiration boards, design philosophy
+- Cleaning/maintenance guides, application instructions
+- Certification pages (ISO, ANSI, ASTM)
+
+EXAMPLES OF NON-PRODUCTS TO SKIP:
+- "ESTUDI{{H}}AC was founded in 2003 by designers..." → SKIP (designer biography)
+- "Factory location: Castellón, Spain. Production capacity: 10,000 m²/day" → SKIP (factory details)
+- "Water absorption: <0.5%, Breaking strength: >1300N" → SKIP (specs without product name)
+- "Sustainability: Our commitment to the environment..." → SKIP (sustainability content)
+- "Fresh Inspiration: Moodboard featuring natural textures..." → SKIP (moodboard)
+
+ONLY CLASSIFY AS PRODUCT IF:
+- Has a specific product name (UPPERCASE) AND
+- Has dimensions/specifications AND
+- Is NOT biography/factory/sustainability content
+
 RESPOND WITH JSON ONLY:
 {{
   "results": [
@@ -1211,7 +1269,7 @@ RESPOND WITH JSON ONLY:
   ]
 }}
 
-Focus on speed and accuracy. Skip index pages, sustainability content, and technical tables."""
+Focus on speed and accuracy. Be strict - when in doubt, mark as NOT a product."""
 
     def _build_stage2_enrichment_prompt(self, content: str, candidate: Dict[str, Any]) -> str:
         """Build prompt for Stage 2 deep enrichment with Claude Sonnet."""
@@ -1224,10 +1282,30 @@ STAGE 1 ANALYSIS:
 - Confidence: {candidate.get('confidence', 0)}
 - Initial Assessment: {candidate.get('reasoning', 'N/A')}
 
-PERFORM COMPREHENSIVE ANALYSIS:
+FIRST, VALIDATE THIS IS ACTUALLY A PRODUCT:
+- Does it have a specific product name (not just a designer/studio/factory name)?
+- Does it have dimensions or technical specifications?
+- Is this product content or designer biography/factory details/sustainability info?
+
+RED FLAGS (NOT PRODUCTS):
+- Designer biographies: "John Doe was born in...", "Studio founded in...", "Career began..."
+- Factory details: "Factory location...", "Production capacity...", "Manufacturing facility..."
+- Sustainability content: "Our commitment to environment...", "Carbon footprint...", "LEED certified..."
+- Technical specs only: Just tables of data without product names
+- Moodboards: "Fresh inspiration...", "Design philosophy...", "Mood board..."
+
+IF THIS IS NOT A PRODUCT (biography/factory/sustainability/etc.), RESPOND:
+{{
+  "is_valid_product": false,
+  "rejection_reason": "Designer biography / Factory details / Sustainability content / Technical specs only / Moodboard",
+  "confidence_score": 0.0,
+  "quality_assessment": "rejected"
+}}
+
+IF THIS IS A VALID PRODUCT, PERFORM COMPREHENSIVE ANALYSIS:
 
 1. PRODUCT IDENTIFICATION:
-   - Extract exact product name
+   - Extract exact product name (must be a product, not a person/place)
    - Identify product category/type
    - Determine collection/series
 
@@ -1238,8 +1316,8 @@ PERFORM COMPREHENSIVE ANALYSIS:
    - Technical properties
 
 3. DESIGN INFORMATION:
-   - Designer/studio name
-   - Design inspiration/story
+   - Designer/studio name (who designed it, not biography)
+   - Design inspiration/story (brief, not full biography)
    - Style characteristics
 
 4. METADATA:
@@ -1250,6 +1328,7 @@ PERFORM COMPREHENSIVE ANALYSIS:
 
 RESPOND WITH DETAILED JSON:
 {{
+  "is_valid_product": true,
   "product_name": "exact product name",
   "category": "product category",
   "collection": "collection name",
@@ -1264,7 +1343,7 @@ RESPOND WITH DETAILED JSON:
   "quality_assessment": "high/medium/low"
 }}
 
-Be thorough and accurate. Extract all available information."""
+Be thorough and accurate. REJECT non-product content. Extract all available information for valid products."""
 
     async def _call_claude_haiku(self, client, prompt: str) -> str:
         """Call Claude 4.5 Haiku for fast classification."""
@@ -1402,8 +1481,13 @@ Be thorough and accurate. Extract all available information."""
         try:
             data = self._extract_json_from_response(response)
 
+            # ✅ NEW: Check if Stage 2 rejected this as non-product
+            is_valid_product = data.get('is_valid_product', True)
+
             # Ensure required fields exist
             enrichment_data = {
+                'is_valid_product': is_valid_product,
+                'rejection_reason': data.get('rejection_reason'),
                 'product_name': data.get('product_name', 'Unknown Product'),
                 'category': data.get('category', 'Unknown'),
                 'collection': data.get('collection'),
@@ -1423,6 +1507,8 @@ Be thorough and accurate. Extract all available information."""
         except Exception as e:
             self.logger.error(f"Failed to parse Stage 2 results: {str(e)}")
             return {
+                'is_valid_product': False,
+                'rejection_reason': 'Parse error',
                 'product_name': 'Unknown Product',
                 'category': 'Unknown',
                 'confidence_score': 0.3,
@@ -1432,24 +1518,68 @@ Be thorough and accurate. Extract all available information."""
     def _validate_enrichment_quality(self, enrichment_data: Dict[str, Any]) -> bool:
         """Validate the quality of Stage 2 enrichment results."""
         try:
+            # ✅ NEW: Check if Stage 2 rejected this as non-product
+            is_valid_product = enrichment_data.get('is_valid_product', True)
+            if not is_valid_product:
+                rejection_reason = enrichment_data.get('rejection_reason', 'Unknown')
+                self.logger.warning(f"Stage 2 rejected as non-product: {rejection_reason}")
+                return False
+
             # Check minimum confidence threshold
             confidence = enrichment_data.get('confidence_score', 0)
             if confidence < 0.4:
+                self.logger.debug(f"Rejected: Low confidence ({confidence})")
                 return False
 
             # Check for required fields
             product_name = enrichment_data.get('product_name', '')
             if not product_name or product_name == 'Unknown Product':
+                self.logger.debug("Rejected: Missing or unknown product name")
+                return False
+
+            # ✅ NEW: Check product name is not a designer/studio name
+            designer_indicators = ['studio', 'design', 'architects', 'founded', 'established', 'atelier']
+            if any(indicator in product_name.lower() for indicator in designer_indicators):
+                self.logger.warning(f"Rejected: Product name looks like designer/studio: {product_name}")
                 return False
 
             # Check quality assessment
             quality = enrichment_data.get('quality_assessment', 'low')
-            if quality == 'low':
+            if quality == 'low' or quality == 'rejected':
+                self.logger.debug(f"Rejected: Low quality assessment ({quality})")
                 return False
 
             # Check for meaningful content
             description = enrichment_data.get('description', '')
             if len(description) < 20:
+                self.logger.debug("Rejected: Description too short")
+                return False
+
+            # ✅ NEW: Check description is not a biography
+            bio_indicators = [
+                'born in', 'graduated', 'founded in', 'career began', 'based in',
+                'studied at', 'education', 'professional background', 'years of experience'
+            ]
+            if any(indicator in description.lower() for indicator in bio_indicators):
+                self.logger.warning("Rejected: Description contains biography content")
+                return False
+
+            # ✅ NEW: Check for factory details in description
+            factory_indicators = [
+                'factory location', 'production capacity', 'manufacturing facility',
+                'plant location', 'headquarters', 'production site', 'industrial complex'
+            ]
+            if any(indicator in description.lower() for indicator in factory_indicators):
+                self.logger.warning("Rejected: Description contains factory details")
+                return False
+
+            # ✅ NEW: Check for sustainability content in description
+            sustainability_indicators = [
+                'our commitment to', 'environmental responsibility', 'carbon footprint',
+                'sustainability mission', 'green building', 'leed certification'
+            ]
+            if any(indicator in description.lower() for indicator in sustainability_indicators):
+                self.logger.warning("Rejected: Description contains sustainability content")
                 return False
 
             return True
