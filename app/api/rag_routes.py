@@ -492,13 +492,29 @@ async def create_products_background(
     job_id: str
 ):
     """
-    Background task to create products from chunks.
+    Background task to create products from chunks with checkpoint support.
     Runs separately to avoid blocking main PDF processing.
     """
     try:
         logger.info(f"🏭 Starting background product creation for document {document_id}")
         supabase_client = get_supabase_client()
         product_service = ProductCreationService(supabase_client)
+
+        # Create PRODUCTS_DETECTED checkpoint before detection
+        await checkpoint_recovery_service.create_checkpoint(
+            job_id=job_id,
+            stage=ProcessingStage.PRODUCTS_DETECTED,
+            data={
+                "document_id": document_id,
+                "workspace_id": workspace_id,
+                "detection_started": True
+            },
+            metadata={
+                "current_step": "Detecting product candidates",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        )
+        logger.info(f"✅ Created PRODUCTS_DETECTED checkpoint for job {job_id}")
 
         # Use layout-based product detection
         product_result = await product_service.create_products_from_layout_candidates(
@@ -510,6 +526,24 @@ async def create_products_background(
 
         products_created = product_result.get('products_created', 0)
         logger.info(f"✅ Background product creation completed: {products_created} products created")
+
+        # Create PRODUCTS_CREATED checkpoint after successful creation
+        await checkpoint_recovery_service.create_checkpoint(
+            job_id=job_id,
+            stage=ProcessingStage.PRODUCTS_CREATED,
+            data={
+                "document_id": document_id,
+                "products_created": products_created,
+                "product_ids": product_result.get('product_ids', [])
+            },
+            metadata={
+                "current_step": "Products created successfully",
+                "candidates_detected": product_result.get('candidates_detected', 0),
+                "validation_passed": product_result.get('validation_passed', 0),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        )
+        logger.info(f"✅ Created PRODUCTS_CREATED checkpoint for job {job_id}")
 
         # Update job metadata with product count (in-memory)
         if job_id in job_storage:
@@ -544,6 +578,24 @@ async def create_products_background(
 
     except Exception as e:
         logger.error(f"❌ Background product creation failed: {e}", exc_info=True)
+        # Create failed checkpoint
+        try:
+            await checkpoint_recovery_service.create_checkpoint(
+                job_id=job_id,
+                stage=ProcessingStage.PRODUCTS_DETECTED,
+                data={
+                    "document_id": document_id,
+                    "error": str(e),
+                    "failed": True
+                },
+                metadata={
+                    "current_step": "Product creation failed",
+                    "error_message": str(e),
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+            )
+        except:
+            pass  # Don't fail if checkpoint creation fails
 
 
 async def process_document_background(
@@ -706,9 +758,87 @@ async def process_document_background(
                 )
             logger.info(f"📊 Job {job_id} progress: {progress}% - {detailed_metadata.get('current_step', 'Processing')}")
 
-        # Process document through LlamaIndex service with progress tracking
+        # Process document through LlamaIndex service with progress tracking and granular checkpoints
         # Skip if resuming from a later checkpoint
         if not resume_from_stage or resume_from_stage == ProcessingStage.INITIALIZED:
+            # Enhanced progress callback that creates checkpoints at each stage
+            async def enhanced_progress_callback(progress: int, details: dict = None):
+                """Enhanced progress callback with checkpoint creation"""
+                await update_progress(progress, details)
+
+                # Create checkpoints at specific progress milestones
+                current_step = details.get('current_step', '') if details else ''
+
+                # PDF_EXTRACTED checkpoint (after PDF extraction - 20%)
+                if progress == 20 and 'Extracting text and images' in current_step:
+                    await checkpoint_recovery_service.create_checkpoint(
+                        job_id=job_id,
+                        stage=ProcessingStage.PDF_EXTRACTED,
+                        data={
+                            "document_id": document_id,
+                            "total_pages": details.get('total_pages', 0) if details else 0
+                        },
+                        metadata={
+                            "current_step": current_step,
+                            "timestamp": datetime.utcnow().isoformat()
+                        }
+                    )
+                    logger.info(f"✅ Created PDF_EXTRACTED checkpoint for job {job_id}")
+
+                # CHUNKS_CREATED checkpoint (after chunking - 40%)
+                elif progress == 40 and 'Creating semantic chunks' in current_step:
+                    await checkpoint_recovery_service.create_checkpoint(
+                        job_id=job_id,
+                        stage=ProcessingStage.CHUNKS_CREATED,
+                        data={
+                            "document_id": document_id,
+                            "total_pages": details.get('total_pages', 0) if details else 0,
+                            "images_extracted": details.get('images_extracted', 0) if details else 0
+                        },
+                        metadata={
+                            "current_step": current_step,
+                            "timestamp": datetime.utcnow().isoformat()
+                        }
+                    )
+                    logger.info(f"✅ Created CHUNKS_CREATED checkpoint for job {job_id}")
+
+                # TEXT_EMBEDDINGS_GENERATED checkpoint (after embeddings - 60%)
+                elif progress == 60 and 'Generating embeddings' in current_step:
+                    await checkpoint_recovery_service.create_checkpoint(
+                        job_id=job_id,
+                        stage=ProcessingStage.TEXT_EMBEDDINGS_GENERATED,
+                        data={
+                            "document_id": document_id,
+                            "chunks_created": details.get('chunks_created', 0) if details else 0,
+                            "total_pages": details.get('total_pages', 0) if details else 0,
+                            "images_extracted": details.get('images_extracted', 0) if details else 0
+                        },
+                        metadata={
+                            "current_step": current_step,
+                            "text_embeddings": details.get('text_embeddings', 0) if details else 0,
+                            "openai_calls": details.get('openai_calls', 0) if details else 0,
+                            "timestamp": datetime.utcnow().isoformat()
+                        }
+                    )
+                    logger.info(f"✅ Created TEXT_EMBEDDINGS_GENERATED checkpoint for job {job_id}")
+
+                # IMAGES_EXTRACTED checkpoint (after image processing - 80%)
+                elif progress == 80 and 'Processing images' in current_step:
+                    await checkpoint_recovery_service.create_checkpoint(
+                        job_id=job_id,
+                        stage=ProcessingStage.IMAGES_EXTRACTED,
+                        data={
+                            "document_id": document_id,
+                            "chunks_created": details.get('chunks_created', 0) if details else 0,
+                            "images_extracted": details.get('images_extracted', 0) if details else 0
+                        },
+                        metadata={
+                            "current_step": current_step,
+                            "timestamp": datetime.utcnow().isoformat()
+                        }
+                    )
+                    logger.info(f"✅ Created IMAGES_EXTRACTED checkpoint for job {job_id}")
+
             processing_result = await llamaindex_service.index_document_content(
                 file_content=file_content,
                 document_id=document_id,
@@ -723,12 +853,30 @@ async def process_document_background(
                 },
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
-                progress_callback=update_progress
+                progress_callback=enhanced_progress_callback
             )
 
-            # Create checkpoint after successful processing
+            # Create IMAGE_EMBEDDINGS_GENERATED checkpoint after CLIP embeddings
             chunks_created = processing_result.get('statistics', {}).get('total_chunks', 0)
             images_extracted = processing_result.get('statistics', {}).get('images_extracted', 0)
+            clip_embeddings = processing_result.get('statistics', {}).get('clip_embeddings_generated', 0)
+
+            if clip_embeddings > 0:
+                await checkpoint_recovery_service.create_checkpoint(
+                    job_id=job_id,
+                    stage=ProcessingStage.IMAGE_EMBEDDINGS_GENERATED,
+                    data={
+                        "document_id": document_id,
+                        "chunks_created": chunks_created,
+                        "images_extracted": images_extracted,
+                        "clip_embeddings": clip_embeddings
+                    },
+                    metadata={
+                        "current_step": "CLIP embeddings generated",
+                        "timestamp": datetime.utcnow().isoformat()
+                    }
+                )
+                logger.info(f"✅ Created IMAGE_EMBEDDINGS_GENERATED checkpoint for job {job_id}")
 
             if processing_result.get('status') == 'success':
                 # Create COMPLETED checkpoint with all processing data
@@ -740,7 +888,7 @@ async def process_document_background(
                         "chunks_created": chunks_created,
                         "images_extracted": images_extracted,
                         "embeddings_generated": processing_result.get('statistics', {}).get('database_embeddings_stored', 0),
-                        "clip_embeddings": processing_result.get('statistics', {}).get('clip_embeddings_generated', 0)
+                        "clip_embeddings": clip_embeddings
                     },
                     metadata={
                         "processing_time": (datetime.utcnow() - start_time).total_seconds(),
@@ -757,7 +905,8 @@ async def process_document_background(
                 'statistics': {
                     'total_chunks': checkpoint_data.get('chunks_created', 0),
                     'images_extracted': checkpoint_data.get('images_extracted', 0),
-                    'database_embeddings_stored': checkpoint_data.get('embeddings_generated', 0)
+                    'database_embeddings_stored': checkpoint_data.get('embeddings_generated', 0),
+                    'clip_embeddings_generated': checkpoint_data.get('clip_embeddings', 0)
                 }
             }
 
