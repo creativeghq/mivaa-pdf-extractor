@@ -445,11 +445,29 @@ async def upload_document_async(
 @router.get("/documents/job/{job_id}")
 async def get_job_status(job_id: str):
     """
-    Get the status of an async document processing job.
+    Get the status of an async document processing job with checkpoint information.
+
+    Returns:
+        - Job status and progress
+        - Latest checkpoint information
+        - Detailed metadata including AI usage, chunks, images, products
     """
     # Check in-memory storage first
     if job_id in job_storage:
         job_data = job_storage[job_id]
+
+        # Enhance with checkpoint information
+        try:
+            last_checkpoint = await checkpoint_recovery_service.get_last_checkpoint(job_id)
+            if last_checkpoint:
+                job_data["last_checkpoint"] = {
+                    "stage": last_checkpoint.get('stage'),
+                    "created_at": last_checkpoint.get('created_at'),
+                    "data": last_checkpoint.get('checkpoint_data', {})
+                }
+        except Exception as e:
+            logger.error(f"Failed to get checkpoint for job {job_id}: {e}")
+
         return JSONResponse(content=job_data)
 
     # Check database for background_jobs
@@ -462,15 +480,31 @@ async def get_job_status(job_id: str):
         if response.data and len(response.data) > 0:
             job = response.data[0]
             logger.info(f"✅ Found job in database: {job['id']}, status={job['status']}")
-            return JSONResponse(content={
+
+            job_response = {
                 "job_id": job['id'],
                 "status": job['status'],
                 "document_id": job.get('document_id'),
                 "progress": job.get('progress', 0),
                 "error": job.get('error'),
+                "metadata": job.get('metadata', {}),
                 "created_at": job.get('created_at'),
                 "updated_at": job.get('updated_at')
-            })
+            }
+
+            # Add checkpoint information
+            try:
+                last_checkpoint = await checkpoint_recovery_service.get_last_checkpoint(job_id)
+                if last_checkpoint:
+                    job_response["last_checkpoint"] = {
+                        "stage": last_checkpoint.get('stage'),
+                        "created_at": last_checkpoint.get('created_at'),
+                        "data": last_checkpoint.get('checkpoint_data', {})
+                    }
+            except Exception as e:
+                logger.error(f"Failed to get checkpoint for job {job_id}: {e}")
+
+            return JSONResponse(content=job_response)
         else:
             logger.warning(f"⚠️ Job {job_id} not found in database")
     except Exception as e:
@@ -480,6 +514,92 @@ async def get_job_status(job_id: str):
         status_code=status.HTTP_404_NOT_FOUND,
         detail=f"Job {job_id} not found"
     )
+
+
+@router.get("/jobs/{job_id}/checkpoints")
+async def get_job_checkpoints(job_id: str):
+    """
+    Get all checkpoints for a job.
+
+    Returns:
+        - List of all checkpoints with stage, data, and metadata
+        - Checkpoint count
+        - Processing timeline
+    """
+    try:
+        checkpoints = await checkpoint_recovery_service.get_all_checkpoints(job_id)
+
+        return JSONResponse(content={
+            "job_id": job_id,
+            "checkpoints": checkpoints,
+            "count": len(checkpoints),
+            "stages_completed": [cp.get('stage') for cp in checkpoints]
+        })
+    except Exception as e:
+        logger.error(f"Failed to get checkpoints for job {job_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve checkpoints: {str(e)}"
+        )
+
+
+@router.post("/jobs/{job_id}/restart")
+async def restart_job_from_checkpoint(job_id: str):
+    """
+    Manually restart a job from its last checkpoint.
+
+    This endpoint allows manual recovery of stuck or failed jobs.
+    The job will resume from the last successful checkpoint.
+    """
+    try:
+        # Get last checkpoint
+        last_checkpoint = await checkpoint_recovery_service.get_last_checkpoint(job_id)
+
+        if not last_checkpoint:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No checkpoint found for job {job_id}"
+            )
+
+        # Verify checkpoint data exists
+        resume_stage = last_checkpoint.get('stage')
+        can_resume = await checkpoint_recovery_service.verify_checkpoint_data(job_id, resume_stage)
+
+        if not can_resume:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Checkpoint data verification failed for stage {resume_stage}"
+            )
+
+        # Mark job for restart
+        supabase_client = get_supabase_client()
+        supabase_client.client.table('background_jobs').update({
+            "status": "pending_restart",
+            "metadata": {
+                "restart_from_stage": resume_stage,
+                "restart_reason": "manual_restart",
+                "restart_at": datetime.utcnow().isoformat()
+            }
+        }).eq('id', job_id).execute()
+
+        logger.info(f"✅ Job {job_id} marked for restart from {resume_stage}")
+
+        return JSONResponse(content={
+            "success": True,
+            "message": f"Job will restart from checkpoint: {resume_stage}",
+            "job_id": job_id,
+            "restart_stage": resume_stage,
+            "checkpoint_data": last_checkpoint.get('checkpoint_data', {})
+        })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to restart job {job_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to restart job: {str(e)}"
+        )
 
 
 # REMOVED: Duplicate endpoint - use /api/admin/jobs/{job_id}/status instead
