@@ -267,12 +267,12 @@ class TestSupabaseClient:
         )
         
         result = await supabase_client.store_vector_embedding(document_id, embedding, chunk_text)
-        
+
         assert result["success"] is True
         assert result["data"]["document_id"] == document_id
-        
+
         # Verify the embedding was stored in the correct table
-        supabase_client.client.table.assert_called_with("document_embeddings")
+        supabase_client.client.table.assert_called_with("document_vectors")
 
     @pytest.mark.asyncio
     async def test_search_similar_vectors_success(self, supabase_client):

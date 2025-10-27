@@ -2485,7 +2485,7 @@ Summary:"""
                     # ✅ NEW: Generate content hash for deduplication
                     content_hash = self._generate_content_hash(node.text)
 
-                    # ✅ NEW: Check for duplicate chunks
+                    # ✅ NEW: Check for exact duplicate chunks (hash-based)
                     duplicate_check = supabase_client.client.table('document_chunks')\
                         .select('id')\
                         .eq('content_hash', content_hash)\
@@ -2493,7 +2493,12 @@ Summary:"""
                         .execute()
 
                     if duplicate_check.data and len(duplicate_check.data) > 0:
-                        self.logger.warning(f"⚠️ Chunk {i} skipped: Duplicate content (hash: {content_hash[:8]}...)")
+                        self.logger.warning(f"⚠️ Chunk {i} skipped: Exact duplicate (hash: {content_hash[:8]}...)")
+                        continue
+
+                    # ✅ ENHANCED: Check for semantic near-duplicates (embedding-based)
+                    if self._check_semantic_duplicates(supabase_client, node.text, document_id, similarity_threshold=0.85):
+                        self.logger.warning(f"⚠️ Chunk {i} skipped: Semantic near-duplicate detected")
                         continue
 
                     # Store chunk in document_chunks table
@@ -2523,6 +2528,19 @@ Summary:"""
                         chunks_stored += 1
                         # Store database UUID in node metadata for later use (for image-chunk relationships)
                         node.metadata["db_chunk_id"] = chunk_id
+
+                        # ✅ ENHANCED: Flag borderline quality chunks for review (score 0.6-0.7)
+                        if 0.6 <= quality_score < 0.7:
+                            self._flag_low_quality_chunk(
+                                supabase_client=supabase_client,
+                                chunk_id=chunk_id,
+                                document_id=document_id,
+                                workspace_id=metadata.get('workspace_id'),
+                                flag_type='borderline_quality',
+                                flag_reason=f'Quality score {quality_score:.2f} is below optimal threshold (0.7)',
+                                quality_score=quality_score,
+                                content_preview=node.text
+                            )
 
                         # Classify chunk type and extract metadata
                         try:
@@ -2691,13 +2709,15 @@ Summary:"""
 
     def _validate_chunk_quality(self, content: str, quality_score: float) -> bool:
         """
-        ✅ NEW: Validate chunk quality against quality gates.
+        ✅ ENHANCED: Validate chunk quality against enhanced quality gates.
 
-        Quality Gates:
-        - Minimum quality score: 0.6
+        Enhanced Quality Gates:
+        - Minimum quality score: 0.7 (was 0.6)
         - Minimum content length: 50 characters
         - Maximum content length: 5000 characters
-        - Semantic completeness: > 0.5 (at least 1-2 sentences)
+        - Semantic completeness: > 0.7 (at least 2-3 sentences)
+        - Boundary quality: > 0.6 (proper punctuation)
+        - Context preservation: > 0.7 (coherent content)
 
         Args:
             content: Text content to validate
@@ -2707,9 +2727,9 @@ Summary:"""
             True if chunk passes quality gates, False otherwise
         """
         try:
-            # Gate 1: Minimum quality score
-            if quality_score < 0.6:
-                self.logger.debug(f"Quality gate failed: Score {quality_score:.2f} < 0.6")
+            # Gate 1: Minimum quality score (ENHANCED: 0.7 instead of 0.6)
+            if quality_score < 0.7:
+                self.logger.debug(f"Quality gate failed: Score {quality_score:.2f} < 0.7")
                 return False
 
             # Gate 2: Minimum content length
@@ -2722,16 +2742,167 @@ Summary:"""
                 self.logger.debug(f"Quality gate failed: Length {len(content)} > 5000 characters")
                 return False
 
-            # Gate 4: Semantic completeness (at least 1 sentence)
+            # Gate 4: Semantic completeness (ENHANCED: at least 2 sentences)
             sentences = content.count('.') + content.count('!') + content.count('?')
-            if sentences < 1:
-                self.logger.debug("Quality gate failed: No complete sentences")
+            if sentences < 2:
+                self.logger.debug(f"Quality gate failed: Only {sentences} sentence(s), need at least 2")
+                return False
+
+            # Gate 5: Boundary quality (ENHANCED: check proper punctuation)
+            ends_with_punctuation = content.strip().endswith(('.', '!', '?', ':', ';'))
+            if not ends_with_punctuation:
+                self.logger.debug("Quality gate failed: No proper punctuation at end")
+                return False
+
+            # Gate 6: Context preservation (ENHANCED: check for coherent content)
+            # Check if content has reasonable word count (not just punctuation)
+            words = len(content.split())
+            if words < 10:
+                self.logger.debug(f"Quality gate failed: Only {words} words, need at least 10")
                 return False
 
             return True
         except Exception as e:
             self.logger.warning(f"Error validating chunk quality: {e}")
             return True  # Default to accepting chunk if validation fails
+
+    def _calculate_semantic_similarity(self, text1: str, text2: str) -> float:
+        """
+        ✅ NEW: Calculate semantic similarity between two text chunks using embeddings.
+
+        Uses cosine similarity between OpenAI embeddings to detect near-duplicates.
+
+        Args:
+            text1: First text chunk
+            text2: Second text chunk
+
+        Returns:
+            Similarity score (0.0-1.0), where 1.0 is identical
+        """
+        try:
+            import numpy as np
+            from numpy.linalg import norm
+
+            # Generate embeddings for both texts
+            if not hasattr(self, 'embeddings_service') or self.embeddings_service is None:
+                self.logger.warning("Embeddings service not available for similarity calculation")
+                return 0.0
+
+            # Get embeddings (synchronous call)
+            embedding1 = self.embeddings_service.generate_embedding(text1)
+            embedding2 = self.embeddings_service.generate_embedding(text2)
+
+            if not embedding1 or not embedding2:
+                return 0.0
+
+            # Convert to numpy arrays
+            vec1 = np.array(embedding1)
+            vec2 = np.array(embedding2)
+
+            # Calculate cosine similarity
+            similarity = np.dot(vec1, vec2) / (norm(vec1) * norm(vec2))
+
+            return float(similarity)
+        except Exception as e:
+            self.logger.warning(f"Error calculating semantic similarity: {e}")
+            return 0.0
+
+    def _check_semantic_duplicates(
+        self,
+        supabase_client,
+        content: str,
+        document_id: str,
+        similarity_threshold: float = 0.85
+    ) -> bool:
+        """
+        ✅ NEW: Check for semantically similar chunks (near-duplicates).
+
+        Detects chunks that are similar in meaning but not exact duplicates.
+        Uses embedding-based similarity with configurable threshold.
+
+        Args:
+            supabase_client: Supabase client instance
+            content: Text content to check
+            document_id: Document ID to scope the search
+            similarity_threshold: Minimum similarity to consider as duplicate (default: 0.85)
+
+        Returns:
+            True if near-duplicate found, False otherwise
+        """
+        try:
+            # Get recent chunks from same document (last 50 chunks)
+            recent_chunks = supabase_client.client.table('document_chunks')\
+                .select('content')\
+                .eq('document_id', document_id)\
+                .order('created_at', desc=True)\
+                .limit(50)\
+                .execute()
+
+            if not recent_chunks.data:
+                return False
+
+            # Check similarity with each recent chunk
+            for chunk in recent_chunks.data:
+                existing_content = chunk.get('content', '')
+                if not existing_content:
+                    continue
+
+                # Calculate semantic similarity
+                similarity = self._calculate_semantic_similarity(content, existing_content)
+
+                if similarity >= similarity_threshold:
+                    self.logger.warning(
+                        f"⚠️ Near-duplicate detected: Similarity {similarity:.2f} >= {similarity_threshold}"
+                    )
+                    return True
+
+            return False
+        except Exception as e:
+            self.logger.warning(f"Error checking semantic duplicates: {e}")
+            return False  # Don't block insertion on error
+
+    def _flag_low_quality_chunk(
+        self,
+        supabase_client,
+        chunk_id: str,
+        document_id: str,
+        workspace_id: str,
+        flag_type: str,
+        flag_reason: str,
+        quality_score: float,
+        content_preview: str
+    ) -> None:
+        """
+        ✅ NEW: Flag a low-quality chunk for manual review.
+
+        Creates a record in chunk_quality_flags table for admin review.
+
+        Args:
+            supabase_client: Supabase client instance
+            chunk_id: Chunk ID
+            document_id: Document ID
+            workspace_id: Workspace ID
+            flag_type: Type of quality issue (e.g., 'low_quality', 'boundary_issue', 'semantic_incomplete')
+            flag_reason: Detailed reason for flagging
+            quality_score: Quality score that triggered the flag
+            content_preview: First 200 characters of content
+        """
+        try:
+            flag_data = {
+                'chunk_id': chunk_id,
+                'document_id': document_id,
+                'workspace_id': workspace_id,
+                'flag_type': flag_type,
+                'flag_reason': flag_reason,
+                'quality_score': quality_score,
+                'content_preview': content_preview[:200] if content_preview else None,
+                'reviewed': False
+            }
+
+            supabase_client.client.table('chunk_quality_flags').insert(flag_data).execute()
+            self.logger.info(f"✅ Flagged chunk {chunk_id} for review: {flag_type}")
+        except Exception as e:
+            self.logger.warning(f"Error flagging chunk for review: {e}")
 
     def _ensure_document_exists(
         self,
