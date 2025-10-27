@@ -3054,12 +3054,12 @@ Summary:"""
                         'quality_metrics': image_info.get('quality_metrics', {}),
                         'ocr_extracted_text': image_info.get('ocr_result', {}).get('text', ''),
                         'ocr_confidence_score': image_info.get('ocr_result', {}).get('confidence', 0.0),
-                        'image_analysis_results': material_analysis or {},
+                        'image_analysis_results': material_analysis.get('material_properties', {}) or {},
                         'image_embedding': clip_embeddings.get('embedding_512'),  # pgvector column
 
                         # AI Analysis Columns
-                        'claude_validation': material_analysis,  # Claude Haiku 4.5 material analysis
-                        'llama_analysis': None,  # Llama used for product extraction, not individual images
+                        'claude_validation': material_analysis.get('claude_validation'),  # Claude 4.5 Sonnet validation
+                        'llama_analysis': material_analysis.get('llama_analysis'),  # Llama 4 Scout 17B Vision analysis
                         'visual_clip_embedding_512': clip_embeddings.get('embedding_512'),  # CLIP 512D
                         'color_embedding_256': clip_embeddings.get('color_embedding'),  # Color 256D
                         'texture_embedding_256': clip_embeddings.get('texture_embedding'),  # Texture 256D
@@ -3092,8 +3092,13 @@ Summary:"""
                             'processing_timestamp': image_info.get('processing_timestamp', '')
                         },
                         'analysis_metadata': {
-                            'material_analysis': material_analysis,
-                            'clip_processing_time_ms': clip_embeddings.get('processing_time_ms', 0)
+                            'material_analysis': material_analysis.get('material_properties', {}),
+                            'clip_processing_time_ms': clip_embeddings.get('processing_time_ms', 0),
+                            'llama_processing_time_ms': material_analysis.get('processing_time_ms', 0),
+                            'analysis_method': material_analysis.get('analysis_method', 'unknown'),
+                            'quality_score': material_analysis.get('quality_score', 0.0),
+                            'confidence_score': material_analysis.get('confidence_score', 0.0),
+                            'timestamp': material_analysis.get('timestamp', '')
                         }
                     }
 
@@ -3604,48 +3609,36 @@ Summary:"""
             return {}
 
     async def _analyze_image_material(self, image_base64: str, image_path: str) -> Dict[str, Any]:
-        """Analyze image for material properties using Claude Vision API."""
+        """Analyze image for material properties using Llama 4 Scout + Claude 4.5 in parallel."""
         try:
             self.logger.info(f"🔬 Analyzing material properties for image: {os.path.basename(image_path)}")
 
-            # Use existing Claude image validation service directly
-            analysis_result = await self._call_claude_image_analysis(image_base64, image_path)
+            # Use RealImageAnalysisService for dual-model analysis (Llama + Claude)
+            from .real_image_analysis_service import RealImageAnalysisService
 
-            if analysis_result and analysis_result.get('success'):
-                # Extract material properties from Claude analysis
-                claude_data = analysis_result.get('analysis', {})
+            analysis_service = RealImageAnalysisService()
 
-                material_properties = {
-                    "material_type": claude_data.get('material_type', 'unknown'),
-                    "properties": {
-                        "color": claude_data.get('color', 'unknown'),
-                        "texture": claude_data.get('texture', 'unknown'),
-                        "finish": claude_data.get('finish', 'unknown'),
-                        "pattern": claude_data.get('pattern', 'unknown'),
-                        "composition": claude_data.get('composition', {}),
-                        "mechanical_properties": claude_data.get('mechanical_properties', {}),
-                        "thermal_properties": claude_data.get('thermal_properties', {}),
-                        "safety_ratings": claude_data.get('safety_ratings', {})
-                    },
-                    "confidence": claude_data.get('confidence', 0.0),
-                    "analysis_method": "claude_vision_api",
-                    "processing_time_ms": analysis_result.get('processing_time_ms', 0),
-                    "extracted_features": claude_data.get('extracted_features', {}),
-                    "classification_scores": claude_data.get('classification_scores', {}),
-                    "quality_score": claude_data.get('quality_score', 0.0),
-                    "validation_status": claude_data.get('validation_status', 'unknown')
-                }
+            # Analyze image using both Llama 4 Scout and Claude 4.5 in parallel
+            result = await analysis_service.analyze_image_from_base64(
+                image_base64=image_base64,
+                image_id=os.path.basename(image_path),
+                context={}
+            )
 
-                self.logger.info(f"✅ Claude material analysis complete: {material_properties['material_type']} (confidence: {material_properties['confidence']:.3f})")
-                return material_properties
-
-            else:
-                self.logger.warning(f"Claude material analysis failed or returned no results")
-                # Fallback to basic analysis
-                return await self._fallback_material_analysis(image_base64, image_path)
+            # Return comprehensive analysis with both models' results
+            return {
+                'llama_analysis': result.llama_analysis,
+                'claude_validation': result.claude_validation,
+                'material_properties': result.material_properties,
+                'quality_score': result.quality_score,
+                'confidence_score': result.confidence_score,
+                'processing_time_ms': result.processing_time_ms,
+                'analysis_method': 'llama_claude_dual_vision',
+                'timestamp': result.timestamp
+            }
 
         except Exception as e:
-            self.logger.error(f"Failed to analyze image material with Claude: {e}")
+            self.logger.error(f"Failed to analyze image material with Llama + Claude: {e}")
             # Fallback: Try direct HTTP call to material analysis endpoint
             try:
                 return await self._fallback_material_analysis(image_base64, image_path)

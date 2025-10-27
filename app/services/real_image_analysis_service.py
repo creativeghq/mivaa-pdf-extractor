@@ -153,6 +153,96 @@ class RealImageAnalysisService:
             self.logger.error(f"❌ Image analysis failed: {e}")
             raise
     
+    async def analyze_image_from_base64(
+        self,
+        image_base64: str,
+        image_id: str,
+        context: Optional[Dict[str, Any]] = None
+    ) -> ImageAnalysisResult:
+        """
+        Perform real image analysis using vision models and CLIP from base64 data.
+
+        This method is optimized for cases where the image is already in memory
+        (e.g., during PDF processing) and avoids unnecessary network downloads.
+
+        Args:
+            image_base64: Base64-encoded image data
+            image_id: Unique image identifier
+            context: Optional context for analysis
+
+        Returns:
+            ImageAnalysisResult with real analysis data
+        """
+        start_time = datetime.now()
+
+        try:
+            self.logger.info(f"🖼️ Starting real image analysis from base64 for {image_id}")
+
+            # Step 1: Run parallel analysis (no download needed)
+            llama_task = self._analyze_with_llama(image_base64, context)
+            claude_task = self._analyze_with_claude_base64(image_base64, context)
+            clip_task = self._generate_clip_embedding(image_base64)
+
+            llama_result, claude_result, clip_embedding = await asyncio.gather(
+                llama_task,
+                claude_task,
+                clip_task,
+                return_exceptions=True
+            )
+
+            # Handle errors
+            if isinstance(llama_result, Exception):
+                self.logger.error(f"Llama analysis failed: {llama_result}")
+                llama_result = {"error": str(llama_result)}
+            if isinstance(claude_result, Exception):
+                self.logger.error(f"Claude analysis failed: {claude_result}")
+                claude_result = {"error": str(claude_result)}
+            if isinstance(clip_embedding, Exception):
+                self.logger.error(f"CLIP embedding failed: {clip_embedding}")
+                clip_embedding = []
+
+            # Step 2: Extract material properties
+            material_properties = self._extract_material_properties(
+                llama_result,
+                claude_result
+            )
+
+            # Step 3: Calculate real quality score
+            quality_score = self._calculate_quality_score(
+                llama_result,
+                claude_result,
+                clip_embedding,
+                material_properties
+            )
+
+            # Step 4: Calculate confidence
+            confidence_score = self._calculate_confidence(
+                llama_result,
+                claude_result,
+                material_properties
+            )
+
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+
+            result = ImageAnalysisResult(
+                image_id=image_id,
+                llama_analysis=llama_result,
+                claude_validation=claude_result,
+                clip_embedding=clip_embedding,
+                material_properties=material_properties,
+                quality_score=quality_score,
+                confidence_score=confidence_score,
+                processing_time_ms=processing_time,
+                timestamp=datetime.utcnow().isoformat()
+            )
+
+            self.logger.info(f"✅ Image analysis complete: quality={quality_score:.2f}, confidence={confidence_score:.2f}")
+            return result
+
+        except Exception as e:
+            self.logger.error(f"❌ Image analysis failed: {e}")
+            raise
+
     async def _download_image(self, image_url: str) -> bytes:
         """Download image from URL"""
         async with httpx.AsyncClient() as client:
@@ -388,7 +478,93 @@ Respond ONLY with valid JSON, no additional text."""
         except Exception as e:
             self.logger.error(f"Claude analysis failed: {e}")
             raise RuntimeError(f"Claude 4.5 Sonnet Vision analysis failed: {str(e)}") from e
-    
+
+    async def _analyze_with_claude_base64(
+        self,
+        image_base64: str,
+        context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Analyze image with Claude 4.5 Sonnet Vision from base64 data"""
+        try:
+            if not ANTHROPIC_API_KEY:
+                raise ValueError("ANTHROPIC_API_KEY not set - cannot perform Claude vision analysis")
+
+            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+            prompt = """Validate and analyze this material/product image. Provide response in JSON format:
+{
+  "quality_assessment": {
+    "clarity": <0.0-1.0>,
+    "lighting": <0.0-1.0>,
+    "composition": <0.0-1.0>,
+    "overall_quality": <0.0-1.0>
+  },
+  "material_classification": {
+    "primary_material": "<material>",
+    "secondary_materials": ["<material1>", "<material2>"],
+    "confidence": <0.0-1.0>
+  },
+  "visual_properties": {
+    "surface_finish": "<finish type>",
+    "color_palette": ["<color1>", "<color2>"],
+    "pattern_type": "<pattern>"
+  },
+  "recommendations": ["<recommendation1>", "<recommendation2>"],
+  "confidence": <0.0-1.0>
+}"""
+
+            # Call Claude Vision API with base64 image
+            response = client.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=1024,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": image_base64
+                                }
+                            },
+                            {
+                                "type": "text",
+                                "text": prompt
+                            }
+                        ]
+                    }
+                ]
+            )
+
+            content = response.content[0].text.strip()
+
+            try:
+                # Handle Claude's tendency to add extra text after JSON
+                # Find the last closing brace to extract only the JSON portion
+                last_brace = content.rfind('}')
+                if last_brace != -1:
+                    json_text = content[:last_brace + 1]
+                    validation = json.loads(json_text)
+                else:
+                    # No JSON found, raise error
+                    raise json.JSONDecodeError("No JSON object found", content, 0)
+
+                return {
+                    "model": "claude-3-5-sonnet-20241022",
+                    "validation": validation,
+                    "success": True
+                }
+            except json.JSONDecodeError as e:
+                self.logger.error(f"Failed to parse Claude response as JSON: {e}")
+                self.logger.debug(f"Raw response (first 500 chars): {content[:500]}")
+                raise RuntimeError(f"Claude returned invalid JSON: {e}")
+
+        except Exception as e:
+            self.logger.error(f"Claude analysis failed: {e}")
+            raise RuntimeError(f"Claude 4.5 Sonnet Vision analysis failed: {str(e)}") from e
+
     async def _generate_clip_embedding(self, image_base64: str) -> List[float]:
         """Generate CLIP embedding for image using MIVAA gateway"""
         try:
