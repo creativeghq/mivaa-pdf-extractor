@@ -188,52 +188,131 @@ class RealQualityScoringService:
         product_data: Dict[str, Any]
     ) -> Tuple[float, Dict[str, Any]]:
         """
-        Calculate real product quality score based on actual data.
-        
+        ✅ ENHANCED: Calculate real product quality score with granular metrics.
+
         Args:
             product_data: Product data from database
-            
+
         Returns:
             Tuple of (quality_score, detailed_metrics)
         """
         try:
             metrics = {}
-            
-            # 1. Metadata Completeness (0-1)
+
+            # 1. ✅ ENHANCED: Metadata Completeness with quality assessment (0-1)
             metadata_score = 0.0
-            if product_data.get('name'):
-                metadata_score += 0.25
-            if product_data.get('description'):
-                metadata_score += 0.25
-            if product_data.get('long_description'):
-                metadata_score += 0.25
-            if product_data.get('properties'):
-                metadata_score += 0.25
-            metrics['metadata_completeness'] = metadata_score
-            
-            # 2. Material Properties (0-1)
+            name = product_data.get('name', '')
+            description = product_data.get('description', '')
+            long_description = product_data.get('long_description', '')
             properties = product_data.get('properties', {})
-            properties_score = min(1.0, len(properties) / 5)  # 5 properties = 1.0
+
+            # Name quality (0-0.25)
+            if name:
+                name_length = len(name)
+                if name_length >= 10:  # Good descriptive name
+                    metadata_score += 0.25
+                elif name_length >= 5:  # Acceptable name
+                    metadata_score += 0.15
+                else:  # Short name
+                    metadata_score += 0.10
+
+            # Description quality (0-0.25)
+            if description:
+                desc_length = len(description)
+                if desc_length >= 200:  # Detailed description
+                    metadata_score += 0.25
+                elif desc_length >= 100:  # Good description
+                    metadata_score += 0.20
+                elif desc_length >= 50:  # Basic description
+                    metadata_score += 0.15
+                else:  # Minimal description
+                    metadata_score += 0.10
+
+            # Long description quality (0-0.25)
+            if long_description:
+                long_desc_length = len(long_description)
+                if long_desc_length >= 500:  # Comprehensive
+                    metadata_score += 0.25
+                elif long_desc_length >= 300:  # Detailed
+                    metadata_score += 0.20
+                elif long_desc_length >= 150:  # Good
+                    metadata_score += 0.15
+                else:  # Basic
+                    metadata_score += 0.10
+
+            # Properties presence (0-0.25)
+            if properties and len(properties) > 0:
+                metadata_score += 0.25
+
+            metrics['metadata_completeness'] = min(1.0, metadata_score)
+
+            # 2. ✅ ENHANCED: Material Properties with diversity assessment (0-1)
+            properties_score = 0.0
+            if properties:
+                # Count non-empty, non-unknown properties
+                valid_properties = [
+                    v for v in properties.values()
+                    if v and str(v).lower() not in ['unknown', 'n/a', 'none', '']
+                ]
+
+                # Score based on number and quality of properties
+                num_valid = len(valid_properties)
+                if num_valid >= 8:  # Comprehensive properties
+                    properties_score = 1.0
+                elif num_valid >= 6:  # Good properties
+                    properties_score = 0.85
+                elif num_valid >= 4:  # Acceptable properties
+                    properties_score = 0.70
+                elif num_valid >= 2:  # Minimal properties
+                    properties_score = 0.50
+                elif num_valid >= 1:  # Very minimal
+                    properties_score = 0.30
+
             metrics['material_properties'] = properties_score
-            
+
             # 3. Embedding Coverage (0-1)
             embedding_coverage = self._calculate_product_embedding_coverage(product_data)
             metrics['embedding_coverage'] = embedding_coverage
-            
-            # 4. Related Images (0-1)
+
+            # 4. ✅ ENHANCED: Related Images with diversity assessment (0-1)
             related_images = product_data.get('metadata', {}).get('related_images', [])
-            images_score = min(1.0, len(related_images) / 3)  # 3+ images = 1.0
+            images_score = 0.0
+            if related_images:
+                num_images = len(related_images)
+                if num_images >= 5:  # Excellent image coverage
+                    images_score = 1.0
+                elif num_images >= 3:  # Good image coverage
+                    images_score = 0.80
+                elif num_images >= 2:  # Acceptable
+                    images_score = 0.60
+                elif num_images >= 1:  # Minimal
+                    images_score = 0.40
+
             metrics['related_images'] = images_score
-            
-            # 5. Related Products (0-1)
+
+            # 5. ✅ ENHANCED: Related Products (0-1)
             related_products = product_data.get('metadata', {}).get('related_products', [])
-            products_score = min(1.0, len(related_products) / 3)  # 3+ products = 1.0
+            products_score = 0.0
+            if related_products:
+                num_products = len(related_products)
+                if num_products >= 5:  # Excellent relationships
+                    products_score = 1.0
+                elif num_products >= 3:  # Good relationships
+                    products_score = 0.75
+                elif num_products >= 2:  # Some relationships
+                    products_score = 0.50
+                elif num_products >= 1:  # Minimal relationships
+                    products_score = 0.30
+
             metrics['related_products'] = products_score
-            
+
             # 6. Confidence Score (0-1)
             confidence_score = product_data.get('metadata', {}).get('confidence_score', 0.0)
+            # If confidence_score is not set, try to get it from properties
+            if confidence_score == 0.0:
+                confidence_score = product_data.get('properties', {}).get('confidence', 0.0)
             metrics['confidence_score'] = confidence_score
-            
+
             # Calculate weighted quality score
             quality_score = (
                 metrics['metadata_completeness'] * self.PRODUCT_QUALITY_WEIGHTS['metadata_completeness'] +
@@ -243,9 +322,9 @@ class RealQualityScoringService:
                 metrics['related_products'] * self.PRODUCT_QUALITY_WEIGHTS['related_products'] +
                 metrics['confidence_score'] * self.PRODUCT_QUALITY_WEIGHTS['confidence_score']
             )
-            
+
             return round(quality_score, 3), metrics
-            
+
         except Exception as e:
             self.logger.error(f"Error calculating product quality score: {e}")
             return 0.0, {}
