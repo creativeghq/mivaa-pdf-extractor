@@ -208,6 +208,11 @@ class ProductCreationService:
             stage1_time = time.time() - stage1_start
             self.logger.info(f"⚡ Stage 1 completed in {stage1_time:.2f}s: {len(product_candidates)} candidates from {len(eligible_chunks)} chunks")
 
+            # ✅ NEW: Deduplicate products by name BEFORE Stage 2
+            if product_candidates:
+                product_candidates = self._deduplicate_product_chunks(product_candidates)
+                self.logger.info(f"🔄 After deduplication: {len(product_candidates)} unique products")
+
             # ✅ NEW: Stage 2 - Deep Enrichment with Claude Sonnet
             self.logger.info(f"🎯 Stage 2: Deep enrichment with Claude Sonnet...")
             stage2_start = time.time()
@@ -349,31 +354,55 @@ class ProductCreationService:
             self.logger.debug("Skipping: Technical specifications table")
             return False
 
-        # Skip moodboard content (unless it has strong product indicators)
-        if any(keyword in content for keyword in [
-            'moodboard', 'mood board', 'inspiration', 'fresh inspiration'
+        # ✅ ENHANCED: Skip moodboard content (unless it has strong product indicators)
+        if any(keyword in content.lower() for keyword in [
+            'moodboard', 'mood board', 'inspiration', 'fresh inspiration', 'signature moodboard'
         ]) and not any(product_keyword in content for product_keyword in [
             'dimensions', 'designer', '×', 'cm', 'mm'
         ]):
             self.logger.debug("Skipping: Moodboard content")
             return False
 
+        # ✅ NEW: Skip cleaning/maintenance content
+        cleaning_keywords = [
+            'cleaning', 'cleaner', 'maintenance', 'fila', 'faber', 'remover',
+            'degreaser', 'floor cleaner', 'tile cleaner', 'epoxy pro',
+            'post-construction', 'application guide', 'cleaning system'
+        ]
+        if any(keyword in content.lower() for keyword in cleaning_keywords):
+            # Only skip if it doesn't have strong product indicators
+            if not any(pattern in content for pattern in ['×', 'cm', 'mm']) or \
+               'not applicable' in content.lower() or \
+               'guidance documentation' in content.lower():
+                self.logger.debug("Skipping: Cleaning/maintenance content")
+                return False
+
+        # ✅ NEW: Skip generic descriptive content
+        generic_keywords = [
+            'artisan clay', 'mediterranean sand', 'deep contrast',
+            'not specified', 'not applicable'
+        ]
+        if any(keyword in content.lower() for keyword in generic_keywords) and \
+           len(content) < 200:  # Short generic descriptions
+            self.logger.debug("Skipping: Generic descriptive content")
+            return False
+
         # Require product indicators for valid products
         has_uppercase_name = any(word.isupper() and len(word) > 2 for word in content.split())
         has_dimensions = any(pattern in content for pattern in ['×', 'x ', 'cm', 'mm'])
-        has_product_context = any(keyword in content for keyword in [
+        has_product_context = any(keyword in content.lower() for keyword in [
             'designer', 'collection', 'material', 'ceramic', 'porcelain', 'tile',
             'estudi{h}ac', 'dsignio', 'alt design', 'mut', 'yonoh', 'stacy garcia'
         ])
 
-        # Must have at least 2 of 3 product indicators
+        # ✅ ENHANCED: Require ALL 3 indicators for high confidence (was 2 of 3)
         product_score = sum([has_uppercase_name, has_dimensions, has_product_context])
 
-        if product_score >= 2:
+        if product_score >= 3:  # ✅ CHANGED: Was 2, now 3 (stricter)
             self.logger.debug(f"Valid product chunk: uppercase={has_uppercase_name}, dimensions={has_dimensions}, context={has_product_context}")
             return True
 
-        self.logger.debug(f"Skipping: Insufficient product indicators (score: {product_score}/3)")
+        self.logger.debug(f"Skipping: Insufficient product indicators (score: {product_score}/3, need 3)")
         return False
 
     def _extract_product_name(self, content: str) -> Optional[str]:
@@ -1509,4 +1538,55 @@ Be thorough and accurate. Extract all available information."""
                 workspace_id=workspace_id,
                 index=index
             )
+
+    def _deduplicate_product_chunks(self, product_chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        ✅ NEW: Deduplicate product chunks by product name.
+        Merges chunks that represent the same product (e.g., multiple PIQUÉ chunks → 1 PIQUÉ product).
+
+        Args:
+            product_chunks: List of chunks identified as products
+
+        Returns:
+            Deduplicated list of product chunks (one per unique product name)
+        """
+        try:
+            product_map = {}  # product_name -> best_chunk
+
+            for chunk in product_chunks:
+                content = chunk.get('content', '')
+                product_name = self._extract_product_name(content)
+
+                if not product_name:
+                    # If we can't extract a name, use first line as fallback
+                    first_line = content.split('\n')[0].strip()[:50]
+                    product_name = first_line if first_line else f"Product_{chunk.get('chunk_index', 0)}"
+
+                # Normalize product name (remove extra spaces, convert to uppercase)
+                product_name = ' '.join(product_name.upper().split())
+
+                # If this product name already exists, keep the chunk with more content
+                if product_name in product_map:
+                    existing_chunk = product_map[product_name]
+                    existing_length = len(existing_chunk.get('content', ''))
+                    current_length = len(content)
+
+                    if current_length > existing_length:
+                        self.logger.debug(f"Replacing {product_name}: {existing_length} chars → {current_length} chars")
+                        product_map[product_name] = chunk
+                    else:
+                        self.logger.debug(f"Keeping existing {product_name}: {existing_length} chars (skipping {current_length} chars)")
+                else:
+                    product_map[product_name] = chunk
+                    self.logger.debug(f"New product: {product_name}")
+
+            deduplicated_chunks = list(product_map.values())
+            self.logger.info(f"🔄 Deduplication: {len(product_chunks)} chunks → {len(deduplicated_chunks)} unique products")
+
+            return deduplicated_chunks
+
+        except Exception as e:
+            self.logger.error(f"Deduplication failed: {e}")
+            # Return original chunks if deduplication fails
+            return product_chunks
 
