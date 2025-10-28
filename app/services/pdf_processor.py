@@ -355,7 +355,8 @@ class PDFProcessor:
                 extracted_images = await self._extract_images_async(
                     pdf_path,
                     document_id,
-                    processing_options
+                    processing_options,
+                    progress_callback
                 )
             
             # Calculate content metrics
@@ -786,7 +787,8 @@ class PDFProcessor:
         self,
         pdf_path: str,
         document_id: str,
-        processing_options: Dict[str, Any]
+        processing_options: Dict[str, Any],
+        progress_callback: Optional[callable] = None
     ) -> List[Dict[str, Any]]:
         """
         Enhanced async image extraction with Supabase Storage upload.
@@ -826,7 +828,21 @@ class PDFProcessor:
                 image_files = os.listdir(image_dir)
                 self.logger.info(f"   Found {len(image_files)} files in image directory")
 
-                for image_file in image_files:
+                # Report progress: Image extraction found images
+                if progress_callback:
+                    try:
+                        progress_callback(
+                            25,
+                            {
+                                "current_step": f"Processing {len(image_files)} extracted images",
+                                "total_images": len(image_files),
+                                "images_processed": 0
+                            }
+                        )
+                    except Exception as e:
+                        self.logger.warning(f"Progress callback failed: {e}")
+
+                for idx, image_file in enumerate(image_files):
                     self.logger.debug(f"   Processing file: {image_file}")
                     if image_file.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp')):
                         image_path = os.path.join(image_dir, image_file)
@@ -841,6 +857,21 @@ class PDFProcessor:
                         if processed_image_info:
                             images.append(processed_image_info)
                             self.logger.info(f"   ✅ Processed image: {image_file}")
+
+                            # Report progress: Image processing progress
+                            if progress_callback and idx % 5 == 0:  # Update every 5 images
+                                try:
+                                    progress_pct = 25 + (idx / len(image_files)) * 10  # 25-35% range
+                                    progress_callback(
+                                        int(progress_pct),
+                                        {
+                                            "current_step": f"Processing images ({idx + 1}/{len(image_files)})",
+                                            "total_images": len(image_files),
+                                            "images_processed": idx + 1
+                                        }
+                                    )
+                                except Exception as e:
+                                    self.logger.warning(f"Progress callback failed: {e}")
                         else:
                             self.logger.warning(f"   ⚠️ Failed to process image: {image_file}")
             else:
