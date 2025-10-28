@@ -1299,13 +1299,13 @@ class LlamaIndexService:
                     if progress_callback:
                         import inspect
                         if inspect.iscoroutinefunction(progress_callback):
-                            await progress_callback(20, {
+                            await progress_callback(progress=20, details={
                                 "current_step": "Extracting text and images from PDF",
                                 "current_page": 0,
                                 "total_pages": 0
                             })
                         else:
-                            progress_callback(20, {
+                            progress_callback(progress=20, details={
                                 "current_step": "Extracting text and images from PDF",
                                 "current_page": 0,
                                 "total_pages": 0
@@ -1373,13 +1373,13 @@ class LlamaIndexService:
                 if progress_callback:
                     import inspect
                     if inspect.iscoroutinefunction(progress_callback):
-                        await progress_callback(40, {
+                        await progress_callback(progress=40, details={
                             "current_step": "Creating semantic chunks",
                             "total_pages": total_pages,
                             "images_extracted": images_extracted
                         })
                     else:
-                        progress_callback(40, {
+                        progress_callback(progress=40, details={
                             "current_step": "Creating semantic chunks",
                             "total_pages": total_pages,
                             "images_extracted": images_extracted
@@ -1421,14 +1421,14 @@ class LlamaIndexService:
                 if progress_callback:
                     import inspect
                     if inspect.iscoroutinefunction(progress_callback):
-                        await progress_callback(60, {
+                        await progress_callback(progress=60, details={
                             "current_step": "Generating embeddings and storing chunks",
                             "chunks_created": len(nodes),
                             "total_pages": total_pages,
                             "images_extracted": images_extracted
                         })
                     else:
-                        progress_callback(60, {
+                        progress_callback(progress=60, details={
                             "current_step": "Generating embeddings and storing chunks",
                             "chunks_created": len(nodes),
                             "total_pages": total_pages,
