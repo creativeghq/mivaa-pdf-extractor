@@ -541,9 +541,9 @@ class PDFProcessor:
                 if progress_callback:
                     try:
                         progress_callback(
-                            progress_percentage=30,
-                            current_step="Extracting text from PDF using PyMuPDF4LLM",
+                            progress=30,
                             details={
+                                "current_step": "Extracting text from PDF using PyMuPDF4LLM",
                                 "total_pages": total_pages,
                                 "extraction_method": "pymupdf4llm"
                             }
@@ -611,8 +611,8 @@ class PDFProcessor:
             if progress_callback:
                 try:
                     progress_callback(
-                        50,
-                        {
+                        progress=50,
+                        details={
                             "current_step": "Text extraction complete, preparing for chunking",
                             "total_pages": total_pages,
                             "text_length": len(markdown_content),
@@ -707,9 +707,9 @@ class PDFProcessor:
                     if progress_callback:
                         try:
                             progress_callback(
-                                progress_percentage=progress,
-                                current_step=f"OCR processing: {i + 1}/{len(page_range)} pages",
+                                progress=int(progress),
                                 details={
+                                    "current_step": f"OCR processing: {i + 1}/{len(page_range)} pages",
                                     "pages_processed": i + 1,
                                     "total_pages": len(page_range),
                                     "ocr_stage": "extracting_text"
@@ -728,9 +728,9 @@ class PDFProcessor:
             if progress_callback:
                 try:
                     progress_callback(
-                        progress_percentage=85,
-                        current_step="Creating text chunks for RAG pipeline",
+                        progress=85,
                         details={
+                            "current_step": "Creating text chunks for RAG pipeline",
                             "pages_processed": len(page_range),
                             "total_pages": len(page_range),
                             "text_length": len(final_text),
@@ -834,8 +834,8 @@ class PDFProcessor:
                         import inspect
                         if inspect.iscoroutinefunction(progress_callback):
                             await progress_callback(
-                                25,
-                                {
+                                progress=25,
+                                details={
                                     "current_step": f"Processing {len(image_files)} extracted images",
                                     "total_images": len(image_files),
                                     "images_processed": 0
@@ -843,8 +843,8 @@ class PDFProcessor:
                             )
                         else:
                             progress_callback(
-                                25,
-                                {
+                                progress=25,
+                                details={
                                     "current_step": f"Processing {len(image_files)} extracted images",
                                     "total_images": len(image_files),
                                     "images_processed": 0
@@ -876,8 +876,8 @@ class PDFProcessor:
                                     progress_pct = 25 + (idx / len(image_files)) * 10  # 25-35% range
                                     if inspect.iscoroutinefunction(progress_callback):
                                         await progress_callback(
-                                            int(progress_pct),
-                                            {
+                                            progress=int(progress_pct),
+                                            details={
                                                 "current_step": f"Processing images ({idx + 1}/{len(image_files)})",
                                                 "total_images": len(image_files),
                                                 "images_processed": idx + 1
@@ -885,8 +885,8 @@ class PDFProcessor:
                                         )
                                     else:
                                         progress_callback(
-                                            int(progress_pct),
-                                            {
+                                            progress=int(progress_pct),
+                                            details={
                                                 "current_step": f"Processing images ({idx + 1}/{len(image_files)})",
                                                 "total_images": len(image_files),
                                                 "images_processed": idx + 1
