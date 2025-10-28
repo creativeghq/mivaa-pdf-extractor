@@ -136,7 +136,7 @@ class PDFProcessor:
         self.chunking_service = UnifiedChunkingService(chunking_config)
         
         # Default processing options
-        self.default_timeout = self.config.get('timeout_seconds', 900)  # 15 minutes for large PDFs
+        self.default_timeout = self.config.get('timeout_seconds', 1800)  # 30 minutes for large PDFs with OCR
         self.max_file_size = self.config.get('max_file_size_mb', 50) * 1024 * 1024  # Convert to bytes
         self.temp_dir_base = self.config.get('temp_dir', tempfile.gettempdir())
         
@@ -622,9 +622,16 @@ class PDFProcessor:
                 except Exception as callback_error:
                     self.logger.warning(f"Progress callback failed: {callback_error}")
 
+            # Explicit memory cleanup after extraction
+            import gc
+            gc.collect()
+
             return markdown_content, metadata
-            
+
         except Exception as e:
+            # Cleanup on error
+            import gc
+            gc.collect()
             raise PDFExtractionError(f"Markdown extraction failed: {str(e)}") from e
 
     def _extract_text_with_ocr(
@@ -740,9 +747,16 @@ class PDFProcessor:
                 except Exception as callback_error:
                     self.logger.warning(f"Progress callback failed: {callback_error}")
 
+            # Explicit memory cleanup after OCR extraction
+            import gc
+            gc.collect()
+
             return final_text
 
         except Exception as e:
+            # Cleanup on error
+            import gc
+            gc.collect()
             self.logger.error(f"OCR text extraction failed: {str(e)}")
             raise PDFExtractionError(f"OCR text extraction failed: {str(e)}") from e
 
@@ -853,9 +867,20 @@ class PDFProcessor:
                     except Exception as e:
                         self.logger.warning(f"Progress callback failed: {e}")
 
-                for idx, image_file in enumerate(image_files):
-                    self.logger.debug(f"   Processing file: {image_file}")
-                    if image_file.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp')):
+                # Process images in batches to reduce memory usage
+                batch_size = 10  # Process 10 images at a time
+                valid_image_files = [f for f in image_files if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'))]
+
+                for batch_start in range(0, len(valid_image_files), batch_size):
+                    batch_end = min(batch_start + batch_size, len(valid_image_files))
+                    batch_files = valid_image_files[batch_start:batch_end]
+
+                    self.logger.info(f"   Processing batch {batch_start // batch_size + 1}: images {batch_start + 1}-{batch_end} of {len(valid_image_files)}")
+
+                    # Process each image in the batch
+                    for idx, image_file in enumerate(batch_files):
+                        absolute_idx = batch_start + idx
+                        self.logger.debug(f"   Processing file: {image_file}")
                         image_path = os.path.join(image_dir, image_file)
 
                         # Process each image with advanced capabilities (now async)
@@ -870,32 +895,37 @@ class PDFProcessor:
                             self.logger.info(f"   ✅ Processed image: {image_file}")
 
                             # Report progress: Image processing progress
-                            if progress_callback and idx % 5 == 0:  # Update every 5 images
+                            if progress_callback and absolute_idx % 5 == 0:  # Update every 5 images
                                 try:
                                     import inspect
-                                    progress_pct = 25 + (idx / len(image_files)) * 10  # 25-35% range
+                                    progress_pct = 25 + (absolute_idx / len(valid_image_files)) * 10  # 25-35% range
                                     if inspect.iscoroutinefunction(progress_callback):
                                         await progress_callback(
                                             progress=int(progress_pct),
                                             details={
-                                                "current_step": f"Processing images ({idx + 1}/{len(image_files)})",
-                                                "total_images": len(image_files),
-                                                "images_processed": idx + 1
+                                                "current_step": f"Processing images ({absolute_idx + 1}/{len(valid_image_files)})",
+                                                "total_images": len(valid_image_files),
+                                                "images_processed": absolute_idx + 1
                                             }
                                         )
                                     else:
                                         progress_callback(
                                             progress=int(progress_pct),
                                             details={
-                                                "current_step": f"Processing images ({idx + 1}/{len(image_files)})",
-                                                "total_images": len(image_files),
-                                                "images_processed": idx + 1
+                                                "current_step": f"Processing images ({absolute_idx + 1}/{len(valid_image_files)})",
+                                                "total_images": len(valid_image_files),
+                                                "images_processed": absolute_idx + 1
                                             }
                                         )
                                 except Exception as e:
                                     self.logger.warning(f"Progress callback failed: {e}")
                         else:
                             self.logger.warning(f"   ⚠️ Failed to process image: {image_file}")
+
+                    # Force garbage collection after each batch to free memory
+                    import gc
+                    gc.collect()
+                    self.logger.info(f"   ✅ Batch {batch_start // batch_size + 1} completed, memory freed")
             else:
                 self.logger.warning(f"⚠️ Image directory does not exist: {image_dir}")
                 self.logger.warning(f"   Output directory contents: {os.listdir(output_dir) if os.path.exists(output_dir) else 'N/A'}")
@@ -997,7 +1027,10 @@ class PDFProcessor:
         - Image enhancement options
         - Upload to Supabase Storage instead of local storage
         - Duplicate detection preparation
+        - Memory-efficient processing with explicit cleanup
         """
+        import gc
+
         try:
             # Load image with PIL for metadata and basic processing
             with Image.open(image_path) as pil_image:
@@ -1083,7 +1116,7 @@ class PDFProcessor:
 
                 # Combine all metadata with storage information
                 # AI analysis results will be added later via async update
-                return {
+                result = {
                     **basic_info,
                     'exif': exif_data,
                     'quality_score': real_analysis_data.get('quality_score', quality_metrics['overall_score']),
@@ -1103,9 +1136,15 @@ class PDFProcessor:
                     'analysis_image_url': real_analysis_data.get('image_url'),
                     'analysis_document_id': real_analysis_data.get('document_id')
                 }
-                    
+
+                # Explicit memory cleanup for large images
+                gc.collect()
+
+                return result
+
         except Exception as e:
             self.logger.error("Error processing image %s: %s", image_path, str(e))
+            gc.collect()  # Cleanup even on error
             return None
 
     async def _upload_image_to_storage(

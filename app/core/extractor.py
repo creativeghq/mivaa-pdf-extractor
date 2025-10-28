@@ -68,15 +68,19 @@ def extract_pdf_tables(file_name, page_number):
     return tables
 
 
-def extract_json_and_images(file_path, output_dir, page_number):
+def extract_json_and_images(file_path, output_dir, page_number, batch_size=5):
     """
-    Extract JSON and images from PDF.
-    
+    Extract JSON and images from PDF with batch processing to reduce memory usage.
+
     Args:
         file_path: Path to the PDF file
         output_dir: Directory to save extracted content
         page_number: Specific page number to extract (None for all pages)
+        batch_size: Number of pages to process at once (default: 5 for memory efficiency)
     """
+    import fitz
+    import gc
+
     page_number_list = None
     if page_number is not None:
         page_number_list = [page_number-1]
@@ -84,18 +88,113 @@ def extract_json_and_images(file_path, output_dir, page_number):
     image_path = os.path.join(output_dir, 'images')
     os.makedirs(image_path, exist_ok=True)
 
-    md_text_images = pymupdf4llm.to_markdown(
-        doc=file_path,
-        pages=page_number_list,
-        page_chunks=True,
-        write_images=True,
-        image_path=image_path,
-        image_format="jpg",
-        dpi=200
-    )
-    
-    output_file = os.path.join(output_dir, "output.json")
-    pathlib.Path(output_file).write_text(json.dumps(str(md_text_images)))
+    # If processing specific page, use original method
+    if page_number_list is not None:
+        md_text_images = pymupdf4llm.to_markdown(
+            doc=file_path,
+            pages=page_number_list,
+            page_chunks=True,
+            write_images=True,
+            image_path=image_path,
+            image_format="jpg",
+            dpi=200
+        )
+
+        output_file = os.path.join(output_dir, "output.json")
+        pathlib.Path(output_file).write_text(json.dumps(str(md_text_images)))
+        return
+
+    # For full PDF extraction, use batch processing to reduce memory usage
+    doc = fitz.open(file_path)
+    total_pages = len(doc)
+    all_markdown = []
+
+    try:
+        # Process pages in batches
+        for batch_start in range(0, total_pages, batch_size):
+            batch_end = min(batch_start + batch_size, total_pages)
+            batch_pages = list(range(batch_start, batch_end))
+
+            # Extract markdown and images for this batch
+            batch_markdown = pymupdf4llm.to_markdown(
+                doc=file_path,
+                pages=batch_pages,
+                page_chunks=True,
+                write_images=True,
+                image_path=image_path,
+                image_format="jpg",
+                dpi=200
+            )
+
+            all_markdown.append(batch_markdown)
+
+            # Force garbage collection after each batch to free memory
+            gc.collect()
+
+        # Combine all batches
+        combined_markdown = "\n\n".join(str(m) for m in all_markdown)
+
+        output_file = os.path.join(output_dir, "output.json")
+        pathlib.Path(output_file).write_text(json.dumps(combined_markdown))
+
+    finally:
+        doc.close()
+        gc.collect()
+
+
+def extract_json_and_images_streaming(file_path, output_dir, batch_size=5):
+    """
+    Extract JSON and images from PDF using streaming/chunked processing.
+
+    This generator function yields markdown content and image info for each batch,
+    allowing memory to be freed between batches.
+
+    Args:
+        file_path: Path to the PDF file
+        output_dir: Directory to save extracted content
+        batch_size: Number of pages to process at once (default: 5)
+
+    Yields:
+        Tuple of (batch_number, markdown_content, image_count)
+    """
+    import fitz
+    import gc
+
+    image_path = os.path.join(output_dir, 'images')
+    os.makedirs(image_path, exist_ok=True)
+
+    doc = fitz.open(file_path)
+    total_pages = len(doc)
+
+    try:
+        # Process pages in batches
+        for batch_num, batch_start in enumerate(range(0, total_pages, batch_size)):
+            batch_end = min(batch_start + batch_size, total_pages)
+            batch_pages = list(range(batch_start, batch_end))
+
+            # Extract markdown and images for this batch
+            batch_markdown = pymupdf4llm.to_markdown(
+                doc=file_path,
+                pages=batch_pages,
+                page_chunks=True,
+                write_images=True,
+                image_path=image_path,
+                image_format="jpg",
+                dpi=200
+            )
+
+            # Count images in this batch
+            image_files = os.listdir(image_path) if os.path.exists(image_path) else []
+            image_count = len([f for f in image_files if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'))])
+
+            yield batch_num, str(batch_markdown), image_count
+
+            # Force garbage collection after each batch
+            gc.collect()
+
+    finally:
+        doc.close()
+        gc.collect()
 
 
 def extract_functional_metadata(file_path, page_number=None, extract_mode="comprehensive"):
