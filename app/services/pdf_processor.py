@@ -610,9 +610,9 @@ class PDFProcessor:
             if progress_callback:
                 try:
                     progress_callback(
-                        progress_percentage=50,
-                        current_step="Text extraction complete, preparing for chunking",
-                        details={
+                        50,
+                        {
+                            "current_step": "Text extraction complete, preparing for chunking",
                             "total_pages": total_pages,
                             "text_length": len(markdown_content),
                             "extraction_method": "pymupdf4llm"

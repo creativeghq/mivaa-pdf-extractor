@@ -1043,10 +1043,13 @@ async def process_document_background(
             logger.info(f"📊 Job {job_id} progress: {progress}% - {detailed_metadata.get('current_step', 'Processing')}")
 
         # Create a synchronous wrapper for progress callback that can be called from threads
-        def sync_progress_callback(progress_percentage: float, current_step: str, details: dict = None):
+        def sync_progress_callback(progress: int, details: dict = None):
             """Synchronous progress callback that updates job storage directly"""
             try:
-                job_storage[job_id]["progress"] = int(progress_percentage)
+                job_storage[job_id]["progress"] = int(progress)
+
+                # Extract current_step from details if available
+                current_step = details.get("current_step", "Processing") if details else "Processing"
 
                 # Build detailed metadata
                 detailed_metadata = {
@@ -1064,7 +1067,7 @@ async def process_document_background(
                     detailed_metadata.update(details)
 
                 job_storage[job_id]["metadata"] = detailed_metadata
-                logger.info(f"📊 Job {job_id} progress: {progress_percentage}% - {current_step}")
+                logger.info(f"📊 Job {job_id} progress: {progress}% - {current_step}")
             except Exception as e:
                 logger.warning(f"Failed to update progress: {e}")
 
