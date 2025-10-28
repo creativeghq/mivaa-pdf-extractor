@@ -333,21 +333,63 @@ class PDFProcessor:
     ) -> PDFProcessingResult:
         """
         Internal method to process PDF file using existing extractor functions.
-        
+
         This method runs the existing synchronous extractor functions in a thread pool
         to maintain async compatibility.
         """
         loop = asyncio.get_event_loop()
-        
+
+        # Create a wrapper for the async progress callback that can be called from a thread
+        progress_queue = asyncio.Queue() if progress_callback else None
+
+        async def _process_progress_queue():
+            """Process progress updates from the queue"""
+            if not progress_queue:
+                return
+            while True:
+                try:
+                    progress_data = progress_queue.get_nowait()
+                    if progress_data is None:  # Sentinel value to stop
+                        break
+                    await progress_callback(**progress_data)
+                except asyncio.QueueEmpty:
+                    await asyncio.sleep(0.1)
+
+        # Create a synchronous wrapper for the progress callback
+        def sync_progress_callback(progress_percentage: float, current_step: str, details: dict = None):
+            """Synchronous wrapper that queues progress updates"""
+            if progress_queue:
+                try:
+                    progress_queue.put_nowait({
+                        "progress": progress_percentage,
+                        "details": {
+                            "current_step": current_step,
+                            **(details or {})
+                        }
+                    })
+                except Exception as e:
+                    self.logger.warning(f"Failed to queue progress update: {e}")
+
         try:
+            # Start the progress queue processor task
+            progress_task = None
+            if progress_queue:
+                progress_task = asyncio.create_task(_process_progress_queue())
+
             # Extract markdown content using existing function
             markdown_content, metadata = await loop.run_in_executor(
                 None,
                 self._extract_markdown_sync,
                 pdf_path,
                 processing_options,
-                progress_callback
+                sync_progress_callback
             )
+
+            # Stop the progress queue processor
+            if progress_queue:
+                await progress_queue.put(None)  # Sentinel value
+                if progress_task:
+                    await progress_task
             
             # Extract images if requested
             extracted_images = []
@@ -1314,40 +1356,49 @@ class PDFProcessor:
     ) -> Tuple[str, List[Dict[str, Any]]]:
         """
         Process extracted images with OCR using the OCR service.
-        
+
         Args:
             extracted_images: List of image dictionaries with metadata
             ocr_languages: List of language codes for OCR processing
-            
+
         Returns:
             Tuple of (combined_ocr_text, ocr_results_list)
         """
         try:
-            ocr_service = get_ocr_service()
-            ocr_config = OCRConfig(languages=ocr_languages)
-            
+            ocr_service = get_ocr_service(OCRConfig(languages=ocr_languages))
+
             combined_ocr_text = ""
             ocr_results = []
-            
+
             for image_data in extracted_images:
                 image_path = image_data.get('path')
                 if not image_path or not os.path.exists(image_path):
                     continue
-                
+
                 try:
-                    # Process image with OCR
-                    ocr_result = await ocr_service.process_image(image_path, ocr_config)
-                    
-                    if ocr_result and ocr_result.get('text'):
-                        combined_ocr_text += ocr_result['text'] + "\n"
+                    # Process image with OCR using the correct method
+                    # extract_text_from_image returns a list of OCRResult objects
+                    loop = asyncio.get_event_loop()
+                    ocr_result_list = await loop.run_in_executor(
+                        None,
+                        ocr_service.extract_text_from_image,
+                        image_path
+                    )
+
+                    if ocr_result_list:
+                        # Combine all extracted text from the image
+                        extracted_text = " ".join([result.text for result in ocr_result_list])
+                        avg_confidence = sum([result.confidence for result in ocr_result_list]) / len(ocr_result_list) if ocr_result_list else 0.0
+
+                        combined_ocr_text += extracted_text + "\n"
                         ocr_results.append({
                             'image_path': image_path,
-                            'text': ocr_result['text'],
-                            'confidence': ocr_result.get('confidence', 0.0),
-                            'language': ocr_result.get('language', 'unknown'),
-                            'processing_time': ocr_result.get('processing_time', 0.0)
+                            'text': extracted_text,
+                            'confidence': avg_confidence,
+                            'language': ocr_languages[0] if ocr_languages else 'en',
+                            'regions_detected': len(ocr_result_list)
                         })
-                    
+
                 except Exception as e:
                     self.logger.warning("OCR processing failed for image %s: %s", image_path, str(e))
                     ocr_results.append({
@@ -1357,9 +1408,9 @@ class PDFProcessor:
                         'language': 'unknown',
                         'error': str(e)
                     })
-            
+
             return combined_ocr_text.strip(), ocr_results
-            
+
         except Exception as e:
             self.logger.error("Error in OCR processing: %s", str(e))
             return "", []
