@@ -25,6 +25,7 @@ from .advanced_search_service import (
     MMRResult
 )
 from .chunk_type_classification_service import ChunkTypeClassificationService
+from .async_queue_service import get_async_queue_service
 
 try:
     from llama_index.core import (
@@ -1318,6 +1319,21 @@ class LlamaIndexService:
                         progress_callback=progress_callback
                     )
 
+                    # Update progress: Stage 1 extraction complete (20%)
+                    async_queue_service = get_async_queue_service()
+                    await async_queue_service.update_progress(
+                        document_id=document_id,
+                        stage='extraction',
+                        progress=20,
+                        total_items=1,
+                        completed_items=1,
+                        metadata={
+                            'status': 'complete',
+                            'images_extracted': len(pdf_result.extracted_images),
+                            'pages': pdf_result.page_count
+                        }
+                    )
+
                     # Create Document objects from PDF processing result
                     documents = []
 
@@ -1443,6 +1459,45 @@ class LlamaIndexService:
                     metadata=extracted_metadata
                 )
 
+                # ✅ NEW: Queue AI analysis jobs for chunks (Stage 4)
+                async_queue_service = get_async_queue_service()
+                ai_jobs_queued = await async_queue_service.queue_ai_analysis_jobs(
+                    document_id=document_id,
+                    chunks=[{'id': node.metadata.get('chunk_id')} for node in nodes],
+                    analysis_type='classification',
+                    priority=0
+                )
+
+                # Update progress to Stage 3 (40-60%)
+                await async_queue_service.update_progress(
+                    document_id=document_id,
+                    stage='chunking',
+                    progress=60,
+                    total_items=len(nodes),
+                    completed_items=len(nodes),
+                    metadata={'status': 'complete', 'chunks_created': len(nodes)}
+                )
+
+                # Update progress to Stage 4 (60-90%)
+                await async_queue_service.update_progress(
+                    document_id=document_id,
+                    stage='ai_analysis',
+                    progress=60,
+                    total_items=len(nodes),
+                    completed_items=0,
+                    metadata={'status': 'queued', 'jobs_queued': ai_jobs_queued}
+                )
+
+                # Update progress: Stage 5 product creation (90-100%)
+                await async_queue_service.update_progress(
+                    document_id=document_id,
+                    stage='product_creation',
+                    progress=90,
+                    total_items=1,
+                    completed_items=0,
+                    metadata={'status': 'pending'}
+                )
+
                 # Report progress: Image processing starting (80%)
                 text_embeddings = database_stats.get('embeddings_created', 0)
                 openai_calls = database_stats.get('embeddings_created', 0)  # One call per embedding
@@ -1468,16 +1523,35 @@ class LlamaIndexService:
                             "openai_calls": openai_calls
                         })
 
-                # ✅ NEW: Process extracted images with CLIP and layout analysis
+                # ✅ NEW: Queue extracted images for async processing (Stage 2)
                 image_processing_stats = {}
                 if hasattr(self, '_extracted_images') and self._extracted_images:
-                    self.logger.info(f"🖼️ Processing {len(self._extracted_images)} extracted images...")
-                    image_processing_stats = await self._process_extracted_images_with_context(
+                    self.logger.info(f"🖼️ Queuing {len(self._extracted_images)} extracted images for async processing...")
+
+                    # Queue image processing jobs
+                    async_queue_service = get_async_queue_service()
+                    images_queued = await async_queue_service.queue_image_processing_jobs(
                         document_id=document_id,
-                        extracted_images=self._extracted_images,
-                        nodes=nodes,
-                        metadata=extracted_metadata
+                        images=self._extracted_images,
+                        priority=0
                     )
+
+                    # Update progress to Stage 2 (20-40%)
+                    await async_queue_service.update_progress(
+                        document_id=document_id,
+                        stage='image_processing',
+                        progress=20,
+                        total_items=len(self._extracted_images),
+                        completed_items=0,
+                        metadata={'status': 'queued', 'jobs_queued': images_queued}
+                    )
+
+                    image_processing_stats = {
+                        'images_queued': images_queued,
+                        'images_processed': 0,
+                        'clip_embeddings_generated': 0,
+                        'material_analyses_completed': 0
+                    }
 
                 # Calculate statistics
                 total_chars = sum(len(node.text) for node in nodes)
