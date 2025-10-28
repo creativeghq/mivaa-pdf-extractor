@@ -1314,7 +1314,8 @@ class LlamaIndexService:
                     pdf_result = await pdf_processor.process_pdf_from_bytes(
                         pdf_bytes=file_content,
                         document_id=document_id,
-                        processing_options=processing_options
+                        processing_options=processing_options,
+                        progress_callback=progress_callback
                     )
 
                     # Create Document objects from PDF processing result
