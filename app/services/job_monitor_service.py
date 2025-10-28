@@ -309,7 +309,7 @@ class JobMonitorService:
             job = result.data
             
             # Check if job can be restarted
-            if job["status"] in ["completed", "pending_restart"]:
+            if job["status"] in ["completed"]:
                 return {
                     "success": False,
                     "error": f"Job is {job['status']} - cannot restart"

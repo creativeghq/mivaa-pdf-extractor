@@ -212,7 +212,7 @@ class CheckpointRecoveryService:
             # Mark job as pending for restart
             self.supabase_client.client.table(self.jobs_table)\
                 .update({
-                    "status": "pending_restart",
+                    "status": "pending",
                     "metadata": {
                         "restart_from_stage": last_stage.value,
                         "restart_reason": "auto_recovery_stuck_job",
