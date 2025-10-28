@@ -386,7 +386,7 @@ class PDFProcessor:
             if multimodal_enabled and extracted_images:
                 self.logger.info(f"Processing {len(extracted_images)} images with OCR")
                 ocr_text, ocr_results = await self._process_images_with_ocr(
-                    extracted_images, ocr_languages
+                    extracted_images, ocr_languages, progress_callback
                 )
                 
                 # Enhance extracted images with OCR data
@@ -1432,7 +1432,8 @@ class PDFProcessor:
     async def _process_images_with_ocr(
         self,
         extracted_images: List[Dict[str, Any]],
-        ocr_languages: List[str]
+        ocr_languages: List[str],
+        progress_callback: Optional[Callable] = None
     ) -> Tuple[str, List[Dict[str, Any]]]:
         """
         Process extracted images with OCR using the OCR service.
@@ -1440,6 +1441,7 @@ class PDFProcessor:
         Args:
             extracted_images: List of image dictionaries with metadata
             ocr_languages: List of language codes for OCR processing
+            progress_callback: Optional callback to report progress
 
         Returns:
             Tuple of (combined_ocr_text, ocr_results_list)
@@ -1449,13 +1451,36 @@ class PDFProcessor:
 
             combined_ocr_text = ""
             ocr_results = []
+            total_images = len(extracted_images)
 
-            for image_data in extracted_images:
+            for idx, image_data in enumerate(extracted_images):
                 image_path = image_data.get('path')
                 if not image_path or not os.path.exists(image_path):
                     continue
 
                 try:
+                    # Report progress
+                    if progress_callback:
+                        progress_percent = 25 + int((idx / total_images) * 15)  # 25-40% for OCR
+                        if inspect.iscoroutinefunction(progress_callback):
+                            await progress_callback(
+                                progress=progress_percent,
+                                details={
+                                    "current_step": f"Processing image {idx + 1}/{total_images} with OCR",
+                                    "images_processed": idx + 1,
+                                    "total_images": total_images
+                                }
+                            )
+                        else:
+                            progress_callback(
+                                progress=progress_percent,
+                                details={
+                                    "current_step": f"Processing image {idx + 1}/{total_images} with OCR",
+                                    "images_processed": idx + 1,
+                                    "total_images": total_images
+                                }
+                            )
+
                     # Process image with OCR using the correct method
                     # extract_text_from_image returns a list of OCRResult objects
                     loop = asyncio.get_event_loop()
