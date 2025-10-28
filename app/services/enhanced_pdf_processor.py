@@ -55,7 +55,8 @@ class EnhancedPDFProcessor:
         
         # Existing services
         self.chunking_service = UnifiedChunkingService()
-        self.product_service = ProductCreationService()
+        from app.services.supabase_client import get_supabase_client
+        self.product_service = ProductCreationService(get_supabase_client())
         self.ai_logger = AICallLogger()
         
         logger.info("✅ Enhanced PDF Processor initialized with all AI services")

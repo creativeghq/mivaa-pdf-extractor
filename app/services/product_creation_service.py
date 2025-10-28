@@ -28,7 +28,7 @@ class ProductCreationService:
         """
         self.supabase = supabase_client
         self.logger = logging.getLogger(__name__)
-        self.ai_logger = AICallLogger(supabase_client)
+        self.ai_logger = AICallLogger()
 
     async def create_products_from_layout_candidates(
         self,
