@@ -67,10 +67,7 @@ class RealImageAnalysisService:
         self.clip_model = "clip-vit-base-patch32"
 
         # Initialize AI logger
-        if supabase_client:
-            self.ai_logger = AICallLogger(supabase_client)
-        else:
-            self.ai_logger = AICallLogger(SupabaseClient())
+        self.ai_logger = AICallLogger()
         
     async def analyze_image(
         self,

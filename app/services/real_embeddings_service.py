@@ -54,10 +54,7 @@ class RealEmbeddingsService:
         self.mivaa_gateway_url = MIVAA_GATEWAY_URL
 
         # Initialize AI logger
-        if supabase_client:
-            self.ai_logger = AICallLogger(supabase_client)
-        else:
-            self.ai_logger = AICallLogger(SupabaseClient())
+        self.ai_logger = AICallLogger()
     
     async def generate_all_embeddings(
         self,

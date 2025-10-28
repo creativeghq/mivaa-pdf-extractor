@@ -58,10 +58,7 @@ class EnhancedMaterialClassifier:
         self.vision_service = RealImageAnalysisService(supabase_client)
 
         # Initialize AI logger
-        if supabase_client:
-            self.ai_logger = AICallLogger(supabase_client)
-        else:
-            self.ai_logger = AICallLogger(SupabaseClient())
+        self.ai_logger = AICallLogger()
     
     async def classify_material(
         self,

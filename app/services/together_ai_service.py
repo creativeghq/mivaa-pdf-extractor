@@ -118,11 +118,7 @@ class TogetherAIService:
         self._validate_config()
 
         # Initialize AI logger
-        if supabase_client:
-            self.ai_logger = AICallLogger(supabase_client)
-        else:
-            from app.services.supabase_client import SupabaseClient
-            self.ai_logger = AICallLogger(SupabaseClient())
+        self.ai_logger = AICallLogger()
         
         # Initialize HTTP client with timeout
         self.client = httpx.AsyncClient(
