@@ -339,57 +339,15 @@ class PDFProcessor:
         """
         loop = asyncio.get_event_loop()
 
-        # Create a wrapper for the async progress callback that can be called from a thread
-        progress_queue = asyncio.Queue() if progress_callback else None
-
-        async def _process_progress_queue():
-            """Process progress updates from the queue"""
-            if not progress_queue:
-                return
-            while True:
-                try:
-                    progress_data = progress_queue.get_nowait()
-                    if progress_data is None:  # Sentinel value to stop
-                        break
-                    await progress_callback(**progress_data)
-                except asyncio.QueueEmpty:
-                    await asyncio.sleep(0.1)
-
-        # Create a synchronous wrapper for the progress callback
-        def sync_progress_callback(progress_percentage: float, current_step: str, details: dict = None):
-            """Synchronous wrapper that queues progress updates"""
-            if progress_queue:
-                try:
-                    progress_queue.put_nowait({
-                        "progress": progress_percentage,
-                        "details": {
-                            "current_step": current_step,
-                            **(details or {})
-                        }
-                    })
-                except Exception as e:
-                    self.logger.warning(f"Failed to queue progress update: {e}")
-
         try:
-            # Start the progress queue processor task
-            progress_task = None
-            if progress_queue:
-                progress_task = asyncio.create_task(_process_progress_queue())
-
             # Extract markdown content using existing function
             markdown_content, metadata = await loop.run_in_executor(
                 None,
                 self._extract_markdown_sync,
                 pdf_path,
                 processing_options,
-                sync_progress_callback
+                progress_callback
             )
-
-            # Stop the progress queue processor
-            if progress_queue:
-                await progress_queue.put(None)  # Sentinel value
-                if progress_task:
-                    await progress_task
             
             # Extract images if requested
             extracted_images = []

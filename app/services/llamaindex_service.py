@@ -1297,11 +1297,19 @@ class LlamaIndexService:
 
                     # Report progress: PDF extraction starting (20%)
                     if progress_callback:
-                        await progress_callback(20, {
-                            "current_step": "Extracting text and images from PDF",
-                            "current_page": 0,
-                            "total_pages": 0
-                        })
+                        import inspect
+                        if inspect.iscoroutinefunction(progress_callback):
+                            await progress_callback(20, {
+                                "current_step": "Extracting text and images from PDF",
+                                "current_page": 0,
+                                "total_pages": 0
+                            })
+                        else:
+                            progress_callback(20, {
+                                "current_step": "Extracting text and images from PDF",
+                                "current_page": 0,
+                                "total_pages": 0
+                            })
 
                     pdf_result = await pdf_processor.process_pdf_from_bytes(
                         pdf_bytes=file_content,
@@ -1363,11 +1371,19 @@ class LlamaIndexService:
                 images_extracted = len(pdf_result.extracted_images) if document_format == 'pdf' and hasattr(pdf_result, 'extracted_images') else 0
 
                 if progress_callback:
-                    await progress_callback(40, {
-                        "current_step": "Creating semantic chunks",
-                        "total_pages": total_pages,
-                        "images_extracted": images_extracted
-                    })
+                    import inspect
+                    if inspect.iscoroutinefunction(progress_callback):
+                        await progress_callback(40, {
+                            "current_step": "Creating semantic chunks",
+                            "total_pages": total_pages,
+                            "images_extracted": images_extracted
+                        })
+                    else:
+                        progress_callback(40, {
+                            "current_step": "Creating semantic chunks",
+                            "total_pages": total_pages,
+                            "images_extracted": images_extracted
+                        })
 
                 # Parse documents into nodes with hierarchical chunking
                 # HierarchicalNodeParser automatically creates parent-child relationships
@@ -1403,12 +1419,21 @@ class LlamaIndexService:
 
                 # Report progress: Database storage starting (60%)
                 if progress_callback:
-                    await progress_callback(60, {
-                        "current_step": "Generating embeddings and storing chunks",
-                        "chunks_created": len(nodes),
-                        "total_pages": total_pages,
-                        "images_extracted": images_extracted
-                    })
+                    import inspect
+                    if inspect.iscoroutinefunction(progress_callback):
+                        await progress_callback(60, {
+                            "current_step": "Generating embeddings and storing chunks",
+                            "chunks_created": len(nodes),
+                            "total_pages": total_pages,
+                            "images_extracted": images_extracted
+                        })
+                    else:
+                        progress_callback(60, {
+                            "current_step": "Generating embeddings and storing chunks",
+                            "chunks_created": len(nodes),
+                            "total_pages": total_pages,
+                            "images_extracted": images_extracted
+                        })
 
                 # ✅ NEW: Store chunks and embeddings in database tables
                 database_stats = await self._store_chunks_in_database(
@@ -1422,14 +1447,25 @@ class LlamaIndexService:
                 openai_calls = database_stats.get('embeddings_created', 0)  # One call per embedding
 
                 if progress_callback:
-                    await progress_callback(80, {
-                        "current_step": "Processing images and finalizing",
-                        "chunks_created": len(nodes),
-                        "total_pages": total_pages,
-                        "images_extracted": images_extracted,
-                        "text_embeddings": text_embeddings,
-                        "openai_calls": openai_calls
-                    })
+                    import inspect
+                    if inspect.iscoroutinefunction(progress_callback):
+                        await progress_callback(80, {
+                            "current_step": "Processing images and finalizing",
+                            "chunks_created": len(nodes),
+                            "total_pages": total_pages,
+                            "images_extracted": images_extracted,
+                            "text_embeddings": text_embeddings,
+                            "openai_calls": openai_calls
+                        })
+                    else:
+                        progress_callback(80, {
+                            "current_step": "Processing images and finalizing",
+                            "chunks_created": len(nodes),
+                            "total_pages": total_pages,
+                            "images_extracted": images_extracted,
+                            "text_embeddings": text_embeddings,
+                            "openai_calls": openai_calls
+                        })
 
                 # ✅ NEW: Process extracted images with CLIP and layout analysis
                 image_processing_stats = {}

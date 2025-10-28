@@ -1042,6 +1042,32 @@ async def process_document_background(
                 )
             logger.info(f"📊 Job {job_id} progress: {progress}% - {detailed_metadata.get('current_step', 'Processing')}")
 
+        # Create a synchronous wrapper for progress callback that can be called from threads
+        def sync_progress_callback(progress_percentage: float, current_step: str, details: dict = None):
+            """Synchronous progress callback that updates job storage directly"""
+            try:
+                job_storage[job_id]["progress"] = int(progress_percentage)
+
+                # Build detailed metadata
+                detailed_metadata = {
+                    "document_id": document_id,
+                    "filename": filename,
+                    "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+                    "title": title or filename,
+                    "description": description,
+                    "tags": document_tags,
+                    "source": "rag_upload_async",
+                    "current_step": current_step
+                }
+
+                if details:
+                    detailed_metadata.update(details)
+
+                job_storage[job_id]["metadata"] = detailed_metadata
+                logger.info(f"📊 Job {job_id} progress: {progress_percentage}% - {current_step}")
+            except Exception as e:
+                logger.warning(f"Failed to update progress: {e}")
+
         # Process document through LlamaIndex service with progress tracking and granular checkpoints
         # Skip if resuming from a later checkpoint
         if not resume_from_stage or resume_from_stage == ProcessingStage.INITIALIZED:
@@ -1137,7 +1163,7 @@ async def process_document_background(
                 },
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
-                progress_callback=enhanced_progress_callback
+                progress_callback=sync_progress_callback
             )
 
             # Create IMAGE_EMBEDDINGS_GENERATED checkpoint after CLIP embeddings
