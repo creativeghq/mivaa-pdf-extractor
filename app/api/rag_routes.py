@@ -1046,6 +1046,7 @@ async def process_document_background(
         def sync_progress_callback(progress: int, details: dict = None):
             """Synchronous progress callback that updates job storage directly"""
             try:
+                logger.info(f"🔔 SYNC PROGRESS CALLBACK CALLED: progress={progress}, details={details}")
                 job_storage[job_id]["progress"] = int(progress)
 
                 # Extract current_step from details if available
