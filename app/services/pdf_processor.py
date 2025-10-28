@@ -577,6 +577,21 @@ class PDFProcessor:
             else:
                 # Use PyMuPDF4LLM first for text-based PDFs
                 self.logger.info("Detected text-based PDF, using PyMuPDF4LLM extraction")
+
+                # Update progress: Starting text extraction (30%)
+                if progress_callback:
+                    try:
+                        progress_callback(
+                            progress_percentage=30,
+                            current_step="Extracting text from PDF using PyMuPDF4LLM",
+                            details={
+                                "total_pages": total_pages,
+                                "extraction_method": "pymupdf4llm"
+                            }
+                        )
+                    except Exception as callback_error:
+                        self.logger.warning(f"Progress callback failed: {callback_error}")
+
                 page_number = processing_options.get('page_number')
                 markdown_content = extract_pdf_to_markdown(pdf_path, page_number)
 
@@ -632,7 +647,22 @@ class PDFProcessor:
                 'modification_date': parse_pdf_date(doc.metadata.get('modDate', ''))
             }
             doc.close()
-            
+
+            # Update progress: Text extraction complete (50%)
+            if progress_callback:
+                try:
+                    progress_callback(
+                        progress_percentage=50,
+                        current_step="Text extraction complete, preparing for chunking",
+                        details={
+                            "total_pages": total_pages,
+                            "text_length": len(markdown_content),
+                            "extraction_method": "pymupdf4llm"
+                        }
+                    )
+                except Exception as callback_error:
+                    self.logger.warning(f"Progress callback failed: {callback_error}")
+
             return markdown_content, metadata
             
         except Exception as e:
