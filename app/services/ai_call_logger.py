@@ -14,7 +14,7 @@ from datetime import datetime
 from decimal import Decimal
 import json
 
-from app.core.supabase_client import SupabaseClient
+from app.services.supabase_client import get_supabase_client
 from app.config.ai_pricing import ai_pricing
 
 logger = logging.getLogger(__name__)
@@ -32,9 +32,9 @@ class AICallLogger:
     - Request/response data for debugging
     """
     
-    def __init__(self, supabase_client: Optional[SupabaseClient] = None):
+    def __init__(self):
         """Initialize AI Call Logger"""
-        self.supabase = supabase_client or SupabaseClient()
+        self.supabase = get_supabase_client()
         self.logger = logging.getLogger(__name__)
     
     async def log_ai_call(
