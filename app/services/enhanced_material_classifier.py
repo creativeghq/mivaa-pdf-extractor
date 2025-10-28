@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from app.services.ai_call_logger import AICallLogger
-from app.core.supabase_client import SupabaseClient
+from app.services.supabase_client import SupabaseClient
 
 logger = logging.getLogger(__name__)
 
