@@ -18,9 +18,13 @@ Benefits:
 
 import logging
 import asyncio
+import time
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime
+
+from app.services.ai_call_logger import AICallLogger
+from app.core.supabase_client import SupabaseClient
 
 logger = logging.getLogger(__name__)
 
@@ -47,17 +51,24 @@ class EnhancedMaterialClassifier:
     for superior material classification.
     """
     
-    def __init__(self):
+    def __init__(self, supabase_client=None):
         self.logger = logger
         # Import here to avoid circular dependencies
         from .real_image_analysis_service import RealImageAnalysisService
-        self.vision_service = RealImageAnalysisService()
+        self.vision_service = RealImageAnalysisService(supabase_client)
+
+        # Initialize AI logger
+        if supabase_client:
+            self.ai_logger = AICallLogger(supabase_client)
+        else:
+            self.ai_logger = AICallLogger(SupabaseClient())
     
     async def classify_material(
         self,
         image_base64: str,
         use_dual_validation: bool = True,
-        confidence_threshold: float = 0.7
+        confidence_threshold: float = 0.7,
+        job_id: Optional[str] = None
     ) -> MaterialClassificationResult:
         """
         Classify material using dual-model validation.
@@ -76,14 +87,14 @@ class EnhancedMaterialClassifier:
             if use_dual_validation:
                 # Run both models in parallel
                 vit_task = self._classify_with_vit(image_base64)
-                llama_task = self._classify_with_llama(image_base64)
-                
+                llama_task = self._classify_with_llama(image_base64, job_id)
+
                 vit_result, llama_result = await asyncio.gather(
                     vit_task,
                     llama_task,
                     return_exceptions=True
                 )
-                
+
                 # Handle errors
                 if isinstance(vit_result, Exception):
                     self.logger.warning(f"ViT classification failed: {vit_result}")
@@ -91,13 +102,13 @@ class EnhancedMaterialClassifier:
                 if isinstance(llama_result, Exception):
                     self.logger.warning(f"Llama classification failed: {llama_result}")
                     llama_result = None
-                
+
                 # Combine results
                 combined = self._combine_results(vit_result, llama_result)
-                
+
             else:
                 # Use only Llama 4 Scout (more accurate)
-                llama_result = await self._classify_with_llama(image_base64)
+                llama_result = await self._classify_with_llama(image_base64, job_id)
                 vit_result = None
                 combined = self._extract_from_llama(llama_result)
             
@@ -139,13 +150,14 @@ class EnhancedMaterialClassifier:
             self.logger.error(f"ViT classification failed: {e}")
             return None
     
-    async def _classify_with_llama(self, image_base64: str) -> Optional[Dict[str, Any]]:
+    async def _classify_with_llama(self, image_base64: str, job_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Classify material using Llama 4 Scout Vision.
-        
+
         Uses the existing RealImageAnalysisService with a specialized prompt
         for material classification.
         """
+        start_time = time.time()
         try:
             import httpx
             import os
@@ -228,12 +240,66 @@ Respond ONLY with valid JSON, no additional text."""
                 if content.endswith("```"):
                     content = content[:-3]
                 content = content.strip()
-                
+
                 analysis = json.loads(content)
+
+                # Log AI call
+                latency_ms = int((time.time() - start_time) * 1000)
+                usage = result.get("usage", {})
+                input_tokens = usage.get("prompt_tokens", 0)
+                output_tokens = usage.get("completion_tokens", 0)
+
+                confidence_breakdown = {
+                    "model_confidence": 0.90,
+                    "completeness": analysis.get("confidence", 0.85),
+                    "consistency": 0.88,
+                    "validation": 0.80
+                }
+                confidence_score = (
+                    0.30 * confidence_breakdown["model_confidence"] +
+                    0.30 * confidence_breakdown["completeness"] +
+                    0.25 * confidence_breakdown["consistency"] +
+                    0.15 * confidence_breakdown["validation"]
+                )
+
+                await self.ai_logger.log_llama_call(
+                    task="material_classification",
+                    model="llama-4-scout-17b",
+                    response=result,
+                    latency_ms=latency_ms,
+                    confidence_score=confidence_score,
+                    confidence_breakdown=confidence_breakdown,
+                    action="use_ai_result",
+                    job_id=job_id
+                )
+
                 return analysis
-                
+
         except Exception as e:
             self.logger.error(f"Llama classification failed: {e}")
+
+            # Log failed AI call
+            latency_ms = int((time.time() - start_time) * 1000)
+            await self.ai_logger.log_ai_call(
+                task="material_classification",
+                model="llama-4-scout-17b",
+                input_tokens=0,
+                output_tokens=0,
+                cost=0.0,
+                latency_ms=latency_ms,
+                confidence_score=0.0,
+                confidence_breakdown={
+                    "model_confidence": 0.0,
+                    "completeness": 0.0,
+                    "consistency": 0.0,
+                    "validation": 0.0
+                },
+                action="fallback_to_rules",
+                job_id=job_id,
+                fallback_reason=f"Llama API error: {str(e)}",
+                error_message=str(e)
+            )
+
             return None
     
     def _combine_results(

@@ -1140,6 +1140,8 @@ from app.api.products import router as products_router
 from app.api.embeddings import router as embeddings_router
 from app.api.monitoring_routes import router as monitoring_router
 from app.api.admin.chunk_quality import router as chunk_quality_router
+from app.api.ai_metrics_routes import router as ai_metrics_router
+from app.api.ai_services_routes import router as ai_services_router
 
 app.include_router(pdf_router)  # PDF router already has /api/v1 prefix
 app.include_router(documents_router)
@@ -1153,6 +1155,8 @@ app.include_router(products_router)
 app.include_router(embeddings_router)
 app.include_router(monitoring_router)
 app.include_router(chunk_quality_router)
+app.include_router(ai_metrics_router)
+app.include_router(ai_services_router)
 
 # Customize OpenAPI schema
 def custom_openapi():

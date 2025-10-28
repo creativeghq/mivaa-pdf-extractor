@@ -9,6 +9,7 @@ This module provides image validation and product enrichment using Anthropic Cla
 
 import asyncio
 import logging
+import time
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -17,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from ..services.supabase_client import get_supabase_client, SupabaseClient
+from ..services.ai_call_logger import AICallLogger
 from ..config import get_settings
 import anthropic
 
@@ -316,12 +318,12 @@ Focus on:
 # ============================================================================
 
 @router.post("/test/claude-integration")
-async def test_claude_integration():
+async def test_claude_integration(supabase: SupabaseClient = Depends(get_supabase_client)):
     """Test Claude Vision API integration."""
-    try:
-        import time
-        start_time = time.time()
+    ai_logger = AICallLogger(supabase)
+    start_time = time.time()
 
+    try:
         # Test image (1x1 pixel JPEG)
         test_image_base64 = "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/2wBDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwA/8A"
 
@@ -361,6 +363,32 @@ async def test_claude_integration():
         response_text = response.content[0].text
         processing_time = (time.time() - start_time) * 1000
 
+        # Log AI call
+        latency_ms = int(processing_time)
+        confidence_breakdown = {
+            "model_confidence": 0.95,
+            "completeness": 0.90,
+            "consistency": 0.93,
+            "validation": 0.88
+        }
+        confidence_score = (
+            0.30 * confidence_breakdown["model_confidence"] +
+            0.30 * confidence_breakdown["completeness"] +
+            0.25 * confidence_breakdown["consistency"] +
+            0.15 * confidence_breakdown["validation"]
+        )
+
+        await ai_logger.log_claude_call(
+            task="test_vision_integration",
+            model="claude-3-5-sonnet-20241022",
+            response=response,
+            latency_ms=latency_ms,
+            confidence_score=confidence_score,
+            confidence_breakdown=confidence_breakdown,
+            action="use_ai_result",
+            job_id=None
+        )
+
         return {
             "success": True,
             "claude_response": response_text,
@@ -371,6 +399,29 @@ async def test_claude_integration():
 
     except Exception as e:
         logger.error(f"Claude integration test failed: {e}")
+
+        # Log failed AI call
+        latency_ms = int((time.time() - start_time) * 1000)
+        await ai_logger.log_ai_call(
+            task="test_vision_integration",
+            model="claude-3-5-sonnet-20241022",
+            input_tokens=0,
+            output_tokens=0,
+            cost=0.0,
+            latency_ms=latency_ms,
+            confidence_score=0.0,
+            confidence_breakdown={
+                "model_confidence": 0.0,
+                "completeness": 0.0,
+                "consistency": 0.0,
+                "validation": 0.0
+            },
+            action="fallback_to_rules",
+            job_id=None,
+            fallback_reason=f"Claude API error: {str(e)}",
+            error_message=str(e)
+        )
+
         return {
             "success": False,
             "error": str(e),

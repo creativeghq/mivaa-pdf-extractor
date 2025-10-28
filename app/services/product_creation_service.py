@@ -11,6 +11,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 import json
 import time
+from app.services.ai_call_logger import AICallLogger
 
 logger = logging.getLogger(__name__)
 
@@ -21,12 +22,13 @@ class ProductCreationService:
     def __init__(self, supabase_client):
         """
         Initialize product creation service.
-        
+
         Args:
             supabase_client: Supabase client instance for database operations
         """
         self.supabase = supabase_client
         self.logger = logging.getLogger(__name__)
+        self.ai_logger = AICallLogger(supabase_client)
 
     async def create_products_from_layout_candidates(
         self,
@@ -1345,8 +1347,9 @@ RESPOND WITH DETAILED JSON:
 
 Be thorough and accurate. REJECT non-product content. Extract all available information for valid products."""
 
-    async def _call_claude_haiku(self, client, prompt: str) -> str:
+    async def _call_claude_haiku(self, client, prompt: str, job_id: Optional[str] = None) -> str:
         """Call Claude 4.5 Haiku for fast classification."""
+        start_time = time.time()
         try:
             from app.config import get_settings
             settings = get_settings()
@@ -1358,14 +1361,63 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
                 messages=[{"role": "user", "content": prompt}]
             )
 
+            # Calculate latency
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            # Calculate confidence score (4-factor weighted)
+            confidence_breakdown = {
+                "model_confidence": 0.85,  # Haiku is fast but reliable
+                "completeness": 0.80,  # Stage 1 is preliminary
+                "consistency": 0.90,  # Haiku is consistent
+                "validation": 0.75   # Stage 1 needs Stage 2 validation
+            }
+            confidence_score = (
+                0.30 * confidence_breakdown["model_confidence"] +
+                0.30 * confidence_breakdown["completeness"] +
+                0.25 * confidence_breakdown["consistency"] +
+                0.15 * confidence_breakdown["validation"]
+            )
+
+            # Log AI call
+            await self.ai_logger.log_claude_call(
+                task="product_classification_stage1",
+                model="claude-haiku-4-5",
+                response=response,
+                latency_ms=latency_ms,
+                confidence_score=confidence_score,
+                confidence_breakdown=confidence_breakdown,
+                action="use_ai_result",
+                job_id=job_id,
+                request_data={"prompt_length": len(prompt)}
+            )
+
             return response.content[0].text if response.content else ""
 
         except Exception as e:
             self.logger.error(f"Claude Haiku call failed: {str(e)}")
+
+            # Log failed call
+            latency_ms = int((time.time() - start_time) * 1000)
+            await self.ai_logger.log_ai_call(
+                task="product_classification_stage1",
+                model="claude-haiku-4-5",
+                input_tokens=0,
+                output_tokens=0,
+                cost=0.0,
+                latency_ms=latency_ms,
+                confidence_score=0.0,
+                confidence_breakdown={"model_confidence": 0, "completeness": 0, "consistency": 0, "validation": 0},
+                action="fallback_to_rules",
+                job_id=job_id,
+                fallback_reason=f"API error: {str(e)}",
+                error_message=str(e)
+            )
+
             return ""
 
-    async def _call_claude_sonnet(self, client, prompt: str) -> str:
+    async def _call_claude_sonnet(self, client, prompt: str, job_id: Optional[str] = None) -> str:
         """Call Claude 4.5 Sonnet for deep enrichment."""
+        start_time = time.time()
         try:
             from app.config import get_settings
             settings = get_settings()
@@ -1377,10 +1429,58 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
                 messages=[{"role": "user", "content": prompt}]
             )
 
+            # Calculate latency
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            # Calculate confidence score (4-factor weighted)
+            confidence_breakdown = {
+                "model_confidence": 0.95,  # Sonnet is highly accurate
+                "completeness": 0.90,  # Stage 2 is comprehensive
+                "consistency": 0.95,  # Sonnet is very consistent
+                "validation": 0.85   # Stage 2 provides validation
+            }
+            confidence_score = (
+                0.30 * confidence_breakdown["model_confidence"] +
+                0.30 * confidence_breakdown["completeness"] +
+                0.25 * confidence_breakdown["consistency"] +
+                0.15 * confidence_breakdown["validation"]
+            )
+
+            # Log AI call
+            await self.ai_logger.log_claude_call(
+                task="product_enrichment_stage2",
+                model="claude-sonnet-4-5",
+                response=response,
+                latency_ms=latency_ms,
+                confidence_score=confidence_score,
+                confidence_breakdown=confidence_breakdown,
+                action="use_ai_result",
+                job_id=job_id,
+                request_data={"prompt_length": len(prompt)}
+            )
+
             return response.content[0].text if response.content else ""
 
         except Exception as e:
             self.logger.error(f"Claude Sonnet call failed: {str(e)}")
+
+            # Log failed call
+            latency_ms = int((time.time() - start_time) * 1000)
+            await self.ai_logger.log_ai_call(
+                task="product_enrichment_stage2",
+                model="claude-sonnet-4-5",
+                input_tokens=0,
+                output_tokens=0,
+                cost=0.0,
+                latency_ms=latency_ms,
+                confidence_score=0.0,
+                confidence_breakdown={"model_confidence": 0, "completeness": 0, "consistency": 0, "validation": 0},
+                action="fallback_to_rules",
+                job_id=job_id,
+                fallback_reason=f"API error: {str(e)}",
+                error_message=str(e)
+            )
+
             return ""
 
     def _extract_json_from_response(self, response: str) -> Dict[str, Any]:

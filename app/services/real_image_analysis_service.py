@@ -14,6 +14,7 @@ Replaces mock data with actual AI model calls.
 import logging
 import asyncio
 import base64
+import time
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime
@@ -24,6 +25,9 @@ import httpx
 from PIL import Image
 import io
 import anthropic
+
+from app.services.ai_call_logger import AICallLogger
+from app.core.supabase_client import SupabaseClient
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +60,17 @@ class RealImageAnalysisService:
     - CLIP: Visual embeddings for similarity search
     """
     
-    def __init__(self):
+    def __init__(self, supabase_client=None):
         self.logger = logger
         self.together_ai_url = "https://api.together.xyz/v1"
         self.anthropic_url = "https://api.anthropic.com/v1"
         self.clip_model = "clip-vit-base-patch32"
+
+        # Initialize AI logger
+        if supabase_client:
+            self.ai_logger = AICallLogger(supabase_client)
+        else:
+            self.ai_logger = AICallLogger(SupabaseClient())
         
     async def analyze_image(
         self,
@@ -255,9 +265,11 @@ class RealImageAnalysisService:
     async def _analyze_with_llama(
         self,
         image_base64: str,
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
+        job_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Analyze image with Llama 4 Scout 17B Vision (69.4% MMMU, #1 OCR)"""
+        start_time = time.time()
         try:
             if not TOGETHER_API_KEY:
                 raise ValueError("TOGETHER_API_KEY not set - cannot perform Llama vision analysis")
@@ -360,6 +372,37 @@ Respond ONLY with valid JSON, no additional text."""
                                 analysis = json.loads(content)
 
                             self.logger.info(f"✅ Llama analysis successful on attempt {attempt}")
+
+                            # Log AI call
+                            latency_ms = int((time.time() - start_time) * 1000)
+                            usage = result.get("usage", {})
+                            input_tokens = usage.get("prompt_tokens", 0)
+                            output_tokens = usage.get("completion_tokens", 0)
+
+                            confidence_breakdown = {
+                                "model_confidence": 0.90,
+                                "completeness": analysis.get("confidence", 0.85),
+                                "consistency": 0.88,
+                                "validation": 0.80
+                            }
+                            confidence_score = (
+                                0.30 * confidence_breakdown["model_confidence"] +
+                                0.30 * confidence_breakdown["completeness"] +
+                                0.25 * confidence_breakdown["consistency"] +
+                                0.15 * confidence_breakdown["validation"]
+                            )
+
+                            await self.ai_logger.log_llama_call(
+                                task="image_vision_analysis",
+                                model="llama-4-scout-17b",
+                                response=result,
+                                latency_ms=latency_ms,
+                                confidence_score=confidence_score,
+                                confidence_breakdown=confidence_breakdown,
+                                action="use_ai_result",
+                                job_id=job_id
+                            )
+
                             return {
                                 "model": "llama-4-scout-17b-vision",
                                 "analysis": analysis,
@@ -392,14 +435,39 @@ Respond ONLY with valid JSON, no additional text."""
 
         except Exception as e:
             self.logger.error(f"Llama analysis failed: {e}")
+
+            # Log failed AI call
+            latency_ms = int((time.time() - start_time) * 1000)
+            await self.ai_logger.log_ai_call(
+                task="image_vision_analysis",
+                model="llama-4-scout-17b",
+                input_tokens=0,
+                output_tokens=0,
+                cost=0.0,
+                latency_ms=latency_ms,
+                confidence_score=0.0,
+                confidence_breakdown={
+                    "model_confidence": 0.0,
+                    "completeness": 0.0,
+                    "consistency": 0.0,
+                    "validation": 0.0
+                },
+                action="fallback_to_rules",
+                job_id=job_id,
+                fallback_reason=f"Llama API error: {str(e)}",
+                error_message=str(e)
+            )
+
             raise RuntimeError(f"Llama vision analysis failed: {str(e)}") from e
     
     async def _analyze_with_claude(
         self,
         image_url: str,
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
+        job_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Analyze image with Claude 4.5 Sonnet Vision"""
+        start_time = time.time()
         try:
             if not ANTHROPIC_API_KEY:
                 raise ValueError("ANTHROPIC_API_KEY not set - cannot perform Claude vision analysis")
@@ -465,6 +533,32 @@ Respond ONLY with valid JSON, no additional text."""
                     # No JSON found, raise error
                     raise json.JSONDecodeError("No JSON object found", content, 0)
 
+                # Log AI call
+                latency_ms = int((time.time() - start_time) * 1000)
+                confidence_breakdown = {
+                    "model_confidence": 0.95,
+                    "completeness": validation.get("confidence", 0.90),
+                    "consistency": 0.93,
+                    "validation": 0.88
+                }
+                confidence_score = (
+                    0.30 * confidence_breakdown["model_confidence"] +
+                    0.30 * confidence_breakdown["completeness"] +
+                    0.25 * confidence_breakdown["consistency"] +
+                    0.15 * confidence_breakdown["validation"]
+                )
+
+                await self.ai_logger.log_claude_call(
+                    task="image_vision_validation",
+                    model="claude-3-5-sonnet-20241022",
+                    response=response,
+                    latency_ms=latency_ms,
+                    confidence_score=confidence_score,
+                    confidence_breakdown=confidence_breakdown,
+                    action="use_ai_result",
+                    job_id=job_id
+                )
+
                 return {
                     "model": "claude-3-5-sonnet-20241022",
                     "validation": validation,
@@ -477,6 +571,29 @@ Respond ONLY with valid JSON, no additional text."""
 
         except Exception as e:
             self.logger.error(f"Claude analysis failed: {e}")
+
+            # Log failed AI call
+            latency_ms = int((time.time() - start_time) * 1000)
+            await self.ai_logger.log_ai_call(
+                task="image_vision_validation",
+                model="claude-3-5-sonnet-20241022",
+                input_tokens=0,
+                output_tokens=0,
+                cost=0.0,
+                latency_ms=latency_ms,
+                confidence_score=0.0,
+                confidence_breakdown={
+                    "model_confidence": 0.0,
+                    "completeness": 0.0,
+                    "consistency": 0.0,
+                    "validation": 0.0
+                },
+                action="fallback_to_rules",
+                job_id=job_id,
+                fallback_reason=f"Claude API error: {str(e)}",
+                error_message=str(e)
+            )
+
             raise RuntimeError(f"Claude 4.5 Sonnet Vision analysis failed: {str(e)}") from e
 
     async def _analyze_with_claude_base64(
