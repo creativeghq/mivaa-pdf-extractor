@@ -892,7 +892,7 @@ async def process_document_background(
     document_tags: List[str],
     chunk_size: int,
     chunk_overlap: int,
-    llamaindex_service: LlamaIndexService
+    llamaindex_service: Optional[LlamaIndexService] = None
 ):
     """
     Background task to process document with checkpoint recovery support.
@@ -903,6 +903,24 @@ async def process_document_background(
     logger.info(f"   Document ID: {document_id}")
     logger.info(f"   Filename: {filename}")
     logger.info(f"   Started at: {start_time.isoformat()}")
+
+    # Get LlamaIndex service from app state if not provided
+    if llamaindex_service is None:
+        try:
+            from app.main import app
+            if hasattr(app.state, 'llamaindex_service'):
+                llamaindex_service = app.state.llamaindex_service
+                logger.info("✅ Retrieved LlamaIndex service from app state")
+            else:
+                logger.error("❌ LlamaIndex service not available in app state")
+                job_storage[job_id]["status"] = "failed"
+                job_storage[job_id]["error"] = "LlamaIndex service not available"
+                return
+        except Exception as e:
+            logger.error(f"❌ Failed to get LlamaIndex service: {e}")
+            job_storage[job_id]["status"] = "failed"
+            job_storage[job_id]["error"] = str(e)
+            return
 
     # Check for existing checkpoint to resume from
     last_checkpoint = None
