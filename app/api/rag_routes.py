@@ -1329,7 +1329,13 @@ async def process_document_background(
                 )
                 logger.info(f"✅ Created IMAGE_EMBEDDINGS_GENERATED checkpoint for job {job_id}")
 
-            if processing_result.get('status') == 'success':
+            # Log the processing result status for debugging
+            result_status = processing_result.get('status', 'unknown')
+            logger.info(f"📊 Processing result status: {result_status}")
+            logger.info(f"📊 Processing result keys: {list(processing_result.keys())}")
+            logger.info(f"📊 Statistics: {processing_result.get('statistics', {})}")
+
+            if result_status == 'success':
                 # Create COMPLETED checkpoint with all processing data
                 await checkpoint_recovery_service.create_checkpoint(
                     job_id=job_id,
@@ -1347,6 +1353,13 @@ async def process_document_background(
                     }
                 )
                 logger.info(f"✅ Created COMPLETED checkpoint for job {job_id}")
+            else:
+                # Log why we're not creating COMPLETED checkpoint
+                logger.error(f"❌ Processing did NOT return success status!")
+                logger.error(f"   Status: {result_status}")
+                logger.error(f"   Full result: {processing_result}")
+                # Raise an exception so it gets caught and logged properly
+                raise RuntimeError(f"Document processing returned status '{result_status}' instead of 'success'")
         else:
             # Resuming from checkpoint - retrieve data from last checkpoint
             logger.info(f"⏭️ Skipping document processing - resuming from {resume_from_stage}")
