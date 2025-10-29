@@ -1009,9 +1009,13 @@ async def process_document_background(
                 progress=10
             )
 
+        # Initialize AI model tracker for this job
+        ai_tracker = AIModelTracker(job_id)
+        job_storage[job_id]["ai_tracker"] = ai_tracker
+
         # Define progress callback to update job progress with detailed metadata
         async def update_progress(progress: int, details: dict = None):
-            """Update job progress in memory and database with detailed stats"""
+            """Update job progress in memory and database with detailed stats and AI tracking"""
             job_storage[job_id]["progress"] = progress
 
             # Build detailed metadata
@@ -1049,6 +1053,26 @@ async def process_document_background(
                     "current_step": details.get("current_step", "Processing")
                 })
 
+                # ✅ Log AI model calls if provided
+                if details.get("ai_model_call"):
+                    ai_call = details["ai_model_call"]
+                    ai_tracker.log_model_call(
+                        model_name=ai_call.get("model_name", "Unknown"),
+                        stage=ai_call.get("stage", "unknown"),
+                        task=ai_call.get("task", "unknown"),
+                        latency_ms=ai_call.get("latency_ms", 0),
+                        confidence_score=ai_call.get("confidence_score"),
+                        result_summary=ai_call.get("result_summary"),
+                        items_processed=ai_call.get("items_processed", 0),
+                        input_tokens=ai_call.get("input_tokens"),
+                        output_tokens=ai_call.get("output_tokens"),
+                        success=ai_call.get("success", True),
+                        error=ai_call.get("error")
+                    )
+
+            # Add AI tracker summary to metadata
+            detailed_metadata["ai_tracking"] = ai_tracker.format_for_metadata()
+
             # ✅ FIX: Store metadata in job_storage so it's returned by get_job_status
             job_storage[job_id]["metadata"] = detailed_metadata
 
@@ -1063,96 +1087,7 @@ async def process_document_background(
                 )
             logger.info(f"📊 Job {job_id} progress: {progress}% - {detailed_metadata.get('current_step', 'Processing')}")
 
-        # Initialize AI model tracker for this job
-        ai_tracker = AIModelTracker(job_id)
-        job_storage[job_id]["ai_tracker"] = ai_tracker
 
-        # Create a synchronous wrapper for progress callback that can be called from threads
-        def sync_progress_callback(progress: int, details: dict = None):
-            """Synchronous progress callback that updates job storage AND database with AI tracking"""
-            try:
-                logger.info(f"🔔 SYNC PROGRESS CALLBACK CALLED: progress={progress}, details={details}")
-                job_storage[job_id]["progress"] = int(progress)
-
-                # Extract current_step from details if available
-                current_step = details.get("current_step", "Processing") if details else "Processing"
-
-                # Build detailed metadata with AI model tracking
-                detailed_metadata = {
-                    "document_id": document_id,
-                    "filename": filename,
-                    "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
-                    "title": title or filename,
-                    "description": description,
-                    "tags": document_tags,
-                    "source": "rag_upload_async",
-                    "current_step": current_step
-                }
-
-                # Add AI model usage tracking from details
-                if details:
-                    detailed_metadata.update(details)
-
-                    # Log AI model calls if provided
-                    if details.get("ai_model_call"):
-                        ai_call = details["ai_model_call"]
-                        ai_tracker.log_model_call(
-                            model_name=ai_call.get("model_name", "Unknown"),
-                            stage=ai_call.get("stage", "unknown"),
-                            task=ai_call.get("task", "unknown"),
-                            latency_ms=ai_call.get("latency_ms", 0),
-                            confidence_score=ai_call.get("confidence_score"),
-                            result_summary=ai_call.get("result_summary"),
-                            items_processed=ai_call.get("items_processed", 0),
-                            input_tokens=ai_call.get("input_tokens"),
-                            output_tokens=ai_call.get("output_tokens"),
-                            success=ai_call.get("success", True),
-                            error=ai_call.get("error")
-                        )
-
-                    # Track AI models used (legacy support)
-                    if details.get("llama_calls", 0) > 0 or details.get("llama_classifications", 0) > 0:
-                        detailed_metadata["ai_models_used"] = detailed_metadata.get("ai_models_used", [])
-                        if "LLAMA" not in detailed_metadata["ai_models_used"]:
-                            detailed_metadata["ai_models_used"].append("LLAMA")
-                    if details.get("claude_calls", 0) > 0 or details.get("anthropic_calls", 0) > 0:
-                        detailed_metadata["ai_models_used"] = detailed_metadata.get("ai_models_used", [])
-                        if "Anthropic" not in detailed_metadata["ai_models_used"]:
-                            detailed_metadata["ai_models_used"].append("Anthropic")
-                    if details.get("clip_embeddings", 0) > 0:
-                        detailed_metadata["ai_models_used"] = detailed_metadata.get("ai_models_used", [])
-                        if "CLIP" not in detailed_metadata["ai_models_used"]:
-                            detailed_metadata["ai_models_used"].append("CLIP")
-
-                # Add AI tracker summary to metadata
-                detailed_metadata["ai_tracking"] = ai_tracker.format_for_metadata()
-
-                job_storage[job_id]["metadata"] = detailed_metadata
-                logger.info(f"📊 Job {job_id} progress: {progress}% - {current_step}")
-
-                # ✅ CRITICAL FIX: Update database immediately with progress
-                if job_recovery_service:
-                    try:
-                        # Use asyncio.run to execute async function from sync context
-                        import asyncio
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        loop.run_until_complete(
-                            job_recovery_service.persist_job(
-                                job_id=job_id,
-                                document_id=document_id,
-                                filename=filename,
-                                status="processing",
-                                progress=progress,
-                                metadata=detailed_metadata
-                            )
-                        )
-                        loop.close()
-                        logger.info(f"✅ Database updated: Job {job_id} progress {progress}%")
-                    except Exception as db_error:
-                        logger.warning(f"Failed to update database progress: {db_error}")
-            except Exception as e:
-                logger.warning(f"Failed to update progress: {e}")
 
         # Process document through LlamaIndex service with progress tracking and granular checkpoints
         # Skip if resuming from a later checkpoint
