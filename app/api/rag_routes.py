@@ -28,6 +28,7 @@ from app.services.product_creation_service import ProductCreationService
 from app.services.job_recovery_service import JobRecoveryService
 from app.services.checkpoint_recovery_service import checkpoint_recovery_service, ProcessingStage
 from app.services.supabase_client import get_supabase_client
+from app.services.ai_model_tracker import AIModelTracker
 from app.utils.logging import PDFProcessingLogger
 
 logger = logging.getLogger(__name__)
@@ -1062,9 +1063,13 @@ async def process_document_background(
                 )
             logger.info(f"📊 Job {job_id} progress: {progress}% - {detailed_metadata.get('current_step', 'Processing')}")
 
+        # Initialize AI model tracker for this job
+        ai_tracker = AIModelTracker(job_id)
+        job_storage[job_id]["ai_tracker"] = ai_tracker
+
         # Create a synchronous wrapper for progress callback that can be called from threads
         def sync_progress_callback(progress: int, details: dict = None):
-            """Synchronous progress callback that updates job storage AND database"""
+            """Synchronous progress callback that updates job storage AND database with AI tracking"""
             try:
                 logger.info(f"🔔 SYNC PROGRESS CALLBACK CALLED: progress={progress}, details={details}")
                 job_storage[job_id]["progress"] = int(progress)
@@ -1084,10 +1089,28 @@ async def process_document_background(
                     "current_step": current_step
                 }
 
-                # Add AI model usage tracking
+                # Add AI model usage tracking from details
                 if details:
                     detailed_metadata.update(details)
-                    # Track AI models used
+
+                    # Log AI model calls if provided
+                    if details.get("ai_model_call"):
+                        ai_call = details["ai_model_call"]
+                        ai_tracker.log_model_call(
+                            model_name=ai_call.get("model_name", "Unknown"),
+                            stage=ai_call.get("stage", "unknown"),
+                            task=ai_call.get("task", "unknown"),
+                            latency_ms=ai_call.get("latency_ms", 0),
+                            confidence_score=ai_call.get("confidence_score"),
+                            result_summary=ai_call.get("result_summary"),
+                            items_processed=ai_call.get("items_processed", 0),
+                            input_tokens=ai_call.get("input_tokens"),
+                            output_tokens=ai_call.get("output_tokens"),
+                            success=ai_call.get("success", True),
+                            error=ai_call.get("error")
+                        )
+
+                    # Track AI models used (legacy support)
                     if details.get("llama_calls", 0) > 0 or details.get("llama_classifications", 0) > 0:
                         detailed_metadata["ai_models_used"] = detailed_metadata.get("ai_models_used", [])
                         if "LLAMA" not in detailed_metadata["ai_models_used"]:
@@ -1100,6 +1123,9 @@ async def process_document_background(
                         detailed_metadata["ai_models_used"] = detailed_metadata.get("ai_models_used", [])
                         if "CLIP" not in detailed_metadata["ai_models_used"]:
                             detailed_metadata["ai_models_used"].append("CLIP")
+
+                # Add AI tracker summary to metadata
+                detailed_metadata["ai_tracking"] = ai_tracker.format_for_metadata()
 
                 job_storage[job_id]["metadata"] = detailed_metadata
                 logger.info(f"📊 Job {job_id} progress: {progress}% - {current_step}")
@@ -1877,6 +1903,152 @@ async def advanced_query_search(
             document_ids=request.document_ids,
             metadata_filters=request.metadata_filters,
             search_operator=search_operator
+        )
+
+
+@router.get("/job/{job_id}/ai-tracking")
+async def get_job_ai_tracking(job_id: str):
+    """
+    Get detailed AI model tracking information for a job.
+
+    Returns comprehensive metrics on:
+    - Which AI models were used (LLAMA, Anthropic, CLIP, OpenAI)
+    - Confidence scores and results
+    - Token usage and processing time
+    - Success/failure rates
+    - Per-stage breakdown
+    """
+    try:
+        if job_id not in job_storage:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Job {job_id} not found"
+            )
+
+        job_info = job_storage[job_id]
+        ai_tracker = job_info.get("ai_tracker")
+
+        if not ai_tracker:
+            return {
+                "job_id": job_id,
+                "message": "No AI tracking data available for this job",
+                "status": job_info.get("status", "unknown")
+            }
+
+        # Get comprehensive summary
+        summary = ai_tracker.get_job_summary()
+
+        return {
+            "job_id": job_id,
+            "status": job_info.get("status", "processing"),
+            "progress": job_info.get("progress", 0),
+            "ai_tracking": summary,
+            "metadata": job_info.get("metadata", {})
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get AI tracking for job {job_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get AI tracking: {str(e)}"
+        )
+
+
+@router.get("/job/{job_id}/ai-tracking/stage/{stage}")
+async def get_job_ai_tracking_by_stage(job_id: str, stage: str):
+    """
+    Get AI model tracking information for a specific processing stage.
+
+    Args:
+        job_id: Job identifier
+        stage: Processing stage (classification, boundary_detection, embedding, etc.)
+
+    Returns:
+        Detailed metrics for the specified stage
+    """
+    try:
+        if job_id not in job_storage:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Job {job_id} not found"
+            )
+
+        job_info = job_storage[job_id]
+        ai_tracker = job_info.get("ai_tracker")
+
+        if not ai_tracker:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No AI tracking data available for this job"
+            )
+
+        stage_details = ai_tracker.get_stage_details(stage)
+
+        if not stage_details:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No tracking data for stage: {stage}"
+            )
+
+        return stage_details
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get AI tracking for job {job_id} stage {stage}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get AI tracking: {str(e)}"
+        )
+
+
+@router.get("/job/{job_id}/ai-tracking/model/{model_name}")
+async def get_job_ai_tracking_by_model(job_id: str, model_name: str):
+    """
+    Get AI model tracking information for a specific AI model.
+
+    Args:
+        job_id: Job identifier
+        model_name: AI model name (LLAMA, Anthropic, CLIP, OpenAI)
+
+    Returns:
+        Statistics for the specified AI model
+    """
+    try:
+        if job_id not in job_storage:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Job {job_id} not found"
+            )
+
+        job_info = job_storage[job_id]
+        ai_tracker = job_info.get("ai_tracker")
+
+        if not ai_tracker:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No AI tracking data available for this job"
+            )
+
+        model_stats = ai_tracker.get_model_stats(model_name)
+
+        if not model_stats:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No tracking data for model: {model_name}"
+            )
+
+        return model_stats
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get AI tracking for job {job_id} model {model_name}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get AI tracking: {str(e)}"
         )
         
         processing_time = (datetime.utcnow() - start_time).total_seconds()
