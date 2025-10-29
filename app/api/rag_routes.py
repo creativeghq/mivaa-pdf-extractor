@@ -366,14 +366,16 @@ async def upload_document_async(
         # Create placeholder document record FIRST (to satisfy foreign key constraint)
         supabase_client = get_supabase_client()
         try:
-            supabase_client.table('documents').insert({
+            supabase_client.client.table('documents').insert({
                 'id': document_id,
-                'title': title or file.filename,
-                'description': description,
                 'filename': file.filename,
-                'file_type': file.content_type,
-                'status': 'processing',
-                'created_at': datetime.utcnow().isoformat()
+                'content_type': file.content_type,
+                'processing_status': 'processing',
+                'metadata': {
+                    'title': title or file.filename,
+                    'description': description,
+                    'catalog': catalog
+                }
             }).execute()
             logger.info(f"✅ Created placeholder document record: {document_id}")
         except Exception as e:
@@ -474,7 +476,7 @@ async def get_job_status(job_id: str):
     try:
         supabase_client = get_supabase_client()
         logger.info(f"🔍 Checking database for job {job_id}")
-        response = supabase_client.table('background_jobs').select('*').eq('id', job_id).execute()
+        response = supabase_client.client.table('background_jobs').select('*').eq('id', job_id).execute()
         logger.info(f"🔍 Database response: data={response.data}, count={len(response.data) if response.data else 0}")
 
         if response.data and len(response.data) > 0:
@@ -1062,7 +1064,7 @@ async def process_document_background(
 
         # Create a synchronous wrapper for progress callback that can be called from threads
         def sync_progress_callback(progress: int, details: dict = None):
-            """Synchronous progress callback that updates job storage directly"""
+            """Synchronous progress callback that updates job storage AND database"""
             try:
                 logger.info(f"🔔 SYNC PROGRESS CALLBACK CALLED: progress={progress}, details={details}")
                 job_storage[job_id]["progress"] = int(progress)
@@ -1070,7 +1072,7 @@ async def process_document_background(
                 # Extract current_step from details if available
                 current_step = details.get("current_step", "Processing") if details else "Processing"
 
-                # Build detailed metadata
+                # Build detailed metadata with AI model tracking
                 detailed_metadata = {
                     "document_id": document_id,
                     "filename": filename,
@@ -1082,11 +1084,47 @@ async def process_document_background(
                     "current_step": current_step
                 }
 
+                # Add AI model usage tracking
                 if details:
                     detailed_metadata.update(details)
+                    # Track AI models used
+                    if details.get("llama_calls", 0) > 0 or details.get("llama_classifications", 0) > 0:
+                        detailed_metadata["ai_models_used"] = detailed_metadata.get("ai_models_used", [])
+                        if "LLAMA" not in detailed_metadata["ai_models_used"]:
+                            detailed_metadata["ai_models_used"].append("LLAMA")
+                    if details.get("claude_calls", 0) > 0 or details.get("anthropic_calls", 0) > 0:
+                        detailed_metadata["ai_models_used"] = detailed_metadata.get("ai_models_used", [])
+                        if "Anthropic" not in detailed_metadata["ai_models_used"]:
+                            detailed_metadata["ai_models_used"].append("Anthropic")
+                    if details.get("clip_embeddings", 0) > 0:
+                        detailed_metadata["ai_models_used"] = detailed_metadata.get("ai_models_used", [])
+                        if "CLIP" not in detailed_metadata["ai_models_used"]:
+                            detailed_metadata["ai_models_used"].append("CLIP")
 
                 job_storage[job_id]["metadata"] = detailed_metadata
                 logger.info(f"📊 Job {job_id} progress: {progress}% - {current_step}")
+
+                # ✅ CRITICAL FIX: Update database immediately with progress
+                if job_recovery_service:
+                    try:
+                        # Use asyncio.run to execute async function from sync context
+                        import asyncio
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(
+                            job_recovery_service.persist_job(
+                                job_id=job_id,
+                                document_id=document_id,
+                                filename=filename,
+                                status="processing",
+                                progress=progress,
+                                metadata=detailed_metadata
+                            )
+                        )
+                        loop.close()
+                        logger.info(f"✅ Database updated: Job {job_id} progress {progress}%")
+                    except Exception as db_error:
+                        logger.warning(f"Failed to update database progress: {db_error}")
             except Exception as e:
                 logger.warning(f"Failed to update progress: {e}")
 
@@ -1185,7 +1223,7 @@ async def process_document_background(
                 },
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
-                progress_callback=enhanced_progress_callback
+                progress_callback=sync_progress_callback
             )
 
             # Create IMAGE_EMBEDDINGS_GENERATED checkpoint after CLIP embeddings
