@@ -137,7 +137,7 @@ class PDFProcessor:
         self.chunking_service = UnifiedChunkingService(chunking_config)
         
         # Default processing options
-        self.default_timeout = self.config.get('timeout_seconds', 1800)  # 30 minutes for large PDFs with OCR
+        self.default_timeout = self.config.get('timeout_seconds', 7200)  # 2 hours for large PDFs with OCR
         self.max_file_size = self.config.get('max_file_size_mb', 50) * 1024 * 1024  # Convert to bytes
         self.temp_dir_base = self.config.get('temp_dir', tempfile.gettempdir())
         
