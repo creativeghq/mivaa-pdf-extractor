@@ -100,7 +100,7 @@ class AsyncQueueService:
                 jobs.append(job)
 
             if jobs:
-                self.supabase.client.table('ai_analysis_queue').insert(jobs).execute()
+                self.supabase.table('ai_analysis_queue').insert(jobs).execute()
                 logger.info(f"✅ Queued {len(jobs)} AI analysis jobs for document {document_id}")
 
             return len(jobs)
