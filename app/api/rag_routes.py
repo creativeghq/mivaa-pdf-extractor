@@ -528,13 +528,15 @@ async def get_job_status(job_id: str):
                     f"🚨 [CRITICAL] Job {job_id} exists in memory but NOT in database! "
                     f"This indicates a database sync failure."
                 )
+                # Create serializable copy of job_storage (exclude ai_tracker)
+                memory_state = {k: v for k, v in job_storage[job_id].items() if k != 'ai_tracker'}
                 return JSONResponse(
                     status_code=500,
                     content={
                         "error": "Database sync failure",
                         "detail": "Job exists in memory but not in database",
                         "job_id": job_id,
-                        "memory_state": job_storage[job_id]
+                        "memory_state": memory_state
                     }
                 )
 
