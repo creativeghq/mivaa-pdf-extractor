@@ -609,7 +609,7 @@ async def restart_job_from_checkpoint(job_id: str):
 
         # Mark job for restart
         supabase_client = get_supabase_client()
-        supabase_client.client.table('background_jobs').update({
+        supabase_client.table('background_jobs').update({
             "status": "pending_restart",
             "metadata": {
                 "restart_from_stage": resume_stage,
@@ -635,6 +635,71 @@ async def restart_job_from_checkpoint(job_id: str):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to restart job: {str(e)}"
+        )
+
+
+@router.post("/documents/job/{job_id}/resume")
+async def resume_job(job_id: str):
+    """
+    Resume a job from its last checkpoint (alias for restart).
+
+    This endpoint is the same as /jobs/{job_id}/restart but with a more intuitive name.
+    """
+    return await restart_job_from_checkpoint(job_id)
+
+
+@router.get("/documents/jobs")
+async def list_jobs(
+    limit: int = 10,
+    offset: int = 0,
+    status_filter: Optional[str] = None,
+    sort: str = "created_at:desc"
+):
+    """
+    List all background jobs with optional filtering and sorting.
+
+    Args:
+        limit: Maximum number of jobs to return (default: 10)
+        offset: Number of jobs to skip (default: 0)
+        status_filter: Filter by status (pending, processing, completed, failed, interrupted)
+        sort: Sort order (created_at:desc, created_at:asc, progress:desc, progress:asc)
+
+    Returns:
+        List of jobs with status, progress, and metadata
+    """
+    try:
+        supabase_client = get_supabase_client()
+
+        # Build query
+        query = supabase_client.table('background_jobs').select('*')
+
+        # Apply status filter
+        if status_filter:
+            query = query.eq('status', status_filter)
+
+        # Apply sorting
+        if ':' in sort:
+            field, direction = sort.split(':')
+            ascending = direction.lower() == 'asc'
+            query = query.order(field, desc=not ascending)
+        else:
+            query = query.order('created_at', desc=True)
+
+        # Apply pagination
+        query = query.range(offset, offset + limit - 1)
+
+        # Execute query
+        result = query.execute()
+
+        jobs = result.data if result.data else []
+
+        return JSONResponse(content=jobs)
+
+    except Exception as e:
+        logger.error(f"Failed to list jobs: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list jobs: {str(e)}"
         )
 
 
