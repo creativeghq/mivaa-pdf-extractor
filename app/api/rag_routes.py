@@ -1293,7 +1293,7 @@ async def process_document_background(
             if chunks_created > 0:
                 logger.info(f"🏭 Scheduling background product creation for document {document_id}")
                 # Start product creation in background (don't await)
-                import asyncio
+                # Note: asyncio is already imported at the top of the file
                 asyncio.create_task(create_products_background(
                     document_id=document_id,
                     workspace_id="ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
