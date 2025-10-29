@@ -29,6 +29,7 @@ from app.services.job_recovery_service import JobRecoveryService
 from app.services.checkpoint_recovery_service import checkpoint_recovery_service, ProcessingStage
 from app.services.supabase_client import get_supabase_client
 from app.services.ai_model_tracker import AIModelTracker
+from app.services.focused_product_extractor import get_focused_product_extractor
 from app.utils.logging import PDFProcessingLogger
 
 logger = logging.getLogger(__name__)
@@ -2147,4 +2148,147 @@ async def get_job_ai_tracking_by_model(job_id: str, model_name: str):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Advanced query search failed: {str(e)}"
+        )
+
+
+@router.post("/documents/upload-focused")
+async def upload_focused_product_pdf(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    product_name: str = Form(...),
+    designer: Optional[str] = Form(None),
+    search_terms: Optional[str] = Form(None),
+    title: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
+    tags: Optional[str] = Form(None)
+):
+    """
+    Upload PDF and process ONLY pages containing a specific product.
+
+    This endpoint:
+    1. Scans the PDF to find pages containing the product
+    2. Extracts only those pages to a new PDF
+    3. Processes only the focused PDF (not the entire document)
+    4. Returns detailed results for the specific product
+
+    Args:
+        file: PDF file to upload
+        product_name: Product name to search for (e.g., "NOVA")
+        designer: Optional designer name (e.g., "SG NY")
+        search_terms: Optional comma-separated additional search terms
+        title: Optional document title
+        description: Optional description
+        tags: Optional comma-separated tags
+
+    Returns:
+        Job ID and status URL for monitoring
+    """
+    import tempfile
+    import os
+
+    try:
+        # Generate IDs
+        job_id = str(uuid4())
+        document_id = str(uuid4())
+
+        logger.info(f"🎯 FOCUSED PRODUCT EXTRACTION: {product_name}")
+        logger.info(f"   Job ID: {job_id}")
+        logger.info(f"   Document ID: {document_id}")
+        logger.info(f"   Designer: {designer}")
+
+        # Read PDF content
+        file_content = await file.read()
+
+        # Save to temporary file for page scanning
+        temp_dir = tempfile.mkdtemp()
+        original_pdf_path = os.path.join(temp_dir, "original.pdf")
+        focused_pdf_path = os.path.join(temp_dir, "focused.pdf")
+
+        with open(original_pdf_path, 'wb') as f:
+            f.write(file_content)
+
+        # Find product pages
+        extractor = get_focused_product_extractor()
+        search_terms_list = search_terms.split(',') if search_terms else None
+
+        page_numbers = extractor.find_product_pages(
+            original_pdf_path,
+            product_name,
+            designer,
+            search_terms_list
+        )
+
+        if not page_numbers:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Product '{product_name}' not found in PDF"
+            )
+
+        # Extract product metadata
+        product_metadata = extractor.get_product_metadata_from_pages(
+            original_pdf_path,
+            page_numbers,
+            product_name
+        )
+
+        # Extract focused pages to new PDF
+        extractor.extract_product_pages_to_pdf(
+            original_pdf_path,
+            focused_pdf_path,
+            page_numbers
+        )
+
+        # Read focused PDF
+        with open(focused_pdf_path, 'rb') as f:
+            focused_pdf_content = f.read()
+
+        # Clean up temp files
+        os.remove(original_pdf_path)
+        os.remove(focused_pdf_path)
+        os.rmdir(temp_dir)
+
+        logger.info(f"✅ Created focused PDF with {len(page_numbers)} pages")
+        logger.info(f"   Pages: {[p+1 for p in page_numbers]}")
+
+        # Process the focused PDF using existing pipeline
+        # This will now only process the product-specific pages
+        background_tasks.add_task(
+            process_pdf_background,
+            job_id,
+            document_id,
+            focused_pdf_content,
+            file.filename,
+            title or f"{product_name} - Focused Extraction",
+            description or f"Focused extraction of {product_name} product",
+            tags,
+            {
+                "focused_extraction": True,
+                "product_name": product_name,
+                "designer": designer,
+                "original_pages": [p+1 for p in page_numbers],
+                "product_metadata": product_metadata
+            }
+        )
+
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={
+                "job_id": job_id,
+                "document_id": document_id,
+                "status": "pending",
+                "message": f"Focused extraction started for product: {product_name}",
+                "status_url": f"/api/rag/documents/job/{job_id}",
+                "pages_found": len(page_numbers),
+                "page_numbers": [p+1 for p in page_numbers],
+                "product_metadata": product_metadata
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Focused product extraction failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Focused product extraction failed: {str(e)}"
         )
