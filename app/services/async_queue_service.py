@@ -18,7 +18,8 @@ class AsyncQueueService:
     """Service for managing async job queues"""
 
     def __init__(self):
-        self.supabase = get_supabase_client()
+        supabase_wrapper = get_supabase_client()
+        self.supabase = supabase_wrapper.client
 
     async def queue_image_processing_jobs(
         self,
@@ -54,7 +55,7 @@ class AsyncQueueService:
                 jobs.append(job)
 
             if jobs:
-                self.supabase.table('image_processing_queue').insert(jobs).execute()
+                self.supabase.client.table('image_processing_queue').insert(jobs).execute()
                 logger.info(f"✅ Queued {len(jobs)} image processing jobs for document {document_id}")
 
             return len(jobs)
@@ -99,7 +100,7 @@ class AsyncQueueService:
                 jobs.append(job)
 
             if jobs:
-                self.supabase.table('ai_analysis_queue').insert(jobs).execute()
+                self.supabase.client.table('ai_analysis_queue').insert(jobs).execute()
                 logger.info(f"✅ Queued {len(jobs)} AI analysis jobs for document {document_id}")
 
             return len(jobs)
@@ -145,7 +146,7 @@ class AsyncQueueService:
             if metadata:
                 data['metadata'] = metadata
 
-            self.supabase.table('job_progress').upsert(
+            self.supabase.client.table('job_progress').upsert(
                 data,
                 on_conflict='document_id,stage'
             ).execute()
@@ -165,17 +166,17 @@ class AsyncQueueService:
         """
         try:
             # Get image queue metrics
-            image_queue = self.supabase.table('image_processing_queue').select(
+            image_queue = self.supabase.client.table('image_processing_queue').select(
                 'status, count'
             ).execute()
 
             # Get AI queue metrics
-            ai_queue = self.supabase.table('ai_analysis_queue').select(
+            ai_queue = self.supabase.client.table('ai_analysis_queue').select(
                 'status, count'
             ).execute()
 
             # Get active documents
-            progress = self.supabase.table('job_progress').select(
+            progress = self.supabase.client.table('job_progress').select(
                 'document_id'
             ).eq('progress', '<', 100).execute()
 
@@ -214,7 +215,7 @@ class AsyncQueueService:
 
             if retry_count < 3:
                 # Re-queue for retry
-                self.supabase.table(table_name).update({
+                self.supabase.client.table(table_name).update({
                     'status': 'pending',
                     'retry_count': retry_count + 1,
                     'error_message': error_message,
@@ -224,7 +225,7 @@ class AsyncQueueService:
                 logger.info(f"🔄 Re-queued job {job_id} for retry (attempt {retry_count + 1}/3)")
             else:
                 # Mark as permanently failed
-                self.supabase.table(table_name).update({
+                self.supabase.client.table(table_name).update({
                     'status': 'failed',
                     'error_message': f"Max retries exceeded: {error_message}",
                     'updated_at': datetime.utcnow().isoformat()

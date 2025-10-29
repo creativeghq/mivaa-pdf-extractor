@@ -8,6 +8,7 @@ proper error handling while leveraging the proven PDF extraction code.
 
 import asyncio
 import base64
+import inspect
 import logging
 import os
 import tempfile
@@ -540,14 +541,16 @@ class PDFProcessor:
                 # Update progress: Starting text extraction (30%)
                 if progress_callback:
                     try:
-                        progress_callback(
-                            progress=30,
-                            details={
-                                "current_step": "Extracting text from PDF using PyMuPDF4LLM",
-                                "total_pages": total_pages,
-                                "extraction_method": "pymupdf4llm"
-                            }
-                        )
+                        # Only call if it's not a coroutine (sync callbacks only in sync function)
+                        if not inspect.iscoroutinefunction(progress_callback):
+                            progress_callback(
+                                progress=30,
+                                details={
+                                    "current_step": "Extracting text from PDF using PyMuPDF4LLM",
+                                    "total_pages": total_pages,
+                                    "extraction_method": "pymupdf4llm"
+                                }
+                            )
                     except Exception as callback_error:
                         self.logger.warning(f"Progress callback failed: {callback_error}")
 
@@ -610,15 +613,17 @@ class PDFProcessor:
             # Update progress: Text extraction complete (50%)
             if progress_callback:
                 try:
-                    progress_callback(
-                        progress=50,
-                        details={
-                            "current_step": "Text extraction complete, preparing for chunking",
-                            "total_pages": total_pages,
-                            "text_length": len(markdown_content),
-                            "extraction_method": "pymupdf4llm"
-                        }
-                    )
+                    # Only call if it's not a coroutine (sync callbacks only in sync function)
+                    if not inspect.iscoroutinefunction(progress_callback):
+                        progress_callback(
+                            progress=50,
+                            details={
+                                "current_step": "Text extraction complete, preparing for chunking",
+                                "total_pages": total_pages,
+                                "text_length": len(markdown_content),
+                                "extraction_method": "pymupdf4llm"
+                            }
+                        )
                 except Exception as callback_error:
                     self.logger.warning(f"Progress callback failed: {callback_error}")
 
@@ -713,15 +718,17 @@ class PDFProcessor:
                     # Update job progress if callback provided
                     if progress_callback:
                         try:
-                            progress_callback(
-                                progress=int(progress),
-                                details={
-                                    "current_step": f"OCR processing: {i + 1}/{len(page_range)} pages",
-                                    "pages_processed": i + 1,
-                                    "total_pages": len(page_range),
-                                    "ocr_stage": "extracting_text"
-                                }
-                            )
+                            # Only call if it's not a coroutine (sync callbacks only in sync function)
+                            if not inspect.iscoroutinefunction(progress_callback):
+                                progress_callback(
+                                    progress=int(progress),
+                                    details={
+                                        "current_step": f"OCR processing: {i + 1}/{len(page_range)} pages",
+                                        "pages_processed": i + 1,
+                                        "total_pages": len(page_range),
+                                        "ocr_stage": "extracting_text"
+                                    }
+                                )
                         except Exception as callback_error:
                             self.logger.warning(f"Progress callback failed: {callback_error}")
 
@@ -734,16 +741,18 @@ class PDFProcessor:
             # Update progress for chunk creation
             if progress_callback:
                 try:
-                    progress_callback(
-                        progress=85,
-                        details={
-                            "current_step": "Creating text chunks for RAG pipeline",
-                            "pages_processed": len(page_range),
-                            "total_pages": len(page_range),
-                            "text_length": len(final_text),
-                            "ocr_stage": "creating_chunks"
-                        }
-                    )
+                    # Only call if it's not a coroutine (sync callbacks only in sync function)
+                    if not inspect.iscoroutinefunction(progress_callback):
+                        progress_callback(
+                            progress=85,
+                            details={
+                                "current_step": "Creating text chunks for RAG pipeline",
+                                "pages_processed": len(page_range),
+                                "total_pages": len(page_range),
+                                "text_length": len(final_text),
+                                "ocr_stage": "creating_chunks"
+                            }
+                        )
                 except Exception as callback_error:
                     self.logger.warning(f"Progress callback failed: {callback_error}")
 
