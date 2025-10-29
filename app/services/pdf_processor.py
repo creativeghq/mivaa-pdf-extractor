@@ -1600,11 +1600,18 @@ class PDFProcessor:
             ]
             
             # Get image embedding
+            # Convert PIL Image to bytes for CLIP model
+            import io
+            img_byte_arr = io.BytesIO()
+            image.save(img_byte_arr, format='PNG')
+            img_byte_arr.seek(0)
+            image_bytes = img_byte_arr.read()
+
             loop = asyncio.get_event_loop()
             image_embedding = await loop.run_in_executor(
                 None,
                 clip_model.get_image_embedding,
-                image
+                image_bytes
             )
             image_embedding = image_embedding.tolist() if hasattr(image_embedding, 'tolist') else list(image_embedding)
             
@@ -1796,7 +1803,7 @@ class PDFProcessor:
             
             for idx, item in enumerate(images_to_process):
                 image_data = item['data']
-                ocr_decision = item['decision']
+                ocr_decision = item['clip_decision']
                 image_path = image_data.get('path')
 
                 try:
