@@ -2250,8 +2250,14 @@ async def upload_focused_product_pdf(
         logger.info(f"✅ Created focused PDF with {len(page_numbers)} pages")
         logger.info(f"   Pages: {[p+1 for p in page_numbers]}")
 
-        # Parse tags
+        # Parse tags and add focused extraction metadata
         document_tags = tags.split(',') if tags else []
+        document_tags.extend([
+            f"focused:{product_name}",
+            f"designer:{designer}" if designer else None,
+            f"pages:{len(page_numbers)}"
+        ])
+        document_tags = [t for t in document_tags if t]  # Remove None values
 
         # Process the focused PDF using existing pipeline
         # This will now only process the product-specific pages
@@ -2262,18 +2268,10 @@ async def upload_focused_product_pdf(
             focused_pdf_content,
             file.filename,
             title or f"{product_name} - Focused Extraction",
-            description or f"Focused extraction of {product_name} product",
+            description or f"Focused extraction of {product_name} product. Pages: {[p+1 for p in page_numbers]}. Metadata: {product_metadata}",
             document_tags,
             1000,  # chunk_size
-            200,   # chunk_overlap
-            None,  # llamaindex_service
-            {
-                "focused_extraction": True,
-                "product_name": product_name,
-                "designer": designer,
-                "original_pages": [p+1 for p in page_numbers],
-                "product_metadata": product_metadata
-            }
+            200    # chunk_overlap
         )
 
         return JSONResponse(
