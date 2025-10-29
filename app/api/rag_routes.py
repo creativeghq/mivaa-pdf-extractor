@@ -1217,7 +1217,7 @@ async def process_document_background(
                 },
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
-                progress_callback=sync_progress_callback
+                progress_callback=enhanced_progress_callback
             )
 
             # Create IMAGE_EMBEDDINGS_GENERATED checkpoint after CLIP embeddings
