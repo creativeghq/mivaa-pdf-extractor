@@ -2250,17 +2250,23 @@ async def upload_focused_product_pdf(
         logger.info(f"✅ Created focused PDF with {len(page_numbers)} pages")
         logger.info(f"   Pages: {[p+1 for p in page_numbers]}")
 
+        # Parse tags
+        document_tags = tags.split(',') if tags else []
+
         # Process the focused PDF using existing pipeline
         # This will now only process the product-specific pages
         background_tasks.add_task(
-            process_pdf_background,
+            process_document_background,
             job_id,
             document_id,
             focused_pdf_content,
             file.filename,
             title or f"{product_name} - Focused Extraction",
             description or f"Focused extraction of {product_name} product",
-            tags,
+            document_tags,
+            1000,  # chunk_size
+            200,   # chunk_overlap
+            None,  # llamaindex_service
             {
                 "focused_extraction": True,
                 "product_name": product_name,
