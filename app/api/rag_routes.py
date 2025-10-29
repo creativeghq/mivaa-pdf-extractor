@@ -1840,6 +1840,24 @@ async def advanced_query_search(
             search_operator=search_operator
         )
 
+        processing_time = (datetime.utcnow() - start_time).total_seconds()
+
+        return AdvancedQueryResponse(
+            query=request.query,
+            results=results.get('results', []),
+            total_results=results.get('total_results', 0),
+            processing_time=processing_time,
+            query_type=request.query_type,
+            optimizations_applied=results.get('optimizations_applied', [])
+        )
+
+    except Exception as e:
+        logger.error(f"Advanced query search failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Advanced query search failed: {str(e)}"
+        )
+
 
 @router.get("/job/{job_id}/ai-tracking")
 async def get_job_ai_tracking(job_id: str):
