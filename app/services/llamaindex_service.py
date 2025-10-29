@@ -1468,7 +1468,7 @@ class LlamaIndexService:
                     analysis_type='classification',
                     priority=0
                 )
-                logger.info(f"✅ Queued {ai_jobs_queued} AI analysis jobs for document {document_id}")
+                self.logger.info(f"✅ Queued {ai_jobs_queued} AI analysis jobs for document {document_id}")
 
                 # Update progress to Stage 3 (40-60%)
                 await async_queue_service.update_progress(
@@ -2746,15 +2746,13 @@ Summary:"""
             return result
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to store chunks in database: {e}")
-            return {
-                "chunks_stored": 0,
-                "embeddings_stored": 0,
-                "failed_chunks": len(nodes),
-                "total_processed": len(nodes),
-                "success_rate": 0,
-                "error": str(e)
-            }
+            self.logger.error(f"❌ CRITICAL: Failed to store chunks in database: {e}", exc_info=True)
+            self.logger.error(f"   Document ID: {document_id}")
+            self.logger.error(f"   Total nodes to process: {len(nodes)}")
+            self.logger.error(f"   Chunks stored before error: {chunks_stored}")
+            self.logger.error(f"   Embeddings stored before error: {embeddings_stored}")
+            # RE-RAISE the exception so the background task knows it failed
+            raise RuntimeError(f"Failed to store chunks in database: {str(e)}") from e
 
     def _generate_content_hash(self, content: str) -> str:
         """
