@@ -1139,7 +1139,7 @@ from app.api.anthropic_routes import router as anthropic_router
 from app.api.products import router as products_router
 from app.api.embeddings import router as embeddings_router
 from app.api.monitoring_routes import router as monitoring_router
-from app.api.admin.chunk_quality import router as chunk_quality_router
+from app.api.admin_modules_old.chunk_quality import router as chunk_quality_router
 from app.api.ai_metrics_routes import router as ai_metrics_router
 from app.api.ai_services_routes import router as ai_services_router
 
