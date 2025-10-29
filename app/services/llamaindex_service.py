@@ -1460,15 +1460,15 @@ class LlamaIndexService:
                 )
 
                 # ✅ NEW: Queue AI analysis jobs for chunks (Stage 4)
-                # TEMPORARILY DISABLED: Chunk ID format mismatch - nodes have 'doc_id_chunk_N' but DB expects UUIDs
-                # TODO: Fix chunk ID mapping before re-enabling
-                # async_queue_service = get_async_queue_service()
-                # ai_jobs_queued = await async_queue_service.queue_ai_analysis_jobs(
-                #     document_id=document_id,
-                #     chunks=[{'id': node.metadata.get('chunk_id')} for node in nodes],
-                #     analysis_type='classification',
-                #     priority=0
-                # )
+                # Use db_chunk_id (database UUID) instead of chunk_id (string format)
+                async_queue_service = get_async_queue_service()
+                ai_jobs_queued = await async_queue_service.queue_ai_analysis_jobs(
+                    document_id=document_id,
+                    chunks=[{'id': node.metadata.get('db_chunk_id')} for node in nodes if node.metadata.get('db_chunk_id')],
+                    analysis_type='classification',
+                    priority=0
+                )
+                logger.info(f"✅ Queued {ai_jobs_queued} AI analysis jobs for document {document_id}")
 
                 # Update progress to Stage 3 (40-60%)
                 await async_queue_service.update_progress(
