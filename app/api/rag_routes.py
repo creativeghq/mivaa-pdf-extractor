@@ -2259,6 +2259,22 @@ async def upload_focused_product_pdf(
         ])
         document_tags = [t for t in document_tags if t]  # Remove None values
 
+        # Initialize job in job_storage (required by process_document_background)
+        job_storage[job_id] = {
+            "job_id": job_id,
+            "document_id": document_id,
+            "status": "pending",
+            "progress": 0,
+            "metadata": {
+                "focused_extraction": True,
+                "product_name": product_name,
+                "designer": designer,
+                "pages_found": len(page_numbers),
+                "page_numbers": [p+1 for p in page_numbers],
+                "product_metadata": product_metadata
+            }
+        }
+
         # Process the focused PDF using existing pipeline
         # This will now only process the product-specific pages
         background_tasks.add_task(
