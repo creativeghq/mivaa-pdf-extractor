@@ -1600,18 +1600,12 @@ class PDFProcessor:
             ]
             
             # Get image embedding
-            # Convert PIL Image to bytes for CLIP model
-            import io
-            img_byte_arr = io.BytesIO()
-            image.save(img_byte_arr, format='PNG')
-            img_byte_arr.seek(0)
-            image_bytes = img_byte_arr.read()
-
+            # CLIP model accepts PIL Image object directly
             loop = asyncio.get_event_loop()
             image_embedding = await loop.run_in_executor(
                 None,
                 clip_model.get_image_embedding,
-                image_bytes
+                image  # Pass PIL Image object, not bytes
             )
             image_embedding = image_embedding.tolist() if hasattr(image_embedding, 'tolist') else list(image_embedding)
             
