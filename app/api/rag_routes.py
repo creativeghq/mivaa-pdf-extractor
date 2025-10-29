@@ -1005,6 +1005,25 @@ async def process_document_background(
                     "updated_at": start_time.isoformat()
                 }).execute()
                 logger.info(f"✅ Created placeholder document record: {document_id}")
+
+                # Also create processed_documents record (required for ai_analysis_queue foreign key)
+                try:
+                    supabase_client.client.table('processed_documents').insert({
+                        "id": document_id,  # Use same ID as documents table
+                        "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+                        "pdf_document_id": document_id,
+                        "content": "",  # Will be populated during processing
+                        "processing_status": "processing",
+                        "processing_started_at": start_time.isoformat(),
+                        "metadata": {},
+                        "created_at": start_time.isoformat(),
+                        "updated_at": start_time.isoformat()
+                    }).execute()
+                    logger.info(f"✅ Created processed_documents record: {document_id}")
+                except Exception as proc_doc_error:
+                    logger.error(f"Failed to create processed_documents record: {proc_doc_error}")
+                    # Continue anyway
+
             except Exception as doc_error:
                 logger.error(f"Failed to create document record: {doc_error}")
                 # Continue anyway - the document might already exist
