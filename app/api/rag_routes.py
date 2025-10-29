@@ -450,40 +450,27 @@ async def get_job_status(job_id: str):
     """
     Get the status of an async document processing job with checkpoint information.
 
+    ALWAYS queries the database first as the source of truth, then optionally merges
+    with in-memory data for additional real-time details.
+
     Returns:
-        - Job status and progress
+        - Job status and progress (from database)
         - Latest checkpoint information
         - Detailed metadata including AI usage, chunks, images, products
+        - In-memory state comparison (if available)
     """
-    # Check in-memory storage first
-    if job_id in job_storage:
-        job_data = job_storage[job_id]
-
-        # Enhance with checkpoint information
-        try:
-            last_checkpoint = await checkpoint_recovery_service.get_last_checkpoint(job_id)
-            if last_checkpoint:
-                job_data["last_checkpoint"] = {
-                    "stage": last_checkpoint.get('stage'),
-                    "created_at": last_checkpoint.get('created_at'),
-                    "data": last_checkpoint.get('checkpoint_data', {})
-                }
-        except Exception as e:
-            logger.error(f"Failed to get checkpoint for job {job_id}: {e}")
-
-        return JSONResponse(content=job_data)
-
-    # Check database for background_jobs
+    # ALWAYS check database FIRST - this is the source of truth
     try:
         supabase_client = get_supabase_client()
-        logger.info(f"🔍 Checking database for job {job_id}")
+        logger.info(f"🔍 [DB QUERY] Checking database for job {job_id}")
         response = supabase_client.client.table('background_jobs').select('*').eq('id', job_id).execute()
-        logger.info(f"🔍 Database response: data={response.data}, count={len(response.data) if response.data else 0}")
+        logger.info(f"🔍 [DB QUERY] Database response: data={response.data}, count={len(response.data) if response.data else 0}")
 
         if response.data and len(response.data) > 0:
             job = response.data[0]
-            logger.info(f"✅ Found job in database: {job['id']}, status={job['status']}")
+            logger.info(f"✅ [DB QUERY] Found job in database: {job['id']}, status={job['status']}, progress={job.get('progress', 0)}%")
 
+            # Build response from DATABASE data (source of truth)
             job_response = {
                 "job_id": job['id'],
                 "status": job['status'],
@@ -492,8 +479,32 @@ async def get_job_status(job_id: str):
                 "error": job.get('error'),
                 "metadata": job.get('metadata', {}),
                 "created_at": job.get('created_at'),
-                "updated_at": job.get('updated_at')
+                "updated_at": job.get('updated_at'),
+                "source": "database"  # Indicate this came from DB
             }
+
+            # Optionally merge with in-memory data for comparison/debugging
+            if job_id in job_storage:
+                memory_data = job_storage[job_id]
+                logger.info(f"📊 [COMPARISON] In-memory status: {memory_data.get('status')}, progress: {memory_data.get('progress', 0)}%")
+
+                # Add comparison data
+                job_response["memory_state"] = {
+                    "status": memory_data.get('status'),
+                    "progress": memory_data.get('progress', 0),
+                    "matches_db": (
+                        memory_data.get('status') == job['status'] and
+                        memory_data.get('progress', 0) == job.get('progress', 0)
+                    )
+                }
+
+                # Log discrepancies
+                if not job_response["memory_state"]["matches_db"]:
+                    logger.warning(
+                        f"⚠️ [MISMATCH] DB vs Memory mismatch for job {job_id}: "
+                        f"DB({job['status']}, {job.get('progress', 0)}%) vs "
+                        f"Memory({memory_data.get('status')}, {memory_data.get('progress', 0)}%)"
+                    )
 
             # Add checkpoint information
             try:
@@ -509,13 +520,35 @@ async def get_job_status(job_id: str):
 
             return JSONResponse(content=job_response)
         else:
-            logger.warning(f"⚠️ Job {job_id} not found in database")
-    except Exception as e:
-        logger.error(f"Error checking database for job {job_id}: {e}", exc_info=True)
+            logger.warning(f"⚠️ [DB QUERY] Job {job_id} not found in database")
 
+            # Check if it exists in memory (shouldn't happen in normal flow)
+            if job_id in job_storage:
+                logger.error(
+                    f"🚨 [CRITICAL] Job {job_id} exists in memory but NOT in database! "
+                    f"This indicates a database sync failure."
+                )
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "error": "Database sync failure",
+                        "detail": "Job exists in memory but not in database",
+                        "job_id": job_id,
+                        "memory_state": job_storage[job_id]
+                    }
+                )
+
+    except Exception as e:
+        logger.error(f"❌ [DB ERROR] Error checking database for job {job_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database query failed: {str(e)}"
+        )
+
+    # Job not found in database or memory
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"Job {job_id} not found"
+        detail=f"Job {job_id} not found in database"
     )
 
 
