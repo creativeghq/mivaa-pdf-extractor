@@ -14,6 +14,8 @@ from pathlib import Path
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+import gc  # For garbage collection
+import psutil  # For memory monitoring
 
 # Import the real embeddings service (replaces old embedding_service.py)
 from .real_embeddings_service import RealEmbeddingsService
@@ -3255,25 +3257,38 @@ Summary:"""
             # Extract heading hierarchy from document text for context
             heading_hierarchy = self._extract_heading_hierarchy(nodes)
 
-            for i, image_info in enumerate(extracted_images):
-                try:
-                    image_path = image_info.get('path')
-                    self.logger.info(f"🔍 DEBUG - Image {i}: path={image_path}, exists={os.path.exists(image_path)}")
-                    if not image_path or not os.path.exists(image_path):
-                        continue
+            # ✅ MEMORY OPTIMIZATION: Process images in batches to avoid OOM
+            BATCH_SIZE = 5  # Process 5 images at a time
+            total_images = len(extracted_images)
 
-                    # Generate contextual name based on nearest heading
-                    contextual_name, nearest_heading, heading_level = self._generate_contextual_image_name(
-                        image_info, heading_hierarchy, i
-                    )
+            for batch_start in range(0, total_images, BATCH_SIZE):
+                batch_end = min(batch_start + BATCH_SIZE, total_images)
+                batch_images = extracted_images[batch_start:batch_end]
 
-                    # Find associated chunks based on layout proximity
-                    associated_chunks = self._find_associated_chunks(image_info, nodes)
+                # Log memory usage before batch
+                process = psutil.Process()
+                mem_before = process.memory_info().rss / 1024 / 1024  # MB
+                self.logger.info(f"🧠 Memory before batch {batch_start//BATCH_SIZE + 1}: {mem_before:.1f} MB")
 
-                    # Read image for processing
-                    with open(image_path, 'rb') as img_file:
-                        image_data = img_file.read()
-                        image_base64 = base64.b64encode(image_data).decode('utf-8')
+                for i, image_info in enumerate(batch_images, start=batch_start):
+                    try:
+                        image_path = image_info.get('path')
+                        self.logger.info(f"🔍 DEBUG - Image {i+1}/{total_images}: path={image_path}, exists={os.path.exists(image_path)}")
+                        if not image_path or not os.path.exists(image_path):
+                            continue
+
+                        # Generate contextual name based on nearest heading
+                        contextual_name, nearest_heading, heading_level = self._generate_contextual_image_name(
+                            image_info, heading_hierarchy, i
+                        )
+
+                        # Find associated chunks based on layout proximity
+                        associated_chunks = self._find_associated_chunks(image_info, nodes)
+
+                        # Read image for processing
+                        with open(image_path, 'rb') as img_file:
+                            image_data = img_file.read()
+                            image_base64 = base64.b64encode(image_data).decode('utf-8')
 
                     # Generate CLIP embeddings using existing service
                     clip_embeddings = await self._generate_clip_embeddings(image_base64, image_path)
@@ -3371,11 +3386,21 @@ Summary:"""
                             stats["material_analyses_completed"] += 1
 
                     stats["images_processed"] += 1
-                    self.logger.info(f"✅ Processed image {i+1}/{len(extracted_images)}: {contextual_name}")
+                    self.logger.info(f"✅ Processed image {i+1}/{total_images}: {contextual_name}")
 
                 except Exception as e:
                     self.logger.error(f"Failed to process image {i}: {e}")
                     continue
+
+                # ✅ MEMORY OPTIMIZATION: Clear memory after each batch
+                # Force garbage collection to free memory
+                gc.collect()
+
+                # Log memory usage after batch
+                mem_after = process.memory_info().rss / 1024 / 1024  # MB
+                mem_freed = mem_before - mem_after
+                self.logger.info(f"🧠 Memory after batch {batch_start//BATCH_SIZE + 1}: {mem_after:.1f} MB (freed: {mem_freed:.1f} MB)")
+                self.logger.info(f"✅ Completed batch {batch_start//BATCH_SIZE + 1}/{(total_images + BATCH_SIZE - 1)//BATCH_SIZE}")
 
             # Clean up local image files and temp directory after processing
             self.logger.info("🧹 Cleaning up local image files and temp directory...")
