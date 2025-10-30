@@ -3290,107 +3290,107 @@ Summary:"""
                             image_data = img_file.read()
                             image_base64 = base64.b64encode(image_data).decode('utf-8')
 
-                    # Generate CLIP embeddings using existing service
-                    clip_embeddings = await self._generate_clip_embeddings(image_base64, image_path)
+                        # Generate CLIP embeddings using existing service
+                        clip_embeddings = await self._generate_clip_embeddings(image_base64, image_path)
 
-                    # Perform material analysis using existing service
-                    material_analysis = await self._analyze_image_material(image_base64, image_path)
+                        # Perform material analysis using existing service
+                        material_analysis = await self._analyze_image_material(image_base64, image_path)
 
-                    # Store image with context in database
-                    # Map to actual database columns
-                    image_record = {
-                        'document_id': document_id,
-                        'workspace_id': workspace_id,
-                        'chunk_id': associated_chunks[0].metadata.get('db_chunk_id') if associated_chunks else None,
-                        'image_url': image_info.get('storage_url', ''),
-                        'image_type': image_info.get('image_type', 'extracted'),
-                        'caption': contextual_name,
-                        'alt_text': f"Image from {nearest_heading}" if nearest_heading else None,
-                        'bbox': image_info.get('bbox', {}),
-                        'page_number': image_info.get('page_number', 1),
-                        'proximity_score': 1.0 if associated_chunks else 0.0,
-                        'confidence': image_info.get('quality_score', 0.0),
-                        'contextual_name': contextual_name,
-                        'nearest_heading': nearest_heading,
-                        'heading_level': heading_level,
-                        'quality_score': image_info.get('quality_score', 0.0),
-                        'quality_metrics': image_info.get('quality_metrics', {}),
-                        'ocr_extracted_text': image_info.get('ocr_result', {}).get('text', ''),
-                        'ocr_confidence_score': image_info.get('ocr_result', {}).get('confidence', 0.0),
-                        'image_analysis_results': material_analysis.get('material_properties', {}) or {},
-                        'image_embedding': clip_embeddings.get('embedding_512'),  # pgvector column
+                        # Store image with context in database
+                        # Map to actual database columns
+                        image_record = {
+                            'document_id': document_id,
+                            'workspace_id': workspace_id,
+                            'chunk_id': associated_chunks[0].metadata.get('db_chunk_id') if associated_chunks else None,
+                            'image_url': image_info.get('storage_url', ''),
+                            'image_type': image_info.get('image_type', 'extracted'),
+                            'caption': contextual_name,
+                            'alt_text': f"Image from {nearest_heading}" if nearest_heading else None,
+                            'bbox': image_info.get('bbox', {}),
+                            'page_number': image_info.get('page_number', 1),
+                            'proximity_score': 1.0 if associated_chunks else 0.0,
+                            'confidence': image_info.get('quality_score', 0.0),
+                            'contextual_name': contextual_name,
+                            'nearest_heading': nearest_heading,
+                            'heading_level': heading_level,
+                            'quality_score': image_info.get('quality_score', 0.0),
+                            'quality_metrics': image_info.get('quality_metrics', {}),
+                            'ocr_extracted_text': image_info.get('ocr_result', {}).get('text', ''),
+                            'ocr_confidence_score': image_info.get('ocr_result', {}).get('confidence', 0.0),
+                            'image_analysis_results': material_analysis.get('material_properties', {}) or {},
+                            'image_embedding': clip_embeddings.get('embedding_512'),  # pgvector column
 
-                        # AI Analysis Columns
-                        'claude_validation': material_analysis.get('claude_validation'),  # Claude 4.5 Sonnet validation
-                        'llama_analysis': material_analysis.get('llama_analysis'),  # Llama 4 Scout 17B Vision analysis
-                        'visual_clip_embedding_512': clip_embeddings.get('embedding_512'),  # CLIP 512D
-                        'color_embedding_256': clip_embeddings.get('color_embedding'),  # Color 256D
-                        'texture_embedding_256': clip_embeddings.get('texture_embedding'),  # Texture 256D
-                        'application_embedding_512': clip_embeddings.get('application_embedding'),  # Application 512D
+                            # AI Analysis Columns
+                            'claude_validation': material_analysis.get('claude_validation'),  # Claude 4.5 Sonnet validation
+                            'llama_analysis': material_analysis.get('llama_analysis'),  # Llama 4 Scout 17B Vision analysis
+                            'visual_clip_embedding_512': clip_embeddings.get('embedding_512'),  # CLIP 512D
+                            'color_embedding_256': clip_embeddings.get('color_embedding'),  # Color 256D
+                            'texture_embedding_256': clip_embeddings.get('texture_embedding'),  # Texture 256D
+                            'application_embedding_512': clip_embeddings.get('application_embedding'),  # Application 512D
 
-                        'visual_features': {
-                            'clip_512': clip_embeddings.get('embedding_512'),
-                            'clip_1536': clip_embeddings.get('embedding_1536'),
-                            'model_used': clip_embeddings.get('model_used', 'ViT-B/32')
-                        },
-                        'processing_status': 'completed',
-                        'multimodal_metadata': {
-                            'associated_chunks': [chunk.metadata.get('db_chunk_id') for chunk in associated_chunks if chunk.metadata.get('db_chunk_id')],
-                            'layout_context': {
-                                'bbox': image_info.get('bbox', {}),
-                                'quality_score': image_info.get('quality_score', 0.0),
-                                'image_type': image_info.get('image_type', 'unknown')
+                            'visual_features': {
+                                'clip_512': clip_embeddings.get('embedding_512'),
+                                'clip_1536': clip_embeddings.get('embedding_1536'),
+                                'model_used': clip_embeddings.get('model_used', 'ViT-B/32')
                             },
-                            'image_metadata': {
-                                'format': image_info.get('format', 'unknown'),
-                                'size_bytes': len(image_data),
-                                'dimensions': f"{image_info.get('width', 0)}x{image_info.get('height', 0)}"
+                            'processing_status': 'completed',
+                            'multimodal_metadata': {
+                                'associated_chunks': [chunk.metadata.get('db_chunk_id') for chunk in associated_chunks if chunk.metadata.get('db_chunk_id')],
+                                'layout_context': {
+                                    'bbox': image_info.get('bbox', {}),
+                                    'quality_score': image_info.get('quality_score', 0.0),
+                                    'image_type': image_info.get('image_type', 'unknown')
+                                },
+                                'image_metadata': {
+                                    'format': image_info.get('format', 'unknown'),
+                                    'size_bytes': len(image_data),
+                                    'dimensions': f"{image_info.get('width', 0)}x{image_info.get('height', 0)}"
+                                },
+                                'extraction_confidence': image_info.get('quality_score', 0.0)
                             },
-                            'extraction_confidence': image_info.get('quality_score', 0.0)
-                        },
-                        'metadata': {
-                            'original_filename': os.path.basename(image_path),
-                            'storage_path': image_info.get('storage_path', ''),
-                            'storage_bucket': image_info.get('storage_bucket', 'pdf-tiles'),
-                            'processing_timestamp': image_info.get('processing_timestamp', '')
-                        },
-                        'analysis_metadata': {
-                            'material_analysis': material_analysis.get('material_properties', {}),
-                            'clip_processing_time_ms': clip_embeddings.get('processing_time_ms', 0),
-                            'llama_processing_time_ms': material_analysis.get('processing_time_ms', 0),
-                            'analysis_method': material_analysis.get('analysis_method', 'unknown'),
-                            'quality_score': material_analysis.get('quality_score', 0.0),
-                            'confidence_score': material_analysis.get('confidence_score', 0.0),
-                            'timestamp': material_analysis.get('timestamp', '')
+                            'metadata': {
+                                'original_filename': os.path.basename(image_path),
+                                'storage_path': image_info.get('storage_path', ''),
+                                'storage_bucket': image_info.get('storage_bucket', 'pdf-tiles'),
+                                'processing_timestamp': image_info.get('processing_timestamp', '')
+                            },
+                            'analysis_metadata': {
+                                'material_analysis': material_analysis.get('material_properties', {}),
+                                'clip_processing_time_ms': clip_embeddings.get('processing_time_ms', 0),
+                                'llama_processing_time_ms': material_analysis.get('processing_time_ms', 0),
+                                'analysis_method': material_analysis.get('analysis_method', 'unknown'),
+                                'quality_score': material_analysis.get('quality_score', 0.0),
+                                'confidence_score': material_analysis.get('confidence_score', 0.0),
+                                'timestamp': material_analysis.get('timestamp', '')
+                            }
                         }
-                    }
 
-                    # Store material metadata in materials_catalog if material analysis was successful
-                    if material_analysis and material_analysis.get('material_type') != 'unknown':
-                        await self._store_material_metadata(
-                            document_id=document_id,
-                            image_record=image_record,
-                            material_analysis=material_analysis,
-                            clip_embeddings=clip_embeddings
-                        )
+                        # Store material metadata in materials_catalog if material analysis was successful
+                        if material_analysis and material_analysis.get('material_type') != 'unknown':
+                            await self._store_material_metadata(
+                                document_id=document_id,
+                                image_record=image_record,
+                                material_analysis=material_analysis,
+                                clip_embeddings=clip_embeddings
+                            )
 
-                    # Insert into database
-                    result = supabase_client.client.table('document_images').insert(image_record).execute()
+                        # Insert into database
+                        result = supabase_client.client.table('document_images').insert(image_record).execute()
 
-                    if result.data:
-                        stats["images_stored"] += 1
-                        stats["layout_links_created"] += len(associated_chunks)
-                        if clip_embeddings.get('embedding_512') or clip_embeddings.get('embedding_1536'):
-                            stats["clip_embeddings_generated"] += 1
-                        if material_analysis:
-                            stats["material_analyses_completed"] += 1
+                        if result.data:
+                            stats["images_stored"] += 1
+                            stats["layout_links_created"] += len(associated_chunks)
+                            if clip_embeddings.get('embedding_512') or clip_embeddings.get('embedding_1536'):
+                                stats["clip_embeddings_generated"] += 1
+                            if material_analysis:
+                                stats["material_analyses_completed"] += 1
 
-                    stats["images_processed"] += 1
-                    self.logger.info(f"✅ Processed image {i+1}/{total_images}: {contextual_name}")
+                        stats["images_processed"] += 1
+                        self.logger.info(f"✅ Processed image {i+1}/{total_images}: {contextual_name}")
 
-                except Exception as e:
-                    self.logger.error(f"Failed to process image {i}: {e}")
-                    continue
+                    except Exception as e:
+                        self.logger.error(f"Failed to process image {i}: {e}")
+                        continue
 
                 # ✅ MEMORY OPTIMIZATION: Clear memory after each batch
                 # Force garbage collection to free memory
