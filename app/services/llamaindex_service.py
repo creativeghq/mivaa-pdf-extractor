@@ -1603,7 +1603,7 @@ class LlamaIndexService:
                         if saved_image_ids:
                             self.logger.info(f"🖼️ Queuing {len(saved_image_ids)} images for async processing...")
 
-                            from app.services.async_queue_service import get_async_queue_service
+                            # Use global import - don't re-import locally
                             async_queue_service = get_async_queue_service()
 
                             images_queued = await async_queue_service.queue_image_processing_jobs(
