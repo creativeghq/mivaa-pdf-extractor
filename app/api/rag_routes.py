@@ -614,7 +614,7 @@ async def restart_job_from_checkpoint(job_id: str):
         # Mark job for restart
         supabase_client = get_supabase_client()
         supabase_client.client.table('background_jobs').update({
-            "status": "pending_restart",
+            "status": "pending",  # ✅ Use valid status: pending, processing, completed, failed, interrupted
             "metadata": {
                 "restart_from_stage": resume_stage,
                 "restart_reason": "manual_restart",
