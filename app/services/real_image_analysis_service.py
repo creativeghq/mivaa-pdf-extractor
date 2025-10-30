@@ -40,14 +40,15 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 class ImageAnalysisResult:
     """Result of real image analysis"""
     image_id: str
-    llama_analysis: Dict[str, Any]  # Llama 3.2 90B Vision analysis
-    claude_validation: Dict[str, Any]  # Claude 4.5 Sonnet validation
+    llama_analysis: Dict[str, Any]  # Llama 4 Scout 17B Vision analysis
+    claude_validation: Optional[Dict[str, Any]]  # Claude 4.5 Sonnet validation (optional, async)
     clip_embedding: List[float]  # 512D CLIP embedding
     material_properties: Dict[str, Any]  # Extracted properties
     quality_score: float  # Real quality score (0.0-1.0)
     confidence_score: float  # Confidence in analysis (0.0-1.0)
     processing_time_ms: float
     timestamp: str
+    needs_claude_validation: bool = False  # NEW: True if quality score < threshold
 
 
 class RealImageAnalysisService:
@@ -164,35 +165,40 @@ class RealImageAnalysisService:
         self,
         image_base64: str,
         image_id: str,
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
+        job_id: Optional[str] = None
     ) -> ImageAnalysisResult:
         """
-        Perform real image analysis using vision models and CLIP from base64 data.
+        Perform LLAMA-ONLY image analysis with quality scoring.
 
-        This method is optimized for cases where the image is already in memory
-        (e.g., during PDF processing) and avoids unnecessary network downloads.
+        NEW ARCHITECTURE (per user requirements):
+        - Use ONLY Llama 4 Scout Vision for sync processing
+        - Calculate quality score based on Llama confidence
+        - Queue Claude validation ONLY if Llama score < threshold (0.7)
+        - Keep ALL 5 CLIP embeddings
+
+        This prevents OOM crashes by removing dual-model sync processing.
 
         Args:
             image_base64: Base64-encoded image data
             image_id: Unique image identifier
             context: Optional context for analysis
+            job_id: Optional job ID for tracking
 
         Returns:
-            ImageAnalysisResult with real analysis data
+            ImageAnalysisResult with Llama analysis + CLIP embeddings
         """
         start_time = datetime.now()
 
         try:
-            self.logger.info(f"🖼️ Starting real image analysis from base64 for {image_id}")
+            self.logger.info(f"🖼️ [LLAMA-ONLY] Starting image analysis for {image_id}")
 
-            # Step 1: Run parallel analysis (no download needed)
-            llama_task = self._analyze_with_llama(image_base64, context)
-            claude_task = self._analyze_with_claude_base64(image_base64, context)
+            # Step 1: Run Llama + CLIP in parallel (NO CLAUDE)
+            llama_task = self._analyze_with_llama(image_base64, context, job_id)
             clip_task = self._generate_clip_embedding(image_base64)
 
-            llama_result, claude_result, clip_embedding = await asyncio.gather(
+            llama_result, clip_embedding = await asyncio.gather(
                 llama_task,
-                claude_task,
                 clip_task,
                 return_exceptions=True
             )
@@ -200,50 +206,59 @@ class RealImageAnalysisService:
             # Handle errors
             if isinstance(llama_result, Exception):
                 self.logger.error(f"Llama analysis failed: {llama_result}")
-                llama_result = {"error": str(llama_result)}
-            if isinstance(claude_result, Exception):
-                self.logger.error(f"Claude analysis failed: {claude_result}")
-                claude_result = {"error": str(claude_result)}
+                llama_result = {"error": str(llama_result), "confidence": 0.0}
             if isinstance(clip_embedding, Exception):
                 self.logger.error(f"CLIP embedding failed: {clip_embedding}")
                 clip_embedding = []
 
-            # Step 2: Extract material properties
-            material_properties = self._extract_material_properties(
-                llama_result,
-                claude_result
-            )
+            # Step 2: Extract material properties from Llama ONLY
+            material_properties = self._extract_material_properties_from_llama(llama_result)
 
-            # Step 3: Calculate real quality score
-            quality_score = self._calculate_quality_score(
+            # Step 3: Calculate quality score based on Llama confidence
+            llama_confidence = llama_result.get('confidence', 0.0)
+            quality_score = self._calculate_llama_quality_score(
                 llama_result,
-                claude_result,
                 clip_embedding,
                 material_properties
             )
 
-            # Step 4: Calculate confidence
-            confidence_score = self._calculate_confidence(
-                llama_result,
-                claude_result,
-                material_properties
-            )
+            # Step 4: Check if Claude validation is needed
+            CLAUDE_THRESHOLD = 0.7  # Queue Claude only if score < 0.7
+            needs_claude_validation = quality_score < CLAUDE_THRESHOLD
+
+            if needs_claude_validation:
+                self.logger.warning(
+                    f"⚠️ Image {image_id} has low quality score ({quality_score:.2f} < {CLAUDE_THRESHOLD}). "
+                    f"Queuing for Claude validation."
+                )
+                # TODO: Queue for async Claude validation
+                # This will be implemented in Task 3
+            else:
+                self.logger.info(
+                    f"✅ Image {image_id} has good quality score ({quality_score:.2f} >= {CLAUDE_THRESHOLD}). "
+                    f"No Claude validation needed."
+                )
 
             processing_time = (datetime.now() - start_time).total_seconds() * 1000
 
             result = ImageAnalysisResult(
                 image_id=image_id,
                 llama_analysis=llama_result,
-                claude_validation=claude_result,
+                claude_validation=None,  # No Claude in sync processing
                 clip_embedding=clip_embedding,
                 material_properties=material_properties,
                 quality_score=quality_score,
-                confidence_score=confidence_score,
+                confidence_score=llama_confidence,
                 processing_time_ms=processing_time,
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.utcnow().isoformat(),
+                needs_claude_validation=needs_claude_validation  # New field
             )
 
-            self.logger.info(f"✅ Image analysis complete: quality={quality_score:.2f}, confidence={confidence_score:.2f}")
+            self.logger.info(
+                f"✅ [LLAMA-ONLY] Image analysis complete: "
+                f"quality={quality_score:.2f}, confidence={llama_confidence:.2f}, "
+                f"needs_claude={needs_claude_validation}"
+            )
             return result
 
         except Exception as e:
@@ -744,6 +759,100 @@ Respond ONLY with valid JSON, no additional text."""
                 properties["confidence"] = claude_confidence
 
         return properties
+
+    def _extract_material_properties_from_llama(
+        self,
+        llama_result: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Extract material properties from Llama analysis ONLY.
+
+        This is the new method for Llama-only processing (no Claude).
+        """
+        properties = {
+            "color": None,
+            "finish": None,
+            "pattern": None,
+            "texture": None,
+            "composition": None,
+            "confidence": 0.0
+        }
+
+        # Extract from Llama analysis
+        if llama_result.get("success") and llama_result.get("analysis"):
+            analysis = llama_result["analysis"]
+            properties["color"] = analysis.get("colors", [None])[0] if analysis.get("colors") else None
+            properties["texture"] = analysis.get("textures", [None])[0] if analysis.get("textures") else None
+            properties["composition"] = analysis.get("properties", {}).get("composition")
+            properties["finish"] = analysis.get("properties", {}).get("finish")
+            properties["pattern"] = analysis.get("properties", {}).get("pattern")
+            properties["confidence"] = analysis.get("confidence", 0.0)
+        elif "error" not in llama_result:
+            # If Llama succeeded but no analysis field, try direct access
+            properties["color"] = llama_result.get("colors", [None])[0] if llama_result.get("colors") else None
+            properties["texture"] = llama_result.get("textures", [None])[0] if llama_result.get("textures") else None
+            properties["composition"] = llama_result.get("properties", {}).get("composition")
+            properties["finish"] = llama_result.get("properties", {}).get("finish")
+            properties["pattern"] = llama_result.get("properties", {}).get("pattern")
+            properties["confidence"] = llama_result.get("confidence", 0.0)
+
+        return properties
+
+    def _calculate_llama_quality_score(
+        self,
+        llama_result: Dict[str, Any],
+        clip_embedding: List[float],
+        material_properties: Dict[str, Any]
+    ) -> float:
+        """
+        Calculate quality score based on Llama analysis ONLY.
+
+        NEW SCORING (Llama-only):
+        - Llama confidence: 60% weight
+        - Material properties completeness: 30% weight
+        - CLIP embedding validity: 10% weight
+
+        Returns:
+            Quality score between 0.0 and 1.0
+        """
+        score = 0.0
+        weight_count = 0
+
+        # Llama confidence (60% weight)
+        if llama_result.get("success"):
+            llama_conf = llama_result.get("analysis", {}).get("confidence", 0.0)
+            if llama_conf == 0.0:
+                # Try direct access
+                llama_conf = llama_result.get("confidence", 0.0)
+            score += llama_conf * 0.6
+            weight_count += 0.6
+        elif "error" not in llama_result:
+            # If no explicit success field, try to get confidence directly
+            llama_conf = llama_result.get("confidence", 0.0)
+            if llama_conf > 0:
+                score += llama_conf * 0.6
+                weight_count += 0.6
+
+        # Material properties completeness (30% weight)
+        if material_properties:
+            properties_filled = sum(1 for v in material_properties.values() if v is not None and v != 0.0)
+            properties_score = properties_filled / 6.0  # 6 properties total
+            score += properties_score * 0.3
+            weight_count += 0.3
+
+        # CLIP embedding validity (10% weight)
+        if clip_embedding and len(clip_embedding) > 0:
+            # Check if embedding is not all zeros
+            non_zero_count = sum(1 for v in clip_embedding if abs(v) > 0.001)
+            if non_zero_count > len(clip_embedding) * 0.1:  # At least 10% non-zero
+                score += 1.0 * 0.1
+                weight_count += 0.1
+
+        # Normalize score
+        if weight_count > 0:
+            return min(1.0, score / weight_count)
+
+        return 0.5  # Default score if no data available
 
     def _calculate_quality_score(
         self,
