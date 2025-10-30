@@ -583,7 +583,7 @@ async def get_job_checkpoints(job_id: str):
 
 
 @router.post("/jobs/{job_id}/restart")
-async def restart_job_from_checkpoint(job_id: str):
+async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundTasks):
     """
     Manually restart a job from its last checkpoint.
 
@@ -611,12 +611,28 @@ async def restart_job_from_checkpoint(job_id: str):
                 detail=f"Checkpoint data verification failed for stage {resume_stage}"
             )
 
-        # Mark job for restart
+        # Get job details from database
         supabase_client = get_supabase_client()
+        job_result = supabase_client.client.table('background_jobs').select('*').eq('id', job_id).execute()
+
+        if not job_result.data or len(job_result.data) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Job {job_id} not found in database"
+            )
+
+        job_data = job_result.data[0]
+        document_id = job_data['document_id']
+
+        # Mark job for restart
         supabase_client.client.table('background_jobs').update({
-            "status": "pending",  # ✅ Use valid status: pending, processing, completed, failed, interrupted
+            "status": "processing",  # ✅ Set to processing immediately
+            "error": None,  # Clear previous error
+            "interrupted_at": None,  # Clear interrupted timestamp
+            "started_at": datetime.utcnow().isoformat(),
             "metadata": {
-                "restart_from_stage": resume_stage,
+                **job_data.get('metadata', {}),
+                "restart_from_stage": resume_stage.value,
                 "restart_reason": "manual_restart",
                 "restart_at": datetime.utcnow().isoformat()
             }
@@ -624,11 +640,24 @@ async def restart_job_from_checkpoint(job_id: str):
 
         logger.info(f"✅ Job {job_id} marked for restart from {resume_stage}")
 
+        # ✅ CRITICAL FIX: Actually trigger the background task!
+        background_tasks.add_task(
+            process_document_background,
+            job_id=job_id,
+            document_id=document_id,
+            workspace_id=job_data.get('workspace_id'),
+            catalog_id=job_data.get('catalog_id'),
+            category=job_data.get('category'),
+            resume_from_checkpoint=True
+        )
+
+        logger.info(f"✅ Background task triggered for job {job_id}")
+
         return JSONResponse(content={
             "success": True,
-            "message": f"Job will restart from checkpoint: {resume_stage}",
+            "message": f"Job restarted from checkpoint: {resume_stage}",
             "job_id": job_id,
-            "restart_stage": resume_stage,
+            "restart_stage": resume_stage.value,
             "checkpoint_data": last_checkpoint.get('checkpoint_data', {})
         })
 
