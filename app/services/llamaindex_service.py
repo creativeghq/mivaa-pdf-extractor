@@ -1525,34 +1525,104 @@ class LlamaIndexService:
                             "openai_calls": openai_calls
                         })
 
-                # ✅ Process images synchronously
+                # ✅ STEP 1: Save images to database FIRST to get image_id
+                # ✅ STEP 2: Queue images for async processing with proper image_id
                 image_processing_stats = {}
                 if hasattr(self, '_extracted_images') and self._extracted_images:
-                    self.logger.info(f"🖼️ Processing {len(self._extracted_images)} extracted images...")
+                    self.logger.info(f"🖼️ Saving {len(self._extracted_images)} extracted images to database...")
 
                     try:
-                        # Process images with context
-                        image_stats = await self._process_extracted_images_with_context(
-                            document_id=document_id,
-                            extracted_images=self._extracted_images,
-                            chunks=nodes,
-                            workspace_id=workspace_id
-                        )
+                        # STEP 1: Save images to database to get image_id
+                        supabase_client = get_supabase_client()
+                        saved_image_ids = []
 
-                        image_processing_stats = image_stats
-                        self.logger.info(f"✅ Processed {image_stats.get('images_processed', 0)} images")
+                        for i, image in enumerate(self._extracted_images):
+                            try:
+                                # Prepare image record for database
+                                image_record = {
+                                    'document_id': document_id,
+                                    'workspace_id': workspace_id,
+                                    'image_url': image.get('storage_url'),
+                                    'image_type': 'extracted',
+                                    'page_number': image.get('page_number'),
+                                    'confidence': image.get('confidence_score', 0.5),
+                                    'metadata': {
+                                        'filename': image.get('filename'),
+                                        'dimensions': image.get('dimensions'),
+                                        'size_bytes': image.get('size_bytes'),
+                                        'format': image.get('format'),
+                                        'quality_score': image.get('quality_score'),
+                                        'storage_path': image.get('storage_path'),
+                                        'storage_bucket': image.get('storage_bucket'),
+                                        'extracted_at': datetime.now().isoformat()
+                                    }
+                                }
 
-                        # Update job progress
-                        await sync_progress_callback(
-                            progress=80,
-                            message=f"Processed {image_stats.get('images_stored', 0)} images",
-                            metadata={'status': 'images_processed', 'images_stored': image_stats.get('images_stored', 0)}
-                        )
+                                # Insert into database and get image_id
+                                result = supabase_client.client.table('document_images').insert(image_record).execute()
+
+                                if result.data and len(result.data) > 0:
+                                    image_id = result.data[0]['id']
+                                    saved_image_ids.append({
+                                        'id': image_id,
+                                        'url': image.get('storage_url'),
+                                        'page_number': image.get('page_number')
+                                    })
+                                    self.logger.info(f"   ✅ Saved image {i+1}/{len(self._extracted_images)}: {image_id}")
+                                else:
+                                    self.logger.warning(f"   ⚠️ Failed to save image {i+1}: No data returned")
+
+                            except Exception as img_error:
+                                self.logger.error(f"   ❌ Failed to save image {i+1}: {img_error}")
+                                continue
+
+                        self.logger.info(f"✅ Saved {len(saved_image_ids)} images to database")
+
+                        # STEP 2: Queue images for async processing
+                        if saved_image_ids:
+                            self.logger.info(f"🖼️ Queuing {len(saved_image_ids)} images for async processing...")
+
+                            from app.services.async_queue_service import get_async_queue_service
+                            async_queue_service = get_async_queue_service()
+
+                            images_queued = await async_queue_service.queue_image_processing_jobs(
+                                document_id=document_id,
+                                images=saved_image_ids,  # Now has 'id' field!
+                                priority=0
+                            )
+
+                            self.logger.info(f"✅ Queued {images_queued} images for async processing")
+
+                            # Update job progress
+                            await sync_progress_callback(
+                                progress=80,
+                                message=f"Queued {images_queued} images for processing",
+                                metadata={'status': 'images_queued', 'images_queued': images_queued}
+                            )
+
+                            image_processing_stats = {
+                                'images_saved': len(saved_image_ids),
+                                'images_queued': images_queued,
+                                'images_processed': 0,  # Will be updated by async workers
+                                'clip_embeddings_generated': 0,  # Will be updated by async workers
+                                'material_analyses_completed': 0  # Will be updated by async workers
+                            }
+                        else:
+                            self.logger.warning("⚠️ No images were saved, skipping async queue")
+                            image_processing_stats = {
+                                'images_saved': 0,
+                                'images_queued': 0,
+                                'images_processed': 0,
+                                'clip_embeddings_generated': 0,
+                                'material_analyses_completed': 0
+                            }
+
                     except Exception as e:
-                        self.logger.error(f"❌ Failed to process images: {e}", exc_info=True)
+                        self.logger.error(f"❌ Failed to save/queue images: {e}", exc_info=True)
                         image_processing_stats = {
+                            'images_saved': 0,
+                            'images_queued': 0,
                             'images_processed': 0,
-                            'images_stored': 0,
                             'clip_embeddings_generated': 0,
                             'material_analyses_completed': 0,
                             'error': str(e)
