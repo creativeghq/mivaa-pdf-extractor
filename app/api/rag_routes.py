@@ -601,7 +601,8 @@ async def restart_job_from_checkpoint(job_id: str):
             )
 
         # Verify checkpoint data exists
-        resume_stage = last_checkpoint.get('stage')
+        resume_stage_str = last_checkpoint.get('stage')
+        resume_stage = ProcessingStage(resume_stage_str)
         can_resume = await checkpoint_recovery_service.verify_checkpoint_data(job_id, resume_stage)
 
         if not can_resume:
@@ -1032,8 +1033,9 @@ async def process_document_background(
     try:
         last_checkpoint = await checkpoint_recovery_service.get_last_checkpoint(job_id)
         if last_checkpoint:
-            resume_from_stage = last_checkpoint.get('stage')
-            logger.info(f"🔄 RESUMING FROM CHECKPOINT: {resume_from_stage}")
+            resume_from_stage_str = last_checkpoint.get('stage')
+            resume_from_stage = ProcessingStage(resume_from_stage_str)
+            logger.info(f"🔄 RESUMING FROM CHECKPOINT: {resume_from_stage.value}")
             logger.info(f"   Checkpoint created at: {last_checkpoint.get('created_at')}")
             logger.info(f"   Checkpoint data: {last_checkpoint.get('checkpoint_data', {}).keys()}")
 
