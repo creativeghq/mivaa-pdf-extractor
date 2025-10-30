@@ -1525,37 +1525,38 @@ class LlamaIndexService:
                             "openai_calls": openai_calls
                         })
 
-                # ✅ DISABLED: Async queue not fully implemented yet
-                # Images will be processed synchronously in _process_extracted_images_with_context
-                # TODO: Implement full async queue architecture with proper database persistence
+                # ✅ Process images synchronously
                 image_processing_stats = {}
-                # if hasattr(self, '_extracted_images') and self._extracted_images:
-                #     self.logger.info(f"🖼️ Queuing {len(self._extracted_images)} extracted images for async processing...")
-                #
-                #     # Queue image processing jobs
-                #     async_queue_service = get_async_queue_service()
-                #     images_queued = await async_queue_service.queue_image_processing_jobs(
-                #         document_id=document_id,
-                #         images=self._extracted_images,
-                #         priority=0
-                #     )
-                #
-                #     # Update progress to Stage 2 (20-40%)
-                #     await async_queue_service.update_progress(
-                #         document_id=document_id,
-                #         stage='image_processing',
-                #         progress=20,
-                #         total_items=len(self._extracted_images),
-                #         completed_items=0,
-                #         metadata={'status': 'queued', 'jobs_queued': images_queued}
-                #     )
-                #
-                #     image_processing_stats = {
-                #         'images_queued': images_queued,
-                #         'images_processed': 0,
-                #         'clip_embeddings_generated': 0,
-                #         'material_analyses_completed': 0
-                #     }
+                if hasattr(self, '_extracted_images') and self._extracted_images:
+                    self.logger.info(f"🖼️ Processing {len(self._extracted_images)} extracted images...")
+
+                    try:
+                        # Process images with context
+                        image_stats = await self._process_extracted_images_with_context(
+                            document_id=document_id,
+                            extracted_images=self._extracted_images,
+                            chunks=nodes,
+                            workspace_id=workspace_id
+                        )
+
+                        image_processing_stats = image_stats
+                        self.logger.info(f"✅ Processed {image_stats.get('images_processed', 0)} images")
+
+                        # Update job progress
+                        await sync_progress_callback(
+                            progress=80,
+                            message=f"Processed {image_stats.get('images_stored', 0)} images",
+                            metadata={'status': 'images_processed', 'images_stored': image_stats.get('images_stored', 0)}
+                        )
+                    except Exception as e:
+                        self.logger.error(f"❌ Failed to process images: {e}", exc_info=True)
+                        image_processing_stats = {
+                            'images_processed': 0,
+                            'images_stored': 0,
+                            'clip_embeddings_generated': 0,
+                            'material_analyses_completed': 0,
+                            'error': str(e)
+                        }
 
                 # Calculate statistics
                 total_chars = sum(len(node.text) for node in nodes)
