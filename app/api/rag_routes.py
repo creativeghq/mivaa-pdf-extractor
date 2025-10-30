@@ -640,18 +640,70 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
 
         logger.info(f"✅ Job {job_id} marked for restart from {resume_stage}")
 
-        # ✅ CRITICAL FIX: Actually trigger the background task!
-        background_tasks.add_task(
-            process_document_background,
-            job_id=job_id,
-            document_id=document_id,
-            workspace_id=job_data.get('workspace_id'),
-            catalog_id=job_data.get('catalog_id'),
-            category=job_data.get('category'),
-            resume_from_checkpoint=True
-        )
+        # ✅ CRITICAL FIX: Restart the job by calling the LlamaIndex service directly
+        # The process_document_background function doesn't support resume_from_checkpoint
+        # Instead, we need to trigger the processing through the service layer
 
-        logger.info(f"✅ Background task triggered for job {job_id}")
+        # Get the file content from storage
+        try:
+            # Get document details
+            doc_result = supabase_client.client.table('documents').select('*').eq('id', document_id).execute()
+            if not doc_result.data or len(doc_result.data) == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Document {document_id} not found"
+                )
+
+            doc_data = doc_result.data[0]
+            file_url = doc_data.get('file_url')
+            filename = doc_data.get('filename', 'document.pdf')
+
+            if not file_url:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Document {document_id} has no file_url"
+                )
+
+            # Download file from storage
+            logger.info(f"📥 Downloading file from storage: {file_url}")
+            bucket_name = file_url.split('/')[0] if '/' in file_url else 'pdf-documents'
+            file_path = '/'.join(file_url.split('/')[1:]) if '/' in file_url else file_url
+
+            file_response = supabase_client.client.storage.from_(bucket_name).download(file_path)
+            if not file_response:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"File not found in storage: {file_url}"
+                )
+
+            file_content = file_response
+            logger.info(f"✅ Downloaded file: {len(file_content)} bytes")
+
+            # Trigger background processing with resume support
+            background_tasks.add_task(
+                process_document_background,
+                job_id=job_id,
+                document_id=document_id,
+                file_content=file_content,
+                filename=filename,
+                title=doc_data.get('title'),
+                description=doc_data.get('description'),
+                document_tags=doc_data.get('tags', []),
+                chunk_size=1000,
+                chunk_overlap=200,
+                llamaindex_service=None  # Will be retrieved from app state
+            )
+
+            logger.info(f"✅ Background task triggered for job {job_id}")
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to download file for restart: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to download file for restart: {str(e)}"
+            )
 
         return JSONResponse(content={
             "success": True,
@@ -1033,30 +1085,43 @@ async def process_document_background(
     """
     start_time = datetime.utcnow()
 
-    logger.info(f"📋 BACKGROUND JOB STARTED: {job_id}")
-    logger.info(f"   Document ID: {document_id}")
-    logger.info(f"   Filename: {filename}")
-    logger.info(f"   Started at: {start_time.isoformat()}")
+    logger.info("=" * 80)
+    logger.info(f"🚀 [BACKGROUND TASK] STARTING PROCESS_DOCUMENT_BACKGROUND")
+    logger.info("=" * 80)
+    logger.info(f"📋 Job ID: {job_id}")
+    logger.info(f"📄 Document ID: {document_id}")
+    logger.info(f"📝 Filename: {filename}")
+    logger.info(f"📦 File size: {len(file_content)} bytes")
+    logger.info(f"⏰ Started at: {start_time.isoformat()}")
+    logger.info(f"🔧 Chunk size: {chunk_size}, Overlap: {chunk_overlap}")
+    logger.info(f"📚 Title: {title}")
+    logger.info(f"📝 Description: {description}")
+    logger.info(f"🏷️  Tags: {document_tags}")
+    logger.info("=" * 80)
 
     # Get LlamaIndex service from app state if not provided
+    logger.info("🔧 [STEP 1] Getting LlamaIndex service...")
     if llamaindex_service is None:
         try:
             from app.main import app
             if hasattr(app.state, 'llamaindex_service'):
                 llamaindex_service = app.state.llamaindex_service
-                logger.info("✅ Retrieved LlamaIndex service from app state")
+                logger.info("✅ [STEP 1] Retrieved LlamaIndex service from app state")
             else:
-                logger.error("❌ LlamaIndex service not available in app state")
+                logger.error("❌ [STEP 1] LlamaIndex service not available in app state")
                 job_storage[job_id]["status"] = "failed"
                 job_storage[job_id]["error"] = "LlamaIndex service not available"
                 return
         except Exception as e:
-            logger.error(f"❌ Failed to get LlamaIndex service: {e}")
+            logger.error(f"❌ [STEP 1] Failed to get LlamaIndex service: {e}")
             job_storage[job_id]["status"] = "failed"
             job_storage[job_id]["error"] = str(e)
             return
+    else:
+        logger.info("✅ [STEP 1] LlamaIndex service provided as parameter")
 
     # Check for existing checkpoint to resume from
+    logger.info("🔍 [STEP 2] Checking for existing checkpoints...")
     last_checkpoint = None
     resume_from_stage = None
     try:
@@ -1064,20 +1129,23 @@ async def process_document_background(
         if last_checkpoint:
             resume_from_stage_str = last_checkpoint.get('stage')
             resume_from_stage = ProcessingStage(resume_from_stage_str)
-            logger.info(f"🔄 RESUMING FROM CHECKPOINT: {resume_from_stage.value}")
-            logger.info(f"   Checkpoint created at: {last_checkpoint.get('created_at')}")
-            logger.info(f"   Checkpoint data: {last_checkpoint.get('checkpoint_data', {}).keys()}")
+            logger.info(f"🔄 [STEP 2] RESUMING FROM CHECKPOINT: {resume_from_stage.value}")
+            logger.info(f"   📅 Checkpoint created at: {last_checkpoint.get('created_at')}")
+            logger.info(f"   📦 Checkpoint data keys: {list(last_checkpoint.get('checkpoint_data', {}).keys())}")
 
             # Verify checkpoint data exists in database
+            logger.info(f"🔍 [STEP 2] Verifying checkpoint data for stage {resume_from_stage.value}...")
             can_resume = await checkpoint_recovery_service.verify_checkpoint_data(job_id, resume_from_stage)
             if not can_resume:
-                logger.warning(f"⚠️ Checkpoint data verification failed, starting from scratch")
+                logger.warning(f"⚠️ [STEP 2] Checkpoint data verification failed, starting from scratch")
                 resume_from_stage = None
                 last_checkpoint = None
+            else:
+                logger.info(f"✅ [STEP 2] Checkpoint data verified successfully")
         else:
-            logger.info("📝 No checkpoint found, starting fresh processing")
+            logger.info("📝 [STEP 2] No checkpoint found, starting fresh processing")
     except Exception as e:
-        logger.error(f"Failed to check for checkpoint: {e}", exc_info=True)
+        logger.error(f"❌ [STEP 2] Failed to check for checkpoint: {e}", exc_info=True)
         resume_from_stage = None
 
     try:
@@ -1321,6 +1389,15 @@ async def process_document_background(
                     )
                     logger.info(f"✅ Created IMAGES_EXTRACTED checkpoint for job {job_id}")
 
+            logger.info("=" * 80)
+            logger.info("🚀 [STEP 4] CALLING LLAMAINDEX SERVICE index_document_content")
+            logger.info("=" * 80)
+            logger.info(f"📄 File content size: {len(file_content)} bytes")
+            logger.info(f"📝 Document ID: {document_id}")
+            logger.info(f"📂 Filename: {filename}")
+            logger.info(f"🔧 Chunk size: {chunk_size}, Overlap: {chunk_overlap}")
+            logger.info("=" * 80)
+
             processing_result = await llamaindex_service.index_document_content(
                 file_content=file_content,
                 document_id=document_id,
@@ -1337,6 +1414,10 @@ async def process_document_background(
                 chunk_overlap=chunk_overlap,
                 progress_callback=enhanced_progress_callback
             )
+
+            logger.info("=" * 80)
+            logger.info("✅ [STEP 4] LLAMAINDEX SERVICE COMPLETED")
+            logger.info("=" * 80)
 
             # Create IMAGE_EMBEDDINGS_GENERATED checkpoint after CLIP embeddings
             chunks_created = processing_result.get('statistics', {}).get('total_chunks', 0)

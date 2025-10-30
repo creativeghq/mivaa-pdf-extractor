@@ -1255,6 +1255,17 @@ class LlamaIndexService:
         Returns:
             Dict containing indexing results and statistics
         """
+        self.logger.info("=" * 100)
+        self.logger.info("🚀 [LLAMAINDEX SERVICE] STARTING index_document_content")
+        self.logger.info("=" * 100)
+        self.logger.info(f"📄 Document ID: {document_id}")
+        self.logger.info(f"📝 File path: {file_path}")
+        self.logger.info(f"📦 File content size: {len(file_content)} bytes")
+        self.logger.info(f"🔧 Chunk size: {chunk_size}, Overlap: {chunk_overlap}")
+        self.logger.info(f"📊 Metadata keys: {list(metadata.keys()) if metadata else 'None'}")
+        self.logger.info(f"🔄 Progress callback: {'Provided' if progress_callback else 'None'}")
+        self.logger.info("=" * 100)
+
         if not self.available:
             raise RuntimeError("LlamaIndex service not available")
 
@@ -1527,16 +1538,26 @@ class LlamaIndexService:
 
                 # ✅ STEP 1: Save images to database FIRST to get image_id
                 # ✅ STEP 2: Queue images for async processing with proper image_id
+                self.logger.info("=" * 100)
+                self.logger.info("🖼️ [IMAGE PROCESSING] STARTING IMAGE SAVE AND QUEUE")
+                self.logger.info("=" * 100)
+
                 image_processing_stats = {}
                 if hasattr(self, '_extracted_images') and self._extracted_images:
-                    self.logger.info(f"🖼️ Saving {len(self._extracted_images)} extracted images to database...")
+                    self.logger.info(f"🖼️ [IMAGE PROCESSING] Found {len(self._extracted_images)} extracted images")
+                    self.logger.info(f"🖼️ [IMAGE PROCESSING] Saving images to database...")
 
                     try:
                         # STEP 1: Save images to database to get image_id
+                        self.logger.info("🔧 [IMAGE PROCESSING] Getting Supabase client...")
                         supabase_client = get_supabase_client()
+                        self.logger.info("✅ [IMAGE PROCESSING] Supabase client obtained")
+
                         saved_image_ids = []
 
                         for i, image in enumerate(self._extracted_images):
+                            self.logger.info(f"🖼️ [IMAGE PROCESSING] Processing image {i+1}/{len(self._extracted_images)}")
+                            self.logger.info(f"   📦 Image data keys: {list(image.keys())}")
                             try:
                                 # Prepare image record for database
                                 image_record = {
