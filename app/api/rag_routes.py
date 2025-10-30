@@ -2409,8 +2409,39 @@ async def upload_focused_product_pdf(
             }
         }
 
-        # Create job record in database for persistence
+        # Create document record FIRST (required by foreign key constraint)
         supabase_client = get_supabase_client()
+        file_url = f"https://bgbavxtjlbvgplozizxu.supabase.co/storage/v1/object/public/pdf-documents/{document_id}/{file.filename}"
+        try:
+            supabase_client.client.table('documents').insert({
+                "id": document_id,
+                "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+                "filename": file.filename,
+                "content_type": "application/pdf",
+                "file_size": len(focused_pdf_content),
+                "file_url": file_url,
+                "processing_status": "processing",
+                "metadata": {
+                    "title": title or f"{product_name} - Focused Extraction",
+                    "description": description or f"Focused extraction of {product_name} product",
+                    "tags": document_tags,
+                    "source": "focused_extraction",
+                    "focused_extraction": True,
+                    "product_name": product_name,
+                    "designer": designer,
+                    "pages_found": len(page_numbers),
+                    "page_numbers": [p+1 for p in page_numbers],
+                    "product_metadata": product_metadata
+                },
+                "created_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat()
+            }).execute()
+            logger.info(f"✅ Created document record {document_id}")
+        except Exception as e:
+            logger.error(f"❌ Failed to create document record: {e}")
+            # Continue anyway - will try to create in background task
+
+        # Create job record in database for persistence (AFTER document record)
         try:
             supabase_client.client.table('background_jobs').insert({
                 "id": job_id,
