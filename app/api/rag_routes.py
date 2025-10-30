@@ -2409,9 +2409,22 @@ async def upload_focused_product_pdf(
             }
         }
 
-        # Create document record FIRST (required by foreign key constraint)
+        # Upload focused PDF to storage FIRST (required for resume functionality)
         supabase_client = get_supabase_client()
         file_path = f"pdf-documents/{document_id}/{file.filename}"
+        try:
+            # Upload to Supabase storage
+            supabase_client.client.storage.from_('pdf-documents').upload(
+                f"{document_id}/{file.filename}",
+                focused_pdf_content,
+                {"content-type": "application/pdf"}
+            )
+            logger.info(f"✅ Uploaded focused PDF to storage: {file_path}")
+        except Exception as e:
+            logger.error(f"❌ Failed to upload PDF to storage: {e}")
+            # Continue anyway - processing can still work with in-memory content
+
+        # Create document record (required by foreign key constraint)
         try:
             supabase_client.client.table('documents').insert({
                 "id": document_id,
