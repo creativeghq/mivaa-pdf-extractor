@@ -1080,7 +1080,8 @@ async def process_document_background(
     document_tags: List[str],
     chunk_size: int,
     chunk_overlap: int,
-    llamaindex_service: Optional[LlamaIndexService] = None
+    llamaindex_service: Optional[LlamaIndexService] = None,
+    file_url: Optional[str] = None
 ):
     """
     Background task to process document with checkpoint recovery support.
@@ -1157,12 +1158,17 @@ async def process_document_background(
         # Skip document creation if resuming from checkpoint
         if not resume_from_stage:
             try:
+                # Generate file_url if not provided
+                if not file_url:
+                    file_url = f"https://bgbavxtjlbvgplozizxu.supabase.co/storage/v1/object/public/pdf-documents/{document_id}/{filename}"
+
                 supabase_client.client.table('documents').insert({
                     "id": document_id,
                     "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
                     "filename": filename,
                     "content_type": "application/pdf",
                     "file_size": len(file_content),
+                    "file_url": file_url,
                     "processing_status": "processing",
                     "metadata": {
                         "title": title or filename,
@@ -1174,6 +1180,7 @@ async def process_document_background(
                     "updated_at": start_time.isoformat()
                 }).execute()
                 logger.info(f"✅ Created placeholder document record: {document_id}")
+                logger.info(f"   File URL: {file_url}")
 
                 # Also create processed_documents record (required for ai_analysis_queue foreign key)
                 try:
