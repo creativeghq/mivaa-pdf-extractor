@@ -906,7 +906,7 @@ async def create_products_background(
             job_recovery_service = JobRecoveryService(supabase_client)
 
             # Get current job from database
-            current_job = await job_recovery_service.get_job(job_id)
+            current_job = await job_recovery_service.get_job_status(job_id)  # ✅ FIX: Use correct method name get_job_status
             if current_job:
                 # Update metadata with products_created
                 updated_metadata = current_job.get('metadata', {})
