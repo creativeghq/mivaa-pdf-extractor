@@ -2411,7 +2411,7 @@ async def upload_focused_product_pdf(
 
         # Create document record FIRST (required by foreign key constraint)
         supabase_client = get_supabase_client()
-        file_url = f"https://bgbavxtjlbvgplozizxu.supabase.co/storage/v1/object/public/pdf-documents/{document_id}/{file.filename}"
+        file_path = f"pdf-documents/{document_id}/{file.filename}"
         try:
             supabase_client.client.table('documents').insert({
                 "id": document_id,
@@ -2419,7 +2419,7 @@ async def upload_focused_product_pdf(
                 "filename": file.filename,
                 "content_type": "application/pdf",
                 "file_size": len(focused_pdf_content),
-                "file_url": file_url,
+                "file_path": file_path,
                 "processing_status": "processing",
                 "metadata": {
                     "title": title or f"{product_name} - Focused Extraction",
@@ -2447,6 +2447,7 @@ async def upload_focused_product_pdf(
                 "id": job_id,
                 "job_type": "focused_product_extraction",
                 "document_id": document_id,
+                "filename": file.filename,  # Required field
                 "status": "pending",
                 "progress": 0,
                 "metadata": {
@@ -2455,8 +2456,7 @@ async def upload_focused_product_pdf(
                     "designer": designer,
                     "pages_found": len(page_numbers),
                     "page_numbers": [p+1 for p in page_numbers],
-                    "product_metadata": product_metadata,
-                    "filename": file.filename
+                    "product_metadata": product_metadata
                 },
                 "created_at": datetime.utcnow().isoformat(),
                 "updated_at": datetime.utcnow().isoformat()
