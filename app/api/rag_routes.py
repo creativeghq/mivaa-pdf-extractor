@@ -655,25 +655,25 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
                 )
 
             doc_data = doc_result.data[0]
-            file_url = doc_data.get('file_url')
+            file_path = doc_data.get('file_path')
             filename = doc_data.get('filename', 'document.pdf')
 
-            if not file_url:
+            if not file_path:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Document {document_id} has no file_url"
+                    detail=f"Document {document_id} has no file_path"
                 )
 
             # Download file from storage
-            logger.info(f"📥 Downloading file from storage: {file_url}")
-            bucket_name = file_url.split('/')[0] if '/' in file_url else 'pdf-documents'
-            file_path = '/'.join(file_url.split('/')[1:]) if '/' in file_url else file_url
+            logger.info(f"📥 Downloading file from storage: {file_path}")
+            bucket_name = file_path.split('/')[0] if '/' in file_path else 'pdf-documents'
+            storage_path = '/'.join(file_path.split('/')[1:]) if '/' in file_path else file_path
 
-            file_response = supabase_client.client.storage.from_(bucket_name).download(file_path)
+            file_response = supabase_client.client.storage.from_(bucket_name).download(storage_path)
             if not file_response:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"File not found in storage: {file_url}"
+                    detail=f"File not found in storage: {file_path}"
                 )
 
             file_content = file_response
