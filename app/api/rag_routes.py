@@ -2409,6 +2409,32 @@ async def upload_focused_product_pdf(
             }
         }
 
+        # Create job record in database for persistence
+        supabase_client = get_supabase_client()
+        try:
+            supabase_client.client.table('background_jobs').insert({
+                "id": job_id,
+                "job_type": "focused_product_extraction",
+                "document_id": document_id,
+                "status": "pending",
+                "progress": 0,
+                "metadata": {
+                    "focused_extraction": True,
+                    "product_name": product_name,
+                    "designer": designer,
+                    "pages_found": len(page_numbers),
+                    "page_numbers": [p+1 for p in page_numbers],
+                    "product_metadata": product_metadata,
+                    "filename": file.filename
+                },
+                "created_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat()
+            }).execute()
+            logger.info(f"✅ Created database record for job {job_id}")
+        except Exception as e:
+            logger.error(f"❌ Failed to create job database record: {e}")
+            # Continue anyway - job_storage will work for now
+
         # Process the focused PDF using existing pipeline
         # This will now only process the product-specific pages
         background_tasks.add_task(
