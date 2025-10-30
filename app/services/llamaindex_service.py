@@ -2671,6 +2671,15 @@ Summary:"""
             embeddings_stored = 0
             failed_chunks = 0
 
+            # ✅ NEW: Track rejection statistics
+            rejection_stats = {
+                'quality_rejected': 0,
+                'exact_duplicates': 0,
+                'semantic_duplicates': 0,
+                'total_rejected': 0
+            }
+            rejection_details = []
+
             self.logger.info(f"🔄 Starting database storage for {len(nodes)} chunks from document {document_id}")
             self.logger.info(f"   OpenAI embeddings available: {self.embeddings is not None}")
             if self.embeddings is None:
@@ -2686,6 +2695,15 @@ Summary:"""
 
                     # ✅ NEW: Quality validation gates
                     if not self._validate_chunk_quality(node.text, quality_score):
+                        rejection_stats['quality_rejected'] += 1
+                        rejection_stats['total_rejected'] += 1
+                        rejection_details.append({
+                            'chunk_index': i,
+                            'reason': 'quality_score',
+                            'quality_score': quality_score,
+                            'length': len(node.text),
+                            'content_preview': node.text[:100]
+                        })
                         self.logger.warning(f"⚠️ Chunk {i} rejected: Low quality (score: {quality_score:.2f})")
                         continue
 
@@ -2700,11 +2718,26 @@ Summary:"""
                         .execute()
 
                     if duplicate_check.data and len(duplicate_check.data) > 0:
+                        rejection_stats['exact_duplicates'] += 1
+                        rejection_stats['total_rejected'] += 1
+                        rejection_details.append({
+                            'chunk_index': i,
+                            'reason': 'exact_duplicate',
+                            'content_hash': content_hash,
+                            'duplicate_of': duplicate_check.data[0]['id']
+                        })
                         self.logger.warning(f"⚠️ Chunk {i} skipped: Exact duplicate (hash: {content_hash[:8]}...)")
                         continue
 
                     # ✅ ENHANCED: Check for semantic near-duplicates (embedding-based)
                     if self._check_semantic_duplicates(supabase_client, node.text, document_id, similarity_threshold=0.85):
+                        rejection_stats['semantic_duplicates'] += 1
+                        rejection_stats['total_rejected'] += 1
+                        rejection_details.append({
+                            'chunk_index': i,
+                            'reason': 'semantic_duplicate',
+                            'similarity_threshold': 0.85
+                        })
                         self.logger.warning(f"⚠️ Chunk {i} skipped: Semantic near-duplicate detected")
                         continue
 
@@ -2818,20 +2851,30 @@ Summary:"""
                     self.logger.error(f"Failed to store chunk {i}: {chunk_error}")
                     failed_chunks += 1
 
+            # ✅ NEW: Calculate acceptance rate
+            rejection_stats['acceptance_rate'] = f"{(chunks_stored / len(nodes) * 100):.1f}%" if nodes else "0%"
+
             result = {
                 "chunks_stored": chunks_stored,
                 "embeddings_stored": embeddings_stored,
                 "failed_chunks": failed_chunks,
                 "total_processed": len(nodes),
-                "success_rate": (chunks_stored / len(nodes)) * 100 if nodes else 0
+                "success_rate": (chunks_stored / len(nodes)) * 100 if nodes else 0,
+                # ✅ NEW: Add rejection statistics
+                "rejection_stats": rejection_stats,
+                "rejection_details": rejection_details[:10]  # Limit to first 10 for brevity
             }
 
             # Log detailed statistics
             self.logger.info(f"✅ Database storage completed:")
-            self.logger.info(f"   Chunks stored: {chunks_stored}/{len(nodes)}")
-            self.logger.info(f"   Embeddings generated: {embeddings_stored}/{len(nodes)}")
+            self.logger.info(f"   Chunks created by Anthropic: {len(nodes)}")
+            self.logger.info(f"   Chunks accepted & stored: {chunks_stored}/{len(nodes)} ({rejection_stats['acceptance_rate']})")
+            self.logger.info(f"   Chunks rejected: {rejection_stats['total_rejected']}")
+            self.logger.info(f"     - Quality rejected: {rejection_stats['quality_rejected']}")
+            self.logger.info(f"     - Exact duplicates: {rejection_stats['exact_duplicates']}")
+            self.logger.info(f"     - Semantic duplicates: {rejection_stats['semantic_duplicates']}")
+            self.logger.info(f"   Embeddings generated: {embeddings_stored}/{chunks_stored}")
             self.logger.info(f"   Failed chunks: {failed_chunks}")
-            self.logger.info(f"   Success rate: {result['success_rate']:.1f}%")
 
             if embeddings_stored == 0 and chunks_stored > 0:
                 self.logger.error(f"   ⚠️ CRITICAL: No embeddings were generated despite {chunks_stored} chunks being stored!")
