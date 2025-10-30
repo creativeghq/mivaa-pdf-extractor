@@ -679,6 +679,16 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
             file_content = file_response
             logger.info(f"✅ Downloaded file: {len(file_content)} bytes")
 
+            # Initialize job in job_storage (CRITICAL: required by process_document_background)
+            job_storage[job_id] = {
+                "job_id": job_id,
+                "document_id": document_id,
+                "status": "processing",
+                "progress": job_data.get('progress', 0),
+                "metadata": job_data.get('metadata', {})
+            }
+            logger.info(f"✅ Job {job_id} added to job_storage for resume")
+
             # Trigger background processing with resume support
             background_tasks.add_task(
                 process_document_background,
