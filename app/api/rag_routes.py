@@ -802,8 +802,9 @@ async def create_products_background(
     Runs separately to avoid blocking main PDF processing.
     Creates a sub-job for tracking.
     """
+    import uuid
     supabase_client = get_supabase_client()
-    sub_job_id = f"{job_id}_products"
+    sub_job_id = str(uuid.uuid4())  # ✅ FIX: Generate proper UUID instead of appending "_products"
 
     try:
         logger.info(f"🏭 Starting background product creation for document {document_id}")
@@ -973,8 +974,9 @@ async def process_images_background(
     Runs separately to avoid blocking main PDF processing.
     Creates a sub-job for tracking.
     """
+    import uuid
     supabase_client = get_supabase_client()
-    sub_job_id = f"{job_id}_images"
+    sub_job_id = str(uuid.uuid4())  # ✅ FIX: Generate proper UUID instead of appending "_images"
 
     try:
         logger.info(f"🖼️ Starting background image AI analysis for document {document_id}")
@@ -1516,7 +1518,7 @@ async def process_document_background(
                 logger.info("⚠️ No chunks created, skipping product creation")
 
             # ✅ FIX 4: Start background image processing with sub-job tracking
-            images_extracted = processing_result.get('statistics', {}).get('total_images', 0)
+            images_extracted = processing_result.get('statistics', {}).get('images_extracted', 0)  # ✅ FIX: Use correct key 'images_extracted' not 'total_images'
             if images_extracted > 0:
                 logger.info(f"🖼️ Scheduling background image AI analysis for {images_extracted} images")
                 asyncio.create_task(process_images_background(
