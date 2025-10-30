@@ -672,13 +672,13 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
 
 
 @router.post("/documents/job/{job_id}/resume")
-async def resume_job(job_id: str):
+async def resume_job(job_id: str, background_tasks: BackgroundTasks):
     """
     Resume a job from its last checkpoint (alias for restart).
 
     This endpoint is the same as /jobs/{job_id}/restart but with a more intuitive name.
     """
-    return await restart_job_from_checkpoint(job_id)
+    return await restart_job_from_checkpoint(job_id, background_tasks)
 
 
 @router.get("/documents/jobs")
