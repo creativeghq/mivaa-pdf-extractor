@@ -1958,7 +1958,7 @@ async def process_document_with_discovery(
         claude_service = ClaudeValidationService()
         validation_results = await claude_service.process_validation_queue(document_id=document_id)
 
-        logger.info(f"   Claude validation: {validation_results['validated_count']} images validated")
+        logger.info(f"   Claude validation: {validation_results.get('validated', 0)} images validated")
         logger.info(f"   Average quality improvement: {validation_results.get('avg_improvement', 0):.2f}")
 
         await tracker._sync_to_database(stage="quality_enhancement")
@@ -1985,7 +1985,7 @@ async def process_document_with_discovery(
             "chunks_created": tracker.chunks_created,
             "images_processed": images_processed,
             "metafields_extracted": metafield_results['total_metafields'],
-            "claude_validations": validation_results['validated_count'],
+            "claude_validations": validation_results.get('validated', 0),
             "focused_extraction": focused_extraction,
             "pages_processed": len(product_pages),
             "pages_skipped": pdf_result.page_count - len(product_pages),
