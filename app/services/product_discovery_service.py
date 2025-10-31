@@ -225,7 +225,7 @@ Analyze the above content and return ONLY valid JSON with ALL products discovere
             client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
             
             response = client.messages.create(
-                model="claude-3-5-sonnet-20241022",
+                model="claude-sonnet-4-5",
                 max_tokens=8000,  # Large response for comprehensive catalog
                 temperature=0.1,  # Low temperature for consistent extraction
                 messages=[
@@ -256,7 +256,7 @@ Analyze the above content and return ONLY valid JSON with ALL products discovere
                 latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
                 await self.ai_logger.log_claude_call(
                     task="product_discovery",
-                    model="claude-3-5-sonnet-20241022",
+                    model="claude-sonnet-4-5",
                     input_tokens=response.usage.input_tokens,
                     output_tokens=response.usage.output_tokens,
                     latency_ms=latency_ms,

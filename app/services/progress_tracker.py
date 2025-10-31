@@ -424,7 +424,7 @@ class ProgressTracker:
                 self._supabase.client.table('background_jobs')\
                     .update({
                         'status': 'failed',
-                        'progress': self.calculate_progress_percentage(),
+                        'progress': int(self.calculate_progress_percentage()),
                         'error': error_message,
                         'metadata': {
                             'pages_completed': self.pages_completed,
