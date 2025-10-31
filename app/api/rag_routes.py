@@ -1705,7 +1705,7 @@ async def process_document_with_discovery(
             from app.schemas.jobs import PageProcessingStatus
             tracker.page_statuses[page_num] = PageProcessingStatus(
                 page_number=page_num,
-                stage=ProcessingStage.PENDING,
+                stage=ProcessingStage.INITIALIZING,  # Changed from PENDING (doesn't exist)
                 status="pending"
             )
 
@@ -1774,6 +1774,19 @@ async def process_document_with_discovery(
             }
         }
         supabase.client.table('documents').upsert(doc_data).execute()
+
+        # Also create processed_documents record (required for job_progress foreign key)
+        try:
+            supabase.client.table('processed_documents').insert({
+                "id": document_id,  # Use same ID as documents table
+                "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+                "file_name": filename,
+                "file_size": len(file_content),
+                "page_count": pdf_result.page_count,
+                "status": "processing"
+            }).execute()
+        except Exception as e:
+            logger.warning(f"Failed to create processed_documents record (may already exist): {e}")
 
         # Process chunks using LlamaIndex
         chunk_result = await llamaindex_service.process_document(
