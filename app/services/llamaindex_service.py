@@ -3294,7 +3294,11 @@ Summary:"""
                         clip_embeddings = await self._generate_clip_embeddings(image_base64, image_path)
 
                         # Perform material analysis using existing service
-                        material_analysis = await self._analyze_image_material(image_base64, image_path)
+                        material_analysis = await self._analyze_image_material(
+                            image_base64,
+                            image_path,
+                            document_id=document_id
+                        )
 
                         # Store image with context in database
                         # Map to actual database columns
@@ -3881,21 +3885,34 @@ Summary:"""
             self.logger.error(f"Fallback CLIP generation error: {e}")
             return {}
 
-    async def _analyze_image_material(self, image_base64: str, image_path: str) -> Dict[str, Any]:
-        """Analyze image for material properties using Llama 4 Scout + Claude 4.5 in parallel."""
+    async def _analyze_image_material(
+        self,
+        image_base64: str,
+        image_path: str,
+        document_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Analyze image for material properties using Llama-only analysis.
+
+        NEW ARCHITECTURE:
+        - Llama 4 Scout Vision for sync processing
+        - Queue Claude validation for low-quality images (score < 0.7)
+        - Claude runs async before product creation
+        """
         try:
             self.logger.info(f"🔬 Analyzing material properties for image: {os.path.basename(image_path)}")
 
-            # Use RealImageAnalysisService for dual-model analysis (Llama + Claude)
+            # Use RealImageAnalysisService for Llama-only analysis
             from .real_image_analysis_service import RealImageAnalysisService
 
             analysis_service = RealImageAnalysisService()
 
-            # Analyze image using both Llama 4 Scout and Claude 4.5 in parallel
+            # Analyze image using Llama 4 Scout Vision ONLY (prevents OOM)
             result = await analysis_service.analyze_image_from_base64(
                 image_base64=image_base64,
                 image_id=os.path.basename(image_path),
-                context={}
+                context={},
+                document_id=document_id  # Pass document_id for Claude validation queuing
             )
 
             # Return comprehensive analysis with both models' results

@@ -166,7 +166,8 @@ class RealImageAnalysisService:
         image_base64: str,
         image_id: str,
         context: Optional[Dict[str, Any]] = None,
-        job_id: Optional[str] = None
+        job_id: Optional[str] = None,
+        document_id: Optional[str] = None
     ) -> ImageAnalysisResult:
         """
         Perform LLAMA-ONLY image analysis with quality scoring.
@@ -184,6 +185,7 @@ class RealImageAnalysisService:
             image_id: Unique image identifier
             context: Optional context for analysis
             job_id: Optional job ID for tracking
+            document_id: Optional document ID for queuing Claude validation
 
         Returns:
             ImageAnalysisResult with Llama analysis + CLIP embeddings
@@ -231,8 +233,20 @@ class RealImageAnalysisService:
                     f"⚠️ Image {image_id} has low quality score ({quality_score:.2f} < {CLAUDE_THRESHOLD}). "
                     f"Queuing for Claude validation."
                 )
-                # TODO: Queue for async Claude validation
-                # This will be implemented in Task 3
+
+                # Queue for async Claude validation
+                if document_id:
+                    try:
+                        from app.services.claude_validation_service import ClaudeValidationService
+                        validation_service = ClaudeValidationService()
+                        await validation_service.queue_image_for_validation(
+                            image_id=image_id,
+                            document_id=document_id,
+                            llama_quality_score=quality_score,
+                            priority=5
+                        )
+                    except Exception as e:
+                        self.logger.error(f"❌ Failed to queue image for Claude validation: {e}")
             else:
                 self.logger.info(
                     f"✅ Image {image_id} has good quality score ({quality_score:.2f} >= {CLAUDE_THRESHOLD}). "

@@ -1641,6 +1641,7 @@ async def process_document_with_discovery(
     description: Optional[str],
     document_tags: List[str],
     discovery_model: str,
+    focused_extraction: bool,
     chunk_size: int,
     chunk_overlap: int
 ):
@@ -1649,11 +1650,15 @@ async def process_document_with_discovery(
 
     NEW ARCHITECTURE:
     Stage 0: Product Discovery (0-15%) - Analyze PDF with Claude/GPT
-    Stage 1: Focused Extraction (15-30%) - Extract only product pages
+    Stage 1: Focused Extraction (15-30%) - Extract only product pages (if focused_extraction=True)
     Stage 2: Chunking (30-50%) - Create chunks for products
     Stage 3: Image Processing (50-70%) - Llama + CLIP only
     Stage 4: Product Creation (70-90%) - Create products from discovery
     Stage 5: Quality Enhancement (90-100%) - Claude validation (async)
+
+    Args:
+        focused_extraction: If True (default), only process pages/images identified in discovery.
+                          If False, process entire PDF.
     """
     start_time = datetime.utcnow()
 
@@ -1663,16 +1668,26 @@ async def process_document_with_discovery(
     logger.info(f"📋 Job ID: {job_id}")
     logger.info(f"📄 Document ID: {document_id}")
     logger.info(f"🤖 Discovery Model: {discovery_model.upper()}")
+    logger.info(f"🎯 Focused Extraction: {'ENABLED' if focused_extraction else 'DISABLED (Full PDF)'}")
     logger.info("=" * 80)
 
     try:
-        # Update job status
-        job_storage[job_id]["status"] = "processing"
-        job_storage[job_id]["progress"] = 0
-        job_storage[job_id]["current_stage"] = "product_discovery"
+        # Initialize Progress Tracker
+        from app.services.progress_tracker import ProgressTracker
+        from app.schemas.progress import ProcessingStage
+
+        tracker = ProgressTracker(
+            job_id=job_id,
+            document_id=document_id,
+            total_pages=0,  # Will update after PDF extraction
+            job_storage=job_storage
+        )
+        await tracker.start_processing()
 
         # Stage 0: Product Discovery (0-15%)
         logger.info("🔍 [STAGE 0] Product Discovery - Starting...")
+        await tracker.update_stage(ProcessingStage.INITIALIZING, stage_name="product_discovery")
+
         from app.services.product_discovery_service import ProductDiscoveryService
         from app.services.pdf_processor import PDFProcessor
 
@@ -1683,6 +1698,16 @@ async def process_document_with_discovery(
             document_id=document_id,
             processing_options={'extract_images': False, 'extract_tables': False}
         )
+
+        # Update tracker with total pages
+        tracker.total_pages = pdf_result.page_count
+        for page_num in range(1, pdf_result.page_count + 1):
+            from app.schemas.progress import PageProcessingStatus
+            tracker.page_statuses[page_num] = PageProcessingStatus(
+                page_number=page_num,
+                stage=ProcessingStage.PENDING,
+                status="pending"
+            )
 
         # Run product discovery
         discovery_service = ProductDiscoveryService(model=discovery_model)
@@ -1698,31 +1723,245 @@ async def process_document_with_discovery(
         logger.info(f"   Metafield categories: {list(catalog.metafield_categories.keys())}")
         logger.info(f"   Confidence: {catalog.confidence_score:.2f}")
 
-        # Update job with discovery results
-        job_storage[job_id]["progress"] = 15
-        job_storage[job_id]["metadata"]["total_products"] = len(catalog.products)
-        job_storage[job_id]["metadata"]["products_discovered"] = [p.name for p in catalog.products]
-        job_storage[job_id]["metadata"]["discovery_confidence"] = catalog.confidence_score
+        # Update tracker
+        tracker.products_created = len(catalog.products)
+        await tracker._sync_to_database(stage="product_discovery")
 
-        # TODO: Continue with focused extraction, chunking, image processing, etc.
-        # For now, mark as complete
-        job_storage[job_id]["status"] = "completed"
-        job_storage[job_id]["progress"] = 100
-        job_storage[job_id]["result"] = {
+        # Stage 1: Focused Extraction (15-30%)
+        logger.info("🎯 [STAGE 1] Focused Extraction - Starting...")
+        await tracker.update_stage(ProcessingStage.EXTRACTING_TEXT, stage_name="focused_extraction")
+
+        product_pages = set()
+        if focused_extraction:
+            logger.info(f"   ENABLED - Processing ONLY pages with {len(catalog.products)} products")
+            for product in catalog.products:
+                product_pages.update(product.page_range)
+
+            pages_to_skip = set(range(1, pdf_result.page_count + 1)) - product_pages
+            for page_num in pages_to_skip:
+                tracker.skip_page_processing(page_num, "Not a product page (focused extraction)")
+
+            logger.info(f"   Product pages: {sorted(product_pages)}")
+            logger.info(f"   Processing: {len(product_pages)} / {pdf_result.page_count} pages")
+        else:
+            logger.info(f"   DISABLED - Processing ALL {pdf_result.page_count} pages")
+            product_pages = set(range(1, pdf_result.page_count + 1))
+
+        await tracker._sync_to_database(stage="focused_extraction")
+
+        # Stage 2: Chunking (30-50%)
+        logger.info("📝 [STAGE 2] Chunking - Starting...")
+        await tracker.update_stage(ProcessingStage.CHUNKING, stage_name="chunking")
+
+        from app.services.llamaindex_service import LlamaIndexService
+        llamaindex_service = LlamaIndexService()
+
+        # Create document in database
+        supabase = get_supabase_client()
+        doc_data = {
+            'id': document_id,
+            'title': title or filename,
+            'description': description,
+            'file_name': filename,
+            'file_size': len(file_content),
+            'page_count': pdf_result.page_count,
+            'tags': document_tags,
+            'metadata': {
+                'products_discovered': len(catalog.products),
+                'product_names': [p.name for p in catalog.products],
+                'focused_extraction': focused_extraction,
+                'discovery_model': discovery_model
+            }
+        }
+        supabase.client.table('documents').upsert(doc_data).execute()
+
+        # Process chunks using LlamaIndex
+        chunk_result = await llamaindex_service.process_document(
+            document_id=document_id,
+            content=pdf_result.markdown_content,
+            metadata={
+                'filename': filename,
+                'title': title,
+                'page_count': pdf_result.page_count,
+                'product_pages': sorted(product_pages)
+            },
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap
+        )
+
+        tracker.chunks_created = chunk_result.get('chunks_created', 0)
+        await tracker.update_database_stats(
+            chunks_created=tracker.chunks_created,
+            kb_entries=tracker.chunks_created,
+            sync_to_db=True
+        )
+
+        logger.info(f"✅ [STAGE 2] Chunking Complete: {tracker.chunks_created} chunks created")
+
+        # Stage 3: Image Processing (50-70%)
+        logger.info("🖼️ [STAGE 3] Image Processing - Starting...")
+        await tracker.update_stage(ProcessingStage.EXTRACTING_IMAGES, stage_name="image_processing")
+
+        # Re-extract PDF with images this time
+        pdf_result_with_images = await pdf_processor.process_pdf_from_bytes(
+            pdf_bytes=file_content,
+            document_id=document_id,
+            processing_options={'extract_images': True, 'extract_tables': False}
+        )
+
+        # Process images with Llama + CLIP (focused extraction applies here too)
+        images_processed = 0
+        for page_num, images in pdf_result_with_images.images_by_page.items():
+            if page_num not in product_pages:
+                continue  # Skip non-product pages if focused extraction enabled
+
+            for img_data in images:
+                try:
+                    # Analyze with Llama Vision + CLIP embeddings
+                    analysis_result = await llamaindex_service._analyze_image_material(
+                        image_base64=img_data['base64'],
+                        page_number=page_num,
+                        document_id=document_id
+                    )
+
+                    images_processed += 1
+                    tracker.total_images_extracted += 1
+
+                    # Update progress every 10 images
+                    if images_processed % 10 == 0:
+                        await tracker.update_database_stats(
+                            images_stored=images_processed,
+                            sync_to_db=True
+                        )
+
+                except Exception as e:
+                    logger.error(f"Failed to process image on page {page_num}: {e}")
+
+        tracker.images_stored = images_processed
+        await tracker._sync_to_database(stage="image_processing")
+
+        logger.info(f"✅ [STAGE 3] Image Processing Complete: {images_processed} images processed")
+
+        # Stage 4: Product Creation & Linking (70-90%)
+        logger.info("🏭 [STAGE 4] Product Creation & Linking - Starting...")
+        await tracker.update_stage(ProcessingStage.CREATING_PRODUCTS, stage_name="product_creation")
+
+        from app.services.metafield_extraction_service import MetafieldExtractionService
+        from app.services.entity_linking_service import EntityLinkingService
+
+        # Extract metafields from discovery results
+        metafield_service = MetafieldExtractionService()
+        metafield_results = await metafield_service.extract_metafields_from_catalog(
+            catalog=catalog,
+            document_id=document_id
+        )
+
+        logger.info(f"   Metafields extracted: {metafield_results['total_metafields']}")
+
+        # Create products in database
+        products_created = 0
+        for product in catalog.products:
+            try:
+                product_data = {
+                    'document_id': document_id,
+                    'name': product.name,
+                    'description': product.description,
+                    'page_range': product.page_range,
+                    'metadata': {
+                        'variants': product.variants,
+                        'image_types': product.image_types,
+                        'confidence': product.confidence
+                    }
+                }
+                result = supabase.client.table('products').insert(product_data).execute()
+                products_created += 1
+            except Exception as e:
+                logger.error(f"Failed to create product {product.name}: {e}")
+
+        tracker.products_created = products_created
+        logger.info(f"   Products created: {products_created}")
+
+        # Link entities (images, chunks, products, metafields)
+        linking_service = EntityLinkingService()
+        linking_results = await linking_service.link_all_entities(
+            document_id=document_id,
+            catalog=catalog
+        )
+
+        logger.info(f"   Entity linking complete:")
+        logger.info(f"     - Image-to-product links: {linking_results['image_product_links']}")
+        logger.info(f"     - Image-to-chunk links: {linking_results['image_chunk_links']}")
+        logger.info(f"     - Metafield links: {linking_results['metafield_links']}")
+
+        await tracker._sync_to_database(stage="product_creation")
+
+        logger.info(f"✅ [STAGE 4] Product Creation & Linking Complete")
+
+        # Stage 5: Quality Enhancement (90-100%) - ASYNC
+        logger.info("⚡ [STAGE 5] Quality Enhancement - Starting (Async)...")
+        await tracker.update_stage(ProcessingStage.QUALITY_ENHANCEMENT, stage_name="quality_enhancement")
+
+        from app.services.claude_validation_service import ClaudeValidationService
+
+        # Process Claude validation queue (for low-scoring images)
+        claude_service = ClaudeValidationService()
+        validation_results = await claude_service.process_validation_queue(document_id=document_id)
+
+        logger.info(f"   Claude validation: {validation_results['validated_count']} images validated")
+        logger.info(f"   Average quality improvement: {validation_results.get('avg_improvement', 0):.2f}")
+
+        await tracker._sync_to_database(stage="quality_enhancement")
+
+        # Cleanup
+        logger.info("🧹 Cleanup - Starting...")
+        from app.services.cleanup_service import CleanupService
+
+        cleanup_service = CleanupService()
+        cleanup_results = await cleanup_service.cleanup_after_processing(
+            document_id=document_id,
+            job_id=job_id,
+            temp_image_paths=[]  # Images already cleaned by PDF processor
+        )
+
+        logger.info(f"   Cleanup complete: {cleanup_results['files_deleted']} files deleted")
+
+        # Mark job as complete
+        result = {
             "document_id": document_id,
             "products_discovered": len(catalog.products),
+            "products_created": products_created,
             "product_names": [p.name for p in catalog.products],
-            "metafield_categories": catalog.metafield_categories,
+            "chunks_created": tracker.chunks_created,
+            "images_processed": images_processed,
+            "metafields_extracted": metafield_results['total_metafields'],
+            "claude_validations": validation_results['validated_count'],
+            "focused_extraction": focused_extraction,
+            "pages_processed": len(product_pages),
+            "pages_skipped": pdf_result.page_count - len(product_pages),
             "confidence_score": catalog.confidence_score
         }
 
-        logger.info(f"✅ [PRODUCT DISCOVERY] COMPLETED")
+        await tracker.complete_job(result=result)
+
+        logger.info("=" * 80)
+        logger.info(f"✅ [PRODUCT DISCOVERY PIPELINE] COMPLETED")
+        logger.info(f"   Products: {products_created}")
+        logger.info(f"   Chunks: {tracker.chunks_created}")
+        logger.info(f"   Images: {images_processed}")
+        logger.info(f"   Metafields: {metafield_results['total_metafields']}")
+        logger.info("=" * 80)
 
     except Exception as e:
-        logger.error(f"❌ [PRODUCT DISCOVERY] FAILED: {e}", exc_info=True)
-        job_storage[job_id]["status"] = "failed"
-        job_storage[job_id]["error"] = str(e)
-        job_storage[job_id]["progress"] = 100
+        logger.error(f"❌ [PRODUCT DISCOVERY PIPELINE] FAILED: {e}", exc_info=True)
+
+        # Mark job as failed using tracker
+        if 'tracker' in locals():
+            await tracker.fail_job(error=e)
+        else:
+            # Fallback if tracker wasn't initialized
+            job_storage[job_id]["status"] = "failed"
+            job_storage[job_id]["error"] = str(e)
+            job_storage[job_id]["progress"] = 100
 
 
 @router.post("/query", response_model=QueryResponse)
@@ -2395,7 +2634,8 @@ async def upload_pdf_with_product_discovery(
     title: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
     tags: Optional[str] = Form(None),
-    discovery_model: str = Form("claude")  # "claude" or "gpt"
+    discovery_model: str = Form("claude", description="AI model for product discovery: 'claude' (default) or 'gpt'"),
+    focused_extraction: bool = Form(True, description="Only process product pages identified in discovery (default: True)")
 ):
     """
     Upload PDF with intelligent product discovery.
@@ -2439,6 +2679,7 @@ async def upload_pdf_with_product_discovery(
         description: Optional description
         tags: Optional comma-separated tags
         discovery_model: "claude" (default) or "gpt" for product discovery
+        focused_extraction: Only process product pages (default: True). Set to False to process entire PDF
 
     Returns:
         Job ID and status URL for monitoring
@@ -2547,6 +2788,7 @@ async def upload_pdf_with_product_discovery(
             description or "Product catalog with intelligent discovery",
             document_tags,
             discovery_model,
+            focused_extraction,  # NEW: Pass focused extraction flag
             1000,  # chunk_size
             200    # chunk_overlap
         )
