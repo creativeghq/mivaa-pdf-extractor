@@ -1834,17 +1834,43 @@ async def process_document_with_discovery(
             processing_options={'extract_images': True, 'extract_tables': False}
         )
 
+        # Group images by page number (extract from filename: page_X_image_Y.png)
+        images_by_page = {}
+        for img_data in pdf_result_with_images.extracted_images:
+            filename = img_data.get('filename', '')
+            # Extract page number from filename (format: page_X_image_Y.png)
+            import re
+            match = re.search(r'page_(\d+)_', filename)
+            if match:
+                page_num = int(match.group(1))
+                if page_num not in images_by_page:
+                    images_by_page[page_num] = []
+                images_by_page[page_num].append(img_data)
+            else:
+                logger.warning(f"Could not extract page number from filename: {filename}")
+
         # Process images with Llama + CLIP (focused extraction applies here too)
         images_processed = 0
-        for page_num, images in pdf_result_with_images.images_by_page.items():
+        for page_num, images in images_by_page.items():
             if page_num not in product_pages:
                 continue  # Skip non-product pages if focused extraction enabled
 
             for img_data in images:
                 try:
+                    # Read image file and convert to base64
+                    import base64
+                    image_path = img_data.get('path')
+                    if not image_path or not os.path.exists(image_path):
+                        logger.warning(f"Image file not found: {image_path}")
+                        continue
+
+                    with open(image_path, 'rb') as f:
+                        image_bytes = f.read()
+                        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+
                     # Analyze with Llama Vision + CLIP embeddings
                     analysis_result = await llamaindex_service._analyze_image_material(
-                        image_base64=img_data['base64'],
+                        image_base64=image_base64,
                         page_number=page_num,
                         document_id=document_id
                     )
