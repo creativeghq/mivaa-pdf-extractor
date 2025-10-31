@@ -1760,7 +1760,7 @@ async def process_document_with_discovery(
         supabase = get_supabase_client()
         doc_data = {
             'id': document_id,
-            'workspace_id': workspace_id,
+            'workspace_id': "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",  # Default workspace
             'filename': filename,
             'content_type': 'application/pdf',
             'file_size': len(file_content),
