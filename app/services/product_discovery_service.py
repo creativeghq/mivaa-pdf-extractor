@@ -257,10 +257,11 @@ Analyze the above content and return ONLY valid JSON with ALL products discovere
                 await self.ai_logger.log_claude_call(
                     task="product_discovery",
                     model="claude-sonnet-4-5",
-                    input_tokens=response.usage.input_tokens,
-                    output_tokens=response.usage.output_tokens,
+                    response=response,
                     latency_ms=latency_ms,
                     confidence_score=result.get("confidence_score", 0.9),
+                    confidence_breakdown={},
+                    action="product_discovery",
                     job_id=job_id
                 )
                 
