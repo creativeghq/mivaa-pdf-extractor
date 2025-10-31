@@ -1760,13 +1760,17 @@ async def process_document_with_discovery(
         supabase = get_supabase_client()
         doc_data = {
             'id': document_id,
-            'title': title or filename,
-            'description': description,
-            'file_name': filename,
+            'workspace_id': workspace_id,
+            'filename': filename,
+            'content_type': 'application/pdf',
             'file_size': len(file_content),
-            'page_count': pdf_result.page_count,
-            'tags': document_tags,
+            'file_path': f'pdf-documents/{document_id}/{filename}',
+            'processing_status': 'processing',
             'metadata': {
+                'title': title or filename,
+                'description': description,
+                'page_count': pdf_result.page_count,
+                'tags': document_tags,
                 'products_discovered': len(catalog.products),
                 'product_names': [p.name for p in catalog.products],
                 'focused_extraction': focused_extraction,
