@@ -1675,6 +1675,7 @@ async def process_document_with_discovery(
         # Initialize Progress Tracker
         from app.services.progress_tracker import ProgressTracker
         from app.schemas.jobs import ProcessingStage
+        from app.services.checkpoint_recovery_service import checkpoint_recovery_service, ProcessingStage as CheckpointStage
 
         tracker = ProgressTracker(
             job_id=job_id,
@@ -1683,6 +1684,25 @@ async def process_document_with_discovery(
             job_storage=job_storage
         )
         await tracker.start_processing()
+
+        # Create INITIALIZED checkpoint
+        await checkpoint_recovery_service.create_checkpoint(
+            job_id=job_id,
+            stage=CheckpointStage.INITIALIZED,
+            data={
+                "document_id": document_id,
+                "filename": filename,
+                "file_size": len(file_content)
+            },
+            metadata={
+                "title": title or filename,
+                "description": description,
+                "tags": document_tags,
+                "discovery_model": discovery_model,
+                "focused_extraction": focused_extraction
+            }
+        )
+        logger.info(f"✅ Created INITIALIZED checkpoint for job {job_id}")
 
         # Stage 0: Product Discovery (0-15%)
         logger.info("🔍 [STAGE 0] Product Discovery - Starting...")
@@ -1747,6 +1767,24 @@ async def process_document_with_discovery(
         # Update tracker
         tracker.products_created = len(catalog.products)
         await tracker._sync_to_database(stage="product_discovery")
+
+        # Create PRODUCTS_DETECTED checkpoint
+        await checkpoint_recovery_service.create_checkpoint(
+            job_id=job_id,
+            stage=CheckpointStage.PRODUCTS_DETECTED,
+            data={
+                "document_id": document_id,
+                "products_detected": len(catalog.products),
+                "product_names": [p.name for p in catalog.products],
+                "total_pages": pdf_result.page_count
+            },
+            metadata={
+                "confidence_score": catalog.confidence_score,
+                "metafield_categories": list(catalog.metafield_categories.keys()),
+                "discovery_model": discovery_model
+            }
+        )
+        logger.info(f"✅ Created PRODUCTS_DETECTED checkpoint for job {job_id}")
 
         # Stage 1: Focused Extraction (15-30%)
         logger.info("🎯 [STAGE 1] Focused Extraction - Starting...")
@@ -1823,6 +1861,23 @@ async def process_document_with_discovery(
 
         logger.info(f"✅ [STAGE 2] Chunking Complete: {tracker.chunks_created} chunks created")
 
+        # Create CHUNKS_CREATED checkpoint
+        await checkpoint_recovery_service.create_checkpoint(
+            job_id=job_id,
+            stage=CheckpointStage.CHUNKS_CREATED,
+            data={
+                "document_id": document_id,
+                "chunks_created": tracker.chunks_created,
+                "chunk_ids": chunk_result.get('chunk_ids', [])
+            },
+            metadata={
+                "chunk_size": chunk_size,
+                "chunk_overlap": chunk_overlap,
+                "product_pages": sorted(product_pages)
+            }
+        )
+        logger.info(f"✅ Created CHUNKS_CREATED checkpoint for job {job_id}")
+
         # Stage 3: Image Processing (50-70%)
         logger.info("🖼️ [STAGE 3] Image Processing - Starting...")
         await tracker.update_stage(ProcessingStage.EXTRACTING_IMAGES, stage_name="image_processing")
@@ -1893,6 +1948,22 @@ async def process_document_with_discovery(
 
         logger.info(f"✅ [STAGE 3] Image Processing Complete: {images_processed} images processed")
 
+        # Create IMAGES_EXTRACTED checkpoint
+        await checkpoint_recovery_service.create_checkpoint(
+            job_id=job_id,
+            stage=CheckpointStage.IMAGES_EXTRACTED,
+            data={
+                "document_id": document_id,
+                "images_processed": images_processed,
+                "images_by_page": {str(k): len(v) for k, v in images_by_page.items()}
+            },
+            metadata={
+                "total_images": images_processed,
+                "product_pages_with_images": len(images_by_page)
+            }
+        )
+        logger.info(f"✅ Created IMAGES_EXTRACTED checkpoint for job {job_id}")
+
         # Stage 4: Product Creation & Linking (70-90%)
         logger.info("🏭 [STAGE 4] Product Creation & Linking - Starting...")
         await tracker.update_stage(ProcessingStage.FINALIZING, stage_name="product_creation")
@@ -1948,6 +2019,22 @@ async def process_document_with_discovery(
 
         logger.info(f"✅ [STAGE 4] Product Creation & Linking Complete")
 
+        # Create PRODUCTS_CREATED checkpoint
+        await checkpoint_recovery_service.create_checkpoint(
+            job_id=job_id,
+            stage=CheckpointStage.PRODUCTS_CREATED,
+            data={
+                "document_id": document_id,
+                "products_created": products_created,
+                "metafields_extracted": metafield_results['total_metafields']
+            },
+            metadata={
+                "entity_links": linking_results,
+                "product_names": [p.name for p in catalog.products]
+            }
+        )
+        logger.info(f"✅ Created PRODUCTS_CREATED checkpoint for job {job_id}")
+
         # Stage 5: Quality Enhancement (90-100%) - ASYNC
         logger.info("⚡ [STAGE 5] Quality Enhancement - Starting (Async)...")
         await tracker.update_stage(ProcessingStage.COMPLETED, stage_name="quality_enhancement")
@@ -1993,6 +2080,26 @@ async def process_document_with_discovery(
         }
 
         await tracker.complete_job(result=result)
+
+        # Create COMPLETED checkpoint
+        await checkpoint_recovery_service.create_checkpoint(
+            job_id=job_id,
+            stage=CheckpointStage.COMPLETED,
+            data={
+                "document_id": document_id,
+                "products_created": products_created,
+                "chunks_created": tracker.chunks_created,
+                "images_processed": images_processed,
+                "metafields_extracted": metafield_results['total_metafields']
+            },
+            metadata={
+                "processing_time": (datetime.utcnow() - start_time).total_seconds(),
+                "confidence_score": catalog.confidence_score,
+                "focused_extraction": focused_extraction,
+                "pages_processed": len(product_pages)
+            }
+        )
+        logger.info(f"✅ Created COMPLETED checkpoint for job {job_id}")
 
         logger.info("=" * 80)
         logger.info(f"✅ [PRODUCT DISCOVERY PIPELINE] COMPLETED")
