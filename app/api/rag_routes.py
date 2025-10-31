@@ -1793,17 +1793,17 @@ async def process_document_with_discovery(
             logger.warning(f"Failed to create processed_documents record (may already exist): {e}")
 
         # Process chunks using LlamaIndex
-        chunk_result = await llamaindex_service.process_document(
+        chunk_result = await llamaindex_service.index_pdf_content(
+            pdf_content=file_content,
             document_id=document_id,
-            content=pdf_result.markdown_content,
             metadata={
                 'filename': filename,
                 'title': title,
                 'page_count': pdf_result.page_count,
-                'product_pages': sorted(product_pages)
-            },
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap
+                'product_pages': sorted(product_pages),
+                'chunk_size': chunk_size,
+                'chunk_overlap': chunk_overlap
+            }
         )
 
         tracker.chunks_created = chunk_result.get('chunks_created', 0)
