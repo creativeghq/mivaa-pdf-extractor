@@ -302,7 +302,7 @@ async def lifespan(app: FastAPI):
     # Mark active jobs as interrupted in database before shutdown
     try:
         from app.api.rag_routes import job_storage
-        from app.services.supabase_client import get_supabase_client
+        # get_supabase_client is already imported at top of file - don't re-import locally
 
         active_jobs = [job_id for job_id, job in job_storage.items() if job.get("status") == "processing"]
         if active_jobs:
