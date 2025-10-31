@@ -1895,7 +1895,7 @@ async def process_document_with_discovery(
 
         # Stage 4: Product Creation & Linking (70-90%)
         logger.info("🏭 [STAGE 4] Product Creation & Linking - Starting...")
-        await tracker.update_stage(ProcessingStage.CREATING_PRODUCTS, stage_name="product_creation")
+        await tracker.update_stage(ProcessingStage.FINALIZING, stage_name="product_creation")
 
         from app.services.metafield_extraction_service import MetafieldExtractionService
         from app.services.entity_linking_service import EntityLinkingService
