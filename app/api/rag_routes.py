@@ -1664,7 +1664,8 @@ async def process_document_with_discovery(
     discovery_model: str,
     focused_extraction: bool,
     chunk_size: int,
-    chunk_overlap: int
+    chunk_overlap: int,
+    workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"
 ):
     """
     Background task to process document with intelligent product discovery.
@@ -3043,7 +3044,8 @@ async def upload_pdf_with_product_discovery(
             discovery_model,
             focused_extraction,  # NEW: Pass focused extraction flag
             1000,  # chunk_size
-            200    # chunk_overlap
+            200,   # chunk_overlap
+            "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"  # workspace_id
         )
 
         return JSONResponse(

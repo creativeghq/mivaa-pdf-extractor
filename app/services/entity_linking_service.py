@@ -196,38 +196,42 @@ class EntityLinkingService:
     ) -> int:
         """
         Link image to metafield values.
-        
+
         Args:
             image_id: Image ID
             metafields: List of metafield records
-            
+
         Returns:
             Number of metafields linked
         """
         try:
             linked_count = 0
-            
+
             for metafield in metafields:
                 try:
+                    # Determine which value column to use based on value type
+                    value = metafield.get('value')
                     record = {
                         'id': str(uuid.uuid4()),
                         'image_id': image_id,
                         'field_id': metafield['field_id'],
-                        'value': metafield['value'],
+                        'value_text': str(value) if value is not None else None,
+                        'confidence_score': metafield.get('confidence', 0.9),
+                        'extraction_method': 'ai_extraction',
                         'created_at': datetime.utcnow().isoformat(),
                         'updated_at': datetime.utcnow().isoformat()
                     }
-                    
+
                     self.supabase.client.table('image_metafield_values').insert(record).execute()
                     linked_count += 1
-                    
+
                 except Exception as e:
                     self.logger.error(
-                        f"❌ Failed to link metafield {metafield['field_name']} to image {image_id}: {e}"
+                        f"❌ Failed to link metafield {metafield.get('field_name', 'unknown')} to image {image_id}: {e}"
                     )
-            
+
             return linked_count
-            
+
         except Exception as e:
             self.logger.error(f"❌ Failed to link metafields to image: {e}")
             return 0
@@ -239,39 +243,43 @@ class EntityLinkingService:
     ) -> int:
         """
         Link product to metafield values.
-        
+
         Args:
             product_id: Product ID
             metafields: List of metafield records
-            
+
         Returns:
             Number of metafields linked
         """
         try:
             linked_count = 0
-            
+
             for metafield in metafields:
                 try:
+                    # Determine which value column to use based on value type
+                    value = metafield.get('value')
                     record = {
                         'id': str(uuid.uuid4()),
                         'product_id': product_id,
                         'field_id': metafield['field_id'],
-                        'value': metafield['value'],
+                        'value_text': str(value) if value is not None else None,
+                        'confidence_score': metafield.get('confidence', 0.9),
+                        'extraction_method': 'ai_extraction',
                         'created_at': datetime.utcnow().isoformat(),
                         'updated_at': datetime.utcnow().isoformat()
                     }
-                    
+
                     self.supabase.client.table('product_metafield_values').insert(record).execute()
                     linked_count += 1
-                    
+
                 except Exception as e:
                     self.logger.error(
-                        f"❌ Failed to link metafield {metafield['field_name']} to product {product_id}: {e}"
+                        f"❌ Failed to link metafield {metafield.get('field_name', 'unknown')} to product {product_id}: {e}"
                     )
-            
+
             self.logger.info(f"✅ Linked {linked_count}/{len(metafields)} metafields to product {product_id}")
             return linked_count
-            
+
         except Exception as e:
             self.logger.error(f"❌ Failed to link metafields to product: {e}")
             return 0
