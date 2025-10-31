@@ -819,6 +819,159 @@ async def list_jobs(
         )
 
 
+@router.get("/chunks")
+async def get_chunks(
+    document_id: Optional[str] = Query(None, description="Filter by document ID"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of chunks to return"),
+    offset: int = Query(0, ge=0, description="Number of chunks to skip")
+):
+    """
+    Get chunks for a document.
+
+    Args:
+        document_id: Document ID to filter chunks
+        limit: Maximum number of chunks to return
+        offset: Pagination offset
+
+    Returns:
+        List of chunks with metadata and embeddings
+    """
+    try:
+        supabase_client = get_supabase_client()
+
+        if not document_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="document_id is required"
+            )
+
+        # Query chunks
+        query = supabase_client.client.table('document_chunks').select('*').eq('document_id', document_id)
+        query = query.range(offset, offset + limit - 1)
+        result = query.execute()
+
+        chunks = result.data if result.data else []
+
+        return JSONResponse(content={
+            "document_id": document_id,
+            "chunks": chunks,
+            "count": len(chunks),
+            "limit": limit,
+            "offset": offset
+        })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get chunks for document {document_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve chunks: {str(e)}"
+        )
+
+
+@router.get("/images")
+async def get_images(
+    document_id: Optional[str] = Query(None, description="Filter by document ID"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of images to return"),
+    offset: int = Query(0, ge=0, description="Number of images to skip")
+):
+    """
+    Get images for a document.
+
+    Args:
+        document_id: Document ID to filter images
+        limit: Maximum number of images to return
+        offset: Pagination offset
+
+    Returns:
+        List of images with metadata
+    """
+    try:
+        supabase_client = get_supabase_client()
+
+        if not document_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="document_id is required"
+            )
+
+        # Query images
+        query = supabase_client.client.table('document_images').select('*').eq('document_id', document_id)
+        query = query.range(offset, offset + limit - 1)
+        result = query.execute()
+
+        images = result.data if result.data else []
+
+        return JSONResponse(content={
+            "document_id": document_id,
+            "images": images,
+            "count": len(images),
+            "limit": limit,
+            "offset": offset
+        })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get images for document {document_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve images: {str(e)}"
+        )
+
+
+@router.get("/products")
+async def get_products(
+    document_id: Optional[str] = Query(None, description="Filter by document ID"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of products to return"),
+    offset: int = Query(0, ge=0, description="Number of products to skip")
+):
+    """
+    Get products for a document.
+
+    Args:
+        document_id: Document ID to filter products
+        limit: Maximum number of products to return
+        offset: Pagination offset
+
+    Returns:
+        List of products with metadata
+    """
+    try:
+        supabase_client = get_supabase_client()
+
+        if not document_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="document_id is required"
+            )
+
+        # Query products
+        query = supabase_client.client.table('products').select('*').eq('source_document_id', document_id)
+        query = query.range(offset, offset + limit - 1)
+        result = query.execute()
+
+        products = result.data if result.data else []
+
+        return JSONResponse(content={
+            "document_id": document_id,
+            "products": products,
+            "count": len(products),
+            "limit": limit,
+            "offset": offset
+        })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get products for document {document_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve products: {str(e)}"
+        )
+
+
 # REMOVED: Duplicate endpoint - use /api/admin/jobs/{job_id}/status instead
 # This endpoint was conflicting with admin.py and never being reached due to router registration order
 
