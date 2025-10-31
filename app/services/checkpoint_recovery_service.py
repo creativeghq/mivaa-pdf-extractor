@@ -253,17 +253,24 @@ class CheckpointRecoveryService:
             if stage == ProcessingStage.CHUNKS_CREATED:
                 # Verify chunks exist in database
                 chunk_ids = data.get("chunk_ids", [])
+                chunks_created = data.get("chunks_created", 0)
+
+                # Allow empty chunk_ids if chunks_created is 0 (focused extraction may skip chunking)
+                if chunks_created == 0 and not chunk_ids:
+                    logger.info(f"✅ Checkpoint valid: no chunks created (focused extraction)")
+                    return True
+
                 if not chunk_ids:
                     return False
-                
+
                 result = self.supabase_client.client.table("document_chunks")\
                     .select("id")\
                     .in_("id", chunk_ids)\
                     .execute()
-                
+
                 found_count = len(result.data or [])
                 expected_count = len(chunk_ids)
-                
+
                 if found_count != expected_count:
                     logger.warning(f"⚠️ Checkpoint data mismatch: expected {expected_count} chunks, found {found_count}")
                     return False
