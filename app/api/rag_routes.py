@@ -689,22 +689,43 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
             }
             logger.info(f"✅ Job {job_id} added to job_storage for resume")
 
-            # Trigger background processing with resume support
-            background_tasks.add_task(
-                process_document_background,
-                job_id=job_id,
-                document_id=document_id,
-                file_content=file_content,
-                filename=filename,
-                title=doc_data.get('title'),
-                description=doc_data.get('description'),
-                document_tags=doc_data.get('tags', []),
-                chunk_size=1000,
-                chunk_overlap=200,
-                llamaindex_service=None  # Will be retrieved from app state
-            )
+            # Determine which processing function to use based on job_type
+            job_type = job_data.get('job_type', 'document_upload')
 
-            logger.info(f"✅ Background task triggered for job {job_id}")
+            if job_type == 'product_discovery_upload':
+                # Use product discovery pipeline for resume
+                logger.info(f"🔄 Resuming product discovery job {job_id}")
+                background_tasks.add_task(
+                    process_document_with_discovery,
+                    job_id=job_id,
+                    document_id=document_id,
+                    file_content=file_content,
+                    filename=filename,
+                    workspace_id=doc_data.get('workspace_id', 'ffafc28b-1b8b-4b0d-b226-9f9a6154004e'),
+                    title=doc_data.get('title'),
+                    description=doc_data.get('description'),
+                    document_tags=doc_data.get('tags', []),
+                    chunk_size=1000,
+                    chunk_overlap=200
+                )
+            else:
+                # Use standard processing for resume
+                logger.info(f"🔄 Resuming standard document job {job_id}")
+                background_tasks.add_task(
+                    process_document_background,
+                    job_id=job_id,
+                    document_id=document_id,
+                    file_content=file_content,
+                    filename=filename,
+                    title=doc_data.get('title'),
+                    description=doc_data.get('description'),
+                    document_tags=doc_data.get('tags', []),
+                    chunk_size=1000,
+                    chunk_overlap=200,
+                    llamaindex_service=None  # Will be retrieved from app state
+                )
+
+            logger.info(f"✅ Background task triggered for job {job_id} (type: {job_type})")
 
         except HTTPException:
             raise
