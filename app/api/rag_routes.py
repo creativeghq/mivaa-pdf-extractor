@@ -1784,11 +1784,16 @@ async def process_document_with_discovery(
             supabase.client.table('processed_documents').insert({
                 "id": document_id,  # Use same ID as documents table
                 "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
-                "file_name": filename,
-                "file_size": len(file_content),
-                "page_count": pdf_result.page_count,
-                "status": "processing"
+                "pdf_document_id": document_id,  # Required field
+                "content": pdf_result.markdown_content or "",  # Required field
+                "processing_status": "processing",
+                "metadata": {
+                    "filename": filename,
+                    "file_size": len(file_content),
+                    "page_count": pdf_result.page_count
+                }
             }).execute()
+            logger.info(f"✅ Created processed_documents record for {document_id}")
         except Exception as e:
             logger.warning(f"Failed to create processed_documents record (may already exist): {e}")
 
