@@ -1878,6 +1878,11 @@ async def process_document_with_discovery(
         )
         logger.info(f"✅ Created CHUNKS_CREATED checkpoint for job {job_id}")
 
+        # Force garbage collection after chunking to free memory
+        import gc
+        gc.collect()
+        logger.info("🧹 Memory cleanup after Stage 2 (Chunking)")
+
         # Stage 3: Image Processing (50-70%)
         logger.info("🖼️ [STAGE 3] Image Processing - Starting...")
         await tracker.update_stage(ProcessingStage.EXTRACTING_IMAGES, stage_name="image_processing")
@@ -1964,6 +1969,11 @@ async def process_document_with_discovery(
         )
         logger.info(f"✅ Created IMAGES_EXTRACTED checkpoint for job {job_id}")
 
+        # Force garbage collection after image processing to free memory
+        import gc
+        gc.collect()
+        logger.info("🧹 Memory cleanup after Stage 3 (Image Processing)")
+
         # Stage 4: Product Creation & Linking (70-90%)
         logger.info("🏭 [STAGE 4] Product Creation & Linking - Starting...")
         await tracker.update_stage(ProcessingStage.FINALIZING, stage_name="product_creation")
@@ -2039,6 +2049,11 @@ async def process_document_with_discovery(
             }
         )
         logger.info(f"✅ Created PRODUCTS_CREATED checkpoint for job {job_id}")
+
+        # Force garbage collection after product creation to free memory
+        import gc
+        gc.collect()
+        logger.info("🧹 Memory cleanup after Stage 4 (Product Creation)")
 
         # Stage 5: Quality Enhancement (90-100%) - ASYNC
         logger.info("⚡ [STAGE 5] Quality Enhancement - Starting (Async)...")

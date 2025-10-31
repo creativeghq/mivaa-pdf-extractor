@@ -877,7 +877,7 @@ class PDFProcessor:
                         self.logger.warning(f"Progress callback failed: {e}")
 
                 # Process images in batches to reduce memory usage
-                batch_size = 10  # Process 10 images at a time
+                batch_size = 1  # Process 1 image at a time for maximum memory efficiency
                 valid_image_files = [f for f in image_files if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'))]
 
                 for batch_start in range(0, len(valid_image_files), batch_size):
