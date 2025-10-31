@@ -1699,6 +1699,27 @@ async def process_document_with_discovery(
             processing_options={'extract_images': False, 'extract_tables': False}
         )
 
+        # Create processed_documents record IMMEDIATELY (required for job_progress foreign key)
+        # This MUST happen BEFORE any _sync_to_database() calls
+        supabase = get_supabase_client()
+        try:
+            supabase.client.table('processed_documents').insert({
+                "id": document_id,
+                "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+                "pdf_document_id": document_id,
+                "content": pdf_result.markdown_content or "",
+                "processing_status": "processing",
+                "metadata": {
+                    "filename": filename,
+                    "file_size": len(file_content),
+                    "page_count": pdf_result.page_count
+                }
+            }).execute()
+            logger.info(f"✅ Created processed_documents record for {document_id}")
+        except Exception as e:
+            logger.error(f"❌ CRITICAL: Failed to create processed_documents record: {e}")
+            raise  # Don't continue if this fails
+
         # Update tracker with total pages
         tracker.total_pages = pdf_result.page_count
         for page_num in range(1, pdf_result.page_count + 1):
@@ -1757,7 +1778,6 @@ async def process_document_with_discovery(
         llamaindex_service = LlamaIndexService()
 
         # Create document in database
-        supabase = get_supabase_client()
         doc_data = {
             'id': document_id,
             'workspace_id': "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",  # Default workspace
@@ -1778,24 +1798,7 @@ async def process_document_with_discovery(
             }
         }
         supabase.client.table('documents').upsert(doc_data).execute()
-
-        # Also create processed_documents record (required for job_progress foreign key)
-        try:
-            supabase.client.table('processed_documents').insert({
-                "id": document_id,  # Use same ID as documents table
-                "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
-                "pdf_document_id": document_id,  # Required field
-                "content": pdf_result.markdown_content or "",  # Required field
-                "processing_status": "processing",
-                "metadata": {
-                    "filename": filename,
-                    "file_size": len(file_content),
-                    "page_count": pdf_result.page_count
-                }
-            }).execute()
-            logger.info(f"✅ Created processed_documents record for {document_id}")
-        except Exception as e:
-            logger.warning(f"Failed to create processed_documents record (may already exist): {e}")
+        logger.info(f"✅ Created documents table record for {document_id}")
 
         # Process chunks using LlamaIndex
         chunk_result = await llamaindex_service.index_pdf_content(
