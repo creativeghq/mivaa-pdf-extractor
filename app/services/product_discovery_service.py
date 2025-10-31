@@ -40,6 +40,7 @@ class ProductInfo:
     """Information about a discovered product"""
     name: str
     page_range: List[int]  # Pages where this product appears
+    description: Optional[str] = None  # Product description
     designer: Optional[str] = None
     studio: Optional[str] = None
     dimensions: List[str] = None  # e.g., ["15×38", "20×40"]
@@ -337,6 +338,7 @@ Analyze the above content and return ONLY valid JSON with ALL products discovere
             product = ProductInfo(
                 name=p.get("name", "Unknown"),
                 page_range=p.get("page_range", []),
+                description=p.get("description", ""),
                 designer=p.get("designer"),
                 studio=p.get("studio"),
                 dimensions=p.get("dimensions", []),
