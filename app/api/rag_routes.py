@@ -1974,7 +1974,7 @@ async def process_document_with_discovery(
             temp_image_paths=[]  # Images already cleaned by PDF processor
         )
 
-        logger.info(f"   Cleanup complete: {cleanup_results['files_deleted']} files deleted")
+        logger.info(f"   Cleanup complete: {cleanup_results.get('images_deleted', 0)} images deleted, {cleanup_results.get('processes_killed', 0)} processes killed")
 
         # Mark job as complete
         result = {
