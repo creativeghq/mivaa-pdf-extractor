@@ -1985,13 +1985,18 @@ async def process_document_with_discovery(
         for product in catalog.products:
             try:
                 product_data = {
-                    'document_id': document_id,
+                    'source_document_id': document_id,
+                    'workspace_id': workspace_id,
                     'name': product.name,
-                    'description': product.description,
-                    'page_range': product.page_range,
+                    'description': product.description or '',
                     'metadata': {
-                        'variants': product.variants,
-                        'image_types': product.image_types,
+                        'page_range': product.page_range,
+                        'variants': product.variants or [],
+                        'dimensions': product.dimensions or [],
+                        'designer': product.designer,
+                        'studio': product.studio,
+                        'category': product.category,
+                        'metafields': product.metafields or {},
                         'confidence': product.confidence
                     }
                 }

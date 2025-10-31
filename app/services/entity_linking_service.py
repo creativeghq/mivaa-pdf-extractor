@@ -305,7 +305,7 @@ class EntityLinkingService:
             # Get all products from database to build name-to-id mapping
             products_response = self.supabase.client.table('products')\
                 .select('id, name')\
-                .eq('document_id', document_id)\
+                .eq('source_document_id', document_id)\
                 .execute()
 
             product_name_to_id = {p['name']: p['id'] for p in products_response.data}
