@@ -1674,7 +1674,7 @@ async def process_document_with_discovery(
     try:
         # Initialize Progress Tracker
         from app.services.progress_tracker import ProgressTracker
-        from app.schemas.progress import ProcessingStage
+        from app.schemas.jobs import ProcessingStage
 
         tracker = ProgressTracker(
             job_id=job_id,
@@ -1702,7 +1702,7 @@ async def process_document_with_discovery(
         # Update tracker with total pages
         tracker.total_pages = pdf_result.page_count
         for page_num in range(1, pdf_result.page_count + 1):
-            from app.schemas.progress import PageProcessingStatus
+            from app.schemas.jobs import PageProcessingStatus
             tracker.page_statuses[page_num] = PageProcessingStatus(
                 page_number=page_num,
                 stage=ProcessingStage.PENDING,
