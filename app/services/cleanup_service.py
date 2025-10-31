@@ -255,8 +255,8 @@ class CleanupService:
             Number of files deleted
         """
         try:
-            from app.core.supabase_client import get_supabase_client
-            
+            from app.services.supabase_client import get_supabase_client
+
             supabase = get_supabase_client()
             
             # List all files for this document

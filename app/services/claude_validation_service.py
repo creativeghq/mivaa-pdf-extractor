@@ -19,7 +19,7 @@ from datetime import datetime
 import uuid
 
 from app.services.real_image_analysis_service import RealImageAnalysisService
-from app.core.supabase_client import get_supabase_client
+from app.services.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 

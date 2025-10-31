@@ -15,7 +15,7 @@ from typing import List, Dict, Any, Optional, Set
 from datetime import datetime
 import uuid
 
-from app.core.supabase_client import get_supabase_client
+from app.services.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
