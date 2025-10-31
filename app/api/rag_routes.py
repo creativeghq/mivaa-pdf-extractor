@@ -1950,7 +1950,7 @@ async def process_document_with_discovery(
 
         # Stage 5: Quality Enhancement (90-100%) - ASYNC
         logger.info("⚡ [STAGE 5] Quality Enhancement - Starting (Async)...")
-        await tracker.update_stage(ProcessingStage.QUALITY_ENHANCEMENT, stage_name="quality_enhancement")
+        await tracker.update_stage(ProcessingStage.COMPLETED, stage_name="quality_enhancement")
 
         from app.services.claude_validation_service import ClaudeValidationService
 
