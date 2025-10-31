@@ -1683,6 +1683,13 @@ async def process_document_with_discovery(
     """
     start_time = datetime.utcnow()
 
+    # Initialize lazy loading for this job
+    from app.services.lazy_loader import get_component_manager
+    component_manager = get_component_manager()
+
+    # Track which components are loaded for cleanup
+    loaded_components = []
+
     logger.info("=" * 80)
     logger.info(f"🔍 [PRODUCT DISCOVERY] STARTING")
     logger.info("=" * 80)
@@ -1908,6 +1915,16 @@ async def process_document_with_discovery(
         logger.info("🖼️ [STAGE 3] Image Processing - Starting...")
         await tracker.update_stage(ProcessingStage.EXTRACTING_IMAGES, stage_name="image_processing")
 
+        # LAZY LOADING: Load LlamaIndex service only for image processing
+        logger.info("📦 Loading LlamaIndex service for image analysis...")
+        try:
+            llamaindex_service = await component_manager.load("llamaindex_service")
+            loaded_components.append("llamaindex_service")
+            logger.info("✅ LlamaIndex service loaded for Stage 3")
+        except Exception as e:
+            logger.error(f"❌ Failed to load LlamaIndex service: {e}")
+            raise
+
         # Re-extract PDF with images this time
         pdf_result_with_images = await pdf_processor.process_pdf_from_bytes(
             pdf_bytes=file_content,
@@ -1989,6 +2006,16 @@ async def process_document_with_discovery(
             }
         )
         logger.info(f"✅ Created IMAGES_EXTRACTED checkpoint for job {job_id}")
+
+        # LAZY LOADING: Unload LlamaIndex service after image processing to free memory
+        if "llamaindex_service" in loaded_components:
+            logger.info("🧹 Unloading LlamaIndex service after Stage 3...")
+            try:
+                await component_manager.unload("llamaindex_service")
+                loaded_components.remove("llamaindex_service")
+                logger.info("✅ LlamaIndex service unloaded, memory freed")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to unload LlamaIndex service: {e}")
 
         # Force garbage collection after image processing to free memory
         import gc
@@ -2150,8 +2177,35 @@ async def process_document_with_discovery(
         logger.info(f"   Metafields: {metafield_results['total_metafields']}")
         logger.info("=" * 80)
 
+        # LAZY LOADING: Cleanup all loaded components after successful completion
+        logger.info("🧹 Cleaning up all loaded components...")
+        for component_name in loaded_components:
+            try:
+                await component_manager.unload(component_name)
+                logger.info(f"✅ Unloaded {component_name}")
+            except Exception as cleanup_error:
+                logger.warning(f"⚠️ Failed to unload {component_name}: {cleanup_error}")
+
+        # Force garbage collection
+        import gc
+        gc.collect()
+        logger.info("✅ All components cleaned up, memory freed")
+
     except Exception as e:
         logger.error(f"❌ [PRODUCT DISCOVERY PIPELINE] FAILED: {e}", exc_info=True)
+
+        # LAZY LOADING: Cleanup all loaded components on error
+        logger.info("🧹 Cleaning up loaded components due to error...")
+        for component_name in loaded_components:
+            try:
+                await component_manager.unload(component_name)
+                logger.info(f"✅ Unloaded {component_name}")
+            except Exception as cleanup_error:
+                logger.warning(f"⚠️ Failed to unload {component_name}: {cleanup_error}")
+
+        # Force garbage collection
+        import gc
+        gc.collect()
 
         # Mark job as failed using tracker
         if 'tracker' in locals():
