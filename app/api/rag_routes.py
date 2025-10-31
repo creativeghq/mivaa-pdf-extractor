@@ -1751,7 +1751,7 @@ async def process_document_with_discovery(
 
         # Stage 2: Chunking (30-50%)
         logger.info("📝 [STAGE 2] Chunking - Starting...")
-        await tracker.update_stage(ProcessingStage.CHUNKING, stage_name="chunking")
+        await tracker.update_stage(ProcessingStage.SAVING_TO_DATABASE, stage_name="chunking")
 
         from app.services.llamaindex_service import LlamaIndexService
         llamaindex_service = LlamaIndexService()
