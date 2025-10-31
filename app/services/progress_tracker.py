@@ -377,7 +377,6 @@ class ProgressTracker:
                     .update({
                         'status': 'completed',
                         'progress': 100,
-                        'result': result,
                         'metadata': {
                             'pages_completed': self.pages_completed,
                             'pages_failed': self.pages_failed,
@@ -388,7 +387,8 @@ class ProgressTracker:
                             'chunks_created': self.chunks_created,
                             'products_created': self.products_created,
                             'errors_count': len(self.errors),
-                            'warnings_count': len(self.warnings)
+                            'warnings_count': len(self.warnings),
+                            'result': result  # Store result in metadata instead
                         },
                         'completed_at': datetime.utcnow().isoformat(),
                         'updated_at': datetime.utcnow().isoformat()
