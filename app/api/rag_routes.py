@@ -2025,6 +2025,9 @@ async def process_document_with_discovery(
         logger.info(f"✅ Created documents table record for {document_id}")
 
         # Process chunks using LlamaIndex
+        logger.info(f"📝 Calling index_pdf_content with {len(file_content)} bytes, product_pages={sorted(product_pages)}")
+        logger.info(f"📝 LlamaIndex service available: {llamaindex_service.available}")
+
         chunk_result = await llamaindex_service.index_pdf_content(
             pdf_content=file_content,
             document_id=document_id,
@@ -2037,6 +2040,8 @@ async def process_document_with_discovery(
                 'chunk_overlap': chunk_overlap
             }
         )
+
+        logger.info(f"📝 index_pdf_content returned: {chunk_result}")
 
         tracker.chunks_created = chunk_result.get('chunks_created', 0)
         await tracker.update_database_stats(
