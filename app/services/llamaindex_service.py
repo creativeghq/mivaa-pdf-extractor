@@ -1772,15 +1772,54 @@ class LlamaIndexService:
 
                 self.logger.info(f"Indexed document {document_id}: {total_nodes} nodes, {total_chars} characters")
 
+                # CRITICAL FIX: Save chunks to database
+                from ..core.supabase_client import get_supabase_client
+                from uuid import uuid4
+
+                chunk_ids = []
+                chunks_saved = 0
+
+                if total_nodes > 0:
+                    supabase = get_supabase_client()
+                    self.logger.info(f"💾 Saving {total_nodes} chunks to database for document {document_id}")
+
+                    for node_id, node in nodes.items():
+                        try:
+                            chunk_id = str(uuid4())
+                            chunk_data = {
+                                "id": chunk_id,
+                                "document_id": document_id,
+                                "content": node.text,
+                                "metadata": {
+                                    "node_id": node_id,
+                                    "char_count": len(node.text),
+                                    **(node.metadata if hasattr(node, 'metadata') else {})
+                                },
+                                "chunk_index": chunks_saved,
+                                "created_at": datetime.utcnow().isoformat(),
+                                "updated_at": datetime.utcnow().isoformat()
+                            }
+
+                            supabase.client.table('document_chunks').insert(chunk_data).execute()
+                            chunk_ids.append(chunk_id)
+                            chunks_saved += 1
+
+                        except Exception as e:
+                            self.logger.error(f"Failed to save chunk {node_id}: {e}")
+
+                    self.logger.info(f"✅ Saved {chunks_saved}/{total_nodes} chunks to database")
+
                 return {
                     "success": True,
                     "document_id": document_id,
+                    "chunks_created": chunks_saved,
+                    "chunk_ids": chunk_ids,
                     "statistics": {
                         "total_nodes": total_nodes,
                         "total_characters": total_chars,
                         "average_node_size": total_chars // total_nodes if total_nodes > 0 else 0
                     },
-                    "storage_path": str(index_dir)
+                    "storage_path": str(index_dir) if not self.vector_store else "supabase"
                 }
 
             finally:
