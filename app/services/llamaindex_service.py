@@ -1721,15 +1721,22 @@ class LlamaIndexService:
             raise RuntimeError("LlamaIndex service not available")
 
         try:
+            self.logger.info(f"📝 Starting index_pdf_content for document {document_id}")
+            self.logger.info(f"📝 PDF size: {len(pdf_content)} bytes, metadata: {metadata}")
+
             # Save PDF to temporary file for processing
             with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
                 temp_file.write(pdf_content)
                 temp_path = temp_file.name
 
+            self.logger.info(f"📝 Saved PDF to temp file: {temp_path}")
+
             try:
                 # Load PDF using LlamaIndex PDFReader
                 reader = PDFReader()
+                self.logger.info(f"📝 Loading PDF with PDFReader...")
                 documents = reader.load_data(file=Path(temp_path))
+                self.logger.info(f"📝 PDFReader loaded {len(documents)} documents")
 
                 # Add metadata to documents
                 for doc in documents:
@@ -1740,6 +1747,7 @@ class LlamaIndexService:
                     })
 
                 # Create index with SupabaseVectorStore if available, otherwise use local storage
+                self.logger.info(f"📝 Creating index (vector_store={self.vector_store is not None})...")
                 if self.vector_store:
                     # Use SupabaseVectorStore
                     storage_context = StorageContext.from_defaults(vector_store=self.vector_store)
@@ -1761,6 +1769,8 @@ class LlamaIndexService:
                     index_dir.mkdir(exist_ok=True)
                     index.storage_context.persist(persist_dir=str(index_dir))
                     self.logger.info(f"Created local index for document: {document_id}")
+
+                self.logger.info(f"📝 Index created successfully")
 
                 # Cache index
                 self.indices[document_id] = index
