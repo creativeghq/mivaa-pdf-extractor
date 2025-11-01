@@ -1783,7 +1783,7 @@ class LlamaIndexService:
                 self.logger.info(f"Indexed document {document_id}: {total_nodes} nodes, {total_chars} characters")
 
                 # CRITICAL FIX: Save chunks to database
-                from ..core.supabase_client import get_supabase_client
+                from .supabase_client import get_supabase_client
                 from uuid import uuid4
 
                 chunk_ids = []
