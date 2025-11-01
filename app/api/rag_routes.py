@@ -972,6 +972,84 @@ async def get_products(
         )
 
 
+@router.get("/embeddings")
+async def get_embeddings(
+    document_id: Optional[str] = Query(None, description="Filter by document ID"),
+    embedding_type: Optional[str] = Query(None, description="Filter by embedding type (text, visual, multimodal, color, texture, application)"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of embeddings to return"),
+    offset: int = Query(0, ge=0, description="Number of embeddings to skip")
+):
+    """
+    Get embeddings for a document.
+
+    Args:
+        document_id: Document ID to filter embeddings
+        embedding_type: Type of embedding (text, visual, multimodal, color, texture, application)
+        limit: Maximum number of embeddings to return
+        offset: Pagination offset
+
+    Returns:
+        List of embeddings with metadata including:
+        - id: Embedding ID
+        - document_id: Source document
+        - chunk_id: Associated chunk (for text embeddings)
+        - image_id: Associated image (for visual embeddings)
+        - embedding_type: Type of embedding
+        - embedding_model: Model used to generate embedding
+        - embedding_dimensions: Vector dimensions
+        - metadata: Additional metadata (quality scores, confidence, etc.)
+    """
+    try:
+        supabase_client = get_supabase_client()
+
+        if not document_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="document_id is required"
+            )
+
+        # Query embeddings
+        query = supabase_client.client.table('embeddings').select('*').eq('document_id', document_id)
+
+        # Filter by embedding type if specified
+        if embedding_type:
+            query = query.eq('embedding_type', embedding_type)
+
+        query = query.range(offset, offset + limit - 1)
+        result = query.execute()
+
+        embeddings = result.data if result.data else []
+
+        # Enrich embeddings with summary statistics
+        embedding_stats = {}
+        for emb in embeddings:
+            emb_type = emb.get('embedding_type', 'unknown')
+            if emb_type not in embedding_stats:
+                embedding_stats[emb_type] = 0
+            embedding_stats[emb_type] += 1
+
+        return JSONResponse(content={
+            "document_id": document_id,
+            "embeddings": embeddings,
+            "count": len(embeddings),
+            "limit": limit,
+            "offset": offset,
+            "statistics": {
+                "total_embeddings": len(embeddings),
+                "by_type": embedding_stats
+            }
+        })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get embeddings for document {document_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve embeddings: {str(e)}"
+        )
+
+
 # REMOVED: Duplicate endpoint - use /api/admin/jobs/{job_id}/status instead
 # This endpoint was conflicting with admin.py and never being reached due to router registration order
 
@@ -2156,6 +2234,13 @@ async def process_document_with_discovery(
                 logger.error(f"Failed to save image {filename} to database: {e}")
 
         logger.info(f"✅ Saved {images_saved}/{len(pdf_result_with_images.extracted_images)} images to database")
+
+        # Update tracker with images_extracted count
+        tracker.images_extracted = images_saved
+        await tracker.update_database_stats(
+            images_extracted=images_saved,
+            sync_to_db=True
+        )
 
         # Process images with Llama + CLIP (always extract images, even in focused mode)
         images_processed = 0
