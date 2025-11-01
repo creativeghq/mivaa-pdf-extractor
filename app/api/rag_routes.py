@@ -2044,8 +2044,9 @@ async def process_document_with_discovery(
         logger.info(f"📝 index_pdf_content returned: {chunk_result}")
 
         tracker.chunks_created = chunk_result.get('chunks_created', 0)
+        # NOTE: Don't pass chunks_created to update_database_stats because it increments!
+        # We already set tracker.chunks_created directly above.
         await tracker.update_database_stats(
-            chunks_created=tracker.chunks_created,
             kb_entries=tracker.chunks_created,
             sync_to_db=True
         )
