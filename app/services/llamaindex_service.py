@@ -1788,6 +1788,7 @@ class LlamaIndexService:
 
                 chunk_ids = []
                 chunks_saved = 0
+                embeddings_saved = 0
 
                 if total_nodes > 0:
                     supabase = get_supabase_client()
@@ -1796,6 +1797,12 @@ class LlamaIndexService:
                     for node_id, node in nodes.items():
                         try:
                             chunk_id = str(uuid4())
+
+                            # Extract embedding from node if available
+                            embedding_vector = None
+                            if hasattr(node, 'embedding') and node.embedding is not None:
+                                embedding_vector = node.embedding
+
                             chunk_data = {
                                 "id": chunk_id,
                                 "document_id": document_id,
@@ -1814,10 +1821,35 @@ class LlamaIndexService:
                             chunk_ids.append(chunk_id)
                             chunks_saved += 1
 
+                            # Save embedding to embeddings table if available
+                            if embedding_vector is not None:
+                                try:
+                                    embedding_data = {
+                                        "id": str(uuid4()),
+                                        "document_id": document_id,
+                                        "chunk_id": chunk_id,
+                                        "embedding_type": "text",
+                                        "embedding_model": "text-embedding-3-small",
+                                        "embedding_dimensions": len(embedding_vector),
+                                        "embedding_vector": embedding_vector,
+                                        "metadata": {
+                                            "node_id": node_id,
+                                            "generated_at": datetime.utcnow().isoformat()
+                                        },
+                                        "created_at": datetime.utcnow().isoformat()
+                                    }
+
+                                    supabase.client.table('embeddings').insert(embedding_data).execute()
+                                    embeddings_saved += 1
+
+                                except Exception as emb_error:
+                                    self.logger.warning(f"Failed to save embedding for chunk {chunk_id}: {emb_error}")
+
                         except Exception as e:
                             self.logger.error(f"Failed to save chunk {node_id}: {e}")
 
                     self.logger.info(f"✅ Saved {chunks_saved}/{total_nodes} chunks to database")
+                    self.logger.info(f"✅ Saved {embeddings_saved}/{total_nodes} embeddings to database")
 
                 return {
                     "success": True,
