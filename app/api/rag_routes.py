@@ -1898,6 +1898,7 @@ async def process_document_with_discovery(
     document_tags: List[str],
     discovery_model: str,
     focused_extraction: bool,
+    extract_categories: List[str],
     chunk_size: int,
     chunk_overlap: int,
     workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"
@@ -1906,16 +1907,18 @@ async def process_document_with_discovery(
     Background task to process document with intelligent product discovery.
 
     NEW ARCHITECTURE:
-    Stage 0: Product Discovery (0-15%) - Analyze PDF with Claude/GPT
-    Stage 1: Focused Extraction (15-30%) - Extract only product pages (if focused_extraction=True)
-    Stage 2: Chunking (30-50%) - Create chunks for products
-    Stage 3: Image Processing (50-70%) - Llama + CLIP only
+    Stage 0: Product Discovery (0-15%) - Analyze PDF with Claude/GPT, classify content by category
+    Stage 1: Focused Extraction (15-30%) - Extract pages based on extract_categories
+    Stage 2: Chunking (30-50%) - Create chunks for extracted content
+    Stage 3: Image Processing (50-70%) - Extract images from specified categories only
     Stage 4: Product Creation (70-90%) - Create products from discovery
     Stage 5: Quality Enhancement (90-100%) - Claude validation (async)
 
     Args:
-        focused_extraction: If True (default), only process pages/images identified in discovery.
+        focused_extraction: If True (default), only process pages/images from extract_categories.
                           If False, process entire PDF.
+        extract_categories: List of categories to extract (e.g., ['products'], ['certificates', 'logos']).
+                          Categories: 'products', 'certificates', 'logos', 'specifications', 'all'
     """
     start_time = datetime.utcnow()
 
@@ -1933,6 +1936,7 @@ async def process_document_with_discovery(
     logger.info(f"📄 Document ID: {document_id}")
     logger.info(f"🤖 Discovery Model: {discovery_model.upper()}")
     logger.info(f"🎯 Focused Extraction: {'ENABLED' if focused_extraction else 'DISABLED (Full PDF)'}")
+    logger.info(f"📦 Extract Categories: {', '.join(extract_categories).upper()}")
     logger.info("=" * 80)
 
     try:
@@ -2197,14 +2201,32 @@ async def process_document_with_discovery(
 
         # CRITICAL: Save images to database FIRST before AI processing
         # This ensures images are persisted even if AI processing fails
-        logger.info(f"💾 Saving {len(pdf_result_with_images.extracted_images)} images to database...")
+        # IMPORTANT: Respect focused_extraction flag and extract_categories
+        logger.info(f"💾 Saving images to database...")
+        logger.info(f"   Focused extraction: {focused_extraction}")
+        logger.info(f"   Extract categories: {', '.join(extract_categories)}")
         images_saved = 0
+        images_skipped = 0
+
         for img_data in pdf_result_with_images.extracted_images:
             try:
                 # Extract page number from filename
                 filename = img_data.get('filename', '')
                 match = re.search(r'page_(\d+)_', filename) or re.search(r'\.pdf-(\d+)-\d+\.', filename)
                 page_num = int(match.group(1)) if match else None
+
+                # Determine image category
+                image_category = 'product' if (page_num and page_num in product_pages) else 'other'
+
+                # Skip images based on focused_extraction and extract_categories
+                if focused_extraction and 'all' not in extract_categories:
+                    # Only save images from categories specified in extract_categories
+                    if 'products' in extract_categories and image_category != 'product':
+                        logger.debug(f"Skipping image from page {page_num} (category: {image_category}, not in extract_categories)")
+                        images_skipped += 1
+                        continue
+                    # TODO: Add support for other categories (certificates, logos, specifications)
+                    # For now, only 'products' category is fully implemented
 
                 # Prepare image record for database
                 image_record = {
@@ -2222,7 +2244,11 @@ async def process_document_with_discovery(
                         'storage_bucket': img_data.get('storage_bucket', 'pdf-tiles'),
                         'quality_score': img_data.get('quality_score', 0.5),
                         'extracted_at': datetime.utcnow().isoformat(),
-                        'source': 'pdf_extraction'
+                        'source': 'pdf_extraction',
+                        'focused_extraction': focused_extraction,
+                        'extract_categories': extract_categories,
+                        'category': image_category,
+                        'product_page': page_num in product_pages if page_num else False
                     }
                 }
 
@@ -2234,6 +2260,8 @@ async def process_document_with_discovery(
                 logger.error(f"Failed to save image {filename} to database: {e}")
 
         logger.info(f"✅ Saved {images_saved}/{len(pdf_result_with_images.extracted_images)} images to database")
+        if images_skipped > 0:
+            logger.info(f"   Skipped {images_skipped} images (not in extract_categories: {', '.join(extract_categories)})")
 
         # Update tracker with images_extracted count
         tracker.images_extracted = images_saved
@@ -3187,7 +3215,8 @@ async def upload_pdf_with_product_discovery(
     description: Optional[str] = Form(None),
     tags: Optional[str] = Form(None),
     discovery_model: str = Form("claude", description="AI model for product discovery: 'claude' (default) or 'gpt'"),
-    focused_extraction: bool = Form(True, description="Only process product pages identified in discovery (default: True)")
+    focused_extraction: bool = Form(True, description="Only process product pages identified in discovery (default: True)"),
+    extract_categories: Optional[str] = Form("products", description="Comma-separated categories to extract: 'products' (default), 'certificates', 'logos', 'specifications', 'all'")
 ):
     """
     Upload PDF with intelligent product discovery.
@@ -3197,16 +3226,16 @@ async def upload_pdf_with_product_discovery(
       - Analyze entire PDF with Claude/GPT
       - Identify ALL products, metadata, metafields
       - Map images to products
-      - Classify content (product vs marketing vs admin)
+      - Classify content (product vs certificates vs logos vs specifications)
 
     Stage 1: Focused Extraction (15-30%)
-      - Extract ONLY product-related pages
-      - Extract ONLY product-related images
-      - Skip marketing/admin content
+      - Extract pages based on extract_categories parameter
+      - If focused_extraction=True: Only extract specified categories
+      - If focused_extraction=False: Extract all content
 
     Stage 2: Chunking (30-50%)
-      - Create chunks ONLY for product content
-      - Link chunks to products
+      - Create chunks based on extracted pages
+      - Link chunks to products/certificates/etc
       - Generate text embeddings
 
     Stage 3: Image Processing (50-70%)
@@ -3231,7 +3260,9 @@ async def upload_pdf_with_product_discovery(
         description: Optional description
         tags: Optional comma-separated tags
         discovery_model: "claude" (default) or "gpt" for product discovery
-        focused_extraction: Only process product pages (default: True). Set to False to process entire PDF
+        focused_extraction: Only process pages from extract_categories (default: True). Set to False to process entire PDF
+        extract_categories: Categories to extract - 'products' (default), 'certificates', 'logos', 'specifications', or 'all'.
+                          Comma-separated. Only applies when focused_extraction=True.
 
     Returns:
         Job ID and status URL for monitoring
@@ -3329,6 +3360,9 @@ async def upload_pdf_with_product_discovery(
         except Exception as e:
             logger.error(f"❌ Failed to create job record: {e}")
 
+        # Parse extract_categories
+        categories_list = [cat.strip().lower() for cat in extract_categories.split(',')] if extract_categories else ['products']
+
         # Start background processing with product discovery
         background_tasks.add_task(
             process_document_with_discovery,
@@ -3340,7 +3374,8 @@ async def upload_pdf_with_product_discovery(
             description or "Product catalog with intelligent discovery",
             document_tags,
             discovery_model,
-            focused_extraction,  # NEW: Pass focused extraction flag
+            focused_extraction,  # Pass focused extraction flag
+            categories_list,  # NEW: Pass extract categories
             1000,  # chunk_size
             200,   # chunk_overlap
             "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"  # workspace_id
