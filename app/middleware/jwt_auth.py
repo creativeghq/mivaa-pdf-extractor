@@ -14,6 +14,7 @@ Key Features:
 
 import json
 import logging
+import os
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone, timedelta
 
@@ -234,6 +235,11 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         """
         Validate JWT token or simple API key and extract claims.
 
+        Supports:
+        1. Supabase JWT tokens (from frontend auth)
+        2. MIVAA JWT tokens (internal)
+        3. Simple API keys (Material Kai API key)
+
         Args:
             token: JWT token string or simple API key
 
@@ -245,7 +251,13 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             if self._is_simple_api_key(token):
                 return await self._validate_simple_api_key(token)
 
-            # Otherwise, try to decode as JWT token
+            # Try to validate as Supabase JWT token first
+            supabase_claims = await self._validate_supabase_jwt(token)
+            if supabase_claims:
+                logger.info(f"✅ Supabase JWT validated for user: {supabase_claims.get('sub')}")
+                return supabase_claims
+
+            # Otherwise, try to decode as MIVAA JWT token
             try:
                 claims = jwt.decode(
                     token,
@@ -267,6 +279,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                     logger.warning("Token has expired")
                     return None
 
+                logger.info(f"✅ MIVAA JWT validated for user: {claims.get('sub')}")
                 return claims
 
             except jwt.ExpiredSignatureError:
@@ -281,6 +294,91 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
 
         except Exception as e:
             logger.error(f"Token validation error: {str(e)}")
+            return None
+
+    async def _validate_supabase_jwt(self, token: str) -> Optional[Dict[str, Any]]:
+        """
+        Validate Supabase JWT token from frontend authentication.
+
+        Supabase uses HS256 algorithm with JWT_SECRET from Supabase project settings.
+
+        Args:
+            token: Supabase JWT token string
+
+        Returns:
+            Token claims dictionary or None if invalid
+        """
+        try:
+            # Get Supabase JWT secret from environment
+            supabase_jwt_secret = os.getenv("SUPABASE_JWT_SECRET")
+            if not supabase_jwt_secret:
+                logger.debug("SUPABASE_JWT_SECRET not configured, skipping Supabase JWT validation")
+                return None
+
+            # Decode Supabase JWT token
+            claims = jwt.decode(
+                token,
+                supabase_jwt_secret,
+                algorithms=["HS256"],
+                audience="authenticated",  # Supabase uses "authenticated" as audience
+                options={"verify_exp": True, "verify_iat": True}
+            )
+
+            # Validate required Supabase claims
+            required_claims = ["sub", "exp", "iat", "aud"]
+            for claim in required_claims:
+                if claim not in claims:
+                    logger.debug(f"Missing required Supabase claim: {claim}")
+                    return None
+
+            # Check if audience is "authenticated" (Supabase standard)
+            if claims.get("aud") != "authenticated":
+                logger.debug(f"Invalid Supabase audience: {claims.get('aud')}")
+                return None
+
+            # Extract user information from Supabase token
+            user_id = claims.get("sub")
+            email = claims.get("email")
+            role = claims.get("role", "authenticated")
+
+            # Get workspace_id from app_metadata or user_metadata
+            app_metadata = claims.get("app_metadata", {})
+            user_metadata = claims.get("user_metadata", {})
+            workspace_id = (
+                app_metadata.get("workspace_id") or
+                user_metadata.get("workspace_id") or
+                self.settings.material_kai_workspace_id  # Default workspace
+            )
+
+            # Transform Supabase claims to MIVAA format
+            mivaa_claims = {
+                "sub": user_id,
+                "email": email,
+                "role": role,
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+                "organization": "material-kai-vision-platform",
+                "permissions": [
+                    "pdf:read", "pdf:write",
+                    "document:read", "document:write",
+                    "search:read",
+                    "image:read", "image:write"
+                ],
+                "iat": claims.get("iat"),
+                "exp": claims.get("exp"),
+                "source": "supabase"  # Mark as Supabase token
+            }
+
+            return mivaa_claims
+
+        except jwt.ExpiredSignatureError:
+            logger.debug("Supabase JWT token has expired")
+            return None
+        except jwt.InvalidTokenError as e:
+            logger.debug(f"Invalid Supabase JWT token: {str(e)}")
+            return None
+        except Exception as e:
+            logger.debug(f"Supabase JWT validation error: {str(e)}")
             return None
 
     def _is_simple_api_key(self, token: str) -> bool:

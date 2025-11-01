@@ -1709,7 +1709,9 @@ async def process_document_background(
                 logger.info("⚠️ No chunks created, skipping product creation")
 
             # ✅ FIX 4: Start background image processing with sub-job tracking
-            images_extracted = processing_result.get('statistics', {}).get('images_extracted', 0)  # ✅ FIX: Use correct key 'images_extracted' not 'total_images'
+            # Get images_extracted from database
+            images_extracted_result = supabase.client.table("document_images").select("id", count="exact").eq("document_id", document_id).execute()
+            images_extracted = images_extracted_result.count if images_extracted_result else 0
             if images_extracted > 0:
                 logger.info(f"🖼️ Scheduling background image AI analysis for {images_extracted} images")
                 asyncio.create_task(process_images_background(
@@ -1731,8 +1733,9 @@ async def process_document_background(
                 "chunks_created": chunks_created,
                 "embeddings_generated": chunks_created > 0,
                 "products_created": products_created,
+                "images_extracted": images_extracted,  # Include images count
                 "processing_time": processing_time,
-                "message": f"Document processed successfully: {chunks_created} chunks created, {products_created} products created"
+                "message": f"Document processed successfully: {chunks_created} chunks created, {products_created} products created, {images_extracted} images extracted"
             }
 
             # Persist completion to database
@@ -1746,6 +1749,7 @@ async def process_document_background(
                     metadata={
                         "chunks_created": chunks_created,
                         "products_created": products_created,
+                        "images_extracted": images_extracted,  # Include images count
                         "processing_time": processing_time
                     }
                 )
@@ -2086,13 +2090,19 @@ async def process_document_with_discovery(
             processing_options={'extract_images': True, 'extract_tables': False}
         )
 
-        # Group images by page number (extract from filename: page_X_image_Y.png)
+        # Group images by page number
+        # Filename formats: "page_X_image_Y.png" OR "document_id.pdf-PAGE-IMAGE.jpg"
         images_by_page = {}
         for img_data in pdf_result_with_images.extracted_images:
             filename = img_data.get('filename', '')
-            # Extract page number from filename (format: page_X_image_Y.png)
             import re
+
+            # Try format 1: page_X_image_Y.png
             match = re.search(r'page_(\d+)_', filename)
+            if not match:
+                # Try format 2: document_id.pdf-PAGE-IMAGE.jpg
+                match = re.search(r'\.pdf-(\d+)-\d+\.', filename)
+
             if match:
                 page_num = int(match.group(1))
                 if page_num not in images_by_page:
@@ -2101,11 +2111,15 @@ async def process_document_with_discovery(
             else:
                 logger.warning(f"Could not extract page number from filename: {filename}")
 
-        # Process images with Llama + CLIP (focused extraction applies here too)
+        # Process images with Llama + CLIP (always extract images, even in focused mode)
         images_processed = 0
+        logger.info(f"   Total images extracted from PDF: {len(pdf_result_with_images.extracted_images)}")
+        logger.info(f"   Images grouped by page: {len(images_by_page)} pages with images")
+        logger.info(f"   Product pages to process: {sorted(product_pages)}")
+
         for page_num, images in images_by_page.items():
-            if page_num not in product_pages:
-                continue  # Skip non-product pages if focused extraction enabled
+            # Process images from all pages (focused extraction only affects chunking, not images)
+            logger.info(f"   Processing {len(images)} images from page {page_num}")
 
             for img_data in images:
                 try:

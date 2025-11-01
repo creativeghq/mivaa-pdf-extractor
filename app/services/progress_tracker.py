@@ -121,7 +121,7 @@ class ProgressTracker:
                     'pages_skipped': self.pages_skipped,
                     'database_records_created': self.database_records_created,
                     'knowledge_base_entries': self.knowledge_base_entries,
-                    'images_stored': self.images_stored,
+                    'images_extracted': self.images_stored,  # Use images_extracted for API compatibility
                     'chunks_created': self.chunks_created,
                     'products_created': self.products_created,
                     'errors_count': len(self.errors),
@@ -168,7 +168,7 @@ class ProgressTracker:
                 self.job_storage[self.job_id]['metadata'].update({
                     'pages_completed': self.pages_completed,
                     'pages_failed': self.pages_failed,
-                    'images_stored': self.images_stored,
+                    'images_extracted': self.images_stored,  # Use images_extracted for API compatibility
                     'chunks_created': self.chunks_created,
                     'products_created': self.products_created
                 })
@@ -383,7 +383,7 @@ class ProgressTracker:
                             'pages_skipped': self.pages_skipped,
                             'database_records_created': self.database_records_created,
                             'knowledge_base_entries': self.knowledge_base_entries,
-                            'images_stored': self.images_stored,
+                            'images_extracted': self.images_stored,  # Use images_extracted for API compatibility
                             'chunks_created': self.chunks_created,
                             'products_created': self.products_created,
                             'errors_count': len(self.errors),

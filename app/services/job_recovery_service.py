@@ -62,20 +62,27 @@ class JobRecoveryService:
             bool: True if successful, False otherwise
         """
         try:
+            # Check if job exists and get existing metadata
+            existing = self.supabase.client.table(self.table_name).select("id, metadata").eq("id", job_id).execute()
+
+            # Merge metadata with existing metadata instead of replacing
+            merged_metadata = {}
+            if existing.data and existing.data[0].get("metadata"):
+                merged_metadata = existing.data[0]["metadata"].copy()
+            if metadata:
+                merged_metadata.update(metadata)
+
             job_data = {
                 "id": job_id,
                 "document_id": document_id,
                 "filename": filename,
                 "status": status,
                 "progress": progress,
-                "metadata": metadata or {},
+                "metadata": merged_metadata,
                 "error": error,
                 "updated_at": datetime.utcnow().isoformat()
             }
-            
-            # Check if job exists
-            existing = self.supabase.client.table(self.table_name).select("id").eq("id", job_id).execute()
-            
+
             if existing.data:
                 # Update existing job
                 self.supabase.client.table(self.table_name).update(job_data).eq("id", job_id).execute()
