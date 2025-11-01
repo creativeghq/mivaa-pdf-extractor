@@ -2117,6 +2117,46 @@ async def process_document_with_discovery(
             else:
                 logger.warning(f"Could not extract page number from filename: {filename}")
 
+        # CRITICAL: Save images to database FIRST before AI processing
+        # This ensures images are persisted even if AI processing fails
+        logger.info(f"💾 Saving {len(pdf_result_with_images.extracted_images)} images to database...")
+        images_saved = 0
+        for img_data in pdf_result_with_images.extracted_images:
+            try:
+                # Extract page number from filename
+                filename = img_data.get('filename', '')
+                match = re.search(r'page_(\d+)_', filename) or re.search(r'\.pdf-(\d+)-\d+\.', filename)
+                page_num = int(match.group(1)) if match else None
+
+                # Prepare image record for database
+                image_record = {
+                    'document_id': document_id,
+                    'workspace_id': workspace_id,
+                    'image_url': img_data.get('storage_url'),
+                    'image_type': 'extracted',
+                    'caption': f"Image from page {page_num}" if page_num else "Extracted image",
+                    'page_number': page_num,
+                    'confidence': img_data.get('confidence_score', 0.5),
+                    'processing_status': 'pending_analysis',
+                    'metadata': {
+                        'filename': filename,
+                        'storage_path': img_data.get('storage_path'),
+                        'storage_bucket': img_data.get('storage_bucket', 'pdf-tiles'),
+                        'quality_score': img_data.get('quality_score', 0.5),
+                        'extracted_at': datetime.utcnow().isoformat(),
+                        'source': 'pdf_extraction'
+                    }
+                }
+
+                # Insert into database
+                supabase.client.table('document_images').insert(image_record).execute()
+                images_saved += 1
+
+            except Exception as e:
+                logger.error(f"Failed to save image {filename} to database: {e}")
+
+        logger.info(f"✅ Saved {images_saved}/{len(pdf_result_with_images.extracted_images)} images to database")
+
         # Process images with Llama + CLIP (always extract images, even in focused mode)
         images_processed = 0
         logger.info(f"   Total images extracted from PDF: {len(pdf_result_with_images.extracted_images)}")
