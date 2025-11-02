@@ -632,7 +632,7 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 - ✅ **Consolidated Upload**: `/api/rag/documents/upload` with processing modes (quick/standard/deep) and categories
 - ✅ **Unified Search**: `/api/rag/search?strategy={strategy}` with 6 strategies (semantic, vector, multi_vector, hybrid, material, image)
 - ✅ **Comprehensive Health**: `/health` for all services (database, storage, AI models)
-- ✅ **Well-Organized**: 16 endpoint categories covering RAG, documents, search, AI services, admin, and more
+- ✅ **Well-Organized**: 15 endpoint categories covering RAG, documents, search, AI services, admin, and more
 - ✅ **Preserved**: Prompt enhancement system, category extraction, all processing modes
 
 ### Key Capabilities
