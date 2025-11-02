@@ -1293,8 +1293,11 @@ async def get_embeddings(
                 detail="document_id is required"
             )
 
-        # Query embeddings
-        query = supabase_client.client.table('embeddings').select('*').eq('document_id', document_id)
+        # Query embeddings - JOIN through chunks to get document_id
+        # embeddings table has chunk_id, not document_id
+        query = supabase_client.client.table('embeddings').select(
+            '*, document_chunks!inner(document_id)'
+        ).eq('document_chunks.document_id', document_id)
 
         # Filter by embedding type if specified
         if embedding_type:
