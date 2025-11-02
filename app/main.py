@@ -628,7 +628,7 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 
 ## ✨ **API Organization (v2.2.0)**
 
-**Comprehensive API with 119 endpoints organized into 16 categories**
+**Comprehensive API with 106 endpoints organized into 15 categories**
 
 **Key Features:**
 - ✅ **Consolidated Upload**: `/api/rag/documents/upload` with processing modes (quick/standard/deep) and categories
@@ -734,11 +734,10 @@ Get your token from the frontend application or Supabase authentication.
 - Flagged chunks review
 - Metadata management
 
-### **📄 Document Management** (`/api/documents/*`)
-- Process documents
-- Analyze structure
-- Job status tracking
-- Batch operations
+### **⚠️ Legacy Endpoints Removed**
+- All `/api/documents/*` endpoints have been removed (except `/api/document-entities/*` which are valid)
+- Use `/api/rag/*` endpoints instead for all document operations
+- See migration guide in documentation
 
 ### **🏥 Health & Monitoring**
 - `/health` - Service health check
@@ -1471,7 +1470,7 @@ def custom_openapi():
         "uptime": "99.5%+",
         "version": "2.2.0",
         "last_updated": "2025-11-02",
-        "legacy_removed": "Removed 13 duplicate /api/documents/* endpoints"
+        "legacy_removed": "Removed 18 duplicate /api/documents/* endpoints (13 from documents.py + 5 from search.py)"
     }
 
     app.openapi_schema = openapi_schema
