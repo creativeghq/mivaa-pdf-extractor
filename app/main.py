@@ -655,12 +655,12 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 5. **Custom**: Color, texture, application embeddings
 
 ### **API Endpoints**
-- **Total**: 119 endpoints across 16 categories
+- **Total**: 106 endpoints across 15 categories (13 legacy endpoints removed)
 - **RAG System**: 23 endpoints for document upload, search, query, chat, embeddings
-- **Documents**: 13 endpoints for analysis, comparison, entity extraction
 - **AI Services**: 10 endpoints for classification, validation, boundary detection
-- **Search**: 8 endpoints for semantic, image, material, multimodal search
 - **Admin**: 10 endpoints for chunk quality, extraction config, prompts
+- **Search**: 8 endpoints for semantic, image, material, multimodal search
+- **Jobs**: 7 endpoints for progress tracking, statistics, status
 - **Document Entities**: 5 endpoints for certificates, logos, specifications
 
 ### **Performance**
@@ -687,7 +687,7 @@ Get your token from the frontend application or Supabase authentication.
 ✅ **Admin Dashboard** - Chunk quality monitoring and review workflow
 ✅ **Metadata Synchronization** - 100% accuracy in job status reporting
 
-## 🚀 **API Categories** (119 Endpoints)
+## 🚀 **API Categories** (106 Endpoints)
 
 ### **📄 PDF Processing** (`/api/v1/extract/*`)
 - Extract markdown, tables, images from PDFs
@@ -794,10 +794,7 @@ Get your token from the frontend application or Supabase authentication.
                 "name": "Admin",
                 "description": "👨‍💼 Admin operations - Chunk quality dashboard, quality statistics, flagged chunks review, and metadata management for platform administrators"
             },
-            {
-                "name": "Documents",
-                "description": "📄 Document management - Process documents, analyze structure, track job status, and perform batch operations"
-            },
+
             {
                 "name": "Anthropic Claude",
                 "description": "🎨 Anthropic Claude integration - Image validation and product enrichment using Claude Haiku 4.5 (fast classification) and Claude Sonnet 4.5 (deep enrichment)"
@@ -1360,7 +1357,6 @@ async def root() -> Dict[str, Any]:
 
 # Include API routes
 from app.api.pdf_routes import router as pdf_router
-from app.api.documents import router as documents_router
 from app.api.search import router as search_router
 from app.api.images import router as images_router
 from app.api.admin import router as admin_router
@@ -1377,7 +1373,6 @@ from app.api.ai_services_routes import router as ai_services_router
 from app.api.admin_prompts import router as admin_prompts_router, config_router as extraction_config_router
 
 app.include_router(pdf_router)  # PDF router already has /api/v1 prefix
-app.include_router(documents_router)
 app.include_router(search_router)
 app.include_router(images_router)
 app.include_router(admin_router)
@@ -1445,10 +1440,9 @@ def custom_openapi():
         "agentic_queries": "Factory/group filtering for certificates, logos, specifications"
     }
 
-    # Add custom paths info (UPDATED - Accurate endpoint counts)
+    # Add custom paths info (UPDATED - Legacy endpoints removed)
     openapi_schema["info"]["x-endpoint-categories"] = {
         "rag_routes": "/api/rag/* (23 endpoints) - Document upload, search, query, chat, embeddings, jobs",
-        "documents_routes": "/api/documents/* (13 endpoints) - Document analysis, comparison, entity extraction",
         "utilities_routes": "/api/bulk/*, /api/data/*, /api/monitoring/*, /api/system/* (12 endpoints)",
         "admin_routes": "/admin/* (10 endpoints) - Chunk quality, extraction config, prompts management",
         "ai_services_routes": "/api/v1/ai-services/* (10 endpoints) - Classification, validation, boundary detection",
@@ -1465,10 +1459,10 @@ def custom_openapi():
         "ai_metrics_routes": "/api/v1/ai-metrics/* (2 endpoints) - Job metrics, summary"
     }
 
-    # Add platform statistics (UPDATED - Accurate counts)
+    # Add platform statistics (UPDATED - Legacy endpoints removed)
     openapi_schema["info"]["x-platform-stats"] = {
-        "total_endpoints": 119,
-        "endpoint_categories": 16,
+        "total_endpoints": 106,
+        "endpoint_categories": 15,
         "ai_models": 12,
         "processing_stages": 14,
         "embedding_types": 6,
@@ -1477,7 +1471,7 @@ def custom_openapi():
         "uptime": "99.5%+",
         "version": "2.2.0",
         "last_updated": "2025-11-02",
-        "api_consolidation": "Phase 1 Complete - Organized into 16 categories"
+        "legacy_removed": "Removed 13 duplicate /api/documents/* endpoints"
     }
 
     app.openapi_schema = openapi_schema

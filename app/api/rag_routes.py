@@ -649,11 +649,10 @@ async def upload_document(
                 detail=f"Failed to create background job record: {str(e)}"
             )
 
-        # Start background processing based on processing mode
+        # Start background processing
+        # Note: "quick" mode is not implemented - all processing uses standard mode
         if processing_mode == "quick":
-            # Quick mode: Simple extraction without RAG
-            # TODO: Implement quick extraction mode
-            logger.warning("⚠️ Quick mode not yet implemented, falling back to standard mode")
+            logger.info("Quick mode requested but not implemented, using standard mode")
             processing_mode = "standard"
 
         # Use the existing process_document_with_discovery function
@@ -2503,8 +2502,8 @@ async def process_document_with_discovery(
                         logger.debug(f"Skipping image from page {page_num} (category: {image_category}, not in extract_categories)")
                         images_skipped += 1
                         continue
-                    # TODO: Add support for other categories (certificates, logos, specifications)
-                    # For now, only 'products' category is fully implemented
+                    # Note: Other categories (certificates, logos, specifications) are handled
+                    # by the document_entities system, not the images table
 
                 # Prepare image record for database
                 image_record = {
@@ -2907,46 +2906,21 @@ async def process_document_with_discovery(
 @router.post("/query", response_model=QueryResponse)
 async def query_documents(
     request: QueryRequest,
-    modality: Optional[str] = Query(
-        None,
-        description="Query modality: 'text', 'image', 'multimodal'. Auto-detected if not specified."
-    ),
-    image_url: Optional[str] = Query(
-        None,
-        description="Image URL for image or multimodal queries"
-    ),
-    image_data: Optional[str] = Query(
-        None,
-        description="Base64-encoded image data for image or multimodal queries"
-    ),
     llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
 ):
     """
-    **🤖 CONSOLIDATED QUERY ENDPOINT - Auto-Detects Query Modality**
+    **🤖 CONSOLIDATED QUERY ENDPOINT - Text-Based RAG Query**
 
     This endpoint replaces:
-    - `/api/query/multimodal` → Auto-detected when image is provided
     - `/api/documents/{id}/query` → Use with `document_ids` filter
     - `/api/documents/{id}/summarize` → Use with summarization prompt
 
-    ## 🎯 Modality Detection
+    ## 🎯 Query Capabilities
 
-    The system automatically detects the query modality:
-
-    ### Text Query (Auto-detected)
-    - Only `query` parameter provided
-    - Pure text-based RAG
-    - Best for: Factual questions, information retrieval
-
-    ### Image Query (Auto-detected)
-    - `image_url` or `image_data` provided without text
-    - Vision model analysis
-    - Best for: Visual similarity, image understanding
-
-    ### Multimodal Query (Auto-detected)
-    - Both `query` and image provided
-    - Combined text and vision analysis
-    - Best for: Complex queries requiring both text and visual understanding
+    ### Text Query (Implemented) ✅
+    - Pure text-based RAG with advanced retrieval
+    - Semantic search with reranking
+    - Best for: Factual questions, information retrieval, summarization
 
     ## 📝 Examples
 
@@ -2956,28 +2930,6 @@ async def query_documents(
       -H "Content-Type: application/json" \\
       -d '{
         "query": "What are the dimensions of the NOVA product?",
-        "top_k": 5
-      }'
-    ```
-
-    ### Image Query
-    ```bash
-    curl -X POST "/api/rag/query" \\
-      -H "Content-Type: application/json" \\
-      -d '{
-        "query": "",
-        "image_url": "https://example.com/product.jpg",
-        "top_k": 10
-      }'
-    ```
-
-    ### Multimodal Query
-    ```bash
-    curl -X POST "/api/rag/query" \\
-      -H "Content-Type: application/json" \\
-      -d '{
-        "query": "Find products similar to this image with oak finish",
-        "image_url": "https://example.com/reference.jpg",
         "top_k": 5
       }'
     ```
@@ -2995,9 +2947,6 @@ async def query_documents(
 
     ## 🔄 Migration from Old Endpoints
 
-    **Old:** `POST /api/query/multimodal`
-    **New:** `POST /api/rag/query` with image parameters (auto-detected)
-
     **Old:** `POST /api/documents/{id}/query`
     **New:** `POST /api/rag/query` with `document_ids` filter
 
@@ -3007,61 +2956,14 @@ async def query_documents(
     start_time = datetime.utcnow()
 
     try:
-        # Auto-detect modality if not specified
-        detected_modality = modality
-        if not detected_modality:
-            has_text = bool(request.query and request.query.strip())
-            has_image = bool(image_url or image_data)
-
-            if has_text and has_image:
-                detected_modality = "multimodal"
-            elif has_image:
-                detected_modality = "image"
-            else:
-                detected_modality = "text"
-
-        logger.info(f"🔍 Query modality: {detected_modality}")
-
-        # Route to appropriate query method based on modality
-        if detected_modality == "text":
-            # Standard text-based RAG query
-            result = await llamaindex_service.advanced_rag_query(
-                query=request.query,
-                max_results=request.top_k,
-                similarity_threshold=request.similarity_threshold,
-                enable_reranking=request.enable_reranking,
-                query_type="factual"
-            )
-
-        elif detected_modality == "image":
-            # Image-based query using vision models
-            # TODO: Implement image query
-            logger.warning("⚠️ Image query not yet implemented, falling back to text query")
-            result = await llamaindex_service.advanced_rag_query(
-                query=request.query or "Analyze this image",
-                max_results=request.top_k,
-                similarity_threshold=request.similarity_threshold,
-                enable_reranking=request.enable_reranking,
-                query_type="factual"
-            )
-
-        elif detected_modality == "multimodal":
-            # Multimodal query combining text and image
-            # TODO: Implement multimodal query
-            logger.warning("⚠️ Multimodal query not yet implemented, falling back to text query")
-            result = await llamaindex_service.advanced_rag_query(
-                query=request.query,
-                max_results=request.top_k,
-                similarity_threshold=request.similarity_threshold,
-                enable_reranking=request.enable_reranking,
-                query_type="factual"
-            )
-
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid modality '{detected_modality}'. Valid modalities: text, image, multimodal"
-            )
+        # Standard text-based RAG query
+        result = await llamaindex_service.advanced_rag_query(
+            query=request.query,
+            max_results=request.top_k,
+            similarity_threshold=request.similarity_threshold,
+            enable_reranking=request.enable_reranking,
+            query_type="factual"
+        )
 
         processing_time = (datetime.utcnow() - start_time).total_seconds()
 
@@ -3129,7 +3031,7 @@ async def search_documents(
     request: SearchRequest,
     strategy: Optional[str] = Query(
         "semantic",
-        description="Search strategy: 'semantic', 'vector', 'multi_vector', 'hybrid', 'material', 'image'"
+        description="Search strategy: 'semantic' (default), 'vector'"
     ),
     llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
 ):
@@ -3139,41 +3041,19 @@ async def search_documents(
     This endpoint replaces:
     - `/api/search/semantic` → Use `strategy="semantic"`
     - `/api/search/similarity` → Use `strategy="vector"`
-    - `/api/search/multimodal` → Use `strategy="multi_vector"`
     - `/api/unified-search` → Use this endpoint
-    - `/api/search/materials/visual` → Use `strategy="material"`
 
-    ## 🎯 Search Strategies
+    ## 🎯 Search Strategies (Implemented)
 
-    ### Semantic Search (`strategy="semantic"`) - DEFAULT
-    - Natural language understanding
-    - Context-aware matching
-    - Best for: Text queries, conceptual search
+    ### Semantic Search (`strategy="semantic"`) - DEFAULT ✅
+    - Natural language understanding with MMR (Maximal Marginal Relevance)
+    - Context-aware matching with diversity
+    - Best for: Text queries, conceptual search, diverse results
 
-    ### Vector Search (`strategy="vector"`)
-    - Pure vector similarity
-    - Fast and efficient
-    - Best for: Similar document finding
-
-    ### Multi-Vector Search (`strategy="multi_vector"`)
-    - Combines text and image embeddings
-    - Multimodal understanding
-    - Best for: Queries with both text and visual elements
-
-    ### Hybrid Search (`strategy="hybrid"`)
-    - Combines semantic and keyword search
-    - Best of both worlds
-    - Best for: Complex queries requiring precision and recall
-
-    ### Material Search (`strategy="material"`)
-    - Specialized for material properties
-    - Visual and textual material matching
-    - Best for: Finding materials by appearance or properties
-
-    ### Image Search (`strategy="image"`)
-    - Image-based similarity
-    - CLIP embeddings
-    - Best for: Finding visually similar content
+    ### Vector Search (`strategy="vector"`) ✅
+    - Pure vector similarity (cosine distance)
+    - Fast and efficient, no diversity filtering
+    - Best for: Finding most similar documents, precise matching
 
     ## 📝 Examples
 
@@ -3191,20 +3071,6 @@ async def search_documents(
       -d '{"query": "oak wood flooring", "top_k": 5}'
     ```
 
-    ### Multimodal Search
-    ```bash
-    curl -X POST "/api/rag/search?strategy=multi_vector" \\
-      -H "Content-Type: application/json" \\
-      -d '{"query": "textured ceramic tiles", "top_k": 20}'
-    ```
-
-    ### Material Search
-    ```bash
-    curl -X POST "/api/rag/search?strategy=material" \\
-      -H "Content-Type: application/json" \\
-      -d '{"query": "matte black metal finish", "top_k": 15}'
-    ```
-
     ## 🔄 Migration from Old Endpoints
 
     **Old:** `POST /api/search/semantic`
@@ -3213,9 +3079,6 @@ async def search_documents(
     **Old:** `POST /api/search/similarity`
     **New:** `POST /api/rag/search?strategy=vector`
 
-    **Old:** `POST /api/search/multimodal`
-    **New:** `POST /api/rag/search?strategy=multi_vector`
-
     **Old:** `POST /api/unified-search`
     **New:** `POST /api/rag/search` (same functionality, clearer naming)
     """
@@ -3223,7 +3086,7 @@ async def search_documents(
 
     try:
         # Validate strategy
-        valid_strategies = ['semantic', 'vector', 'multi_vector', 'hybrid', 'material', 'image']
+        valid_strategies = ['semantic', 'vector']
         if strategy not in valid_strategies:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -3232,7 +3095,8 @@ async def search_documents(
 
         # Route to appropriate search method based on strategy
         if strategy == "semantic":
-            # Semantic search using MMR
+            # Semantic search using MMR (Maximal Marginal Relevance)
+            # Balances relevance and diversity (lambda_mult=0.5)
             results = await llamaindex_service.semantic_search_with_mmr(
                 query=request.query,
                 k=request.top_k,
@@ -3240,51 +3104,12 @@ async def search_documents(
             )
 
         elif strategy == "vector":
-            # Pure vector similarity search
+            # Pure vector similarity search (cosine distance)
+            # No diversity filtering (lambda_mult=1.0)
             results = await llamaindex_service.semantic_search_with_mmr(
                 query=request.query,
                 k=request.top_k,
                 lambda_mult=1.0  # Pure similarity, no diversity
-            )
-
-        elif strategy == "multi_vector":
-            # Multimodal search (text + image embeddings)
-            # TODO: Implement multimodal search
-            logger.warning("⚠️ Multi-vector search not yet implemented, falling back to semantic")
-            results = await llamaindex_service.semantic_search_with_mmr(
-                query=request.query,
-                k=request.top_k,
-                lambda_mult=0.5
-            )
-
-        elif strategy == "hybrid":
-            # Hybrid search (semantic + keyword)
-            # TODO: Implement hybrid search
-            logger.warning("⚠️ Hybrid search not yet implemented, falling back to semantic")
-            results = await llamaindex_service.semantic_search_with_mmr(
-                query=request.query,
-                k=request.top_k,
-                lambda_mult=0.5
-            )
-
-        elif strategy == "material":
-            # Material-specific search
-            # TODO: Implement material search
-            logger.warning("⚠️ Material search not yet implemented, falling back to semantic")
-            results = await llamaindex_service.semantic_search_with_mmr(
-                query=request.query,
-                k=request.top_k,
-                lambda_mult=0.5
-            )
-
-        elif strategy == "image":
-            # Image-based search
-            # TODO: Implement image search
-            logger.warning("⚠️ Image search not yet implemented, falling back to semantic")
-            results = await llamaindex_service.semantic_search_with_mmr(
-                query=request.query,
-                k=request.top_k,
-                lambda_mult=0.5
             )
 
         processing_time = (datetime.utcnow() - start_time).total_seconds()
