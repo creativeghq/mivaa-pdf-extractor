@@ -620,6 +620,30 @@ async def upload_document(
                 detail=f"Failed to create document record: {str(e)}"
             )
 
+        # Create processed_documents record (required for job_progress foreign key)
+        try:
+            supabase_client.client.table('processed_documents').insert({
+                "id": document_id,  # Use same ID as documents table
+                "workspace_id": workspace_id,
+                "pdf_document_id": document_id,
+                "content": "",  # Will be populated during processing
+                "processing_status": "processing",
+                "processing_started_at": datetime.utcnow().isoformat(),
+                "metadata": {
+                    "processing_mode": processing_mode,
+                    "categories": category_list
+                },
+                "created_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat()
+            }).execute()
+            logger.info(f"✅ Created processed_documents record: {document_id}")
+        except Exception as proc_doc_error:
+            logger.error(f"❌ Failed to create processed_documents record: {proc_doc_error}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to create processed_documents record: {str(proc_doc_error)}"
+            )
+
         # Create background job record
         try:
             supabase_client.client.table('background_jobs').insert({
