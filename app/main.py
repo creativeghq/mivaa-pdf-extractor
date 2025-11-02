@@ -687,12 +687,12 @@ Get your token from the frontend application or Supabase authentication.
 
 ## 🚀 API Categories (106 Endpoints)
 
-### 📄 PDF Processing (`/api/v1/extract/*`)
+### 📄 PDF Processing (`/api/pdf/*`)
 - Extract markdown, tables, images from PDFs
 - PyMuPDF4LLM integration
 - Batch processing support
 
-### 🧠 RAG System (`/api/v1/rag/*`)
+### 🧠 RAG System (`/api/rag/*`)
 - Document upload and processing
 - Query and chat interfaces
 - Semantic search
