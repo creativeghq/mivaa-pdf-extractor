@@ -626,6 +626,16 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
 
         return prompt
 
+    def _repair_json(self, json_str: str) -> str:
+        """Attempt to repair common JSON issues"""
+        # Remove trailing commas before closing brackets/braces
+        json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
+        # Fix missing commas between array elements
+        json_str = re.sub(r'}\s*{', r'},{', json_str)
+        # Fix missing commas between object properties
+        json_str = re.sub(r'"\s*"', r'","', json_str)
+        return json_str
+
     async def _discover_with_claude(
         self,
         prompt: str,
@@ -639,7 +649,7 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
             
             response = client.messages.create(
                 model="claude-sonnet-4-5",
-                max_tokens=8000,  # Large response for comprehensive catalog
+                max_tokens=16000,  # Large response for comprehensive catalog
                 temperature=0.1,  # Low temperature for consistent extraction
                 messages=[
                     {
@@ -662,9 +672,20 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                     json_start = content.find("```") + 3
                     json_end = content.find("```", json_start)
                     content = content[json_start:json_end].strip()
-                
-                result = json.loads(content)
-                
+
+                try:
+                    result = json.loads(content)
+                except json.JSONDecodeError as first_error:
+                    self.logger.warning(f"First JSON parse failed, attempting repair: {first_error}")
+                    try:
+                        repaired = self._repair_json(content)
+                        result = json.loads(repaired)
+                        self.logger.info("Successfully repaired and parsed JSON")
+                    except json.JSONDecodeError as e:
+                        self.logger.error(f"Failed to parse Claude response as JSON even after repair: {e}")
+                        self.logger.debug(f"Raw response (first 1000 chars): {content[:1000]}")
+                        raise RuntimeError(f"Claude returned invalid JSON: {e}")
+
                 # Log AI call
                 latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
                 await self.ai_logger.log_claude_call(

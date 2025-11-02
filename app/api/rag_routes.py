@@ -624,6 +624,7 @@ async def upload_document(
         try:
             supabase_client.client.table('background_jobs').insert({
                 "id": job_id,
+                "filename": filename,
                 "job_type": "pdf_processing",
                 "status": "processing",
                 "progress": 0,
