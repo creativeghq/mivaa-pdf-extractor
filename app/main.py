@@ -626,15 +626,15 @@ def create_app() -> FastAPI:
 
 MIVAA is the core backend service powering the Material Kai Vision Platform, providing comprehensive PDF processing, AI analysis, and multi-vector search capabilities.
 
-## ✨ **API Consolidation (v2.2.0)**
+## ✨ **API Organization (v2.2.0)**
 
-**One Endpoint, One Purpose, No Duplicates** - Reduced from 113 to ~70 endpoints (38% reduction)
+**Comprehensive API with 119 endpoints organized into 16 categories**
 
-**Key Changes:**
-- ✅ **Single Upload Endpoint**: `/api/rag/documents/upload` with processing modes (quick/standard/deep) and categories
-- ✅ **Single Search Endpoint**: `/api/rag/search?strategy={strategy}` with 6 strategies (semantic, vector, multi_vector, hybrid, material, image)
-- ✅ **Single Health Check**: `/health` for all services (database, storage, AI models)
-- ✅ **Removed**: All deprecated endpoints (`/process`, `/process-url`, `/unified-search`, test endpoints)
+**Key Features:**
+- ✅ **Consolidated Upload**: `/api/rag/documents/upload` with processing modes (quick/standard/deep) and categories
+- ✅ **Unified Search**: `/api/rag/search?strategy={strategy}` with 6 strategies (semantic, vector, multi_vector, hybrid, material, image)
+- ✅ **Comprehensive Health**: `/health` for all services (database, storage, AI models)
+- ✅ **Well-Organized**: 16 endpoint categories covering RAG, documents, search, AI services, admin, and more
 - ✅ **Preserved**: Prompt enhancement system, category extraction, all processing modes
 
 ### **Key Capabilities**
@@ -655,8 +655,13 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 5. **Custom**: Color, texture, application embeddings
 
 ### **API Endpoints**
-- **Total**: 113 endpoints across 14 categories
-- **New**: Document Entities Routes (5 endpoints) for certificates, logos, specifications
+- **Total**: 119 endpoints across 16 categories
+- **RAG System**: 23 endpoints for document upload, search, query, chat, embeddings
+- **Documents**: 13 endpoints for analysis, comparison, entity extraction
+- **AI Services**: 10 endpoints for classification, validation, boundary detection
+- **Search**: 8 endpoints for semantic, image, material, multimodal search
+- **Admin**: 10 endpoints for chunk quality, extraction config, prompts
+- **Document Entities**: 5 endpoints for certificates, logos, specifications
 
 ### **Performance**
 - **Search Accuracy**: 85%+
@@ -682,7 +687,7 @@ Get your token from the frontend application or Supabase authentication.
 ✅ **Admin Dashboard** - Chunk quality monitoring and review workflow
 ✅ **Metadata Synchronization** - 100% accuracy in job status reporting
 
-## 🚀 **API Categories** (37+ Endpoints)
+## 🚀 **API Categories** (119 Endpoints)
 
 ### **📄 PDF Processing** (`/api/v1/extract/*`)
 - Extract markdown, tables, images from PDFs
@@ -1420,7 +1425,7 @@ def custom_openapi():
 
     # Add custom info (UPDATED - API Consolidation)
     openapi_schema["info"]["x-api-features"] = {
-        "api_consolidation": "Single endpoints with parameters - 38% reduction (113 → ~70 endpoints)",
+        "api_consolidation": "Consolidated and organized endpoints with clear categorization",
         "consolidated_upload": "/api/rag/documents/upload with modes (quick/standard/deep) + categories",
         "consolidated_search": "/api/rag/search?strategy={strategy} with 6 strategies",
         "consolidated_health": "/health for all services (database, storage, AI models)",
@@ -1440,29 +1445,30 @@ def custom_openapi():
         "agentic_queries": "Factory/group filtering for certificates, logos, specifications"
     }
 
-    # Add custom paths info (UPDATED - API Consolidation)
+    # Add custom paths info (UPDATED - Accurate endpoint counts)
     openapi_schema["info"]["x-endpoint-categories"] = {
-        "core_endpoints": "/health (1 endpoint) - CONSOLIDATED health check",
-        "rag_routes": "/api/rag/* (CONSOLIDATED: upload, search, query)",
-        "admin_routes": "/api/admin/* (18 endpoints)",
-        "documents_routes": "/api/documents/* (8 endpoints) - Removed deprecated/test endpoints",
-        "ai_services_routes": "/api/vision/*, /api/semantic-analysis, /api/chat/* (10 endpoints)",
-        "images_routes": "/api/images/* (5 endpoints)",
-        "document_entities_routes": "/api/document-entities/* (5 endpoints)",
-        "pdf_routes": "/api/v1/pdf/* (4 endpoints)",
-        "products_routes": "/api/products/* (3 endpoints)",
-        "embeddings_routes": "/api/embeddings/* (3 endpoints)",
-        "together_ai_routes": "/api/together-ai/* (3 endpoints)",
-        "anthropic_routes": "/api/anthropic/* (3 endpoints)",
-        "monitoring_routes": "/health, /metrics, /performance/summary (3 endpoints)",
-        "ai_metrics_routes": "/api/ai-metrics/* (2 endpoints)"
+        "rag_routes": "/api/rag/* (23 endpoints) - Document upload, search, query, chat, embeddings, jobs",
+        "documents_routes": "/api/documents/* (13 endpoints) - Document analysis, comparison, entity extraction",
+        "utilities_routes": "/api/bulk/*, /api/data/*, /api/monitoring/*, /api/system/* (12 endpoints)",
+        "admin_routes": "/admin/* (10 endpoints) - Chunk quality, extraction config, prompts management",
+        "ai_services_routes": "/api/v1/ai-services/* (10 endpoints) - Classification, validation, boundary detection",
+        "search_routes": "/api/search/* (8 endpoints) - Semantic, image, material, multimodal search",
+        "jobs_routes": "/api/jobs/* (7 endpoints) - Job progress, statistics, status tracking",
+        "document_entities_routes": "/api/document-entities/* (5 endpoints) - Certificates, logos, specifications",
+        "images_routes": "/api/images/* (5 endpoints) - Image analysis, search, upload",
+        "monitoring_routes": "/, /health, /metrics, /performance/summary (4 endpoints)",
+        "embeddings_routes": "/api/embeddings/* (4 endpoints) - CLIP text/image, material embeddings",
+        "ai_analysis_routes": "/api/semantic-analysis, /api/analyze/* (4 endpoints) - TogetherAI, multimodal analysis",
+        "pdf_routes": "/api/pdf/* (4 endpoints) - Extract markdown, tables, images",
+        "anthropic_routes": "/api/v1/anthropic/* (3 endpoints) - Claude image validation, product enrichment",
+        "products_routes": "/api/products/* (3 endpoints) - Product creation from chunks/layout",
+        "ai_metrics_routes": "/api/v1/ai-metrics/* (2 endpoints) - Job metrics, summary"
     }
 
-    # Add platform statistics (UPDATED - API Consolidation)
+    # Add platform statistics (UPDATED - Accurate counts)
     openapi_schema["info"]["x-platform-stats"] = {
-        "total_endpoints": "~70 (consolidated from 113)",
-        "consolidation_reduction": "38%",
-        "endpoint_categories": 14,
+        "total_endpoints": 119,
+        "endpoint_categories": 16,
         "ai_models": 12,
         "processing_stages": 14,
         "embedding_types": 6,
@@ -1471,7 +1477,7 @@ def custom_openapi():
         "uptime": "99.5%+",
         "version": "2.2.0",
         "last_updated": "2025-11-02",
-        "api_consolidation": "Phase 1 Complete"
+        "api_consolidation": "Phase 1 Complete - Organized into 16 categories"
     }
 
     app.openapi_schema = openapi_schema
