@@ -189,20 +189,20 @@ async def seed_default_prompts():
             print(f"\n📝 Processing: {stage}/{category}")
             
             # Check if prompt already exists
-            existing = supabase.table("extraction_prompts").select("*").eq(
+            existing = supabase.client.table("extraction_prompts").select("*").eq(
                 "workspace_id", DEFAULT_WORKSPACE_ID
             ).eq(
                 "stage", stage
             ).eq(
                 "category", category
             ).execute()
-            
+
             if existing.data and len(existing.data) > 0:
                 print(f"   ⚠️  Prompt already exists (ID: {existing.data[0]['id']})")
                 print(f"   Skipping... (use update script to modify existing prompts)")
                 skipped_count += 1
                 continue
-            
+
             # Create new prompt (matching actual database schema)
             prompt_record = {
                 "workspace_id": DEFAULT_WORKSPACE_ID,
@@ -215,8 +215,8 @@ async def seed_default_prompts():
                 "created_at": datetime.utcnow().isoformat(),
                 "updated_at": datetime.utcnow().isoformat()
             }
-            
-            result = supabase.table("extraction_prompts").insert(prompt_record).execute()
+
+            result = supabase.client.table("extraction_prompts").insert(prompt_record).execute()
             
             if result.data:
                 print(f"   ✅ Created prompt (ID: {result.data[0]['id']})")
