@@ -1825,18 +1825,11 @@ class LlamaIndexService:
                             if embedding_vector is not None:
                                 try:
                                     embedding_data = {
-                                        "id": str(uuid4()),
-                                        "document_id": document_id,
                                         "chunk_id": chunk_id,
-                                        "embedding_type": "text",
-                                        "embedding_model": "text-embedding-3-small",
-                                        "embedding_dimensions": len(embedding_vector),
-                                        "embedding_vector": embedding_vector,
-                                        "metadata": {
-                                            "node_id": node_id,
-                                            "generated_at": datetime.utcnow().isoformat()
-                                        },
-                                        "created_at": datetime.utcnow().isoformat()
+                                        "workspace_id": workspace_id,
+                                        "embedding": embedding_vector,
+                                        "model_name": "text-embedding-3-small",
+                                        "dimensions": len(embedding_vector)
                                     }
 
                                     supabase.client.table('embeddings').insert(embedding_data).execute()
