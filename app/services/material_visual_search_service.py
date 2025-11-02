@@ -885,49 +885,11 @@ class MaterialVisualSearchService:
 
 
     async def _get_fallback_image_analysis(self, image_data: str, analysis_types: List[str]) -> Dict[str, Any]:
-        """Provide fallback image analysis when external services are unavailable."""
-        logger.info("Using fallback mode for material image analysis")
-
-        return {
-            "success": True,
-            "analysis_id": f"fallback_{hash(image_data) % 10000}",
-            "material_identification": {
-                "primary_material": "composite",
-                "confidence": 0.85,
-                "secondary_materials": ["polymer", "fiber"],
-                "material_class": "engineering_material"
-            },
-            "visual_analysis": {
-                "color_analysis": {
-                    "dominant_colors": ["#2C3E50", "#34495E"],
-                    "color_distribution": {"dark": 0.6, "medium": 0.3, "light": 0.1}
-                },
-                "texture_analysis": {
-                    "roughness": "medium",
-                    "pattern": "woven",
-                    "surface_quality": "good"
-                }
-            },
-            "spectral_analysis": {
-                "absorption_peaks": [1650, 2900, 3300],
-                "material_signature": "polymer_composite",
-                "confidence": 0.78
-            },
-            "chemical_analysis": {
-                "composition": {
-                    "carbon": 0.65,
-                    "oxygen": 0.20,
-                    "hydrogen": 0.10,
-                    "other": 0.05
-                },
-                "functional_groups": ["C-H", "C=O", "O-H"]
-            },
-            "processing_metadata": {
-                "analysis_time": 0.15,
-                "fallback_mode": True,
-                "analysis_types": analysis_types
-            }
-        }
+        """Raise error when external services are unavailable - no fallback mode."""
+        logger.error("Material Kai service unavailable - cannot perform image analysis")
+        raise MaterialKaiIntegrationError(
+            "Material Kai Vision Platform is not available. Image analysis requires external service."
+        )
 
 
 # Service factory function

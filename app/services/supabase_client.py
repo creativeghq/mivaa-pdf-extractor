@@ -204,13 +204,20 @@ class SupabaseClient:
             ID of the saved record
         """
         try:
-            # Generate a default user_id (required field)
-            # TODO: Get actual user_id from authentication context
-            default_user_id = "00000000-0000-0000-0000-000000000000"  # System user
+            # Get user_id from result metadata or use system user as fallback
+            # User ID should be passed from the upload endpoint via result.metadata
+            user_id = None
+            if hasattr(result, 'metadata') and isinstance(result.metadata, dict):
+                user_id = result.metadata.get('user_id')
+
+            # Fallback to system user if no user_id provided
+            if not user_id:
+                user_id = "00000000-0000-0000-0000-000000000000"  # System user
+                logger.warning("No user_id found in result metadata, using system user")
 
             # Prepare data for insertion
             insert_data = {
-                'user_id': default_user_id,  # Required field
+                'user_id': user_id,  # Required field
                 'original_filename': original_filename or f"{result.document_id}.pdf",
                 'file_url': file_url or f"https://example.com/{result.document_id}.pdf",  # Required field
                 'processing_status': 'completed',

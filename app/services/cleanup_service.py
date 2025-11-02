@@ -262,15 +262,35 @@ class CleanupService:
             # List all files for this document
             prefix = f"{document_id}/"
             
-            # Note: Supabase storage API doesn't have a direct "list" method
-            # This is a placeholder - actual implementation depends on your storage structure
-            
             self.logger.info(f"🗑️ Cleaning storage bucket {bucket_name} for document {document_id}")
-            
-            # TODO: Implement actual storage cleanup
-            # For now, just log
-            
-            return 0
+
+            # List all files in the bucket for this document
+            # Files are typically stored with document_id as prefix
+            try:
+                # List files with document_id prefix
+                list_response = self.supabase.storage.from_(bucket_name).list(path=document_id)
+
+                if not list_response:
+                    self.logger.info(f"No files found in bucket {bucket_name} for document {document_id}")
+                    return 0
+
+                # Delete each file
+                files_deleted = 0
+                for file_obj in list_response:
+                    file_path = f"{document_id}/{file_obj['name']}"
+                    try:
+                        self.supabase.storage.from_(bucket_name).remove([file_path])
+                        files_deleted += 1
+                        self.logger.info(f"✅ Deleted file: {file_path}")
+                    except Exception as file_error:
+                        self.logger.warning(f"Failed to delete file {file_path}: {file_error}")
+
+                self.logger.info(f"🗑️ Deleted {files_deleted} files from bucket {bucket_name}")
+                return files_deleted
+
+            except Exception as list_error:
+                self.logger.warning(f"Failed to list files in bucket {bucket_name}: {list_error}")
+                return 0
             
         except Exception as e:
             self.logger.error(f"❌ Failed to clean storage bucket: {e}")

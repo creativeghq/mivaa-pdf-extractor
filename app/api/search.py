@@ -1158,6 +1158,9 @@ async def image_search(
     - Visual element detection
     """
     try:
+        import time
+        search_start_time = time.time()
+
         # Get configuration
         from app.config import get_settings
         settings = get_settings()
@@ -1268,8 +1271,8 @@ async def image_search(
         search_results.sort(key=lambda x: x.similarity_score, reverse=True)
         limited_results = search_results[:request.limit]
 
-        # Calculate search time (mock for now)
-        search_time_ms = 150.0
+        # Calculate actual search time
+        search_time_ms = (time.time() - search_start_time) * 1000
 
         return ImageSearchResponse(
             success=True,

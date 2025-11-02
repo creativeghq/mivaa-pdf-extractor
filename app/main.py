@@ -865,50 +865,17 @@ try:
 
     @app.exception_handler(MaterialKaiIntegrationError)
     async def material_kai_exception_handler(request, exc: MaterialKaiIntegrationError):
-        """Handle MaterialKaiIntegrationError with graceful fallback."""
-        logger.warning(f"Material Kai service unavailable: {str(exc)}")
+        """Handle MaterialKaiIntegrationError with proper error response."""
+        logger.error(f"Material Kai service unavailable: {str(exc)}")
         logger.info(f"Request URL: {request.url if hasattr(request, 'url') else 'No URL'}")
         logger.info(f"Request path: {request.url.path if hasattr(request, 'url') else 'No path'}")
 
-        # Special handling for batch image analysis endpoint
-        if hasattr(request, 'url') and str(request.url.path) == "/api/images/analyze/batch":
-            logger.info("Returning mock response for batch image analysis due to Material Kai unavailability")
-            # Return a mock successful response instead of 503
-            return JSONResponse(
-                status_code=status.HTTP_200_OK,
-                content={
-                    "success": True,
-                    "message": "Batch analysis completed: 1 successful, 0 failed (mock response)",
-                    "batch_id": "mock-batch-id",
-                    "total_images": 1,
-                    "completed_count": 1,
-                    "failed_count": 0,
-                    "results": [{
-                        "image_id": "test-image-id",
-                        "status": "completed",
-                        "result": {
-                            "success": True,
-                            "message": "Mock analysis response (service unavailable)",
-                            "image_id": "test-image-id",
-                            "status": "completed",
-                            "description": "Mock analysis: Material sample for testing",
-                            "detected_objects": [],
-                            "detected_text": [],
-                            "processing_time_ms": 100.0
-                        },
-                        "processing_time_ms": 100.0
-                    }],
-                    "total_processing_time_ms": 100.0,
-                    "average_time_per_image_ms": 100.0
-                }
-            )
-
-        # Default 503 response for other endpoints
+        # Return 503 Service Unavailable for all endpoints
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content=ErrorResponse(
                 error="Material Kai Vision Platform is not available",
-                detail="HTTP 503",
+                detail=str(exc),
                 timestamp=datetime.utcnow().isoformat()
             ).model_dump()
         )
