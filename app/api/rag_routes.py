@@ -2544,7 +2544,7 @@ async def process_document_with_discovery(
         # Update tracker with images_extracted count
         tracker.images_extracted = images_saved
         await tracker.update_database_stats(
-            images_extracted=images_saved,
+            images_stored=images_saved,
             sync_to_db=True
         )
 
