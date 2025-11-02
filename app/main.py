@@ -618,15 +618,13 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version=settings.app_version,
         description="""
-# MIVAA - Material Intelligence Vision and Analysis Agent
-
 **Production API v2.2.0** - AI-powered material recognition and knowledge management platform serving 5,000+ users.
 
-## 🎯 **Overview**
+## 🎯 Overview
 
 MIVAA is the core backend service powering the Material Kai Vision Platform, providing comprehensive PDF processing, AI analysis, and multi-vector search capabilities.
 
-## ✨ **API Organization (v2.2.0)**
+## ✨ API Organization (v2.2.0)
 
 **Comprehensive API with 106 endpoints organized into 15 categories**
 
@@ -637,7 +635,7 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 - ✅ **Well-Organized**: 16 endpoint categories covering RAG, documents, search, AI services, admin, and more
 - ✅ **Preserved**: Prompt enhancement system, category extraction, all processing modes
 
-### **Key Capabilities**
+### Key Capabilities
 - **PDF Processing**: 14-stage pipeline with PyMuPDF4LLM extraction
 - **Products + Metadata**: Inseparable extraction (Stage 0A) - all metadata stored in product.metadata JSONB
 - **Document Entities**: Certificates, logos, specifications as separate knowledge base (Stage 0B)
@@ -647,15 +645,15 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 - **Image Analysis**: CLIP + Llama 4 Scout Vision (69.4% MMMU, #1 OCR)
 - **Agentic Queries**: Factory/group filtering for certificates, logos, specifications
 
-### **AI Models**
+### AI Models
 1. **OpenAI**: text-embedding-3-small (1536D embeddings)
 2. **Anthropic**: Claude Haiku 4.5 (fast classification), Claude Sonnet 4.5 (deep enrichment)
 3. **Together AI**: Llama 4 Scout 17B Vision
 4. **CLIP**: Visual embeddings (512D)
 5. **Custom**: Color, texture, application embeddings
 
-### **API Endpoints**
-- **Total**: 106 endpoints across 15 categories (13 legacy endpoints removed)
+### API Endpoints
+- **Total**: 106 endpoints across 15 categories (18 legacy endpoints removed)
 - **RAG System**: 23 endpoints for document upload, search, query, chat, embeddings
 - **AI Services**: 10 endpoints for classification, validation, boundary detection
 - **Admin**: 10 endpoints for chunk quality, extraction config, prompts
@@ -663,13 +661,13 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 - **Jobs**: 7 endpoints for progress tracking, statistics, status
 - **Document Entities**: 5 endpoints for certificates, logos, specifications
 
-### **Performance**
+### Performance
 - **Search Accuracy**: 85%+
 - **Processing Success**: 95%+
 - **Response Time**: 200-800ms (search), 1-4s (analysis)
 - **Uptime**: 99.5%+
 
-## 🔐 **Authentication**
+## 🔐 Authentication
 
 All API endpoints require JWT authentication:
 ```
@@ -678,7 +676,7 @@ Authorization: Bearer your-jwt-token
 
 Get your token from the frontend application or Supabase authentication.
 
-## 📊 **Latest Enhancements (October 2025)**
+## 📊 Latest Enhancements (October 2025)
 
 ✅ **Product Detection Pipeline** - 60-70% false positive reduction with 4-layer validation
 ✅ **Chunk Quality System** - Hash-based + semantic deduplication, quality scoring
@@ -687,71 +685,71 @@ Get your token from the frontend application or Supabase authentication.
 ✅ **Admin Dashboard** - Chunk quality monitoring and review workflow
 ✅ **Metadata Synchronization** - 100% accuracy in job status reporting
 
-## 🚀 **API Categories** (106 Endpoints)
+## 🚀 API Categories (106 Endpoints)
 
-### **📄 PDF Processing** (`/api/v1/extract/*`)
+### 📄 PDF Processing (`/api/v1/extract/*`)
 - Extract markdown, tables, images from PDFs
 - PyMuPDF4LLM integration
 - Batch processing support
 
-### **🧠 RAG System** (`/api/v1/rag/*`)
+### 🧠 RAG System (`/api/v1/rag/*`)
 - Document upload and processing
 - Query and chat interfaces
 - Semantic search
 - Job monitoring with real-time progress
 
-### **🤖 AI Analysis** (`/api/semantic-analysis`)
+### 🤖 AI Analysis (`/api/semantic-analysis`)
 - Llama 4 Scout Vision material analysis
 - Multi-modal text + image processing
 - Entity extraction and classification
 
-### **🔍 Search APIs** (`/api/search/*`)
+### 🔍 Search APIs (`/api/search/*`)
 - Semantic search (text embeddings)
 - Vector search (multi-vector)
 - Hybrid search (combined)
 - Recommendations
 
-### **🔗 Embedding APIs** (`/api/embeddings/*`)
+### 🔗 Embedding APIs (`/api/embeddings/*`)
 - Generate text embeddings (1536D)
 - Generate CLIP embeddings (512D)
 - Batch processing
 - Multi-vector generation (6 types)
 
-### **💬 Chat APIs** (`/api/chat/*`)
+### 💬 Chat APIs (`/api/chat/*`)
 - Chat completions
 - Contextual responses
 - Conversation history
 
-### **📦 Products API** (`/api/products/*`)
+### 📦 Products API (`/api/products/*`)
 - Two-stage product classification
 - Product enrichment
 - Product management
 - Health monitoring
 
-### **👨‍💼 Admin APIs** (`/api/admin/*`)
+### 👨‍💼 Admin APIs (`/api/admin/*`)
 - Chunk quality dashboard
 - Quality statistics
 - Flagged chunks review
 - Metadata management
 
-### **⚠️ Legacy Endpoints Removed**
+### ⚠️ Legacy Endpoints Removed
 - All `/api/documents/*` endpoints have been removed (except `/api/document-entities/*` which are valid)
 - Use `/api/rag/*` endpoints instead for all document operations
 - See migration guide in documentation
 
-### **🏥 Health & Monitoring**
+### 🏥 Health & Monitoring
 - `/health` - Service health check
 - `/metrics` - Performance metrics
 - `/performance/summary` - Comprehensive stats
 
-## 📖 **Documentation**
+## 📖 Documentation
 
 - **Interactive API Docs**: [/docs](/docs) (Swagger UI)
 - **Alternative Docs**: [/redoc](/redoc) (ReDoc)
 - **OpenAPI Schema**: [/openapi.json](/openapi.json)
 - **Complete Documentation**: https://basilakis.github.io
 
-## 🔗 **Related Services**
+## 🔗 Related Services
 
 - **Frontend**: https://materialshub.gr
 - **Documentation Site**: https://basilakis.github.io
