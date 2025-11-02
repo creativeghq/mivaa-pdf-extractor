@@ -291,6 +291,33 @@ async def unified_document_upload(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to create document record: {str(e)}"
             )
+
+        # Create background job record
+        try:
+            supabase_client.client.table('background_jobs').insert({
+                "id": job_id,
+                "job_type": "pdf_processing",
+                "status": "processing",
+                "progress": 0,
+                "document_id": document_id,
+                "workspace_id": workspace_id,
+                "metadata": {
+                    "filename": file.filename,
+                    "categories": category_list,
+                    "discovery_model": discovery_model,
+                    "prompt_enhancement_enabled": enable_prompt_enhancement,
+                    "agent_prompt": agent_prompt
+                },
+                "created_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat()
+            }).execute()
+            logger.info(f"✅ Created background job record {job_id}")
+        except Exception as e:
+            logger.error(f"❌ Failed to create background job record: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to create background job record: {str(e)}"
+            )
         
         # Import and start background processing
         from app.api.rag_routes import process_document_with_discovery
