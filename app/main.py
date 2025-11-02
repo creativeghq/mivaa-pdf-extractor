@@ -732,11 +732,6 @@ Get your token from the frontend application or Supabase authentication.
 - Flagged chunks review
 - Metadata management
 
-### ⚠️ Legacy Endpoints Removed
-- All `/api/documents/*` endpoints have been removed (except `/api/document-entities/*` which are valid)
-- Use `/api/rag/*` endpoints instead for all document operations
-- See migration guide in documentation
-
 ### 🏥 Health & Monitoring
 - `/health` - Service health check
 - `/metrics` - Performance metrics
