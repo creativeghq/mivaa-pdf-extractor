@@ -360,8 +360,18 @@ class ProductDiscoveryService:
         if "products" in categories:
             category_instructions.append("""
 **PRODUCTS (with ALL metadata - inseparable):**
-- Identify EVERY distinct product (e.g., "NOVA", "BEAT", "FOLD")
-- Extract ALL available metadata for each product:
+- Identify ONLY MAIN FEATURED PRODUCTS with dedicated multi-page presentations (e.g., "NOVA", "BEAT", "FOLD")
+- EXCLUDE products that appear only in:
+  * Index pages (table of contents, product lists, thumbnails)
+  * Cross-references or "related products" sections
+  * Small preview images or catalog grids
+  * Footer/header references
+- A MAIN PRODUCT must have:
+  * Dedicated page spread (typically 2-12 consecutive pages)
+  * Large hero images showing the product
+  * Detailed product description and specifications
+  * Designer/studio attribution (usually present)
+- Extract ALL available metadata for each MAIN product:
   * Basic info: name, description, category
   * Design: designer, studio
   * Dimensions: all size variants (e.g., ["15×38", "20×40"])
@@ -369,7 +379,7 @@ class ProductDiscoveryService:
   * Factory/Group: factory name, factory group, manufacturer, country of origin
   * Technical specs: slip resistance, fire rating, thickness, water absorption, finish, material
   * Any other relevant metadata found in the PDF
-- Image pages for each product
+- Image pages for each product (the full page range of the product spread)
 - Products and metadata are INSEPARABLE - always extract together""")
 
         if "certificates" in categories:
@@ -531,10 +541,13 @@ Your task is to identify and extract content across the following categories:
 {chr(10).join(category_sections)}
 
 **GENERAL INSTRUCTIONS:**
-1. Be comprehensive - identify EVERY instance in each category
-2. Focus on fulfilling the user's request: "{agent_prompt}"
-3. Classify each page as: "product", "certificate", "logo", "specification", "marketing", "admin", or "transitional"
-4. Provide confidence scores (0.0-1.0) for each item
+1. For PRODUCTS: Identify ONLY main featured products with dedicated multi-page spreads
+   - EXCLUDE index pages, thumbnails, cross-references, and catalog grids
+   - A main product must have: dedicated page spread (2-12 pages), large hero images, detailed specs, designer attribution
+2. For other categories: Be comprehensive - identify EVERY instance
+3. Focus on fulfilling the user's request: "{agent_prompt}"
+4. Classify each page as: "product", "certificate", "logo", "specification", "marketing", "admin", or "transitional"
+5. Provide confidence scores (0.0-1.0) for each item
 
 **SPECIAL HANDLING FOR USER REQUEST:**
 - If user mentions specific product names (e.g., "NOVA"), prioritize finding those products

@@ -28,11 +28,26 @@ DEFAULT_PROMPTS = {
     # DISCOVERY STAGE
     ("discovery", "products"): {
         "name": "Product Discovery - Default",
-        "template": """Analyze this PDF catalog and identify ALL products with complete metadata.
+        "template": """Analyze this PDF catalog and identify ONLY MAIN FEATURED PRODUCTS with complete metadata.
 
-**REQUIRED INFORMATION:**
+**WHAT TO EXTRACT:**
+Identify ONLY main featured products that have:
+- Dedicated multi-page presentation (typically 2-12 consecutive pages)
+- Large hero images showcasing the product
+- Detailed product description and specifications
+- Designer/studio attribution (usually present for main products)
+
+**WHAT TO EXCLUDE:**
+DO NOT extract products that appear only in:
+- Index pages (table of contents, product lists, thumbnail grids)
+- Cross-reference sections or "related products" areas
+- Small preview images or catalog grids
+- Footer/header references
+- Marketing collages or mood boards
+
+**REQUIRED INFORMATION FOR EACH MAIN PRODUCT:**
 - Product name and all variants (colors, finishes, patterns)
-- Page ranges where product appears (be precise)
+- Complete page range of the product spread (be precise - include ALL pages)
 - Designer/brand/studio information
 - Material composition and finish details
 - ALL dimensions and sizes mentioned (e.g., "15×38", "20×40", "8×45")
@@ -46,18 +61,19 @@ DEFAULT_PROMPTS = {
 
 **QUALITY REQUIREMENTS:**
 - Minimum confidence score: 0.7
-- Include page numbers for ALL references
+- Include page numbers for ALL pages in the product spread
 - Identify product boundaries clearly (where one product ends and another begins)
-- Extract EVERY product, not just the first few
+- Extract EVERY main featured product - scan the entire document thoroughly
 
 **SPECIAL INSTRUCTIONS:**
 - If a product has multiple variants, list them all
 - If dimensions are given in ranges, extract all values
 - Pay attention to product families and collections
 - Note any cross-references between products
+- Be thorough - scan ALL pages to ensure no main products are missed
 
-**OUTPUT:** Return comprehensive JSON with all products, their metadata, and confidence scores.""",
-        "description": "Comprehensive product discovery with full metadata extraction",
+**OUTPUT:** Return comprehensive JSON with all MAIN FEATURED products, their metadata, and confidence scores.""",
+        "description": "Comprehensive discovery of main featured products with full metadata extraction",
         "quality_threshold": 0.7,
         "is_active": True
     },
