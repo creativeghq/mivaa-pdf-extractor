@@ -1724,7 +1724,7 @@ async def process_document_background(
 
                 # Also create processed_documents record (required for ai_analysis_queue foreign key)
                 try:
-                    supabase_client.client.table('processed_documents').insert({
+                    supabase_client.client.table('processed_documents').upsert({
                         "id": document_id,  # Use same ID as documents table
                         "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
                         "pdf_document_id": document_id,
@@ -2271,7 +2271,7 @@ async def process_document_with_discovery(
         # This MUST happen BEFORE any _sync_to_database() calls
         supabase = get_supabase_client()
         try:
-            supabase.client.table('processed_documents').insert({
+            supabase.client.table('processed_documents').upsert({
                 "id": document_id,
                 "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
                 "pdf_document_id": document_id,
