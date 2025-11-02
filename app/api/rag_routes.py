@@ -6,6 +6,8 @@ document embedding, querying, chat interface, and document management.
 """
 
 import logging
+import os
+import base64
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from uuid import uuid4
@@ -2586,7 +2588,6 @@ async def process_document_with_discovery(
             for img_data in images:
                 try:
                     # Read image file and convert to base64
-                    import base64
                     image_path = img_data.get('path')
                     if not image_path or not os.path.exists(image_path):
                         logger.warning(f"Image file not found: {image_path}")
@@ -2616,7 +2617,9 @@ async def process_document_with_discovery(
                 except Exception as e:
                     logger.error(f"Failed to process image on page {page_num}: {e}")
 
-        tracker.images_stored = images_processed
+        # Don't overwrite tracker.images_stored - it was already set correctly from images_saved
+        # tracker.images_stored is the count of images saved to database (line 2570)
+        # images_processed is the count of images analyzed with Llama Vision (may be 0 if files don't exist)
         await tracker._sync_to_database(stage="image_processing")
 
         logger.info(f"✅ [STAGE 3] Image Processing Complete: {images_processed} images processed")
