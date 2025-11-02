@@ -1,14 +1,30 @@
 """
 Product Discovery Service - Stage 0 Implementation
 
-This service analyzes the entire PDF BEFORE processing to identify:
-1. All products (names, page ranges, variants)
-2. Product metadata (dimensions, designers, categories)
-3. Metafield categories (R11 ratings, fire ratings, sizes, etc.)
-4. Image-to-product mapping
-5. Content classification (product vs marketing vs admin)
+ARCHITECTURE:
+1. **Products + Metadata** (ALWAYS extracted together - inseparable)
+   - Products are discovered with ALL metadata in one pass
+   - Metadata stored in product.metadata JSONB (dimensions, designer, factory, etc.)
+   - This is the PRIMARY service that always runs
 
-This enables focused extraction - only processing relevant content.
+2. **Document Entities** (OPTIONAL - separate knowledge base)
+   - Certificates, Logos, Specifications = Document entities
+   - Stored in document_entities table with category system
+   - Connected to products via product_document_relationships
+   - Managed in "Docs" admin page
+   - Can be extracted DURING or AFTER product processing
+
+DISCOVERY PROCESS:
+- Stage 0A: Discover products with metadata (ALWAYS)
+- Stage 0B: Discover document entities (OPTIONAL - based on extract_categories)
+- Both stages identify content location and classification
+- Subsequent stages create semantic chunks for RAG search
+
+EXTENSIBILITY:
+This service is designed to support future extraction types:
+- Marketing content extraction
+- Bank statement extraction
+- Custom document type extraction
 """
 
 import logging
@@ -37,31 +53,132 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 @dataclass
 class ProductInfo:
-    """Information about a discovered product"""
+    """
+    Information about a discovered product.
+
+    ARCHITECTURE: Products + Metadata are INSEPARABLE.
+    All product metadata (designer, dimensions, factory, technical specs, etc.)
+    is stored in the metadata JSONB field and saved to product.metadata in database.
+
+    Technical specifications are ALSO extracted as semantic chunks for RAG search,
+    but the primary source of truth is product.metadata.
+    """
     name: str
     page_range: List[int]  # Pages where this product appears
     description: Optional[str] = None  # Product description
-    designer: Optional[str] = None
-    studio: Optional[str] = None
-    dimensions: List[str] = None  # e.g., ["15×38", "20×40"]
-    variants: List[Dict[str, Any]] = None  # Color/finish variants
-    category: Optional[str] = None
-    metafields: Dict[str, Any] = None  # R11, fire ratings, etc.
+
+    # ALL product metadata stored here (inseparable from product)
+    metadata: Dict[str, Any] = None
+    """
+    Metadata structure:
+    {
+        # Design information
+        "designer": "SG NY",
+        "studio": "SG NY",
+        "category": "tiles",
+
+        # Dimensions and variants
+        "dimensions": ["15×38", "20×40"],
+        "variants": [{"type": "color", "value": "beige"}],
+
+        # Factory/Group identification (for agentic queries)
+        "factory": "Castellón Factory",
+        "factory_group": "Harmony Group",
+        "manufacturer": "Harmony Materials",
+        "country_of_origin": "Spain",
+
+        # Technical specifications
+        "slip_resistance": "R11",
+        "fire_rating": "A1",
+        "thickness": "8mm",
+        "water_absorption": "Class 3",
+        "finish": "matte",
+        "material": "ceramic",
+
+        # Discovery metadata
+        "page_range": [12, 13, 14],
+        "confidence": 0.95,
+        "extraction_method": "ai_discovery"
+    }
+    """
+
     image_indices: List[int] = None  # Which images belong to this product
     confidence: float = 0.0
 
 
 @dataclass
+class CertificateInfo:
+    """Information about a discovered certificate"""
+    name: str
+    page_range: List[int]
+    certificate_type: Optional[str] = None  # ISO, CE, fire rating, etc.
+    issuer: Optional[str] = None
+    issue_date: Optional[str] = None
+    expiry_date: Optional[str] = None
+    standards: List[str] = None  # e.g., ["ISO 9001", "EN 14411"]
+    confidence: float = 0.0
+
+
+@dataclass
+class LogoInfo:
+    """Information about a discovered logo"""
+    name: str
+    page_range: List[int]
+    logo_type: Optional[str] = None  # company, brand, certification, etc.
+    description: Optional[str] = None
+    confidence: float = 0.0
+
+
+@dataclass
+class SpecificationInfo:
+    """Information about discovered specifications"""
+    name: str
+    page_range: List[int]
+    spec_type: Optional[str] = None  # technical, installation, maintenance, etc.
+    description: Optional[str] = None
+    confidence: float = 0.0
+
+
+@dataclass
 class ProductCatalog:
-    """Complete product catalog discovered from PDF"""
+    """
+    Complete catalog discovered from PDF.
+
+    ARCHITECTURE:
+    - Products (ALWAYS extracted with metadata)
+    - Document entities (OPTIONAL - certificates, logos, specifications)
+
+    Products contain ALL metadata in ProductInfo.metadata field.
+    Document entities are stored separately in document_entities table.
+    """
+    # Products (ALWAYS extracted with metadata)
     products: List[ProductInfo]
-    total_pages: int
-    total_images: int
-    metafield_categories: Dict[str, List[str]]  # e.g., {"slip_resistance": ["R9", "R10", "R11"]}
-    content_classification: Dict[int, str]  # page_number -> "product" | "marketing" | "admin"
-    processing_time_ms: float
-    model_used: str
-    confidence_score: float
+
+    # Document entities (OPTIONAL - based on extract_categories parameter)
+    certificates: List[CertificateInfo] = None
+    logos: List[LogoInfo] = None
+    specifications: List[SpecificationInfo] = None
+
+    # Metadata
+    total_pages: int = 0
+    total_images: int = 0
+    content_classification: Dict[int, str] = None  # page_number -> "product" | "certificate" | "logo" | "specification" | "marketing" | "admin"
+
+    # Processing info
+    processing_time_ms: float = 0.0
+    model_used: str = ""
+    confidence_score: float = 0.0
+
+    def __post_init__(self):
+        """Initialize empty lists if None"""
+        if self.certificates is None:
+            self.certificates = []
+        if self.logos is None:
+            self.logos = []
+        if self.specifications is None:
+            self.specifications = []
+        if self.content_classification is None:
+            self.content_classification = {}
 
 
 class ProductDiscoveryService:
@@ -91,80 +208,211 @@ class ProductDiscoveryService:
         pdf_content: bytes,
         pdf_text: str,
         total_pages: int,
+        categories: List[str] = None,
+        agent_prompt: Optional[str] = None,
+        workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+        enable_prompt_enhancement: bool = True,
         job_id: Optional[str] = None
     ) -> ProductCatalog:
         """
-        Analyze PDF to discover all products and their metadata.
-        
+        Analyze PDF to discover all content across specified categories.
+
         Args:
             pdf_content: Raw PDF bytes
             pdf_text: Extracted text from PDF (markdown format)
             total_pages: Total number of pages in PDF
+            categories: Categories to discover (products, certificates, logos, specifications). Default: ["products"]
+            agent_prompt: Optional natural language prompt from agent (e.g., "extract products", "search for NOVA")
+            workspace_id: Workspace ID for custom prompts
+            enable_prompt_enhancement: Whether to enhance prompts with admin templates
             job_id: Optional job ID for tracking
-            
+
         Returns:
-            ProductCatalog with all discovered products
+            ProductCatalog with all discovered content across categories
         """
         start_time = datetime.now()
-        
+
+        # Default to products only if not specified
+        if categories is None:
+            categories = ["products"]
+
         try:
-            self.logger.info(f"🔍 Starting product discovery for {total_pages} pages using {self.model.upper()}")
-            
-            # Build comprehensive prompt for product discovery
-            prompt = self._build_discovery_prompt(pdf_text, total_pages)
-            
+            self.logger.info(f"🔍 Starting discovery for {total_pages} pages using {self.model.upper()}")
+            self.logger.info(f"   Categories: {', '.join(categories)}")
+            if agent_prompt:
+                self.logger.info(f"   Agent Prompt: '{agent_prompt}'")
+            if enable_prompt_enhancement:
+                self.logger.info(f"   Prompt Enhancement: ENABLED")
+
+            # Build comprehensive prompt for category-based discovery
+            # This will use admin templates + agent prompt enhancement
+            prompt = await self._build_discovery_prompt(
+                pdf_text,
+                total_pages,
+                categories,
+                agent_prompt,
+                workspace_id,
+                enable_prompt_enhancement
+            )
+
             # Call AI model
             if self.model == "claude":
                 result = await self._discover_with_claude(prompt, job_id)
             else:
                 result = await self._discover_with_gpt(prompt, job_id)
-            
+
             # Parse and validate results
-            catalog = self._parse_discovery_results(result, total_pages)
+            catalog = self._parse_discovery_results(result, total_pages, categories)
             
             processing_time = (datetime.now() - start_time).total_seconds() * 1000
             catalog.processing_time_ms = processing_time
             catalog.model_used = self.model
-            
-            self.logger.info(f"✅ Product discovery complete: {len(catalog.products)} products found in {processing_time:.0f}ms")
-            
+
+            # Log comprehensive results
+            self.logger.info(f"✅ Discovery complete in {processing_time:.0f}ms:")
+            if "products" in categories:
+                self.logger.info(f"   📦 Products: {len(catalog.products)}")
+            if "certificates" in categories:
+                self.logger.info(f"   📜 Certificates: {len(catalog.certificates)}")
+            if "logos" in categories:
+                self.logger.info(f"   🎨 Logos: {len(catalog.logos)}")
+            if "specifications" in categories:
+                self.logger.info(f"   📋 Specifications: {len(catalog.specifications)}")
+
             return catalog
             
         except Exception as e:
             self.logger.error(f"❌ Product discovery failed: {e}")
             raise
     
-    def _build_discovery_prompt(self, pdf_text: str, total_pages: int) -> str:
-        """Build comprehensive prompt for product discovery"""
-        
+    async def _build_discovery_prompt(
+        self,
+        pdf_text: str,
+        total_pages: int,
+        categories: List[str],
+        agent_prompt: Optional[str] = None,
+        workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+        enable_prompt_enhancement: bool = True
+    ) -> str:
+        """
+        Build comprehensive prompt for category-based discovery.
+
+        Uses admin-configured prompts as templates and enhances with agent context.
+        """
+
+        # If prompt enhancement is enabled, use PromptEnhancementService
+        if enable_prompt_enhancement and agent_prompt:
+            try:
+                from app.services.prompt_enhancement_service import PromptEnhancementService
+
+                enhancement_service = PromptEnhancementService()
+
+                # Enhance prompt for each category
+                enhanced_prompts = []
+                for category in categories:
+                    enhanced = await enhancement_service.enhance_prompt(
+                        agent_prompt=agent_prompt,
+                        stage="discovery",
+                        category=category,
+                        workspace_id=workspace_id,
+                        context={
+                            "total_pages": total_pages,
+                            "pdf_text_preview": pdf_text[:2000],  # First 2000 chars for context
+                            "categories": categories
+                        }
+                    )
+                    enhanced_prompts.append({
+                        "category": category,
+                        "enhanced": enhanced.enhanced_prompt,
+                        "version": enhanced.prompt_version
+                    })
+
+                    self.logger.info(f"   ✅ Enhanced prompt for {category} (v{enhanced.prompt_version})")
+
+                # Build combined prompt from enhanced templates
+                return await self._build_enhanced_discovery_prompt(
+                    pdf_text,
+                    total_pages,
+                    categories,
+                    enhanced_prompts,
+                    agent_prompt
+                )
+
+            except Exception as e:
+                self.logger.warning(f"⚠️ Prompt enhancement failed, using default: {e}")
+                # Fall through to default prompt building
+
+        # Default prompt building (fallback or when enhancement disabled)
+        return self._build_default_discovery_prompt(pdf_text, total_pages, categories, agent_prompt)
+
+    def _build_default_discovery_prompt(
+        self,
+        pdf_text: str,
+        total_pages: int,
+        categories: List[str],
+        agent_prompt: Optional[str] = None
+    ) -> str:
+        """Build default discovery prompt without enhancement"""
+
+        # Build category-specific instructions
+        category_instructions = []
+
+        if "products" in categories:
+            category_instructions.append("""
+**PRODUCTS (with ALL metadata - inseparable):**
+- Identify EVERY distinct product (e.g., "NOVA", "BEAT", "FOLD")
+- Extract ALL available metadata for each product:
+  * Basic info: name, description, category
+  * Design: designer, studio
+  * Dimensions: all size variants (e.g., ["15×38", "20×40"])
+  * Variants: color, finish, texture variants
+  * Factory/Group: factory name, factory group, manufacturer, country of origin
+  * Technical specs: slip resistance, fire rating, thickness, water absorption, finish, material
+  * Any other relevant metadata found in the PDF
+- Image pages for each product
+- Products and metadata are INSEPARABLE - always extract together""")
+
+        if "certificates" in categories:
+            category_instructions.append("""
+**CERTIFICATES:**
+- Identify ALL certificates (ISO, CE, fire ratings, quality certifications)
+- Extract: name, type, issuer, issue/expiry dates, standards (e.g., "ISO 9001", "EN 14411")
+- Page range where certificate appears""")
+
+        if "logos" in categories:
+            category_instructions.append("""
+**LOGOS:**
+- Identify company logos, brand marks, certification logos
+- Extract: name, type (company/brand/certification), description
+- Page range where logo appears""")
+
+        if "specifications" in categories:
+            category_instructions.append("""
+**SPECIFICATIONS:**
+- Identify technical specs, installation guides, maintenance instructions
+- Extract: name, type (technical/installation/maintenance), description
+- Page range where specification appears""")
+
+        # Build agent prompt context
+        agent_context = ""
+        if agent_prompt:
+            agent_context = f"""
+**AGENT REQUEST:**
+The user requested: "{agent_prompt}"
+Focus your analysis on fulfilling this specific request while still providing comprehensive results.
+"""
+
         prompt = f"""You are analyzing a material/product catalog PDF with {total_pages} pages.
 
-Your task is to identify ALL products and extract their complete metadata.
+Your task is to identify and extract content across the following categories:
+{chr(10).join(category_instructions)}
 
-**IMPORTANT INSTRUCTIONS:**
-1. Identify EVERY distinct product (not just the first few)
-2. For each product, extract:
-   - Product name (e.g., "NOVA", "BEAT", "FOLD")
-   - Designer/Studio (e.g., "SG NY", "ESTUDI{{H}}AC")
-   - Page range where product appears (e.g., [12, 13, 14])
-   - All available dimensions/sizes (e.g., ["15×38", "20×40", "8×45"])
-   - Variants (colors, finishes, patterns)
-   - Category (e.g., "tiles", "flooring", "wall_covering")
-   - Metafields:
-     * Slip resistance (R9, R10, R11, R12, R13)
-     * Fire rating (A1, A2, B, C, etc.)
-     * Water absorption class
-     * Thickness
-     * Weight
-     * Any other technical specifications
+{agent_context}
 
-3. Classify each page as:
-   - "product" - Contains product information
-   - "marketing" - Marketing/branding content
-   - "admin" - Index, TOC, legal, contact info
-   - "transitional" - Dividers, section breaks
-
-4. Identify which images belong to which products (by page number)
+**GENERAL INSTRUCTIONS:**
+1. Be comprehensive - identify EVERY instance in each category
+2. Classify each page as: "product", "certificate", "logo", "specification", "marketing", "admin", or "transitional"
+3. Provide confidence scores (0.0-1.0) for each item
 
 **OUTPUT FORMAT (JSON):**
 ```json
@@ -172,48 +420,212 @@ Your task is to identify ALL products and extract their complete metadata.
   "products": [
     {{
       "name": "NOVA",
-      "designer": "SG NY",
-      "studio": "SG NY",
+      "description": "Modern ceramic tile collection",
       "page_range": [12, 13, 14],
-      "dimensions": ["15×38", "20×40"],
-      "variants": [
-        {{"type": "color", "value": "beige"}},
-        {{"type": "finish", "value": "matte"}}
-      ],
-      "category": "tiles",
-      "metafields": {{
+      "image_pages": [12, 13],
+      "confidence": 0.95,
+      "metadata": {{
+        "designer": "SG NY",
+        "studio": "SG NY",
+        "category": "tiles",
+        "dimensions": ["15×38", "20×40"],
+        "variants": [
+          {{"type": "color", "value": "beige"}},
+          {{"type": "finish", "value": "matte"}}
+        ],
+        "factory": "Castellón Factory",
+        "factory_group": "Harmony Group",
+        "manufacturer": "Harmony Materials",
+        "country_of_origin": "Spain",
         "slip_resistance": "R11",
         "fire_rating": "A1",
         "thickness": "8mm",
-        "water_absorption": "Class 3"
-      }},
-      "image_pages": [12, 13],
-      "confidence": 0.95
+        "water_absorption": "Class 3",
+        "finish": "matte",
+        "material": "ceramic"
+      }}
     }}
   ],
-  "metafield_categories": {{
-    "slip_resistance": ["R9", "R10", "R11"],
-    "fire_rating": ["A1", "A2"],
-    "thickness": ["6mm", "8mm", "10mm"]
-  }},
+  "certificates": [
+    {{
+      "name": "ISO 9001:2015",
+      "certificate_type": "quality_management",
+      "issuer": "TÜV SÜD",
+      "issue_date": "2023-01-15",
+      "expiry_date": "2026-01-15",
+      "standards": ["ISO 9001:2015"],
+      "page_range": [45, 46],
+      "confidence": 0.92
+    }}
+  ],
+  "logos": [
+    {{
+      "name": "Company Logo",
+      "logo_type": "company",
+      "description": "Main company brand logo",
+      "page_range": [1, 2],
+      "confidence": 0.98
+    }}
+  ],
+  "specifications": [
+    {{
+      "name": "Installation Guide",
+      "spec_type": "installation",
+      "description": "Step-by-step installation instructions",
+      "page_range": [50, 52],
+      "confidence": 0.90
+    }}
+  ],
   "page_classification": {{
-    "1": "admin",
+    "1": "logo",
     "2": "marketing",
     "12": "product",
-    "13": "product"
+    "13": "product",
+    "45": "certificate",
+    "50": "specification"
   }},
   "total_products": 14,
+  "total_certificates": 3,
+  "total_logos": 5,
+  "total_specifications": 2,
   "confidence_score": 0.92
 }}
 ```
 
 **PDF CONTENT:**
-{pdf_text[:50000]}  
+{pdf_text[:50000]}
 
-Analyze the above content and return ONLY valid JSON with ALL products discovered."""
+Analyze the above content and return ONLY valid JSON with ALL content discovered across the requested categories."""
 
         return prompt
-    
+
+    async def _build_enhanced_discovery_prompt(
+        self,
+        pdf_text: str,
+        total_pages: int,
+        categories: List[str],
+        enhanced_prompts: List[Dict[str, Any]],
+        agent_prompt: str
+    ) -> str:
+        """
+        Build discovery prompt using admin-enhanced templates.
+
+        Combines admin-configured prompts with agent context and PDF content.
+        """
+
+        # Build category-specific sections from enhanced prompts
+        category_sections = []
+        for ep in enhanced_prompts:
+            category_sections.append(f"""
+**{ep['category'].upper()}:**
+{ep['enhanced']}
+(Using admin template v{ep['version']})
+""")
+
+        # Build comprehensive prompt
+        prompt = f"""You are analyzing a material/product catalog PDF with {total_pages} pages.
+
+**USER REQUEST:** "{agent_prompt}"
+
+Your task is to identify and extract content across the following categories:
+{chr(10).join(category_sections)}
+
+**GENERAL INSTRUCTIONS:**
+1. Be comprehensive - identify EVERY instance in each category
+2. Focus on fulfilling the user's request: "{agent_prompt}"
+3. Classify each page as: "product", "certificate", "logo", "specification", "marketing", "admin", or "transitional"
+4. Provide confidence scores (0.0-1.0) for each item
+
+**SPECIAL HANDLING FOR USER REQUEST:**
+- If user mentions specific product names (e.g., "NOVA"), prioritize finding those products
+- If user requests "search", provide comprehensive results with high confidence scores
+- If user requests "extract", focus on complete data extraction with all metadata
+
+**OUTPUT FORMAT (JSON):**
+```json
+{{
+  "products": [
+    {{
+      "name": "NOVA",
+      "description": "Modern ceramic tile collection",
+      "page_range": [12, 13, 14],
+      "image_pages": [12, 13],
+      "confidence": 0.95,
+      "metadata": {{
+        "designer": "SG NY",
+        "studio": "SG NY",
+        "category": "tiles",
+        "dimensions": ["15×38", "20×40"],
+        "variants": [
+          {{"type": "color", "value": "beige"}},
+          {{"type": "finish", "value": "matte"}}
+        ],
+        "factory": "Castellón Factory",
+        "factory_group": "Harmony Group",
+        "manufacturer": "Harmony Materials",
+        "country_of_origin": "Spain",
+        "slip_resistance": "R11",
+        "fire_rating": "A1",
+        "thickness": "8mm",
+        "water_absorption": "Class 3",
+        "finish": "matte",
+        "material": "ceramic"
+      }}
+    }}
+  ],
+  "certificates": [
+    {{
+      "name": "ISO 9001:2015",
+      "certificate_type": "quality_management",
+      "issuer": "TÜV SÜD",
+      "issue_date": "2023-01-15",
+      "expiry_date": "2026-01-15",
+      "standards": ["ISO 9001:2015"],
+      "page_range": [45, 46],
+      "confidence": 0.92
+    }}
+  ],
+  "logos": [
+    {{
+      "name": "Company Logo",
+      "logo_type": "company",
+      "description": "Main company brand logo",
+      "page_range": [1, 2],
+      "confidence": 0.98
+    }}
+  ],
+  "specifications": [
+    {{
+      "name": "Installation Guide",
+      "spec_type": "installation",
+      "description": "Step-by-step installation instructions",
+      "page_range": [50, 52],
+      "confidence": 0.90
+    }}
+  ],
+  "page_classification": {{
+    "1": "logo",
+    "2": "marketing",
+    "12": "product",
+    "13": "product",
+    "45": "certificate",
+    "50": "specification"
+  }},
+  "total_products": 14,
+  "total_certificates": 3,
+  "total_logos": 5,
+  "total_specifications": 2,
+  "confidence_score": 0.92
+}}
+```
+
+**PDF CONTENT:**
+{pdf_text[:50000]}
+
+Analyze the above content and return ONLY valid JSON with ALL content discovered across the requested categories."""
+
+        return prompt
+
     async def _discover_with_claude(
         self,
         prompt: str,
@@ -329,45 +741,97 @@ Analyze the above content and return ONLY valid JSON with ALL products discovere
     def _parse_discovery_results(
         self,
         result: Dict[str, Any],
-        total_pages: int
+        total_pages: int,
+        categories: List[str]
     ) -> ProductCatalog:
-        """Parse and validate discovery results"""
-        
+        """Parse and validate discovery results across all categories"""
+
+        # Parse products
         products = []
         for p in result.get("products", []):
+            # Extract metadata (new architecture - products + metadata inseparable)
+            metadata = p.get("metadata", {})
+
+            # If metadata is not in the new format, build it from old fields for backward compatibility
+            if not metadata:
+                metadata = {
+                    "designer": p.get("designer"),
+                    "studio": p.get("studio"),
+                    "dimensions": p.get("dimensions", []),
+                    "variants": p.get("variants", []),
+                    "category": p.get("category"),
+                    "page_range": p.get("page_range", []),
+                    "confidence": p.get("confidence", 0.8)
+                }
+                # Remove None values
+                metadata = {k: v for k, v in metadata.items() if v is not None}
+
             product = ProductInfo(
                 name=p.get("name", "Unknown"),
                 page_range=p.get("page_range", []),
                 description=p.get("description", ""),
-                designer=p.get("designer"),
-                studio=p.get("studio"),
-                dimensions=p.get("dimensions", []),
-                variants=p.get("variants", []),
-                category=p.get("category"),
-                metafields=p.get("metafields", {}),
+                metadata=metadata,
                 image_indices=p.get("image_pages", []),
                 confidence=p.get("confidence", 0.8)
             )
             products.append(product)
-        
-        # Build metafield categories
-        metafield_categories = result.get("metafield_categories", {})
-        
+
+        # Parse certificates
+        certificates = []
+        for c in result.get("certificates", []):
+            certificate = CertificateInfo(
+                name=c.get("name", "Unknown"),
+                page_range=c.get("page_range", []),
+                certificate_type=c.get("certificate_type"),
+                issuer=c.get("issuer"),
+                issue_date=c.get("issue_date"),
+                expiry_date=c.get("expiry_date"),
+                standards=c.get("standards", []),
+                confidence=c.get("confidence", 0.8)
+            )
+            certificates.append(certificate)
+
+        # Parse logos
+        logos = []
+        for l in result.get("logos", []):
+            logo = LogoInfo(
+                name=l.get("name", "Unknown"),
+                page_range=l.get("page_range", []),
+                logo_type=l.get("logo_type"),
+                description=l.get("description"),
+                confidence=l.get("confidence", 0.8)
+            )
+            logos.append(logo)
+
+        # Parse specifications
+        specifications = []
+        for s in result.get("specifications", []):
+            spec = SpecificationInfo(
+                name=s.get("name", "Unknown"),
+                page_range=s.get("page_range", []),
+                spec_type=s.get("spec_type"),
+                description=s.get("description"),
+                confidence=s.get("confidence", 0.8)
+            )
+            specifications.append(spec)
+
         # Build page classification
         page_classification = {}
         for page_str, classification in result.get("page_classification", {}).items():
             page_classification[int(page_str)] = classification
-        
+
         catalog = ProductCatalog(
             products=products,
+            certificates=certificates,
+            logos=logos,
+            specifications=specifications,
             total_pages=total_pages,
             total_images=0,  # Will be updated later
-            metafield_categories=metafield_categories,
             content_classification=page_classification,
             processing_time_ms=0,  # Will be set by caller
             model_used=self.model,
             confidence_score=result.get("confidence_score", 0.85)
         )
-        
+
         return catalog
 

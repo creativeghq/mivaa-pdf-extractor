@@ -619,7 +619,7 @@ def create_app() -> FastAPI:
         description="""
 # MIVAA - Material Intelligence Vision and Analysis Agent
 
-**Production API** - AI-powered material recognition and knowledge management platform serving 5,000+ users.
+**Production API v2.1.0** - AI-powered material recognition and knowledge management platform serving 5,000+ users.
 
 ## 🎯 **Overview**
 
@@ -627,12 +627,13 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 
 ### **Key Capabilities**
 - **PDF Processing**: 14-stage pipeline with PyMuPDF4LLM extraction
+- **Products + Metadata**: Inseparable extraction (Stage 0A) - all metadata stored in product.metadata JSONB
+- **Document Entities**: Certificates, logos, specifications as separate knowledge base (Stage 0B)
 - **AI Analysis**: 12 AI models across 7 pipeline stages
 - **Multi-Vector Search**: 6 specialized embeddings (text, visual, color, texture, application, multimodal)
-- **Product Classification**: Two-stage AI system (Claude Haiku 4.5 + Sonnet 4.5)
 - **Knowledge Base**: Semantic chunking, quality scoring, deduplication
 - **Image Analysis**: CLIP + Llama 4 Scout Vision (69.4% MMMU, #1 OCR)
-- **Auto-Metadata**: AI-powered metadata extraction (200+ fields)
+- **Agentic Queries**: Factory/group filtering for certificates, logos, specifications
 
 ### **AI Models**
 1. **OpenAI**: text-embedding-3-small (1536D embeddings)
@@ -640,6 +641,10 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 3. **Together AI**: Llama 4 Scout 17B Vision
 4. **CLIP**: Visual embeddings (512D)
 5. **Custom**: Color, texture, application embeddings
+
+### **API Endpoints**
+- **Total**: 113 endpoints across 14 categories
+- **New**: Document Entities Routes (5 endpoints) for certificates, logos, specifications
 
 ### **Performance**
 - **Search Accuracy**: 85%+
@@ -1171,26 +1176,33 @@ from app.api.rag_routes import router as rag_router
 from app.api.together_ai_routes import router as together_ai_router
 from app.api.anthropic_routes import router as anthropic_router
 from app.api.products import router as products_router
+from app.api.document_entities import router as document_entities_router
 from app.api.embeddings import router as embeddings_router
 from app.api.monitoring_routes import router as monitoring_router
 from app.api.admin_modules_old.chunk_quality import router as chunk_quality_router
 from app.api.ai_metrics_routes import router as ai_metrics_router
 from app.api.ai_services_routes import router as ai_services_router
+from app.api.admin_prompts import router as admin_prompts_router, config_router as extraction_config_router
+from app.api.unified_upload import router as unified_upload_router
 
 app.include_router(pdf_router)  # PDF router already has /api/v1 prefix
 app.include_router(documents_router)
 app.include_router(search_router)
 app.include_router(images_router)
 app.include_router(admin_router)
+app.include_router(unified_upload_router)  # NEW: Unified upload endpoint (replaces old upload endpoints)
 app.include_router(rag_router)
 app.include_router(together_ai_router)
 app.include_router(anthropic_router)
 app.include_router(products_router)
+app.include_router(document_entities_router)  # NEW: Document entities (certificates, logos, specifications)
 app.include_router(embeddings_router)
 app.include_router(monitoring_router)
 app.include_router(chunk_quality_router)
 app.include_router(ai_metrics_router)
 app.include_router(ai_services_router)
+app.include_router(admin_prompts_router)  # Admin prompts management
+app.include_router(extraction_config_router)  # Extraction configuration
 
 # Customize OpenAPI schema
 def custom_openapi():
@@ -1224,39 +1236,47 @@ def custom_openapi():
     # Add custom info
     openapi_schema["info"]["x-api-features"] = {
         "pdf_processing": "14-stage AI pipeline with checkpoint recovery",
-        "product_discovery": "Two-stage AI classification (Claude Haiku → Sonnet)",
+        "product_discovery": "Products + Metadata extraction (inseparable) - Stage 0A",
+        "document_entities": "Certificates, logos, specifications as separate knowledge base - Stage 0B",
         "rag_system": "Retrieval-Augmented Generation with multi-vector search",
         "vector_search": "6 embedding types (text, visual, color, texture, application, multimodal)",
         "ai_models": "12 models: Claude Sonnet 4.5, Haiku 4.5, GPT-4o, Llama 4 Scout 17B Vision, CLIP",
         "material_recognition": "Llama 4 Scout 17B Vision (69.4% MMMU, #1 OCR)",
         "embedding_models": "OpenAI text-embedding-3-small (1536D), CLIP ViT-B/32 (512D)",
         "performance": "95%+ product detection, 85%+ search accuracy, 200-800ms response time",
-        "scalability": "5,000+ users, 99.5%+ uptime"
+        "scalability": "5,000+ users, 99.5%+ uptime",
+        "agentic_queries": "Factory/group filtering for certificates, logos, specifications"
     }
 
     # Add custom paths info
     openapi_schema["info"]["x-endpoint-categories"] = {
-        "rag_document_processing": "/api/rag/documents/*",
-        "rag_query_chat": "/api/rag/query, /api/rag/chat, /api/rag/search",
-        "search": "/api/search/semantic, /api/search/vector, /api/search/hybrid",
-        "embeddings": "/api/embeddings/generate, /api/embeddings/batch, /api/embeddings/clip-generate",
-        "products": "/api/products/*",
-        "images": "/api/images/*",
-        "ai_services": "/api/vision/llama-analyze, /api/semantic-analysis, /api/chat/*",
-        "background_jobs": "/api/jobs/*",
-        "admin_monitoring": "/api/admin/*, /api/ai-metrics/*",
-        "health": "/health, /metrics, /performance/summary"
+        "rag_routes": "/api/rag/* (25 endpoints)",
+        "admin_routes": "/api/admin/* (18 endpoints)",
+        "search_routes": "/api/search/* (18 endpoints)",
+        "documents_routes": "/api/documents/* (11 endpoints)",
+        "ai_services_routes": "/api/vision/*, /api/semantic-analysis, /api/chat/* (10 endpoints)",
+        "images_routes": "/api/images/* (5 endpoints)",
+        "document_entities_routes": "/api/document-entities/* (5 endpoints) - NEW",
+        "pdf_routes": "/api/v1/pdf/* (4 endpoints)",
+        "products_routes": "/api/products/* (3 endpoints)",
+        "embeddings_routes": "/api/embeddings/* (3 endpoints)",
+        "together_ai_routes": "/api/together-ai/* (3 endpoints)",
+        "anthropic_routes": "/api/anthropic/* (3 endpoints)",
+        "monitoring_routes": "/health, /metrics, /performance/summary (3 endpoints)",
+        "ai_metrics_routes": "/api/ai-metrics/* (2 endpoints)"
     }
 
     # Add platform statistics
     openapi_schema["info"]["x-platform-stats"] = {
-        "total_endpoints": "74+",
+        "total_endpoints": 113,
+        "endpoint_categories": 14,
         "ai_models": 12,
         "processing_stages": 14,
         "embedding_types": 6,
         "users": "5,000+",
         "uptime": "99.5%+",
-        "version": "2.0.0"
+        "version": "2.1.0",
+        "last_updated": "2025-11-02"
     }
 
     app.openapi_schema = openapi_schema

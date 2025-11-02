@@ -231,221 +231,6 @@ async def get_embedding_service() -> RealEmbeddingsService:
 
 # API Endpoints
 
-@router.post("/documents/upload", response_model=DocumentUploadResponse)
-async def upload_document(
-    file: UploadFile = File(...),
-    title: Optional[str] = Form(None),
-    description: Optional[str] = Form(None),
-    tags: Optional[str] = Form(None),  # JSON string of tags
-    chunk_size: int = Form(1000),
-    chunk_overlap: int = Form(200),
-    enable_embedding: bool = Form(True),
-    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
-):
-    """
-    Upload and process a document for RAG functionality.
-    
-    This endpoint accepts document uploads, processes them into chunks,
-    generates embeddings, and stores them in the vector database.
-    """
-    start_time = datetime.utcnow()
-    
-    try:
-        # Validate file type
-        if not file.content_type or not file.content_type.startswith(('application/pdf', 'text/', 'application/msword')):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Unsupported file type. Please upload PDF, text, or Word documents."
-            )
-        
-        # Parse tags if provided
-        document_tags = []
-        if tags:
-            try:
-                import json
-                document_tags = json.loads(tags)
-            except json.JSONDecodeError:
-                document_tags = [tag.strip() for tag in tags.split(',')]
-        
-        # Generate document ID
-        document_id = str(uuid4())
-        
-        # Read file content
-        file_content = await file.read()
-        
-        # Process document through LlamaIndex service
-        processing_result = await llamaindex_service.index_document_content(
-            file_content=file_content,
-            document_id=document_id,
-            file_path=file.filename,
-            metadata={
-                "filename": file.filename,
-                "title": title or file.filename,
-                "description": description,
-                "tags": document_tags,
-                "source": "rag_upload"
-            },
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap
-        )
-        
-        processing_time = (datetime.utcnow() - start_time).total_seconds()
-
-        # Check if processing actually succeeded
-        result_status = processing_result.get('status', 'completed')
-        chunks_created = processing_result.get('statistics', {}).get('total_chunks', 0)
-
-        # If status is error, raise an exception with details
-        if result_status == 'error':
-            error_message = processing_result.get('error', 'Unknown error during document processing')
-            logger.error(f"Document processing failed for {document_id}: {error_message}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Document processing failed: {error_message}"
-            )
-
-        return DocumentUploadResponse(
-            document_id=document_id,
-            title=title or file.filename,
-            status=result_status,
-            chunks_created=chunks_created,
-            embeddings_generated=chunks_created > 0,  # Only true if chunks were actually created
-            processing_time=processing_time,
-            message=f"Document processed successfully: {chunks_created} chunks created"
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Document upload failed: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Document processing failed: {str(e)}"
-        )
-
-@router.post("/documents/upload-async")
-async def upload_document_async(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    title: Optional[str] = Form(None),
-    description: Optional[str] = Form(None),
-    tags: Optional[str] = Form(None),
-    chunk_size: int = Form(1000),
-    chunk_overlap: int = Form(200),
-    enable_embedding: bool = Form(True),
-    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
-):
-    """
-    Upload and process a document asynchronously for RAG functionality.
-
-    Returns immediately with a job_id that can be used to check processing status.
-    Use GET /documents/job/{job_id} to check the status and get results.
-    """
-    try:
-        # Validate file type
-        if not file.content_type or not file.content_type.startswith(('application/pdf', 'text/', 'application/msword')):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Unsupported file type. Please upload PDF, text, or Word documents."
-            )
-
-        # Generate IDs
-        job_id = str(uuid4())
-        document_id = str(uuid4())
-
-        # Parse tags if provided
-        document_tags = []
-        if tags:
-            try:
-                import json
-                document_tags = json.loads(tags)
-            except json.JSONDecodeError:
-                document_tags = [tag.strip() for tag in tags.split(',')]
-
-        # Read file content
-        file_content = await file.read()
-
-        # Create placeholder document record FIRST (to satisfy foreign key constraint)
-        supabase_client = get_supabase_client()
-        try:
-            supabase_client.client.table('documents').insert({
-                'id': document_id,
-                'filename': file.filename,
-                'content_type': file.content_type,
-                'processing_status': 'processing',
-                'metadata': {
-                    'title': title or file.filename,
-                    'description': description,
-                    'catalog': catalog
-                }
-            }).execute()
-            logger.info(f"✅ Created placeholder document record: {document_id}")
-        except Exception as e:
-            logger.error(f"Failed to create placeholder document: {e}")
-            # Continue anyway - the background task will create it
-
-        # Initialize job storage (in-memory)
-        job_storage[job_id] = {
-            "status": "pending",
-            "document_id": document_id,
-            "filename": file.filename,
-            "created_at": datetime.utcnow().isoformat(),
-            "progress": 0
-        }
-
-        # Persist job to database for recovery (now document exists)
-        if job_recovery_service:
-            await job_recovery_service.persist_job(
-                job_id=job_id,
-                document_id=document_id,
-                filename=file.filename,
-                status="pending",
-                metadata={
-                    "title": title,
-                    "description": description,
-                    "tags": document_tags,
-                    "chunk_size": chunk_size,
-                    "chunk_overlap": chunk_overlap
-                },
-                progress=0
-            )
-
-        # Start background processing
-        background_tasks.add_task(
-            process_document_background,
-            job_id=job_id,
-            document_id=document_id,
-            file_content=file_content,
-            filename=file.filename,
-            title=title,
-            description=description,
-            document_tags=document_tags,
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            llamaindex_service=llamaindex_service
-        )
-
-        return JSONResponse(
-            status_code=status.HTTP_202_ACCEPTED,
-            content={
-                "job_id": job_id,
-                "document_id": document_id,
-                "status": "pending",
-                "message": "Document upload accepted. Processing in background.",
-                "status_url": f"/api/rag/documents/job/{job_id}"
-            }
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Document upload failed: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Document upload failed: {str(e)}"
-        )
-
-
 @router.get("/documents/job/{job_id}")
 async def get_job_status(job_id: str):
     """
@@ -1901,7 +1686,9 @@ async def process_document_with_discovery(
     extract_categories: List[str],
     chunk_size: int,
     chunk_overlap: int,
-    workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"
+    workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+    agent_prompt: Optional[str] = None,
+    enable_prompt_enhancement: bool = True
 ):
     """
     Background task to process document with intelligent product discovery.
@@ -2018,37 +1805,60 @@ async def process_document_with_discovery(
                 status="pending"
             )
 
-        # Run product discovery
+        # Run category-based discovery with prompt enhancement
         discovery_service = ProductDiscoveryService(model=discovery_model)
         catalog = await discovery_service.discover_products(
             pdf_content=file_content,
             pdf_text=pdf_result.markdown_content,
             total_pages=pdf_result.page_count,
+            categories=extract_categories,
+            agent_prompt=agent_prompt,  # From unified_upload request
+            workspace_id=workspace_id,
+            enable_prompt_enhancement=enable_prompt_enhancement,
             job_id=job_id
         )
 
-        logger.info(f"✅ [STAGE 0] Product Discovery Complete:")
-        logger.info(f"   Products found: {len(catalog.products)}")
-        logger.info(f"   Metafield categories: {list(catalog.metafield_categories.keys())}")
+        logger.info(f"✅ [STAGE 0] Discovery Complete:")
+        logger.info(f"   Categories: {', '.join(extract_categories)}")
+        logger.info(f"   Products: {len(catalog.products)}")
+        if "certificates" in extract_categories:
+            logger.info(f"   Certificates: {len(catalog.certificates)}")
+        if "logos" in extract_categories:
+            logger.info(f"   Logos: {len(catalog.logos)}")
+        if "specifications" in extract_categories:
+            logger.info(f"   Specifications: {len(catalog.specifications)}")
         logger.info(f"   Confidence: {catalog.confidence_score:.2f}")
 
         # Update tracker
         tracker.products_created = len(catalog.products)
         await tracker._sync_to_database(stage="product_discovery")
 
-        # Create PRODUCTS_DETECTED checkpoint
+        # Create PRODUCTS_DETECTED checkpoint (now includes all categories)
+        checkpoint_data = {
+            "document_id": document_id,
+            "categories": extract_categories,
+            "products_detected": len(catalog.products),
+            "product_names": [p.name for p in catalog.products],
+            "total_pages": pdf_result.page_count
+        }
+
+        # Add other categories if discovered
+        if "certificates" in extract_categories:
+            checkpoint_data["certificates_detected"] = len(catalog.certificates)
+            checkpoint_data["certificate_names"] = [c.name for c in catalog.certificates]
+        if "logos" in extract_categories:
+            checkpoint_data["logos_detected"] = len(catalog.logos)
+            checkpoint_data["logo_names"] = [l.name for l in catalog.logos]
+        if "specifications" in extract_categories:
+            checkpoint_data["specifications_detected"] = len(catalog.specifications)
+            checkpoint_data["specification_names"] = [s.name for s in catalog.specifications]
+
         await checkpoint_recovery_service.create_checkpoint(
             job_id=job_id,
             stage=CheckpointStage.PRODUCTS_DETECTED,
-            data={
-                "document_id": document_id,
-                "products_detected": len(catalog.products),
-                "product_names": [p.name for p in catalog.products],
-                "total_pages": pdf_result.page_count
-            },
+            data=checkpoint_data,
             metadata={
                 "confidence_score": catalog.confidence_score,
-                "metafield_categories": list(catalog.metafield_categories.keys()),
                 "discovery_model": discovery_model
             }
         )
@@ -2353,47 +2163,122 @@ async def process_document_with_discovery(
         logger.info("🏭 [STAGE 4] Product Creation & Linking - Starting...")
         await tracker.update_stage(ProcessingStage.FINALIZING, stage_name="product_creation")
 
-        from app.services.metafield_extraction_service import MetafieldExtractionService
         from app.services.entity_linking_service import EntityLinkingService
+        from app.services.document_entity_service import DocumentEntityService
 
-        # Extract metafields from discovery results
-        metafield_service = MetafieldExtractionService()
-        metafield_results = await metafield_service.extract_metafields_from_catalog(
-            catalog=catalog,
-            document_id=document_id
-        )
-
-        logger.info(f"   Metafields extracted: {metafield_results['total_metafields']}")
-
-        # Create products in database
+        # Create products in database (with metadata)
         products_created = 0
+        product_id_map = {}  # Map product name to product ID for entity linking
+
         for product in catalog.products:
             try:
+                # Use product.metadata field (new architecture - products + metadata inseparable)
+                metadata = product.metadata or {}
+
+                # Ensure page_range and confidence are in metadata
+                if 'page_range' not in metadata:
+                    metadata['page_range'] = product.page_range
+                if 'confidence' not in metadata:
+                    metadata['confidence'] = product.confidence
+
                 product_data = {
                     'source_document_id': document_id,
                     'workspace_id': workspace_id,
                     'name': product.name,
                     'description': product.description or '',
-                    'metadata': {
-                        'page_range': product.page_range,
-                        'variants': product.variants or [],
-                        'dimensions': product.dimensions or [],
-                        'designer': product.designer,
-                        'studio': product.studio,
-                        'category': product.category,
-                        'metafields': product.metafields or {},
-                        'confidence': product.confidence
-                    }
+                    'metadata': metadata  # ALL product metadata stored here
                 }
+
                 result = supabase.client.table('products').insert(product_data).execute()
-                products_created += 1
+
+                if result.data and len(result.data) > 0:
+                    product_id = result.data[0]['id']
+                    product_id_map[product.name] = product_id
+                    products_created += 1
+                    logger.info(f"   ✅ Created product: {product.name} (ID: {product_id})")
+
             except Exception as e:
                 logger.error(f"Failed to create product {product.name}: {e}")
 
         tracker.products_created = products_created
         logger.info(f"   Products created: {products_created}")
 
-        # Link entities (images, chunks, products, metafields)
+        # Save document entities (certificates, logos, specifications) if discovered
+        document_entity_service = DocumentEntityService(supabase.client)
+        entities_created = 0
+        entity_id_map = {}  # Map entity name to entity ID
+
+        # Combine all entities from catalog
+        all_entities = []
+
+        if "certificates" in extract_categories and catalog.certificates:
+            from app.services.document_entity_service import DocumentEntity
+            for cert in catalog.certificates:
+                entity = DocumentEntity(
+                    entity_type="certificate",
+                    name=cert.name,
+                    page_range=cert.page_range,
+                    description=f"{cert.certificate_type or 'Certificate'} issued by {cert.issuer or 'Unknown'}",
+                    metadata={
+                        "certificate_type": cert.certificate_type,
+                        "issuer": cert.issuer,
+                        "issue_date": cert.issue_date,
+                        "expiry_date": cert.expiry_date,
+                        "standards": cert.standards or [],
+                        "confidence": cert.confidence
+                    }
+                )
+                all_entities.append(entity)
+
+        if "logos" in extract_categories and catalog.logos:
+            from app.services.document_entity_service import DocumentEntity
+            for logo in catalog.logos:
+                entity = DocumentEntity(
+                    entity_type="logo",
+                    name=logo.name,
+                    page_range=logo.page_range,
+                    description=logo.description,
+                    metadata={
+                        "logo_type": logo.logo_type,
+                        "confidence": logo.confidence
+                    }
+                )
+                all_entities.append(entity)
+
+        if "specifications" in extract_categories and catalog.specifications:
+            from app.services.document_entity_service import DocumentEntity
+            for spec in catalog.specifications:
+                entity = DocumentEntity(
+                    entity_type="specification",
+                    name=spec.name,
+                    page_range=spec.page_range,
+                    description=spec.description,
+                    metadata={
+                        "spec_type": spec.spec_type,
+                        "confidence": spec.confidence
+                    }
+                )
+                all_entities.append(entity)
+
+        # Save all entities to database
+        if all_entities:
+            entity_ids = await document_entity_service.save_entities(
+                entities=all_entities,
+                source_document_id=document_id,
+                workspace_id=workspace_id
+            )
+            entities_created = len(entity_ids)
+
+            # Map entity names to IDs
+            for entity, entity_id in zip(all_entities, entity_ids):
+                entity_id_map[entity.name] = entity_id
+
+            logger.info(f"   Document entities created: {entities_created}")
+            logger.info(f"     - Certificates: {len([e for e in all_entities if e.entity_type == 'certificate'])}")
+            logger.info(f"     - Logos: {len([e for e in all_entities if e.entity_type == 'logo'])}")
+            logger.info(f"     - Specifications: {len([e for e in all_entities if e.entity_type == 'specification'])}")
+
+        # Link entities (images, chunks, products)
         linking_service = EntityLinkingService()
         linking_results = await linking_service.link_all_entities(
             document_id=document_id,
@@ -2403,25 +2288,35 @@ async def process_document_with_discovery(
         logger.info(f"   Entity linking complete:")
         logger.info(f"     - Image-to-product links: {linking_results['image_product_links']}")
         logger.info(f"     - Image-to-chunk links: {linking_results['image_chunk_links']}")
-        logger.info(f"     - Metafield links: {linking_results['metafield_links']}")
 
         await tracker._sync_to_database(stage="product_creation")
 
         logger.info(f"✅ [STAGE 4] Product Creation & Linking Complete")
 
         # Create PRODUCTS_CREATED checkpoint
+        checkpoint_metadata = {
+            "entity_links": linking_results,
+            "product_names": [p.name for p in catalog.products]
+        }
+
+        # Add document entity info if any were created
+        if entities_created > 0:
+            checkpoint_metadata["document_entities_created"] = entities_created
+            checkpoint_metadata["entity_types"] = {
+                "certificates": len([e for e in all_entities if e.entity_type == 'certificate']),
+                "logos": len([e for e in all_entities if e.entity_type == 'logo']),
+                "specifications": len([e for e in all_entities if e.entity_type == 'specification'])
+            }
+
         await checkpoint_recovery_service.create_checkpoint(
             job_id=job_id,
             stage=CheckpointStage.PRODUCTS_CREATED,
             data={
                 "document_id": document_id,
                 "products_created": products_created,
-                "metafields_extracted": metafield_results['total_metafields']
+                "document_entities_created": entities_created
             },
-            metadata={
-                "entity_links": linking_results,
-                "product_names": [p.name for p in catalog.products]
-            }
+            metadata=checkpoint_metadata
         )
         logger.info(f"✅ Created PRODUCTS_CREATED checkpoint for job {job_id}")
 
@@ -2466,7 +2361,6 @@ async def process_document_with_discovery(
             "product_names": [p.name for p in catalog.products],
             "chunks_created": tracker.chunks_created,
             "images_processed": images_processed,
-            "metafields_extracted": metafield_results['total_metafields'],
             "claude_validations": validation_results.get('validated', 0),
             "focused_extraction": focused_extraction,
             "pages_processed": len(product_pages),
@@ -2484,8 +2378,7 @@ async def process_document_with_discovery(
                 "document_id": document_id,
                 "products_created": products_created,
                 "chunks_created": tracker.chunks_created,
-                "images_processed": images_processed,
-                "metafields_extracted": metafield_results['total_metafields']
+                "images_processed": images_processed
             },
             metadata={
                 "processing_time": (datetime.utcnow() - start_time).total_seconds(),
@@ -2501,7 +2394,6 @@ async def process_document_with_discovery(
         logger.info(f"   Products: {products_created}")
         logger.info(f"   Chunks: {tracker.chunks_created}")
         logger.info(f"   Images: {images_processed}")
-        logger.info(f"   Metafields: {metafield_results['total_metafields']}")
         logger.info("=" * 80)
 
         # LAZY LOADING: Cleanup all loaded components after successful completion
@@ -3204,431 +3096,4 @@ async def get_job_ai_tracking_by_model(job_id: str, model_name: str):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Advanced query search failed: {str(e)}"
-        )
-
-
-@router.post("/documents/upload-with-discovery")
-async def upload_pdf_with_product_discovery(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    title: Optional[str] = Form(None),
-    description: Optional[str] = Form(None),
-    tags: Optional[str] = Form(None),
-    discovery_model: str = Form("claude", description="AI model for product discovery: 'claude' (default) or 'gpt'"),
-    focused_extraction: bool = Form(True, description="Only process product pages identified in discovery (default: True)"),
-    extract_categories: Optional[str] = Form("products", description="Comma-separated categories to extract: 'products' (default), 'certificates', 'logos', 'specifications', 'all'")
-):
-    """
-    Upload PDF with intelligent product discovery.
-
-    NEW ARCHITECTURE:
-    Stage 0: Product Discovery (0-15%)
-      - Analyze entire PDF with Claude/GPT
-      - Identify ALL products, metadata, metafields
-      - Map images to products
-      - Classify content (product vs certificates vs logos vs specifications)
-
-    Stage 1: Focused Extraction (15-30%)
-      - Extract pages based on extract_categories parameter
-      - If focused_extraction=True: Only extract specified categories
-      - If focused_extraction=False: Extract all content
-
-    Stage 2: Chunking (30-50%)
-      - Create chunks based on extracted pages
-      - Link chunks to products/certificates/etc
-      - Generate text embeddings
-
-    Stage 3: Image Processing (50-70%)
-      - Process ONLY product images
-      - Llama Vision analysis (OCR, materials)
-      - Basic CLIP embedding (512D)
-      - Link images to products + chunks
-
-    Stage 4: Product Creation (70-90%)
-      - Create product records from discovery
-      - Attach chunks, images, metadata
-      - Link metafields
-
-    Stage 5: Quality Enhancement (90-100%) - ASYNC
-      - Claude validation (ONLY if Llama score < threshold)
-      - Advanced CLIP embeddings
-      - Product enrichment
-
-    Args:
-        file: PDF catalog file
-        title: Optional document title
-        description: Optional description
-        tags: Optional comma-separated tags
-        discovery_model: "claude" (default) or "gpt" for product discovery
-        focused_extraction: Only process pages from extract_categories (default: True). Set to False to process entire PDF
-        extract_categories: Categories to extract - 'products' (default), 'certificates', 'logos', 'specifications', or 'all'.
-                          Comma-separated. Only applies when focused_extraction=True.
-
-    Returns:
-        Job ID and status URL for monitoring
-    """
-    import tempfile
-    import os
-    from app.services.product_discovery_service import ProductDiscoveryService
-
-    try:
-        # Generate IDs
-        job_id = str(uuid4())
-        document_id = str(uuid4())
-
-        logger.info(f"🔍 PRODUCT DISCOVERY UPLOAD")
-        logger.info(f"   Job ID: {job_id}")
-        logger.info(f"   Document ID: {document_id}")
-        logger.info(f"   Discovery Model: {discovery_model.upper()}")
-
-        # Read PDF content
-        file_content = await file.read()
-
-        # Initialize job in job_storage
-        job_storage[job_id] = {
-            "job_id": job_id,
-            "document_id": document_id,
-            "status": "pending",
-            "progress": 0,
-            "current_stage": "product_discovery",
-            "metadata": {
-                "discovery_enabled": True,
-                "discovery_model": discovery_model,
-                "total_products": 0,
-                "products_discovered": []
-            }
-        }
-
-        # Upload PDF to storage
-        supabase_client = get_supabase_client()
-        file_path = f"pdf-documents/{document_id}/{file.filename}"
-        try:
-            supabase_client.client.storage.from_('pdf-documents').upload(
-                f"{document_id}/{file.filename}",
-                file_content,
-                {"content-type": "application/pdf"}
-            )
-            logger.info(f"✅ Uploaded PDF to storage: {file_path}")
-        except Exception as e:
-            logger.error(f"❌ Failed to upload PDF to storage: {e}")
-
-        # Create document record
-        document_tags = tags.split(',') if tags else []
-        document_tags.append("discovery_enabled")
-
-        try:
-            supabase_client.client.table('documents').insert({
-                "id": document_id,
-                "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
-                "filename": file.filename,
-                "content_type": "application/pdf",
-                "file_size": len(file_content),
-                "file_path": file_path,
-                "processing_status": "processing",
-                "metadata": {
-                    "title": title or file.filename,
-                    "description": description or "Product catalog with intelligent discovery",
-                    "tags": document_tags,
-                    "source": "discovery_upload",
-                    "discovery_enabled": True,
-                    "discovery_model": discovery_model
-                },
-                "created_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat()
-            }).execute()
-            logger.info(f"✅ Created document record {document_id}")
-        except Exception as e:
-            logger.error(f"❌ Failed to create document record: {e}")
-
-        # Create job record
-        try:
-            supabase_client.client.table('background_jobs').insert({
-                "id": job_id,
-                "job_type": "product_discovery_upload",
-                "document_id": document_id,
-                "filename": file.filename,
-                "status": "pending",
-                "progress": 0,
-                "metadata": {
-                    "discovery_enabled": True,
-                    "discovery_model": discovery_model
-                },
-                "created_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat()
-            }).execute()
-            logger.info(f"✅ Created job record {job_id}")
-        except Exception as e:
-            logger.error(f"❌ Failed to create job record: {e}")
-
-        # Parse extract_categories
-        categories_list = [cat.strip().lower() for cat in extract_categories.split(',')] if extract_categories else ['products']
-
-        # Start background processing with product discovery
-        background_tasks.add_task(
-            process_document_with_discovery,
-            job_id,
-            document_id,
-            file_content,
-            file.filename,
-            title or file.filename,
-            description or "Product catalog with intelligent discovery",
-            document_tags,
-            discovery_model,
-            focused_extraction,  # Pass focused extraction flag
-            categories_list,  # NEW: Pass extract categories
-            1000,  # chunk_size
-            200,   # chunk_overlap
-            "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"  # workspace_id
-        )
-
-        return JSONResponse(
-            status_code=status.HTTP_202_ACCEPTED,
-            content={
-                "job_id": job_id,
-                "document_id": document_id,
-                "status": "pending",
-                "message": f"Product discovery started using {discovery_model.upper()}",
-                "status_url": f"/api/rag/documents/job/{job_id}",
-                "discovery_model": discovery_model
-            }
-        )
-
-    except Exception as e:
-        logger.error(f"Product discovery upload failed: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Product discovery upload failed: {str(e)}"
-        )
-
-
-@router.post("/documents/upload-focused")
-async def upload_focused_product_pdf(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    product_name: str = Form(...),
-    designer: Optional[str] = Form(None),
-    search_terms: Optional[str] = Form(None),
-    title: Optional[str] = Form(None),
-    description: Optional[str] = Form(None),
-    tags: Optional[str] = Form(None)
-):
-    """
-    Upload PDF and process ONLY pages containing a specific product.
-
-    This endpoint:
-    1. Scans the PDF to find pages containing the product
-    2. Extracts only those pages to a new PDF
-    3. Processes only the focused PDF (not the entire document)
-    4. Returns detailed results for the specific product
-
-    Args:
-        file: PDF file to upload
-        product_name: Product name to search for (e.g., "NOVA")
-        designer: Optional designer name (e.g., "SG NY")
-        search_terms: Optional comma-separated additional search terms
-        title: Optional document title
-        description: Optional description
-        tags: Optional comma-separated tags
-
-    Returns:
-        Job ID and status URL for monitoring
-    """
-    import tempfile
-    import os
-
-    try:
-        # Generate IDs
-        job_id = str(uuid4())
-        document_id = str(uuid4())
-
-        logger.info(f"🎯 FOCUSED PRODUCT EXTRACTION: {product_name}")
-        logger.info(f"   Job ID: {job_id}")
-        logger.info(f"   Document ID: {document_id}")
-        logger.info(f"   Designer: {designer}")
-
-        # Read PDF content
-        file_content = await file.read()
-
-        # Save to temporary file for page scanning
-        temp_dir = tempfile.mkdtemp()
-        original_pdf_path = os.path.join(temp_dir, "original.pdf")
-        focused_pdf_path = os.path.join(temp_dir, "focused.pdf")
-
-        with open(original_pdf_path, 'wb') as f:
-            f.write(file_content)
-
-        # Find product pages
-        extractor = get_focused_product_extractor()
-        search_terms_list = search_terms.split(',') if search_terms else None
-
-        page_numbers = extractor.find_product_pages(
-            original_pdf_path,
-            product_name,
-            designer,
-            search_terms_list
-        )
-
-        if not page_numbers:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Product '{product_name}' not found in PDF"
-            )
-
-        # Extract product metadata
-        product_metadata = extractor.get_product_metadata_from_pages(
-            original_pdf_path,
-            page_numbers,
-            product_name
-        )
-
-        # Extract focused pages to new PDF
-        extractor.extract_product_pages_to_pdf(
-            original_pdf_path,
-            focused_pdf_path,
-            page_numbers
-        )
-
-        # Read focused PDF
-        with open(focused_pdf_path, 'rb') as f:
-            focused_pdf_content = f.read()
-
-        # Clean up temp files
-        os.remove(original_pdf_path)
-        os.remove(focused_pdf_path)
-        os.rmdir(temp_dir)
-
-        logger.info(f"✅ Created focused PDF with {len(page_numbers)} pages")
-        logger.info(f"   Pages: {[p+1 for p in page_numbers]}")
-
-        # Parse tags and add focused extraction metadata
-        document_tags = tags.split(',') if tags else []
-        document_tags.extend([
-            f"focused:{product_name}",
-            f"designer:{designer}" if designer else None,
-            f"pages:{len(page_numbers)}"
-        ])
-        document_tags = [t for t in document_tags if t]  # Remove None values
-
-        # Initialize job in job_storage (required by process_document_background)
-        job_storage[job_id] = {
-            "job_id": job_id,
-            "document_id": document_id,
-            "status": "pending",
-            "progress": 0,
-            "metadata": {
-                "focused_extraction": True,
-                "product_name": product_name,
-                "designer": designer,
-                "pages_found": len(page_numbers),
-                "page_numbers": [p+1 for p in page_numbers],
-                "product_metadata": product_metadata
-            }
-        }
-
-        # Upload focused PDF to storage FIRST (required for resume functionality)
-        supabase_client = get_supabase_client()
-        file_path = f"pdf-documents/{document_id}/{file.filename}"
-        try:
-            # Upload to Supabase storage
-            supabase_client.client.storage.from_('pdf-documents').upload(
-                f"{document_id}/{file.filename}",
-                focused_pdf_content,
-                {"content-type": "application/pdf"}
-            )
-            logger.info(f"✅ Uploaded focused PDF to storage: {file_path}")
-        except Exception as e:
-            logger.error(f"❌ Failed to upload PDF to storage: {e}")
-            # Continue anyway - processing can still work with in-memory content
-
-        # Create document record (required by foreign key constraint)
-        try:
-            supabase_client.client.table('documents').insert({
-                "id": document_id,
-                "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
-                "filename": file.filename,
-                "content_type": "application/pdf",
-                "file_size": len(focused_pdf_content),
-                "file_path": file_path,
-                "processing_status": "processing",
-                "metadata": {
-                    "title": title or f"{product_name} - Focused Extraction",
-                    "description": description or f"Focused extraction of {product_name} product",
-                    "tags": document_tags,
-                    "source": "focused_extraction",
-                    "focused_extraction": True,
-                    "product_name": product_name,
-                    "designer": designer,
-                    "pages_found": len(page_numbers),
-                    "page_numbers": [p+1 for p in page_numbers],
-                    "product_metadata": product_metadata
-                },
-                "created_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat()
-            }).execute()
-            logger.info(f"✅ Created document record {document_id}")
-        except Exception as e:
-            logger.error(f"❌ Failed to create document record: {e}")
-            # Continue anyway - will try to create in background task
-
-        # Create job record in database for persistence (AFTER document record)
-        try:
-            supabase_client.client.table('background_jobs').insert({
-                "id": job_id,
-                "job_type": "focused_product_extraction",
-                "document_id": document_id,
-                "filename": file.filename,  # Required field
-                "status": "pending",
-                "progress": 0,
-                "metadata": {
-                    "focused_extraction": True,
-                    "product_name": product_name,
-                    "designer": designer,
-                    "pages_found": len(page_numbers),
-                    "page_numbers": [p+1 for p in page_numbers],
-                    "product_metadata": product_metadata
-                },
-                "created_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat()
-            }).execute()
-            logger.info(f"✅ Created database record for job {job_id}")
-        except Exception as e:
-            logger.error(f"❌ Failed to create job database record: {e}")
-            # Continue anyway - job_storage will work for now
-
-        # Process the focused PDF using existing pipeline
-        # This will now only process the product-specific pages
-        background_tasks.add_task(
-            process_document_background,
-            job_id,
-            document_id,
-            focused_pdf_content,
-            file.filename,
-            title or f"{product_name} - Focused Extraction",
-            description or f"Focused extraction of {product_name} product. Pages: {[p+1 for p in page_numbers]}. Metadata: {product_metadata}",
-            document_tags,
-            1000,  # chunk_size
-            200    # chunk_overlap
-        )
-
-        return JSONResponse(
-            status_code=status.HTTP_202_ACCEPTED,
-            content={
-                "job_id": job_id,
-                "document_id": document_id,
-                "status": "pending",
-                "message": f"Focused extraction started for product: {product_name}",
-                "status_url": f"/api/rag/documents/job/{job_id}",
-                "pages_found": len(page_numbers),
-                "page_numbers": [p+1 for p in page_numbers],
-                "product_metadata": product_metadata
-            }
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Focused product extraction failed: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Focused product extraction failed: {str(e)}"
         )
