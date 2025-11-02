@@ -621,8 +621,9 @@ async def upload_document(
             )
 
         # Create processed_documents record (required for job_progress foreign key)
+        # Use upsert to handle cases where record already exists
         try:
-            supabase_client.client.table('processed_documents').insert({
+            supabase_client.client.table('processed_documents').upsert({
                 "id": document_id,  # Use same ID as documents table
                 "workspace_id": workspace_id,
                 "pdf_document_id": document_id,
@@ -636,7 +637,7 @@ async def upload_document(
                 "created_at": datetime.utcnow().isoformat(),
                 "updated_at": datetime.utcnow().isoformat()
             }).execute()
-            logger.info(f"✅ Created processed_documents record: {document_id}")
+            logger.info(f"✅ Created/updated processed_documents record: {document_id}")
         except Exception as proc_doc_error:
             logger.error(f"❌ Failed to create processed_documents record: {proc_doc_error}")
             raise HTTPException(
