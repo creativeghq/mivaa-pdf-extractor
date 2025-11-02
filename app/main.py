@@ -1370,14 +1370,12 @@ from app.api.admin_modules_old.chunk_quality import router as chunk_quality_rout
 from app.api.ai_metrics_routes import router as ai_metrics_router
 from app.api.ai_services_routes import router as ai_services_router
 from app.api.admin_prompts import router as admin_prompts_router, config_router as extraction_config_router
-from app.api.unified_upload import router as unified_upload_router
 
 app.include_router(pdf_router)  # PDF router already has /api/v1 prefix
 app.include_router(documents_router)
 app.include_router(search_router)
 app.include_router(images_router)
 app.include_router(admin_router)
-app.include_router(unified_upload_router)  # NEW: Unified upload endpoint (replaces old upload endpoints)
 app.include_router(rag_router)
 app.include_router(together_ai_router)
 app.include_router(anthropic_router)
