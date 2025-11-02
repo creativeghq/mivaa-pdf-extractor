@@ -1067,7 +1067,7 @@ async def list_jobs(
         supabase_client = get_supabase_client()
 
         # Build query
-        query = supabase_client.table('background_jobs').select('*')
+        query = supabase_client.client.table('background_jobs').select('*')
 
         # Apply status filter
         if status_filter:
@@ -1089,7 +1089,12 @@ async def list_jobs(
 
         jobs = result.data if result.data else []
 
-        return JSONResponse(content=jobs)
+        return JSONResponse(content={
+            "jobs": jobs,
+            "count": len(jobs),
+            "limit": limit,
+            "offset": offset
+        })
 
     except Exception as e:
         logger.error(f"Failed to list jobs: {e}", exc_info=True)
