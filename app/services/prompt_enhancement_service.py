@@ -112,10 +112,11 @@ class PromptEnhancementService:
         stage: str,
         category: str
     ) -> Optional[Dict[str, Any]]:
-        """Get custom prompt from database"""
+        """Get prompt from database (custom or default)"""
         try:
+            # First try to get custom prompt (is_custom = true)
             result = self.supabase.client.table('extraction_prompts')\
-                .select('prompt_template, system_prompt, version')\
+                .select('prompt_template, system_prompt, version, is_custom')\
                 .eq('workspace_id', workspace_id)\
                 .eq('stage', stage)\
                 .eq('category', category)\
@@ -123,18 +124,30 @@ class PromptEnhancementService:
                 .order('version', desc=True)\
                 .limit(1)\
                 .execute()
-            
+
+            # If no custom prompt, try to get default prompt (is_custom = false)
+            if not result.data or len(result.data) == 0:
+                result = self.supabase.client.table('extraction_prompts')\
+                    .select('prompt_template, system_prompt, version, is_custom')\
+                    .eq('workspace_id', workspace_id)\
+                    .eq('stage', stage)\
+                    .eq('category', category)\
+                    .eq('is_custom', False)\
+                    .order('version', desc=True)\
+                    .limit(1)\
+                    .execute()
+
             if result.data and len(result.data) > 0:
                 return {
                     'template': result.data[0]['prompt_template'],
                     'system_prompt': result.data[0].get('system_prompt'),
                     'version': result.data[0]['version']
                 }
-            
+
             return None
-            
+
         except Exception as e:
-            logger.error(f"Error fetching custom prompt: {str(e)}")
+            logger.error(f"Error fetching prompt from database: {str(e)}")
             return None
     
     def get_default_prompt(self, stage: str, category: str) -> str:
