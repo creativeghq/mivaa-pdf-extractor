@@ -20,6 +20,7 @@ from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+import sentry_sdk
 
 # Import configuration and logging setup
 from app.config import get_settings, configure_logging
@@ -27,6 +28,19 @@ from app.utils.logging import PDFProcessingLogger, LoggingMiddleware
 from app.utils.json_encoder import CustomJSONEncoder
 from app.services.supabase_client import initialize_supabase, get_supabase_client
 from app.monitoring import global_performance_monitor
+
+# Initialize Sentry for error tracking and monitoring
+sentry_sdk.init(
+    dsn="https://73f48f6581b882c707ded429e384fb8a@o4509716458045440.ingest.de.sentry.io/4510132019658832",
+    # Add data like request headers and IP for users
+    send_default_pii=True,
+    # Set traces_sample_rate to 1.0 to capture 100% of transactions for performance monitoring
+    traces_sample_rate=1.0,
+    # Set profiles_sample_rate to 1.0 to profile 100% of sampled transactions
+    profiles_sample_rate=1.0,
+    # Environment tracking
+    environment="production",
+)
 
 # Configure logging using the enhanced system
 configure_logging()
@@ -1394,6 +1408,30 @@ app.include_router(ai_services_router)
 app.include_router(admin_prompts_router)  # Admin prompts management
 app.include_router(extraction_config_router)  # Extraction configuration
 app.include_router(metadata_router)  # NEW: Metadata management (scope detection, application, listing)
+
+
+# ============================================================================
+# SENTRY DEBUG ENDPOINT
+# ============================================================================
+@app.get("/sentry-debug", tags=["Monitoring"])
+async def trigger_sentry_error():
+    """
+    Debug endpoint to test Sentry error tracking integration.
+
+    This endpoint intentionally triggers a division by zero error to verify
+    that Sentry is properly capturing and reporting errors from the application.
+
+    **WARNING:** This endpoint should only be used for testing purposes.
+
+    Returns:
+        Never returns - always raises ZeroDivisionError
+
+    Raises:
+        ZeroDivisionError: Intentional error for Sentry testing
+    """
+    division_by_zero = 1 / 0
+    return {"status": "This should never be reached"}
+
 
 # Customize OpenAPI schema
 def custom_openapi():
