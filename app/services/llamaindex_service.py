@@ -3396,7 +3396,6 @@ Summary:"""
                             'ocr_extracted_text': image_info.get('ocr_result', {}).get('text', ''),
                             'ocr_confidence_score': image_info.get('ocr_result', {}).get('confidence', 0.0),
                             'image_analysis_results': material_analysis.get('material_properties', {}) or {},
-                            'image_embedding': clip_embeddings.get('embedding_512'),  # pgvector column
 
                             # AI Analysis Columns
                             'claude_validation': material_analysis.get('claude_validation'),  # Claude 4.5 Sonnet validation

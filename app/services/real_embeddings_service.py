@@ -1,15 +1,13 @@
 """
 Real Embeddings Service - Step 4 Implementation
 
-Generates all 6 embedding types using real AI models:
+Generates 3 real embedding types using AI models:
 1. Text (1536D) - OpenAI text-embedding-3-small
-2. Visual CLIP (512D) - CLIP visual embeddings (already real from Step 2)
+2. Visual CLIP (512D) - CLIP visual embeddings
 3. Multimodal Fusion (2048D) - Combined text+visual
-4. Color (256D) - Color palette embeddings
-5. Texture (256D) - Texture pattern embeddings
-6. Application (512D) - Use-case/application embeddings
 
-Replaces all mock embeddings with real AI-powered generation.
+Removed fake embeddings (color, texture, application) as they were just
+downsampled versions of text embeddings - redundant and wasteful.
 """
 
 import logging
@@ -34,15 +32,15 @@ MIVAA_GATEWAY_URL = os.getenv("MIVAA_GATEWAY_URL", "http://localhost:3000")
 
 class RealEmbeddingsService:
     """
-    Generates all 6 embedding types using real AI models.
-    
-    This service replaces mock embeddings with real implementations:
-    - Text embeddings via OpenAI
-    - Visual embeddings via CLIP (already real)
-    - Multimodal via fusion
-    - Color embeddings via color analysis
-    - Texture embeddings via texture analysis
-    - Application embeddings via use-case classification
+    Generates 3 real embedding types using AI models.
+
+    This service provides:
+    - Text embeddings via OpenAI (1536D)
+    - Visual embeddings via CLIP (512D)
+    - Multimodal fusion (2048D) - combined text+visual
+
+    Removed fake embeddings (color, texture, application) as they were
+    redundant with text embeddings.
     """
     
     def __init__(self, supabase_client=None):
@@ -122,38 +120,8 @@ class RealEmbeddingsService:
                 embeddings["metadata"]["confidence_scores"]["multimodal"] = 0.92
                 self.logger.info("✅ Multimodal fusion embedding generated (2048D)")
             
-            # 4. Color Embedding (256D) - REAL
-            if image_url or image_data or material_properties:
-                color_embedding = await self._generate_color_embedding(
-                    image_url, image_data, material_properties
-                )
-                if color_embedding:
-                    embeddings["embeddings"]["color_256"] = color_embedding
-                    embeddings["metadata"]["model_versions"]["color"] = "color-palette-extractor-v1"
-                    embeddings["metadata"]["confidence_scores"]["color"] = 0.85
-                    self.logger.info("✅ Color embedding generated (256D)")
-            
-            # 5. Texture Embedding (256D) - REAL
-            if image_url or image_data or material_properties:
-                texture_embedding = await self._generate_texture_embedding(
-                    image_url, image_data, material_properties
-                )
-                if texture_embedding:
-                    embeddings["embeddings"]["texture_256"] = texture_embedding
-                    embeddings["metadata"]["model_versions"]["texture"] = "texture-analysis-v1"
-                    embeddings["metadata"]["confidence_scores"]["texture"] = 0.80
-                    self.logger.info("✅ Texture embedding generated (256D)")
-            
-            # 6. Application Embedding (512D) - REAL
-            if material_properties or text_content:
-                app_embedding = await self._generate_application_embedding(
-                    text_content, material_properties
-                )
-                if app_embedding:
-                    embeddings["embeddings"]["application_512"] = app_embedding
-                    embeddings["metadata"]["model_versions"]["application"] = "use-case-classifier-v1"
-                    embeddings["metadata"]["confidence_scores"]["application"] = 0.88
-                    self.logger.info("✅ Application embedding generated (512D)")
+            # Removed fake embeddings (color, texture, application)
+            # They were just downsampled text embeddings - redundant!
             
             self.logger.info(f"✅ All embeddings generated: {len(embeddings['embeddings'])} types")
             return embeddings
@@ -306,96 +274,10 @@ class RealEmbeddingsService:
         # Concatenate text (1536D) + visual (512D) = 2048D
         return text_embedding + visual_embedding
     
-    async def _generate_color_embedding(
-        self,
-        image_url: Optional[str],
-        image_data: Optional[str],
-        material_properties: Optional[Dict[str, Any]]
-    ) -> Optional[List[float]]:
-        """Generate color embedding using OpenAI text embeddings of color descriptions."""
-        try:
-            # Extract color information
-            colors = []
-            if material_properties and material_properties.get("colors"):
-                colors = material_properties["colors"]
-
-            # Create text description of colors for embedding
-            if colors:
-                color_text = f"Material colors: {', '.join(colors)}"
-            else:
-                color_text = "Material with unknown color palette"
-
-            # Generate text embedding for color description
-            color_embedding = await self._generate_text_embedding(color_text)
-
-            if color_embedding:
-                # Reduce from 1536D to 256D by taking every 6th dimension
-                reduced_embedding = [color_embedding[i] for i in range(0, len(color_embedding), 6)][:256]
-                self.logger.info(f"✅ Generated color embedding: {len(reduced_embedding)}D")
-                return reduced_embedding
-
-        except Exception as e:
-            self.logger.error(f"Color embedding generation failed: {e}")
-
-        return None
-    
-    async def _generate_texture_embedding(
-        self,
-        image_url: Optional[str],
-        image_data: Optional[str],
-        material_properties: Optional[Dict[str, Any]]
-    ) -> Optional[List[float]]:
-        """Generate texture embedding using OpenAI text embeddings of texture descriptions."""
-        try:
-            # Extract texture information
-            texture_desc = ""
-            if material_properties and material_properties.get("textures"):
-                texture_desc = ", ".join(material_properties["textures"])
-
-            # Create text description of textures for embedding
-            if texture_desc:
-                texture_text = f"Material textures: {texture_desc}"
-            else:
-                texture_text = "Material with unknown texture patterns"
-
-            # Generate text embedding for texture description
-            texture_embedding = await self._generate_text_embedding(texture_text)
-
-            if texture_embedding:
-                # Reduce from 1536D to 256D by taking every 6th dimension
-                reduced_embedding = [texture_embedding[i] for i in range(0, len(texture_embedding), 6)][:256]
-                self.logger.info(f"✅ Generated texture embedding: {len(reduced_embedding)}D")
-                return reduced_embedding
-
-        except Exception as e:
-            self.logger.error(f"Texture embedding generation failed: {e}")
-
-        return None
-    
-    async def _generate_application_embedding(
-        self,
-        text_content: str,
-        material_properties: Optional[Dict[str, Any]]
-    ) -> Optional[List[float]]:
-        """Generate application embedding using OpenAI text embeddings of use-case descriptions."""
-        try:
-            # Combine text and material properties for application context
-            app_context = f"{text_content}. "
-            if material_properties:
-                app_context += f"Materials: {', '.join(material_properties.get('materials', []))}. "
-                app_context += f"Uses: {', '.join(material_properties.get('applications', []))}"
-
-            # Generate text embedding for application context
-            app_embedding = await self._generate_text_embedding(app_context[:2000])
-
-            if app_embedding:
-                # Reduce from 1536D to 512D by taking every 3rd dimension
-                reduced_embedding = [app_embedding[i] for i in range(0, len(app_embedding), 3)][:512]
-                self.logger.info(f"✅ Generated application embedding: {len(reduced_embedding)}D")
-                return reduced_embedding
-
-        except Exception as e:
-            self.logger.error(f"Application embedding generation failed: {e}")
-
-        return None
+    # Removed fake embedding methods:
+    # - _generate_color_embedding (was just downsampled text embedding)
+    # - _generate_texture_embedding (was just downsampled text embedding)
+    # - _generate_application_embedding (was just downsampled text embedding)
+    #
+    # These were redundant - text_embedding_1536 already contains all this information!
 

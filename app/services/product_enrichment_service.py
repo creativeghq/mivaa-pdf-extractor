@@ -347,9 +347,7 @@ RESPOND WITH ONLY THE DESCRIPTION, NO ADDITIONAL TEXT."""
                 "text_embedding_1536": product_embeddings.get('text_1536'),
                 "visual_clip_embedding_512": product_embeddings.get('visual_clip_512'),
                 "multimodal_fusion_embedding_2048": product_embeddings.get('multimodal_2048'),
-                "color_embedding_256": product_embeddings.get('color_256'),
-                "texture_embedding_256": product_embeddings.get('texture_256'),
-                "application_embedding_512": product_embeddings.get('application_512'),
+                # Removed fake embeddings: color_256, texture_256, application_512
                 "metadata": {
                     "related_images": enrichment_result.get('related_images', []),
                     "related_products": enrichment_result.get('related_products', [])
@@ -360,13 +358,11 @@ RESPOND WITH ONLY THE DESCRIPTION, NO ADDITIONAL TEXT."""
 
             update_data = {
                 "long_description": enrichment_result.get('enhanced_description', ''),
-                # Store all 6 embedding types
+                # Store 3 real embedding types
                 "text_embedding_1536": product_embeddings.get('text_1536'),
                 "visual_clip_embedding_512": product_embeddings.get('visual_clip_512'),
                 "multimodal_fusion_embedding_2048": product_embeddings.get('multimodal_2048'),
-                "color_embedding_256": product_embeddings.get('color_256'),
-                "texture_embedding_256": product_embeddings.get('texture_256'),
-                "application_embedding_512": product_embeddings.get('application_512'),
+                # Removed fake embeddings: color_256, texture_256, application_512
                 # Keep legacy embedding field for backward compatibility
                 "embedding": product_embeddings.get('text_1536'),
                 "properties": enrichment_result.get('material_properties', {}),
@@ -390,7 +386,7 @@ RESPOND WITH ONLY THE DESCRIPTION, NO ADDITIONAL TEXT."""
             ).eq('id', product_id).execute()
 
             if response.data:
-                self.logger.info(f"✅ Stored all 6 embedding types for product {product_id}")
+                self.logger.info(f"✅ Stored 3 real embedding types for product {product_id}")
 
             return bool(response.data)
 
