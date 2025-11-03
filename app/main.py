@@ -653,8 +653,8 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 5. **Custom**: Color, texture, application embeddings
 
 ### API Endpoints
-- **Total**: 106 endpoints across 15 categories (18 legacy endpoints removed)
-- **RAG System**: 23 endpoints for document upload, search, query, chat, embeddings
+- **Total**: 110 endpoints across 15 categories (18 legacy endpoints removed)
+- **RAG System**: 27 endpoints for document upload, search, query, chat, embeddings, metadata
 - **AI Services**: 10 endpoints for classification, validation, boundary detection
 - **Admin**: 10 endpoints for chunk quality, extraction config, prompts
 - **Search**: 8 endpoints for semantic, image, material, multimodal search
@@ -685,7 +685,7 @@ Get your token from the frontend application or Supabase authentication.
 ✅ **Admin Dashboard** - Chunk quality monitoring and review workflow
 ✅ **Metadata Synchronization** - 100% accuracy in job status reporting
 
-## 🚀 API Categories (106 Endpoints)
+## 🚀 API Categories (110 Endpoints)
 
 ### 📄 PDF Processing (`/api/pdf/*`)
 - Extract markdown, tables, images from PDFs
@@ -731,6 +731,12 @@ Get your token from the frontend application or Supabase authentication.
 - Quality statistics
 - Flagged chunks review
 - Metadata management
+
+### 🏷️ Metadata APIs (`/api/rag/metadata/*`)
+- Scope detection (product-specific vs catalog-general)
+- Metadata application with override logic
+- Metadata listing and filtering
+- Statistics and analytics
 
 ### 🏥 Health & Monitoring
 - `/health` - Service health check
@@ -1327,13 +1333,19 @@ async def root() -> Dict[str, Any]:
             # Products APIs
             "products_create": "/api/products/create",
             "products_status": "/api/products/status",
+
+            # Metadata APIs (RAG System)
+            "metadata_detect_scope": "/api/rag/metadata/detect-scope",
+            "metadata_apply": "/api/rag/metadata/apply-to-products",
+            "metadata_list": "/api/rag/metadata/list",
+            "metadata_statistics": "/api/rag/metadata/statistics",
         },
         "api_info": {
-            "total_endpoints": 43,
+            "total_endpoints": 110,
             "authentication": "JWT Bearer Token Required",
-            "embedding_model": "text-embedding-ada-002 (1536 dimensions)",
-            "recent_enhancements": "Phase 3 - Unified Vector Search System (January 2025)",
-            "performance_improvements": "80% faster search, 90% error reduction"
+            "embedding_model": "text-embedding-3-small (1536 dimensions)",
+            "recent_enhancements": "Metadata Management System (November 2025)",
+            "performance_improvements": "Implicit catalog-general metadata detection, override logic"
         },
         "features": [
             "PDF to Markdown conversion",
@@ -1363,6 +1375,7 @@ from app.api.admin_modules_old.chunk_quality import router as chunk_quality_rout
 from app.api.ai_metrics_routes import router as ai_metrics_router
 from app.api.ai_services_routes import router as ai_services_router
 from app.api.admin_prompts import router as admin_prompts_router, config_router as extraction_config_router
+from app.api.metadata import router as metadata_router
 
 app.include_router(pdf_router)  # PDF router already has /api/v1 prefix
 app.include_router(search_router)
@@ -1380,6 +1393,7 @@ app.include_router(ai_metrics_router)
 app.include_router(ai_services_router)
 app.include_router(admin_prompts_router)  # Admin prompts management
 app.include_router(extraction_config_router)  # Extraction configuration
+app.include_router(metadata_router)  # NEW: Metadata management (scope detection, application, listing)
 
 # Customize OpenAPI schema
 def custom_openapi():
@@ -1410,7 +1424,7 @@ def custom_openapi():
     # Add global security requirement
     openapi_schema["security"] = [{"BearerAuth": []}]
 
-    # Add custom info (UPDATED - API Consolidation)
+    # Add custom info (UPDATED - API Consolidation + Metadata Management)
     openapi_schema["info"]["x-api-features"] = {
         "api_consolidation": "Consolidated and organized endpoints with clear categorization",
         "consolidated_upload": "/api/rag/documents/upload with modes (quick/standard/deep) + categories",
@@ -1419,6 +1433,7 @@ def custom_openapi():
         "pdf_processing": "14-stage AI pipeline with checkpoint recovery",
         "product_discovery": "Products + Metadata extraction (inseparable) - Stage 0A",
         "document_entities": "Certificates, logos, specifications as separate knowledge base - Stage 0B",
+        "metadata_management": "Dynamic metadata extraction with scope detection and override logic - Stage 4",
         "prompt_enhancement": "Admin templates + agent prompt enhancement (PRESERVED)",
         "category_extraction": "Products, certificates, logos, specifications (PRESERVED)",
         "rag_system": "Retrieval-Augmented Generation with multi-vector search",

@@ -3328,6 +3328,21 @@ Summary:"""
                     supabase_client=supabase_client
                 )
 
+                # ✅ NEW: Apply metadata with scope detection and override logic
+                try:
+                    self.logger.info("🏷️ Applying metadata with scope detection...")
+                    metadata_stats = await self._apply_metadata_to_products(
+                        document_id=document_id,
+                        nodes=nodes,
+                        detected_products=detected_products,
+                        supabase_client=supabase_client
+                    )
+                    stats["metadata_applied"] = metadata_stats
+                    self.logger.info(f"✅ Metadata applied: {metadata_stats.get('products_updated', 0)} products updated")
+                except Exception as metadata_error:
+                    self.logger.error(f"❌ Failed to apply metadata: {metadata_error}", exc_info=True)
+                    stats["metadata_error"] = str(metadata_error)
+
             # Extract heading hierarchy from document text for context
             heading_hierarchy = self._extract_heading_hierarchy(nodes)
 
@@ -4855,3 +4870,78 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
 
         except Exception as e:
             self.logger.error(f"❌ Failed to store detected products: {e}")
+
+    async def _apply_metadata_to_products(
+        self,
+        document_id: str,
+        nodes: List,
+        detected_products: List,
+        supabase_client: Any
+    ) -> Dict[str, Any]:
+        """
+        Apply metadata to products with scope detection and override logic.
+
+        This method:
+        1. Detects scope for each chunk (product-specific vs catalog-general)
+        2. Applies metadata in correct order (catalog-general FIRST, product-specific LAST)
+        3. Tracks overrides when product-specific metadata overrides catalog-general
+
+        Args:
+            document_id: Document ID
+            nodes: List of document chunks
+            detected_products: List of detected products
+            supabase_client: Supabase client
+
+        Returns:
+            Dict with metadata application statistics
+        """
+        try:
+            from app.services.dynamic_metadata_extractor import MetadataScopeDetector
+            from app.services.metadata_application_service import MetadataApplicationService
+
+            # Initialize services
+            scope_detector = MetadataScopeDetector()
+            metadata_service = MetadataApplicationService(supabase_client)
+
+            # Get product names for scope detection
+            product_names = [p.product_name for p in detected_products]
+
+            # Detect scope for each chunk
+            chunks_with_scope = []
+            for node in nodes:
+                try:
+                    scope_result = await scope_detector.detect_scope(
+                        chunk_content=node.text,
+                        product_names=product_names,
+                        document_context=None
+                    )
+
+                    chunks_with_scope.append({
+                        'chunk_id': node.metadata.get('db_chunk_id'),
+                        'content': node.text,
+                        'scope': scope_result['scope'],
+                        'applies_to': scope_result['applies_to'],
+                        'extracted_metadata': scope_result['extracted_metadata'],
+                        'is_override': scope_result['is_override'],
+                        'confidence': scope_result['confidence']
+                    })
+
+                except Exception as scope_error:
+                    self.logger.warning(f"Failed to detect scope for chunk: {scope_error}")
+                    continue
+
+            # Apply metadata to products
+            result = await metadata_service.apply_metadata_to_products(
+                document_id=document_id,
+                chunks_with_scope=chunks_with_scope
+            )
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to apply metadata to products: {e}", exc_info=True)
+            return {
+                'products_updated': 0,
+                'overrides_detected': 0,
+                'error': str(e)
+            }
