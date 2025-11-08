@@ -95,12 +95,58 @@ async def generate_clip_image_embedding(
     embedding_service: RealEmbeddingsService = Depends(get_embedding_service)
 ) -> EmbeddingResponse:
     """
-    Generate CLIP embedding for an image.
-    
-    This endpoint:
-    - Accepts base64 encoded image data
-    - Generates 512-dimensional CLIP embedding
-    - Returns normalized embedding vector
+    **🖼️ CLIP Image Embedding - Visual Similarity Search**
+
+    Generate 512-dimensional CLIP embedding for images to enable visual similarity search.
+
+    ## 🎯 Use Cases
+
+    - Visual product search
+    - Image similarity matching
+    - Multimodal search (combine with text embeddings)
+    - Image clustering and categorization
+
+    ## 📝 Request Example
+
+    ```json
+    {
+      "image_data": "data:image/jpeg;base64,/9j/4AAQSkZJRg...",
+      "model": "clip-vit-base-patch32"
+    }
+    ```
+
+    ## ✅ Response Example
+
+    ```json
+    {
+      "embedding": [0.123, -0.456, 0.789, ...],
+      "dimension": 512,
+      "model": "clip-vit-base-patch32",
+      "processing_time_ms": 234.5
+    }
+    ```
+
+    ## 📊 Technical Details
+
+    - **Model**: OpenAI CLIP ViT-B/32
+    - **Dimension**: 512
+    - **Normalization**: L2 normalized (unit vector)
+    - **Distance Metric**: Cosine similarity
+    - **Processing Time**: 200-500ms
+
+    ## ⚠️ Error Codes
+
+    - **400 Bad Request**: Invalid base64 image data
+    - **413 Payload Too Large**: Image exceeds 10MB
+    - **415 Unsupported Media Type**: Unsupported image format
+    - **500 Internal Server Error**: Embedding generation failed
+    - **503 Service Unavailable**: CLIP model not available
+
+    ## 📏 Limits
+
+    - **Max image size**: 10MB
+    - **Supported formats**: JPEG, PNG, WebP
+    - **Rate limit**: 100 requests/minute
     """
     try:
         logger.info(f"Generating CLIP image embedding with model: {request.model}")
@@ -140,12 +186,65 @@ async def generate_clip_text_embedding(
     embedding_service: RealEmbeddingsService = Depends(get_embedding_service)
 ) -> EmbeddingResponse:
     """
-    Generate CLIP embedding for text.
-    
-    This endpoint:
-    - Accepts text input
-    - Generates 512-dimensional CLIP text embedding
-    - Returns normalized embedding vector
+    **📝 CLIP Text Embedding - Multimodal Text-to-Image Search**
+
+    Generate 512-dimensional CLIP text embedding for text-to-image similarity search.
+
+    ## 🎯 Use Cases
+
+    - Text-to-image search ("find images of oak furniture")
+    - Multimodal search (combine text and image queries)
+    - Cross-modal retrieval
+    - Semantic image tagging
+
+    ## 📝 Request Example
+
+    ```json
+    {
+      "text": "modern minimalist oak dining table",
+      "model": "clip-vit-base-patch32"
+    }
+    ```
+
+    ## ✅ Response Example
+
+    ```json
+    {
+      "embedding": [0.234, -0.567, 0.891, ...],
+      "dimension": 512,
+      "model": "clip-vit-base-patch32",
+      "processing_time_ms": 123.4
+    }
+    ```
+
+    ## 📊 Technical Details
+
+    - **Model**: OpenAI CLIP ViT-B/32 (text encoder)
+    - **Dimension**: 512
+    - **Normalization**: L2 normalized (unit vector)
+    - **Distance Metric**: Cosine similarity with image embeddings
+    - **Processing Time**: 100-300ms
+
+    ## 💡 Usage Pattern
+
+    1. Generate text embedding using this endpoint
+    2. Search for similar images using cosine similarity:
+       ```sql
+       SELECT * FROM images
+       ORDER BY visual_clip_embedding_512 <=> '[your_embedding]'
+       LIMIT 10
+       ```
+
+    ## ⚠️ Error Codes
+
+    - **400 Bad Request**: Empty or invalid text
+    - **500 Internal Server Error**: Embedding generation failed
+    - **503 Service Unavailable**: CLIP model not available
+
+    ## 📏 Limits
+
+    - **Max text length**: 77 tokens (~300 characters)
+    - **Rate limit**: 100 requests/minute
     """
     try:
         logger.info(f"Generating CLIP text embedding with model: {request.model}")
