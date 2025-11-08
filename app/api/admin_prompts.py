@@ -100,12 +100,49 @@ async def list_prompts(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    List all prompts for workspace
-    
-    Query Parameters:
-    - workspace_id: Workspace ID (required)
-    - stage: Filter by stage (optional)
-    - category: Filter by category (optional)
+    **📋 List Extraction Prompts - Admin Configuration**
+
+    List all AI extraction prompts configured for a workspace with optional filtering.
+
+    ## 🎯 Use Cases
+
+    - View all configured extraction prompts
+    - Filter prompts by processing stage
+    - Filter prompts by extraction category
+    - Audit prompt configurations
+
+    ## 📝 Query Parameters
+
+    - **workspace_id** (required): Workspace UUID
+    - **stage** (optional): Filter by stage (discovery, extraction, validation)
+    - **category** (optional): Filter by category (products, certificates, logos, specifications)
+
+    ## ✅ Response Example
+
+    ```json
+    [
+      {
+        "id": "prompt-uuid-1",
+        "workspace_id": "workspace-uuid",
+        "stage": "discovery",
+        "category": "products",
+        "prompt_template": "Identify all products in this PDF...",
+        "system_prompt": "You are an expert at identifying products...",
+        "is_custom": true,
+        "version": 2,
+        "created_by": "user-uuid",
+        "created_at": "2025-11-08T10:00:00Z",
+        "updated_at": "2025-11-08T12:00:00Z"
+      }
+    ]
+    ```
+
+    ## ⚠️ Error Codes
+
+    - **400 Bad Request**: Invalid workspace_id
+    - **401 Unauthorized**: Authentication required
+    - **403 Forbidden**: Insufficient permissions
+    - **500 Internal Server Error**: Database error
     """
     try:
         service = AdminPromptService()

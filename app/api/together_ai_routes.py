@@ -127,20 +127,68 @@ async def semantic_analysis(
     together_ai_service: TogetherAIService = Depends(get_together_ai_service)
 ):
     """
-    Perform semantic analysis on material images using TogetherAI/LLaMA Vision.
-    
-    This endpoint provides material identification and semantic description capabilities
-    using the meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo model.
-    
-    Args:
-        request: Semantic analysis request with image data and parameters
-        together_ai_service: TogetherAI service instance
-    
-    Returns:
-        SemanticAnalysisAPIResponse: Analysis results with confidence and metadata
-    
-    Raises:
-        HTTPException: For validation errors, service failures, or rate limiting
+    **🤖 Semantic Analysis - LLaMA Vision Material Identification**
+
+    Analyze material images using TogetherAI's Llama 4 Scout 17B Vision model for semantic descriptions and material identification.
+
+    ## 🎯 Analysis Types
+
+    - **material_identification**: Identify material type, properties, and characteristics
+    - **semantic_description**: Generate detailed natural language description
+    - **general_analysis**: Comprehensive analysis including both identification and description
+
+    ## 📝 Request Example
+
+    ```json
+    {
+      "image_data": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ...",
+      "analysis_type": "material_identification",
+      "prompt": "Analyze this material image for material properties",
+      "options": {
+        "temperature": 0.1,
+        "max_tokens": 200
+      }
+    }
+    ```
+
+    ## ✅ Response Example
+
+    ```json
+    {
+      "success": true,
+      "message": "Semantic analysis completed successfully",
+      "analysis": "This material appears to be polished granite with a speckled pattern. The surface shows high reflectivity indicating a polished finish. Color palette includes black, white, and gray tones typical of granite composition.",
+      "confidence": 0.95,
+      "model_used": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+      "processing_time_ms": 1500,
+      "metadata": {
+        "fallback_mode": false,
+        "analysis_type": "material_identification",
+        "timestamp": "2025-11-08T12:00:00Z"
+      }
+    }
+    ```
+
+    ## 📊 Performance
+
+    - **Typical Time**: 1-2 seconds
+    - **Max Time**: 5 seconds
+    - **Model**: meta-llama/Llama-4-Scout-17B-16E-Instruct
+    - **Fallback**: Database lookup if TogetherAI unavailable
+
+    ## ⚠️ Error Codes
+
+    - **400 Bad Request**: Invalid image data or analysis type
+    - **422 Unprocessable Entity**: Invalid request format
+    - **500 Internal Server Error**: Analysis failed
+    - **503 Service Unavailable**: TogetherAI service unavailable (falls back to database)
+
+    ## 📏 Limits
+
+    - **Max image size**: 10 MB
+    - **Supported formats**: JPEG, PNG, WEBP
+    - **Rate limit**: 100 requests/minute
+    - **Max tokens**: 500 (configurable)
     """
     start_time = time.time()
     
