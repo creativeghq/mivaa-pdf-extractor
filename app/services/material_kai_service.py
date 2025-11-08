@@ -259,16 +259,20 @@ class MaterialKaiService:
             if self._websocket and not self._websocket.closed:
                 await self._websocket.close()
                 self._websocket = None
-            
+
             if self._session and not self._session.closed:
                 await self._session.close()
                 self._session = None
-            
+
             self._is_connected = False
             logger.info("Disconnected from Material Kai Vision Platform")
-            
+
         except Exception as e:
             logger.error(f"Error during disconnect: {e}")
+
+    async def cleanup(self):
+        """Cleanup resources (alias for disconnect for compatibility)."""
+        await self.disconnect()
     
     async def health_check(self) -> Dict[str, Any]:
         """

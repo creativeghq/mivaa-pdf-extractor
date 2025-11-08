@@ -249,14 +249,27 @@ class AdvancedQueryResponse(BaseModel):
 
 # Dependency functions
 async def get_llamaindex_service() -> LlamaIndexService:
-    """Get LlamaIndex service instance."""
+    """Get LlamaIndex service instance using lazy loading."""
     from app.main import app
-    if not hasattr(app.state, 'llamaindex_service') or app.state.llamaindex_service is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="LlamaIndex service is not available"
-        )
-    return app.state.llamaindex_service
+
+    # Try to use component_manager for lazy loading
+    if hasattr(app.state, 'component_manager') and app.state.component_manager:
+        try:
+            service = await app.state.component_manager.get("llamaindex_service")
+            if service:
+                return service
+        except Exception as e:
+            logger.error(f"Failed to load LlamaIndex service via component_manager: {e}")
+
+    # Fallback to direct service if already loaded
+    if hasattr(app.state, 'llamaindex_service') and app.state.llamaindex_service is not None:
+        return app.state.llamaindex_service
+
+    # Service not available
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="LlamaIndex service is not available"
+    )
 
 async def get_embedding_service() -> RealEmbeddingsService:
     """Get embedding service instance."""
