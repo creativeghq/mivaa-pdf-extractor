@@ -63,6 +63,13 @@ coverage.xml
 
 # Deployment artifacts
 .requirements_hash
+.deployment-ready
+
+# Backup and patch files
+*.backup
+*.patch
+*_old/
+*_backup/
 
 # Local development
 .env.local
