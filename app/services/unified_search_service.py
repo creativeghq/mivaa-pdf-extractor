@@ -69,7 +69,9 @@ class SearchResponse:
 class UnifiedSearchService:
     """
     Unified search service that consolidates all search strategies.
-    
+
+    NEW: Runs all strategies in parallel and merges results for comprehensive coverage.
+
     This service provides:
     - Semantic search using text embeddings
     - Visual search using CLIP embeddings
@@ -78,76 +80,75 @@ class UnifiedSearchService:
     - Material search for material properties
     - Keyword search for exact matches
     """
-    
+
     def __init__(self, config: Optional[SearchConfig] = None, supabase_client=None):
         """Initialize unified search service."""
         self.config = config or SearchConfig()
         self.supabase = supabase_client
         self.logger = logger
-    
+
     async def search(
         self,
         query: str,
         strategy: Optional[SearchStrategy] = None,
         filters: Optional[Dict[str, Any]] = None,
-        workspace_id: Optional[str] = None
+        workspace_id: Optional[str] = None,
+        run_all_strategies: bool = False
     ) -> SearchResponse:
         """
-        Perform search using the configured strategy.
-        
+        Perform search using the configured strategy or all strategies.
+
         Args:
             query: Search query
             strategy: Search strategy (uses config default if not specified)
             filters: Additional filters for search
             workspace_id: Workspace ID for scoped search
-            
+            run_all_strategies: If True, run all strategies in parallel and merge
+
         Returns:
             SearchResponse with results
         """
         try:
             start_time = datetime.utcnow()
-            search_strategy = strategy or self.config.strategy
-            
-            # Select search strategy
-            if search_strategy == SearchStrategy.SEMANTIC:
-                results = await self._search_semantic(query, filters, workspace_id)
-            elif search_strategy == SearchStrategy.VISUAL:
-                results = await self._search_visual(query, filters, workspace_id)
-            elif search_strategy == SearchStrategy.MULTI_VECTOR:
-                results = await self._search_multi_vector(query, filters, workspace_id)
-            elif search_strategy == SearchStrategy.HYBRID:
-                results = await self._search_hybrid(query, filters, workspace_id)
-            elif search_strategy == SearchStrategy.MATERIAL:
-                results = await self._search_material(query, filters, workspace_id)
-            elif search_strategy == SearchStrategy.KEYWORD:
-                results = await self._search_keyword(query, filters, workspace_id)
+
+            # If run_all_strategies is True, execute all strategies in parallel
+            if run_all_strategies:
+                results, strategy_metadata = await self._search_all_strategies(
+                    query, filters, workspace_id
+                )
+                search_strategy = "all_strategies"
             else:
-                raise ValueError(f"Unknown search strategy: {search_strategy}")
-            
+                search_strategy = strategy or self.config.strategy
+                results = await self._search_single_strategy(
+                    search_strategy, query, filters, workspace_id
+                )
+                strategy_metadata = {"strategies_used": [search_strategy.value]}
+
             # Sort by similarity score
             results.sort(key=lambda x: x.similarity_score, reverse=True)
             limited_results = results[:self.config.max_results]
-            
+
             # Calculate search time
             search_time_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
-            
+
             self.logger.info(f"✅ Search completed: {len(limited_results)} results found in {search_time_ms:.2f}ms")
-            
+
             return SearchResponse(
                 success=True,
                 query=query,
                 results=limited_results,
                 total_found=len(results),
                 search_time_ms=search_time_ms,
-                strategy_used=search_strategy.value,
+                strategy_used=str(search_strategy),
                 metadata={
                     "similarity_threshold": self.config.similarity_threshold,
                     "max_results": self.config.max_results,
                     "include_metadata": self.config.include_metadata,
-                    "workspace_id": workspace_id
+                    "workspace_id": workspace_id,
+                    **strategy_metadata
                 }
             )
-            
+
         except Exception as e:
             self.logger.error(f"Search failed: {e}")
             return SearchResponse(
@@ -159,6 +160,118 @@ class UnifiedSearchService:
                 strategy_used=str(strategy or self.config.strategy),
                 metadata={"error": str(e)}
             )
+
+    async def _search_single_strategy(
+        self,
+        strategy: SearchStrategy,
+        query: str,
+        filters: Optional[Dict[str, Any]],
+        workspace_id: Optional[str]
+    ) -> List[SearchResult]:
+        """Execute a single search strategy."""
+        if strategy == SearchStrategy.SEMANTIC:
+            return await self._search_semantic(query, filters, workspace_id)
+        elif strategy == SearchStrategy.VISUAL:
+            return await self._search_visual(query, filters, workspace_id)
+        elif strategy == SearchStrategy.MULTI_VECTOR:
+            return await self._search_multi_vector(query, filters, workspace_id)
+        elif strategy == SearchStrategy.HYBRID:
+            return await self._search_hybrid(query, filters, workspace_id)
+        elif strategy == SearchStrategy.MATERIAL:
+            return await self._search_material(query, filters, workspace_id)
+        elif strategy == SearchStrategy.KEYWORD:
+            return await self._search_keyword(query, filters, workspace_id)
+        else:
+            raise ValueError(f"Unknown search strategy: {strategy}")
+
+    async def _search_all_strategies(
+        self,
+        query: str,
+        filters: Optional[Dict[str, Any]],
+        workspace_id: Optional[str]
+    ) -> Tuple[List[SearchResult], Dict[str, Any]]:
+        """
+        Run all search strategies in parallel and merge results.
+
+        Returns:
+            Tuple of (merged_results, strategy_metadata)
+        """
+        self.logger.info(f"🔍 Running all search strategies in parallel for: {query}")
+
+        # Run all strategies in parallel
+        tasks = [
+            self._search_semantic(query, filters, workspace_id),
+            self._search_visual(query, filters, workspace_id),
+            self._search_multi_vector(query, filters, workspace_id),
+            self._search_hybrid(query, filters, workspace_id),
+            self._search_material(query, filters, workspace_id),
+            self._search_keyword(query, filters, workspace_id),
+        ]
+
+        strategy_names = ["semantic", "visual", "multi_vector", "hybrid", "material", "keyword"]
+
+        # Execute all tasks in parallel
+        results_list = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Process results and handle exceptions
+        strategy_results = {}
+        for name, result in zip(strategy_names, results_list):
+            if isinstance(result, Exception):
+                self.logger.warning(f"⚠️ {name} search failed: {result}")
+                strategy_results[name] = []
+            else:
+                strategy_results[name] = result
+
+        # Merge results from all strategies
+        merged = self._merge_strategy_results(strategy_results)
+
+        # Create metadata
+        metadata = {
+            "strategies_used": strategy_names,
+            "results_by_strategy": {
+                name: len(results) for name, results in strategy_results.items()
+            }
+        }
+
+        return merged, metadata
+
+    def _merge_strategy_results(
+        self,
+        strategy_results: Dict[str, List[SearchResult]]
+    ) -> List[SearchResult]:
+        """
+        Merge results from all strategies.
+
+        Algorithm:
+        1. Deduplicate by ID
+        2. Calculate weighted average score
+        3. Track which strategies found each result
+        4. Return merged results
+        """
+        import numpy as np
+
+        # Deduplicate by ID
+        merged: Dict[str, SearchResult] = {}
+        strategy_scores: Dict[str, Dict[str, float]] = {}
+
+        for strategy, results in strategy_results.items():
+            for result in results:
+                if result.id not in merged:
+                    merged[result.id] = result
+                    strategy_scores[result.id] = {}
+
+                # Track strategy score
+                strategy_scores[result.id][strategy] = result.similarity_score
+
+        # Calculate weighted average scores
+        for result_id, result in merged.items():
+            scores = list(strategy_scores[result_id].values())
+            if scores:
+                result.similarity_score = float(np.mean(scores))
+                result.metadata["strategies_found"] = len(scores)
+                result.metadata["strategy_scores"] = strategy_scores[result_id]
+
+        return list(merged.values())
     
     async def _search_semantic(
         self,

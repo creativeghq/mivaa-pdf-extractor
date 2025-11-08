@@ -315,3 +315,17 @@ async def estimate_storage_for_upload(
         logger.error(f"Failed to estimate storage: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to estimate storage: {str(e)}")
 
+
+@router.get("/pdf/health", tags=["health"])
+async def pdf_health():
+    """
+    PDF service health check endpoint.
+
+    Returns:
+        Health status of the PDF processing service
+    """
+    return {
+        "status": "healthy",
+        "service": "pdf-processor",
+        "timestamp": datetime.now().isoformat()
+    }

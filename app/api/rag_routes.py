@@ -33,6 +33,7 @@ from app.services.supabase_client import get_supabase_client
 from app.services.ai_model_tracker import AIModelTracker
 from app.services.focused_product_extractor import get_focused_product_extractor
 from app.services.product_relationship_service import ProductRelationshipService
+from app.services.search_prompt_service import SearchPromptService
 from app.utils.logging import PDFProcessingLogger
 
 logger = logging.getLogger(__name__)
@@ -179,14 +180,18 @@ class SearchRequest(BaseModel):
     workspace_id: str = Field(..., description="Workspace ID for scoped search and related products")
     include_related_products: bool = Field(True, description="Include related products in results")
     related_products_limit: int = Field(3, ge=1, le=10, description="Max related products per result")
+    use_search_prompts: bool = Field(True, description="Apply admin-configured search prompts")
+    custom_formatting_prompt: Optional[str] = Field(None, description="Custom formatting prompt (overrides default)")
 
 class SearchResponse(BaseModel):
     """Response model for semantic search."""
     query: str = Field(..., description="Original search query")
+    enhanced_query: Optional[str] = Field(None, description="Enhanced query (if prompts applied)")
     results: List[Dict[str, Any]] = Field(..., description="Search results")
     total_results: int = Field(..., description="Total number of results")
     search_type: str = Field(..., description="Type of search performed")
     processing_time: float = Field(..., description="Search processing time")
+    search_metadata: Optional[Dict[str, Any]] = Field(None, description="Search metadata (prompts applied, etc.)")
 
 class DocumentListResponse(BaseModel):
     """Response model for document listing."""
@@ -3217,12 +3222,33 @@ async def search_documents(
                 detail=f"Invalid strategy '{strategy}'. Valid strategies: {', '.join(valid_strategies)}"
             )
 
+        # Initialize services
+        supabase_client = get_supabase_client()
+        search_prompt_service = SearchPromptService(supabase_client=supabase_client)
+        product_rel_service = ProductRelationshipService(supabase_client=supabase_client)
+
+        # Apply enhancement prompt to query if enabled
+        query_to_use = request.query
+        enhanced_query = None
+        prompts_applied = []
+
+        if request.use_search_prompts:
+            enhancement_result = await search_prompt_service.enhance_query(
+                query=request.query,
+                workspace_id=request.workspace_id,
+                custom_prompt=request.custom_formatting_prompt
+            )
+            if enhancement_result.get('enhancement_applied'):
+                query_to_use = enhancement_result['enhanced_query']
+                enhanced_query = query_to_use
+                prompts_applied.extend(enhancement_result.get('prompts_applied', []))
+
         # Route to appropriate search method based on strategy
         if strategy == "semantic":
             # Semantic search using MMR (Maximal Marginal Relevance)
             # Balances relevance and diversity (lambda_mult=0.5)
             results = await llamaindex_service.semantic_search_with_mmr(
-                query=request.query,
+                query=query_to_use,
                 k=request.top_k,
                 lambda_mult=0.5
             )
@@ -3231,14 +3257,30 @@ async def search_documents(
             # Pure vector similarity search (cosine distance)
             # No diversity filtering (lambda_mult=1.0)
             results = await llamaindex_service.semantic_search_with_mmr(
-                query=request.query,
+                query=query_to_use,
                 k=request.top_k,
                 lambda_mult=1.0  # Pure similarity, no diversity
             )
 
+        # Get raw results
+        raw_results = results.get('results', [])
+
+        # Apply formatting, filtering, enrichment prompts if enabled
+        processed_results = raw_results
+        if request.use_search_prompts:
+            processed_results = await search_prompt_service.format_results(
+                raw_results, request.workspace_id, request.custom_formatting_prompt
+            )
+            processed_results = await search_prompt_service.filter_results(
+                processed_results, request.workspace_id
+            )
+            processed_results = await search_prompt_service.enrich_results(
+                processed_results, request.workspace_id
+            )
+
         # Enhance results with related products and images
         enhanced_results = await _enhance_search_results(
-            results.get('results', []),
+            processed_results,
             request.workspace_id,
             request.include_related_products,
             request.related_products_limit
@@ -3248,10 +3290,16 @@ async def search_documents(
 
         return SearchResponse(
             query=request.query,
+            enhanced_query=enhanced_query,
             results=enhanced_results,
             total_results=results.get('total_results', 0),
-            search_type=strategy,  # Use strategy as search_type
-            processing_time=processing_time
+            search_type=strategy,
+            processing_time=processing_time,
+            search_metadata={
+                'prompts_applied': prompts_applied,
+                'prompts_enabled': request.use_search_prompts,
+                'related_products_included': request.include_related_products
+            }
         )
 
     except HTTPException:
