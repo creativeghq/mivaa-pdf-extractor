@@ -84,9 +84,69 @@ async def validate_image_with_claude(
     supabase: SupabaseClient = Depends(get_supabase_client)
 ) -> ImageValidationResponse:
     """
-    Validate an image using Claude 3.5 Sonnet Vision.
-    
-    Analyzes image quality, content, and matches to product groups.
+    **🔍 Image Validation - Claude 3.5 Sonnet Vision**
+
+    Validate image quality and match to product groups using Claude Vision.
+
+    ## 🎯 What It Does
+
+    - **Quality Assessment**: Rates image quality (0-1 scale) based on clarity, lighting, composition
+    - **Content Analysis**: Describes what's visible in the image
+    - **Material Identification**: Identifies materials present
+    - **Product Matching**: Matches image to relevant product groups
+    - **Issue Detection**: Identifies quality issues or concerns
+    - **Recommendations**: Suggests improvements
+
+    ## 📝 Request Example
+
+    ```json
+    {
+      "image_id": "550e8400-e29b-41d4-a716-446655440000",
+      "image_url": "https://example.com/product.jpg",
+      "product_groups": ["Furniture", "Lighting", "Textiles"],
+      "workspace_id": "workspace_uuid"
+    }
+    ```
+
+    ## ✅ Response Example
+
+    ```json
+    {
+      "image_id": "550e8400-e29b-41d4-a716-446655440000",
+      "validation_status": "valid",
+      "quality_score": 0.92,
+      "product_associations": [
+        {
+          "product_group": "Furniture",
+          "confidence": 0.95,
+          "reasoning": "Clear oak dining table visible with professional lighting"
+        }
+      ],
+      "issues": [],
+      "recommendations": ["Consider adding lifestyle context shots"],
+      "processing_time_ms": 1234.5
+    }
+    ```
+
+    ## 📊 Validation Status
+
+    - **valid**: Quality score ≥ 0.7 - Image is production-ready
+    - **needs_review**: Quality score 0.5-0.7 - Manual review recommended
+    - **invalid**: Quality score < 0.5 - Image needs improvement
+
+    ## ⚠️ Error Codes
+
+    - **400 Bad Request**: Invalid parameters (missing image_id/image_url)
+    - **404 Not Found**: Image not found in database
+    - **500 Internal Server Error**: Claude API call failed
+    - **503 Service Unavailable**: Claude API unavailable
+
+    ## 📏 Limits
+
+    - **Max image size**: 10MB
+    - **Timeout**: 30 seconds
+    - **Rate limit**: 60 requests/minute
+    - **Model**: claude-3-5-sonnet-20241022
     """
     try:
         import time

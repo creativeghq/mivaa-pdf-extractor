@@ -56,9 +56,74 @@ async def analyze_image(
     material_kai: MaterialKaiService = Depends(get_material_kai_service)
 ) -> ImageAnalysisResponse:
     """
-    Analyze a single image using Material Kai Vision Platform.
-    
-    Supports various analysis types including OCR, object detection, and material recognition.
+    **🔍 Image Analysis - AI-Powered Visual Understanding**
+
+    Analyze images using Llama 4 Scout 17B Vision model for comprehensive visual understanding.
+
+    ## 🎯 Analysis Types
+
+    - **description**: Generate natural language description of the image
+    - **ocr**: Extract text from the image using OCR
+    - **objects**: Detect and identify objects in the image
+    - **materials**: Identify materials and their properties
+    - **quality**: Assess image quality and technical specifications
+    - **all**: Run all analysis types
+
+    ## 📝 Request Example
+
+    ```json
+    {
+      "image_url": "https://example.com/product.jpg",
+      "analysis_types": ["description", "materials", "quality"],
+      "confidence_threshold": 0.7
+    }
+    ```
+
+    Or use existing image ID:
+    ```json
+    {
+      "image_id": "550e8400-e29b-41d4-a716-446655440000",
+      "analysis_types": ["all"]
+    }
+    ```
+
+    ## ✅ Response Example
+
+    ```json
+    {
+      "image_id": "550e8400-e29b-41d4-a716-446655440000",
+      "analysis_results": {
+        "description": "Modern oak dining table with minimalist design",
+        "materials": ["oak wood", "metal legs"],
+        "quality_score": 0.92,
+        "ocr_text": "NOVA Collection - Premium Oak",
+        "objects": ["table", "chair", "lamp"]
+      },
+      "confidence_scores": {
+        "description": 0.95,
+        "materials": 0.88,
+        "quality": 0.92
+      },
+      "processing_time": 1.23,
+      "model_used": "meta-llama/Llama-4-Scout-17B-16E-Instruct"
+    }
+    ```
+
+    ## ⚠️ Error Codes
+
+    - **400 Bad Request**: Invalid parameters (missing image_id/image_url, invalid analysis types)
+    - **404 Not Found**: Image ID not found in database
+    - **413 Payload Too Large**: Image exceeds size limit (10MB)
+    - **415 Unsupported Media Type**: Unsupported image format
+    - **500 Internal Server Error**: AI analysis failed
+    - **503 Service Unavailable**: Vision model not available
+
+    ## 📏 Limits
+
+    - **Max image size**: 10MB
+    - **Supported formats**: JPEG, PNG, WebP
+    - **Max concurrent requests**: 10 per user
+    - **Timeout**: 30 seconds per image
     """
     try:
         logger.info(f"Starting image analysis for image: {request.image_id or request.image_url}")

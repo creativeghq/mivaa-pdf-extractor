@@ -483,10 +483,50 @@ async def upload_document(
       -F "categories=products"
     ```
 
-    ## ✅ Returns
+    ## ✅ Response Example
 
-    Job ID and status URL for monitoring progress.
-    Poll `/api/rag/documents/job/{job_id}` for status updates.
+    ```json
+    {
+      "job_id": "550e8400-e29b-41d4-a716-446655440000",
+      "document_id": "660e8400-e29b-41d4-a716-446655440001",
+      "status": "pending",
+      "message": "Document upload successful. Processing started.",
+      "status_url": "/api/rag/documents/job/550e8400-e29b-41d4-a716-446655440000",
+      "processing_mode": "standard",
+      "categories": ["products", "certificates"],
+      "estimated_time": "2-5 minutes"
+    }
+    ```
+
+    ## 📊 Monitoring Progress
+
+    Poll the status URL to track processing:
+    ```bash
+    curl -X GET "/api/rag/documents/job/{job_id}"
+    ```
+
+    Response includes:
+    - Current stage and progress percentage
+    - Checkpoint information
+    - AI model usage statistics
+    - Extracted entities count (chunks, images, products)
+    - Error details if failed
+
+    ## ⚠️ Error Codes
+
+    - **400 Bad Request**: Invalid parameters (missing file/URL, invalid mode, unsupported file type)
+    - **401 Unauthorized**: Missing or invalid authentication
+    - **413 Payload Too Large**: File exceeds size limit (100MB)
+    - **415 Unsupported Media Type**: Non-PDF file uploaded
+    - **500 Internal Server Error**: Processing initialization failed
+    - **503 Service Unavailable**: Background job queue full
+
+    ## 📏 Limits
+
+    - **Max file size**: 100MB
+    - **Max concurrent jobs**: 5 per workspace
+    - **Supported formats**: PDF only
+    - **URL download timeout**: 60 seconds
 
     ## 🔄 Migration from Old Endpoints
 
@@ -3178,7 +3218,7 @@ async def search_documents(
     request: SearchRequest,
     strategy: Optional[str] = Query(
         "semantic",
-        description="Search strategy: 'semantic' (default), 'vector', 'multi_vector', 'hybrid', 'material', 'image'"
+        description="Search strategy: 'semantic' (default), 'vector', 'multi_vector', 'hybrid', 'material', 'image', 'all'"
     ),
     llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
 ):
@@ -3267,6 +3307,53 @@ async def search_documents(
       -d '{"query": "modern oak furniture", "workspace_id": "xxx", "top_k": 10}'
     ```
 
+    ## 📊 Response Example (All Strategies)
+    ```json
+    {
+      "query": "modern oak furniture",
+      "enhanced_query": "modern oak furniture",
+      "results": [
+        {
+          "id": "product_uuid_1",
+          "name": "Modern Oak Dining Table",
+          "description": "Contemporary oak furniture...",
+          "score": 0.92,
+          "final_score": 0.85,
+          "strategy_count": 4,
+          "strategies": ["semantic", "vector", "multi_vector", "hybrid"]
+        }
+      ],
+      "total_results": 10,
+      "search_type": "all",
+      "processing_time": 0.223,
+      "search_metadata": {
+        "strategies_executed": 4,
+        "strategies_successful": 4,
+        "strategies_failed": 0,
+        "strategy_breakdown": {
+          "semantic": {"count": 3, "success": true},
+          "vector": {"count": 2, "success": true},
+          "multi_vector": {"count": 4, "success": true},
+          "hybrid": {"count": 5, "success": true}
+        },
+        "parallel_execution": true,
+        "parallel_processing_time": 0.017
+      }
+    }
+    ```
+
+    ## ⚡ Performance Characteristics
+
+    | Strategy | Typical Time | Max Time | Notes |
+    |----------|-------------|----------|-------|
+    | semantic | 100-150ms | 300ms | Indexed, MMR diversity |
+    | vector | 50-100ms | 200ms | Fastest, pure similarity |
+    | multi_vector | 200-300ms | 500ms | 3 embeddings, sequential scan for 2048-dim |
+    | hybrid | 120-180ms | 350ms | Semantic + full-text search |
+    | material | 30-50ms | 100ms | JSONB indexed |
+    | image | 100-150ms | 300ms | CLIP indexed |
+    | **all (parallel)** | **200-300ms** | **500ms** | **3-4x faster than sequential** |
+
     ## 🔄 Migration from Old Endpoints
 
     **Old:** `POST /api/search/semantic`
@@ -3277,6 +3364,20 @@ async def search_documents(
 
     **Old:** `POST /api/unified-search`
     **New:** `POST /api/rag/search` (same functionality, clearer naming)
+
+    ## ⚠️ Error Codes
+
+    - **400 Bad Request**: Invalid parameters (missing query, invalid strategy, etc.)
+    - **401 Unauthorized**: Missing or invalid authentication
+    - **404 Not Found**: Workspace not found
+    - **500 Internal Server Error**: Search processing failed
+    - **503 Service Unavailable**: LlamaIndex service not available
+
+    ## 🎯 Rate Limits
+
+    - **60 requests/minute** per user
+    - **1000 requests/hour** per workspace
+    - Parallel execution (`strategy="all"`) counts as 1 request
     """
     start_time = datetime.utcnow()
 
