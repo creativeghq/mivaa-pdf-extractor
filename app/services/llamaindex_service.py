@@ -4945,3 +4945,505 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
                 'overrides_detected': 0,
                 'error': str(e)
             }
+
+    # ============================================================================
+    # MULTI-STRATEGY SEARCH METHODS (Issue #54)
+    # ============================================================================
+
+    async def multi_vector_search(
+        self,
+        query: str,
+        workspace_id: str,
+        top_k: int = 10,
+        text_weight: float = 0.4,
+        visual_weight: float = 0.3,
+        multimodal_weight: float = 0.3,
+        similarity_threshold: float = 0.7
+    ) -> Dict[str, Any]:
+        """
+        Multi-vector search combining 3 embedding types with weighted scoring.
+
+        Combines:
+        - text_embedding_1536 (40% weight)
+        - visual_clip_embedding_512 (30% weight)
+        - multimodal_fusion_embedding_2048 (30% weight)
+
+        Args:
+            query: Search query text
+            workspace_id: Workspace ID to filter results
+            top_k: Number of results to return
+            text_weight: Weight for text embeddings (default 0.4)
+            visual_weight: Weight for visual embeddings (default 0.3)
+            multimodal_weight: Weight for multimodal embeddings (default 0.3)
+            similarity_threshold: Minimum similarity score (default 0.7)
+
+        Returns:
+            Dictionary containing search results with weighted scores
+        """
+        try:
+            from .supabase_client import get_supabase_client
+            import time
+
+            start_time = time.time()
+            supabase_client = get_supabase_client()
+
+            # Generate query embedding using the centralized embedding service
+            query_embedding = await self.embedding_service.generate_embedding(
+                text=query,
+                embedding_type="openai"  # Use OpenAI for text embedding
+            )
+
+            if not query_embedding:
+                return {
+                    "results": [],
+                    "message": "Failed to generate query embedding",
+                    "total_results": 0,
+                    "processing_time": time.time() - start_time
+                }
+
+            # Convert embedding to PostgreSQL vector format
+            embedding_str = f"[{','.join(map(str, query_embedding))}]"
+
+            # Multi-vector search query combining all 3 embedding types
+            query_sql = f"""
+            SELECT
+                p.id,
+                p.product_name,
+                p.description,
+                p.metadata,
+                p.workspace_id,
+                p.document_id,
+                (
+                    ({text_weight} * (1 - (p.text_embedding_1536 <=> '{embedding_str}'::vector(1536)))) +
+                    ({visual_weight} * (1 - (p.visual_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
+                    ({multimodal_weight} * (1 - (p.multimodal_fusion_embedding_2048 <=> '{embedding_str}'::vector(2048))))
+                ) as weighted_score
+            FROM products p
+            WHERE p.workspace_id = '{workspace_id}'
+                AND p.text_embedding_1536 IS NOT NULL
+                AND p.visual_clip_embedding_512 IS NOT NULL
+                AND p.multimodal_fusion_embedding_2048 IS NOT NULL
+                AND (
+                    ({text_weight} * (1 - (p.text_embedding_1536 <=> '{embedding_str}'::vector(1536)))) +
+                    ({visual_weight} * (1 - (p.visual_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
+                    ({multimodal_weight} * (1 - (p.multimodal_fusion_embedding_2048 <=> '{embedding_str}'::vector(2048))))
+                ) >= {similarity_threshold}
+            ORDER BY weighted_score DESC
+            LIMIT {top_k}
+            """
+
+            # Execute query
+            response = supabase_client.client.rpc('exec_sql', {'query': query_sql}).execute()
+
+            results = []
+            if response.data:
+                for row in response.data:
+                    results.append({
+                        "id": row.get("id"),
+                        "product_name": row.get("product_name"),
+                        "description": row.get("description"),
+                        "metadata": row.get("metadata", {}),
+                        "workspace_id": row.get("workspace_id"),
+                        "document_id": row.get("document_id"),
+                        "score": row.get("weighted_score", 0.0),
+                        "search_type": "multi_vector"
+                    })
+
+            return {
+                "results": results,
+                "total_results": len(results),
+                "processing_time": time.time() - start_time,
+                "weights": {
+                    "text": text_weight,
+                    "visual": visual_weight,
+                    "multimodal": multimodal_weight
+                },
+                "query": query
+            }
+
+        except Exception as e:
+            self.logger.error(f"Multi-vector search failed: {e}", exc_info=True)
+            return {
+                "results": [],
+                "error": str(e),
+                "total_results": 0,
+                "processing_time": time.time() - start_time if 'start_time' in locals() else 0
+            }
+
+    async def hybrid_search(
+        self,
+        query: str,
+        workspace_id: str,
+        top_k: int = 10,
+        semantic_weight: float = 0.7,
+        keyword_weight: float = 0.3,
+        similarity_threshold: float = 0.6
+    ) -> Dict[str, Any]:
+        """
+        Hybrid search combining semantic search (70%) with PostgreSQL full-text search (30%).
+
+        Combines:
+        - Semantic vector similarity using text_embedding_1536
+        - PostgreSQL full-text search using search_vector tsvector column
+
+        Args:
+            query: Search query text
+            workspace_id: Workspace ID to filter results
+            top_k: Number of results to return
+            semantic_weight: Weight for semantic similarity (default 0.7)
+            keyword_weight: Weight for keyword matching (default 0.3)
+            similarity_threshold: Minimum similarity score (default 0.6)
+
+        Returns:
+            Dictionary containing hybrid search results
+        """
+        try:
+            from .supabase_client import get_supabase_client
+            import time
+
+            start_time = time.time()
+            supabase_client = get_supabase_client()
+
+            # Generate query embedding for semantic search
+            query_embedding = await self.embedding_service.generate_embedding(
+                text=query,
+                embedding_type="openai"
+            )
+
+            if not query_embedding:
+                return {
+                    "results": [],
+                    "message": "Failed to generate query embedding",
+                    "total_results": 0,
+                    "processing_time": time.time() - start_time
+                }
+
+            # Convert embedding to PostgreSQL vector format
+            embedding_str = f"[{','.join(map(str, query_embedding))}]"
+
+            # Hybrid search query combining vector similarity and full-text search
+            query_sql = f"""
+            SELECT
+                p.id,
+                p.product_name,
+                p.description,
+                p.metadata,
+                p.workspace_id,
+                p.document_id,
+                (
+                    ({semantic_weight} * (1 - (p.text_embedding_1536 <=> '{embedding_str}'::vector(1536)))) +
+                    ({keyword_weight} * ts_rank(p.search_vector, plainto_tsquery('english', '{query}')))
+                ) as hybrid_score,
+                (1 - (p.text_embedding_1536 <=> '{embedding_str}'::vector(1536))) as semantic_score,
+                ts_rank(p.search_vector, plainto_tsquery('english', '{query}')) as keyword_score
+            FROM products p
+            WHERE p.workspace_id = '{workspace_id}'
+                AND p.text_embedding_1536 IS NOT NULL
+                AND p.search_vector IS NOT NULL
+                AND (
+                    (1 - (p.text_embedding_1536 <=> '{embedding_str}'::vector(1536))) >= {similarity_threshold}
+                    OR p.search_vector @@ plainto_tsquery('english', '{query}')
+                )
+            ORDER BY hybrid_score DESC
+            LIMIT {top_k}
+            """
+
+            # Execute query
+            response = supabase_client.client.rpc('exec_sql', {'query': query_sql}).execute()
+
+            results = []
+            if response.data:
+                for row in response.data:
+                    results.append({
+                        "id": row.get("id"),
+                        "product_name": row.get("product_name"),
+                        "description": row.get("description"),
+                        "metadata": row.get("metadata", {}),
+                        "workspace_id": row.get("workspace_id"),
+                        "document_id": row.get("document_id"),
+                        "score": row.get("hybrid_score", 0.0),
+                        "semantic_score": row.get("semantic_score", 0.0),
+                        "keyword_score": row.get("keyword_score", 0.0),
+                        "search_type": "hybrid"
+                    })
+
+            return {
+                "results": results,
+                "total_results": len(results),
+                "processing_time": time.time() - start_time,
+                "weights": {
+                    "semantic": semantic_weight,
+                    "keyword": keyword_weight
+                },
+                "query": query
+            }
+
+        except Exception as e:
+            self.logger.error(f"Hybrid search failed: {e}", exc_info=True)
+            return {
+                "results": [],
+                "error": str(e),
+                "total_results": 0,
+                "processing_time": time.time() - start_time if 'start_time' in locals() else 0
+            }
+
+    async def material_property_search(
+        self,
+        workspace_id: str,
+        material_filters: Dict[str, Any],
+        top_k: int = 10,
+        match_mode: str = "AND"
+    ) -> Dict[str, Any]:
+        """
+        JSONB-based property filtering with AND/OR logic support.
+
+        Searches products based on material properties stored in metadata JSONB column.
+        Supports complex queries like:
+        - material_type = "fabric"
+        - dimensions.width >= 100
+        - color IN ["red", "blue"]
+
+        Args:
+            workspace_id: Workspace ID to filter results
+            material_filters: Dictionary of property filters
+                Example: {
+                    "material_type": "fabric",
+                    "dimensions.width": {"gte": 100},
+                    "color": ["red", "blue"]
+                }
+            top_k: Number of results to return
+            match_mode: "AND" or "OR" for combining filters
+
+        Returns:
+            Dictionary containing filtered products
+        """
+        try:
+            from .supabase_client import get_supabase_client
+            import time
+
+            start_time = time.time()
+            supabase_client = get_supabase_client()
+
+            if not material_filters:
+                return {
+                    "results": [],
+                    "message": "No filters provided",
+                    "total_results": 0,
+                    "processing_time": time.time() - start_time
+                }
+
+            # Build WHERE clauses for JSONB filtering
+            where_clauses = []
+            for key, value in material_filters.items():
+                if isinstance(value, dict):
+                    # Handle comparison operators (gte, lte, gt, lt, eq)
+                    for op, val in value.items():
+                        if op == "gte":
+                            where_clauses.append(f"(p.metadata->>'{key}')::numeric >= {val}")
+                        elif op == "lte":
+                            where_clauses.append(f"(p.metadata->>'{key}')::numeric <= {val}")
+                        elif op == "gt":
+                            where_clauses.append(f"(p.metadata->>'{key}')::numeric > {val}")
+                        elif op == "lt":
+                            where_clauses.append(f"(p.metadata->>'{key}')::numeric < {val}")
+                        elif op == "eq":
+                            where_clauses.append(f"p.metadata->>'{key}' = '{val}'")
+                elif isinstance(value, list):
+                    # Handle IN operator
+                    values_str = "', '".join(str(v) for v in value)
+                    where_clauses.append(f"p.metadata->>'{key}' IN ('{values_str}')")
+                else:
+                    # Handle exact match
+                    where_clauses.append(f"p.metadata->>'{key}' = '{value}'")
+
+            # Combine clauses with AND/OR
+            connector = " AND " if match_mode == "AND" else " OR "
+            where_condition = connector.join(where_clauses)
+
+            # Material property search query
+            query_sql = f"""
+            SELECT
+                p.id,
+                p.product_name,
+                p.description,
+                p.metadata,
+                p.workspace_id,
+                p.document_id
+            FROM products p
+            WHERE p.workspace_id = '{workspace_id}'
+                AND ({where_condition})
+            LIMIT {top_k}
+            """
+
+            # Execute query
+            response = supabase_client.client.rpc('exec_sql', {'query': query_sql}).execute()
+
+            results = []
+            if response.data:
+                for row in response.data:
+                    results.append({
+                        "id": row.get("id"),
+                        "product_name": row.get("product_name"),
+                        "description": row.get("description"),
+                        "metadata": row.get("metadata", {}),
+                        "workspace_id": row.get("workspace_id"),
+                        "document_id": row.get("document_id"),
+                        "search_type": "material_property"
+                    })
+
+            return {
+                "results": results,
+                "total_results": len(results),
+                "processing_time": time.time() - start_time,
+                "filters": material_filters,
+                "match_mode": match_mode
+            }
+
+        except Exception as e:
+            self.logger.error(f"Material property search failed: {e}", exc_info=True)
+            return {
+                "results": [],
+                "error": str(e),
+                "total_results": 0,
+                "processing_time": time.time() - start_time if 'start_time' in locals() else 0
+            }
+
+    async def image_similarity_search(
+        self,
+        workspace_id: str,
+        image_url: Optional[str] = None,
+        image_base64: Optional[str] = None,
+        top_k: int = 10,
+        similarity_threshold: float = 0.7
+    ) -> Dict[str, Any]:
+        """
+        Visual similarity search using CLIP embeddings.
+
+        Searches products based on visual similarity using visual_clip_embedding_512 column.
+        Accepts either image URL or base64-encoded image.
+
+        Args:
+            workspace_id: Workspace ID to filter results
+            image_url: URL of the query image (optional)
+            image_base64: Base64-encoded query image (optional)
+            top_k: Number of results to return
+            similarity_threshold: Minimum similarity score (default 0.7)
+
+        Returns:
+            Dictionary containing visually similar products
+        """
+        try:
+            from .supabase_client import get_supabase_client
+            import time
+            import base64
+            import requests
+            from io import BytesIO
+            from PIL import Image
+
+            start_time = time.time()
+            supabase_client = get_supabase_client()
+
+            # Validate input
+            if not image_url and not image_base64:
+                return {
+                    "results": [],
+                    "message": "Either image_url or image_base64 must be provided",
+                    "total_results": 0,
+                    "processing_time": time.time() - start_time
+                }
+
+            # Load image
+            if image_url:
+                response = requests.get(image_url)
+                image = Image.open(BytesIO(response.content))
+            else:
+                image_data = base64.b64decode(image_base64)
+                image = Image.open(BytesIO(image_data))
+
+            # Generate CLIP embedding for the query image
+            # Note: This requires CLIP model integration
+            # For now, we'll use a placeholder - in production, integrate with CLIP service
+            query_embedding = await self._generate_clip_embedding(image)
+
+            if not query_embedding:
+                return {
+                    "results": [],
+                    "message": "Failed to generate image embedding",
+                    "total_results": 0,
+                    "processing_time": time.time() - start_time
+                }
+
+            # Convert embedding to PostgreSQL vector format
+            embedding_str = f"[{','.join(map(str, query_embedding))}]"
+
+            # Image similarity search query
+            query_sql = f"""
+            SELECT
+                p.id,
+                p.product_name,
+                p.description,
+                p.metadata,
+                p.workspace_id,
+                p.document_id,
+                (1 - (p.visual_clip_embedding_512 <=> '{embedding_str}'::vector(512))) as similarity_score
+            FROM products p
+            WHERE p.workspace_id = '{workspace_id}'
+                AND p.visual_clip_embedding_512 IS NOT NULL
+                AND (1 - (p.visual_clip_embedding_512 <=> '{embedding_str}'::vector(512))) >= {similarity_threshold}
+            ORDER BY p.visual_clip_embedding_512 <=> '{embedding_str}'::vector(512)
+            LIMIT {top_k}
+            """
+
+            # Execute query
+            response = supabase_client.client.rpc('exec_sql', {'query': query_sql}).execute()
+
+            results = []
+            if response.data:
+                for row in response.data:
+                    results.append({
+                        "id": row.get("id"),
+                        "product_name": row.get("product_name"),
+                        "description": row.get("description"),
+                        "metadata": row.get("metadata", {}),
+                        "workspace_id": row.get("workspace_id"),
+                        "document_id": row.get("document_id"),
+                        "score": row.get("similarity_score", 0.0),
+                        "search_type": "image_similarity"
+                    })
+
+            return {
+                "results": results,
+                "total_results": len(results),
+                "processing_time": time.time() - start_time,
+                "query_type": "image_url" if image_url else "image_base64"
+            }
+
+        except Exception as e:
+            self.logger.error(f"Image similarity search failed: {e}", exc_info=True)
+            return {
+                "results": [],
+                "error": str(e),
+                "total_results": 0,
+                "processing_time": time.time() - start_time if 'start_time' in locals() else 0
+            }
+
+    async def _generate_clip_embedding(self, image: 'Image') -> Optional[List[float]]:
+        """
+        Generate CLIP embedding for an image.
+
+        Args:
+            image: PIL Image object
+
+        Returns:
+            List of floats representing the CLIP embedding (512 dimensions)
+        """
+        try:
+            # TODO: Integrate with actual CLIP model
+            # For now, return a placeholder embedding
+            # In production, this should call the CLIP embedding service
+            self.logger.warning("CLIP embedding generation not yet implemented - using placeholder")
+            return [0.0] * 512  # Placeholder 512-dimensional embedding
+
+        except Exception as e:
+            self.logger.error(f"Failed to generate CLIP embedding: {e}")
+            return None

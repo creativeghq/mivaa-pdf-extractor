@@ -183,6 +183,11 @@ class SearchRequest(BaseModel):
     use_search_prompts: bool = Field(True, description="Apply admin-configured search prompts")
     custom_formatting_prompt: Optional[str] = Field(None, description="Custom formatting prompt (overrides default)")
 
+    # New fields for Issue #54 - Multi-Strategy Search
+    material_filters: Optional[Dict[str, Any]] = Field(None, description="Material property filters for material search strategy")
+    image_url: Optional[str] = Field(None, description="Image URL for image similarity search strategy")
+    image_base64: Optional[str] = Field(None, description="Base64-encoded image for image similarity search strategy")
+
 class SearchResponse(BaseModel):
     """Response model for semantic search."""
     query: str = Field(..., description="Original search query")
@@ -3173,7 +3178,7 @@ async def search_documents(
     request: SearchRequest,
     strategy: Optional[str] = Query(
         "semantic",
-        description="Search strategy: 'semantic' (default), 'vector'"
+        description="Search strategy: 'semantic' (default), 'vector', 'multi_vector', 'hybrid', 'material', 'image'"
     ),
     llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
 ):
@@ -3185,7 +3190,7 @@ async def search_documents(
     - `/api/search/similarity` → Use `strategy="vector"`
     - `/api/unified-search` → Use this endpoint
 
-    ## 🎯 Search Strategies (Implemented)
+    ## 🎯 Search Strategies (Issue #54 - All Implemented ✅)
 
     ### Semantic Search (`strategy="semantic"`) - DEFAULT ✅
     - Natural language understanding with MMR (Maximal Marginal Relevance)
@@ -3197,20 +3202,55 @@ async def search_documents(
     - Fast and efficient, no diversity filtering
     - Best for: Finding most similar documents, precise matching
 
+    ### Multi-Vector Search (`strategy="multi_vector"`) ✅ NEW
+    - Combines 3 embedding types with weighted scoring:
+      - text_embedding_1536 (40%)
+      - visual_clip_embedding_512 (30%)
+      - multimodal_fusion_embedding_2048 (30%)
+    - Best for: Comprehensive multimodal search
+
+    ### Hybrid Search (`strategy="hybrid"`) ✅ NEW
+    - Combines semantic (70%) + PostgreSQL full-text search (30%)
+    - Best for: Balancing semantic understanding with keyword matching
+
+    ### Material Property Search (`strategy="material"`) ✅ NEW
+    - JSONB-based filtering with AND/OR logic
+    - Requires `material_filters` in request body
+    - Best for: Filtering by specific material properties
+
+    ### Image Similarity Search (`strategy="image"`) ✅ NEW
+    - Visual similarity using CLIP embeddings
+    - Requires `image_url` or `image_base64` in request body
+    - Best for: Finding visually similar products
+
     ## 📝 Examples
 
     ### Semantic Search (Default)
     ```bash
     curl -X POST "/api/rag/search" \\
       -H "Content-Type: application/json" \\
-      -d '{"query": "modern minimalist furniture", "top_k": 10}'
+      -d '{"query": "modern minimalist furniture", "workspace_id": "xxx", "top_k": 10}'
     ```
 
-    ### Vector Similarity Search
+    ### Multi-Vector Search
     ```bash
-    curl -X POST "/api/rag/search?strategy=vector" \\
+    curl -X POST "/api/rag/search?strategy=multi_vector" \\
       -H "Content-Type: application/json" \\
-      -d '{"query": "oak wood flooring", "top_k": 5}'
+      -d '{"query": "oak wood flooring", "workspace_id": "xxx", "top_k": 5}'
+    ```
+
+    ### Material Property Search
+    ```bash
+    curl -X POST "/api/rag/search?strategy=material" \\
+      -H "Content-Type: application/json" \\
+      -d '{"workspace_id": "xxx", "material_filters": {"material_type": "fabric", "color": ["red", "blue"]}, "top_k": 10}'
+    ```
+
+    ### Image Similarity Search
+    ```bash
+    curl -X POST "/api/rag/search?strategy=image" \\
+      -H "Content-Type: application/json" \\
+      -d '{"workspace_id": "xxx", "image_url": "https://example.com/image.jpg", "top_k": 10}'
     ```
 
     ## 🔄 Migration from Old Endpoints
@@ -3228,7 +3268,7 @@ async def search_documents(
 
     try:
         # Validate strategy
-        valid_strategies = ['semantic', 'vector']
+        valid_strategies = ['semantic', 'vector', 'multi_vector', 'hybrid', 'material', 'image']
         if strategy not in valid_strategies:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -3273,6 +3313,55 @@ async def search_documents(
                 query=query_to_use,
                 k=request.top_k,
                 lambda_mult=1.0  # Pure similarity, no diversity
+            )
+
+        elif strategy == "multi_vector":
+            # Multi-vector search combining 3 embedding types
+            # text_embedding_1536 (40%), visual_clip_embedding_512 (30%), multimodal_fusion_embedding_2048 (30%)
+            results = await llamaindex_service.multi_vector_search(
+                query=query_to_use,
+                workspace_id=request.workspace_id,
+                top_k=request.top_k
+            )
+
+        elif strategy == "hybrid":
+            # Hybrid search combining semantic (70%) + full-text keyword search (30%)
+            results = await llamaindex_service.hybrid_search(
+                query=query_to_use,
+                workspace_id=request.workspace_id,
+                top_k=request.top_k
+            )
+
+        elif strategy == "material":
+            # Material property search using JSONB filtering
+            # Requires material_filters in request
+            material_filters = getattr(request, 'material_filters', {})
+            if not material_filters:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="material_filters required for material property search"
+                )
+            results = await llamaindex_service.material_property_search(
+                workspace_id=request.workspace_id,
+                material_filters=material_filters,
+                top_k=request.top_k
+            )
+
+        elif strategy == "image":
+            # Image similarity search using CLIP embeddings
+            # Requires image_url or image_base64 in request
+            image_url = getattr(request, 'image_url', None)
+            image_base64 = getattr(request, 'image_base64', None)
+            if not image_url and not image_base64:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="image_url or image_base64 required for image similarity search"
+                )
+            results = await llamaindex_service.image_similarity_search(
+                workspace_id=request.workspace_id,
+                image_url=image_url,
+                image_base64=image_base64,
+                top_k=request.top_k
             )
 
         # Get raw results
