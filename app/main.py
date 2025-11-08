@@ -1374,7 +1374,6 @@ async def root() -> Dict[str, Any]:
     }
 
 # Include API routes
-from app.api.pdf_routes import router as pdf_router
 from app.api.search import router as search_router
 from app.api.images import router as images_router
 from app.api.admin import router as admin_router
@@ -1391,7 +1390,6 @@ from app.api.ai_services_routes import router as ai_services_router
 from app.api.admin_prompts import router as admin_prompts_router, config_router as extraction_config_router
 from app.api.metadata import router as metadata_router
 
-app.include_router(pdf_router)  # PDF router already has /api/v1 prefix
 app.include_router(search_router)
 app.include_router(images_router)
 app.include_router(admin_router)
@@ -1498,7 +1496,6 @@ def custom_openapi():
         "monitoring_routes": "/, /health, /metrics, /performance/summary (4 endpoints)",
         "embeddings_routes": "/api/embeddings/* (4 endpoints) - CLIP text/image, material embeddings",
         "ai_analysis_routes": "/api/semantic-analysis, /api/analyze/* (4 endpoints) - TogetherAI, multimodal analysis",
-        "pdf_routes": "/api/pdf/* (4 endpoints) - Extract markdown, tables, images",
         "anthropic_routes": "/api/v1/anthropic/* (3 endpoints) - Claude image validation, product enrichment",
         "products_routes": "/api/products/* (3 endpoints) - Product creation from chunks/layout",
         "ai_metrics_routes": "/api/v1/ai-metrics/* (2 endpoints) - Job metrics, summary"
