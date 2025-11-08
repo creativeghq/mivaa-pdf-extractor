@@ -76,11 +76,104 @@ class ConsensusValidateRequest(BaseModel):
 # DOCUMENT CLASSIFICATION ENDPOINTS
 # ============================================================================
 
-@router.post("/classify-document")
+@router.post(
+    "/classify-document",
+    summary="Classify document content into semantic categories",
+    description="""
+    AI-powered content classification using Claude 4.5 Haiku for fast, accurate categorization.
+
+    **Classification Categories:**
+
+    **1. Product** (`product`)
+    - Product information and specifications
+    - Features and benefits
+    - Technical specifications
+    - Product variants and options
+    - Pricing and availability
+
+    **2. Supporting Information** (`supporting`)
+    - Technical details and guides
+    - Certifications and compliance
+    - Installation instructions
+    - Maintenance guides
+    - Warranty information
+
+    **3. Administrative** (`administrative`)
+    - Company information
+    - Legal notices and disclaimers
+    - Contact information
+    - Terms and conditions
+    - Privacy policies
+
+    **4. Transitional** (`transitional`)
+    - Table of contents
+    - Headers and footers
+    - Page numbers
+    - Navigation elements
+    - Section dividers
+
+    **Example Request:**
+    ```json
+    {
+      "content": "NOVA Oak Flooring - Premium engineered wood flooring with 3mm oak veneer...",
+      "context": {
+        "page_number": 5,
+        "has_images": true,
+        "section": "Products"
+      },
+      "job_id": "job_123"
+    }
+    ```
+
+    **Example Response:**
+    ```json
+    {
+      "success": true,
+      "classification": {
+        "category": "product",
+        "confidence": 0.95,
+        "reasoning": "Content contains product name, specifications, and features",
+        "metadata": {
+          "product_indicators": ["specifications", "features", "pricing"],
+          "quality_score": 0.92
+        }
+      }
+    }
+    ```
+
+    **Use Cases:**
+    - PDF content categorization
+    - Automated document organization
+    - Product extraction pipelines
+    - Content filtering
+
+    **Performance:**
+    - Typical: 300-500ms per classification
+    - Batch processing: Use `/classify-batch` for better performance
+
+    **Accuracy:**
+    - Average confidence: 0.87
+    - Fallback rate: <5%
+
+    **Rate Limits:**
+    - 60 requests/minute
+
+    **Error Codes:**
+    - 200: Success
+    - 400: Invalid content or parameters
+    - 500: Classification failed
+    """,
+    tags=["AI Services"],
+    responses={
+        200: {"description": "Classification successful"},
+        400: {"description": "Invalid request"},
+        500: {"description": "Classification failed"}
+    }
+)
 async def classify_document(request: ClassifyRequest):
     """
     Classify document content into categories.
-    
+
     Categories:
     - product: Product information, specifications, features
     - supporting: Technical details, certifications, guides

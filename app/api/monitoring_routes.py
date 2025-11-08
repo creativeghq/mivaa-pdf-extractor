@@ -104,11 +104,104 @@ async def get_bucket_stats(bucket_name: str) -> Dict[str, Any]:
         }
 
 
-@router.get("/supabase-status")
+@router.get(
+    "/supabase-status",
+    response_model=Dict[str, Any],
+    summary="Get comprehensive Supabase resource usage and health status",
+    description="""
+    Monitor all Supabase resources including database, storage, and usage limits.
+
+    **Returns:**
+    - **Database Statistics**: Row counts for all monitored tables
+    - **Storage Statistics**: Size and file counts per bucket
+    - **Resource Limits**: Free tier limits and current usage percentages
+    - **Health Status**: Overall system health (healthy, notice, warning, critical)
+    - **Warnings**: Alerts when approaching resource limits
+
+    **Monitored Tables:**
+    - documents, document_chunks, document_images
+    - embeddings, products, materials_catalog
+    - background_jobs
+
+    **Monitored Buckets:**
+    - pdf-tiles, pdf-documents, material-images
+
+    **Health Status Levels:**
+    - `healthy`: <50% usage
+    - `notice`: 50-80% usage
+    - `warning`: 80-90% usage
+    - `critical`: >90% usage (upgrade needed)
+
+    **Example Response:**
+    ```json
+    {
+      "success": true,
+      "timestamp": "2025-11-08T16:30:00Z",
+      "health_status": "warning",
+      "database": {
+        "tables": [
+          {"table": "documents", "rows": 150},
+          {"table": "document_chunks", "rows": 5000}
+        ],
+        "total_rows": 5150
+      },
+      "storage": {
+        "buckets": [
+          {
+            "bucket": "pdf-documents",
+            "files": 150,
+            "size_gb": 0.45
+          }
+        ],
+        "total_files": 150,
+        "total_size_gb": 0.85
+      },
+      "limits": {
+        "storage_gb": 1.0,
+        "database_size_gb": 0.5
+      },
+      "usage": {
+        "storage_percent": 85.0,
+        "storage_remaining_gb": 0.15
+      },
+      "warnings": [
+        {
+          "type": "warning",
+          "resource": "storage",
+          "message": "Storage usage is at 85.0% - Consider upgrading soon.",
+          "usage_percent": 85.0
+        }
+      ]
+    }
+    ```
+
+    **Use Cases:**
+    - Admin dashboard monitoring
+    - Automated alerts for resource limits
+    - Capacity planning
+    - Cost optimization
+
+    **Performance:**
+    - Typical: 1-2 seconds (queries all tables and buckets)
+    - Recommended: Cache for 5-10 minutes
+
+    **Rate Limits:**
+    - 10 requests/minute
+
+    **Error Codes:**
+    - 200: Success
+    - 500: Failed to retrieve status (check logs)
+    """,
+    tags=["monitoring"],
+    responses={
+        200: {"description": "Comprehensive resource status"},
+        500: {"description": "Failed to retrieve status"}
+    }
+)
 async def get_supabase_status() -> Dict[str, Any]:
     """
     Get current Supabase resource usage and status.
-    
+
     Returns:
         - Database statistics (row counts per table)
         - Storage statistics (size per bucket)

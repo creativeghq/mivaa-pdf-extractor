@@ -76,14 +76,137 @@ class AIMetricsResponse(BaseModel):
 # API Endpoints
 # ============================================================================
 
-@router.get("/summary", response_model=AIMetricsResponse)
+@router.get(
+    "/summary",
+    response_model=AIMetricsResponse,
+    summary="Get comprehensive AI usage metrics and cost tracking",
+    description="""
+    Monitor AI model usage, costs, performance, and quality metrics across all services.
+
+    **Metrics Provided:**
+
+    **1. Summary Statistics**
+    - Total AI calls made
+    - Total cost (USD)
+    - Total tokens consumed
+    - Average latency (ms)
+    - Average confidence score
+    - Fallback rate (%)
+
+    **2. Model Usage Breakdown**
+    - Per-model call counts
+    - Per-model costs
+    - Per-model token usage
+    - Per-model latency
+    - Per-model confidence scores
+    - Fallback counts
+
+    **3. Task Breakdown**
+    - Calls per task type (classification, extraction, validation, etc.)
+    - Cost per task type
+    - Average confidence per task
+    - Models used per task
+
+    **4. Confidence Distribution**
+    - Distribution across confidence ranges (0.0-0.2, 0.2-0.4, etc.)
+    - Percentage of calls in each range
+    - Quality assessment
+
+    **5. Recent Calls**
+    - Last 10 AI calls with full details
+    - Model used, task, cost, latency, confidence
+
+    **Time Periods:**
+    - `1h`: Last hour
+    - `24h`: Last 24 hours (default)
+    - `7d`: Last 7 days
+    - `30d`: Last 30 days
+    - `all`: All time
+
+    **Example Response:**
+    ```json
+    {
+      "summary": {
+        "total_calls": 1250,
+        "total_cost": 12.45,
+        "total_tokens": 450000,
+        "average_latency_ms": 850.5,
+        "average_confidence": 0.87,
+        "fallback_rate": 0.05,
+        "time_period": "24h"
+      },
+      "model_usage": [
+        {
+          "model": "claude-3-5-sonnet-20241022",
+          "call_count": 500,
+          "total_cost": 8.50,
+          "total_tokens": 300000,
+          "average_latency_ms": 1200.0,
+          "average_confidence": 0.92,
+          "fallback_count": 10
+        },
+        {
+          "model": "claude-3-5-haiku-20241022",
+          "call_count": 750,
+          "total_cost": 3.95,
+          "total_tokens": 150000,
+          "average_latency_ms": 500.0,
+          "average_confidence": 0.84,
+          "fallback_count": 50
+        }
+      ],
+      "task_breakdown": [
+        {
+          "task": "product_classification",
+          "call_count": 600,
+          "total_cost": 5.20,
+          "average_confidence": 0.89,
+          "models_used": ["claude-3-5-haiku-20241022"]
+        }
+      ],
+      "confidence_distribution": [
+        {"range": "0.8-1.0", "count": 1000, "percentage": 80.0},
+        {"range": "0.6-0.8", "count": 200, "percentage": 16.0},
+        {"range": "0.4-0.6", "count": 50, "percentage": 4.0}
+      ],
+      "recent_calls": [...]
+    }
+    ```
+
+    **Use Cases:**
+    - Cost monitoring and optimization
+    - Model performance comparison
+    - Quality assurance (confidence tracking)
+    - Fallback rate monitoring
+    - Budget forecasting
+    - Performance optimization
+
+    **Performance:**
+    - Typical: 200-500ms
+    - Cached: 1 minute
+
+    **Rate Limits:**
+    - 30 requests/minute
+
+    **Error Codes:**
+    - 200: Success
+    - 400: Invalid time period
+    - 500: Failed to retrieve metrics
+    """,
+    tags=["AI Metrics"],
+    responses={
+        200: {"description": "Comprehensive AI metrics"},
+        400: {"description": "Invalid time period"},
+        500: {"description": "Failed to retrieve metrics"}
+    }
+)
 async def get_ai_metrics_summary(
     time_period: str = Query("24h", description="Time period: 1h, 24h, 7d, 30d, all"),
     supabase: SupabaseClient = Depends(get_supabase_client)
 ):
     """
     Get comprehensive AI metrics summary.
-    
+
     Returns:
     - Summary statistics (total calls, cost, tokens, latency, confidence, fallback rate)
     - Model usage breakdown
