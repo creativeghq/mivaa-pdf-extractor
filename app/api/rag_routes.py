@@ -15,6 +15,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, status, BackgroundTasks
 from fastapi.responses import JSONResponse
 import asyncio
+import numpy as np
 try:
     # Try Pydantic v2 first
     from pydantic import BaseModel, Field, field_validator as validator
@@ -175,6 +176,7 @@ class SearchRequest(BaseModel):
     similarity_threshold: Optional[float] = Field(0.6, ge=0.0, le=1.0, description="Similarity threshold")
     document_ids: Optional[List[str]] = Field(None, description="Filter by document IDs")
     include_content: bool = Field(True, description="Include chunk content in results")
+    workspace_id: Optional[str] = Field(None, description="Workspace ID for scoped search and related products")
 
 class SearchResponse(BaseModel):
     """Response model for semantic search."""
@@ -3067,95 +3069,191 @@ async def chat_with_documents(
 async def search_documents(
     request: SearchRequest,
     strategy: Optional[str] = Query(
-        "semantic",
-        description="Search strategy: 'semantic' (default), 'vector'"
+        None,
+        description="Search strategy: 'semantic', 'vector', 'multi_vector', 'hybrid', 'material', 'image', or 'all' (default runs all strategies)"
     ),
     llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
 ):
     """
-    **🔍 CONSOLIDATED SEARCH ENDPOINT - Single Entry Point for All Search Strategies**
+    **🔍 UNIFIED MULTI-STRATEGY SEARCH ENDPOINT**
 
-    This endpoint replaces:
-    - `/api/search/semantic` → Use `strategy="semantic"`
-    - `/api/search/similarity` → Use `strategy="vector"`
-    - `/api/unified-search` → Use this endpoint
+    Runs all search strategies in parallel and merges results for comprehensive coverage.
 
-    ## 🎯 Search Strategies (Implemented)
+    ## 🎯 Search Strategies
 
-    ### Semantic Search (`strategy="semantic"`) - DEFAULT ✅
-    - Natural language understanding with MMR (Maximal Marginal Relevance)
-    - Context-aware matching with diversity
-    - Best for: Text queries, conceptual search, diverse results
+    ### Implemented ✅
+    - **semantic**: Text embeddings with MMR (relevance + diversity)
+    - **vector**: Pure vector similarity (100% relevance)
 
-    ### Vector Search (`strategy="vector"`) ✅
-    - Pure vector similarity (cosine distance)
-    - Fast and efficient, no diversity filtering
-    - Best for: Finding most similar documents, precise matching
+    ### In Development 🚧
+    - **multi_vector**: Combines text + visual + multimodal embeddings
+    - **hybrid**: Semantic (70%) + keyword matching (30%)
+    - **material**: Material property-based search
+    - **image**: Visual similarity using CLIP embeddings
 
     ## 📝 Examples
 
-    ### Semantic Search (Default)
+    ### Run All Strategies (Default)
     ```bash
     curl -X POST "/api/rag/search" \\
+      -H "Content-Type: application/json" \\
+      -d '{"query": "cement tiles 60x60", "top_k": 10}'
+    ```
+
+    ### Run Specific Strategy
+    ```bash
+    curl -X POST "/api/rag/search?strategy=semantic" \\
       -H "Content-Type: application/json" \\
       -d '{"query": "modern minimalist furniture", "top_k": 10}'
     ```
 
-    ### Vector Similarity Search
+    ### Run All Strategies Explicitly
     ```bash
-    curl -X POST "/api/rag/search?strategy=vector" \\
+    curl -X POST "/api/rag/search?strategy=all" \\
       -H "Content-Type: application/json" \\
-      -d '{"query": "oak wood flooring", "top_k": 5}'
+      -d '{"query": "oak wood flooring", "top_k": 10}'
     ```
 
-    ## 🔄 Migration from Old Endpoints
+    ## Response Format
 
-    **Old:** `POST /api/search/semantic`
-    **New:** `POST /api/rag/search?strategy=semantic`
-
-    **Old:** `POST /api/search/similarity`
-    **New:** `POST /api/rag/search?strategy=vector`
-
-    **Old:** `POST /api/unified-search`
-    **New:** `POST /api/rag/search` (same functionality, clearer naming)
+    Results include complete metadata and related images:
+    ```json
+    {
+      "results": [
+        {
+          "id": "product-123",
+          "name": "NOVA Tile",
+          "description": "Premium porcelain ceramic tile",
+          "relevance_score": 0.92,
+          "metadata": {
+            "material_type": "Porcelain",
+            "factory_name": "Castellón Factory",
+            "factory_group": "Harmony Group",
+            "manufacturer": "Harmony Materials",
+            "country_of_origin": "Spain",
+            "dimensions": ["15×38", "20×40"],
+            "slip_resistance": "R11",
+            "fire_rating": "A1",
+            "thickness": "8mm",
+            "finish": "matte",
+            "designer": "SG NY",
+            "colors": ["beige", "white"],
+            "page_range": [86, 97],
+            "confidence": 0.95
+          },
+          "related_images": [
+            {
+              "id": "image-456",
+              "url": "https://...",
+              "relationship_type": "depicts",
+              "relevance_score": 0.98,
+              "caption": "Product showcase"
+            }
+          ]
+        }
+      ],
+      "search_metadata": {
+        "strategies_used": ["semantic", "vector"],
+        "processing_time_ms": 245,
+        "total_results": 42
+      }
+    }
+    ```
     """
     start_time = datetime.utcnow()
 
     try:
-        # Validate strategy
-        valid_strategies = ['semantic', 'vector']
-        if strategy not in valid_strategies:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid strategy '{strategy}'. Valid strategies: {', '.join(valid_strategies)}"
+        # Determine if running all strategies or single strategy
+        run_all = strategy is None or strategy.lower() == "all"
+
+        if not run_all:
+            # Validate single strategy
+            valid_strategies = ['semantic', 'vector', 'multi_vector', 'hybrid', 'material', 'image']
+            if strategy not in valid_strategies:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid strategy '{strategy}'. Valid strategies: {', '.join(valid_strategies)} or 'all'"
+                )
+
+        # Get Supabase client for fetching related images
+        from app.config import get_settings
+        settings = get_settings()
+        from app.database import get_supabase_client
+        supabase_client = get_supabase_client()
+
+        # Execute search
+        if run_all:
+            logger.info(f"🔍 Running all search strategies for: {request.query}")
+
+            # Run all strategies in parallel
+            tasks = [
+                llamaindex_service.semantic_search_with_mmr(
+                    query=request.query,
+                    k=request.top_k,
+                    lambda_mult=0.5
+                ),
+                llamaindex_service.semantic_search_with_mmr(
+                    query=request.query,
+                    k=request.top_k,
+                    lambda_mult=1.0
+                ),
+                # TODO: Add multi_vector, hybrid, material, image strategies
+            ]
+
+            results_list = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Merge results from all strategies and fetch related images and products
+            merged_results = await _merge_search_results(
+                results_list,
+                ["semantic", "vector"],
+                supabase_client,
+                workspace_id=request.workspace_id,
+                include_related_products=True,
+                related_products_limit=3,
+                custom_relationship_prompt=None
             )
 
-        # Route to appropriate search method based on strategy
-        if strategy == "semantic":
-            # Semantic search using MMR (Maximal Marginal Relevance)
-            # Balances relevance and diversity (lambda_mult=0.5)
-            results = await llamaindex_service.semantic_search_with_mmr(
-                query=request.query,
-                k=request.top_k,
-                lambda_mult=0.5
-            )
+            search_type = "all_strategies"
 
-        elif strategy == "vector":
-            # Pure vector similarity search (cosine distance)
-            # No diversity filtering (lambda_mult=1.0)
-            results = await llamaindex_service.semantic_search_with_mmr(
-                query=request.query,
-                k=request.top_k,
-                lambda_mult=1.0  # Pure similarity, no diversity
+        else:
+            # Single strategy
+            if strategy == "semantic":
+                results = await llamaindex_service.semantic_search_with_mmr(
+                    query=request.query,
+                    k=request.top_k,
+                    lambda_mult=0.5
+                )
+            elif strategy == "vector":
+                results = await llamaindex_service.semantic_search_with_mmr(
+                    query=request.query,
+                    k=request.top_k,
+                    lambda_mult=1.0
+                )
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                    detail=f"Strategy '{strategy}' not yet implemented"
+                )
+
+            # Merge single strategy results and fetch related images and products
+            merged_results = await _merge_search_results(
+                [results],
+                [strategy],
+                supabase_client,
+                workspace_id=request.workspace_id,
+                include_related_products=True,
+                related_products_limit=3,
+                custom_relationship_prompt=None
             )
+            search_type = strategy
 
         processing_time = (datetime.utcnow() - start_time).total_seconds()
 
         return SearchResponse(
             query=request.query,
-            results=results.get('results', []),
-            total_results=results.get('total_results', 0),
-            search_type=strategy,  # Use strategy as search_type
+            results=merged_results,
+            total_results=len(merged_results),
+            search_type=search_type,
             processing_time=processing_time
         )
 
@@ -3167,6 +3265,115 @@ async def search_documents(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Search processing failed: {str(e)}"
         )
+
+
+async def _merge_search_results(
+    results_list: List[Dict],
+    strategy_names: List[str],
+    supabase_client=None,
+    workspace_id: Optional[str] = None,
+    include_related_products: bool = True,
+    related_products_limit: int = 3,
+    custom_relationship_prompt: Optional[str] = None
+) -> List[Dict]:
+    """
+    Merge results from multiple search strategies.
+
+    Deduplicates by ID, calculates weighted average scores, and includes:
+    - All metadata from product.metadata JSONB
+    - Related images via product_image_relationships
+    - Related products (material family, pattern match, collection, complementary)
+    - Factory name, brand, material type
+    """
+    import numpy as np
+    from app.config import get_settings
+    from app.services.product_relationship_service import ProductRelationshipService
+
+    merged: Dict[str, Dict] = {}
+
+    for strategy, result in zip(strategy_names, results_list):
+        if isinstance(result, Exception):
+            logger.warning(f"⚠️ {strategy} search failed: {result}")
+            continue
+
+        for item in result.get('results', []):
+            item_id = item.get('id')
+            if not item_id:
+                continue
+
+            if item_id not in merged:
+                merged[item_id] = {
+                    **item,
+                    'strategy_scores': {}
+                }
+
+            # Track strategy score
+            score = item.get('relevance_score', 0.0)
+            merged[item_id]['strategy_scores'][strategy] = score
+
+    # Calculate weighted average scores
+    for item_id, item in merged.items():
+        scores = list(item['strategy_scores'].values())
+        if scores:
+            item['relevance_score'] = float(np.mean(scores))
+
+        # Remove internal strategy tracking from customer response
+        if 'strategy_scores' in item:
+            del item['strategy_scores']
+
+    # Fetch related images and products for each result
+    if supabase_client:
+        try:
+            # Initialize product relationship service
+            product_rel_service = ProductRelationshipService(
+                supabase_client=supabase_client
+            )
+
+            for item_id, item in merged.items():
+                # Only fetch images and products for products
+                if item.get('type') == 'product' or 'metadata' in item:
+                    # Get related images via product_image_relationships
+                    images_response = supabase_client.table(
+                        'product_image_relationships'
+                    ).select(
+                        'id, image_id, relationship_type, relevance_score, document_images(id, image_url, caption)'
+                    ).eq('product_id', item_id).order('relevance_score', ascending=False).execute()
+
+                    if images_response.data:
+                        related_images = []
+                        for rel in images_response.data:
+                            image_data = rel.get('document_images')
+                            if image_data:
+                                related_images.append({
+                                    'id': image_data.get('id'),
+                                    'url': image_data.get('image_url'),
+                                    'relationship_type': rel.get('relationship_type'),
+                                    'relevance_score': rel.get('relevance_score'),
+                                    'caption': image_data.get('caption')
+                                })
+
+                        if related_images:
+                            item['related_images'] = related_images
+
+                    # Get related products if requested
+                    if include_related_products and workspace_id:
+                        try:
+                            related_products = await product_rel_service.find_related_products(
+                                product_id=item_id,
+                                workspace_id=workspace_id,
+                                limit=related_products_limit,
+                                custom_prompt=custom_relationship_prompt
+                            )
+
+                            if related_products:
+                                item['related_products'] = related_products
+                        except Exception as e:
+                            logger.warning(f"⚠️ Failed to fetch related products for {item_id}: {e}")
+
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to fetch related images and products: {e}")
+
+    return list(merged.values())
 
 @router.get("/documents/documents/{document_id}/content")
 async def get_document_content(
