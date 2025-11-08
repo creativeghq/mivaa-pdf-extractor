@@ -3420,6 +3420,24 @@ async def search_documents(
 
         processing_time = (datetime.utcnow() - start_time).total_seconds()
 
+        # Build search metadata
+        search_metadata = {
+            'prompts_applied': prompts_applied,
+            'prompts_enabled': request.use_search_prompts,
+            'related_products_included': request.include_related_products
+        }
+
+        # Add parallel execution metadata for 'all' strategy
+        if strategy == "all":
+            search_metadata.update({
+                'strategies_executed': results.get('strategies_executed', 0),
+                'strategies_successful': results.get('strategies_successful', 0),
+                'strategies_failed': results.get('strategies_failed', 0),
+                'strategy_breakdown': results.get('strategy_breakdown', {}),
+                'parallel_execution': True,
+                'parallel_processing_time': results.get('processing_time', 0)
+            })
+
         return SearchResponse(
             query=request.query,
             enhanced_query=enhanced_query,
@@ -3427,11 +3445,7 @@ async def search_documents(
             total_results=results.get('total_results', 0),
             search_type=strategy,
             processing_time=processing_time,
-            search_metadata={
-                'prompts_applied': prompts_applied,
-                'prompts_enabled': request.use_search_prompts,
-                'related_products_included': request.include_related_products
-            }
+            search_metadata=search_metadata
         )
 
     except HTTPException:

@@ -65,16 +65,25 @@ async function testParallelSearch(query, workspace_id) {
         // Display results
         console.log(`✅ Request completed in ${totalTime}ms\n`);
 
+        // Extract metadata (could be at root level or in search_metadata)
+        const metadata = data.search_metadata || data;
+        const strategiesExecuted = metadata.strategies_executed || data.strategies_executed;
+        const strategiesSuccessful = metadata.strategies_successful || data.strategies_successful;
+        const strategiesFailed = metadata.strategies_failed || data.strategies_failed;
+        const strategyBreakdown = metadata.strategy_breakdown || data.strategy_breakdown;
+        const parallelProcessingTime = metadata.parallel_processing_time || data.processing_time;
+
         console.log('📊 Performance Metrics:');
         console.log(`   Total Time: ${totalTime}ms`);
-        console.log(`   Processing Time: ${data.processing_time ? (data.processing_time * 1000).toFixed(2) : 'N/A'}ms`);
-        console.log(`   Strategies Executed: ${data.strategies_executed || 'N/A'}`);
-        console.log(`   Strategies Successful: ${data.strategies_successful || 'N/A'}`);
-        console.log(`   Strategies Failed: ${data.strategies_failed || 'N/A'}`);
+        console.log(`   API Processing Time: ${data.processing_time ? (data.processing_time * 1000).toFixed(2) : 'N/A'}ms`);
+        console.log(`   Parallel Processing Time: ${parallelProcessingTime ? (parallelProcessingTime * 1000).toFixed(2) : 'N/A'}ms`);
+        console.log(`   Strategies Executed: ${strategiesExecuted || 'N/A'}`);
+        console.log(`   Strategies Successful: ${strategiesSuccessful || 'N/A'}`);
+        console.log(`   Strategies Failed: ${strategiesFailed || 'N/A'}`);
 
-        if (data.strategy_breakdown) {
+        if (strategyBreakdown) {
             console.log('\n📋 Strategy Breakdown:');
-            for (const [strategy, info] of Object.entries(data.strategy_breakdown)) {
+            for (const [strategy, info] of Object.entries(strategyBreakdown)) {
                 const status = info.success ? '✅' : '❌';
                 console.log(`   ${status} ${strategy}: ${info.count} results`);
             }
@@ -106,14 +115,14 @@ async function testParallelSearch(query, workspace_id) {
         }
 
         // Strategy execution validation
-        if (data.strategies_executed >= 4) {
-            console.log(`   ✅ PASS: ${data.strategies_executed} strategies executed (expected 4-6)`);
+        if (strategiesExecuted >= 4) {
+            console.log(`   ✅ PASS: ${strategiesExecuted} strategies executed (expected 4-6)`);
         } else {
-            console.log(`   ❌ FAIL: Only ${data.strategies_executed} strategies executed (expected 4-6)`);
+            console.log(`   ❌ FAIL: Only ${strategiesExecuted || 0} strategies executed (expected 4-6)`);
         }
 
         // Success rate validation
-        const successRate = data.strategies_successful / data.strategies_executed;
+        const successRate = strategiesExecuted ? strategiesSuccessful / strategiesExecuted : 0;
         if (successRate >= 0.8) {
             console.log(`   ✅ PASS: ${(successRate * 100).toFixed(0)}% success rate (expected >80%)`);
         } else {
@@ -122,10 +131,10 @@ async function testParallelSearch(query, workspace_id) {
 
         return {
             totalTime,
-            processingTime: data.processing_time * 1000,
-            strategiesExecuted: data.strategies_executed,
-            strategiesSuccessful: data.strategies_successful,
-            totalResults: data.total_results,
+            processingTime: parallelProcessingTime ? parallelProcessingTime * 1000 : data.processing_time * 1000,
+            strategiesExecuted: strategiesExecuted || 0,
+            strategiesSuccessful: strategiesSuccessful || 0,
+            totalResults: data.total_results || 0,
             successRate
         };
 
