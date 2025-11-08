@@ -9,6 +9,7 @@ Components are loaded only when needed and can be unloaded after use.
 
 import logging
 import gc
+import inspect
 from typing import Any, Optional, Callable, Dict
 from functools import wraps
 from datetime import datetime
@@ -40,11 +41,15 @@ class LazyComponent:
         if self._loaded and self._instance is not None:
             logger.debug(f"✅ Component '{self.name}' already loaded")
             return self._instance
-        
+
         try:
             logger.info(f"📦 Loading component: {self.name}...")
             self._load_time = datetime.utcnow()
-            self._instance = await self.loader_func() if hasattr(self.loader_func, '__await__') else self.loader_func()
+            # Check if loader_func is an async function (coroutine function)
+            if inspect.iscoroutinefunction(self.loader_func):
+                self._instance = await self.loader_func()
+            else:
+                self._instance = self.loader_func()
             self._loaded = True
             logger.info(f"✅ Component '{self.name}' loaded successfully")
             return self._instance
