@@ -177,7 +177,7 @@ class SearchRequest(BaseModel):
     similarity_threshold: Optional[float] = Field(0.6, ge=0.0, le=1.0, description="Similarity threshold")
     document_ids: Optional[List[str]] = Field(None, description="Filter by document IDs")
     include_content: bool = Field(True, description="Include chunk content in results")
-    workspace_id: str = Field(..., description="Workspace ID for scoped search")
+    workspace_id: str = Field(..., description="Workspace ID for scoped search and related products")
     include_related_products: bool = Field(True, description="Include related products in results")
     related_products_limit: int = Field(3, ge=1, le=10, description="Max related products per result")
     use_search_prompts: bool = Field(True, description="Apply admin-configured search prompts")
@@ -3072,6 +3072,89 @@ async def chat_with_documents(
             detail=f"Chat processing failed: {str(e)}"
         )
 
+
+async def _enhance_search_results(
+    results: List[Dict[str, Any]],
+    workspace_id: str,
+    include_related_products: bool = True,
+    related_products_limit: int = 3
+) -> List[Dict[str, Any]]:
+    """
+    Enhance search results with related products and images.
+
+    Args:
+        results: Raw search results
+        workspace_id: Workspace ID for scoped queries
+        include_related_products: Whether to include related products
+        related_products_limit: Max related products per result
+
+    Returns:
+        Enhanced results with related products and images
+    """
+    try:
+        supabase_client = get_supabase_client()
+        product_rel_service = ProductRelationshipService(supabase_client=supabase_client)
+
+        enhanced = []
+
+        for result in results:
+            # Get product ID from result
+            product_id = result.get('id')
+            if not product_id:
+                enhanced.append(result)
+                continue
+
+            # Fetch related images
+            try:
+                images_response = supabase_client.table('product_image_relationships').select(
+                    'id, image_id, relationship_type, relevance_score, document_images(id, image_url, caption)'
+                ).eq('product_id', product_id).order('relevance_score', desc=True).limit(10).execute()
+
+                related_images = []
+                for img_rel in images_response.data or []:
+                    if img_rel.get('document_images'):
+                        related_images.append({
+                            'id': img_rel['document_images']['id'],
+                            'url': img_rel['document_images']['image_url'],
+                            'relationship_type': img_rel['relationship_type'],
+                            'relevance_score': img_rel['relevance_score'],
+                            'caption': img_rel['document_images'].get('caption')
+                        })
+
+                result['related_images'] = related_images
+            except Exception as e:
+                logger.warning(f"Failed to fetch related images for product {product_id}: {e}")
+                result['related_images'] = []
+
+            # Fetch related products
+            if include_related_products:
+                try:
+                    related_products = await product_rel_service.find_related_products(
+                        product_id=product_id,
+                        workspace_id=workspace_id,
+                        limit=related_products_limit
+                    )
+                    result['related_products'] = related_products
+                except Exception as e:
+                    logger.warning(f"Failed to fetch related products for product {product_id}: {e}")
+                    result['related_products'] = []
+            else:
+                result['related_products'] = []
+
+            # Ensure all metadata is included
+            if 'metadata' not in result:
+                result['metadata'] = {}
+
+            enhanced.append(result)
+
+        return enhanced
+
+    except Exception as e:
+        logger.error(f"Error enhancing search results: {e}", exc_info=True)
+        # Return original results if enhancement fails
+        return results
+
+
 @router.post("/search", response_model=SearchResponse)
 async def search_documents(
     request: SearchRequest,
@@ -3196,51 +3279,12 @@ async def search_documents(
             )
 
         # Enhance results with related products and images
-        enhanced_results = []
-        for result in processed_results:
-            product_id = result.get('id')
-            if not product_id:
-                enhanced_results.append(result)
-                continue
-
-            # Fetch related images
-            try:
-                images_response = supabase_client.table('product_image_relationships').select(
-                    'id, image_id, relationship_type, relevance_score, document_images(id, image_url, caption)'
-                ).eq('product_id', product_id).order('relevance_score', desc=True).limit(10).execute()
-
-                related_images = []
-                for img_rel in images_response.data or []:
-                    if img_rel.get('document_images'):
-                        related_images.append({
-                            'id': img_rel['document_images']['id'],
-                            'url': img_rel['document_images']['image_url'],
-                            'relationship_type': img_rel['relationship_type'],
-                            'relevance_score': img_rel['relevance_score'],
-                            'caption': img_rel['document_images'].get('caption')
-                        })
-
-                result['related_images'] = related_images
-            except Exception as e:
-                logger.warning(f"Failed to fetch related images for product {product_id}: {e}")
-                result['related_images'] = []
-
-            # Fetch related products if enabled
-            if request.include_related_products:
-                try:
-                    related_products = await product_rel_service.find_related_products(
-                        product_id=product_id,
-                        workspace_id=request.workspace_id,
-                        limit=request.related_products_limit
-                    )
-                    result['related_products'] = related_products
-                except Exception as e:
-                    logger.warning(f"Failed to fetch related products for product {product_id}: {e}")
-                    result['related_products'] = []
-            else:
-                result['related_products'] = []
-
-            enhanced_results.append(result)
+        enhanced_results = await _enhance_search_results(
+            processed_results,
+            request.workspace_id,
+            request.include_related_products,
+            request.related_products_limit
+        )
 
         processing_time = (datetime.utcnow() - start_time).total_seconds()
 
