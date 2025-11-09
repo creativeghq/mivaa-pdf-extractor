@@ -68,10 +68,18 @@ def print_warning(text: str):
 
 class SavedSearchesE2ETest:
     """E2E test suite for saved searches."""
-    
+
     def __init__(self):
         self.settings = get_settings()
-        self.supabase = get_supabase_client().client
+
+        # Initialize Supabase client
+        supabase_wrapper = get_supabase_client()
+        supabase_wrapper.initialize(
+            url=self.settings.supabase_url,
+            key=self.settings.supabase_service_role_key
+        )
+        self.supabase = supabase_wrapper.client
+
         self.dedup_service = SearchDeduplicationService()
         self.test_user_id = "test-user-e2e-" + datetime.utcnow().strftime("%Y%m%d%H%M%S")
         self.created_search_ids: List[str] = []
