@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from app.services.search_deduplication_service import SearchDeduplicationService
 from app.config import get_settings
+from app.services.supabase_client import initialize_supabase
 
 async def test_deduplication_service():
     """Test the deduplication service."""
@@ -26,6 +27,14 @@ async def test_deduplication_service():
     print(f"  - Supabase URL: {settings.supabase_url}")
     print(f"  - Anthropic API Key: {'✓ Set' if settings.anthropic_api_key else '✗ Missing'}")
     print(f"  - OpenAI API Key: {'✓ Set' if settings.openai_api_key else '✗ Missing'}")
+
+    # Initialize Supabase
+    try:
+        initialize_supabase(settings)
+        print(f"\n✓ Supabase client initialized")
+    except Exception as e:
+        print(f"\n✗ Failed to initialize Supabase: {e}")
+        return False
     
     # Initialize service
     try:
