@@ -138,20 +138,20 @@ def get_dedup_service() -> SearchDeduplicationService:
 
 async def verify_user_access(user_id: str, search_id: str) -> Dict:
     """Verify user has access to the search."""
-    supabase = get_supabase_client()
-    
-    response = supabase.from_("saved_searches").select("*").eq(
+    supabase = get_supabase_client().client
+
+    response = supabase.table("saved_searches").select("*").eq(
         "id", search_id
     ).eq(
         "user_id", user_id
     ).single().execute()
-    
+
     if not response.data:
         raise HTTPException(
             status_code=404,
             detail=f"Saved search {search_id} not found or access denied"
         )
-    
+
     return response.data
 
 
@@ -197,7 +197,6 @@ async def check_for_duplicates(
             )
         
         # Get existing search details
-        supabase = get_supabase_client()
         existing_search = await verify_user_access(request.user_id, existing_id)
         
         if should_merge:
@@ -275,7 +274,6 @@ async def merge_into_existing(
         )
         
         # Get updated search
-        supabase = get_supabase_client()
         updated_search = await verify_user_access(request.user_id, merged_id)
         
         return SavedSearchResponse(**updated_search)
@@ -301,7 +299,7 @@ async def create_saved_search(
     try:
         logger.info(f"Creating saved search for user {request.user_id}: {request.query}")
 
-        supabase = get_supabase_client()
+        supabase = get_supabase_client().client
 
         # Convert material_filters to dict
         material_filters_dict = request.material_filters.dict() if request.material_filters else {}
@@ -359,7 +357,7 @@ async def create_saved_search(
             "relevance_score": 1.0
         }
 
-        response = supabase.from_("saved_searches").insert(search_data).execute()
+        response = supabase.table("saved_searches").insert(search_data).execute()
 
         if not response.data:
             raise HTTPException(status_code=500, detail="Failed to create saved search")
@@ -391,10 +389,10 @@ async def get_user_saved_searches(
     try:
         logger.info(f"Getting saved searches for user {user_id}")
 
-        supabase = get_supabase_client()
+        supabase = get_supabase_client().client
 
         # Build query
-        query = supabase.from_("saved_searches").select("*").eq("user_id", user_id)
+        query = supabase.table("saved_searches").select("*").eq("user_id", user_id)
 
         if integration_context:
             query = query.eq("integration_context", integration_context)
@@ -463,8 +461,8 @@ async def update_saved_search(
 
         update_data["updated_at"] = datetime.utcnow().isoformat()
 
-        supabase = get_supabase_client()
-        response = supabase.from_("saved_searches").update(update_data).eq(
+        supabase = get_supabase_client().client
+        response = supabase.table("saved_searches").update(update_data).eq(
             "id", search_id
         ).eq("user_id", user_id).execute()
 
@@ -492,8 +490,8 @@ async def delete_saved_search(
         # Verify access
         await verify_user_access(user_id, search_id)
 
-        supabase = get_supabase_client()
-        supabase.from_("saved_searches").delete().eq("id", search_id).eq(
+        supabase = get_supabase_client().client
+        supabase.table("saved_searches").delete().eq("id", search_id).eq(
             "user_id", user_id
         ).execute()
 
@@ -526,7 +524,7 @@ async def execute_saved_search(
         search = await verify_user_access(request.user_id, search_id)
 
         # Update usage tracking
-        supabase = get_supabase_client()
+        supabase = get_supabase_client().client
         update_data = {
             "use_count": search["use_count"] + 1,
             "last_executed_at": datetime.utcnow().isoformat(),
@@ -539,7 +537,7 @@ async def execute_saved_search(
         usage_frequency = (search["use_count"] + 1) / max(days_since_created, 1)
         update_data["relevance_score"] = min(usage_frequency * 10, 10.0)  # Cap at 10.0
 
-        response = supabase.from_("saved_searches").update(update_data).eq(
+        response = supabase.table("saved_searches").update(update_data).eq(
             "id", search_id
         ).eq("user_id", request.user_id).execute()
 

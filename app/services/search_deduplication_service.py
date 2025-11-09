@@ -45,7 +45,7 @@ class SearchDeduplicationService:
     def __init__(self):
         self.anthropic = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
         self.openai = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-        self.supabase = get_supabase_client()
+        self.supabase = get_supabase_client().client
         
         # Configuration
         self.SEMANTIC_THRESHOLD = 0.85
@@ -253,7 +253,7 @@ Rules:
         
         try:
             # Get searches with same core material
-            response = self.supabase.from_("saved_searches").select("*").eq(
+            response = self.supabase.table("saved_searches").select("*").eq(
                 "user_id", user_id
             ).eq(
                 "core_material", analysis.core_material
@@ -444,7 +444,7 @@ Rules:
 
         try:
             # Get existing search
-            response = self.supabase.from_("saved_searches").select("*").eq(
+            response = self.supabase.table("saved_searches").select("*").eq(
                 "id", existing_id
             ).single().execute()
 
@@ -478,7 +478,7 @@ Rules:
                 "updated_at": "now()"
             }
 
-            self.supabase.from_("saved_searches").update(update_data).eq(
+            self.supabase.table("saved_searches").update(update_data).eq(
                 "id", existing_id
             ).execute()
 
