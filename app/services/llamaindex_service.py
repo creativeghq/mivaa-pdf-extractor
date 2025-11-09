@@ -373,8 +373,9 @@ class LlamaIndexService:
             }
 
     def _initialize_embedding_service(self):
-        """Check for OpenAI API key availability."""
+        """Initialize the centralized embedding service."""
         if not self.available:
+            self.embedding_service = None
             return
 
         try:
@@ -389,14 +390,18 @@ class LlamaIndexService:
                 self.logger.error("❌ CRITICAL: OpenAI API key not found in environment variables!")
                 self.logger.error("   Embeddings will NOT be generated for any documents")
                 self.logger.error("   Please set OPENAI_API_KEY environment variable in MIVAA deployment")
+                self.embedding_service = None
                 return
 
-            self.logger.info(f"✅ OpenAI API key found, embeddings will be generated")
+            # Initialize the RealEmbeddingsService
+            self.embedding_service = RealEmbeddingsService()
+            self.logger.info(f"✅ OpenAI API key found, embeddings service initialized")
 
         except Exception as e:
             import traceback
-            self.logger.error(f"Failed to check OpenAI API key: {e}")
+            self.logger.error(f"Failed to initialize embedding service: {e}")
             self.logger.error(f"Full traceback: {traceback.format_exc()}")
+            self.embedding_service = None
 
     def _create_embedding_wrapper(self):
         """Create a wrapper that integrates our embedding service with LlamaIndex."""
@@ -4987,6 +4992,15 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
             start_time = time.time()
             supabase_client = get_supabase_client()
 
+            # Check if embedding service is available
+            if not self.embedding_service:
+                return {
+                    "results": [],
+                    "message": "Embedding service not available",
+                    "total_results": 0,
+                    "processing_time": time.time() - start_time
+                }
+
             # Generate query embedding using the centralized embedding service
             query_embedding = await self.embedding_service.generate_embedding(
                 text=query,
@@ -5103,6 +5117,15 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
 
             start_time = time.time()
             supabase_client = get_supabase_client()
+
+            # Check if embedding service is available
+            if not self.embedding_service:
+                return {
+                    "results": [],
+                    "message": "Embedding service not available",
+                    "total_results": 0,
+                    "processing_time": time.time() - start_time
+                }
 
             # Generate query embedding for semantic search
             query_embedding = await self.embedding_service.generate_embedding(
