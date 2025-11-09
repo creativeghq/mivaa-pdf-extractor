@@ -78,15 +78,19 @@ def signal_handler(signum, frame):
 
         # Log active background tasks
         try:
-            from app.api.rag_routes import job_storage
-            active_jobs = [job_id for job_id, job in job_storage.items() if job.get("status") == "processing"]
-            if active_jobs:
-                logger.error(f"🛑 INTERRUPTED JOBS: {len(active_jobs)} active jobs will be terminated:")
-                for job_id in active_jobs:
-                    job = job_storage[job_id]
-                    logger.error(f"   - Job {job_id}: Document {job.get('document_id', 'unknown')}")
+            import sys
+            if 'app.api.rag_routes' in sys.modules:
+                from app.api.rag_routes import job_storage
+                active_jobs = [job_id for job_id, job in job_storage.items() if job.get("status") == "processing"]
+                if active_jobs:
+                    logger.error(f"🛑 INTERRUPTED JOBS: {len(active_jobs)} active jobs will be terminated:")
+                    for job_id in active_jobs:
+                        job = job_storage[job_id]
+                        logger.error(f"   - Job {job_id}: Document {job.get('document_id', 'unknown')}")
+                else:
+                    logger.info("✅ No active jobs to interrupt")
             else:
-                logger.info("✅ No active jobs to interrupt")
+                logger.info("ℹ️ RAG routes not yet initialized, skipping job logging")
         except Exception as e:
             logger.error(f"Failed to log active jobs: {e}")
 
@@ -329,36 +333,40 @@ async def lifespan(app: FastAPI):
 
     # Mark active jobs as interrupted in database before shutdown
     try:
-        from app.api.rag_routes import job_storage
-        # get_supabase_client is already imported at top of file - don't re-import locally
+        import sys
+        if 'app.api.rag_routes' in sys.modules:
+            from app.api.rag_routes import job_storage
+            # get_supabase_client is already imported at top of file - don't re-import locally
 
-        active_jobs = [job_id for job_id, job in job_storage.items() if job.get("status") == "processing"]
-        if active_jobs:
-            logger.error(f"🛑 SHUTDOWN WARNING: {len(active_jobs)} jobs still processing - marking as interrupted")
+            active_jobs = [job_id for job_id, job in job_storage.items() if job.get("status") == "processing"]
+            if active_jobs:
+                logger.error(f"🛑 SHUTDOWN WARNING: {len(active_jobs)} jobs still processing - marking as interrupted")
 
-            supabase_client = get_supabase_client()
-            for job_id in active_jobs:
-                job = job_storage[job_id]
-                logger.error(f"   - Job {job_id}: Document {job.get('document_id', 'unknown')}, Started: {job.get('started_at', 'unknown')}")
+                supabase_client = get_supabase_client()
+                for job_id in active_jobs:
+                    job = job_storage[job_id]
+                    logger.error(f"   - Job {job_id}: Document {job.get('document_id', 'unknown')}, Started: {job.get('started_at', 'unknown')}")
 
-                # Mark job as interrupted in database
-                try:
-                    supabase_client.client.table('background_jobs').update({
-                        'status': 'interrupted',
-                        'error': 'Service restart detected',
-                        'interrupted_at': datetime.now().isoformat(),
-                        'updated_at': datetime.now().isoformat()
-                    }).eq('id', job_id).execute()
+                    # Mark job as interrupted in database
+                    try:
+                        supabase_client.client.table('background_jobs').update({
+                            'status': 'interrupted',
+                            'error': 'Service restart detected',
+                            'interrupted_at': datetime.now().isoformat(),
+                            'updated_at': datetime.now().isoformat()
+                        }).eq('id', job_id).execute()
 
-                    # Update in-memory storage
-                    job_storage[job_id]['status'] = 'interrupted'
-                    job_storage[job_id]['error'] = 'Service restart detected'
+                        # Update in-memory storage
+                        job_storage[job_id]['status'] = 'interrupted'
+                        job_storage[job_id]['error'] = 'Service restart detected'
 
-                    logger.info(f"   ✅ Marked job {job_id} as interrupted in database")
-                except Exception as job_error:
-                    logger.error(f"   ❌ Failed to mark job {job_id} as interrupted: {job_error}")
+                        logger.info(f"   ✅ Marked job {job_id} as interrupted in database")
+                    except Exception as job_error:
+                        logger.error(f"   ❌ Failed to mark job {job_id} as interrupted: {job_error}")
+            else:
+                logger.info("✅ No active jobs during shutdown")
         else:
-            logger.info("✅ No active jobs during shutdown")
+            logger.info("ℹ️ RAG routes not yet initialized, skipping job interruption marking")
     except Exception as e:
         logger.error(f"Failed to check/interrupt active jobs during shutdown: {e}")
 
