@@ -1397,6 +1397,7 @@ from app.api.ai_metrics_routes import router as ai_metrics_router
 from app.api.ai_services_routes import router as ai_services_router
 from app.api.admin_prompts import router as admin_prompts_router, config_router as extraction_config_router
 from app.api.metadata import router as metadata_router
+from app.api.saved_searches_routes import router as saved_searches_router
 
 app.include_router(search_router)
 app.include_router(images_router)
@@ -1413,6 +1414,7 @@ app.include_router(ai_services_router)
 app.include_router(admin_prompts_router)  # Admin prompts management
 app.include_router(extraction_config_router)  # Extraction configuration
 app.include_router(metadata_router)  # NEW: Metadata management (scope detection, application, listing)
+app.include_router(saved_searches_router)  # NEW: Saved searches with AI deduplication
 
 
 # ============================================================================
