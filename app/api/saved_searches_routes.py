@@ -20,11 +20,11 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from app.services.search_deduplication_service import (
+from ..services.search_deduplication_service import (
     get_deduplication_service,
     SearchDeduplicationService
 )
-from app.integrations.supabase_client import get_supabase_client
+from ..services.supabase_client import get_supabase_client
 
 # Configure logging
 logger = logging.getLogger(__name__)
