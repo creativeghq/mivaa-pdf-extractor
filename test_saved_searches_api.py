@@ -24,8 +24,8 @@ async def test_deduplication_service():
     settings = get_settings()
     print(f"\n✓ Settings loaded")
     print(f"  - Supabase URL: {settings.supabase_url}")
-    print(f"  - Anthropic API Key: {'✓ Set' if settings.ANTHROPIC_API_KEY else '✗ Missing'}")
-    print(f"  - OpenAI API Key: {'✓ Set' if settings.OPENAI_API_KEY else '✗ Missing'}")
+    print(f"  - Anthropic API Key: {'✓ Set' if settings.anthropic_api_key else '✗ Missing'}")
+    print(f"  - OpenAI API Key: {'✓ Set' if settings.openai_api_key else '✗ Missing'}")
     
     # Initialize service
     try:

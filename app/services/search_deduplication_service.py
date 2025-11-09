@@ -43,8 +43,8 @@ class SearchDeduplicationService:
     """Service for intelligent search deduplication."""
     
     def __init__(self):
-        self.anthropic = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-        self.openai = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        self.anthropic = AsyncAnthropic(api_key=settings.anthropic_api_key)
+        self.openai = openai.AsyncOpenAI(api_key=settings.openai_api_key)
         self.supabase = get_supabase_client().client
         
         # Configuration
