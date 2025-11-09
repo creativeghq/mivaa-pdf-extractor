@@ -21,8 +21,11 @@ import numpy as np
 from anthropic import AsyncAnthropic
 import openai
 
-from app.core.config import settings
-from app.integrations.supabase_client import get_supabase_client
+from ..config import get_settings
+from .supabase_client import get_supabase_client
+
+# Get settings
+settings = get_settings()
 
 
 @dataclass
