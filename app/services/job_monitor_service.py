@@ -189,9 +189,9 @@ class JobMonitorService:
         """Cleanup old checkpoints and completed jobs"""
         try:
             # Cleanup checkpoints older than 7 days
-            result = self.supabase_client.client.rpc("cleanup_old_checkpoints").execute()
+            result = self.supabase_client.client.rpc("cleanup_old_checkpoints", {}).execute()
             deleted = result.data if result.data else 0
-            
+
             if deleted > 0:
                 logger.info(f"🧹 Cleaned up {deleted} old checkpoints")
             
