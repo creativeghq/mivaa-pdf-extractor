@@ -16,11 +16,12 @@ import json
 import tempfile
 import zipfile
 import httpx
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from pathlib import Path
+from collections import defaultdict, deque
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile, status, Request
 from fastapi.responses import JSONResponse, FileResponse
 
 from ..schemas.images import (
@@ -53,6 +54,36 @@ router = APIRouter(prefix="/api/images", tags=["Image Analysis"])
 
 # Get settings
 settings = get_settings()
+
+# Rate limiter for image export (5 exports per hour per user)
+export_rate_limiter = defaultdict(deque)
+EXPORT_RATE_LIMIT = 5  # Max exports per hour
+EXPORT_RATE_WINDOW = 3600  # 1 hour in seconds
+
+
+def check_export_rate_limit(user_id: str) -> bool:
+    """
+    Check if user is within export rate limit (5 exports/hour).
+
+    Args:
+        user_id: User ID to check
+
+    Returns:
+        True if allowed, False if rate limit exceeded
+    """
+    now = datetime.utcnow()
+    user_exports = export_rate_limiter[user_id]
+
+    # Remove exports older than 1 hour
+    while user_exports and user_exports[0] <= now - timedelta(seconds=EXPORT_RATE_WINDOW):
+        user_exports.popleft()
+
+    # Check if under limit
+    if len(user_exports) < EXPORT_RATE_LIMIT:
+        user_exports.append(now)
+        return True
+
+    return False
 
 
 @router.post("/analyze", response_model=ImageAnalysisResponse)
@@ -625,10 +656,12 @@ def cleanup_temp_file(file_path: str):
 async def export_document_images(
     document_id: str,
     background_tasks: BackgroundTasks,
+    request: Request,
     format: str = Query("PNG", description="Image format: PNG, JPEG, WEBP"),
     quality: int = Query(95, ge=1, le=100, description="Image quality (1-100)"),
     include_metadata: bool = Query(True, description="Include metadata.json in ZIP"),
-    max_images: int = Query(500, ge=1, le=500, description="Maximum images to export")
+    max_images: int = Query(500, ge=1, le=500, description="Maximum images to export"),
+    current_user: User = Depends(get_current_user)
 ):
     """
     **📦 Batch Image Export - Streaming ZIP Generation**
@@ -681,7 +714,14 @@ async def export_document_images(
     - **Rate limit**: 5 exports/hour per user
     """
     try:
-        logger.info(f"📦 Starting image export for document {document_id}")
+        logger.info(f"📦 Starting image export for document {document_id} by user {current_user.id}")
+
+        # Check rate limit (5 exports/hour per user)
+        if not check_export_rate_limit(current_user.id):
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Rate limit exceeded. Maximum {EXPORT_RATE_LIMIT} exports per hour allowed."
+            )
 
         # Validate format
         valid_formats = ["PNG", "JPEG", "WEBP"]
