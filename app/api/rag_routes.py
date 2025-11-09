@@ -256,6 +256,7 @@ class AdvancedQueryResponse(BaseModel):
 async def get_llamaindex_service() -> LlamaIndexService:
     """Get LlamaIndex service instance using lazy loading."""
     from app.main import app
+    import inspect
 
     # Try to use component_manager for lazy loading
     if hasattr(app.state, 'component_manager') and app.state.component_manager:
@@ -266,9 +267,13 @@ async def get_llamaindex_service() -> LlamaIndexService:
         except Exception as e:
             logger.error(f"Failed to load LlamaIndex service via component_manager: {e}")
 
-    # Fallback to direct service if already loaded
+    # Fallback to direct service if already loaded (but not if it's a coroutine)
     if hasattr(app.state, 'llamaindex_service') and app.state.llamaindex_service is not None:
-        return app.state.llamaindex_service
+        # Check if it's actually a service instance, not a coroutine
+        if not inspect.iscoroutine(app.state.llamaindex_service):
+            return app.state.llamaindex_service
+        else:
+            logger.warning("app.state.llamaindex_service is a coroutine, not a service instance")
 
     # Service not available
     raise HTTPException(
