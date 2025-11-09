@@ -74,10 +74,7 @@ class SavedSearchesE2ETest:
 
         # Initialize Supabase client
         supabase_wrapper = get_supabase_client()
-        supabase_wrapper.initialize(
-            url=self.settings.supabase_url,
-            key=self.settings.supabase_service_role_key
-        )
+        supabase_wrapper.initialize(self.settings)
         self.supabase = supabase_wrapper.client
 
         self.dedup_service = SearchDeduplicationService()
