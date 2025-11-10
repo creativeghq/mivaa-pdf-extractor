@@ -1408,6 +1408,7 @@ from app.api.metadata import router as metadata_router
 from app.api.saved_searches_routes import router as saved_searches_router
 from app.api.duplicate_detection_routes import router as duplicate_detection_router
 from app.api.suggestions import router as suggestions_router
+from app.api.data_import_routes import router as data_import_router
 
 app.include_router(search_router)
 app.include_router(images_router)
@@ -1427,6 +1428,7 @@ app.include_router(metadata_router)  # NEW: Metadata management (scope detection
 app.include_router(saved_searches_router)  # NEW: Saved searches with AI deduplication
 app.include_router(duplicate_detection_router)  # NEW: Duplicate detection and product merging (same factory only)
 app.include_router(suggestions_router)  # NEW: Search suggestions, auto-complete, trending, typo correction
+app.include_router(data_import_router)  # NEW: Data import (XML, web scraping) with batch processing
 
 
 # ============================================================================
