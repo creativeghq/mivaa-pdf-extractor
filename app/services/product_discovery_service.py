@@ -714,7 +714,7 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                     latency_ms=latency_ms,
                     confidence_score=result.get("confidence_score", 0.9),
                     confidence_breakdown={},
-                    action="product_discovery",
+                    action="use_ai_result",  # Fixed: must be 'use_ai_result' or 'fallback_to_rules'
                     job_id=job_id
                 )
                 

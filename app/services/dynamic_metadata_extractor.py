@@ -315,7 +315,7 @@ class DynamicMetadataExtractor:
                 latency_ms=latency_ms,
                 confidence_score=0.9,
                 confidence_breakdown={},
-                action="metadata_extraction",
+                action="use_ai_result",  # Fixed: must be 'use_ai_result' or 'fallback_to_rules'
                 job_id=self.job_id
             )
 
