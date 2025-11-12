@@ -352,13 +352,27 @@ class DynamicMetadataExtractor:
 
             # Log AI call
             latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-            await self.ai_logger.log_openai_call(
+
+            # Calculate cost
+            input_cost = (response.usage.prompt_tokens / 1_000_000) * 2.50  # GPT-4o pricing
+            output_cost = (response.usage.completion_tokens / 1_000_000) * 10.00
+            total_cost = input_cost + output_cost
+
+            await self.ai_logger.log_ai_call(
                 task="dynamic_metadata_extraction",
                 model="gpt-4o",
                 input_tokens=response.usage.prompt_tokens,
                 output_tokens=response.usage.completion_tokens,
+                cost=total_cost,
                 latency_ms=latency_ms,
                 confidence_score=0.9,
+                confidence_breakdown={
+                    "model_confidence": 0.9,
+                    "completeness": 0.9,
+                    "consistency": 0.9,
+                    "validation": 0.9
+                },
+                action="use_ai_result",
                 job_id=self.job_id
             )
 
