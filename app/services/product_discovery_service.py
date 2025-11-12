@@ -459,8 +459,13 @@ Your task is to identify and extract content across the following categories:
 
 **GENERAL INSTRUCTIONS:**
 1. Be comprehensive - identify EVERY instance in each category
-2. Classify each page as: "product", "certificate", "logo", "specification", "marketing", "admin", or "transitional"
-3. Provide confidence scores (0.0-1.0) for each item
+2. **CRITICAL: For page_range, you MUST identify the COMPLETE page range for each product:**
+   - Include ALL consecutive pages where the product appears (not just 2 representative pages)
+   - Example: If a product spans pages 22-27, return [22, 23, 24, 25, 26, 27], NOT just [22, 23]
+   - Look for: product name continuity, related images, variant displays, technical specs across multiple pages
+   - A product's page range ends when a new product begins or when content becomes unrelated
+3. Classify each page as: "product", "certificate", "logo", "specification", "marketing", "admin", or "transitional"
+4. Provide confidence scores (0.0-1.0) for each item
 
 **OUTPUT FORMAT (JSON):**
 ```json
@@ -584,10 +589,15 @@ Your task is to identify and extract content across the following categories:
    - INCLUDE if product has: dedicated page spread (1-12 pages) OR comprehensive metadata OR visual prominence OR content depth
    - Use multiple identification methods: page spread, metadata presence, visual prominence, or content depth
    - Even single-page products count if they have comprehensive metadata and visual prominence
-2. For other categories: Be comprehensive - identify EVERY instance
-3. Focus on fulfilling the user's request: "{agent_prompt}"
-4. Classify each page as: "product", "certificate", "logo", "specification", "marketing", "admin", or "transitional"
-5. Provide confidence scores (0.0-1.0) for each item
+2. **CRITICAL: For page_range, you MUST identify the COMPLETE page range for each product:**
+   - Include ALL consecutive pages where the product appears (not just 2 representative pages)
+   - Example: If a product spans pages 22-27, return [22, 23, 24, 25, 26, 27], NOT just [22, 23]
+   - Look for: product name continuity, related images, variant displays, technical specs across multiple pages
+   - A product's page range ends when a new product begins or when content becomes unrelated
+3. For other categories: Be comprehensive - identify EVERY instance
+4. Focus on fulfilling the user's request: "{agent_prompt}"
+5. Classify each page as: "product", "certificate", "logo", "specification", "marketing", "admin", or "transitional"
+6. Provide confidence scores (0.0-1.0) for each item
 
 **SPECIAL HANDLING FOR USER REQUEST:**
 - If user mentions specific product names (e.g., "NOVA"), prioritize finding those products
