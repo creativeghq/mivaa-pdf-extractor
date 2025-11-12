@@ -804,6 +804,13 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
             content = response.choices[0].message.content.strip()
             result = json.loads(content)
 
+            # DEBUG: Log how many products GPT found
+            products_found = len(result.get("products", []))
+            self.logger.info(f"🔍 GPT-4o discovered {products_found} products")
+            if products_found > 0:
+                product_names = [p.get("name", "Unknown") for p in result.get("products", [])]
+                self.logger.info(f"   Product names: {product_names}")
+
             # Log AI call
             latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
             confidence_score = result.get("confidence_score", 0.9)
