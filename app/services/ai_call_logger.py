@@ -16,6 +16,7 @@ import json
 
 from app.services.supabase_client import get_supabase_client
 from app.config.ai_pricing import ai_pricing
+from app.utils.json_encoder import json_dumps
 
 logger = logging.getLogger(__name__)
 
@@ -84,14 +85,14 @@ class AICallLogger:
                 "model": model,
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
-                "cost": Decimal(str(cost)),
+                "cost": float(cost),  # Convert to float for JSON serialization
                 "latency_ms": latency_ms,
-                "confidence_score": Decimal(str(round(confidence_score, 2))),
-                "confidence_breakdown": json.dumps(confidence_breakdown),
+                "confidence_score": round(confidence_score, 2),  # Use float instead of Decimal
+                "confidence_breakdown": json_dumps(confidence_breakdown),  # Use custom encoder
                 "action": action,
                 "fallback_reason": fallback_reason,
-                "request_data": json.dumps(request_data) if request_data else None,
-                "response_data": json.dumps(response_data) if response_data else None,
+                "request_data": json_dumps(request_data) if request_data else None,  # Use custom encoder
+                "response_data": json_dumps(response_data) if response_data else None,  # Use custom encoder
                 "error_message": error_message
             }
             
