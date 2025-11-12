@@ -403,11 +403,13 @@ class ProductDiscoveryService:
    - Application examples or use cases described
 
 **CRITICAL RULES:**
-- A product appearing in BOTH index AND dedicated section = count ONLY the dedicated section
-- A product with ONLY thumbnail in index = EXCLUDE
+- A product appearing in BOTH index AND dedicated section = count ONLY the dedicated section (not the index mention)
+- A product with ONLY thumbnail in index = EXCLUDE (no dedicated pages)
 - A product with small reference in footer/header = EXCLUDE
 - A product with comprehensive metadata even on 1 page = INCLUDE
-- When in doubt, check if removing this would lose significant product information
+- A "dedicated section" means: product name as heading + ANY product details (dimensions, colors, designer, images, description)
+- If a product has its own page(s) with product information, it MUST be included even if also mentioned in index
+- When in doubt, INCLUDE the product - better to have false positives than miss real products
 
 **Extract ALL available metadata for each MAIN product:**
 - Basic info: name, description, category
