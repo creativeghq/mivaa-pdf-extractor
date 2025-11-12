@@ -796,11 +796,10 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
             
             # Log AI call
             latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-            await self.ai_logger.log_openai_call(
+            await self.ai_logger.log_gpt_call(
                 task="product_discovery",
                 model="gpt-4o",
-                input_tokens=response.usage.prompt_tokens,
-                output_tokens=response.usage.completion_tokens,
+                response=response,
                 latency_ms=latency_ms,
                 confidence_score=result.get("confidence_score", 0.9),
                 job_id=job_id
