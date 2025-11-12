@@ -546,7 +546,7 @@ Your task is to identify and extract content across the following categories:
 ```
 
 **PDF CONTENT:**
-{pdf_text[:50000]}
+{pdf_text[:200000]}
 
 Analyze the above content and return ONLY valid JSON with ALL content discovered across the requested categories."""
 
@@ -683,7 +683,7 @@ Your task is to identify and extract content across the following categories:
 ```
 
 **PDF CONTENT:**
-{pdf_text[:50000]}
+{pdf_text[:200000]}
 
 Analyze the above content and return ONLY valid JSON with ALL content discovered across the requested categories."""
 
