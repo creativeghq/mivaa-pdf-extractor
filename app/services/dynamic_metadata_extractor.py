@@ -20,8 +20,18 @@ import re
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 import json
+import os
+
+import anthropic
+import openai
+
+from app.services.ai_call_logger import AICallLogger
 
 logger = logging.getLogger(__name__)
+
+# Get API keys from environment
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 
 # ============================================================================
@@ -196,16 +206,24 @@ class DynamicMetadataExtractor:
     """
     Extracts metadata dynamically using AI, without hardcoded attribute checks.
     """
-    
-    def __init__(self, ai_client=None):
+
+    def __init__(self, model: str = "claude", job_id: Optional[str] = None):
         """
         Initialize extractor.
-        
+
         Args:
-            ai_client: AI client (Claude, GPT, etc.) for extraction
+            model: "claude" for Claude Sonnet 4.5 or "gpt" for GPT-4o
+            job_id: Optional job ID for AI call logging
         """
-        self.ai_client = ai_client
+        self.model = model
+        self.job_id = job_id
         self.logger = logging.getLogger(__name__)
+        self.ai_logger = AICallLogger()
+
+        if model == "claude" and not ANTHROPIC_API_KEY:
+            raise ValueError("ANTHROPIC_API_KEY not set - cannot use Claude")
+        if model == "gpt" and not OPENAI_API_KEY:
+            raise ValueError("OPENAI_API_KEY not set - cannot use GPT")
     
     async def extract_metadata(
         self,
@@ -215,12 +233,12 @@ class DynamicMetadataExtractor:
     ) -> Dict[str, Any]:
         """
         Extract metadata dynamically from PDF text.
-        
+
         Args:
             pdf_text: Text content from PDF
             category_hint: Optional material category hint
             manual_overrides: Manual values from admin (override AI extraction)
-        
+
         Returns:
             {
                 "critical": {...},
@@ -236,48 +254,137 @@ class DynamicMetadataExtractor:
         try:
             # Step 1: AI extraction
             prompt = get_dynamic_extraction_prompt(pdf_text, category_hint)
-            
-            if self.ai_client:
-                ai_response = await self._call_ai(prompt)
-                extracted_data = self._parse_ai_response(ai_response)
+
+            # Call AI model
+            if self.model == "claude":
+                ai_response = await self._call_claude(prompt)
             else:
-                # Fallback to pattern-based extraction
-                extracted_data = self._fallback_extraction(pdf_text)
-            
+                ai_response = await self._call_gpt(prompt)
+
+            extracted_data = self._parse_ai_response(ai_response)
+
             # Step 2: Apply manual overrides
             if manual_overrides:
                 extracted_data = self._apply_manual_overrides(extracted_data, manual_overrides)
-            
+
             # Step 3: Validate critical fields
             validation_result = self._validate_critical_fields(extracted_data)
-            
+
             # Step 4: Add metadata
             extracted_data["metadata"] = {
                 "extraction_timestamp": datetime.utcnow().isoformat(),
-                "extraction_method": "ai_dynamic" if self.ai_client else "pattern_fallback",
+                "extraction_method": f"ai_dynamic_{self.model}",
                 "validation_passed": validation_result["valid"],
                 "validation_errors": validation_result.get("errors", []),
                 "manual_overrides_applied": bool(manual_overrides)
             }
-            
+
             return extracted_data
-            
+
         except Exception as e:
             self.logger.error(f"Metadata extraction failed: {e}")
             return self._get_empty_result(error=str(e))
     
-    async def _call_ai(self, prompt: str) -> str:
-        """Call AI service for extraction."""
-        # Implementation depends on your AI client (Claude, GPT, etc.)
-        # This is a placeholder
-        raise NotImplementedError("AI client integration needed")
+    async def _call_claude(self, prompt: str) -> str:
+        """Call Claude Sonnet 4.5 for metadata extraction."""
+        start_time = datetime.now()
+
+        try:
+            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+            response = client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=8000,
+                temperature=0.1,  # Low temperature for consistent extraction
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+            )
+
+            content = response.content[0].text
+
+            # Log AI call
+            latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+            await self.ai_logger.log_claude_call(
+                task="dynamic_metadata_extraction",
+                model="claude-sonnet-4-5",
+                response=response,
+                latency_ms=latency_ms,
+                confidence_score=0.9,
+                confidence_breakdown={},
+                action="metadata_extraction",
+                job_id=self.job_id
+            )
+
+            return content
+
+        except Exception as e:
+            self.logger.error(f"Claude metadata extraction failed: {e}")
+            raise RuntimeError(f"Claude metadata extraction failed: {str(e)}") from e
+
+    async def _call_gpt(self, prompt: str) -> str:
+        """Call GPT-4o for metadata extraction."""
+        start_time = datetime.now()
+
+        try:
+            client = openai.OpenAI(api_key=OPENAI_API_KEY)
+
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an expert at extracting structured metadata from product specifications. Always respond with valid JSON."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                temperature=0.1,
+                max_tokens=8000
+            )
+
+            content = response.choices[0].message.content
+
+            # Log AI call
+            latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+            await self.ai_logger.log_openai_call(
+                task="dynamic_metadata_extraction",
+                model="gpt-4o",
+                input_tokens=response.usage.prompt_tokens,
+                output_tokens=response.usage.completion_tokens,
+                latency_ms=latency_ms,
+                confidence_score=0.9,
+                job_id=self.job_id
+            )
+
+            return content
+
+        except Exception as e:
+            self.logger.error(f"GPT metadata extraction failed: {e}")
+            raise RuntimeError(f"GPT metadata extraction failed: {str(e)}") from e
     
     def _parse_ai_response(self, response: str) -> Dict[str, Any]:
         """Parse AI JSON response."""
         try:
+            # Try to extract JSON from markdown code blocks if present
+            if "```json" in response:
+                json_match = re.search(r'```json\s*(\{.*?\})\s*```', response, re.DOTALL)
+                if json_match:
+                    response = json_match.group(1)
+            elif "```" in response:
+                json_match = re.search(r'```\s*(\{.*?\})\s*```', response, re.DOTALL)
+                if json_match:
+                    response = json_match.group(1)
+
             return json.loads(response)
-        except json.JSONDecodeError:
-            self.logger.error("Failed to parse AI response as JSON")
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Failed to parse AI response as JSON: {e}")
+            self.logger.debug(f"Raw response (first 500 chars): {response[:500]}")
             return self._get_empty_result()
     
     def _fallback_extraction(self, pdf_text: str) -> Dict[str, Any]:

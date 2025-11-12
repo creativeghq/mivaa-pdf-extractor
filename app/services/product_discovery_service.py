@@ -43,6 +43,7 @@ from PIL import Image
 import io
 
 from app.services.ai_call_logger import AICallLogger
+from app.services.dynamic_metadata_extractor import DynamicMetadataExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -263,7 +264,12 @@ class ProductDiscoveryService:
 
             # Parse and validate results
             catalog = self._parse_discovery_results(result, total_pages, categories)
-            
+
+            # ✅ NEW: Enrich products with comprehensive metadata using DynamicMetadataExtractor
+            if "products" in categories and catalog.products:
+                self.logger.info(f"🔍 Enriching {len(catalog.products)} products with comprehensive metadata...")
+                catalog = await self._enrich_products_with_metadata(catalog, pdf_text, job_id)
+
             processing_time = (datetime.now() - start_time).total_seconds() * 1000
             catalog.processing_time_ms = processing_time
             catalog.model_used = self.model
@@ -868,4 +874,100 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
         )
 
         return catalog
+
+    async def _enrich_products_with_metadata(
+        self,
+        catalog: ProductCatalog,
+        pdf_text: str,
+        job_id: Optional[str] = None
+    ) -> ProductCatalog:
+        """
+        Enrich products with comprehensive metadata using DynamicMetadataExtractor.
+
+        This extracts 200+ metadata fields across 9 functional categories:
+        - slip_safety, surface_gloss, mechanical, thermal, chemical,
+          dimensional, environmental, compliance, commercial
+
+        Args:
+            catalog: Product catalog from discovery
+            pdf_text: Full PDF text content
+            job_id: Optional job ID for logging
+
+        Returns:
+            Catalog with enriched product metadata
+        """
+        try:
+            # Initialize metadata extractor with same model as discovery
+            metadata_extractor = DynamicMetadataExtractor(model=self.model, job_id=job_id)
+
+            enriched_products = []
+
+            for product in catalog.products:
+                try:
+                    # Extract product-specific text from page range
+                    product_text = self._extract_product_text(pdf_text, product.page_range)
+
+                    # Get category hint from existing metadata
+                    category_hint = product.metadata.get("category") or product.metadata.get("material")
+
+                    # Extract comprehensive metadata
+                    self.logger.info(f"   🔍 Extracting metadata for: {product.name}")
+                    extracted = await metadata_extractor.extract_metadata(
+                        pdf_text=product_text,
+                        category_hint=category_hint
+                    )
+
+                    # Merge extracted metadata with existing metadata
+                    # Priority: existing metadata > extracted critical > extracted discovered
+                    enriched_metadata = {
+                        **extracted.get("discovered", {}),  # Lowest priority
+                        **extracted.get("critical", {}),    # Medium priority
+                        **product.metadata,                 # Highest priority (from discovery)
+                        "_extraction_metadata": extracted.get("metadata", {})
+                    }
+
+                    # Flatten nested values (extract "value" from {"value": "...", "confidence": ...})
+                    flattened_metadata = {}
+                    for key, value in enriched_metadata.items():
+                        if isinstance(value, dict) and "value" in value:
+                            flattened_metadata[key] = value["value"]
+                        else:
+                            flattened_metadata[key] = value
+
+                    # Update product with enriched metadata
+                    product.metadata = flattened_metadata
+                    enriched_products.append(product)
+
+                    self.logger.info(f"      ✅ Extracted {len(flattened_metadata)} metadata fields")
+
+                except Exception as e:
+                    self.logger.error(f"Failed to enrich metadata for {product.name}: {e}")
+                    # Keep original product if enrichment fails
+                    enriched_products.append(product)
+
+            # Update catalog with enriched products
+            catalog.products = enriched_products
+
+            return catalog
+
+        except Exception as e:
+            self.logger.error(f"Metadata enrichment failed: {e}")
+            # Return original catalog if enrichment fails
+            return catalog
+
+    def _extract_product_text(self, pdf_text: str, page_range: List[int]) -> str:
+        """
+        Extract text for specific product pages.
+
+        Args:
+            pdf_text: Full PDF text
+            page_range: List of page numbers for this product
+
+        Returns:
+            Text content for the product pages
+        """
+        # For now, return full PDF text
+        # TODO: Implement page-specific text extraction if needed
+        # This would require storing page boundaries during PDF extraction
+        return pdf_text[:10000]  # Limit to first 10k chars to avoid token limits
 
