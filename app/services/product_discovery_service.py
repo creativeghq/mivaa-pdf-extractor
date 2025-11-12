@@ -366,25 +366,57 @@ class ProductDiscoveryService:
         if "products" in categories:
             category_instructions.append("""
 **PRODUCTS (with ALL metadata - inseparable):**
-- Identify ONLY MAIN FEATURED PRODUCTS with dedicated multi-page presentations (e.g., "NOVA", "BEAT", "FOLD")
+- Identify ONLY MAIN FEATURED PRODUCTS with dedicated presentations (e.g., "NOVA", "BEAT", "FOLD")
 - EXCLUDE products that appear only in:
   * Index pages (table of contents, product lists, thumbnails)
   * Cross-references or "related products" sections
   * Small preview images or catalog grids
   * Footer/header references
-- A MAIN PRODUCT must have:
-  * Dedicated page spread (typically 2-12 consecutive pages)
-  * Large hero images showing the product
-  * Detailed product description and specifications
-  * Designer/studio attribution (usually present)
-- Extract ALL available metadata for each MAIN product:
-  * Basic info: name, description, category
-  * Design: designer, studio
-  * Dimensions: all size variants (e.g., ["15×38", "20×40"])
-  * Variants: color, finish, texture variants
-  * Factory/Group: factory name, factory group, manufacturer, country of origin
-  * Technical specs: slip resistance, fire rating, thickness, water absorption, finish, material
-  * Any other relevant metadata found in the PDF
+
+**PRODUCT IDENTIFICATION CRITERIA (use ANY of these to identify a MAIN product):**
+
+1. **Page Spread Method** (most common):
+   - Dedicated page spread (typically 1-12 consecutive pages)
+   - Large hero images showing the product prominently
+   - Detailed product description and specifications
+   - Designer/studio attribution (usually present)
+
+2. **Metadata Presence Method** (for compact catalogs):
+   - Product has comprehensive metadata including:
+     * Product name prominently displayed (large font, title position)
+     * Dimensions/sizes listed (e.g., "15×38", "20×40", "60x60cm")
+     * Designer or studio name mentioned
+     * Technical specifications (material, finish, thickness, etc.)
+     * Factory/manufacturer information
+   - Even if on a single page, if metadata is comprehensive, it's a MAIN product
+
+3. **Visual Prominence Method** (for mixed layouts):
+   - Product image is significantly larger than surrounding content (>30% of page)
+   - Product name in prominent typography (larger than body text)
+   - Dedicated section with clear visual separation from other content
+   - Product has its own design space, not part of a grid/list
+
+4. **Content Depth Method** (for text-heavy catalogs):
+   - Detailed product description (>100 words)
+   - Multiple paragraphs about the product
+   - Technical specifications table or detailed specs
+   - Application examples or use cases described
+
+**CRITICAL RULES:**
+- A product appearing in BOTH index AND dedicated section = count ONLY the dedicated section
+- A product with ONLY thumbnail in index = EXCLUDE
+- A product with small reference in footer/header = EXCLUDE
+- A product with comprehensive metadata even on 1 page = INCLUDE
+- When in doubt, check if removing this would lose significant product information
+
+**Extract ALL available metadata for each MAIN product:**
+- Basic info: name, description, category
+- Design: designer, studio
+- Dimensions: all size variants (e.g., ["15×38", "20×40"])
+- Variants: color, finish, texture variants
+- Factory/Group: factory name, factory group, manufacturer, country of origin
+- Technical specs: slip resistance, fire rating, thickness, water absorption, finish, material
+- Any other relevant metadata found in the PDF
 - Image pages for each product (the full page range of the product spread)
 - Products and metadata are INSEPARABLE - always extract together""")
 
@@ -547,9 +579,11 @@ Your task is to identify and extract content across the following categories:
 {chr(10).join(category_sections)}
 
 **GENERAL INSTRUCTIONS:**
-1. For PRODUCTS: Identify ONLY main featured products with dedicated multi-page spreads
-   - EXCLUDE index pages, thumbnails, cross-references, and catalog grids
-   - A main product must have: dedicated page spread (2-12 pages), large hero images, detailed specs, designer attribution
+1. For PRODUCTS: Identify ONLY main featured products using ANY of these criteria:
+   - EXCLUDE index pages, thumbnails, cross-references, and catalog grids (this is critical!)
+   - INCLUDE if product has: dedicated page spread (1-12 pages) OR comprehensive metadata OR visual prominence OR content depth
+   - Use multiple identification methods: page spread, metadata presence, visual prominence, or content depth
+   - Even single-page products count if they have comprehensive metadata and visual prominence
 2. For other categories: Be comprehensive - identify EVERY instance
 3. Focus on fulfilling the user's request: "{agent_prompt}"
 4. Classify each page as: "product", "certificate", "logo", "specification", "marketing", "admin", or "transitional"
