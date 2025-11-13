@@ -2715,25 +2715,38 @@ async def process_document_with_discovery(
         images_saved = 0
         images_skipped = 0
 
-        for img_data in pdf_result_with_images.extracted_images:
+        for idx, img_data in enumerate(pdf_result_with_images.extracted_images):
             try:
                 # Extract page number from filename
                 filename = img_data.get('filename', '')
                 match = re.search(r'page_(\d+)_', filename) or re.search(r'\.pdf-(\d+)-\d+\.', filename)
                 page_num = int(match.group(1)) if match else None
 
+                # DETAILED LOGGING: Log every image being processed
+                logger.info(f"   [{idx+1}/{len(pdf_result_with_images.extracted_images)}] Processing image: {filename} (page {page_num})")
+                logger.info(f"      storage_url: {img_data.get('storage_url')}")
+                logger.info(f"      storage_path: {img_data.get('storage_path')}")
+                logger.info(f"      storage_bucket: {img_data.get('storage_bucket')}")
+
                 # Determine image category
                 image_category = 'product' if (page_num and page_num in product_pages) else 'other'
+                logger.info(f"      category: {image_category} (product_pages: {sorted(product_pages)[:5]}...)")
 
                 # Skip images based on focused_extraction and extract_categories
                 if focused_extraction and 'all' not in extract_categories:
                     # Only save images from categories specified in extract_categories
                     if 'products' in extract_categories and image_category != 'product':
-                        logger.debug(f"Skipping image from page {page_num} (category: {image_category}, not in extract_categories)")
+                        logger.info(f"      ⏭️  SKIPPED: Not a product image (focused_extraction=True, categories={extract_categories})")
                         images_skipped += 1
                         continue
                     # Note: Other categories (certificates, logos, specifications) are handled
                     # by the document_entities system, not the images table
+
+                # Validate required fields
+                if not img_data.get('storage_url'):
+                    logger.warning(f"      ⚠️  SKIPPED: Missing storage_url")
+                    images_skipped += 1
+                    continue
 
                 # Prepare image record for database
                 image_record = {
@@ -2762,9 +2775,14 @@ async def process_document_with_discovery(
                 # Insert into database
                 supabase.client.table('document_images').insert(image_record).execute()
                 images_saved += 1
+                logger.info(f"      ✅ SAVED to database (total: {images_saved})")
 
             except Exception as e:
-                logger.error(f"Failed to save image {filename} to database: {e}")
+                logger.error(f"      ❌ FAILED to save image {filename} to database: {e}")
+                logger.error(f"         Error type: {type(e).__name__}")
+                logger.error(f"         Error details: {str(e)}")
+                import traceback
+                logger.error(f"         Traceback: {traceback.format_exc()}")
 
         logger.info(f"✅ Saved {images_saved}/{len(pdf_result_with_images.extracted_images)} images to database")
         if images_skipped > 0:
