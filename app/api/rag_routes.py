@@ -38,6 +38,50 @@ from app.utils.logging import PDFProcessingLogger
 
 logger = logging.getLogger(__name__)
 
+# ============================================================================
+# Background Task Helper for Async Functions
+# ============================================================================
+
+def run_async_in_background(async_func):
+    """
+    Wrapper to run async functions in FastAPI BackgroundTasks.
+
+    FastAPI's BackgroundTasks.add_task() expects synchronous functions.
+    When an async function is passed, it doesn't execute properly because
+    there's no event loop in the background thread.
+
+    This wrapper creates a new event loop specifically for the background task,
+    allowing async functions to run correctly in background threads.
+
+    Usage:
+        background_tasks.add_task(
+            run_async_in_background(process_document_with_discovery),
+            job_id=job_id,
+            document_id=document_id,
+            ...
+        )
+
+    Args:
+        async_func: The async function to wrap
+
+    Returns:
+        A synchronous wrapper function that can be used with BackgroundTasks
+    """
+    def wrapper(*args, **kwargs):
+        # Create a new event loop for this background task
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            # Run the async function to completion
+            loop.run_until_complete(async_func(*args, **kwargs))
+        except Exception as e:
+            logger.error(f"❌ Background task failed: {str(e)}", exc_info=True)
+            raise
+        finally:
+            # Clean up the event loop
+            loop.close()
+    return wrapper
+
 # Initialize router
 router = APIRouter(prefix="/api/rag", tags=["RAG"])
 
@@ -756,8 +800,9 @@ async def upload_document(
             processing_mode = "standard"
 
         # Use the existing process_document_with_discovery function
+        # Wrap async function for background execution
         background_tasks.add_task(
-            process_document_with_discovery,
+            run_async_in_background(process_document_with_discovery),
             job_id=job_id,
             document_id=document_id,
             file_content=file_content,
@@ -1048,7 +1093,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
                 # Use product discovery pipeline for resume
                 logger.info(f"🔄 Resuming product discovery job {job_id}")
                 background_tasks.add_task(
-                    process_document_with_discovery,
+                    run_async_in_background(process_document_with_discovery),
                     job_id=job_id,
                     document_id=document_id,
                     file_content=file_content,
@@ -1064,7 +1109,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
                 # Use standard processing for resume
                 logger.info(f"🔄 Resuming standard document job {job_id}")
                 background_tasks.add_task(
-                    process_document_background,
+                    run_async_in_background(process_document_background),
                     job_id=job_id,
                     document_id=document_id,
                     file_content=file_content,
