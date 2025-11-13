@@ -1821,10 +1821,17 @@ class LlamaIndexService:
                         try:
                             chunk_id = str(uuid4())
 
-                            # Extract embedding from node if available
+                            # CRITICAL FIX: Generate embedding for this node's text
+                            # The nodes from VectorStoreIndex don't have embeddings attached,
+                            # so we need to generate them manually
                             embedding_vector = None
-                            if hasattr(node, 'embedding') and node.embedding is not None:
-                                embedding_vector = node.embedding
+                            try:
+                                if self.embeddings and node.text:
+                                    # Generate embedding using the same model used by VectorStoreIndex
+                                    embedding_vector = self.embeddings.get_text_embedding(node.text)
+                                    self.logger.debug(f"Generated embedding for chunk {chunks_saved}: {len(embedding_vector)} dimensions")
+                            except Exception as emb_gen_error:
+                                self.logger.warning(f"Failed to generate embedding for chunk {chunks_saved}: {emb_gen_error}")
 
                             chunk_data = {
                                 "id": chunk_id,
