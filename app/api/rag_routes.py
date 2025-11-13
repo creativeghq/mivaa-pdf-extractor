@@ -2736,17 +2736,41 @@ async def process_document_with_discovery(
         )
 
         # Process images with Llama + CLIP (always extract images, even in focused mode)
+        # OPTIMIZATION: Process in batches to reduce memory consumption
         images_processed = 0
         clip_embeddings_generated = 0
+        BATCH_SIZE = 10  # Process 10 images at a time to prevent OOM
+
         logger.info(f"   Total images extracted from PDF: {len(pdf_result_with_images.extracted_images)}")
         logger.info(f"   Images grouped by page: {len(images_by_page)} pages with images")
         logger.info(f"   Product pages to process: {sorted(product_pages)}")
+        logger.info(f"   🔧 BATCH PROCESSING: {BATCH_SIZE} images per batch with memory cleanup")
 
+        # Flatten images_by_page into a single list for batch processing
+        all_images_to_process = []
         for page_num, images in images_by_page.items():
-            # Process images from all pages (focused extraction only affects chunking, not images)
-            logger.info(f"   Processing {len(images)} images from page {page_num}")
-
             for img_data in images:
+                all_images_to_process.append((page_num, img_data))
+
+        total_images = len(all_images_to_process)
+        logger.info(f"   📊 Total images to process: {total_images}")
+
+        # Process images in batches
+        for batch_start in range(0, total_images, BATCH_SIZE):
+            batch_end = min(batch_start + BATCH_SIZE, total_images)
+            batch_images = all_images_to_process[batch_start:batch_end]
+            batch_num = (batch_start // BATCH_SIZE) + 1
+            total_batches = (total_images + BATCH_SIZE - 1) // BATCH_SIZE
+
+            logger.info(f"   🔄 Processing batch {batch_num}/{total_batches} ({len(batch_images)} images)")
+
+            # Log memory before batch
+            import psutil
+            process = psutil.Process()
+            mem_before = process.memory_info().rss / 1024 / 1024  # MB
+            logger.info(f"   💾 Memory before batch: {mem_before:.1f} MB")
+
+            for page_num, img_data in batch_images:
                 try:
                     # Read image file and convert to base64
                     image_path = img_data.get('path')
@@ -2759,7 +2783,7 @@ async def process_document_with_discovery(
                         image_base64 = base64.b64encode(image_bytes).decode('utf-8')
 
                     # CRITICAL: Generate CLIP embeddings for this image
-                    logger.info(f"🎨 Generating CLIP embeddings for image on page {page_num}")
+                    logger.info(f"🎨 Generating CLIP embeddings for image on page {page_num} ({images_processed+1}/{total_images})")
                     clip_result = await llamaindex_service._generate_clip_embeddings(
                         image_base64=image_base64,
                         image_path=image_path
@@ -2822,15 +2846,32 @@ async def process_document_with_discovery(
                     images_processed += 1
                     tracker.total_images_extracted += 1
 
-                    # Update progress every 10 images
-                    if images_processed % 10 == 0:
-                        await tracker.update_database_stats(
-                            images_stored=images_processed,
-                            sync_to_db=True
-                        )
+                    # Clear image data from memory immediately after processing
+                    del image_bytes
+                    del image_base64
+                    if clip_result:
+                        del clip_result
+                    if analysis_result:
+                        del analysis_result
 
                 except Exception as e:
                     logger.error(f"Failed to process image on page {page_num}: {e}")
+
+            # CRITICAL: Force garbage collection after each batch to free memory
+            import gc
+            gc.collect()
+
+            # Log memory after batch
+            mem_after = process.memory_info().rss / 1024 / 1024  # MB
+            mem_freed = mem_before - mem_after
+            logger.info(f"   💾 Memory after batch: {mem_after:.1f} MB (freed: {mem_freed:.1f} MB)")
+            logger.info(f"   ✅ Batch {batch_num}/{total_batches} complete: {clip_embeddings_generated} CLIP embeddings generated so far")
+
+            # Update progress after each batch
+            await tracker.update_database_stats(
+                images_stored=images_processed,
+                sync_to_db=True
+            )
 
         # Don't overwrite tracker.images_stored - it was already set correctly from images_saved
         # tracker.images_stored is the count of images saved to database (line 2570)
