@@ -1002,13 +1002,13 @@ class LlamaIndexService:
                         index = VectorStoreIndex.from_documents(
                             documents,
                             storage_context=storage_context,
-                            embed_model=self.embed_model  # ✅ FIX: Add embedding model
+                            embed_model=self.embeddings  # ✅ FIX: Use self.embeddings (initialized in _initialize_components)
                         )
                     else:
                         # Use in-memory storage
                         index = VectorStoreIndex.from_documents(
                             documents,
-                            embed_model=self.embed_model  # ✅ FIX: Add embedding model
+                            embed_model=self.embeddings  # ✅ FIX: Use self.embeddings (initialized in _initialize_components)
                         )
 
                     # Store index reference
@@ -1072,13 +1072,13 @@ class LlamaIndexService:
                 combined_index = VectorStoreIndex.from_documents(
                     all_documents,
                     storage_context=storage_context,
-                    embed_model=self.embed_model  # ✅ FIX: Add embedding model
+                    embed_model=self.embeddings  # ✅ FIX: Use self.embeddings (initialized in _initialize_components)
                 )
             else:
                 # Use in-memory storage for combined index
                 combined_index = VectorStoreIndex.from_documents(
                     all_documents,
-                    embed_model=self.embed_model  # ✅ FIX: Add embedding model
+                    embed_model=self.embeddings  # ✅ FIX: Use self.embeddings (initialized in _initialize_components)
                 )
 
             # Cache the combined index
@@ -1767,7 +1767,7 @@ class LlamaIndexService:
 
                 # Create index with SupabaseVectorStore if available, otherwise use local storage
                 self.logger.info(f"📝 Creating index (vector_store={self.vector_store is not None})...")
-                self.logger.info(f"📝 Using embedding model: {self.embed_model.__class__.__name__ if self.embed_model else 'None'}")
+                self.logger.info(f"📝 Using embedding model: {self.embeddings.__class__.__name__ if self.embeddings else 'None'}")
 
                 if self.vector_store:
                     # Use SupabaseVectorStore
@@ -1776,7 +1776,7 @@ class LlamaIndexService:
                         documents,
                         storage_context=storage_context,
                         node_parser=self.node_parser,
-                        embed_model=self.embed_model  # ✅ FIX: Add embedding model to generate embeddings
+                        embed_model=self.embeddings  # ✅ FIX: Use self.embeddings (initialized in _initialize_components)
                     )
                     self.logger.info(f"✅ Created index in Supabase for document: {document_id} with embeddings")
                 else:
@@ -1784,7 +1784,7 @@ class LlamaIndexService:
                     index = VectorStoreIndex.from_documents(
                         documents,
                         node_parser=self.node_parser,
-                        embed_model=self.embed_model  # ✅ FIX: Add embedding model to generate embeddings
+                        embed_model=self.embeddings  # ✅ FIX: Use self.embeddings (initialized in _initialize_components)
                     )
 
                     # Store index locally
