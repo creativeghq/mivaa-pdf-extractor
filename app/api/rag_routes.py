@@ -38,6 +38,7 @@ from app.services.stuck_job_analyzer import stuck_job_analyzer
 from app.utils.logging import PDFProcessingLogger
 from app.utils.timeout_guard import with_timeout, TimeoutConstants, TimeoutError, ProgressiveTimeoutStrategy
 from app.utils.circuit_breaker import claude_breaker, llama_breaker, clip_breaker, CircuitBreakerError
+from app.utils.memory_monitor import memory_monitor
 
 logger = logging.getLogger(__name__)
 
@@ -2793,9 +2794,17 @@ async def process_document_with_discovery(
         images_saved = 0
         images_skipped = 0
 
-        # ⚡ OPTIMIZATION: Batch database inserts (100 images at a time)
+        # 🚀 DYNAMIC BATCH SIZE: Calculate optimal batch size for database inserts
+        DEFAULT_INSERT_BATCH_SIZE = 100
+        BATCH_INSERT_SIZE = memory_monitor.calculate_optimal_batch_size(
+            default_batch_size=DEFAULT_INSERT_BATCH_SIZE,
+            min_batch_size=10,  # At least 10 records per batch
+            max_batch_size=200,  # Max 200 records per batch
+            memory_per_item_mb=0.5  # Estimate 0.5MB per image record (metadata only)
+        )
+        logger.info(f"   🔧 DYNAMIC DB BATCH SIZE: {BATCH_INSERT_SIZE} records per batch (adaptive)")
+
         image_records_batch = []
-        BATCH_INSERT_SIZE = 100
 
         for idx, img_data in enumerate(pdf_result_with_images.extracted_images):
             try:
@@ -2911,12 +2920,21 @@ async def process_document_with_discovery(
         # OPTIMIZATION: Process in batches to reduce memory consumption
         images_processed = 0
         clip_embeddings_generated = 0
-        BATCH_SIZE = 10  # Process 10 images at a time to prevent OOM
+
+        # 🚀 DYNAMIC BATCH SIZE: Calculate optimal batch size based on available memory
+        DEFAULT_BATCH_SIZE = 10
+        BATCH_SIZE = memory_monitor.calculate_optimal_batch_size(
+            default_batch_size=DEFAULT_BATCH_SIZE,
+            min_batch_size=2,  # At least 2 images per batch
+            max_batch_size=20,  # Max 20 images per batch
+            memory_per_item_mb=15.0  # Estimate 15MB per image (CLIP + Llama + image data)
+        )
 
         logger.info(f"   Total images extracted from PDF: {len(pdf_result_with_images.extracted_images)}")
         logger.info(f"   Images grouped by page: {len(images_by_page)} pages with images")
         logger.info(f"   Product pages to process: {sorted(product_pages)}")
-        logger.info(f"   🔧 BATCH PROCESSING: {BATCH_SIZE} images per batch with memory cleanup")
+        logger.info(f"   🔧 DYNAMIC BATCH PROCESSING: {BATCH_SIZE} images per batch (adaptive based on memory)")
+        memory_monitor.log_memory_stats(prefix="   ")
 
         # Flatten images_by_page into a single list for batch processing
         all_images_to_process = []
@@ -3067,6 +3085,18 @@ async def process_document_with_discovery(
 
             logger.info(f"   🔄 Processing batch {batch_num}/{total_batches} ({len(batch_images)} images)")
 
+            # 🚀 MEMORY PRESSURE MONITORING: Check memory before processing batch
+            try:
+                await memory_monitor.wait_for_memory_available(
+                    required_mb=50,  # Need at least 50MB free for image processing
+                    max_wait_seconds=120,  # Wait up to 2 minutes for memory
+                    operation_name=f"batch {batch_num}/{total_batches}"
+                )
+            except MemoryError as mem_error:
+                logger.error(f"❌ Insufficient memory for batch {batch_num}: {mem_error}")
+                # Continue anyway, but log the warning
+                memory_monitor.log_memory_stats(prefix=f"   [Batch {batch_num}] ")
+
             # Log memory before batch
             import psutil
             process = psutil.Process()
@@ -3094,10 +3124,16 @@ async def process_document_with_discovery(
             import gc
             gc.collect()
 
-            # Log memory after batch
+            # 🚀 MEMORY MONITORING: Log memory stats and check pressure after batch
             mem_after = process.memory_info().rss / 1024 / 1024  # MB
             mem_freed = mem_before - mem_after
             logger.info(f"   💾 Memory after batch: {mem_after:.1f} MB (freed: {mem_freed:.1f} MB)")
+
+            # Check memory pressure and trigger cleanup if needed
+            mem_stats = await memory_monitor.check_memory_pressure()
+            if mem_stats.is_high_pressure:
+                logger.warning(f"   ⚠️ High memory pressure detected: {mem_stats.percent_used:.1f}%")
+
             logger.info(f"   ✅ Batch {batch_num}/{total_batches} complete: {clip_embeddings_generated} CLIP embeddings generated so far")
 
             # Update progress after each batch
