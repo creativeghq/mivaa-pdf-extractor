@@ -68,18 +68,22 @@ def run_async_in_background(async_func):
         A synchronous wrapper function that can be used with BackgroundTasks
     """
     def wrapper(*args, **kwargs):
+        logger.info(f"🚀 Background task wrapper started for {async_func.__name__}")
         # Create a new event loop for this background task
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
+            logger.info(f"▶️  Executing async function {async_func.__name__} in background")
             # Run the async function to completion
             loop.run_until_complete(async_func(*args, **kwargs))
+            logger.info(f"✅ Background task {async_func.__name__} completed successfully")
         except Exception as e:
-            logger.error(f"❌ Background task failed: {str(e)}", exc_info=True)
+            logger.error(f"❌ Background task {async_func.__name__} failed: {str(e)}", exc_info=True)
             raise
         finally:
             # Clean up the event loop
             loop.close()
+            logger.info(f"🔚 Background task wrapper finished for {async_func.__name__}")
     return wrapper
 
 # Initialize router
