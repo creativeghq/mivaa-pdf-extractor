@@ -1061,6 +1061,19 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
             doc_data = doc_result.data[0]
             file_path = doc_data.get('file_path')
             filename = doc_data.get('filename', 'document.pdf')
+            metadata = doc_data.get('metadata', {})
+
+            # CRITICAL FIX: If file_path is a local temp file, use file_url from metadata instead
+            if file_path and file_path.startswith('/tmp/'):
+                file_url = metadata.get('file_url')
+                if file_url:
+                    logger.info(f"⚠️ file_path is local temp file ({file_path}), using file_url from metadata: {file_url}")
+                    file_path = file_url
+                else:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Document {document_id} has local temp file_path but no file_url in metadata"
+                    )
 
             if not file_path:
                 raise HTTPException(
@@ -1068,12 +1081,23 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
                     detail=f"Document {document_id} has no file_path"
                 )
 
-            # Download file from storage
-            logger.info(f"📥 Downloading file from storage: {file_path}")
-            bucket_name = file_path.split('/')[0] if '/' in file_path else 'pdf-documents'
-            storage_path = '/'.join(file_path.split('/')[1:]) if '/' in file_path else file_path
+            # Download file from storage or URL
+            logger.info(f"📥 Downloading file from: {file_path}")
 
-            file_response = supabase_client.client.storage.from_(bucket_name).download(storage_path)
+            # Check if file_path is a full URL (starts with http:// or https://)
+            if file_path.startswith('http://') or file_path.startswith('https://'):
+                # Download from URL
+                import httpx
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(file_path)
+                    response.raise_for_status()
+                    file_response = response.content
+                    logger.info(f"✅ Downloaded file from URL: {len(file_response)} bytes")
+            else:
+                # Download from Supabase storage
+                bucket_name = file_path.split('/')[0] if '/' in file_path else 'pdf-documents'
+                storage_path = '/'.join(file_path.split('/')[1:]) if '/' in file_path else file_path
+                file_response = supabase_client.client.storage.from_(bucket_name).download(storage_path)
             if not file_response:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
