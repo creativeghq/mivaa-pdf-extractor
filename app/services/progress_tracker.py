@@ -75,6 +75,11 @@ class ProgressTracker:
     _supabase: Any = field(default=None, init=False, repr=False)
     _db_sync_enabled: bool = field(default=True, init=False)
 
+    # Heartbeat monitoring
+    _heartbeat_task: Optional[Any] = field(default=None, init=False, repr=False)
+    _heartbeat_running: bool = field(default=False, init=False)
+    last_heartbeat: Optional[datetime] = None
+
     def __post_init__(self):
         """Initialize page statuses and database client."""
         # Initialize Supabase client
@@ -370,6 +375,9 @@ class ProgressTracker:
         """
         self.current_stage = ProcessingStage.COMPLETED
 
+        # Stop heartbeat when job completes
+        await self.stop_heartbeat()
+
         try:
             # Update background_jobs table
             if self._db_sync_enabled and self._supabase:
@@ -418,6 +426,9 @@ class ProgressTracker:
         self.current_stage = ProcessingStage.FAILED
         error_message = str(error)
 
+        # Stop heartbeat when job fails
+        await self.stop_heartbeat()
+
         try:
             # Update background_jobs table
             if self._db_sync_enabled and self._supabase:
@@ -448,6 +459,83 @@ class ProgressTracker:
 
         except Exception as e:
             logger.error(f"❌ Failed to mark job as failed: {e}")
+
+    async def start_heartbeat(self, interval_seconds: int = 30):
+        """
+        Start sending heartbeat signals every interval_seconds to prove job is alive.
+
+        This allows the job monitor to detect crashes within 2 missed heartbeats (60s)
+        instead of waiting for the full stuck_job_timeout (5min).
+
+        Args:
+            interval_seconds: How often to send heartbeat (default: 30s)
+        """
+        if self._heartbeat_running:
+            logger.warning(f"Heartbeat already running for job {self.job_id}")
+            return
+
+        self._heartbeat_running = True
+        logger.info(f"🫀 Starting heartbeat for job {self.job_id} (interval: {interval_seconds}s)")
+
+        async def heartbeat_loop():
+            """Background task that sends heartbeat signals"""
+            import asyncio
+
+            while self._heartbeat_running:
+                try:
+                    await self.update_heartbeat()
+                    await asyncio.sleep(interval_seconds)
+                except asyncio.CancelledError:
+                    logger.info(f"🫀 Heartbeat cancelled for job {self.job_id}")
+                    break
+                except Exception as e:
+                    logger.error(f"❌ Heartbeat error for job {self.job_id}: {e}")
+                    await asyncio.sleep(interval_seconds)  # Continue despite errors
+
+        # Start heartbeat task
+        import asyncio
+        self._heartbeat_task = asyncio.create_task(heartbeat_loop())
+
+    async def update_heartbeat(self):
+        """
+        Send a heartbeat signal to the database to prove job is alive.
+
+        Updates the 'last_heartbeat' timestamp in background_jobs table.
+        Job monitor uses this to detect silent crashes.
+        """
+        try:
+            self.last_heartbeat = datetime.utcnow()
+
+            if self._db_sync_enabled and self._supabase:
+                self._supabase.client.table('background_jobs')\
+                    .update({
+                        'last_heartbeat': self.last_heartbeat.isoformat(),
+                        'updated_at': self.last_heartbeat.isoformat()
+                    })\
+                    .eq('id', self.job_id)\
+                    .execute()
+
+                logger.debug(f"🫀 Heartbeat sent for job {self.job_id}")
+
+        except Exception as e:
+            logger.error(f"❌ Failed to update heartbeat for job {self.job_id}: {e}")
+
+    async def stop_heartbeat(self):
+        """Stop the heartbeat monitoring task"""
+        if not self._heartbeat_running:
+            return
+
+        self._heartbeat_running = False
+
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except:
+                pass  # Ignore cancellation errors
+            self._heartbeat_task = None
+
+        logger.info(f"🫀 Heartbeat stopped for job {self.job_id}")
 
 
 class ProgressTrackingService:

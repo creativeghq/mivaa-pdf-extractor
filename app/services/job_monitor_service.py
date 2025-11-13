@@ -94,30 +94,69 @@ class JobMonitorService:
         try:
             self.stats["checks_performed"] += 1
             self.stats["last_check"] = datetime.utcnow().isoformat()
-            
-            # 1. Detect stuck jobs
+
+            # 1. Detect stuck jobs (by heartbeat timeout - 2min detection)
+            heartbeat_stuck_jobs = await self._detect_heartbeat_timeout_jobs()
+
+            # 2. Detect stuck jobs (by updated_at timeout - 5min detection)
             stuck_jobs = await checkpoint_recovery_service.detect_stuck_jobs(
                 timeout_minutes=self.stuck_timeout
             )
-            
-            if stuck_jobs:
-                self.stats["stuck_jobs_detected"] += len(stuck_jobs)
-                logger.warning(f"🛑 Found {len(stuck_jobs)} stuck jobs")
-                
-                # 2. Try to recover each stuck job
-                for job in stuck_jobs:
+
+            # Combine both detection methods
+            all_stuck_jobs = heartbeat_stuck_jobs + stuck_jobs
+
+            if all_stuck_jobs:
+                self.stats["stuck_jobs_detected"] += len(all_stuck_jobs)
+                logger.warning(f"🛑 Found {len(all_stuck_jobs)} stuck jobs ({len(heartbeat_stuck_jobs)} by heartbeat, {len(stuck_jobs)} by timeout)")
+
+                # 3. Try to recover each stuck job
+                for job in all_stuck_jobs:
                     await self._recover_stuck_job(job)
-            
-            # 3. Cleanup old checkpoints
+
+            # 4. Cleanup old checkpoints
             if self.stats["checks_performed"] % 60 == 0:  # Every hour
                 await self._cleanup_old_data()
-            
-            # 4. Report health metrics
+
+            # 5. Report health metrics
             if self.stats["checks_performed"] % 10 == 0:  # Every 10 checks
                 await self._report_health()
-                
+
         except Exception as e:
             logger.error(f"❌ Error in check_and_recover: {e}", exc_info=True)
+
+    async def _detect_heartbeat_timeout_jobs(self, heartbeat_timeout_seconds: int = 120) -> List[Dict[str, Any]]:
+        """
+        Detect jobs that haven't sent a heartbeat in heartbeat_timeout_seconds.
+
+        This provides FAST crash detection (2min) compared to stuck_job_timeout (5min).
+
+        Args:
+            heartbeat_timeout_seconds: Consider job crashed if no heartbeat for this long (default: 120s = 2min)
+
+        Returns:
+            List of stuck jobs detected by heartbeat timeout
+        """
+        try:
+            cutoff_time = datetime.utcnow() - timedelta(seconds=heartbeat_timeout_seconds)
+
+            # Find processing jobs with stale heartbeat
+            result = self.supabase_client.client.table("background_jobs")\
+                .select("*")\
+                .eq("status", "processing")\
+                .lt("last_heartbeat", cutoff_time.isoformat())\
+                .execute()
+
+            stuck_jobs = result.data or []
+
+            if stuck_jobs:
+                logger.warning(f"🫀 Detected {len(stuck_jobs)} jobs with stale heartbeat (>{heartbeat_timeout_seconds}s)")
+
+            return stuck_jobs
+
+        except Exception as e:
+            logger.error(f"❌ Error detecting heartbeat timeout jobs: {e}")
+            return []
     
     async def _recover_stuck_job(self, job: Dict[str, Any]):
         """
@@ -358,8 +397,8 @@ class JobMonitorService:
 
 # Global instance
 job_monitor_service = JobMonitorService(
-    check_interval_seconds=60,  # Check every minute
-    stuck_job_timeout_minutes=30,  # Consider stuck after 30 minutes
+    check_interval_seconds=30,  # Check every 30 seconds (was 60s)
+    stuck_job_timeout_minutes=5,  # Consider stuck after 5 minutes (was 30min) - 6x faster detection
     auto_restart_enabled=True  # Auto-restart enabled
 )
 

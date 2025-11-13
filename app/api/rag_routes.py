@@ -36,6 +36,7 @@ from app.services.product_relationship_service import ProductRelationshipService
 from app.services.search_prompt_service import SearchPromptService
 from app.services.stuck_job_analyzer import stuck_job_analyzer
 from app.utils.logging import PDFProcessingLogger
+from app.utils.timeout_guard import with_timeout, TimeoutConstants, TimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -2410,6 +2411,9 @@ async def process_document_with_discovery(
         )
         await tracker.start_processing()
 
+        # 🫀 Start heartbeat monitoring (30s interval, 2min crash detection)
+        await tracker.start_heartbeat(interval_seconds=30)
+
         # Create INITIALIZED checkpoint
         await checkpoint_recovery_service.create_checkpoint(
             job_id=job_id,
@@ -2452,12 +2456,16 @@ async def process_document_with_discovery(
 
             logger.info(f"📁 Saved PDF to temp file: {temp_pdf_path}")
 
-            # Extract PDF text first
+            # Extract PDF text first (with timeout guard)
             pdf_processor = PDFProcessor()
-            pdf_result = await pdf_processor.process_pdf_from_bytes(
-                pdf_bytes=file_content,
-                document_id=document_id,
-                processing_options={'extract_images': False, 'extract_tables': False}
+            pdf_result = await with_timeout(
+                pdf_processor.process_pdf_from_bytes(
+                    pdf_bytes=file_content,
+                    document_id=document_id,
+                    processing_options={'extract_images': False, 'extract_tables': False}
+                ),
+                timeout_seconds=TimeoutConstants.PDF_FULL_EXTRACTION,
+                operation_name="PDF text extraction"
             )
 
             # Create processed_documents record IMMEDIATELY (required for job_progress foreign key)
@@ -2491,20 +2499,24 @@ async def process_document_with_discovery(
                     status="pending"
                 )
 
-            # Run TWO-STAGE category-based discovery with prompt enhancement
+            # Run TWO-STAGE category-based discovery with prompt enhancement (with timeout guard)
             # Stage 0A: Index scan (first 50-100 pages)
             # Stage 0B: Focused extraction (specific pages per product)
             discovery_service = ProductDiscoveryService(model=discovery_model)
-            catalog = await discovery_service.discover_products(
-                pdf_content=file_content,
-                pdf_text=pdf_result.markdown_content,
-                total_pages=pdf_result.page_count,
-                categories=extract_categories,
-                agent_prompt=agent_prompt,  # From unified_upload request
-                workspace_id=workspace_id,
-                enable_prompt_enhancement=enable_prompt_enhancement,
-                job_id=job_id,
-                pdf_path=temp_pdf_path  # ✅ NEW: Enable two-stage discovery
+            catalog = await with_timeout(
+                discovery_service.discover_products(
+                    pdf_content=file_content,
+                    pdf_text=pdf_result.markdown_content,
+                    total_pages=pdf_result.page_count,
+                    categories=extract_categories,
+                    agent_prompt=agent_prompt,  # From unified_upload request
+                    workspace_id=workspace_id,
+                    enable_prompt_enhancement=enable_prompt_enhancement,
+                    job_id=job_id,
+                    pdf_path=temp_pdf_path  # ✅ NEW: Enable two-stage discovery
+                ),
+                timeout_seconds=TimeoutConstants.PRODUCT_DISCOVERY_STAGE_0B,
+                operation_name="Product discovery (Stage 0A + 0B)"
             )
 
         finally:
@@ -2614,21 +2626,25 @@ async def process_document_with_discovery(
         supabase.client.table('documents').upsert(doc_data).execute()
         logger.info(f"✅ Created documents table record for {document_id}")
 
-        # Process chunks using LlamaIndex
+        # Process chunks using LlamaIndex (with timeout guard)
         logger.info(f"📝 Calling index_pdf_content with {len(file_content)} bytes, product_pages={sorted(product_pages)}")
         logger.info(f"📝 LlamaIndex service available: {llamaindex_service.available}")
 
-        chunk_result = await llamaindex_service.index_pdf_content(
-            pdf_content=file_content,
-            document_id=document_id,
-            metadata={
-                'filename': filename,
-                'title': title,
-                'page_count': pdf_result.page_count,
-                'product_pages': sorted(product_pages),
-                'chunk_size': chunk_size,
-                'chunk_overlap': chunk_overlap
-            }
+        chunk_result = await with_timeout(
+            llamaindex_service.index_pdf_content(
+                pdf_content=file_content,
+                document_id=document_id,
+                metadata={
+                    'filename': filename,
+                    'title': title,
+                    'page_count': pdf_result.page_count,
+                    'product_pages': sorted(product_pages),
+                    'chunk_size': chunk_size,
+                    'chunk_overlap': chunk_overlap
+                }
+            ),
+            timeout_seconds=TimeoutConstants.CHUNKING_OPERATION,
+            operation_name="Chunking operation"
         )
 
         logger.info(f"📝 index_pdf_content returned: {chunk_result}")
@@ -2685,10 +2701,15 @@ async def process_document_with_discovery(
         logger.info(f"   Document ID: {document_id}")
 
         try:
-            pdf_result_with_images = await pdf_processor.process_pdf_from_bytes(
-                pdf_bytes=file_content,
-                document_id=document_id,
-                processing_options={'extract_images': True, 'extract_tables': False}
+            # ⏱️ TIMEOUT GUARD: Prevent indefinite hangs during image extraction
+            pdf_result_with_images = await with_timeout(
+                pdf_processor.process_pdf_from_bytes(
+                    pdf_bytes=file_content,
+                    document_id=document_id,
+                    processing_options={'extract_images': True, 'extract_tables': False}
+                ),
+                timeout_seconds=TimeoutConstants.PYMUPDF4LLM_EXTRACTION,
+                operation_name="PyMuPDF4LLM image extraction"
             )
             logger.info(f"✅ Image extraction completed: {len(pdf_result_with_images.extracted_images)} images found")
         except Exception as extraction_error:
@@ -2887,12 +2908,16 @@ async def process_document_with_discovery(
                     image_base64 = base64.b64encode(image_bytes).decode('utf-8')
                 logger.info(f"✅ [{image_index}/{total_images}] Image read successfully: {len(image_bytes)} bytes")
 
-                # CRITICAL: Generate CLIP embeddings for this image
+                # CRITICAL: Generate CLIP embeddings for this image (with timeout guard)
                 logger.info(f"🎨 [{image_index}/{total_images}] Generating CLIP embeddings for page {page_num}")
                 try:
-                    clip_result = await llamaindex_service._generate_clip_embeddings(
-                        image_base64=image_base64,
-                        image_path=image_path
+                    clip_result = await with_timeout(
+                        llamaindex_service._generate_clip_embeddings(
+                            image_base64=image_base64,
+                            image_path=image_path
+                        ),
+                        timeout_seconds=TimeoutConstants.CLIP_EMBEDDING,
+                        operation_name=f"CLIP embedding generation (image {image_index}/{total_images})"
                     )
                     logger.info(f"✅ [{image_index}/{total_images}] CLIP embeddings generated successfully")
                 except Exception as clip_error:
@@ -2900,13 +2925,17 @@ async def process_document_with_discovery(
                     logger.error(f"   Error type: {type(clip_error).__name__}")
                     clip_result = None
 
-                # Analyze with Llama Vision
+                # Analyze with Llama Vision (with timeout guard)
                 logger.info(f"🔍 [{image_index}/{total_images}] Analyzing image with Llama Vision...")
                 try:
-                    analysis_result = await llamaindex_service._analyze_image_material(
-                        image_base64=image_base64,
-                        image_path=image_path,
-                        document_id=document_id
+                    analysis_result = await with_timeout(
+                        llamaindex_service._analyze_image_material(
+                            image_base64=image_base64,
+                            image_path=image_path,
+                            document_id=document_id
+                        ),
+                        timeout_seconds=TimeoutConstants.LLAMA_VISION_CALL,
+                        operation_name=f"Llama Vision analysis (image {image_index}/{total_images})"
                     )
                     logger.info(f"✅ [{image_index}/{total_images}] Llama Vision analysis completed")
                 except Exception as llama_error:
