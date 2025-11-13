@@ -104,16 +104,18 @@ class RealEmbeddingsService:
             if image_url or image_data:
                 visual_embedding = await self._generate_visual_embedding(image_url, image_data)
                 if visual_embedding:
-                    embeddings["embeddings"]["visual_clip_512"] = visual_embedding
+                    # Store with both key names for compatibility
+                    embeddings["embeddings"]["visual_512"] = visual_embedding  # Expected by llamaindex_service
+                    embeddings["embeddings"]["visual_clip_512"] = visual_embedding  # Legacy key
                     embeddings["metadata"]["model_versions"]["visual"] = "clip-vit-base-patch32"
                     embeddings["metadata"]["confidence_scores"]["visual"] = 0.90
                     self.logger.info("✅ Visual CLIP embedding generated (512D)")
-            
+
             # 3. Multimodal Fusion Embedding (2048D) - REAL
-            if embeddings["embeddings"].get("text_1536") and embeddings["embeddings"].get("visual_clip_512"):
+            if embeddings["embeddings"].get("text_1536") and embeddings["embeddings"].get("visual_512"):
                 multimodal_embedding = self._generate_multimodal_fusion(
                     embeddings["embeddings"]["text_1536"],
-                    embeddings["embeddings"]["visual_clip_512"]
+                    embeddings["embeddings"]["visual_512"]
                 )
                 embeddings["embeddings"]["multimodal_2048"] = multimodal_embedding
                 embeddings["metadata"]["model_versions"]["multimodal"] = "fusion-v1"
@@ -122,8 +124,12 @@ class RealEmbeddingsService:
             
             # Removed fake embeddings (color, texture, application)
             # They were just downsampled text embeddings - redundant!
-            
+
             self.logger.info(f"✅ All embeddings generated: {len(embeddings['embeddings'])} types")
+
+            # Add success flag for compatibility with calling code
+            embeddings["success"] = True
+
             return embeddings
             
         except Exception as e:
