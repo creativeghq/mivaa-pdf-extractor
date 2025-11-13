@@ -3910,18 +3910,15 @@ Summary:"""
 
             self.logger.info(f"🔗 Generating CLIP embeddings for image: {os.path.basename(image_path)}")
 
-            # Use the existing material visual search service for CLIP embeddings
-            from .material_visual_search_service import MaterialVisualSearchService
+            # CRITICAL FIX: Reuse the shared embedding_service instance instead of creating new ones
+            # This prevents memory accumulation from loading CLIP model for every image
+            if not hasattr(self, 'embedding_service') or self.embedding_service is None:
+                self.logger.warning("⚠️ Embedding service not initialized, creating new instance")
+                from .real_embeddings_service import RealEmbeddingsService
+                self.embedding_service = RealEmbeddingsService()
 
-            # Get the service instance
-            material_service = MaterialVisualSearchService()
-
-            # Generate ALL embeddings (CLIP, color, texture, application) using the existing service
-            # This calls the RealEmbeddingsService for complete embedding generation
-            from .real_embeddings_service import RealEmbeddingsService
-            embeddings_service = RealEmbeddingsService()
-
-            embedding_result = await embeddings_service.generate_all_embeddings(
+            # Generate ALL embeddings (CLIP, color, texture, application) using the SHARED service
+            embedding_result = await self.embedding_service.generate_all_embeddings(
                 entity_id="temp",
                 entity_type="image",
                 text_content="",
