@@ -2733,6 +2733,7 @@ async def process_document_with_discovery(
 
         # Process images with Llama + CLIP (always extract images, even in focused mode)
         images_processed = 0
+        clip_embeddings_generated = 0
         logger.info(f"   Total images extracted from PDF: {len(pdf_result_with_images.extracted_images)}")
         logger.info(f"   Images grouped by page: {len(images_by_page)} pages with images")
         logger.info(f"   Product pages to process: {sorted(product_pages)}")
@@ -2753,12 +2754,67 @@ async def process_document_with_discovery(
                         image_bytes = f.read()
                         image_base64 = base64.b64encode(image_bytes).decode('utf-8')
 
-                    # Analyze with Llama Vision + CLIP embeddings
+                    # CRITICAL: Generate CLIP embeddings for this image
+                    logger.info(f"🎨 Generating CLIP embeddings for image on page {page_num}")
+                    clip_result = await llamaindex_service._generate_clip_embeddings(
+                        image_base64=image_base64,
+                        image_path=image_path
+                    )
+
+                    # Analyze with Llama Vision
                     analysis_result = await llamaindex_service._analyze_image_material(
                         image_base64=image_base64,
-                        page_number=page_num,
+                        image_path=image_path,
                         document_id=document_id
                     )
+
+                    # Update the image record in database with CLIP embeddings
+                    if clip_result and clip_result.get('embedding_512'):
+                        try:
+                            # Find the image record in database by matching page_number and image_url
+                            image_filename = os.path.basename(image_path)
+
+                            # Query to find the image record
+                            from .services.supabase_client import get_supabase_client
+                            supabase = get_supabase_client()
+
+                            # Find image by document_id, page_number, and filename in image_url
+                            image_query = supabase.client.table('document_images')\
+                                .select('id')\
+                                .eq('document_id', document_id)\
+                                .eq('page_number', page_num)\
+                                .like('image_url', f'%{image_filename}%')\
+                                .execute()
+
+                            if image_query.data and len(image_query.data) > 0:
+                                image_id = image_query.data[0]['id']
+
+                                # Update with CLIP embeddings
+                                update_data = {
+                                    'visual_clip_embedding_512': clip_result.get('embedding_512'),
+                                    'color_embedding_256': clip_result.get('color_embedding'),
+                                    'texture_embedding_256': clip_result.get('texture_embedding'),
+                                    'application_embedding_512': clip_result.get('application_embedding'),
+                                    'llama_analysis': analysis_result.get('llama_analysis'),
+                                    'claude_validation': analysis_result.get('claude_validation'),
+                                    'processing_status': 'completed',
+                                    'image_analysis_results': analysis_result.get('material_properties', {}),
+                                    'quality_score': analysis_result.get('quality_score'),
+                                    'confidence_score': analysis_result.get('confidence_score')
+                                }
+
+                                supabase.client.table('document_images')\
+                                    .update(update_data)\
+                                    .eq('id', image_id)\
+                                    .execute()
+
+                                clip_embeddings_generated += 1
+                                logger.info(f"✅ Updated image {image_id} with CLIP embeddings ({clip_embeddings_generated}/{images_processed+1})")
+                            else:
+                                logger.warning(f"Could not find image record for {image_filename} on page {page_num}")
+
+                        except Exception as update_error:
+                            logger.error(f"Failed to update image with CLIP embeddings: {update_error}")
 
                     images_processed += 1
                     tracker.total_images_extracted += 1
@@ -2778,7 +2834,7 @@ async def process_document_with_discovery(
         # images_processed is the count of images analyzed with Llama Vision (may be 0 if files don't exist)
         await tracker._sync_to_database(stage="image_processing")
 
-        logger.info(f"✅ [STAGE 3] Image Processing Complete: {images_processed} images processed")
+        logger.info(f"✅ [STAGE 3] Image Processing Complete: {images_processed} images processed, {clip_embeddings_generated} CLIP embeddings generated")
 
         # Create IMAGES_EXTRACTED checkpoint
         await checkpoint_recovery_service.create_checkpoint(
@@ -2787,14 +2843,16 @@ async def process_document_with_discovery(
             data={
                 "document_id": document_id,
                 "images_processed": images_processed,
+                "clip_embeddings_generated": clip_embeddings_generated,
                 "images_by_page": {str(k): len(v) for k, v in images_by_page.items()}
             },
             metadata={
                 "total_images": images_processed,
+                "clip_embeddings": clip_embeddings_generated,
                 "product_pages_with_images": len(images_by_page)
             }
         )
-        logger.info(f"✅ Created IMAGES_EXTRACTED checkpoint for job {job_id}")
+        logger.info(f"✅ Created IMAGES_EXTRACTED checkpoint for job {job_id}: {images_processed} images, {clip_embeddings_generated} CLIP embeddings")
 
         # LAZY LOADING: Unload LlamaIndex service after image processing to free memory
         if "llamaindex_service" in loaded_components:
