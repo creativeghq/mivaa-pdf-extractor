@@ -622,8 +622,11 @@ async def upload_document(
                 )
 
         # Expand 'all' to all categories
+        # When 'all' is specified, we want FULL extraction, not focused extraction
+        use_focused_extraction = True
         if 'all' in category_list:
             category_list = ['products', 'certificates', 'logos', 'specifications']
+            use_focused_extraction = False  # Process ALL pages, not just category pages
 
         # Handle file upload or URL download
         file_content = None
@@ -811,7 +814,7 @@ async def upload_document(
             description=description,
             document_tags=document_tags,
             discovery_model=discovery_model,
-            focused_extraction=True,  # Always use focused extraction with categories
+            focused_extraction=use_focused_extraction,  # Use focused extraction based on categories
             extract_categories=category_list,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
