@@ -555,7 +555,21 @@ class PDFProcessor:
                         self.logger.warning(f"Progress callback failed: {callback_error}")
 
                 page_number = processing_options.get('page_number')
-                markdown_content = extract_pdf_to_markdown(pdf_path, page_number)
+
+                # Try PyMuPDF4LLM first, fall back to OCR if it fails with "not a textpage" error
+                try:
+                    markdown_content = extract_pdf_to_markdown(pdf_path, page_number)
+                except ValueError as e:
+                    if "not a textpage" in str(e):
+                        self.logger.warning(f"⚠️ PyMuPDF4LLM failed with 'not a textpage' error, falling back to OCR")
+                        self.logger.info("Switching to OCR-first extraction for this PDF")
+                        try:
+                            markdown_content = self._extract_text_with_ocr(pdf_path, processing_options, progress_callback)
+                        except Exception as ocr_error:
+                            self.logger.error(f"OCR extraction also failed: {ocr_error}")
+                            raise PDFExtractionError(f"Both PyMuPDF4LLM and OCR extraction failed: {str(e)}") from e
+                    else:
+                        raise
 
                 # Check if we got meaningful text content
                 clean_content = markdown_content.replace('-', '').replace('\n', '').strip()
