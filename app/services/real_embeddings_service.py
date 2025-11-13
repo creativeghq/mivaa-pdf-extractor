@@ -243,6 +243,13 @@ class RealEmbeddingsService:
                 image_bytes = base64.b64decode(image_data)
                 pil_image = Image.open(io.BytesIO(image_bytes))
 
+                # Convert RGBA to RGB if necessary (JPEG doesn't support transparency)
+                if pil_image.mode == 'RGBA':
+                    # Create white background
+                    rgb_image = Image.new('RGB', pil_image.size, (255, 255, 255))
+                    rgb_image.paste(pil_image, mask=pil_image.split()[3])  # Use alpha channel as mask
+                    pil_image = rgb_image
+
                 # Save PIL image to temporary file for CLIP model
                 import tempfile
                 with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp_file:
@@ -267,6 +274,13 @@ class RealEmbeddingsService:
                     response = await client.get(image_url)
                     if response.status_code == 200:
                         pil_image = Image.open(io.BytesIO(response.content))
+
+                        # Convert RGBA to RGB if necessary (JPEG doesn't support transparency)
+                        if pil_image.mode == 'RGBA':
+                            # Create white background
+                            rgb_image = Image.new('RGB', pil_image.size, (255, 255, 255))
+                            rgb_image.paste(pil_image, mask=pil_image.split()[3])  # Use alpha channel as mask
+                            pil_image = rgb_image
 
                         # Save PIL image to temporary file for CLIP model
                         import tempfile
