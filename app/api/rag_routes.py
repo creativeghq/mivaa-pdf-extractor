@@ -37,6 +37,7 @@ from app.services.search_prompt_service import SearchPromptService
 from app.services.stuck_job_analyzer import stuck_job_analyzer
 from app.utils.logging import PDFProcessingLogger
 from app.utils.timeout_guard import with_timeout, TimeoutConstants, TimeoutError
+from app.utils.circuit_breaker import claude_breaker, llama_breaker, clip_breaker, CircuitBreakerError
 
 logger = logging.getLogger(__name__)
 
@@ -2908,10 +2909,12 @@ async def process_document_with_discovery(
                     image_base64 = base64.b64encode(image_bytes).decode('utf-8')
                 logger.info(f"✅ [{image_index}/{total_images}] Image read successfully: {len(image_bytes)} bytes")
 
-                # CRITICAL: Generate CLIP embeddings for this image (with timeout guard)
+                # CRITICAL: Generate CLIP embeddings for this image (with timeout guard + circuit breaker)
                 logger.info(f"🎨 [{image_index}/{total_images}] Generating CLIP embeddings for page {page_num}")
                 try:
-                    clip_result = await with_timeout(
+                    # Wrap with circuit breaker to fail fast on API outages
+                    clip_result = await clip_breaker.call(
+                        with_timeout,
                         llamaindex_service._generate_clip_embeddings(
                             image_base64=image_base64,
                             image_path=image_path
@@ -2920,15 +2923,20 @@ async def process_document_with_discovery(
                         operation_name=f"CLIP embedding generation (image {image_index}/{total_images})"
                     )
                     logger.info(f"✅ [{image_index}/{total_images}] CLIP embeddings generated successfully")
+                except CircuitBreakerError as cb_error:
+                    logger.warning(f"⚠️ [{image_index}/{total_images}] CLIP embedding skipped (circuit breaker open): {cb_error}")
+                    clip_result = None
                 except Exception as clip_error:
                     logger.error(f"❌ [{image_index}/{total_images}] CLIP embedding generation failed: {clip_error}")
                     logger.error(f"   Error type: {type(clip_error).__name__}")
                     clip_result = None
 
-                # Analyze with Llama Vision (with timeout guard)
+                # Analyze with Llama Vision (with timeout guard + circuit breaker)
                 logger.info(f"🔍 [{image_index}/{total_images}] Analyzing image with Llama Vision...")
                 try:
-                    analysis_result = await with_timeout(
+                    # Wrap with circuit breaker to fail fast on API outages
+                    analysis_result = await llama_breaker.call(
+                        with_timeout,
                         llamaindex_service._analyze_image_material(
                             image_base64=image_base64,
                             image_path=image_path,
@@ -2938,6 +2946,9 @@ async def process_document_with_discovery(
                         operation_name=f"Llama Vision analysis (image {image_index}/{total_images})"
                     )
                     logger.info(f"✅ [{image_index}/{total_images}] Llama Vision analysis completed")
+                except CircuitBreakerError as cb_error:
+                    logger.warning(f"⚠️ [{image_index}/{total_images}] Llama Vision analysis skipped (circuit breaker open): {cb_error}")
+                    analysis_result = {}
                 except Exception as llama_error:
                     logger.error(f"❌ [{image_index}/{total_images}] Llama Vision analysis failed: {llama_error}")
                     logger.error(f"   Error type: {type(llama_error).__name__}")
@@ -3268,12 +3279,18 @@ async def process_document_with_discovery(
 
         from app.services.claude_validation_service import ClaudeValidationService
 
-        # Process Claude validation queue (for low-scoring images)
+        # Process Claude validation queue (for low-scoring images) with circuit breaker
         claude_service = ClaudeValidationService()
-        validation_results = await claude_service.process_validation_queue(document_id=document_id)
-
-        logger.info(f"   Claude validation: {validation_results.get('validated', 0)} images validated")
-        logger.info(f"   Average quality improvement: {validation_results.get('avg_improvement', 0):.2f}")
+        try:
+            validation_results = await claude_breaker.call(
+                claude_service.process_validation_queue,
+                document_id=document_id
+            )
+            logger.info(f"   Claude validation: {validation_results.get('validated', 0)} images validated")
+            logger.info(f"   Average quality improvement: {validation_results.get('avg_improvement', 0):.2f}")
+        except CircuitBreakerError as cb_error:
+            logger.warning(f"⚠️ Claude validation skipped (circuit breaker open): {cb_error}")
+            validation_results = {'validated': 0, 'avg_improvement': 0}
 
         await tracker._sync_to_database(stage="quality_enhancement")
 
