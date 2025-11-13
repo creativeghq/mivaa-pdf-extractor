@@ -1076,30 +1076,61 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
         """
         try:
             from app.core.extractor import extract_pdf_to_markdown
+            import pymupdf4llm
 
             # Initialize metadata extractor
             metadata_extractor = DynamicMetadataExtractor(model=self.model, job_id=job_id)
 
             enriched_products = []
 
+            # ⚡ OPTIMIZATION: Extract all product pages in ONE pass instead of sequentially
+            # Collect all unique pages needed across all products
+            all_product_pages = set()
+            product_page_mapping = {}  # Map product index to its pages
+
+            for i, product in enumerate(catalog.products):
+                page_indices = [p - 1 for p in product.page_range if p > 0]
+                if page_indices:
+                    all_product_pages.update(page_indices)
+                    product_page_mapping[i] = page_indices
+
+            # Extract ALL product pages in a single PyMuPDF4LLM call
+            if all_product_pages:
+                self.logger.info(f"   ⚡ OPTIMIZED: Extracting {len(all_product_pages)} unique pages in ONE pass for {len(catalog.products)} products")
+                sorted_pages = sorted(all_product_pages)
+
+                # Single extraction for all products (MUCH faster than sequential)
+                all_pages_text = pymupdf4llm.to_markdown(pdf_path, pages=sorted_pages)
+
+                # Parse the markdown to extract page-specific content
+                # PyMuPDF4LLM returns markdown with page markers
+                page_texts = self._split_markdown_by_pages(all_pages_text, sorted_pages)
+
+                self.logger.info(f"      ✅ Extracted {len(all_pages_text)} characters from {len(sorted_pages)} pages")
+            else:
+                page_texts = {}
+                self.logger.warning("   ⚠️ No valid pages found for any products")
+
+            # Now process each product with its pre-extracted text
             for i, product in enumerate(catalog.products):
                 try:
-                    self.logger.info(f"   🔍 [{i+1}/{len(catalog.products)}] Extracting {product.name} (pages {product.page_range})...")
+                    self.logger.info(f"   🔍 [{i+1}/{len(catalog.products)}] Processing {product.name} metadata...")
 
-                    # Extract ONLY this product's pages from PDF
-                    # Convert page numbers to 0-indexed for PyMuPDF
-                    page_indices = [p - 1 for p in product.page_range if p > 0]
+                    # Get this product's pages from the mapping
+                    page_indices = product_page_mapping.get(i)
 
                     if not page_indices:
                         self.logger.warning(f"   ⚠️ No valid pages for {product.name}, skipping")
                         enriched_products.append(product)
                         continue
 
-                    # Extract text from specific pages using PyMuPDF4LLM
-                    import pymupdf4llm
-                    product_text = pymupdf4llm.to_markdown(pdf_path, pages=page_indices)
+                    # Combine text from this product's pages
+                    product_text = "\n\n".join(
+                        page_texts.get(page_idx, "")
+                        for page_idx in page_indices
+                    )
 
-                    self.logger.info(f"      Extracted {len(product_text)} characters from {len(page_indices)} pages")
+                    self.logger.info(f"      Using {len(product_text)} characters from {len(page_indices)} pages")
 
                     # Get category hint from existing metadata
                     category_hint = product.metadata.get("category") or product.metadata.get("material")
@@ -1226,6 +1257,41 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
             self.logger.error(f"Metadata enrichment failed: {e}")
             # Return original catalog if enrichment fails
             return catalog
+
+    def _split_markdown_by_pages(self, markdown_text: str, page_indices: list) -> dict:
+        """
+        Split PyMuPDF4LLM markdown output into individual pages.
+
+        PyMuPDF4LLM returns markdown with page markers like:
+        -----
+        # Page 1
+        content...
+        -----
+        # Page 2
+        content...
+
+        Args:
+            markdown_text: Full markdown text from PyMuPDF4LLM
+            page_indices: List of 0-indexed page numbers that were extracted
+
+        Returns:
+            Dictionary mapping page_index -> page_text
+        """
+        import re
+
+        page_texts = {}
+
+        # Split by page markers (PyMuPDF4LLM uses "-----" as separator)
+        # Pattern: -----\n# Page N\n or similar
+        pages = re.split(r'-{3,}\s*(?:#\s*Page\s*\d+)?', markdown_text)
+
+        # Map extracted pages to their indices
+        for i, page_text in enumerate(pages):
+            if i < len(page_indices) and page_text.strip():
+                page_idx = page_indices[i]
+                page_texts[page_idx] = page_text.strip()
+
+        return page_texts
 
     def _extract_index_text(self, pdf_text: str, index_pages: int, total_pages: int) -> str:
         """
