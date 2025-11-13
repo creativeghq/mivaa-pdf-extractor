@@ -155,3 +155,141 @@ async def with_db_timeout(coro, operation_name: str = "Database operation"):
         operation_name=operation_name
     )
 
+
+class ProgressiveTimeoutStrategy:
+    """
+    Progressive timeout strategy that adjusts timeouts based on document characteristics.
+
+    Timeouts scale with:
+    - Document size (page count, file size)
+    - Processing stage (later stages get more time)
+    - Complexity (number of images, products)
+    """
+
+    @staticmethod
+    def calculate_pdf_extraction_timeout(page_count: int, file_size_mb: float) -> float:
+        """
+        Calculate timeout for PDF extraction based on document size.
+
+        Base: 10s per page
+        Scaling: +2s per page for large PDFs (>50 pages)
+        Max: 30min
+        """
+        base_timeout = page_count * 10  # 10s per page
+
+        # Add extra time for large PDFs
+        if page_count > 50:
+            extra_time = (page_count - 50) * 2
+            base_timeout += extra_time
+
+        # Add time based on file size (1s per MB)
+        base_timeout += file_size_mb
+
+        # Cap at 30 minutes
+        return min(base_timeout, 1800)
+
+    @staticmethod
+    def calculate_product_discovery_timeout(page_count: int, categories: list) -> float:
+        """
+        Calculate timeout for product discovery based on pages and categories.
+
+        Base: 60s for index scan
+        Scaling: +30s per 10 pages for metadata extraction
+        Categories: +30s per category
+        Max: 10min
+        """
+        base_timeout = 60  # 1min for index scan
+
+        # Add time for metadata extraction (30s per 10 pages)
+        metadata_time = (page_count / 10) * 30
+        base_timeout += metadata_time
+
+        # Add time per category
+        category_time = len(categories) * 30
+        base_timeout += category_time
+
+        # Cap at 10 minutes
+        return min(base_timeout, 600)
+
+    @staticmethod
+    def calculate_chunking_timeout(page_count: int, chunk_size: int = 512) -> float:
+        """
+        Calculate timeout for chunking based on document size.
+
+        Base: 30s
+        Scaling: +10s per 10 pages
+        Max: 5min
+        """
+        base_timeout = 30
+
+        # Add time per 10 pages
+        page_time = (page_count / 10) * 10
+        base_timeout += page_time
+
+        # Cap at 5 minutes
+        return min(base_timeout, 300)
+
+    @staticmethod
+    def calculate_image_processing_timeout(image_count: int, concurrent_limit: int = 5) -> float:
+        """
+        Calculate timeout for image processing based on image count.
+
+        Base: 45s per image (CLIP + Llama Vision)
+        Parallel: Divide by concurrency limit
+        Buffer: +20% safety margin
+        Max: 30min
+        """
+        # Time per image (45s for CLIP + Llama)
+        total_time = image_count * 45
+
+        # Account for parallel processing
+        parallel_time = total_time / concurrent_limit
+
+        # Add 20% safety margin
+        timeout = parallel_time * 1.2
+
+        # Cap at 30 minutes
+        return min(timeout, 1800)
+
+    @staticmethod
+    def calculate_stage_timeout(
+        stage: str,
+        page_count: int = 0,
+        image_count: int = 0,
+        file_size_mb: float = 0,
+        categories: list = None
+    ) -> float:
+        """
+        Calculate timeout for a specific processing stage.
+
+        Args:
+            stage: Processing stage name
+            page_count: Number of pages in document
+            image_count: Number of images to process
+            file_size_mb: File size in MB
+            categories: List of extraction categories
+
+        Returns:
+            Timeout in seconds for the stage
+        """
+        categories = categories or ['products']
+
+        stage_calculators = {
+            'pdf_extraction': lambda: ProgressiveTimeoutStrategy.calculate_pdf_extraction_timeout(
+                page_count, file_size_mb
+            ),
+            'product_discovery': lambda: ProgressiveTimeoutStrategy.calculate_product_discovery_timeout(
+                page_count, categories
+            ),
+            'chunking': lambda: ProgressiveTimeoutStrategy.calculate_chunking_timeout(page_count),
+            'image_processing': lambda: ProgressiveTimeoutStrategy.calculate_image_processing_timeout(image_count),
+        }
+
+        calculator = stage_calculators.get(stage)
+        if calculator:
+            timeout = calculator()
+            return timeout
+
+        # Default fallback
+        return TimeoutConstants.FULL_PIPELINE
+

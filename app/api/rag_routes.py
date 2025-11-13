@@ -36,7 +36,7 @@ from app.services.product_relationship_service import ProductRelationshipService
 from app.services.search_prompt_service import SearchPromptService
 from app.services.stuck_job_analyzer import stuck_job_analyzer
 from app.utils.logging import PDFProcessingLogger
-from app.utils.timeout_guard import with_timeout, TimeoutConstants, TimeoutError
+from app.utils.timeout_guard import with_timeout, TimeoutConstants, TimeoutError, ProgressiveTimeoutStrategy
 from app.utils.circuit_breaker import claude_breaker, llama_breaker, clip_breaker, CircuitBreakerError
 
 logger = logging.getLogger(__name__)
@@ -2457,7 +2457,23 @@ async def process_document_with_discovery(
 
             logger.info(f"📁 Saved PDF to temp file: {temp_pdf_path}")
 
-            # Extract PDF text first (with timeout guard)
+            # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on document size
+            file_size_mb = len(file_content) / (1024 * 1024)
+
+            # Quick page count check (fast, doesn't extract content)
+            import fitz
+            quick_doc = fitz.open(temp_pdf_path)
+            page_count = len(quick_doc)
+            quick_doc.close()
+
+            # Calculate progressive timeout for PDF extraction
+            pdf_extraction_timeout = ProgressiveTimeoutStrategy.calculate_pdf_extraction_timeout(
+                page_count=page_count,
+                file_size_mb=file_size_mb
+            )
+            logger.info(f"📊 Document: {page_count} pages, {file_size_mb:.1f} MB → timeout: {pdf_extraction_timeout:.0f}s")
+
+            # Extract PDF text first (with progressive timeout guard)
             pdf_processor = PDFProcessor()
             pdf_result = await with_timeout(
                 pdf_processor.process_pdf_from_bytes(
@@ -2465,7 +2481,7 @@ async def process_document_with_discovery(
                     document_id=document_id,
                     processing_options={'extract_images': False, 'extract_tables': False}
                 ),
-                timeout_seconds=TimeoutConstants.PDF_FULL_EXTRACTION,
+                timeout_seconds=pdf_extraction_timeout,
                 operation_name="PDF text extraction"
             )
 
@@ -2500,9 +2516,17 @@ async def process_document_with_discovery(
                     status="pending"
                 )
 
-            # Run TWO-STAGE category-based discovery with prompt enhancement (with timeout guard)
+            # Run TWO-STAGE category-based discovery with prompt enhancement (with progressive timeout)
             # Stage 0A: Index scan (first 50-100 pages)
             # Stage 0B: Focused extraction (specific pages per product)
+
+            # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on pages and categories
+            discovery_timeout = ProgressiveTimeoutStrategy.calculate_product_discovery_timeout(
+                page_count=pdf_result.page_count,
+                categories=extract_categories
+            )
+            logger.info(f"📊 Product discovery: {pdf_result.page_count} pages, {len(extract_categories)} categories → timeout: {discovery_timeout:.0f}s")
+
             discovery_service = ProductDiscoveryService(model=discovery_model)
             catalog = await with_timeout(
                 discovery_service.discover_products(
@@ -2516,7 +2540,7 @@ async def process_document_with_discovery(
                     job_id=job_id,
                     pdf_path=temp_pdf_path  # ✅ NEW: Enable two-stage discovery
                 ),
-                timeout_seconds=TimeoutConstants.PRODUCT_DISCOVERY_STAGE_0B,
+                timeout_seconds=discovery_timeout,
                 operation_name="Product discovery (Stage 0A + 0B)"
             )
 
@@ -2627,9 +2651,16 @@ async def process_document_with_discovery(
         supabase.client.table('documents').upsert(doc_data).execute()
         logger.info(f"✅ Created documents table record for {document_id}")
 
-        # Process chunks using LlamaIndex (with timeout guard)
+        # Process chunks using LlamaIndex (with progressive timeout)
         logger.info(f"📝 Calling index_pdf_content with {len(file_content)} bytes, product_pages={sorted(product_pages)}")
         logger.info(f"📝 LlamaIndex service available: {llamaindex_service.available}")
+
+        # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on page count
+        chunking_timeout = ProgressiveTimeoutStrategy.calculate_chunking_timeout(
+            page_count=pdf_result.page_count,
+            chunk_size=chunk_size
+        )
+        logger.info(f"📊 Chunking: {pdf_result.page_count} pages, chunk_size={chunk_size} → timeout: {chunking_timeout:.0f}s")
 
         chunk_result = await with_timeout(
             llamaindex_service.index_pdf_content(
@@ -2644,7 +2675,7 @@ async def process_document_with_discovery(
                     'chunk_overlap': chunk_overlap
                 }
             ),
-            timeout_seconds=TimeoutConstants.CHUNKING_OPERATION,
+            timeout_seconds=chunking_timeout,
             operation_name="Chunking operation"
         )
 
@@ -2702,14 +2733,22 @@ async def process_document_with_discovery(
         logger.info(f"   Document ID: {document_id}")
 
         try:
-            # ⏱️ TIMEOUT GUARD: Prevent indefinite hangs during image extraction
+            # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on page count (estimate ~2 images/page)
+            estimated_images = page_count * 2
+            image_extraction_timeout = ProgressiveTimeoutStrategy.calculate_image_processing_timeout(
+                image_count=estimated_images,
+                concurrent_limit=1  # Extraction is sequential
+            )
+            logger.info(f"📊 Image extraction: ~{estimated_images} estimated images → timeout: {image_extraction_timeout:.0f}s")
+
+            # ⏱️ PROGRESSIVE TIMEOUT GUARD: Prevent indefinite hangs during image extraction
             pdf_result_with_images = await with_timeout(
                 pdf_processor.process_pdf_from_bytes(
                     pdf_bytes=file_content,
                     document_id=document_id,
                     processing_options={'extract_images': True, 'extract_tables': False}
                 ),
-                timeout_seconds=TimeoutConstants.PYMUPDF4LLM_EXTRACTION,
+                timeout_seconds=image_extraction_timeout,
                 operation_name="PyMuPDF4LLM image extraction"
             )
             logger.info(f"✅ Image extraction completed: {len(pdf_result_with_images.extracted_images)} images found")
