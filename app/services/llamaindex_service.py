@@ -3918,11 +3918,12 @@ Summary:"""
                 self.embedding_service = RealEmbeddingsService()
 
             # Generate ALL embeddings (CLIP, color, texture, application) using the SHARED service
+            # CRITICAL FIX: Use image_data parameter for base64 string, not image_url
             embedding_result = await self.embedding_service.generate_all_embeddings(
                 entity_id="temp",
                 entity_type="image",
                 text_content="",
-                image_url=image_base64,
+                image_data=image_base64,  # Fixed: was image_url=image_base64
                 material_properties={}
             )
 

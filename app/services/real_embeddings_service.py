@@ -172,7 +172,8 @@ class RealEmbeddingsService:
                         0.15 * confidence_breakdown["validation"]
                     )
 
-                    await self.ai_logger.log_openai_call(
+                    # CRITICAL FIX: Use log_gpt_call instead of log_openai_call
+                    await self.ai_logger.log_gpt_call(
                         task="text_embedding_generation",
                         model="text-embedding-3-small",
                         response=data,
