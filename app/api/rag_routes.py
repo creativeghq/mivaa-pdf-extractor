@@ -2340,58 +2340,86 @@ async def process_document_with_discovery(
 
         from app.services.product_discovery_service import ProductDiscoveryService
         from app.services.pdf_processor import PDFProcessor
+        import tempfile
+        import aiofiles
 
-        # Extract PDF text first
-        pdf_processor = PDFProcessor()
-        pdf_result = await pdf_processor.process_pdf_from_bytes(
-            pdf_bytes=file_content,
-            document_id=document_id,
-            processing_options={'extract_images': False, 'extract_tables': False}
-        )
-
-        # Create processed_documents record IMMEDIATELY (required for job_progress foreign key)
-        # This MUST happen BEFORE any _sync_to_database() calls
-        supabase = get_supabase_client()
+        # Save PDF to temporary file for two-stage discovery
+        # This allows ProductDiscoveryService to extract specific page ranges
+        temp_pdf_path = None
         try:
-            supabase.client.table('processed_documents').upsert({
-                "id": document_id,
-                "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
-                "pdf_document_id": document_id,
-                "content": pdf_result.markdown_content or "",
-                "processing_status": "processing",
-                "metadata": {
-                    "filename": filename,
-                    "file_size": len(file_content),
-                    "page_count": pdf_result.page_count
-                }
-            }).execute()
-            logger.info(f"✅ Created processed_documents record for {document_id}")
-        except Exception as e:
-            logger.error(f"❌ CRITICAL: Failed to create processed_documents record: {e}")
-            raise  # Don't continue if this fails
+            # Create temp file that persists during processing
+            temp_fd, temp_pdf_path = tempfile.mkstemp(suffix='.pdf', prefix=f'{document_id}_')
+            os.close(temp_fd)  # Close file descriptor, we'll write with aiofiles
 
-        # Update tracker with total pages
-        tracker.total_pages = pdf_result.page_count
-        for page_num in range(1, pdf_result.page_count + 1):
-            from app.schemas.jobs import PageProcessingStatus
-            tracker.page_statuses[page_num] = PageProcessingStatus(
-                page_number=page_num,
-                stage=ProcessingStage.INITIALIZING,  # Changed from PENDING (doesn't exist)
-                status="pending"
+            # Write PDF bytes to temp file
+            async with aiofiles.open(temp_pdf_path, 'wb') as f:
+                await f.write(file_content)
+
+            logger.info(f"📁 Saved PDF to temp file: {temp_pdf_path}")
+
+            # Extract PDF text first
+            pdf_processor = PDFProcessor()
+            pdf_result = await pdf_processor.process_pdf_from_bytes(
+                pdf_bytes=file_content,
+                document_id=document_id,
+                processing_options={'extract_images': False, 'extract_tables': False}
             )
 
-        # Run category-based discovery with prompt enhancement
-        discovery_service = ProductDiscoveryService(model=discovery_model)
-        catalog = await discovery_service.discover_products(
-            pdf_content=file_content,
-            pdf_text=pdf_result.markdown_content,
-            total_pages=pdf_result.page_count,
-            categories=extract_categories,
-            agent_prompt=agent_prompt,  # From unified_upload request
-            workspace_id=workspace_id,
-            enable_prompt_enhancement=enable_prompt_enhancement,
-            job_id=job_id
-        )
+            # Create processed_documents record IMMEDIATELY (required for job_progress foreign key)
+            # This MUST happen BEFORE any _sync_to_database() calls
+            supabase = get_supabase_client()
+            try:
+                supabase.client.table('processed_documents').upsert({
+                    "id": document_id,
+                    "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+                    "pdf_document_id": document_id,
+                    "content": pdf_result.markdown_content or "",
+                    "processing_status": "processing",
+                    "metadata": {
+                        "filename": filename,
+                        "file_size": len(file_content),
+                        "page_count": pdf_result.page_count
+                    }
+                }).execute()
+                logger.info(f"✅ Created processed_documents record for {document_id}")
+            except Exception as e:
+                logger.error(f"❌ CRITICAL: Failed to create processed_documents record: {e}")
+                raise  # Don't continue if this fails
+
+            # Update tracker with total pages
+            tracker.total_pages = pdf_result.page_count
+            for page_num in range(1, pdf_result.page_count + 1):
+                from app.schemas.jobs import PageProcessingStatus
+                tracker.page_statuses[page_num] = PageProcessingStatus(
+                    page_number=page_num,
+                    stage=ProcessingStage.INITIALIZING,  # Changed from PENDING (doesn't exist)
+                    status="pending"
+                )
+
+            # Run TWO-STAGE category-based discovery with prompt enhancement
+            # Stage 0A: Index scan (first 50-100 pages)
+            # Stage 0B: Focused extraction (specific pages per product)
+            discovery_service = ProductDiscoveryService(model=discovery_model)
+            catalog = await discovery_service.discover_products(
+                pdf_content=file_content,
+                pdf_text=pdf_result.markdown_content,
+                total_pages=pdf_result.page_count,
+                categories=extract_categories,
+                agent_prompt=agent_prompt,  # From unified_upload request
+                workspace_id=workspace_id,
+                enable_prompt_enhancement=enable_prompt_enhancement,
+                job_id=job_id,
+                pdf_path=temp_pdf_path  # ✅ NEW: Enable two-stage discovery
+            )
+
+        finally:
+            # Clean up temp PDF file after discovery
+            if temp_pdf_path and os.path.exists(temp_pdf_path):
+                try:
+                    os.unlink(temp_pdf_path)
+                    logger.info(f"🗑️ Cleaned up temp PDF file: {temp_pdf_path}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to clean up temp PDF: {e}")
 
         logger.info(f"✅ [STAGE 0] Discovery Complete:")
         logger.info(f"   Categories: {', '.join(extract_categories)}")

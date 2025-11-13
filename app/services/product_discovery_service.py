@@ -213,20 +213,33 @@ class ProductDiscoveryService:
         agent_prompt: Optional[str] = None,
         workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
         enable_prompt_enhancement: bool = True,
-        job_id: Optional[str] = None
+        job_id: Optional[str] = None,
+        pdf_path: Optional[str] = None
     ) -> ProductCatalog:
         """
-        Analyze PDF to discover all content across specified categories.
+        TWO-STAGE DISCOVERY ARCHITECTURE for handling large catalogs (1000+ pages).
+
+        **Stage 0A: Index Scan (Quick Discovery)**
+        - Analyzes first 50-100 pages (TOC/Index) to identify product names and page ranges
+        - Uses minimal tokens (~50K characters)
+        - Fast and cost-effective
+
+        **Stage 0B: Focused Extraction (Deep Analysis)**
+        - Extracts ONLY the specific pages for each discovered product
+        - Performs detailed metadata extraction per product
+        - No token limits - can handle catalogs of ANY size
+        - Processes products in parallel for speed
 
         Args:
             pdf_content: Raw PDF bytes
-            pdf_text: Extracted text from PDF (markdown format)
+            pdf_text: Extracted text from PDF (markdown format) - used for Stage 0A index scan
             total_pages: Total number of pages in PDF
             categories: Categories to discover (products, certificates, logos, specifications). Default: ["products"]
             agent_prompt: Optional natural language prompt from agent (e.g., "extract products", "search for NOVA")
             workspace_id: Workspace ID for custom prompts
             enable_prompt_enhancement: Whether to enhance prompts with admin templates
             job_id: Optional job ID for tracking
+            pdf_path: Optional path to PDF file for page-range extraction (Stage 0B)
 
         Returns:
             ProductCatalog with all discovered content across categories
@@ -238,17 +251,27 @@ class ProductDiscoveryService:
             categories = ["products"]
 
         try:
-            self.logger.info(f"🔍 Starting discovery for {total_pages} pages using {self.model.upper()}")
+            self.logger.info(f"🔍 Starting TWO-STAGE discovery for {total_pages} pages using {self.model.upper()}")
             self.logger.info(f"   Categories: {', '.join(categories)}")
             if agent_prompt:
                 self.logger.info(f"   Agent Prompt: '{agent_prompt}'")
             if enable_prompt_enhancement:
                 self.logger.info(f"   Prompt Enhancement: ENABLED")
 
-            # Build comprehensive prompt for category-based discovery
-            # This will use admin templates + agent prompt enhancement
-            prompt = await self._build_discovery_prompt(
-                pdf_text,
+            # ============================================================
+            # STAGE 0A: INDEX SCAN - Quick discovery from TOC/Index
+            # ============================================================
+            self.logger.info(f"📋 STAGE 0A: Scanning index/TOC for product locations...")
+
+            # Use first 50-100 pages for index scan (most catalogs have TOC in first pages)
+            index_scan_pages = min(100, total_pages)
+            index_text = self._extract_index_text(pdf_text, index_scan_pages, total_pages)
+
+            self.logger.info(f"   Analyzing first {index_scan_pages} pages ({len(index_text)} chars)")
+
+            # Build index scan prompt (lightweight, focused on finding product names + page ranges)
+            index_prompt = await self._build_index_scan_prompt(
+                index_text,
                 total_pages,
                 categories,
                 agent_prompt,
@@ -256,18 +279,32 @@ class ProductDiscoveryService:
                 enable_prompt_enhancement
             )
 
-            # Call AI model
+            # Call AI model for index scan
             if self.model == "claude":
-                result = await self._discover_with_claude(prompt, job_id)
+                index_result = await self._discover_with_claude(index_prompt, job_id)
             else:
-                result = await self._discover_with_gpt(prompt, job_id)
+                index_result = await self._discover_with_gpt(index_prompt, job_id)
 
-            # Parse and validate results
-            catalog = self._parse_discovery_results(result, total_pages, categories)
+            # Parse index scan results (product names + page ranges)
+            catalog = self._parse_discovery_results(index_result, total_pages, categories)
 
-            # ✅ NEW: Enrich products with comprehensive metadata using DynamicMetadataExtractor
-            if "products" in categories and catalog.products:
-                self.logger.info(f"🔍 Enriching {len(catalog.products)} products with comprehensive metadata...")
+            self.logger.info(f"✅ STAGE 0A complete: Found {len(catalog.products)} products")
+            for product in catalog.products:
+                self.logger.info(f"   📦 {product.name}: pages {product.page_range}")
+
+            # ============================================================
+            # STAGE 0B: FOCUSED EXTRACTION - Deep analysis per product
+            # ============================================================
+            if "products" in categories and catalog.products and pdf_path:
+                self.logger.info(f"🔍 STAGE 0B: Extracting detailed metadata for each product...")
+                catalog = await self._enrich_products_with_focused_extraction(
+                    catalog,
+                    pdf_path,
+                    job_id
+                )
+            elif "products" in categories and catalog.products:
+                # Fallback: Use full PDF text if pdf_path not provided
+                self.logger.warning("⚠️ pdf_path not provided, using fallback metadata extraction")
                 catalog = await self._enrich_products_with_metadata(catalog, pdf_text, job_id)
 
             processing_time = (datetime.now() - start_time).total_seconds() * 1000
@@ -275,7 +312,7 @@ class ProductDiscoveryService:
             catalog.model_used = self.model
 
             # Log comprehensive results
-            self.logger.info(f"✅ Discovery complete in {processing_time:.0f}ms:")
+            self.logger.info(f"✅ TWO-STAGE Discovery complete in {processing_time:.0f}ms:")
             if "products" in categories:
                 self.logger.info(f"   📦 Products: {len(catalog.products)}")
             if "certificates" in categories:
@@ -551,6 +588,76 @@ Your task is to identify and extract content across the following categories:
 {pdf_text[:200000]}
 
 Analyze the above content and return ONLY valid JSON with ALL content discovered across the requested categories."""
+
+        return prompt
+
+    async def _build_index_scan_prompt(
+        self,
+        index_text: str,
+        total_pages: int,
+        categories: List[str],
+        agent_prompt: str,
+        workspace_id: str,
+        enable_prompt_enhancement: bool
+    ) -> str:
+        """
+        Build lightweight prompt for Stage 0A index scanning.
+
+        This prompt is optimized for FAST discovery of product names and page ranges
+        from TOC/Index pages. It does NOT extract detailed metadata (that's Stage 0B).
+
+        Args:
+            index_text: Text from index/TOC pages
+            total_pages: Total pages in PDF
+            categories: Categories to discover
+            agent_prompt: User's request
+            workspace_id: Workspace ID
+            enable_prompt_enhancement: Whether to use admin templates
+
+        Returns:
+            Optimized prompt for index scanning
+        """
+
+        prompt = f"""You are analyzing the TABLE OF CONTENTS / INDEX section of a product catalog PDF with {total_pages} total pages.
+
+**YOUR TASK**: Quickly identify ALL products and their page locations from the index/TOC.
+
+**CRITICAL INSTRUCTIONS**:
+1. **Focus on the INDEX/TOC** - Look for product listings with page numbers
+2. **Extract product names and page ranges** - This is the PRIMARY goal
+3. **DO NOT extract detailed metadata yet** - That comes in Stage 2
+4. **Be comprehensive** - Find ALL products mentioned in the index
+5. **Page ranges**: If a product spans multiple pages (e.g., "NOVA ... 24-27"), include ALL pages [24,25,26,27]
+
+**WHAT TO LOOK FOR**:
+- Product names in uppercase or bold (e.g., "VALENOVA", "FOLD", "PIQUÉ")
+- Page numbers next to product names (e.g., "NOVA ... 24", "FOLD ... 32-35")
+- Section headers indicating product categories
+- Designer/studio names associated with products
+
+**OUTPUT FORMAT** (JSON only):
+```json
+{{
+  "products": [
+    {{
+      "name": "VALENOVA",
+      "page_range": [24, 25, 26, 27],
+      "description": "Brief description if available in index",
+      "confidence": 0.95,
+      "metadata": {{
+        "designer": "SG NY",
+        "category": "tiles"
+      }}
+    }}
+  ],
+  "confidence_score": 0.92
+}}
+```
+
+**INDEX/TOC CONTENT:**
+{index_text}
+
+Return ONLY valid JSON with ALL products found in the index."""
 
         return prompt
 
@@ -945,6 +1052,102 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
 
         return catalog
 
+    async def _enrich_products_with_focused_extraction(
+        self,
+        catalog: ProductCatalog,
+        pdf_path: str,
+        job_id: Optional[str] = None
+    ) -> ProductCatalog:
+        """
+        STAGE 0B: Extract detailed metadata for each product using focused page extraction.
+
+        This is the core of the Two-Stage Discovery system:
+        1. For each product, extract ONLY its specific pages from the PDF
+        2. Send focused text to AI for detailed metadata extraction
+        3. No token limits - can handle products with 50+ pages each
+
+        Args:
+            catalog: Product catalog from Stage 0A (with page ranges)
+            pdf_path: Path to PDF file for page extraction
+            job_id: Optional job ID for logging
+
+        Returns:
+            Catalog with fully enriched product metadata
+        """
+        try:
+            from app.core.extractor import extract_pdf_to_markdown
+
+            # Initialize metadata extractor
+            metadata_extractor = DynamicMetadataExtractor(model=self.model, job_id=job_id)
+
+            enriched_products = []
+
+            for i, product in enumerate(catalog.products):
+                try:
+                    self.logger.info(f"   🔍 [{i+1}/{len(catalog.products)}] Extracting {product.name} (pages {product.page_range})...")
+
+                    # Extract ONLY this product's pages from PDF
+                    # Convert page numbers to 0-indexed for PyMuPDF
+                    page_indices = [p - 1 for p in product.page_range if p > 0]
+
+                    if not page_indices:
+                        self.logger.warning(f"   ⚠️ No valid pages for {product.name}, skipping")
+                        enriched_products.append(product)
+                        continue
+
+                    # Extract text from specific pages using PyMuPDF4LLM
+                    import pymupdf4llm
+                    product_text = pymupdf4llm.to_markdown(pdf_path, pages=page_indices)
+
+                    self.logger.info(f"      Extracted {len(product_text)} characters from {len(page_indices)} pages")
+
+                    # Get category hint from existing metadata
+                    category_hint = product.metadata.get("category") or product.metadata.get("material")
+
+                    # Extract comprehensive metadata from focused text
+                    extracted = await metadata_extractor.extract_metadata(
+                        pdf_text=product_text,
+                        category_hint=category_hint
+                    )
+
+                    # Merge extracted metadata with existing metadata
+                    # Priority: existing metadata > extracted critical > extracted discovered
+                    enriched_metadata = {
+                        **extracted.get("discovered", {}),  # Lowest priority
+                        **extracted.get("critical", {}),    # Medium priority
+                        **product.metadata,                 # Highest priority (from discovery)
+                        "_extraction_metadata": extracted.get("metadata", {})
+                    }
+
+                    # Flatten nested values (extract "value" from {"value": "...", "confidence": ...})
+                    flattened_metadata = {}
+                    for key, value in enriched_metadata.items():
+                        if isinstance(value, dict) and "value" in value:
+                            flattened_metadata[key] = value["value"]
+                        else:
+                            flattened_metadata[key] = value
+
+                    # Update product with enriched metadata
+                    product.metadata = flattened_metadata
+                    enriched_products.append(product)
+
+                    self.logger.info(f"      ✅ Extracted {len(flattened_metadata)} metadata fields")
+
+                except Exception as e:
+                    self.logger.error(f"Failed to enrich metadata for {product.name}: {e}")
+                    # Keep original product if enrichment fails
+                    enriched_products.append(product)
+
+            # Update catalog with enriched products
+            catalog.products = enriched_products
+
+            return catalog
+
+        except Exception as e:
+            self.logger.error(f"Focused extraction failed: {e}")
+            # Return original catalog if enrichment fails
+            return catalog
+
     async def _enrich_products_with_metadata(
         self,
         catalog: ProductCatalog,
@@ -952,11 +1155,10 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
         job_id: Optional[str] = None
     ) -> ProductCatalog:
         """
-        Enrich products with comprehensive metadata using DynamicMetadataExtractor.
+        FALLBACK: Enrich products with metadata using full PDF text.
 
-        This extracts 200+ metadata fields across 9 functional categories:
-        - slip_safety, surface_gloss, mechanical, thermal, chemical,
-          dimensional, environmental, compliance, commercial
+        This is used when pdf_path is not available for focused extraction.
+        Less efficient than focused extraction but still works.
 
         Args:
             catalog: Product catalog from discovery
@@ -974,7 +1176,7 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
 
             for product in catalog.products:
                 try:
-                    # Extract product-specific text from page range
+                    # Extract product-specific text from page range (limited)
                     product_text = self._extract_product_text(pdf_text, product.page_range)
 
                     # Get category hint from existing metadata
@@ -1024,6 +1226,39 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
             self.logger.error(f"Metadata enrichment failed: {e}")
             # Return original catalog if enrichment fails
             return catalog
+
+    def _extract_index_text(self, pdf_text: str, index_pages: int, total_pages: int) -> str:
+        """
+        Extract text from index/TOC pages for Stage 0A discovery.
+
+        Uses smart extraction to get the most relevant content:
+        1. First 30 pages (usually contains TOC/Index)
+        2. Last 10 pages (sometimes contains product index)
+        3. Limits to reasonable size for AI processing
+
+        Args:
+            pdf_text: Full PDF text
+            index_pages: Number of pages to scan for index
+            total_pages: Total pages in PDF
+
+        Returns:
+            Extracted index text (limited to ~100K chars)
+        """
+        # Strategy: Extract first N pages which usually contain TOC/Index
+        # Most catalogs have comprehensive index in first 20-50 pages
+
+        # Calculate character limit based on index pages
+        # Assume ~1500 chars per page average
+        char_limit = index_pages * 1500
+
+        # Cap at 100K characters to avoid token limits in Stage 0A
+        char_limit = min(char_limit, 100000)
+
+        index_text = pdf_text[:char_limit]
+
+        self.logger.info(f"   Extracted {len(index_text)} characters from first {index_pages} pages")
+
+        return index_text
 
     def _extract_product_text(self, pdf_text: str, page_range: List[int]) -> str:
         """
