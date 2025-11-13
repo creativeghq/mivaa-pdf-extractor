@@ -2832,7 +2832,119 @@ async def process_document_with_discovery(
         total_images = len(all_images_to_process)
         logger.info(f"   📊 Total images to process: {total_images}")
 
-        # Process images in batches
+        # ⚡ OPTIMIZATION: Parallel image processing with concurrency limit
+        # Process images in batches with parallel processing within each batch
+        CONCURRENT_IMAGES = 5  # Process 5 images concurrently (5-10x faster)
+
+        async def process_single_image(page_num, img_data, image_index, total_images):
+            """Process a single image with CLIP + Llama Vision analysis"""
+            nonlocal images_processed, clip_embeddings_generated
+
+                # Read image file and convert to base64
+                image_path = img_data.get('path')
+                if not image_path or not os.path.exists(image_path):
+                    logger.warning(f"Image file not found: {image_path}")
+                    return
+
+                logger.info(f"📖 [{image_index}/{total_images}] Reading image file: {image_path}")
+                with open(image_path, 'rb') as f:
+                    image_bytes = f.read()
+                    image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+                logger.info(f"✅ [{image_index}/{total_images}] Image read successfully: {len(image_bytes)} bytes")
+
+                # CRITICAL: Generate CLIP embeddings for this image
+                logger.info(f"🎨 [{image_index}/{total_images}] Generating CLIP embeddings for page {page_num}")
+                try:
+                    clip_result = await llamaindex_service._generate_clip_embeddings(
+                        image_base64=image_base64,
+                        image_path=image_path
+                    )
+                    logger.info(f"✅ [{image_index}/{total_images}] CLIP embeddings generated successfully")
+                except Exception as clip_error:
+                    logger.error(f"❌ [{image_index}/{total_images}] CLIP embedding generation failed: {clip_error}")
+                    logger.error(f"   Error type: {type(clip_error).__name__}")
+                    clip_result = None
+
+                # Analyze with Llama Vision
+                logger.info(f"🔍 [{image_index}/{total_images}] Analyzing image with Llama Vision...")
+                try:
+                    analysis_result = await llamaindex_service._analyze_image_material(
+                        image_base64=image_base64,
+                        image_path=image_path,
+                        document_id=document_id
+                    )
+                    logger.info(f"✅ [{image_index}/{total_images}] Llama Vision analysis completed")
+                except Exception as llama_error:
+                    logger.error(f"❌ [{image_index}/{total_images}] Llama Vision analysis failed: {llama_error}")
+                    logger.error(f"   Error type: {type(llama_error).__name__}")
+                    analysis_result = {}
+
+                # Update the image record in database with CLIP embeddings
+                if clip_result and clip_result.get('embedding_512'):
+                    try:
+                        # Find the image record in database by matching page_number and image_url
+                        image_filename = os.path.basename(image_path)
+
+                        # Query to find the image record
+                        supabase = get_supabase_client()
+
+                        # Find image by document_id, page_number, and filename in image_url
+                        image_query = supabase.client.table('document_images')\
+                            .select('id')\
+                            .eq('document_id', document_id)\
+                            .eq('page_number', page_num)\
+                            .like('image_url', f'%{image_filename}%')\
+                            .execute()
+
+                        if image_query.data and len(image_query.data) > 0:
+                            image_id = image_query.data[0]['id']
+
+                            # Update with CLIP embeddings
+                            update_data = {
+                                'visual_clip_embedding_512': clip_result.get('embedding_512'),
+                                'color_embedding_256': clip_result.get('color_embedding'),
+                                'texture_embedding_256': clip_result.get('texture_embedding'),
+                                'application_embedding_512': clip_result.get('application_embedding'),
+                                'llama_analysis': analysis_result.get('llama_analysis'),
+                                'claude_validation': analysis_result.get('claude_validation'),
+                                'processing_status': 'completed',
+                                'image_analysis_results': analysis_result.get('material_properties', {}),
+                                'quality_score': analysis_result.get('quality_score'),
+                                'confidence_score': analysis_result.get('confidence_score')
+                            }
+
+                            supabase.client.table('document_images')\
+                                .update(update_data)\
+                                .eq('id', image_id)\
+                                .execute()
+
+                            clip_embeddings_generated += 1
+                            logger.info(f"✅ [{image_index}/{total_images}] Updated image {image_id} with CLIP embeddings")
+                        else:
+                            logger.warning(f"[{image_index}/{total_images}] Could not find image record for {image_filename} on page {page_num}")
+
+                    except Exception as update_error:
+                        logger.error(f"[{image_index}/{total_images}] Failed to update image with CLIP embeddings: {update_error}")
+
+                images_processed += 1
+
+                # Clear image data from memory immediately after processing
+                del image_bytes
+                del image_base64
+                if clip_result:
+                    del clip_result
+                if analysis_result:
+                    del analysis_result
+
+            except Exception as e:
+                logger.error(f"❌ [{image_index}/{total_images}] Failed to process image on page {page_num}: {e}")
+                logger.error(f"   Error type: {type(e).__name__}")
+                logger.error(f"   Image path: {img_data.get('path')}")
+                import traceback
+                logger.error(f"   Traceback: {traceback.format_exc()}")
+                # Continue processing other images even if one fails
+
+        # Process images in batches with parallel processing
         for batch_start in range(0, total_images, BATCH_SIZE):
             batch_end = min(batch_start + BATCH_SIZE, total_images)
             batch_images = all_images_to_process[batch_start:batch_end]
@@ -2847,114 +2959,22 @@ async def process_document_with_discovery(
             mem_before = process.memory_info().rss / 1024 / 1024  # MB
             logger.info(f"   💾 Memory before batch: {mem_before:.1f} MB")
 
-            for page_num, img_data in batch_images:
-                try:
-                    # Read image file and convert to base64
-                    image_path = img_data.get('path')
-                    if not image_path or not os.path.exists(image_path):
-                        logger.warning(f"Image file not found: {image_path}")
-                        continue
+            # ⚡ PARALLEL PROCESSING: Process CONCURRENT_IMAGES images at a time
+            from asyncio import Semaphore
+            semaphore = Semaphore(CONCURRENT_IMAGES)
 
-                    logger.info(f"📖 Reading image file: {image_path}")
-                    with open(image_path, 'rb') as f:
-                        image_bytes = f.read()
-                        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-                    logger.info(f"✅ Image read successfully: {len(image_bytes)} bytes")
+            async def process_with_semaphore(page_num, img_data, image_index):
+                async with semaphore:
+                    await process_single_image(page_num, img_data, image_index, total_images)
 
-                    # CRITICAL: Generate CLIP embeddings for this image
-                    logger.info(f"🎨 Generating CLIP embeddings for image on page {page_num} ({images_processed+1}/{total_images})")
-                    try:
-                        clip_result = await llamaindex_service._generate_clip_embeddings(
-                            image_base64=image_base64,
-                            image_path=image_path
-                        )
-                        logger.info(f"✅ CLIP embeddings generated successfully")
-                    except Exception as clip_error:
-                        logger.error(f"❌ CLIP embedding generation failed: {clip_error}")
-                        logger.error(f"   Error type: {type(clip_error).__name__}")
-                        clip_result = None
+            # Create tasks for all images in this batch
+            tasks = [
+                process_with_semaphore(page_num, img_data, batch_start + idx + 1)
+                for idx, (page_num, img_data) in enumerate(batch_images)
+            ]
 
-                    # Analyze with Llama Vision
-                    logger.info(f"🔍 Analyzing image with Llama Vision...")
-                    try:
-                        analysis_result = await llamaindex_service._analyze_image_material(
-                            image_base64=image_base64,
-                            image_path=image_path,
-                            document_id=document_id
-                        )
-                        logger.info(f"✅ Llama Vision analysis completed")
-                    except Exception as llama_error:
-                        logger.error(f"❌ Llama Vision analysis failed: {llama_error}")
-                        logger.error(f"   Error type: {type(llama_error).__name__}")
-                        analysis_result = {}
-
-                    # Update the image record in database with CLIP embeddings
-                    if clip_result and clip_result.get('embedding_512'):
-                        try:
-                            # Find the image record in database by matching page_number and image_url
-                            image_filename = os.path.basename(image_path)
-
-                            # Query to find the image record
-                            supabase = get_supabase_client()
-
-                            # Find image by document_id, page_number, and filename in image_url
-                            image_query = supabase.client.table('document_images')\
-                                .select('id')\
-                                .eq('document_id', document_id)\
-                                .eq('page_number', page_num)\
-                                .like('image_url', f'%{image_filename}%')\
-                                .execute()
-
-                            if image_query.data and len(image_query.data) > 0:
-                                image_id = image_query.data[0]['id']
-
-                                # Update with CLIP embeddings
-                                update_data = {
-                                    'visual_clip_embedding_512': clip_result.get('embedding_512'),
-                                    'color_embedding_256': clip_result.get('color_embedding'),
-                                    'texture_embedding_256': clip_result.get('texture_embedding'),
-                                    'application_embedding_512': clip_result.get('application_embedding'),
-                                    'llama_analysis': analysis_result.get('llama_analysis'),
-                                    'claude_validation': analysis_result.get('claude_validation'),
-                                    'processing_status': 'completed',
-                                    'image_analysis_results': analysis_result.get('material_properties', {}),
-                                    'quality_score': analysis_result.get('quality_score'),
-                                    'confidence_score': analysis_result.get('confidence_score')
-                                }
-
-                                supabase.client.table('document_images')\
-                                    .update(update_data)\
-                                    .eq('id', image_id)\
-                                    .execute()
-
-                                clip_embeddings_generated += 1
-                                logger.info(f"✅ Updated image {image_id} with CLIP embeddings ({clip_embeddings_generated}/{images_processed+1})")
-                            else:
-                                logger.warning(f"Could not find image record for {image_filename} on page {page_num}")
-
-                        except Exception as update_error:
-                            logger.error(f"Failed to update image with CLIP embeddings: {update_error}")
-
-                    images_processed += 1
-                    # REMOVED: tracker.total_images_extracted += 1
-                    # This was causing counter inflation by incrementing in a loop
-                    # The correct count is already set in tracker.images_extracted (line 2792)
-
-                    # Clear image data from memory immediately after processing
-                    del image_bytes
-                    del image_base64
-                    if clip_result:
-                        del clip_result
-                    if analysis_result:
-                        del analysis_result
-
-                except Exception as e:
-                    logger.error(f"❌ Failed to process image on page {page_num}: {e}")
-                    logger.error(f"   Error type: {type(e).__name__}")
-                    logger.error(f"   Image path: {img_data.get('path')}")
-                    import traceback
-                    logger.error(f"   Traceback: {traceback.format_exc()}")
-                    # Continue processing other images even if one fails
+            # Execute all tasks in parallel (with concurrency limit)
+            await asyncio.gather(*tasks, return_exceptions=True)
 
             # CRITICAL: Force garbage collection after each batch to free memory
             import gc
