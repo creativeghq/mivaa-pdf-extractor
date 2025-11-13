@@ -775,7 +775,7 @@ async def upload_document(
             supabase_client.client.table('background_jobs').insert({
                 "id": job_id,
                 "filename": filename,
-                "job_type": "pdf_processing",
+                "job_type": "product_discovery_upload",  # CRITICAL: Must match resume logic check
                 "status": "processing",
                 "progress": 0,
                 "document_id": document_id,
