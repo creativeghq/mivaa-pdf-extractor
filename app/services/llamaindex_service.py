@@ -1813,6 +1813,9 @@ class LlamaIndexService:
                 chunks_saved = 0
                 embeddings_saved = 0
 
+                # Extract workspace_id from metadata
+                workspace_id = metadata.get('workspace_id') if metadata else None
+
                 if total_nodes > 0:
                     supabase = get_supabase_client()
                     self.logger.info(f"💾 Saving {total_nodes} chunks to database for document {document_id}")
