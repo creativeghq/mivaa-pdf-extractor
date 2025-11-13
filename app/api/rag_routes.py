@@ -34,6 +34,7 @@ from app.services.ai_model_tracker import AIModelTracker
 from app.services.focused_product_extractor import get_focused_product_extractor
 from app.services.product_relationship_service import ProductRelationshipService
 from app.services.search_prompt_service import SearchPromptService
+from app.services.stuck_job_analyzer import stuck_job_analyzer
 from app.utils.logging import PDFProcessingLogger
 
 logger = logging.getLogger(__name__)
@@ -4379,4 +4380,49 @@ async def get_job_ai_tracking_by_model(job_id: str, model_name: str):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Advanced query search failed: {str(e)}"
+        )
+
+
+@router.get("/admin/stuck-jobs/analyze/{job_id}")
+async def analyze_stuck_job(job_id: str):
+    """
+    Analyze a stuck job to determine root cause and get recommendations.
+
+    Returns detailed analysis including:
+    - Root cause identification
+    - Bottleneck stage
+    - Stage-by-stage timing analysis
+    - Recovery options
+    - Optimization recommendations
+    """
+    try:
+        analysis = await stuck_job_analyzer.analyze_stuck_job(job_id)
+        return JSONResponse(content=analysis)
+    except Exception as e:
+        logger.error(f"Failed to analyze stuck job {job_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to analyze stuck job: {str(e)}"
+        )
+
+
+@router.get("/admin/stuck-jobs/statistics")
+async def get_stuck_job_statistics():
+    """
+    Get overall statistics about stuck jobs.
+
+    Returns:
+    - Total stuck jobs
+    - Stage breakdown (which stages jobs get stuck at)
+    - Most common stuck stage
+    - Historical patterns
+    """
+    try:
+        stats = await stuck_job_analyzer.get_stuck_job_statistics()
+        return JSONResponse(content=stats)
+    except Exception as e:
+        logger.error(f"Failed to get stuck job statistics: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get stuck job statistics: {str(e)}"
         )
