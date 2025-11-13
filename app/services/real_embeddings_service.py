@@ -243,8 +243,20 @@ class RealEmbeddingsService:
                 image_bytes = base64.b64decode(image_data)
                 pil_image = Image.open(io.BytesIO(image_bytes))
 
-                # Generate embedding using local CLIP model
-                embedding = self._clip_model.get_image_embedding(pil_image)
+                # Save PIL image to temporary file for CLIP model
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp_file:
+                    pil_image.save(tmp_file.name, format='JPEG')
+                    tmp_path = tmp_file.name
+
+                try:
+                    # Generate embedding using local CLIP model with file path
+                    embedding = self._clip_model.get_image_embedding(tmp_path)
+                finally:
+                    # Clean up temporary file
+                    import os
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
 
                 self.logger.info(f"✅ Generated CLIP embedding: {len(embedding)}D")
                 return embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding)
@@ -255,9 +267,23 @@ class RealEmbeddingsService:
                     response = await client.get(image_url)
                     if response.status_code == 200:
                         pil_image = Image.open(io.BytesIO(response.content))
-                        embedding = self._clip_model.get_image_embedding(pil_image)
-                        self.logger.info(f"✅ Generated CLIP embedding from URL: {len(embedding)}D")
-                        return embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding)
+
+                        # Save PIL image to temporary file for CLIP model
+                        import tempfile
+                        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp_file:
+                            pil_image.save(tmp_file.name, format='JPEG')
+                            tmp_path = tmp_file.name
+
+                        try:
+                            # Generate embedding using local CLIP model with file path
+                            embedding = self._clip_model.get_image_embedding(tmp_path)
+                            self.logger.info(f"✅ Generated CLIP embedding from URL: {len(embedding)}D")
+                            return embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding)
+                        finally:
+                            # Clean up temporary file
+                            import os
+                            if os.path.exists(tmp_path):
+                                os.unlink(tmp_path)
 
         except Exception as e:
             self.logger.error(f"Visual embedding generation failed: {e}")
