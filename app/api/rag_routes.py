@@ -2679,11 +2679,27 @@ async def process_document_with_discovery(
             raise
 
         # Re-extract PDF with images this time
-        pdf_result_with_images = await pdf_processor.process_pdf_from_bytes(
-            pdf_bytes=file_content,
-            document_id=document_id,
-            processing_options={'extract_images': True, 'extract_tables': False}
-        )
+        logger.info("🔄 Starting image extraction from PDF...")
+        logger.info(f"   PDF size: {len(file_content)} bytes")
+        logger.info(f"   Document ID: {document_id}")
+
+        try:
+            pdf_result_with_images = await pdf_processor.process_pdf_from_bytes(
+                pdf_bytes=file_content,
+                document_id=document_id,
+                processing_options={'extract_images': True, 'extract_tables': False}
+            )
+            logger.info(f"✅ Image extraction completed: {len(pdf_result_with_images.extracted_images)} images found")
+        except Exception as extraction_error:
+            logger.error(f"❌ CRITICAL: Image extraction failed: {extraction_error}")
+            logger.error(f"   Error type: {type(extraction_error).__name__}")
+            logger.error(f"   Error details: {str(extraction_error)}")
+            import traceback
+            logger.error(f"   Traceback: {traceback.format_exc()}")
+
+            # Update job status to failed
+            await tracker.fail(error_message=f"Image extraction failed: {str(extraction_error)}")
+            raise
 
         # Group images by page number
         # Filename formats: "page_X_image_Y.png" OR "document_id.pdf-PAGE-IMAGE.jpg"
@@ -2838,23 +2854,38 @@ async def process_document_with_discovery(
                         logger.warning(f"Image file not found: {image_path}")
                         continue
 
+                    logger.info(f"📖 Reading image file: {image_path}")
                     with open(image_path, 'rb') as f:
                         image_bytes = f.read()
                         image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+                    logger.info(f"✅ Image read successfully: {len(image_bytes)} bytes")
 
                     # CRITICAL: Generate CLIP embeddings for this image
                     logger.info(f"🎨 Generating CLIP embeddings for image on page {page_num} ({images_processed+1}/{total_images})")
-                    clip_result = await llamaindex_service._generate_clip_embeddings(
-                        image_base64=image_base64,
-                        image_path=image_path
-                    )
+                    try:
+                        clip_result = await llamaindex_service._generate_clip_embeddings(
+                            image_base64=image_base64,
+                            image_path=image_path
+                        )
+                        logger.info(f"✅ CLIP embeddings generated successfully")
+                    except Exception as clip_error:
+                        logger.error(f"❌ CLIP embedding generation failed: {clip_error}")
+                        logger.error(f"   Error type: {type(clip_error).__name__}")
+                        clip_result = None
 
                     # Analyze with Llama Vision
-                    analysis_result = await llamaindex_service._analyze_image_material(
-                        image_base64=image_base64,
-                        image_path=image_path,
-                        document_id=document_id
-                    )
+                    logger.info(f"🔍 Analyzing image with Llama Vision...")
+                    try:
+                        analysis_result = await llamaindex_service._analyze_image_material(
+                            image_base64=image_base64,
+                            image_path=image_path,
+                            document_id=document_id
+                        )
+                        logger.info(f"✅ Llama Vision analysis completed")
+                    except Exception as llama_error:
+                        logger.error(f"❌ Llama Vision analysis failed: {llama_error}")
+                        logger.error(f"   Error type: {type(llama_error).__name__}")
+                        analysis_result = {}
 
                     # Update the image record in database with CLIP embeddings
                     if clip_result and clip_result.get('embedding_512'):
@@ -2917,7 +2948,12 @@ async def process_document_with_discovery(
                         del analysis_result
 
                 except Exception as e:
-                    logger.error(f"Failed to process image on page {page_num}: {e}")
+                    logger.error(f"❌ Failed to process image on page {page_num}: {e}")
+                    logger.error(f"   Error type: {type(e).__name__}")
+                    logger.error(f"   Image path: {img_data.get('path')}")
+                    import traceback
+                    logger.error(f"   Traceback: {traceback.format_exc()}")
+                    # Continue processing other images even if one fails
 
             # CRITICAL: Force garbage collection after each batch to free memory
             import gc
