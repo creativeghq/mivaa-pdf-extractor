@@ -999,10 +999,17 @@ class LlamaIndexService:
                     if self.vector_store:
                         # Use SupabaseVectorStore
                         storage_context = StorageContext.from_defaults(vector_store=self.vector_store)
-                        index = VectorStoreIndex.from_documents(documents, storage_context=storage_context)
+                        index = VectorStoreIndex.from_documents(
+                            documents,
+                            storage_context=storage_context,
+                            embed_model=self.embed_model  # ✅ FIX: Add embedding model
+                        )
                     else:
                         # Use in-memory storage
-                        index = VectorStoreIndex.from_documents(documents)
+                        index = VectorStoreIndex.from_documents(
+                            documents,
+                            embed_model=self.embed_model  # ✅ FIX: Add embedding model
+                        )
 
                     # Store index reference
                     self.indices[document_id] = index
@@ -1062,10 +1069,17 @@ class LlamaIndexService:
             if self.vector_store:
                 # Use SupabaseVectorStore for combined index
                 storage_context = StorageContext.from_defaults(vector_store=self.vector_store)
-                combined_index = VectorStoreIndex.from_documents(all_documents, storage_context=storage_context)
+                combined_index = VectorStoreIndex.from_documents(
+                    all_documents,
+                    storage_context=storage_context,
+                    embed_model=self.embed_model  # ✅ FIX: Add embedding model
+                )
             else:
                 # Use in-memory storage for combined index
-                combined_index = VectorStoreIndex.from_documents(all_documents)
+                combined_index = VectorStoreIndex.from_documents(
+                    all_documents,
+                    embed_model=self.embed_model  # ✅ FIX: Add embedding model
+                )
 
             # Cache the combined index
             self._combined_index = combined_index
@@ -1753,27 +1767,31 @@ class LlamaIndexService:
 
                 # Create index with SupabaseVectorStore if available, otherwise use local storage
                 self.logger.info(f"📝 Creating index (vector_store={self.vector_store is not None})...")
+                self.logger.info(f"📝 Using embedding model: {self.embed_model.__class__.__name__ if self.embed_model else 'None'}")
+
                 if self.vector_store:
                     # Use SupabaseVectorStore
                     storage_context = StorageContext.from_defaults(vector_store=self.vector_store)
                     index = VectorStoreIndex.from_documents(
                         documents,
                         storage_context=storage_context,
-                        node_parser=self.node_parser
+                        node_parser=self.node_parser,
+                        embed_model=self.embed_model  # ✅ FIX: Add embedding model to generate embeddings
                     )
-                    self.logger.info(f"Created index in Supabase for document: {document_id}")
+                    self.logger.info(f"✅ Created index in Supabase for document: {document_id} with embeddings")
                 else:
                     # Fallback to local storage
                     index = VectorStoreIndex.from_documents(
                         documents,
-                        node_parser=self.node_parser
+                        node_parser=self.node_parser,
+                        embed_model=self.embed_model  # ✅ FIX: Add embedding model to generate embeddings
                     )
 
                     # Store index locally
                     index_dir = Path(self.storage_dir) / document_id
                     index_dir.mkdir(exist_ok=True)
                     index.storage_context.persist(persist_dir=str(index_dir))
-                    self.logger.info(f"Created local index for document: {document_id}")
+                    self.logger.info(f"✅ Created local index for document: {document_id} with embeddings")
 
                 self.logger.info(f"📝 Index created successfully")
 
