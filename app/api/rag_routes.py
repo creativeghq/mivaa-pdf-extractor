@@ -2732,6 +2732,10 @@ async def process_document_with_discovery(
         images_saved = 0
         images_skipped = 0
 
+        # ⚡ OPTIMIZATION: Batch database inserts (100 images at a time)
+        image_records_batch = []
+        BATCH_INSERT_SIZE = 100
+
         for idx, img_data in enumerate(pdf_result_with_images.extracted_images):
             try:
                 # Extract page number from filename
@@ -2789,17 +2793,47 @@ async def process_document_with_discovery(
                     }
                 }
 
-                # Insert into database
-                supabase.client.table('document_images').insert(image_record).execute()
+                # Add to batch instead of inserting immediately
+                image_records_batch.append(image_record)
                 images_saved += 1
-                logger.info(f"      ✅ SAVED to database (total: {images_saved})")
+                logger.info(f"      ✅ Added to batch (total: {images_saved})")
+
+                # ⚡ OPTIMIZATION: Insert batch when it reaches BATCH_INSERT_SIZE
+                if len(image_records_batch) >= BATCH_INSERT_SIZE:
+                    try:
+                        supabase.client.table('document_images').insert(image_records_batch).execute()
+                        logger.info(f"   💾 Batch inserted {len(image_records_batch)} images to database")
+                        image_records_batch = []  # Clear batch
+                    except Exception as batch_error:
+                        logger.error(f"   ❌ Batch insert failed: {batch_error}")
+                        # Fallback: Insert individually
+                        for record in image_records_batch:
+                            try:
+                                supabase.client.table('document_images').insert(record).execute()
+                            except Exception as individual_error:
+                                logger.error(f"   ❌ Individual insert failed: {individual_error}")
+                        image_records_batch = []
 
             except Exception as e:
-                logger.error(f"      ❌ FAILED to save image {filename} to database: {e}")
+                logger.error(f"      ❌ FAILED to prepare image {filename} for database: {e}")
                 logger.error(f"         Error type: {type(e).__name__}")
                 logger.error(f"         Error details: {str(e)}")
                 import traceback
                 logger.error(f"         Traceback: {traceback.format_exc()}")
+
+        # ⚡ OPTIMIZATION: Insert remaining images in final batch
+        if image_records_batch:
+            try:
+                supabase.client.table('document_images').insert(image_records_batch).execute()
+                logger.info(f"   💾 Final batch inserted {len(image_records_batch)} images to database")
+            except Exception as batch_error:
+                logger.error(f"   ❌ Final batch insert failed: {batch_error}")
+                # Fallback: Insert individually
+                for record in image_records_batch:
+                    try:
+                        supabase.client.table('document_images').insert(record).execute()
+                    except Exception as individual_error:
+                        logger.error(f"   ❌ Individual insert failed: {individual_error}")
 
         logger.info(f"✅ Saved {images_saved}/{len(pdf_result_with_images.extracted_images)} images to database")
         if images_skipped > 0:
