@@ -2874,6 +2874,7 @@ async def process_document_with_discovery(
             """Process a single image with CLIP + Llama Vision analysis"""
             nonlocal images_processed, clip_embeddings_generated
 
+            try:
                 # Read image file and convert to base64
                 image_path = img_data.get('path')
                 if not image_path or not os.path.exists(image_path):
