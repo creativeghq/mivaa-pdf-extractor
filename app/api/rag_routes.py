@@ -2904,7 +2904,9 @@ async def process_document_with_discovery(
                             logger.error(f"Failed to update image with CLIP embeddings: {update_error}")
 
                     images_processed += 1
-                    tracker.total_images_extracted += 1
+                    # REMOVED: tracker.total_images_extracted += 1
+                    # This was causing counter inflation by incrementing in a loop
+                    # The correct count is already set in tracker.images_extracted (line 2792)
 
                     # Clear image data from memory immediately after processing
                     del image_bytes

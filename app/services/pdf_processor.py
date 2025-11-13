@@ -1119,8 +1119,17 @@ class PDFProcessor:
                     converted_path or enhanced_path
                 )
 
+                # DETAILED LOGGING: Log upload result for debugging
+                self.logger.info(f"📤 Upload result for {basic_info['filename']}:")
+                self.logger.info(f"   success: {upload_result.get('success')}")
+                self.logger.info(f"   public_url: {upload_result.get('public_url')}")
+                self.logger.info(f"   storage_path: {upload_result.get('storage_path')}")
+                self.logger.info(f"   error: {upload_result.get('error')}")
+
                 if not upload_result.get('success'):
-                    self.logger.warning(f"Failed to upload image to storage: {upload_result.get('error')}")
+                    self.logger.error(f"❌ CRITICAL: Failed to upload image to storage: {upload_result.get('error')}")
+                    self.logger.error(f"   Image path: {image_path}")
+                    self.logger.error(f"   Document ID: {document_id}")
                     # Continue processing even if upload fails, but mark it
                     upload_result = {'success': False, 'error': 'Upload failed', 'public_url': None}
 
