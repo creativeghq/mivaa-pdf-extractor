@@ -2775,7 +2775,6 @@ async def process_document_with_discovery(
                             image_filename = os.path.basename(image_path)
 
                             # Query to find the image record
-                            from .services.supabase_client import get_supabase_client
                             supabase = get_supabase_client()
 
                             # Find image by document_id, page_number, and filename in image_url
