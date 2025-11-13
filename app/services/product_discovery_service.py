@@ -751,6 +751,13 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                         self.logger.debug(f"Raw response (first 1000 chars): {content[:1000]}")
                         raise RuntimeError(f"Claude returned invalid JSON: {e}")
 
+                # DEBUG: Log how many products Claude found
+                products_found = len(result.get("products", []))
+                self.logger.info(f"🔍 Claude Sonnet 4.5 discovered {products_found} products")
+                if products_found > 0:
+                    product_names = [p.get("name", "Unknown") for p in result.get("products", [])]
+                    self.logger.info(f"   Product names: {product_names}")
+
                 # Log AI call
                 latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
                 await self.ai_logger.log_claude_call(
