@@ -1123,6 +1123,19 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
             if job_type == 'product_discovery_upload':
                 # Use product discovery pipeline for resume
                 logger.info(f"🔄 Resuming product discovery job {job_id}")
+
+                # Extract parameters from job metadata
+                job_metadata = job_data.get('metadata', {})
+                discovery_model = job_metadata.get('discovery_model', 'claude-sonnet-4.5')
+                categories = job_metadata.get('categories', ['products'])
+                enable_prompt_enhancement = job_metadata.get('prompt_enhancement_enabled', False)
+                agent_prompt = job_metadata.get('agent_prompt')
+
+                # Determine focused extraction based on categories
+                use_focused_extraction = 'all' not in categories
+
+                logger.info(f"   Resume parameters: discovery_model={discovery_model}, categories={categories}, focused={use_focused_extraction}")
+
                 background_tasks.add_task(
                     run_async_in_background(process_document_with_discovery),
                     job_id=job_id,
@@ -1133,8 +1146,13 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
                     title=doc_data.get('title'),
                     description=doc_data.get('description'),
                     document_tags=doc_data.get('tags', []),
+                    discovery_model=discovery_model,
+                    focused_extraction=use_focused_extraction,
+                    extract_categories=categories,
                     chunk_size=1000,
-                    chunk_overlap=200
+                    chunk_overlap=200,
+                    agent_prompt=agent_prompt,
+                    enable_prompt_enhancement=enable_prompt_enhancement
                 )
             else:
                 # Use standard processing for resume
