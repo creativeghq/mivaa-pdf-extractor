@@ -24,6 +24,14 @@ from app.services.checkpoint_recovery_service import (
 
 logger = logging.getLogger(__name__)
 
+# Import Sentry for stuck job alerts
+try:
+    import sentry_sdk
+    SENTRY_AVAILABLE = True
+except ImportError:
+    SENTRY_AVAILABLE = False
+    logger.warning("Sentry SDK not available - stuck job alerts disabled")
+
 
 class JobMonitorService:
     """
@@ -208,8 +216,60 @@ class JobMonitorService:
             self.stats["jobs_failed"] += 1
     
     async def _mark_job_failed(self, job_id: str, reason: str):
-        """Mark a job as failed"""
+        """
+        Mark a job as failed and send Sentry alert.
+
+        Args:
+            job_id: Job ID to mark as failed
+            reason: Reason for failure
+        """
         try:
+            # Get job details for Sentry context
+            job_result = self.supabase_client.client.table("background_jobs")\
+                .select("*")\
+                .eq("id", job_id)\
+                .execute()
+
+            job = job_result.data[0] if job_result.data else {}
+
+            # 🚨 SENTRY ALERT: Send stuck job alert
+            if SENTRY_AVAILABLE:
+                try:
+                    with sentry_sdk.configure_scope() as scope:
+                        # Add job context
+                        scope.set_tag("job_id", job_id)
+                        scope.set_tag("document_id", job.get("document_id", "unknown"))
+                        scope.set_tag("job_type", job.get("job_type", "unknown"))
+                        scope.set_tag("error_type", "stuck_job")
+                        scope.set_tag("failure_reason", reason)
+
+                        # Add job details
+                        scope.set_context("stuck_job", {
+                            "job_id": job_id,
+                            "document_id": job.get("document_id"),
+                            "job_type": job.get("job_type"),
+                            "filename": job.get("filename"),
+                            "progress": job.get("progress", 0),
+                            "created_at": job.get("created_at"),
+                            "started_at": job.get("started_at"),
+                            "last_heartbeat": job.get("last_heartbeat"),
+                            "updated_at": job.get("updated_at"),
+                            "failure_reason": reason
+                        })
+
+                    # Capture message with context
+                    sentry_sdk.capture_message(
+                        f"Stuck job detected and failed: {job_id}",
+                        level="warning",
+                        fingerprint=["stuck-job", reason]
+                    )
+
+                    logger.info(f"📊 Sent stuck job alert to Sentry for job {job_id}")
+
+                except Exception as sentry_error:
+                    logger.warning(f"Failed to send Sentry alert: {sentry_error}")
+
+            # Update job status in database
             self.supabase_client.client.table("background_jobs")\
                 .update({
                     "status": "failed",
@@ -219,7 +279,7 @@ class JobMonitorService:
                 })\
                 .eq("id", job_id)\
                 .execute()
-            
+
             logger.info(f"❌ Marked job {job_id} as failed: {reason}")
         except Exception as e:
             logger.error(f"Failed to mark job as failed: {e}")

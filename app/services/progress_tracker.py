@@ -23,6 +23,14 @@ from app.services.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
+# Import Sentry for crash alerts
+try:
+    import sentry_sdk
+    SENTRY_AVAILABLE = True
+except ImportError:
+    SENTRY_AVAILABLE = False
+    logger.warning("Sentry SDK not available - crash alerts disabled")
+
 
 @dataclass
 class ProgressTracker:
@@ -419,6 +427,7 @@ class ProgressTracker:
     async def fail_job(self, error: Exception):
         """
         Mark job as failed and sync final state to database.
+        Sends crash alert to Sentry for monitoring.
 
         Args:
             error: Exception that caused failure
@@ -428,6 +437,50 @@ class ProgressTracker:
 
         # Stop heartbeat when job fails
         await self.stop_heartbeat()
+
+        # 🚨 SENTRY ALERT: Send crash alert for job failure
+        if SENTRY_AVAILABLE:
+            try:
+                with sentry_sdk.configure_scope() as scope:
+                    # Add job context
+                    scope.set_tag("job_id", self.job_id)
+                    scope.set_tag("document_id", self.document_id)
+                    scope.set_tag("job_type", self.job_type)
+                    scope.set_tag("current_stage", self.current_stage.value if hasattr(self.current_stage, 'value') else str(self.current_stage))
+                    scope.set_tag("error_type", "job_crash")
+
+                    # Add job progress context
+                    scope.set_context("job_progress", {
+                        "job_id": self.job_id,
+                        "document_id": self.document_id,
+                        "job_type": self.job_type,
+                        "progress_percentage": self.calculate_progress_percentage(),
+                        "pages_completed": self.pages_completed,
+                        "pages_failed": self.pages_failed,
+                        "total_pages": self.total_pages,
+                        "errors_count": len(self.errors),
+                        "warnings_count": len(self.warnings)
+                    })
+
+                    # Add error details
+                    scope.set_context("error_details", {
+                        "error_message": error_message,
+                        "error_type": type(error).__name__,
+                        "recent_errors": self.errors[-5:] if self.errors else [],
+                        "recent_warnings": self.warnings[-5:] if self.warnings else []
+                    })
+
+                # Capture exception with full context
+                sentry_sdk.capture_exception(
+                    error,
+                    level="error",
+                    fingerprint=["job-crash", self.job_type, type(error).__name__]
+                )
+
+                logger.info(f"📊 Sent crash alert to Sentry for job {self.job_id}")
+
+            except Exception as sentry_error:
+                logger.warning(f"Failed to send Sentry alert: {sentry_error}")
 
         try:
             # Update background_jobs table
