@@ -14,14 +14,16 @@ import os
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 import vecs
-from vecs.collection import Collection
+from vecs.collection import Collection, IndexMethod
 
 logger = logging.getLogger(__name__)
 
 
 class VecsService:
     """Service for managing vector embeddings using Supabase vecs library."""
-    
+
+    _instance = None
+
     def __init__(self):
         """Initialize VECS client with Supabase connection."""
         self._client = None
@@ -63,45 +65,54 @@ class VecsService:
         self,
         name: str,
         dimension: int,
-        create_index: bool = True
+        create_index: bool = True,
+        index_method: str = "hnsw"
     ) -> Collection:
         """
-        Get or create a vector collection.
-        
+        Get or create a vector collection with optimized indexing.
+
         Args:
             name: Collection name (e.g., 'image_clip_embeddings')
             dimension: Vector dimension (e.g., 512 for CLIP)
             create_index: Whether to create index for fast search
-            
+            index_method: Index method - 'hnsw' (fast, approximate) or 'ivfflat' (balanced)
+
         Returns:
             VECS Collection instance
         """
         if name in self._collections:
             return self._collections[name]
-        
+
         try:
             client = self._get_client()
-            
+
             # Get or create collection
             collection = client.get_or_create_collection(
                 name=name,
                 dimension=dimension
             )
-            
-            # Create index for fast similarity search (if not exists)
+
+            # ✅ FIX: Create HNSW index for fast similarity search (if not exists)
             if create_index:
                 try:
-                    collection.create_index()
-                    logger.info(f"✅ Created index for collection '{name}'")
+                    # HNSW parameters for optimal performance:
+                    # - m=16: Number of connections per layer (higher = better recall, more memory)
+                    # - ef_construction=64: Size of dynamic candidate list (higher = better index quality)
+                    if index_method == "hnsw":
+                        collection.create_index(method=IndexMethod.hnsw, m=16, ef_construction=64)
+                        logger.info(f"✅ Created HNSW index for collection '{name}' (m=16, ef_construction=64)")
+                    else:
+                        collection.create_index(method=IndexMethod.ivfflat)
+                        logger.info(f"✅ Created IVFFlat index for collection '{name}'")
                 except Exception as index_error:
                     # Index might already exist
                     logger.debug(f"Index creation skipped for '{name}': {index_error}")
-            
+
             self._collections[name] = collection
-            logger.info(f"✅ Collection '{name}' ready (dimension={dimension})")
-            
+            logger.info(f"✅ Collection '{name}' ready (dimension={dimension}, index={index_method})")
+
             return collection
-            
+
         except Exception as e:
             logger.error(f"❌ Failed to get/create collection '{name}': {e}")
             raise

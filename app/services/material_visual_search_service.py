@@ -496,67 +496,124 @@ class MaterialVisualSearchService:
             )
 
     async def _perform_database_search(self, request: MaterialSearchRequest) -> MaterialSearchResponse:
-        """Perform real database search for materials."""
-        logger.info("Performing real database search for materials")
+        """
+        ✅ UPDATED: Perform VECS-based visual search with relationship enrichment.
+
+        Uses VECS HNSW indexing for fast similarity search and enriches results
+        with related products and chunks from relationship tables.
+        """
+        logger.info("Performing VECS-based visual search for materials")
+        import time
+        start_time = time.time()
 
         try:
-            # Get Supabase client
+            from app.services.vecs_service import get_vecs_service
+            from app.services.search_enrichment_service import SearchEnrichmentService
             from app.dependencies import get_supabase_client
-            supabase = get_supabase_client()
 
-            # Query materials from database
-            query = supabase.table('materials').select('*')
+            # ✅ Step 1: Generate CLIP embedding from query image
+            query_embedding = None
+            if request.query_embedding:
+                query_embedding = request.query_embedding
+            elif request.query_image:
+                # Generate CLIP embedding from image
+                from app.services.llamaindex_service import LlamaIndexService
+                llama_service = LlamaIndexService()
 
-            # Apply filters based on request
-            if request.material_types:
-                query = query.in_('material_type', request.material_types)
+                # Load image and generate embedding
+                import base64
+                import requests
+                from io import BytesIO
+                from PIL import Image
 
-            if request.property_filters:
-                for prop_filter in request.property_filters:
-                    if prop_filter.property_name and prop_filter.min_value is not None:
-                        query = query.gte(prop_filter.property_name, prop_filter.min_value)
-                    if prop_filter.property_name and prop_filter.max_value is not None:
-                        query = query.lte(prop_filter.property_name, prop_filter.max_value)
+                if request.query_image.startswith('http'):
+                    response = requests.get(request.query_image)
+                    image = Image.open(BytesIO(response.content))
+                else:
+                    image_data = base64.b64decode(request.query_image)
+                    image = Image.open(BytesIO(image_data))
 
-            # Limit results
-            query = query.limit(request.limit)
+                query_embedding = await llama_service._generate_clip_embedding(image)
 
-            # Execute query
-            result = query.execute()
+            if not query_embedding:
+                return MaterialSearchResponse(
+                    success=False,
+                    results=[],
+                    total_results=0,
+                    search_metadata={
+                        "error": "No query embedding provided or generated",
+                        "search_type": request.search_type
+                    }
+                )
 
-            # Process results into MaterialSearchResult objects
+            # ✅ Step 2: Search VECS for similar images with HNSW indexing
+            vecs_service = get_vecs_service()
+
+            # Build metadata filters
+            filters = None
+            if request.workspace_id:
+                # Note: VECS metadata doesn't have workspace_id, but we can filter by document_id
+                # if we know which documents belong to the workspace
+                pass
+
+            # Search VECS collection
+            vecs_results = await vecs_service.search_similar_images(
+                query_embedding=query_embedding,
+                limit=request.limit * 2,  # Get more results to filter
+                filters=filters,
+                include_metadata=True
+            )
+
+            # Filter by similarity threshold
+            filtered_results = [
+                r for r in vecs_results
+                if r.get('similarity_score', 0) >= request.similarity_threshold
+            ][:request.limit]
+
+            # ✅ Step 3: Enrich results with relationship data
+            enrichment_service = SearchEnrichmentService()
+            enriched_results = await enrichment_service.enrich_image_results(
+                image_results=filtered_results,
+                include_products=True,
+                include_chunks=True,
+                min_relevance=0.5
+            )
+
+            # ✅ Step 4: Format results as MaterialSearchResult objects
             search_results = []
-            for material_data in result.data:
+            for idx, item in enumerate(enriched_results):
+                metadata = item.get('metadata', {})
+                related_products = item.get('related_products', [])
+                related_chunks = item.get('related_chunks', [])
+
+                # Use first related product as primary material
+                primary_product = related_products[0] if related_products else None
+
                 search_results.append(MaterialSearchResult(
-                    material_id=material_data.get("id", ""),
-                    material_name=material_data.get("name", "Unknown Material"),
-                    material_type=material_data.get("material_type", "unknown"),
-                    visual_similarity_score=0.95,  # Real similarity would come from vector search
-                    semantic_relevance_score=0.90,
-                    confidence_score=0.85,
-                    properties={
-                        "mechanical": material_data.get("mechanical_properties", {}),
-                        "thermal": material_data.get("thermal_properties", {}),
-                        "chemical": material_data.get("chemical_properties", {}),
-                        "spectral": material_data.get("spectral_properties", {})
+                    material_id=primary_product.get('product_id', item.get('image_id', '')),
+                    material_name=primary_product.get('name', 'Unknown Material') if primary_product else 'Image Result',
+                    material_type=primary_product.get('metadata', {}).get('type', 'unknown') if primary_product else 'image',
+                    visual_similarity_score=item.get('similarity_score', 0.0),
+                    semantic_relevance_score=primary_product.get('relevance_score', 0.0) if primary_product else 0.0,
+                    material_property_score=metadata.get('quality_score', 0.0),
+                    combined_score=(item.get('similarity_score', 0.0) * 0.6 +
+                                  (primary_product.get('relevance_score', 0.0) if primary_product else 0.0) * 0.4),
+                    confidence_score=metadata.get('confidence_score', 0.8),
+                    visual_analysis={
+                        "image_url": metadata.get('image_url'),
+                        "page_number": metadata.get('page_number'),
+                        "quality_score": metadata.get('quality_score')
                     },
-                    metadata={
-                        "source": "database",
-                        "last_updated": material_data.get("updated_at", ""),
-                        "data_quality": "high"
-                    },
-                    analysis_results={
-                        "llama_vision": {
-                            "description": material_data.get("description", ""),
-                            "confidence": 0.85,
-                            "properties_detected": material_data.get("detected_properties", [])
-                        }
-                    },
-                    source="database",
-                    created_at=material_data.get("created_at", ""),
-                    processing_method="database_query",
-                    search_rank=len(search_results) + 1
+                    material_properties=metadata.get('material_properties', {}),
+                    clip_embedding=None if not request.include_embeddings else query_embedding,
+                    llama_analysis=metadata.get('llama_analysis'),
+                    source="vecs_search",
+                    created_at=datetime.utcnow().isoformat(),
+                    processing_method="vecs_hnsw",
+                    search_rank=idx + 1
                 ))
+
+            processing_time = (time.time() - start_time) * 1000  # Convert to ms
 
             return MaterialSearchResponse(
                 success=True,
@@ -564,16 +621,20 @@ class MaterialVisualSearchService:
                 total_results=len(search_results),
                 search_metadata={
                     "search_type": request.search_type,
-                    "processing_time_ms": 100.0,
+                    "processing_time_ms": processing_time,
+                    "search_method": "vecs_hnsw",
                     "fallback_mode": False,
                     "limit": request.limit,
-                    "fusion_weights": self.default_fusion_weights
+                    "fusion_weights": self.default_fusion_weights,
+                    "vecs_candidates": len(vecs_results),
+                    "filtered_results": len(filtered_results)
                 },
                 analytics={
                     "search_performance": {
-                        "total_candidates": len(search_results),
+                        "total_candidates": len(vecs_results),
                         "filtered_results": len(search_results),
-                        "avg_confidence": sum(r.confidence_score for r in search_results) / len(search_results) if search_results else 0
+                        "avg_confidence": sum(r.confidence_score for r in search_results) / len(search_results) if search_results else 0,
+                        "avg_similarity": sum(r.visual_similarity_score for r in search_results) / len(search_results) if search_results else 0
                     }
                 }
             )

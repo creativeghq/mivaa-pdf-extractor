@@ -5367,13 +5367,14 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
         image_url: Optional[str] = None,
         image_base64: Optional[str] = None,
         top_k: int = 10,
-        similarity_threshold: float = 0.7
+        similarity_threshold: float = 0.7,
+        document_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Visual similarity search using CLIP embeddings.
+        ✅ UPDATED: Visual similarity search using VECS with relationship enrichment.
 
-        Searches products based on visual similarity using visual_clip_embedding_512 column.
-        Accepts either image URL or base64-encoded image.
+        Searches images using VECS CLIP embeddings with HNSW indexing.
+        Returns enriched results with related products and chunks.
 
         Args:
             workspace_id: Workspace ID to filter results
@@ -5381,12 +5382,14 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
             image_base64: Base64-encoded query image (optional)
             top_k: Number of results to return
             similarity_threshold: Minimum similarity score (default 0.7)
+            document_id: Optional document ID to filter results
 
         Returns:
-            Dictionary containing visually similar products
+            Dictionary containing visually similar images with products and chunks
         """
         try:
-            from .supabase_client import get_supabase_client
+            from .vecs_service import get_vecs_service
+            from .search_enrichment_service import SearchEnrichmentService
             import time
             import base64
             import requests
@@ -5394,7 +5397,6 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
             from PIL import Image
 
             start_time = time.time()
-            supabase_client = get_supabase_client()
 
             # Validate input
             if not image_url and not image_base64:
@@ -5414,8 +5416,6 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
                 image = Image.open(BytesIO(image_data))
 
             # Generate CLIP embedding for the query image
-            # Note: This requires CLIP model integration
-            # For now, we'll use a placeholder - in production, integrate with CLIP service
             query_embedding = await self._generate_clip_embedding(image)
 
             if not query_embedding:
@@ -5426,49 +5426,57 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
                     "processing_time": time.time() - start_time
                 }
 
-            # Convert embedding to PostgreSQL vector format
-            embedding_str = f"[{','.join(map(str, query_embedding))}]"
+            # ✅ NEW: Use VECS for similarity search with HNSW indexing
+            vecs_service = get_vecs_service()
 
-            # Image similarity search query
-            query_sql = f"""
-            SELECT
-                p.id,
-                p.product_name,
-                p.description,
-                p.metadata,
-                p.workspace_id,
-                p.document_id,
-                (1 - (p.visual_clip_embedding_512 <=> '{embedding_str}'::vector(512))) as similarity_score
-            FROM products p
-            WHERE p.workspace_id = '{workspace_id}'
-                AND p.visual_clip_embedding_512 IS NOT NULL
-                AND (1 - (p.visual_clip_embedding_512 <=> '{embedding_str}'::vector(512))) >= {similarity_threshold}
-            ORDER BY p.visual_clip_embedding_512 <=> '{embedding_str}'::vector(512)
-            LIMIT {top_k}
-            """
+            # Build metadata filters
+            filters = None
+            if document_id:
+                filters = {"document_id": {"$eq": document_id}}
 
-            # Execute query
-            response = supabase_client.client.rpc('exec_sql', {'query': query_sql}).execute()
+            # Search VECS collection
+            vecs_results = await vecs_service.search_similar_images(
+                query_embedding=query_embedding,
+                limit=top_k * 2,  # Get more results to filter by threshold
+                filters=filters,
+                include_metadata=True
+            )
 
+            # Filter by similarity threshold
+            filtered_results = [
+                r for r in vecs_results
+                if r.get('similarity_score', 0) >= similarity_threshold
+            ][:top_k]
+
+            # ✅ NEW: Enrich results with relationship data
+            enrichment_service = SearchEnrichmentService()
+            enriched_results = await enrichment_service.enrich_image_results(
+                image_results=filtered_results,
+                include_products=True,
+                include_chunks=True,
+                min_relevance=0.5  # Only include relationships with relevance >= 0.5
+            )
+
+            # Format results
             results = []
-            if response.data:
-                for row in response.data:
-                    results.append({
-                        "id": row.get("id"),
-                        "product_name": row.get("product_name"),
-                        "description": row.get("description"),
-                        "metadata": row.get("metadata", {}),
-                        "workspace_id": row.get("workspace_id"),
-                        "document_id": row.get("document_id"),
-                        "score": row.get("similarity_score", 0.0),
-                        "search_type": "image_similarity"
-                    })
+            for item in enriched_results:
+                results.append({
+                    "image_id": item.get("image_id"),
+                    "similarity_score": item.get("similarity_score"),
+                    "metadata": item.get("metadata", {}),
+                    "related_products": item.get("related_products", []),
+                    "related_chunks": item.get("related_chunks", []),
+                    "search_type": "vecs_image_similarity"
+                })
+
+            self.logger.info(f"✅ VECS image search: {len(results)} results in {time.time() - start_time:.2f}s")
 
             return {
                 "results": results,
                 "total_results": len(results),
                 "processing_time": time.time() - start_time,
-                "query_type": "image_url" if image_url else "image_base64"
+                "query_type": "image_url" if image_url else "image_base64",
+                "search_method": "vecs_hnsw"
             }
 
         except Exception as e:

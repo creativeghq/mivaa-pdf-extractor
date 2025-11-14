@@ -3062,6 +3062,10 @@ async def process_document_with_discovery(
         images_processed = 0
         clip_embeddings_generated = 0
 
+        # ✅ OPTIMIZATION: Collect VECS records for batch upsert
+        vecs_batch_records = []
+        VECS_BATCH_SIZE = 50  # Batch upsert every 50 embeddings
+
         # 🚀 DYNAMIC BATCH SIZE: Calculate optimal batch size based on available memory
         DEFAULT_BATCH_SIZE = 10
         BATCH_SIZE = memory_monitor.calculate_optimal_batch_size(
@@ -3187,8 +3191,7 @@ async def process_document_with_discovery(
                     logger.error(f"   Error type: {type(llama_error).__name__}")
                     analysis_result = {}
 
-                # Save CLIP embedding to VECS collection
-                # 🚀 USE VECS (Supabase recommended approach) for vector storage and similarity search
+                # ✅ OPTIMIZATION: Collect CLIP embeddings for batch upsert to VECS
                 if clip_result and clip_result.get('embedding_512') and image_id:
                     # ✅ FIX: Use storage_url from img_data instead of tmp image_path
                     storage_url = img_data.get('storage_url') or img_data.get('public_url')
@@ -3206,22 +3209,22 @@ async def process_document_with_discovery(
                         'material_properties': analysis_result.get('material_properties', {})
                     }
 
-                    # Get VECS service
-                    vecs_service = get_vecs_service()
+                    # Add to batch records
+                    vecs_batch_records.append((
+                        image_id,
+                        clip_result.get('embedding_512'),
+                        vecs_metadata
+                    ))
 
-                    # Upsert CLIP embedding to VECS collection
-                    success = await vecs_service.upsert_image_embedding(
-                        image_id=image_id,
-                        clip_embedding=clip_result.get('embedding_512'),
-                        metadata=vecs_metadata
-                    )
+                    clip_embeddings_generated += 1
+                    logger.debug(f"✅ [{image_index}/{total_images}] Queued CLIP embedding for batch upsert (image {image_id})")
 
-                    if success:
-                        clip_embeddings_generated += 1
-                        logger.info(f"✅ [{image_index}/{total_images}] Saved CLIP embedding to VECS for image {image_id}")
-                        logger.debug(f"   Storage URL: {storage_url}")
-                    else:
-                        logger.error(f"❌ [{image_index}/{total_images}] Failed to save CLIP embedding to VECS for image {image_id}")
+                    # ✅ OPTIMIZATION: Batch upsert every VECS_BATCH_SIZE embeddings
+                    if len(vecs_batch_records) >= VECS_BATCH_SIZE:
+                        vecs_service = get_vecs_service()
+                        batch_count = await vecs_service.batch_upsert_image_embeddings(vecs_batch_records)
+                        logger.info(f"✅ Batch upserted {batch_count} CLIP embeddings to VECS")
+                        vecs_batch_records = []  # Clear batch
 
                 elif not image_id:
                     logger.warning(f"⚠️ [{image_index}/{total_images}] Skipping VECS save - image ID not found for {image_filename}")
@@ -3321,12 +3324,19 @@ async def process_document_with_discovery(
                 sync_to_db=True
             )
 
+        # ✅ OPTIMIZATION: Final batch upsert for remaining VECS records
+        if vecs_batch_records:
+            vecs_service = get_vecs_service()
+            batch_count = await vecs_service.batch_upsert_image_embeddings(vecs_batch_records)
+            logger.info(f"✅ Final batch upserted {batch_count} CLIP embeddings to VECS")
+            vecs_batch_records = []
+
         # Don't overwrite tracker.images_stored - it was already set correctly from images_saved
         # tracker.images_stored is the count of images saved to database (line 2570)
         # images_processed is the count of images analyzed with Llama Vision (may be 0 if files don't exist)
         await tracker._sync_to_database(stage="image_processing")
 
-        logger.info(f"✅ [STAGE 3] Image Processing Complete: {images_processed} images processed, {clip_embeddings_generated} CLIP embeddings generated")
+        logger.info(f"✅ [STAGE 3] Image Processing Complete: {images_processed} images processed, {clip_embeddings_generated} CLIP embeddings generated (batch upserted to VECS)")
 
         # Create IMAGES_EXTRACTED checkpoint
         await checkpoint_recovery_service.create_checkpoint(
