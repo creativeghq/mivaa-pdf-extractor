@@ -3073,6 +3073,26 @@ async def process_document_with_discovery(
                     logger.error(f"   Error type: {type(clip_error).__name__}")
                     clip_result = None
 
+                # 🔍 CRITICAL: Get image ID from database FIRST (needed for Claude validation queue)
+                image_filename = os.path.basename(image_path)
+                supabase = get_supabase_client()
+
+                # Find image by document_id, page_number, and filename in image_url
+                image_query = supabase.client.table('document_images')\
+                    .select('id')\
+                    .eq('document_id', document_id)\
+                    .eq('page_number', page_num)\
+                    .like('image_url', f'%{image_filename}%')\
+                    .execute()
+
+                # Get image_id for Claude validation queue (or use filename as fallback)
+                image_id = None
+                if image_query.data and len(image_query.data) > 0:
+                    image_id = image_query.data[0]['id']
+                    logger.debug(f"📌 [{image_index}/{total_images}] Found image ID: {image_id}")
+                else:
+                    logger.warning(f"⚠️ [{image_index}/{total_images}] Could not find image record for {image_filename} on page {page_num}")
+
                 # Analyze with Llama Vision (with timeout guard + circuit breaker)
                 logger.info(f"🔍 [{image_index}/{total_images}] Analyzing image with Llama Vision...")
                 try:
@@ -3082,6 +3102,7 @@ async def process_document_with_discovery(
                         llamaindex_service._analyze_image_material(
                             image_base64=image_base64,
                             image_path=image_path,
+                            image_id=image_id,  # Pass actual image ID for Claude validation queue
                             document_id=document_id
                         ),
                         timeout_seconds=TimeoutConstants.LLAMA_VISION_CALL,
@@ -3097,53 +3118,67 @@ async def process_document_with_discovery(
                     analysis_result = {}
 
                 # Update the image record in database with CLIP embeddings
-                if clip_result and clip_result.get('embedding_512'):
-                    try:
-                        # Find the image record in database by matching page_number and image_url
-                        image_filename = os.path.basename(image_path)
+                if clip_result and clip_result.get('embedding_512') and image_id:
+                    # Store material properties in metadata JSONB (not separate columns)
+                    material_metadata = {
+                        'llama_analysis': analysis_result.get('llama_analysis'),
+                        'claude_validation': analysis_result.get('claude_validation'),
+                        'material_properties': analysis_result.get('material_properties', {}),
+                        'quality_score': analysis_result.get('quality_score'),
+                        'confidence_score': analysis_result.get('confidence_score')
+                    }
 
-                        # Query to find the image record
-                        supabase = get_supabase_client()
+                    # Update with CLIP embedding and material metadata
+                    update_data = {
+                        'visual_clip_embedding_512': clip_result.get('embedding_512'),
+                        'processing_status': 'completed',
+                        'image_analysis_results': material_metadata,
+                        'quality_score': analysis_result.get('quality_score'),
+                        'confidence_score': analysis_result.get('confidence_score')
+                    }
 
-                        # Find image by document_id, page_number, and filename in image_url
-                        image_query = supabase.client.table('document_images')\
-                            .select('id')\
-                            .eq('document_id', document_id)\
-                            .eq('page_number', page_num)\
-                            .like('image_url', f'%{image_filename}%')\
-                            .execute()
+                    # 🔄 RETRY LOGIC: Exponential backoff for transient Supabase errors
+                    max_retries = 3
+                    retry_delay = 1  # Start with 1 second
 
-                        if image_query.data and len(image_query.data) > 0:
-                            image_id = image_query.data[0]['id']
-
-                            # Update with CLIP embeddings and analysis results
-                            update_data = {
-                                'visual_clip_embedding_512': clip_result.get('embedding_512'),
-                                'color_embedding_256': clip_result.get('color_embedding'),
-                                'texture_embedding_256': clip_result.get('texture_embedding'),
-                                'application_embedding_512': clip_result.get('application_embedding'),
-                                'llama_analysis': analysis_result.get('llama_analysis'),
-                                'claude_validation': analysis_result.get('claude_validation'),
-                                'processing_status': 'completed',
-                                'image_analysis_results': analysis_result.get('material_properties', {}),
-                                'quality_score': analysis_result.get('quality_score'),
-                                'confidence_score': analysis_result.get('confidence_score')
-                            }
-
+                    for attempt in range(max_retries):
+                        try:
                             supabase.client.table('document_images')\
                                 .update(update_data)\
                                 .eq('id', image_id)\
                                 .execute()
 
                             clip_embeddings_generated += 1
-                            logger.info(f"✅ [{image_index}/{total_images}] Updated image {image_id} with CLIP embeddings")
-                        else:
-                            logger.warning(f"[{image_index}/{total_images}] Could not find image record for {image_filename} on page {page_num}")
+                            logger.info(f"✅ [{image_index}/{total_images}] Updated image {image_id} with CLIP embedding and material metadata")
+                            break  # Success, exit retry loop
 
-                    except Exception as update_error:
-                        logger.error(f"[{image_index}/{total_images}] Failed to update image with CLIP embeddings: {update_error}")
+                        except Exception as update_error:
+                            if attempt < max_retries - 1:
+                                # Retry with exponential backoff
+                                logger.warning(f"⚠️ [{image_index}/{total_images}] Database update failed (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s: {update_error}")
+                                await asyncio.sleep(retry_delay)
+                                retry_delay *= 2  # Exponential backoff: 1s, 2s, 4s
+                            else:
+                                # Final attempt failed
+                                logger.error(f"❌ [{image_index}/{total_images}] Failed to update image with CLIP embeddings after {max_retries} attempts: {update_error}")
+                                logger.error(f"   Error type: {type(update_error).__name__}")
+                                logger.error(f"   Image ID: {image_id}")
+
+                elif not image_id:
+                    logger.warning(f"⚠️ [{image_index}/{total_images}] Skipping database update - image ID not found for {image_filename}")
 
                 images_processed += 1
+
+                # 📊 REAL-TIME PROGRESS: Update progress after each image (every 5 images to reduce DB load)
+                if image_index % 5 == 0:
+                    try:
+                        await tracker.update_database_stats(
+                            images_stored=images_processed,
+                            sync_to_db=True
+                        )
+                        logger.debug(f"📊 Progress updated: {images_processed}/{total_images} images processed")
+                    except Exception as progress_error:
+                        logger.warning(f"⚠️ Failed to update progress: {progress_error}")
 
                 # Clear image data from memory immediately after processing
                 del image_bytes

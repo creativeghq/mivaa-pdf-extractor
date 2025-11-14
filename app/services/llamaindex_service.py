@@ -3931,20 +3931,14 @@ Summary:"""
                 embeddings = embedding_result.get('embeddings', {})
                 metadata = embedding_result.get('metadata', {})
 
-                # Get all embeddings
+                # Get CLIP embedding only (material properties stored in metadata)
                 clip_embedding = embeddings.get('visual_512')  # CLIP 512D
-                color_embedding = embeddings.get('color_256')  # Color 256D
-                texture_embedding = embeddings.get('texture_256')  # Texture 256D
-                application_embedding = embeddings.get('application_512')  # Application 512D
 
-                self.logger.info(f"✅ Generated embeddings: CLIP={len(clip_embedding) if clip_embedding else 0}D, Color={len(color_embedding) if color_embedding else 0}D, Texture={len(texture_embedding) if texture_embedding else 0}D, Application={len(application_embedding) if application_embedding else 0}D")
+                self.logger.info(f"✅ Generated CLIP embedding: {len(clip_embedding) if clip_embedding else 0}D")
 
                 return {
                     "embedding_512": clip_embedding,  # CLIP 512D
                     "embedding_1536": None,  # Not available
-                    "color_embedding": color_embedding,  # Color 256D
-                    "texture_embedding": texture_embedding,  # Texture 256D
-                    "application_embedding": application_embedding,  # Application 512D
                     "model_used": metadata.get('model_versions', {}).get('visual', 'ViT-B/32'),
                     "processing_time_ms": metadata.get('processing_time_ms', 0),
                     "confidence_score": 1.0  # Default confidence
@@ -4008,6 +4002,7 @@ Summary:"""
         self,
         image_base64: str,
         image_path: str,
+        image_id: Optional[str] = None,
         document_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
@@ -4017,6 +4012,12 @@ Summary:"""
         - Llama 4 Scout Vision for sync processing
         - Queue Claude validation for low-quality images (score < 0.7)
         - Claude runs async before product creation
+
+        Args:
+            image_base64: Base64-encoded image data
+            image_path: Path to image file (for logging)
+            image_id: Database image ID (for Claude validation queue)
+            document_id: Document ID (for Claude validation queue)
         """
         try:
             self.logger.info(f"🔬 Analyzing material properties for image: {os.path.basename(image_path)}")
@@ -4026,10 +4027,13 @@ Summary:"""
 
             analysis_service = RealImageAnalysisService()
 
+            # Use actual image_id if provided, otherwise fallback to filename
+            analysis_image_id = image_id if image_id else os.path.basename(image_path)
+
             # Analyze image using Llama 4 Scout Vision ONLY (prevents OOM)
             result = await analysis_service.analyze_image_from_base64(
                 image_base64=image_base64,
-                image_id=os.path.basename(image_path),
+                image_id=analysis_image_id,  # Use actual image ID for Claude validation queue
                 context={},
                 document_id=document_id  # Pass document_id for Claude validation queuing
             )

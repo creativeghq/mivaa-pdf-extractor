@@ -1088,8 +1088,29 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
             all_product_pages = set()
             product_page_mapping = {}  # Map product index to its pages
 
+            # 🔍 VALIDATION: Get PDF page count to validate page ranges
+            import fitz
+            doc = fitz.open(pdf_path)
+            pdf_page_count = doc.page_count
+            doc.close()
+            self.logger.info(f"   📄 PDF has {pdf_page_count} pages")
+
             for i, product in enumerate(catalog.products):
-                page_indices = [p - 1 for p in product.page_range if p > 0]
+                # Convert to 0-based indices and validate against PDF page count
+                page_indices = []
+                invalid_pages = []
+
+                for p in product.page_range:
+                    if p > 0:
+                        page_idx = p - 1  # Convert to 0-based
+                        if page_idx < pdf_page_count:
+                            page_indices.append(page_idx)
+                        else:
+                            invalid_pages.append(p)
+
+                if invalid_pages:
+                    self.logger.warning(f"   ⚠️ Product '{product.name}' has invalid pages {invalid_pages} (PDF has {pdf_page_count} pages) - skipping these pages")
+
                 if page_indices:
                     all_product_pages.update(page_indices)
                     product_page_mapping[i] = page_indices
