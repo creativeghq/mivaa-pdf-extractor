@@ -2818,22 +2818,45 @@ async def process_document_with_discovery(
         logger.info("🔄 Starting image extraction from PDF...")
         logger.info(f"   PDF size: {len(file_content)} bytes")
         logger.info(f"   Document ID: {document_id}")
+        logger.info(f"   Focused extraction: {focused_extraction}")
+        logger.info(f"   Extract categories: {extract_categories}")
 
         try:
-            # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on page count (estimate ~2 images/page)
-            estimated_images = page_count * 2
+            # ✅ OPTIMIZATION: Calculate estimated images based on focused extraction
+            if focused_extraction and 'products' in extract_categories and product_pages:
+                # Only extract images from product pages
+                estimated_images = len(product_pages) * 2  # ~2 images per product page
+                logger.info(f"   🎯 Focused extraction: Only extracting from {len(product_pages)} product pages")
+                logger.info(f"   📄 Product pages: {sorted(product_pages)}")
+            else:
+                # Extract images from all pages
+                estimated_images = page_count * 2
+                logger.info(f"   📄 Full extraction: Extracting from all {page_count} pages")
+
+            # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on estimated images
             image_extraction_timeout = ProgressiveTimeoutStrategy.calculate_image_processing_timeout(
                 image_count=estimated_images,
                 concurrent_limit=1  # Extraction is sequential
             )
             logger.info(f"📊 Image extraction: ~{estimated_images} estimated images → timeout: {image_extraction_timeout:.0f}s")
 
+            # ✅ OPTIMIZATION: Build processing options with page_list for focused extraction
+            processing_options = {
+                'extract_images': True,
+                'extract_tables': False
+            }
+
+            # Add page_list for focused extraction (only extract images from product pages)
+            if focused_extraction and 'products' in extract_categories and product_pages:
+                processing_options['page_list'] = sorted(list(product_pages))  # Convert set to sorted list
+                logger.info(f"   ✅ Passing page_list to PyMuPDF: {len(processing_options['page_list'])} pages")
+
             # ⏱️ PROGRESSIVE TIMEOUT GUARD: Prevent indefinite hangs during image extraction
             pdf_result_with_images = await with_timeout(
                 pdf_processor.process_pdf_from_bytes(
                     pdf_bytes=file_content,
                     document_id=document_id,
-                    processing_options={'extract_images': True, 'extract_tables': False}
+                    processing_options=processing_options
                 ),
                 timeout_seconds=image_extraction_timeout,
                 operation_name="PyMuPDF4LLM image extraction"

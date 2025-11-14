@@ -68,7 +68,7 @@ def extract_pdf_tables(file_name, page_number):
     return tables
 
 
-def extract_json_and_images(file_path, output_dir, page_number, batch_size=5):
+def extract_json_and_images(file_path, output_dir, page_number, batch_size=5, page_list=None):
     """
     Extract JSON and images from PDF with batch processing to reduce memory usage.
 
@@ -77,6 +77,8 @@ def extract_json_and_images(file_path, output_dir, page_number, batch_size=5):
         output_dir: Directory to save extracted content
         page_number: Specific page number to extract (None for all pages)
         batch_size: Number of pages to process at once (default: 5 for memory efficiency)
+        page_list: Optional list of specific page numbers to extract (0-indexed).
+                   When provided, only these pages will be processed (for focused extraction).
     """
     import fitz
     import gc
@@ -102,6 +104,37 @@ def extract_json_and_images(file_path, output_dir, page_number, batch_size=5):
 
         output_file = os.path.join(output_dir, "output.json")
         pathlib.Path(output_file).write_text(json.dumps(str(md_text_images)))
+        return
+
+    # ✅ OPTIMIZATION: If page_list is provided (focused extraction), only process those pages
+    if page_list is not None:
+        # Convert 1-indexed page numbers to 0-indexed for PyMuPDF
+        pages_to_process = [p - 1 if p > 0 else 0 for p in page_list]
+
+        # Process in batches for memory efficiency
+        all_markdown = []
+        for batch_start in range(0, len(pages_to_process), batch_size):
+            batch_end = min(batch_start + batch_size, len(pages_to_process))
+            batch_pages = pages_to_process[batch_start:batch_end]
+
+            # Extract markdown and images for this batch
+            batch_markdown = pymupdf4llm.to_markdown(
+                doc=file_path,
+                pages=batch_pages,
+                page_chunks=True,
+                write_images=True,
+                image_path=image_path,
+                image_format="jpg",
+                dpi=200
+            )
+
+            all_markdown.append(batch_markdown)
+            gc.collect()
+
+        # Combine all batches
+        combined_markdown = "\n\n".join(str(m) for m in all_markdown)
+        output_file = os.path.join(output_dir, "output.json")
+        pathlib.Path(output_file).write_text(json.dumps(combined_markdown))
         return
 
     # For full PDF extraction, use batch processing to reduce memory usage
