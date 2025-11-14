@@ -35,6 +35,7 @@ from app.services.focused_product_extractor import get_focused_product_extractor
 from app.services.product_relationship_service import ProductRelationshipService
 from app.services.search_prompt_service import SearchPromptService
 from app.services.stuck_job_analyzer import stuck_job_analyzer
+from app.services.vecs_service import get_vecs_service
 from app.utils.logging import PDFProcessingLogger
 from app.utils.timeout_guard import with_timeout, TimeoutConstants, TimeoutError, ProgressiveTimeoutStrategy
 from app.utils.circuit_breaker import claude_breaker, llama_breaker, clip_breaker, CircuitBreakerError
@@ -2956,15 +2957,31 @@ async def process_document_with_discovery(
                 # ⚡ OPTIMIZATION: Insert batch when it reaches BATCH_INSERT_SIZE
                 if len(image_records_batch) >= BATCH_INSERT_SIZE:
                     try:
-                        supabase.client.table('document_images').insert(image_records_batch).execute()
+                        result = supabase.client.table('document_images').insert(image_records_batch).execute()
                         logger.info(f"   💾 Batch inserted {len(image_records_batch)} images to database")
+
+                        # 🔑 CRITICAL: Store returned IDs back into extracted_images for VECS lookup
+                        if result.data:
+                            for inserted_record in result.data:
+                                # Find matching image in extracted_images and add the ID
+                                for img in pdf_result_with_images.extracted_images:
+                                    if img.get('filename') == inserted_record.get('metadata', {}).get('filename'):
+                                        img['id'] = inserted_record['id']
+                                        break
+
                         image_records_batch = []  # Clear batch
                     except Exception as batch_error:
                         logger.error(f"   ❌ Batch insert failed: {batch_error}")
                         # Fallback: Insert individually
                         for record in image_records_batch:
                             try:
-                                supabase.client.table('document_images').insert(record).execute()
+                                result = supabase.client.table('document_images').insert(record).execute()
+                                # Store ID back into extracted_images
+                                if result.data and len(result.data) > 0:
+                                    for img in pdf_result_with_images.extracted_images:
+                                        if img.get('filename') == record.get('metadata', {}).get('filename'):
+                                            img['id'] = result.data[0]['id']
+                                            break
                             except Exception as individual_error:
                                 logger.error(f"   ❌ Individual insert failed: {individual_error}")
                         image_records_batch = []
@@ -2979,14 +2996,30 @@ async def process_document_with_discovery(
         # ⚡ OPTIMIZATION: Insert remaining images in final batch
         if image_records_batch:
             try:
-                supabase.client.table('document_images').insert(image_records_batch).execute()
+                result = supabase.client.table('document_images').insert(image_records_batch).execute()
                 logger.info(f"   💾 Final batch inserted {len(image_records_batch)} images to database")
+
+                # 🔑 CRITICAL: Store returned IDs back into extracted_images for VECS lookup
+                if result.data:
+                    for inserted_record in result.data:
+                        # Find matching image in extracted_images and add the ID
+                        for img in pdf_result_with_images.extracted_images:
+                            if img.get('filename') == inserted_record.get('metadata', {}).get('filename'):
+                                img['id'] = inserted_record['id']
+                                break
+
             except Exception as batch_error:
                 logger.error(f"   ❌ Final batch insert failed: {batch_error}")
                 # Fallback: Insert individually
                 for record in image_records_batch:
                     try:
-                        supabase.client.table('document_images').insert(record).execute()
+                        result = supabase.client.table('document_images').insert(record).execute()
+                        # Store ID back into extracted_images
+                        if result.data and len(result.data) > 0:
+                            for img in pdf_result_with_images.extracted_images:
+                                if img.get('filename') == record.get('metadata', {}).get('filename'):
+                                    img['id'] = result.data[0]['id']
+                                    break
                     except Exception as individual_error:
                         logger.error(f"   ❌ Individual insert failed: {individual_error}")
 
@@ -3073,25 +3106,19 @@ async def process_document_with_discovery(
                     logger.error(f"   Error type: {type(clip_error).__name__}")
                     clip_result = None
 
-                # 🔍 CRITICAL: Get image ID from database FIRST (needed for Claude validation queue)
+                # 🔍 Get image ID from the extracted_images list (already has UUID from batch insert)
                 image_filename = os.path.basename(image_path)
-                supabase = get_supabase_client()
 
-                # Find image by document_id, page_number, and filename in image_url
-                image_query = supabase.client.table('document_images')\
-                    .select('id')\
-                    .eq('document_id', document_id)\
-                    .eq('page_number', page_num)\
-                    .like('image_url', f'%{image_filename}%')\
-                    .execute()
-
-                # Get image_id for Claude validation queue (or use filename as fallback)
+                # Find image_id from the extracted_images list by matching filename
                 image_id = None
-                if image_query.data and len(image_query.data) > 0:
-                    image_id = image_query.data[0]['id']
-                    logger.debug(f"📌 [{image_index}/{total_images}] Found image ID: {image_id}")
-                else:
-                    logger.warning(f"⚠️ [{image_index}/{total_images}] Could not find image record for {image_filename} on page {page_num}")
+                for img in pdf_result_with_images.extracted_images:
+                    if img.get('filename') == image_filename:
+                        image_id = img.get('id')
+                        logger.debug(f"📌 [{image_index}/{total_images}] Found image ID from extracted list: {image_id}")
+                        break
+
+                if not image_id:
+                    logger.warning(f"⚠️ [{image_index}/{total_images}] Could not find image ID for {image_filename} in extracted images list")
 
                 # Analyze with Llama Vision (with timeout guard + circuit breaker)
                 logger.info(f"🔍 [{image_index}/{total_images}] Analyzing image with Llama Vision...")
@@ -3117,55 +3144,38 @@ async def process_document_with_discovery(
                     logger.error(f"   Error type: {type(llama_error).__name__}")
                     analysis_result = {}
 
-                # Update the image record in database with CLIP embeddings
+                # Save CLIP embedding to VECS collection
+                # 🚀 USE VECS (Supabase recommended approach) for vector storage and similarity search
                 if clip_result and clip_result.get('embedding_512') and image_id:
-                    # Store material properties in metadata JSONB (not separate columns)
-                    material_metadata = {
+                    # Prepare metadata for VECS
+                    vecs_metadata = {
+                        'document_id': document_id,
+                        'page_number': page_num,
+                        'image_url': image_path,
+                        'quality_score': analysis_result.get('quality_score'),
+                        'confidence_score': analysis_result.get('confidence_score'),
                         'llama_analysis': analysis_result.get('llama_analysis'),
-                        'claude_validation': analysis_result.get('claude_validation'),
-                        'material_properties': analysis_result.get('material_properties', {}),
-                        'quality_score': analysis_result.get('quality_score'),
-                        'confidence_score': analysis_result.get('confidence_score')
+                        'material_properties': analysis_result.get('material_properties', {})
                     }
 
-                    # Update with CLIP embedding and material metadata
-                    update_data = {
-                        'visual_clip_embedding_512': clip_result.get('embedding_512'),
-                        'processing_status': 'completed',
-                        'image_analysis_results': material_metadata,
-                        'quality_score': analysis_result.get('quality_score'),
-                        'confidence_score': analysis_result.get('confidence_score')
-                    }
+                    # Get VECS service
+                    vecs_service = get_vecs_service()
 
-                    # 🔄 RETRY LOGIC: Exponential backoff for transient Supabase errors
-                    max_retries = 3
-                    retry_delay = 1  # Start with 1 second
+                    # Upsert CLIP embedding to VECS collection
+                    success = await vecs_service.upsert_image_embedding(
+                        image_id=image_id,
+                        clip_embedding=clip_result.get('embedding_512'),
+                        metadata=vecs_metadata
+                    )
 
-                    for attempt in range(max_retries):
-                        try:
-                            supabase.client.table('document_images')\
-                                .update(update_data)\
-                                .eq('id', image_id)\
-                                .execute()
-
-                            clip_embeddings_generated += 1
-                            logger.info(f"✅ [{image_index}/{total_images}] Updated image {image_id} with CLIP embedding and material metadata")
-                            break  # Success, exit retry loop
-
-                        except Exception as update_error:
-                            if attempt < max_retries - 1:
-                                # Retry with exponential backoff
-                                logger.warning(f"⚠️ [{image_index}/{total_images}] Database update failed (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s: {update_error}")
-                                await asyncio.sleep(retry_delay)
-                                retry_delay *= 2  # Exponential backoff: 1s, 2s, 4s
-                            else:
-                                # Final attempt failed
-                                logger.error(f"❌ [{image_index}/{total_images}] Failed to update image with CLIP embeddings after {max_retries} attempts: {update_error}")
-                                logger.error(f"   Error type: {type(update_error).__name__}")
-                                logger.error(f"   Image ID: {image_id}")
+                    if success:
+                        clip_embeddings_generated += 1
+                        logger.info(f"✅ [{image_index}/{total_images}] Saved CLIP embedding to VECS for image {image_id}")
+                    else:
+                        logger.error(f"❌ [{image_index}/{total_images}] Failed to save CLIP embedding to VECS for image {image_id}")
 
                 elif not image_id:
-                    logger.warning(f"⚠️ [{image_index}/{total_images}] Skipping database update - image ID not found for {image_filename}")
+                    logger.warning(f"⚠️ [{image_index}/{total_images}] Skipping VECS save - image ID not found for {image_filename}")
 
                 images_processed += 1
 
