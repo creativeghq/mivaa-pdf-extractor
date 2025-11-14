@@ -3054,14 +3054,34 @@ async def process_document_with_discovery(
         logger.info(f"   🔧 DYNAMIC BATCH PROCESSING: {BATCH_SIZE} images per batch (adaptive based on memory)")
         memory_monitor.log_memory_stats(prefix="   ")
 
-        # Flatten images_by_page into a single list for batch processing
+        # ✅ FIX: Filter images to process based on focused_extraction and product_pages
+        # Only process images that were saved to database (i.e., product images when focused_extraction=True)
         all_images_to_process = []
+        images_filtered_out = 0
+
         for page_num, images in images_by_page.items():
             for img_data in images:
+                # Apply same filtering logic as database save
+                if focused_extraction and 'all' not in extract_categories:
+                    # Only process images from categories specified in extract_categories
+                    image_category = 'product' if (page_num and page_num in product_pages) else 'other'
+
+                    if 'products' in extract_categories and image_category != 'product':
+                        # Skip non-product images when focused_extraction is enabled
+                        images_filtered_out += 1
+                        continue
+
+                # Only process images that have storage_url (were successfully saved to database)
+                if not img_data.get('storage_url'):
+                    images_filtered_out += 1
+                    continue
+
                 all_images_to_process.append((page_num, img_data))
 
         total_images = len(all_images_to_process)
-        logger.info(f"   📊 Total images to process: {total_images}")
+        logger.info(f"   📊 Total images to process for CLIP: {total_images} (filtered out: {images_filtered_out})")
+        logger.info(f"   🎯 Focused extraction: {focused_extraction}, Categories: {extract_categories}")
+        logger.info(f"   📄 Product pages: {sorted(product_pages)}")
 
         # ⚡ OPTIMIZATION: Parallel image processing with concurrency limit
         # Process images in batches with parallel processing within each batch
@@ -3147,11 +3167,16 @@ async def process_document_with_discovery(
                 # Save CLIP embedding to VECS collection
                 # 🚀 USE VECS (Supabase recommended approach) for vector storage and similarity search
                 if clip_result and clip_result.get('embedding_512') and image_id:
+                    # ✅ FIX: Use storage_url from img_data instead of tmp image_path
+                    storage_url = img_data.get('storage_url') or img_data.get('public_url')
+                    storage_path = img_data.get('storage_path')
+
                     # Prepare metadata for VECS
                     vecs_metadata = {
                         'document_id': document_id,
                         'page_number': page_num,
-                        'image_url': image_path,
+                        'image_url': storage_url,  # ✅ FIX: Use Supabase storage URL, not tmp path
+                        'storage_path': storage_path,  # Include storage path for reference
                         'quality_score': analysis_result.get('quality_score'),
                         'confidence_score': analysis_result.get('confidence_score'),
                         'llama_analysis': analysis_result.get('llama_analysis'),
@@ -3171,6 +3196,7 @@ async def process_document_with_discovery(
                     if success:
                         clip_embeddings_generated += 1
                         logger.info(f"✅ [{image_index}/{total_images}] Saved CLIP embedding to VECS for image {image_id}")
+                        logger.debug(f"   Storage URL: {storage_url}")
                     else:
                         logger.error(f"❌ [{image_index}/{total_images}] Failed to save CLIP embedding to VECS for image {image_id}")
 
