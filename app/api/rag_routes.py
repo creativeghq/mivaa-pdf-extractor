@@ -1278,15 +1278,17 @@ async def list_jobs(
 async def get_chunks(
     document_id: Optional[str] = Query(None, description="Filter by document ID"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of chunks to return"),
-    offset: int = Query(0, ge=0, description="Number of chunks to skip")
+    offset: int = Query(0, ge=0, description="Number of chunks to skip"),
+    include_embeddings: bool = Query(True, description="Include embeddings in response")
 ):
     """
-    Get chunks for a document.
+    Get chunks for a document with embeddings.
 
     Args:
         document_id: Document ID to filter chunks
         limit: Maximum number of chunks to return
         offset: Pagination offset
+        include_embeddings: Whether to include embeddings (default: True)
 
     Returns:
         List of chunks with metadata and embeddings
@@ -1306,6 +1308,16 @@ async def get_chunks(
         result = query.execute()
 
         chunks = result.data if result.data else []
+
+        # Add embeddings to each chunk if requested
+        if include_embeddings and chunks:
+            for chunk in chunks:
+                embeddings_response = supabase_client.client.table('embeddings').select('*').eq('chunk_id', chunk['id']).execute()
+                embeddings = embeddings_response.data or []
+                # Add embedding field for backward compatibility
+                chunk['embedding'] = embeddings[0]['embedding'] if embeddings else None
+                chunk['embeddings'] = embeddings
+                chunk['has_embedding'] = len(embeddings) > 0
 
         return JSONResponse(content={
             "document_id": document_id,
@@ -1505,6 +1517,79 @@ async def get_embeddings(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve embeddings: {str(e)}"
+        )
+
+
+@router.get("/relevancies")
+async def get_relevancies(
+    document_id: Optional[str] = Query(None, description="Filter by document ID"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of relevancies to return"),
+    offset: int = Query(0, ge=0, description="Number of relevancies to skip"),
+    min_score: float = Query(0.0, ge=0.0, le=1.0, description="Minimum relevance score")
+):
+    """
+    Get chunk-image relevancy relationships for a document.
+
+    Args:
+        document_id: Document ID to filter relevancies
+        limit: Maximum number of relevancies to return
+        offset: Pagination offset
+        min_score: Minimum relevance score threshold
+
+    Returns:
+        List of chunk-image relationships with relevance scores
+    """
+    try:
+        supabase_client = get_supabase_client()
+
+        if not document_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="document_id is required"
+            )
+
+        # Query chunk-image relationships through chunks
+        query = supabase_client.client.table('chunk_image_relationships').select(
+            '*, document_chunks!inner(document_id, content), document_images(image_url, caption)'
+        ).eq('document_chunks.document_id', document_id)
+
+        if min_score > 0:
+            query = query.gte('relevance_score', min_score)
+
+        query = query.order('relevance_score', desc=True)
+        query = query.range(offset, offset + limit - 1)
+        result = query.execute()
+
+        relevancies = result.data if result.data else []
+
+        # Calculate statistics
+        relationship_types = {}
+        for rel in relevancies:
+            rel_type = rel.get('relationship_type', 'unknown')
+            if rel_type not in relationship_types:
+                relationship_types[rel_type] = 0
+            relationship_types[rel_type] += 1
+
+        return JSONResponse(content={
+            "document_id": document_id,
+            "relevancies": relevancies,
+            "count": len(relevancies),
+            "limit": limit,
+            "offset": offset,
+            "statistics": {
+                "total_relevancies": len(relevancies),
+                "by_relationship_type": relationship_types,
+                "min_score_filter": min_score
+            }
+        })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get relevancies for document {document_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve relevancies: {str(e)}"
         )
 
 
@@ -3031,7 +3116,7 @@ async def process_document_with_discovery(
                         if image_query.data and len(image_query.data) > 0:
                             image_id = image_query.data[0]['id']
 
-                            # Update with CLIP embeddings
+                            # Update with CLIP embeddings and analysis results
                             update_data = {
                                 'visual_clip_embedding_512': clip_result.get('embedding_512'),
                                 'color_embedding_256': clip_result.get('color_embedding'),
