@@ -110,13 +110,19 @@ class EntityLinkingService:
                 if image_index is not None and image_index in image_to_product_mapping:
                     product_name = image_to_product_mapping[image_index]
 
-                # Fallback: Find product by page proximity
+                # Fallback: Find product by page proximity (ALWAYS try this)
                 if not product_name:
-                    product_name = self._find_product_by_page(
-                        page_number=page_number,
-                        image_to_product_mapping=image_to_product_mapping,
-                        product_name_to_id=product_name_to_id
-                    )
+                    # Find product whose page_range contains this image's page
+                    for pid, page_range in product_page_ranges.items():
+                        if page_range and len(page_range) >= 2:
+                            start_page, end_page = page_range[0], page_range[1]
+                            if start_page <= page_number <= end_page:
+                                # Find product name by ID
+                                for pname, pid_check in product_name_to_id.items():
+                                    if pid_check == pid:
+                                        product_name = pname
+                                        break
+                                break
 
                 if product_name and product_name in product_name_to_id:
                     product_id = product_name_to_id[product_name]
