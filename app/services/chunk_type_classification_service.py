@@ -327,22 +327,52 @@ class ChunkTypeClassificationService:
     def _is_index_content(self, content: str) -> bool:
         """Check if content represents index/navigation content"""
         content_lower = content.lower()
-        
+
+        # ✅ NEW: Detect multiple product names listed together (index pattern)
+        # Pattern: UPPERCASE words (product names) with minimal text between them
+        uppercase_words = re.findall(r'\b[A-Z]{2,}\b', content)
+        if len(uppercase_words) >= 3:  # 3+ product names = likely index
+            # Check if they're close together (index pattern)
+            lines = content.split('\n')
+            short_lines = [l for l in lines if len(l.strip()) < 50 and len(l.strip()) > 0]
+            if len(short_lines) >= 3:
+                # This looks like an index page with product listings
+                return True
+
+        # ✅ NEW: Detect "by DESIGNER" pattern repeated (index)
+        # Pattern: "by UPPERCASE" appearing multiple times indicates product listing
+        by_pattern_count = len(re.findall(r'by\s+[A-Z]+', content))
+        if by_pattern_count >= 3:
+            return True
+
+        # ✅ NEW: Detect "COLLECTIONS INDEX" or similar text
+        if 'collections index' in content_lower or 'product index' in content_lower:
+            return True
+
+        # ✅ NEW: Detect multiple size patterns (e.g., "20×20 cm") without descriptions
+        # This indicates a spec list rather than actual content
+        size_patterns = re.findall(r'\d+[×x]\d+\s*cm', content)
+        if len(size_patterns) >= 3:
+            # Check if there's minimal descriptive text
+            words = content.split()
+            if len(words) < 100:  # Short text with multiple sizes = index
+                return True
+
         # Index keywords
         index_keywords = [
             'table of contents', 'index', 'contents', 'navigation',
             'page', 'section', 'chapter', 'part'
         ]
-        
+
         keyword_matches = sum(1 for keyword in index_keywords if keyword in content_lower)
-        
+
         # Page number patterns
-        has_page_numbers = (bool(re.search(r'\.\.\.\s*\d+', content)) or 
+        has_page_numbers = (bool(re.search(r'\.\.\.\s*\d+', content)) or
                            bool(re.search(r'page\s+\d+', content, re.IGNORECASE)))
-        
+
         # List structure with numbers
         has_numbered_list = bool(re.search(r'^\d+\.', content.strip())) or '...' in content
-        
+
         return keyword_matches >= 1 or has_page_numbers or has_numbered_list
     
     def _is_sustainability_info(self, content: str) -> bool:

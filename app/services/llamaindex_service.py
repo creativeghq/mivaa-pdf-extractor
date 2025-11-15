@@ -2851,6 +2851,37 @@ Summary:"""
                         self.logger.warning(f"⚠️ Chunk {i} skipped: Semantic near-duplicate detected")
                         continue
 
+                    # ✅ NEW: Classify chunk type BEFORE storing to exclude non-content chunks
+                    try:
+                        from .chunk_type_classification_service import ChunkType
+                        classification_result = await self.chunk_classifier.classify_chunk(node.text)
+
+                        # ✅ EXCLUDE non-content chunks (index pages, specs, etc.)
+                        EXCLUDED_TYPES = [
+                            ChunkType.INDEX_CONTENT,           # Index pages with product listings
+                            ChunkType.TECHNICAL_SPECS,         # Specs (goes in metadata instead)
+                            ChunkType.CERTIFICATION_INFO,      # Certs (separate entity)
+                            ChunkType.UNCLASSIFIED             # Too short/unclear
+                        ]
+
+                        if classification_result.chunk_type in EXCLUDED_TYPES:
+                            rejection_stats['excluded_type'] = rejection_stats.get('excluded_type', 0) + 1
+                            rejection_stats['total_rejected'] += 1
+                            rejection_details.append({
+                                'chunk_index': i,
+                                'reason': 'excluded_chunk_type',
+                                'chunk_type': classification_result.chunk_type.value,
+                                'confidence': classification_result.confidence,
+                                'reasoning': classification_result.reasoning
+                            })
+                            self.logger.info(f"⚠️ Chunk {i} excluded: {classification_result.chunk_type.value} (confidence: {classification_result.confidence:.2f})")
+                            continue  # Skip storing this chunk
+
+                    except Exception as classification_error:
+                        self.logger.warning(f"⚠️ Failed to classify chunk {i} for exclusion check: {classification_error}")
+                        # Continue with storage if classification fails (fail-safe)
+                        classification_result = None
+
                     # Store chunk in document_chunks table
                     chunk_data = {
                         'document_id': document_id,
@@ -2892,27 +2923,25 @@ Summary:"""
                                 content_preview=node.text
                             )
 
-                        # Classify chunk type and extract metadata
-                        try:
-                            classification_result = await self.chunk_classifier.classify_chunk(node.text)
+                        # Update chunk with classification results (already computed above)
+                        if classification_result:
+                            try:
+                                classification_update = {
+                                    'chunk_type': classification_result.chunk_type.value,
+                                    'chunk_type_confidence': classification_result.confidence,
+                                    'chunk_type_metadata': classification_result.metadata
+                                }
 
-                            # Update chunk with classification results
-                            classification_update = {
-                                'chunk_type': classification_result.chunk_type.value,
-                                'chunk_type_confidence': classification_result.confidence,
-                                'chunk_type_metadata': classification_result.metadata
-                            }
+                                update_result = supabase_client.client.table('document_chunks').update(classification_update).eq('id', chunk_id).execute()
 
-                            update_result = supabase_client.client.table('document_chunks').update(classification_update).eq('id', chunk_id).execute()
+                                if update_result.data:
+                                    self.logger.debug(f"✅ Classified chunk {i} as {classification_result.chunk_type.value} (confidence: {classification_result.confidence:.2f})")
+                                else:
+                                    self.logger.warning(f"⚠️ Failed to update chunk {i} with classification")
 
-                            if update_result.data:
-                                self.logger.debug(f"✅ Classified chunk {i} as {classification_result.chunk_type.value} (confidence: {classification_result.confidence:.2f})")
-                            else:
-                                self.logger.warning(f"⚠️ Failed to update chunk {i} with classification")
-
-                        except Exception as classification_error:
-                            self.logger.error(f"❌ Failed to classify chunk {i}: {classification_error}")
-                            # Continue processing even if classification fails
+                            except Exception as classification_error:
+                                self.logger.error(f"❌ Failed to update chunk {i} with classification: {classification_error}")
+                                # Continue processing even if classification update fails
 
                         # Generate and store embedding
                         try:

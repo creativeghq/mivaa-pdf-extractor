@@ -17,22 +17,78 @@ import re
 from typing import Dict, Any, Optional
 
 
+def _fix_glyph_names(text: str) -> str:
+    """
+    Convert PDF glyph names to actual Unicode characters.
+
+    PyMuPDF4LLM sometimes outputs glyph names instead of actual characters.
+    This function post-processes the text to fix these issues.
+
+    Args:
+        text: Raw text from pymupdf4llm
+
+    Returns:
+        Text with glyph names replaced by actual characters
+    """
+    replacements = {
+        # Numbers
+        '/nine.LP': '9', '/eight.LP': '8', '/seven.LP': '7',
+        '/six.LP': '6', '/five.LP': '5', '/four.LP': '4',
+        '/three.LP': '3', '/two.LP': '2', '/one.LP': '1', '/zero.LP': '0',
+
+        # Punctuation
+        '/emdash.cap': '—', '/threequarteremdash': '—',
+        '/percent.LP': '%', '/parenleft.cap': '(', '/parenright.cap': ')',
+        '/periodcentered.cap': '·', '/minus.cap': '-',
+        '/period.LP': '.', '/comma.LP': ',', '/colon.LP': ':',
+        '/semicolon.LP': ';', '/slash.LP': '/', '/backslash.LP': '\\',
+
+        # Quotes
+        '/quotedbl.LP': '"', '/quotesingle.LP': "'",
+        '/quotedblleft': '"', '/quotedblright': '"',
+        '/quoteleft': ''', '/quoteright': ''',
+
+        # Math symbols
+        '/plus.LP': '+', '/equal.LP': '=', '/less.LP': '<', '/greater.LP': '>',
+        '/multiply': '×', '/divide': '÷',
+
+        # Other common glyphs
+        '/space.LP': ' ', '/hyphen.LP': '-', '/underscore.LP': '_',
+        '/at.LP': '@', '/numbersign.LP': '#', '/dollar.LP': '$',
+        '/ampersand.LP': '&', '/asterisk.LP': '*',
+        '/question.LP': '?', '/exclam.LP': '!',
+        '/bracketleft.LP': '[', '/bracketright.LP': ']',
+        '/braceleft.LP': '{', '/braceright.LP': '}',
+    }
+
+    for glyph, char in replacements.items():
+        text = text.replace(glyph, char)
+
+    return text
+
+
 def extract_pdf_to_markdown(file_name, page_number):
     """
-    Extract PDF content as Markdown.
-    
+    Extract PDF content as Markdown with glyph name fixes.
+
     Args:
         file_name: Path to the PDF file
         page_number: Specific page number to extract (None for all pages)
-        
+
     Returns:
-        Markdown content as string
+        Markdown content as string with glyph names fixed
     """
     page_number_list = None
     if page_number is not None:
-        page_number_list = [page_number]   
-    
-    return pymupdf4llm.to_markdown(file_name, pages=page_number_list)
+        page_number_list = [page_number]
+
+    # Extract markdown
+    markdown_text = pymupdf4llm.to_markdown(file_name, pages=page_number_list)
+
+    # ✅ FIX GLYPH NAMES
+    markdown_text = _fix_glyph_names(markdown_text)
+
+    return markdown_text
 
 
 def extract_pdf_tables(file_name, page_number):
@@ -102,8 +158,11 @@ def extract_json_and_images(file_path, output_dir, page_number, batch_size=5, pa
             dpi=200
         )
 
+        # ✅ FIX GLYPH NAMES
+        md_text_images = _fix_glyph_names(str(md_text_images))
+
         output_file = os.path.join(output_dir, "output.json")
-        pathlib.Path(output_file).write_text(json.dumps(str(md_text_images)))
+        pathlib.Path(output_file).write_text(json.dumps(md_text_images))
         return
 
     # ✅ OPTIMIZATION: If page_list is provided (focused extraction), only process those pages
@@ -133,6 +192,10 @@ def extract_json_and_images(file_path, output_dir, page_number, batch_size=5, pa
 
         # Combine all batches
         combined_markdown = "\n\n".join(str(m) for m in all_markdown)
+
+        # ✅ FIX GLYPH NAMES
+        combined_markdown = _fix_glyph_names(combined_markdown)
+
         output_file = os.path.join(output_dir, "output.json")
         pathlib.Path(output_file).write_text(json.dumps(combined_markdown))
         return
@@ -166,6 +229,9 @@ def extract_json_and_images(file_path, output_dir, page_number, batch_size=5, pa
 
         # Combine all batches
         combined_markdown = "\n\n".join(str(m) for m in all_markdown)
+
+        # ✅ FIX GLYPH NAMES
+        combined_markdown = _fix_glyph_names(combined_markdown)
 
         output_file = os.path.join(output_dir, "output.json")
         pathlib.Path(output_file).write_text(json.dumps(combined_markdown))
@@ -220,7 +286,10 @@ def extract_json_and_images_streaming(file_path, output_dir, batch_size=5):
             image_files = os.listdir(image_path) if os.path.exists(image_path) else []
             image_count = len([f for f in image_files if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'))])
 
-            yield batch_num, str(batch_markdown), image_count
+            # ✅ FIX GLYPH NAMES
+            batch_markdown_fixed = _fix_glyph_names(str(batch_markdown))
+
+            yield batch_num, batch_markdown_fixed, image_count
 
             # Force garbage collection after each batch
             gc.collect()
