@@ -34,6 +34,7 @@ from .chunk_relationship_service import ChunkRelationshipService
 from .chunk_context_enrichment_service import ChunkContextEnrichmentService
 from .boundary_aware_chunking_service import BoundaryAwareChunkingService
 from .unified_chunking_service import UnifiedChunkingService, ChunkingStrategy, ChunkingConfig
+from .metadata_first_chunking_service import MetadataFirstChunkingService
 
 try:
     from llama_index.core import (
@@ -160,6 +161,9 @@ class LlamaIndexService:
         )
         self.boundary_aware_chunking_service = BoundaryAwareChunkingService(
             enabled=settings.enable_boundary_detection
+        )
+        self.metadata_first_chunking_service = MetadataFirstChunkingService(
+            enabled=settings.enable_metadata_first
         )
 
         # Log feature flag status
@@ -1395,9 +1399,46 @@ class LlamaIndexService:
                     # Create Document objects from PDF processing result
                     documents = []
 
-                    # Main document with text content
+                    # ✅ ENHANCEMENT 4: Metadata-First Architecture (if enabled)
+                    # Filter text to exclude product metadata pages BEFORE chunking
+                    text_for_chunking = pdf_result.markdown_content
+                    metadata_first_info = {}
+
+                    try:
+                        from app.config import settings
+                        if settings.enable_metadata_first:
+                            # Get products for this document
+                            from app.services.supabase_client import SupabaseClient
+                            supabase_client = SupabaseClient()
+                            products_result = supabase_client.client.table('products')\
+                                .select('id, name, page_range, metadata')\
+                                .eq('document_id', document_id)\
+                                .execute()
+
+                            if products_result.data:
+                                self.logger.info(f"🔍 Metadata-First: Found {len(products_result.data)} products, filtering text...")
+
+                                # Apply metadata-first filtering
+                                filter_result = await self.metadata_first_chunking_service.process_for_metadata_first(
+                                    full_text=pdf_result.markdown_content,
+                                    products=products_result.data,
+                                    document_id=document_id
+                                )
+
+                                text_for_chunking = filter_result['filtered_text']
+                                metadata_first_info = filter_result['metadata']
+
+                                self.logger.info(
+                                    f"✅ Metadata-First: Excluded {len(filter_result['excluded_pages'])} pages, "
+                                    f"reduced text by {((len(pdf_result.markdown_content) - len(text_for_chunking)) / len(pdf_result.markdown_content) * 100):.1f}%"
+                                )
+                    except Exception as metadata_first_error:
+                        self.logger.warning(f"⚠️ Metadata-first filtering failed (using full text): {metadata_first_error}")
+                        text_for_chunking = pdf_result.markdown_content
+
+                    # Main document with text content (potentially filtered)
                     main_doc = Document(
-                        text=pdf_result.markdown_content,
+                        text=text_for_chunking,
                         metadata={
                             **extracted_metadata,
                             'document_type': 'pdf_advanced',
@@ -1406,7 +1447,8 @@ class LlamaIndexService:
                             'character_count': pdf_result.character_count,
                             'multimodal_enabled': pdf_result.multimodal_enabled,
                             'images_extracted': len(pdf_result.extracted_images),
-                            'ocr_text_length': len(pdf_result.ocr_text) if pdf_result.ocr_text else 0
+                            'ocr_text_length': len(pdf_result.ocr_text) if pdf_result.ocr_text else 0,
+                            **metadata_first_info  # Add metadata-first info
                         }
                     )
                     documents.append(main_doc)
@@ -1460,12 +1502,60 @@ class LlamaIndexService:
                             "images_extracted": images_extracted
                         })
 
-                # Parse documents into nodes with hierarchical chunking
-                # HierarchicalNodeParser automatically creates parent-child relationships
-                nodes = self.node_parser.get_nodes_from_documents(documents)
+                # ✅ ENHANCEMENT 2: Semantic Chunking (if enabled)
+                # Use UnifiedChunkingService for semantic chunking instead of HierarchicalNodeParser
+                from app.config import settings
 
-                self.logger.info(f"📊 Created {len(nodes)} hierarchical nodes from {len(documents)} documents")
-                chunk_strategy = "hierarchical"  # Using HierarchicalNodeParser
+                if settings.enable_semantic_chunking:
+                    try:
+                        self.logger.info("🧠 Using SEMANTIC chunking strategy...")
+
+                        # Initialize unified chunking service
+                        chunking_config = ChunkingConfig(
+                            strategy=ChunkingStrategy.SEMANTIC,
+                            max_chunk_size=2048,
+                            min_chunk_size=100,
+                            overlap_size=200,
+                            split_on_sentences=True,
+                            split_on_paragraphs=True
+                        )
+                        unified_chunker = UnifiedChunkingService(config=chunking_config)
+
+                        # Chunk each document using semantic strategy
+                        all_chunks = []
+                        for doc in documents:
+                            semantic_chunks = await unified_chunker.chunk_text(
+                                text=doc.text,
+                                document_id=document_id,
+                                metadata=doc.metadata
+                            )
+                            all_chunks.extend(semantic_chunks)
+
+                        # Convert Chunk objects to LlamaIndex nodes
+                        from llama_index.core.schema import TextNode
+                        nodes = []
+                        for chunk in all_chunks:
+                            node = TextNode(
+                                text=chunk.content,
+                                metadata=chunk.metadata
+                            )
+                            nodes.append(node)
+
+                        self.logger.info(f"✅ Created {len(nodes)} SEMANTIC chunks from {len(documents)} documents")
+                        chunk_strategy = "semantic"
+
+                    except Exception as semantic_error:
+                        self.logger.warning(f"⚠️ Semantic chunking failed, falling back to hierarchical: {semantic_error}")
+                        # Fallback to hierarchical chunking
+                        nodes = self.node_parser.get_nodes_from_documents(documents)
+                        chunk_strategy = "hierarchical_fallback"
+                else:
+                    # Parse documents into nodes with hierarchical chunking
+                    # HierarchicalNodeParser automatically creates parent-child relationships
+                    nodes = self.node_parser.get_nodes_from_documents(documents)
+                    chunk_strategy = "hierarchical"  # Using HierarchicalNodeParser
+
+                self.logger.info(f"📊 Created {len(nodes)} {chunk_strategy} nodes from {len(documents)} documents")
 
                 # Add chunk-specific metadata
                 for i, node in enumerate(nodes):
