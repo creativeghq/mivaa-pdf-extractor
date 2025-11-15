@@ -638,23 +638,24 @@ def create_app() -> FastAPI:
     
     app = FastAPI(
         title=settings.app_name,
-        version=settings.app_version,
+        version="2.3.0",
         description="""
-**Production API v2.2.0** - AI-powered material recognition and knowledge management platform serving 5,000+ users.
+**Production API v2.3.0** - AI-powered material recognition and knowledge management platform serving 5,000+ users.
 
 ## 🎯 Overview
 
 MIVAA is the core backend service powering the Material Kai Vision Platform, providing comprehensive PDF processing, AI analysis, and multi-vector search capabilities.
 
-## ✨ API Organization (v2.2.0)
+## ✨ API Organization (v2.3.0)
 
-**Comprehensive API with 106 endpoints organized into 15 categories**
+**Comprehensive API with 125+ endpoints organized into 16 categories**
 
 **Key Features:**
+- ✅ **Knowledge Base**: `/api/kb/*` - Document management with AI embeddings, semantic search, PDF extraction, categories, and product attachments (NEW)
 - ✅ **Consolidated Upload**: `/api/rag/documents/upload` with processing modes (quick/standard/deep) and categories
 - ✅ **6 Search Strategies**: `/api/rag/search?strategy={strategy}` - semantic, vector, multi_vector, hybrid, material, image, all (100% complete)
 - ✅ **Comprehensive Health**: `/health` for all services (database, storage, AI models)
-- ✅ **Well-Organized**: 15 endpoint categories covering RAG, documents, search, AI services, admin, and more
+- ✅ **Well-Organized**: 16 endpoint categories covering RAG, documents, search, AI services, admin, knowledge base, and more
 - ✅ **Preserved**: Prompt enhancement system, category extraction, all processing modes
 
 ### Key Capabilities
@@ -675,7 +676,8 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 5. **Custom**: Color, texture, application embeddings
 
 ### API Endpoints
-- **Total**: 110 endpoints across 15 categories (18 legacy endpoints removed)
+- **Total**: 125+ endpoints across 16 categories (18 legacy endpoints removed)
+- **Knowledge Base**: 15+ endpoints for document management, semantic search, PDF extraction, categories, product attachments (NEW)
 - **RAG System**: 27 endpoints for document upload, search, query, chat, embeddings, metadata
 - **AI Services**: 10 endpoints for classification, validation, boundary detection
 - **Admin**: 10 endpoints for chunk quality, extraction config, prompts
@@ -700,6 +702,17 @@ Get your token from the frontend application or Supabase authentication.
 
 ## 📊 Latest Enhancements (November 2025)
 
+✅ **Knowledge Base System** - Complete documentation management with AI embeddings (NEW v2.3.0)
+  - Document CRUD with automatic embedding generation (1536D)
+  - Smart content change detection (only regenerate when needed)
+  - PDF text extraction using PyMuPDF
+  - Semantic search (vector similarity)
+  - Category hierarchy with parent/child relationships
+  - Product attachment system (link docs to products)
+  - Version history tracking
+  - Comments and suggestions system
+  - Search analytics tracking
+
 ✅ **6 Search Strategies** - Complete multi-strategy search system (100% implemented)
   - Semantic Search: Natural language with MMR diversity (<150ms)
   - Vector Search: Pure similarity matching (<100ms)
@@ -716,7 +729,16 @@ Get your token from the frontend application or Supabase authentication.
 ✅ **Admin Dashboard** - Chunk quality monitoring and review workflow
 ✅ **Metadata Synchronization** - 100% accuracy in job status reporting
 
-## 🚀 API Categories (110 Endpoints)
+## 🚀 API Categories (125+ Endpoints)
+
+### 📚 Knowledge Base (`/api/kb/*`) - NEW v2.3.0
+- Document management with AI embeddings
+- Semantic search (vector similarity)
+- PDF text extraction (PyMuPDF)
+- Category hierarchy management
+- Product attachment system
+- Version history tracking
+- Comments and suggestions
 
 ### 📄 PDF Processing (`/api/pdf/*`)
 - Extract markdown, tables, images from PDFs
@@ -791,6 +813,10 @@ Get your token from the frontend application or Supabase authentication.
         docs_url="/docs",  # Always enable docs
         redoc_url="/redoc",  # Always enable redoc
         openapi_tags=[
+            {
+                "name": "Knowledge Base",
+                "description": "📚 **NEW v2.3.0** Knowledge Base & Documentation System - Document management with AI embeddings (1536D), semantic search, PDF text extraction, category hierarchy, product attachments, version history, and comments. Smart embedding regeneration on content changes."
+            },
             {
                 "name": "PDF Processing",
                 "description": "📄 Advanced PDF extraction using PyMuPDF4LLM - Extract markdown, tables, and images from PDF documents with 14-stage processing pipeline"
@@ -1410,6 +1436,7 @@ from app.api.duplicate_detection_routes import router as duplicate_detection_rou
 from app.api.suggestions import router as suggestions_router
 from app.api.data_import_routes import router as data_import_router
 from app.api.job_health_routes import router as job_health_router
+from app.api.knowledge_base import router as knowledge_base_router
 
 app.include_router(search_router)
 app.include_router(images_router)
@@ -1431,6 +1458,7 @@ app.include_router(duplicate_detection_router)  # NEW: Duplicate detection and p
 app.include_router(suggestions_router)  # NEW: Search suggestions, auto-complete, trending, typo correction
 app.include_router(data_import_router)  # NEW: Data import (XML, web scraping) with batch processing
 app.include_router(job_health_router)  # NEW: Job health monitoring (heartbeat, stuck jobs, performance metrics)
+app.include_router(knowledge_base_router)  # NEW: Knowledge Base & Documentation System
 
 
 # ============================================================================
