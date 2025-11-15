@@ -80,23 +80,7 @@ class KBDocResponse(BaseModel):
     view_count: int
 
 
-class KBSearchRequest(BaseModel):
-    """Request model for knowledge base search."""
-    workspace_id: str = Field(..., description="UUID of workspace")
-    query: str = Field(..., description="Search query", min_length=1)
-    search_type: str = Field(default="semantic", description="Search type: full-text, semantic, hybrid")
-    limit: int = Field(default=10, description="Max results", ge=1, le=100)
-    offset: int = Field(default=0, description="Result offset", ge=0)
-    category_id: Optional[str] = Field(None, description="Filter by category")
 
-
-class KBSearchResponse(BaseModel):
-    """Response model for search results."""
-    success: bool
-    results: List[KBDocResponse]
-    total_count: int
-    search_time_ms: int
-    search_type: str
 
 
 # ============================================================================
@@ -288,71 +272,7 @@ async def delete_kb_document(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post(
-    "/search",
-    response_model=KBSearchResponse,
-    summary="Search knowledge base documents",
-    description="Search using full-text, semantic, or hybrid search"
-)
-async def search_kb_documents(
-    request: KBSearchRequest,
-    supabase_client: SupabaseClient = Depends()
-) -> KBSearchResponse:
-    """Search knowledge base documents."""
-    try:
-        import time
-        start_time = time.time()
-        
-        if request.search_type == "semantic":
-            # Generate query embedding
-            embeddings_service = RealEmbeddingsService()
-            embedding_result = await embeddings_service.generate_all_embeddings(
-                entity_id="temp",
-                entity_type="query",
-                text_content=request.query
-            )
-            
-            if not embedding_result.get("success"):
-                raise HTTPException(status_code=500, detail="Failed to generate query embedding")
-            
-            query_embedding = embedding_result.get("embeddings", {}).get("text_1536")
-            
-            # Vector similarity search
-            query_sql = f"""
-            SELECT * FROM kb_docs
-            WHERE workspace_id = '{request.workspace_id}'
-            AND text_embedding IS NOT NULL
-            {'AND category_id = ' + f"'{request.category_id}'" if request.category_id else ''}
-            ORDER BY text_embedding <=> '{query_embedding}'::vector
-            LIMIT {request.limit}
-            OFFSET {request.offset}
-            """
-            
-            result = supabase_client.client.rpc("execute_query", {"query": query_sql}).execute()
-            docs = result.data or []
-        else:
-            # Full-text search
-            query_filter = supabase_client.client.table("kb_docs").select("*").eq("workspace_id", request.workspace_id)
-            
-            if request.category_id:
-                query_filter = query_filter.eq("category_id", request.category_id)
-            
-            result = query_filter.ilike("title", f"%{request.query}%").limit(request.limit).offset(request.offset).execute()
-            docs = result.data or []
-        
-        search_time_ms = int((time.time() - start_time) * 1000)
-        
-        return KBSearchResponse(
-            success=True,
-            results=[KBDocResponse(**doc) for doc in docs],
-            total_count=len(docs),
-            search_time_ms=search_time_ms,
-            search_type=request.search_type
-        )
-        
-    except Exception as e:
-        logger.error(f"Error searching KB documents: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.post(
@@ -588,9 +508,28 @@ class SearchKBRequest(BaseModel):
     limit: int = Field(default=20, description="Maximum number of results", ge=1, le=100)
 
 
+class SearchKBDocResult(BaseModel):
+    """Individual search result document."""
+    id: str
+    workspace_id: str
+    title: str
+    content: str
+    summary: Optional[str] = None
+    category_id: Optional[str] = None
+    status: str
+    visibility: str
+    embedding_status: str
+    embedding_generated_at: Optional[str] = None
+    created_by: Optional[str] = None
+    created_at: str
+    updated_at: str
+    view_count: int
+    similarity: Optional[float] = None  # Only for semantic search
+
+
 class SearchKBResponse(BaseModel):
     """Response model for search results."""
-    results: List[Dict[str, Any]]
+    results: List[SearchKBDocResult]
     search_time_ms: float
     total_results: int
 
@@ -606,7 +545,7 @@ async def search_kb_documents(
     **Architecture:**
     1. Frontend calls MIVAA API with search query
     2. MIVAA generates embedding for query using OpenAI (text-embedding-3-small)
-    3. MIVAA calls Supabase `match_kb_docs()` RPC function with query embedding
+    3. MIVAA calls Supabase `kb_match_docs()` RPC function with query embedding
     4. Supabase performs vector similarity search using pgvector `<=>` operator
     5. Returns ranked results with similarity scores
 
@@ -683,7 +622,7 @@ async def search_kb_documents(
 
             # Perform vector similarity search
             response = supabase_client.client.rpc(
-                'match_kb_docs',
+                'kb_match_docs',
                 {
                     'query_embedding': query_embedding,
                     'match_workspace_id': request.workspace_id,
@@ -692,12 +631,12 @@ async def search_kb_documents(
                 }
             ).execute()
 
-            results = response.data if response.data else []
+            raw_results = response.data if response.data else []
 
         else:
-            # Use the search_kb_docs RPC function for full-text and hybrid
+            # Use the kb_search_docs RPC function for full-text and hybrid
             response = supabase_client.client.rpc(
-                'search_kb_docs',
+                'kb_search_docs',
                 {
                     'search_query': request.query,
                     'search_workspace_id': request.workspace_id,
@@ -706,15 +645,42 @@ async def search_kb_documents(
                 }
             ).execute()
 
-            results = response.data if response.data else []
+            raw_results = response.data if response.data else []
 
         end_time = time.time()
         search_time_ms = (end_time - start_time) * 1000
 
+        # Validate and convert raw results to typed models
+        validated_results = []
+        for raw_doc in raw_results:
+            try:
+                # Ensure all required fields exist with defaults
+                doc_data = {
+                    'id': raw_doc.get('id', ''),
+                    'workspace_id': raw_doc.get('workspace_id', request.workspace_id),
+                    'title': raw_doc.get('title', 'Untitled'),
+                    'content': raw_doc.get('content', ''),
+                    'summary': raw_doc.get('summary'),
+                    'category_id': raw_doc.get('category_id'),
+                    'status': raw_doc.get('status', 'draft'),
+                    'visibility': raw_doc.get('visibility', 'workspace'),
+                    'embedding_status': raw_doc.get('embedding_status', 'pending'),
+                    'embedding_generated_at': raw_doc.get('embedding_generated_at'),
+                    'created_by': raw_doc.get('created_by'),
+                    'created_at': raw_doc.get('created_at', datetime.now().isoformat()),
+                    'updated_at': raw_doc.get('updated_at', datetime.now().isoformat()),
+                    'view_count': raw_doc.get('view_count', 0),
+                    'similarity': raw_doc.get('similarity')  # Only present in semantic search
+                }
+                validated_results.append(SearchKBDocResult(**doc_data))
+            except Exception as validation_error:
+                logger.warning(f"Failed to validate search result: {validation_error}, raw_doc: {raw_doc}")
+                continue
+
         return SearchKBResponse(
-            results=results,
+            results=validated_results,
             search_time_ms=search_time_ms,
-            total_results=len(results)
+            total_results=len(validated_results)
         )
 
     except HTTPException:
