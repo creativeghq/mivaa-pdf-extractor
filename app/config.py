@@ -66,7 +66,15 @@ class Settings(BaseSettings):
     # Performance Settings
     max_workers: int = Field(default=4, env="MAX_WORKERS")
     request_timeout: int = Field(default=300, env="REQUEST_TIMEOUT")  # 5 minutes
-    
+
+    # ✅ NEW: Chunking Enhancement Feature Flags (All default: False for safety)
+    enable_boundary_detection: bool = Field(default=False, env="ENABLE_BOUNDARY_DETECTION")
+    enable_semantic_chunking: bool = Field(default=False, env="ENABLE_SEMANTIC_CHUNKING")
+    enable_context_enrichment: bool = Field(default=False, env="ENABLE_CONTEXT_ENRICHMENT")
+    enable_metadata_first: bool = Field(default=False, env="ENABLE_METADATA_FIRST")
+    enable_chunk_relationships: bool = Field(default=False, env="ENABLE_CHUNK_RELATIONSHIPS")
+    fallback_on_error: bool = Field(default=True, env="FALLBACK_ON_ERROR")  # Always fallback to existing pipeline on error
+
     # Security Settings
     max_requests_per_minute: int = Field(default=60, env="MAX_REQUESTS_PER_MINUTE")
     
