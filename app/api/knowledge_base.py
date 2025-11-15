@@ -580,6 +580,153 @@ async def get_product_documents(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class SearchKBRequest(BaseModel):
+    """Request model for searching knowledge base documents."""
+    workspace_id: str = Field(..., description="UUID of the workspace")
+    query: str = Field(..., description="Search query", min_length=1)
+    search_type: str = Field(default="semantic", description="Search type: semantic, full_text, or hybrid")
+    limit: int = Field(default=20, description="Maximum number of results", ge=1, le=100)
+
+
+class SearchKBResponse(BaseModel):
+    """Response model for search results."""
+    results: List[Dict[str, Any]]
+    search_time_ms: float
+    total_results: int
+
+
+@router.post("/search", response_model=SearchKBResponse)
+async def search_kb_documents(
+    request: SearchKBRequest,
+    supabase_client: SupabaseClient = Depends()
+) -> SearchKBResponse:
+    """
+    Search knowledge base documents using semantic, full-text, or hybrid search.
+
+    **Architecture:**
+    1. Frontend calls MIVAA API with search query
+    2. MIVAA generates embedding for query using OpenAI (text-embedding-3-small)
+    3. MIVAA calls Supabase `match_kb_docs()` RPC function with query embedding
+    4. Supabase performs vector similarity search using pgvector `<=>` operator
+    5. Returns ranked results with similarity scores
+
+    **Why MIVAA Backend is Required:**
+    - Document embeddings already stored in `kb_docs.text_embedding` (generated when doc created)
+    - Search only generates ONE embedding (for the query)
+    - Cannot generate embeddings in Supabase RPC (requires OpenAI API call)
+    - Uses pgvector's optimized cosine similarity for fast search
+
+    **Search Types:**
+    - **semantic**: Vector similarity using pgvector cosine distance
+      - Generates query embedding via OpenAI
+      - Compares against stored document embeddings
+      - Returns results with similarity scores (0.0 - 1.0)
+      - Minimum threshold: 0.5
+    - **full_text**: ILIKE-based keyword matching
+      - Searches title and content fields
+      - Case-insensitive
+    - **hybrid**: Combination of semantic + full-text
+      - Weighted scoring for best results
+
+    **Example Request:**
+    ```json
+    {
+      "workspace_id": "uuid",
+      "query": "sustainable wood materials",
+      "search_type": "semantic",
+      "limit": 20
+    }
+    ```
+
+    **Example Response:**
+    ```json
+    {
+      "results": [
+        {
+          "id": "uuid",
+          "title": "Sustainable Wood Guide",
+          "similarity": 0.87,
+          "content": "...",
+          "category_id": "uuid"
+        }
+      ],
+      "search_time_ms": 145.3,
+      "total_results": 5
+    }
+    ```
+    """
+    try:
+        import time
+        start_time = time.time()
+
+        if request.search_type == "semantic":
+            # Generate embedding for search query
+            embeddings_service = RealEmbeddingsService()
+            embedding_result = await embeddings_service.generate_all_embeddings(
+                entity_id="search_query",
+                entity_type="search",
+                text_content=request.query
+            )
+
+            if not embedding_result.get("success"):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to generate query embedding: {embedding_result.get('error')}"
+                )
+
+            query_embedding = embedding_result.get("embeddings", {}).get("text_1536")
+            if not query_embedding:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="No embedding generated for query"
+                )
+
+            # Perform vector similarity search
+            response = supabase_client.client.rpc(
+                'match_kb_docs',
+                {
+                    'query_embedding': query_embedding,
+                    'match_workspace_id': request.workspace_id,
+                    'match_threshold': 0.5,
+                    'match_count': request.limit
+                }
+            ).execute()
+
+            results = response.data if response.data else []
+
+        else:
+            # Use the search_kb_docs RPC function for full-text and hybrid
+            response = supabase_client.client.rpc(
+                'search_kb_docs',
+                {
+                    'search_query': request.query,
+                    'search_workspace_id': request.workspace_id,
+                    'search_type': request.search_type,
+                    'result_limit': request.limit
+                }
+            ).execute()
+
+            results = response.data if response.data else []
+
+        end_time = time.time()
+        search_time_ms = (end_time - start_time) * 1000
+
+        return SearchKBResponse(
+            results=results,
+            search_time_ms=search_time_ms,
+            total_results=len(results)
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Search failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Search failed: {str(e)}"
+        )
+
+
 @router.get("/health")
 async def kb_health_check() -> Dict[str, Any]:
     """Health check endpoint for Knowledge Base API."""

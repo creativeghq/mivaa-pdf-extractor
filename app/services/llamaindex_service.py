@@ -1839,6 +1839,7 @@ class LlamaIndexService:
                             chunk_data = {
                                 "id": chunk_id,
                                 "document_id": document_id,
+                                "workspace_id": workspace_id,
                                 "content": node.text,
                                 "metadata": {
                                     "node_id": node_id,
