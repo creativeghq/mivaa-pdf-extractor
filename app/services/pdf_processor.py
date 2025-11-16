@@ -674,8 +674,7 @@ class PDFProcessor:
             ocr_config = OCRConfig(
                 languages=ocr_languages,
                 confidence_threshold=0.3,  # Lower threshold for better recall
-                preprocessing_enabled=True,
-                fallback_to_tesseract=True
+                preprocessing_enabled=True
             )
             ocr_service = get_ocr_service(ocr_config)
 
