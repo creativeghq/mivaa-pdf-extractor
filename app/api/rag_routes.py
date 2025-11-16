@@ -29,7 +29,7 @@ from app.services.advanced_search_service import QueryType, SearchOperator
 from app.services.product_creation_service import ProductCreationService
 from app.services.job_recovery_service import JobRecoveryService
 from app.services.checkpoint_recovery_service import checkpoint_recovery_service, ProcessingStage
-from app.services.supabase_client import get_supabase_client
+from app.services.supabase_client import get_supabase_client, SupabaseClient
 from app.services.ai_model_tracker import AIModelTracker
 from app.services.focused_product_extractor import get_focused_product_extractor
 from app.services.product_relationship_service import ProductRelationshipService
