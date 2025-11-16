@@ -569,9 +569,17 @@ class PDFProcessor:
 
                         # Try processing page-by-page to find which pages work
                         import fitz
+                        import os
+
+                        # Verify PDF file exists before processing
+                        if not os.path.exists(pdf_path):
+                            raise PDFExtractionError(f"PDF file not found: {pdf_path}")
+
                         doc = fitz.open(pdf_path)
                         total_pages = len(doc)
                         doc.close()
+
+                        self.logger.info(f"PDF has {total_pages} pages, will process page-by-page")
 
                         markdown_content = ""
                         failed_pages = []
@@ -583,7 +591,13 @@ class PDFProcessor:
                             self.logger.info(f"Processing pages {batch_start + 1}-{batch_end} with PyMuPDF4LLM")
 
                             for page_num in range(batch_start, batch_end):
+                                # Verify page number is valid
+                                if page_num >= total_pages:
+                                    self.logger.warning(f"Skipping page {page_num + 1} - out of range (total: {total_pages})")
+                                    continue
+
                                 try:
+                                    self.logger.debug(f"Extracting page {page_num + 1}/{total_pages} (0-indexed: {page_num})")
                                     page_content = extract_pdf_to_markdown(pdf_path, page_num)
                                     markdown_content += page_content + "\n\n"
                                 except ValueError as page_error:
@@ -591,7 +605,11 @@ class PDFProcessor:
                                         self.logger.warning(f"Page {page_num + 1} failed with 'not a textpage', will use OCR for this page")
                                         failed_pages.append(page_num)
                                     else:
+                                        self.logger.error(f"Page {page_num + 1} failed with unexpected error: {page_error}")
                                         raise
+                                except Exception as page_error:
+                                    self.logger.error(f"Page {page_num + 1} failed with error: {page_error}")
+                                    raise
 
                             # Force garbage collection after each batch
                             import gc
