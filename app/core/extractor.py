@@ -83,10 +83,39 @@ def extract_pdf_to_markdown(file_name, page_number):
         page_number_list = [page_number]
 
     # Extract markdown
-    # When processing specific pages, disable header identification to avoid
-    # PyMuPDF4LLM bug where it tries to scan all pages even with pages parameter
-    hdr_info = False if page_number is not None else None
+    # ALWAYS disable header identification to avoid PyMuPDF4LLM hanging
+    # PyMuPDF4LLM's header identification can cause indefinite hangs on some PDFs
+    hdr_info = False
     markdown_text = pymupdf4llm.to_markdown(file_name, pages=page_number_list, hdr_info=hdr_info)
+
+    # ✅ FIX GLYPH NAMES
+    markdown_text = _fix_glyph_names(markdown_text)
+
+    return markdown_text
+
+
+def extract_pdf_to_markdown_with_doc(doc, page_number):
+    """
+    Extract PDF content as Markdown using an already-opened fitz.Document.
+
+    This function keeps the document open to avoid garbage collection issues
+    when processing pages one-by-one.
+
+    Args:
+        doc: fitz.Document object (already opened)
+        page_number: Specific page number to extract (None for all pages)
+
+    Returns:
+        Markdown content as string with glyph names fixed
+    """
+    page_number_list = None
+    if page_number is not None:
+        page_number_list = [page_number]
+
+    # Extract markdown using the document object
+    # Disable header identification to avoid PyMuPDF4LLM bug
+    hdr_info = False if page_number is not None else None
+    markdown_text = pymupdf4llm.to_markdown(doc, pages=page_number_list, hdr_info=hdr_info)
 
     # ✅ FIX GLYPH NAMES
     markdown_text = _fix_glyph_names(markdown_text)

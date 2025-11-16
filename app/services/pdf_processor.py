@@ -580,6 +580,7 @@ class PDFProcessor:
                         if not os.path.exists(pdf_path):
                             raise PDFExtractionError(f"PDF file not found: {pdf_path}")
 
+                        # Get total pages
                         doc = fitz.open(pdf_path)
                         total_pages = len(doc)
                         doc.close()
@@ -589,8 +590,8 @@ class PDFProcessor:
                         markdown_content = ""
                         failed_pages = []
 
-                        # Process in batches of 10 pages
-                        batch_size = 10
+                        # Process in SMALLER batches of 5 pages to reduce memory and avoid hanging
+                        batch_size = 5
                         for batch_start in range(0, total_pages, batch_size):
                             batch_end = min(batch_start + batch_size, total_pages)
                             self.logger.info(f"Processing pages {batch_start + 1}-{batch_end} with PyMuPDF4LLM")
@@ -603,6 +604,8 @@ class PDFProcessor:
 
                                 try:
                                     self.logger.debug(f"Extracting page {page_num + 1}/{total_pages} (0-indexed: {page_num})")
+                                    # Reopen file for each page to avoid garbage collection issues
+                                    # This is slower but more stable than keeping document open
                                     page_content = extract_pdf_to_markdown(pdf_path, page_num)
                                     markdown_content += page_content + "\n\n"
                                 except ValueError as page_error:
