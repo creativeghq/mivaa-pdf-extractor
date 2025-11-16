@@ -83,7 +83,10 @@ def extract_pdf_to_markdown(file_name, page_number):
         page_number_list = [page_number]
 
     # Extract markdown
-    markdown_text = pymupdf4llm.to_markdown(file_name, pages=page_number_list)
+    # When processing specific pages, disable header identification to avoid
+    # PyMuPDF4LLM bug where it tries to scan all pages even with pages parameter
+    hdr_info = False if page_number is not None else None
+    markdown_text = pymupdf4llm.to_markdown(file_name, pages=page_number_list, hdr_info=hdr_info)
 
     # ✅ FIX GLYPH NAMES
     markdown_text = _fix_glyph_names(markdown_text)
