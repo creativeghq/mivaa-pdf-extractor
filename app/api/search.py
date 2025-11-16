@@ -1355,6 +1355,291 @@ async def material_search_health_check(
 
 
 # ============================================================================
+# SPECIALIZED CLIP EMBEDDING SEARCH ENDPOINTS
+# ============================================================================
+
+@router.post(
+    "/search/by-color",
+    response_model=ImageSearchResponse,
+    summary="Search images by color palette",
+    description="Search for images with similar color palettes using specialized CLIP embeddings"
+)
+async def search_by_color(
+    request: ImageSearchRequest,
+    llamaindex: LlamaIndexService = Depends(get_llamaindex_service)
+) -> ImageSearchResponse:
+    """
+    **🎨 Color Palette Search**
+
+    Search for images with similar color palettes using specialized color CLIP embeddings.
+
+    ## Use Cases
+    - Find materials with matching color schemes
+    - Discover products in specific color families
+    - Match color palettes across different materials
+
+    ## Request Example
+    ```json
+    {
+      "query_image": "data:image/jpeg;base64,...",
+      "workspace_id": "workspace-uuid",
+      "limit": 10,
+      "min_similarity": 0.7
+    }
+    ```
+    """
+    try:
+        from app.services.vecs_service import get_vecs_service
+        from app.services.real_embeddings_service import RealEmbeddingsService
+
+        # Generate color embedding from query image
+        embeddings_service = RealEmbeddingsService()
+        result = await embeddings_service._generate_specialized_clip_embeddings(
+            image_url=None,
+            image_data=request.query_image
+        )
+
+        if not result or 'color' not in result:
+            raise HTTPException(status_code=500, detail="Failed to generate color embedding")
+
+        color_embedding = result['color']
+
+        # Search VECS color collection
+        vecs_service = get_vecs_service()
+        results = await vecs_service.search_specialized_embeddings(
+            embedding_type='color',
+            query_embedding=color_embedding,
+            limit=request.limit or 10,
+            filters={"workspace_id": {"$eq": request.workspace_id}} if request.workspace_id else None,
+            min_similarity=request.min_similarity or 0.5
+        )
+
+        # Format response
+        image_results = []
+        for item in results:
+            image_results.append(ImageSearchResult(
+                image_id=item.get('image_id'),
+                similarity_score=item.get('similarity_score'),
+                metadata=item.get('metadata', {}),
+                search_type='color_palette'
+            ))
+
+        return ImageSearchResponse(
+            success=True,
+            results=image_results,
+            total_results=len(image_results),
+            search_type='color_palette'
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Color search failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Color search failed: {str(e)}")
+
+
+@router.post(
+    "/search/by-texture",
+    response_model=ImageSearchResponse,
+    summary="Search images by texture pattern",
+    description="Search for images with similar textures using specialized CLIP embeddings"
+)
+async def search_by_texture(
+    request: ImageSearchRequest,
+    llamaindex: LlamaIndexService = Depends(get_llamaindex_service)
+) -> ImageSearchResponse:
+    """
+    **🔲 Texture Pattern Search**
+
+    Search for images with similar texture patterns using specialized texture CLIP embeddings.
+
+    ## Use Cases
+    - Find materials with similar surface textures
+    - Match rough/smooth/patterned textures
+    - Discover materials with specific tactile properties
+    """
+    try:
+        from app.services.vecs_service import get_vecs_service
+        from app.services.real_embeddings_service import RealEmbeddingsService
+
+        embeddings_service = RealEmbeddingsService()
+        result = await embeddings_service._generate_specialized_clip_embeddings(
+            image_url=None,
+            image_data=request.query_image
+        )
+
+        if not result or 'texture' not in result:
+            raise HTTPException(status_code=500, detail="Failed to generate texture embedding")
+
+        texture_embedding = result['texture']
+
+        vecs_service = get_vecs_service()
+        results = await vecs_service.search_specialized_embeddings(
+            embedding_type='texture',
+            query_embedding=texture_embedding,
+            limit=request.limit or 10,
+            filters={"workspace_id": {"$eq": request.workspace_id}} if request.workspace_id else None,
+            min_similarity=request.min_similarity or 0.5
+        )
+
+        image_results = []
+        for item in results:
+            image_results.append(ImageSearchResult(
+                image_id=item.get('image_id'),
+                similarity_score=item.get('similarity_score'),
+                metadata=item.get('metadata', {}),
+                search_type='texture_pattern'
+            ))
+
+        return ImageSearchResponse(
+            success=True,
+            results=image_results,
+            total_results=len(image_results),
+            search_type='texture_pattern'
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Texture search failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Texture search failed: {str(e)}")
+
+
+@router.post(
+    "/search/by-style",
+    response_model=ImageSearchResponse,
+    summary="Search images by design style",
+    description="Search for images with similar design styles using specialized CLIP embeddings"
+)
+async def search_by_style(
+    request: ImageSearchRequest,
+    llamaindex: LlamaIndexService = Depends(get_llamaindex_service)
+) -> ImageSearchResponse:
+    """
+    **✨ Design Style Search**
+
+    Search for images with similar design styles using specialized style CLIP embeddings.
+
+    ## Use Cases
+    - Find materials in modern/classic/minimalist styles
+    - Match aesthetic preferences
+    - Discover products with similar design language
+    """
+    try:
+        from app.services.vecs_service import get_vecs_service
+        from app.services.real_embeddings_service import RealEmbeddingsService
+
+        embeddings_service = RealEmbeddingsService()
+        result = await embeddings_service._generate_specialized_clip_embeddings(
+            image_url=None,
+            image_data=request.query_image
+        )
+
+        if not result or 'style' not in result:
+            raise HTTPException(status_code=500, detail="Failed to generate style embedding")
+
+        style_embedding = result['style']
+
+        vecs_service = get_vecs_service()
+        results = await vecs_service.search_specialized_embeddings(
+            embedding_type='style',
+            query_embedding=style_embedding,
+            limit=request.limit or 10,
+            filters={"workspace_id": {"$eq": request.workspace_id}} if request.workspace_id else None,
+            min_similarity=request.min_similarity or 0.5
+        )
+
+        image_results = []
+        for item in results:
+            image_results.append(ImageSearchResult(
+                image_id=item.get('image_id'),
+                similarity_score=item.get('similarity_score'),
+                metadata=item.get('metadata', {}),
+                search_type='design_style'
+            ))
+
+        return ImageSearchResponse(
+            success=True,
+            results=image_results,
+            total_results=len(image_results),
+            search_type='design_style'
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Style search failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Style search failed: {str(e)}")
+
+
+@router.post(
+    "/search/by-material",
+    response_model=ImageSearchResponse,
+    summary="Search images by material type",
+    description="Search for images with similar material types using specialized CLIP embeddings"
+)
+async def search_by_material(
+    request: ImageSearchRequest,
+    llamaindex: LlamaIndexService = Depends(get_llamaindex_service)
+) -> ImageSearchResponse:
+    """
+    **🪨 Material Type Search**
+
+    Search for images with similar material types using specialized material CLIP embeddings.
+
+    ## Use Cases
+    - Find wood/metal/stone/fabric materials
+    - Match material properties
+    - Discover similar material compositions
+    """
+    try:
+        from app.services.vecs_service import get_vecs_service
+        from app.services.real_embeddings_service import RealEmbeddingsService
+
+        embeddings_service = RealEmbeddingsService()
+        result = await embeddings_service._generate_specialized_clip_embeddings(
+            image_url=None,
+            image_data=request.query_image
+        )
+
+        if not result or 'material' not in result:
+            raise HTTPException(status_code=500, detail="Failed to generate material embedding")
+
+        material_embedding = result['material']
+
+        vecs_service = get_vecs_service()
+        results = await vecs_service.search_specialized_embeddings(
+            embedding_type='material',
+            query_embedding=material_embedding,
+            limit=request.limit or 10,
+            filters={"workspace_id": {"$eq": request.workspace_id}} if request.workspace_id else None,
+            min_similarity=request.min_similarity or 0.5
+        )
+
+        image_results = []
+        for item in results:
+            image_results.append(ImageSearchResult(
+                image_id=item.get('image_id'),
+                similarity_score=item.get('similarity_score'),
+                metadata=item.get('metadata', {}),
+                search_type='material_type'
+            ))
+
+        return ImageSearchResponse(
+            success=True,
+            results=image_results,
+            total_results=len(image_results),
+            search_type='material_type'
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Material search failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Material search failed: {str(e)}")
+
+
+# ============================================================================
 # ============================================================================
 # REMOVED DEPRECATED ENDPOINTS
 # ============================================================================

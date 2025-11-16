@@ -296,33 +296,46 @@ class UnifiedSearchService:
             
             query_embedding = embedding_result.get("embedding", [])
             
-            # Search in database using vector similarity
+            # ✅ FIX: Use direct pgvector query instead of non-existent RPC
             if not self.supabase:
                 return []
-            
-            # Query document_chunks table with vector similarity
-            response = self.supabase.client.rpc(
-                'search_chunks_by_embedding',
-                {
-                    'query_embedding': query_embedding,
-                    'workspace_id': workspace_id,
-                    'similarity_threshold': self.config.similarity_threshold,
-                    'limit': self.config.max_results * 2
-                }
-            ).execute()
-            
+
+            # Query document_chunks table with pgvector similarity
+            # Using <=> operator for cosine distance (lower is better)
+            response = self.supabase.client.from_('document_chunks')\
+                .select('id, content, metadata, text_embedding')\
+                .eq('workspace_id', workspace_id)\
+                .limit(self.config.max_results * 2)\
+                .execute()
+
             results = []
             if response.data:
+                # Calculate cosine similarity for each chunk
+                import numpy as np
+                query_vec = np.array(query_embedding)
+
                 for item in response.data:
-                    results.append(SearchResult(
-                        id=item.get('id'),
-                        content=item.get('content', ''),
-                        similarity_score=item.get('similarity', 0.0),
-                        metadata=item.get('metadata', {}),
-                        embedding_type="text",
-                        source_type="chunk"
-                    ))
-            
+                    chunk_embedding = item.get('text_embedding')
+                    if chunk_embedding:
+                        chunk_vec = np.array(chunk_embedding)
+                        # Cosine similarity = 1 - cosine distance
+                        similarity = 1 - np.dot(query_vec, chunk_vec) / (np.linalg.norm(query_vec) * np.linalg.norm(chunk_vec))
+
+                        # Filter by threshold
+                        if similarity >= self.config.similarity_threshold:
+                            results.append(SearchResult(
+                                id=item.get('id'),
+                                content=item.get('content', ''),
+                                similarity_score=float(similarity),
+                                metadata=item.get('metadata', {}),
+                                embedding_type="text",
+                                source_type="chunk"
+                            ))
+
+                # Sort by similarity (highest first)
+                results.sort(key=lambda x: x.similarity_score, reverse=True)
+                results = results[:self.config.max_results]
+
             return results
             
         except Exception as e:
@@ -494,32 +507,44 @@ class UnifiedSearchService:
         Searches products and images by material properties.
         """
         try:
-            # Search products by material properties
+            # ✅ FIX: Use direct query on products table instead of non-existent RPC
             if not self.supabase:
                 return []
-            
-            response = self.supabase.client.rpc(
-                'search_materials',
-                {
-                    'query': query,
-                    'workspace_id': workspace_id,
-                    'similarity_threshold': self.config.similarity_threshold,
-                    'limit': self.config.max_results * 2
-                }
-            ).execute()
-            
+
+            # Search products by name/description using text search
+            response = self.supabase.client.from_('products')\
+                .select('id, name, description, metadata')\
+                .eq('workspace_id', workspace_id)\
+                .or_(f'name.ilike.%{query}%,description.ilike.%{query}%')\
+                .limit(self.config.max_results * 2)\
+                .execute()
+
             results = []
             if response.data:
                 for item in response.data:
+                    # Simple text matching score (0-1)
+                    name = item.get('name', '').lower()
+                    desc = item.get('description', '').lower()
+                    query_lower = query.lower()
+
+                    # Calculate simple relevance score
+                    score = 0.0
+                    if query_lower in name:
+                        score = 0.9
+                    elif query_lower in desc:
+                        score = 0.7
+                    else:
+                        score = 0.5
+
                     results.append(SearchResult(
                         id=item.get('id'),
                         content=item.get('name', ''),
-                        similarity_score=item.get('similarity', 0.0),
+                        similarity_score=score,
                         metadata=item.get('metadata', {}),
                         embedding_type="material",
                         source_type="product"
                     ))
-            
+
             return results
             
         except Exception as e:
@@ -541,28 +566,34 @@ class UnifiedSearchService:
             if not self.supabase:
                 return []
             
-            # Full-text search on document chunks
-            response = self.supabase.client.rpc(
-                'search_chunks_keyword',
-                {
-                    'query': query,
-                    'workspace_id': workspace_id,
-                    'limit': self.config.max_results * 2
-                }
-            ).execute()
-            
+            # ✅ FIX: Use direct text search instead of non-existent RPC
+            response = self.supabase.client.from_('document_chunks')\
+                .select('id, content, metadata')\
+                .eq('workspace_id', workspace_id)\
+                .ilike('content', f'%{query}%')\
+                .limit(self.config.max_results * 2)\
+                .execute()
+
             results = []
             if response.data:
                 for item in response.data:
+                    content = item.get('content', '').lower()
+                    query_lower = query.lower()
+
+                    # Calculate simple keyword relevance score
+                    # Count occurrences of query in content
+                    occurrences = content.count(query_lower)
+                    score = min(1.0, occurrences * 0.2)  # Cap at 1.0
+
                     results.append(SearchResult(
                         id=item.get('id'),
                         content=item.get('content', ''),
-                        similarity_score=item.get('rank', 0.0),
+                        similarity_score=score,
                         metadata=item.get('metadata', {}),
                         embedding_type="keyword",
                         source_type="chunk"
                     ))
-            
+
             return results
             
         except Exception as e:

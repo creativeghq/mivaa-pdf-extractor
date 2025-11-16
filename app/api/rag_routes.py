@@ -3061,6 +3061,7 @@ async def process_document_with_discovery(
         # OPTIMIZATION: Process in batches to reduce memory consumption
         images_processed = 0
         clip_embeddings_generated = 0
+        specialized_embeddings_generated = 0  # ✅ NEW: Track specialized embeddings
 
         # ✅ OPTIMIZATION: Collect VECS records for batch upsert
         vecs_batch_records = []
@@ -3116,7 +3117,7 @@ async def process_document_with_discovery(
 
         async def process_single_image(page_num, img_data, image_index, total_images):
             """Process a single image with CLIP + Llama Vision analysis"""
-            nonlocal images_processed, clip_embeddings_generated
+            nonlocal images_processed, clip_embeddings_generated, specialized_embeddings_generated
 
             try:
                 # Read image file and convert to base64
@@ -3238,6 +3239,7 @@ async def process_document_with_discovery(
                             embeddings=specialized_embeddings,
                             metadata=vecs_metadata
                         )
+                        specialized_embeddings_generated += len(specialized_embeddings)  # ✅ NEW: Track count
                         logger.debug(f"✅ [{image_index}/{total_images}] Saved {len(specialized_embeddings)} specialized embeddings")
 
                     # ✅ OPTIMIZATION: Batch upsert every VECS_BATCH_SIZE embeddings
@@ -3357,7 +3359,7 @@ async def process_document_with_discovery(
         # images_processed is the count of images analyzed with Llama Vision (may be 0 if files don't exist)
         await tracker._sync_to_database(stage="image_processing")
 
-        logger.info(f"✅ [STAGE 3] Image Processing Complete: {images_processed} images processed, {clip_embeddings_generated} CLIP embeddings generated (batch upserted to VECS)")
+        logger.info(f"✅ [STAGE 3] Image Processing Complete: {images_processed} images processed, {clip_embeddings_generated} CLIP embeddings generated, {specialized_embeddings_generated} specialized embeddings generated (batch upserted to VECS)")
 
         # Create IMAGES_EXTRACTED checkpoint
         await checkpoint_recovery_service.create_checkpoint(
@@ -3367,15 +3369,17 @@ async def process_document_with_discovery(
                 "document_id": document_id,
                 "images_processed": images_processed,
                 "clip_embeddings_generated": clip_embeddings_generated,
+                "specialized_embeddings_generated": specialized_embeddings_generated,  # ✅ NEW: Track specialized embeddings
                 "images_by_page": {str(k): len(v) for k, v in images_by_page.items()}
             },
             metadata={
                 "total_images": images_processed,
                 "clip_embeddings": clip_embeddings_generated,
+                "specialized_embeddings": specialized_embeddings_generated,  # ✅ NEW: Add to metadata
                 "product_pages_with_images": len(images_by_page)
             }
         )
-        logger.info(f"✅ Created IMAGES_EXTRACTED checkpoint for job {job_id}: {images_processed} images, {clip_embeddings_generated} CLIP embeddings")
+        logger.info(f"✅ Created IMAGES_EXTRACTED checkpoint for job {job_id}: {images_processed} images, {clip_embeddings_generated} CLIP embeddings, {specialized_embeddings_generated} specialized embeddings")
 
         # LAZY LOADING: Unload LlamaIndex service after image processing to free memory
         if "llamaindex_service" in loaded_components:
