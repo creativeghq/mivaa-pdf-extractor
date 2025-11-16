@@ -904,8 +904,8 @@ class PDFProcessor:
                                     "total_batches": total_batches
                                 }
                             )
-                        except Exception as callback_error:
-                            self.logger.warning(f"Progress callback failed: {callback_error}")
+                    except Exception as callback_error:
+                        self.logger.warning(f"Progress callback failed: {callback_error}")
 
             doc.close()
 
