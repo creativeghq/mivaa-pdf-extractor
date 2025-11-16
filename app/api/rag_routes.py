@@ -3046,12 +3046,49 @@ async def process_document_with_discovery(
 
             # Update pdf_result_with_images.extracted_images with uploaded material images
             pdf_result_with_images.extracted_images = material_images
+
+            # 🧹 CLEANUP: Delete ALL /tmp/ image files (material + non-material) after upload
+            logger.info(f"🧹 Cleaning up temporary image files from /tmp/...")
+            cleanup_count = 0
+            cleanup_errors = 0
+
+            # Combine all images for cleanup (material + non-material)
+            all_images_for_cleanup = classified_images
+
+            for img_data in all_images_for_cleanup:
+                if img_data is None or isinstance(img_data, Exception):
+                    continue
+
+                image_path = img_data.get('path')
+                if image_path and os.path.exists(image_path):
+                    try:
+                        os.remove(image_path)
+                        cleanup_count += 1
+                    except Exception as cleanup_error:
+                        cleanup_errors += 1
+                        logger.warning(f"   ⚠️  Failed to delete {image_path}: {cleanup_error}")
+
+            logger.info(f"✅ Cleanup complete: {cleanup_count} files deleted, {cleanup_errors} errors")
         except Exception as extraction_error:
             logger.error(f"❌ CRITICAL: Image extraction failed: {extraction_error}")
             logger.error(f"   Error type: {type(extraction_error).__name__}")
             logger.error(f"   Error details: {str(extraction_error)}")
             import traceback
             logger.error(f"   Traceback: {traceback.format_exc()}")
+
+            # 🧹 CLEANUP ON ERROR: Delete any /tmp/ files that were created before the error
+            try:
+                if 'pdf_result_with_images' in locals() and hasattr(pdf_result_with_images, 'extracted_images'):
+                    logger.info(f"🧹 Cleaning up {len(pdf_result_with_images.extracted_images)} temporary files after error...")
+                    for img_data in pdf_result_with_images.extracted_images:
+                        image_path = img_data.get('path')
+                        if image_path and os.path.exists(image_path):
+                            try:
+                                os.remove(image_path)
+                            except:
+                                pass
+            except Exception as cleanup_error:
+                logger.warning(f"⚠️  Cleanup after error failed: {cleanup_error}")
 
             # Update job status to failed
             await tracker.fail(error_message=f"Image extraction failed: {str(extraction_error)}")
