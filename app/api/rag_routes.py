@@ -3889,8 +3889,8 @@ async def _enhance_search_results(
 async def search_documents(
     request: SearchRequest,
     strategy: Optional[str] = Query(
-        "semantic",
-        description="Search strategy: 'semantic' (default), 'vector', 'multi_vector', 'hybrid', 'material', 'image', 'all'"
+        "multi_vector",
+        description="Search strategy: 'multi_vector' (RECOMMENDED - default), 'semantic', 'vector', 'hybrid', 'material', 'image', 'color', 'texture', 'style', 'material_type', 'all'"
     ),
     llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
 ):
@@ -3902,60 +3902,82 @@ async def search_documents(
     - `/api/search/similarity` → Use `strategy="vector"`
     - `/api/unified-search` → Use this endpoint
 
-    ## 🎯 Search Strategies (Issue #54 - All Implemented ✅)
+    ## 🎯 Search Strategies (All Implemented ✅)
 
-    ### Semantic Search (`strategy="semantic"`) - DEFAULT ✅
+    ### Multi-Vector Search (`strategy="multi_vector"`) - ⭐ RECOMMENDED DEFAULT ✅
+    - Combines 6 embedding types with intelligent weighted scoring:
+      - text_embedding_1536 (20%)
+      - visual_clip_embedding_512 (20%)
+      - color_clip_embedding_512 (15%)
+      - texture_clip_embedding_512 (15%)
+      - style_clip_embedding_512 (15%)
+      - material_clip_embedding_512 (15%)
+    - Best accuracy and performance for general queries
+    - Best for: Product discovery, material matching, general search
+
+    ### Semantic Search (`strategy="semantic"`) ✅
     - Natural language understanding with MMR (Maximal Marginal Relevance)
     - Context-aware matching with diversity
-    - Best for: Text queries, conceptual search, diverse results
+    - Best for: Fast text queries, conceptual search, diverse results
 
     ### Vector Search (`strategy="vector"`) ✅
     - Pure vector similarity (cosine distance)
     - Fast and efficient, no diversity filtering
     - Best for: Finding most similar documents, precise matching
 
-    ### Multi-Vector Search (`strategy="multi_vector"`) ✅ NEW
-    - Combines 3 embedding types with weighted scoring:
-      - text_embedding_1536 (40%)
-      - visual_clip_embedding_512 (30%)
-      - multimodal_fusion_embedding_2048 (30%)
-    - Best for: Comprehensive multimodal search
-
-    ### Hybrid Search (`strategy="hybrid"`) ✅ NEW
+    ### Hybrid Search (`strategy="hybrid"`) ✅
     - Combines semantic (70%) + PostgreSQL full-text search (30%)
     - Best for: Balancing semantic understanding with keyword matching
 
-    ### Material Property Search (`strategy="material"`) ✅ NEW
+    ### Material Property Search (`strategy="material"`) ✅
     - JSONB-based filtering with AND/OR logic
     - Requires `material_filters` in request body
     - Best for: Filtering by specific material properties
 
-    ### Image Similarity Search (`strategy="image"`) ✅ NEW
+    ### Image Similarity Search (`strategy="image"`) ✅
     - Visual similarity using CLIP embeddings
     - Requires `image_url` or `image_base64` in request body
     - Best for: Finding visually similar products
 
-    ### All Strategies (`strategy="all"`) ✅ NEW - Issue #57
-    - **Parallel execution** of all 6 strategies using `asyncio.gather()`
-    - **3-4x faster** than sequential: ~200-300ms vs ~800ms
+    ### Specialized Visual Searches ✅ NEW
+    - **Color Search** (`strategy="color"`): Color palette matching using specialized CLIP embeddings
+      - Best for: "Find materials with warm tones", "similar color palette"
+    - **Texture Search** (`strategy="texture"`): Texture pattern matching using specialized CLIP embeddings
+      - Best for: "Find rough textured materials", "similar texture pattern"
+    - **Style Search** (`strategy="style"`): Design style matching using specialized CLIP embeddings
+      - Best for: "Find modern style materials", "similar design aesthetic"
+    - **Material Type Search** (`strategy="material_type"`): Material type matching using specialized CLIP embeddings
+      - Best for: "Find similar material types", "materials like this"
+
+    ### All Strategies (`strategy="all"`) ✅
+    - **Parallel execution** of ALL 10 strategies using `asyncio.gather()`
+    - ⚠️ **SLOWER and HIGHER COST** than multi_vector (10x more operations)
     - Intelligent result merging with weighted scoring
     - Graceful error handling (failed strategies don't block others)
-    - Best for: Comprehensive search with maximum coverage
+    - Best for: Comprehensive search when user explicitly requests exhaustive results
+    - **NOTE**: Use `multi_vector` instead for better performance and accuracy
 
     ## 📝 Examples
 
-    ### Semantic Search (Default)
+    ### Multi-Vector Search (⭐ RECOMMENDED - Default)
     ```bash
     curl -X POST "/api/rag/search" \\
       -H "Content-Type: application/json" \\
       -d '{"query": "modern minimalist furniture", "workspace_id": "xxx", "top_k": 10}'
     ```
 
-    ### Multi-Vector Search
+    ### Semantic Search (Fast text-only)
     ```bash
-    curl -X POST "/api/rag/search?strategy=multi_vector" \\
+    curl -X POST "/api/rag/search?strategy=semantic" \\
       -H "Content-Type: application/json" \\
       -d '{"query": "oak wood flooring", "workspace_id": "xxx", "top_k": 5}'
+    ```
+
+    ### Specialized Color Search
+    ```bash
+    curl -X POST "/api/rag/search?strategy=color" \\
+      -H "Content-Type: application/json" \\
+      -d '{"query": "warm tones", "workspace_id": "xxx", "top_k": 10}'
     ```
 
     ### Material Property Search
