@@ -3817,6 +3817,15 @@ async def process_document_with_discovery(
 
         logger.info(f"   Cleanup complete: {cleanup_results.get('images_deleted', 0)} images deleted, {cleanup_results.get('processes_killed', 0)} processes killed")
 
+        # Cleanup temp PDF directory if it exists
+        if hasattr(pdf_result, 'temp_dir') and pdf_result.temp_dir:
+            try:
+                pdf_processor = PDFProcessor()
+                pdf_processor._cleanup_temp_files(pdf_result.temp_dir)
+                logger.info(f"✅ Cleaned up temp PDF directory: {pdf_result.temp_dir}")
+            except Exception as cleanup_error:
+                logger.warning(f"⚠️ Failed to cleanup temp PDF directory: {cleanup_error}")
+
         # Mark job as complete
         result = {
             "document_id": document_id,
@@ -3885,6 +3894,15 @@ async def process_document_with_discovery(
                 logger.info(f"✅ Unloaded {component_name}")
             except Exception as cleanup_error:
                 logger.warning(f"⚠️ Failed to unload {component_name}: {cleanup_error}")
+
+        # Cleanup temp PDF directory on error
+        if 'pdf_result' in locals() and hasattr(pdf_result, 'temp_dir') and pdf_result.temp_dir:
+            try:
+                pdf_processor = PDFProcessor()
+                pdf_processor._cleanup_temp_files(pdf_result.temp_dir)
+                logger.info(f"✅ Cleaned up temp PDF directory on error: {pdf_result.temp_dir}")
+            except Exception as cleanup_error:
+                logger.warning(f"⚠️ Failed to cleanup temp PDF directory on error: {cleanup_error}")
 
         # Force garbage collection
         import gc

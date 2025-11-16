@@ -108,6 +108,7 @@ class PDFProcessingResult:
     word_count: int
     character_count: int
     multimodal_enabled: bool = False
+    temp_dir: Optional[str] = None  # Temp directory to cleanup when job completes
 
 
 class PDFProcessor:
@@ -252,30 +253,34 @@ class PDFProcessor:
                     self._process_pdf_file(temp_pdf_path, document_id, processing_options, progress_callback),
                     timeout=timeout
                 )
-                
+
                 processing_time = time.time() - start_time
                 result.processing_time = processing_time
-                
+
                 self.logger.info(
-                    "PDF processing completed for document %s in %.2f seconds", 
+                    "PDF processing completed for document %s in %.2f seconds",
                     document_id, processing_time
                 )
-                
+
+                # Store temp_dir in result so caller can clean it up when job completes
+                result.temp_dir = temp_dir
+
                 return result
-                
+
             except asyncio.TimeoutError:
+                # Cleanup on timeout
+                if temp_dir:
+                    self._cleanup_temp_files(temp_dir)
                 raise PDFTimeoutError(f"PDF processing timed out after {timeout} seconds")
-                
+
         except Exception as e:
+            # Cleanup on error
+            if temp_dir:
+                self._cleanup_temp_files(temp_dir)
             self.logger.error("PDF processing failed for document %s: %s", document_id, str(e))
             if isinstance(e, (PDFProcessingError, PDFTimeoutError)):
                 raise
             raise PDFProcessingError(f"Unexpected error during PDF processing: {str(e)}") from e
-            
-        finally:
-            # Cleanup temporary files
-            if temp_dir:
-                self._cleanup_temp_files(temp_dir)
     
     async def process_pdf_from_url(
         self,
