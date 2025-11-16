@@ -916,10 +916,12 @@ class PDFProcessor:
                         image_path = os.path.join(image_dir, image_file)
 
                         # Process each image with advanced capabilities (now async)
+                        skip_upload = processing_options.get('skip_upload', False)
                         processed_image_info = await self._process_extracted_image(
                             image_path,
                             document_id,
-                            processing_options
+                            processing_options,
+                            skip_upload=skip_upload
                         )
 
                         if processed_image_info:
@@ -1047,7 +1049,8 @@ class PDFProcessor:
         self,
         image_path: str,
         document_id: str,
-        processing_options: Dict[str, Any]
+        processing_options: Dict[str, Any],
+        skip_upload: bool = False
     ) -> Optional[Dict[str, Any]]:
         """
         Process a single extracted image with advanced capabilities and upload to Supabase Storage.
@@ -1120,13 +1123,24 @@ class PDFProcessor:
                         target_format
                     )
 
-                # Upload image to Supabase Storage
-                upload_result = await self._upload_image_to_storage(
-                    image_path,
-                    document_id,
-                    basic_info,
-                    converted_path or enhanced_path
-                )
+                # Upload image to Supabase Storage (skip if requested for AI classification first)
+                if skip_upload:
+                    # Skip upload - will be done later after AI classification
+                    upload_result = {
+                        'success': True,
+                        'public_url': None,  # Will be set after classification
+                        'storage_path': None,
+                        'storage_bucket': None,
+                        'skipped': True
+                    }
+                    self.logger.info(f"   ⏭️  Skipped upload for AI classification: {basic_info['filename']}")
+                else:
+                    upload_result = await self._upload_image_to_storage(
+                        image_path,
+                        document_id,
+                        basic_info,
+                        converted_path or enhanced_path
+                    )
 
                 # DETAILED LOGGING: Log upload result for debugging
                 self.logger.info(f"📤 Upload result for {basic_info['filename']}:")

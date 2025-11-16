@@ -2759,7 +2759,8 @@ async def process_document_with_discovery(
                     'page_count': pdf_result.page_count,
                     'product_pages': sorted(product_pages),
                     'chunk_size': chunk_size,
-                    'chunk_overlap': chunk_overlap
+                    'chunk_overlap': chunk_overlap,
+                    'workspace_id': workspace_id  # ✅ FIX: Pass workspace_id to chunks
                 }
             ),
             timeout_seconds=chunking_timeout,
@@ -2843,7 +2844,8 @@ async def process_document_with_discovery(
             # ✅ OPTIMIZATION: Build processing options with page_list for focused extraction
             processing_options = {
                 'extract_images': True,
-                'extract_tables': False
+                'extract_tables': False,
+                'skip_upload': True  # Skip upload - will classify first, then upload only material images
             }
 
             # Add page_list for focused extraction (only extract images from product pages)
@@ -2862,6 +2864,188 @@ async def process_document_with_discovery(
                 operation_name="PyMuPDF4LLM image extraction"
             )
             logger.info(f"✅ Image extraction completed: {len(pdf_result_with_images.extracted_images)} images found")
+
+            # AI-BASED IMAGE CLASSIFICATION: Filter out non-material images BEFORE processing
+            # This prevents wasting money on AI processing for irrelevant images (faces, logos, etc.)
+            logger.info(f"🤖 Starting AI-based image classification for {len(pdf_result_with_images.extracted_images)} images...")
+
+            async def classify_image_as_material(image_path: str, page_num: int) -> Dict[str, Any]:
+                """
+                Classify an image as material-related or not using Claude/GPT-5.
+
+                Returns:
+                    {
+                        'is_material': bool,
+                        'classification': 'material_closeup' | 'material_in_situ' | 'non_material',
+                        'confidence': float,
+                        'reason': str
+                    }
+                """
+                try:
+                    # Read image and convert to base64
+                    with open(image_path, 'rb') as f:
+                        image_bytes = f.read()
+                        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+
+                    # Use Claude for classification (faster and cheaper than GPT-5 for this task)
+                    classification_prompt = """Analyze this image and classify it into ONE of these categories:
+
+            1. **material_closeup**: Close-up photo showing material texture, surface, pattern, or finish (tiles, wood, fabric, stone, metal, etc.)
+            2. **material_in_situ**: Material shown in application/context (bathroom with tiles, furniture with fabric, room with flooring, etc.)
+            3. **non_material**: NOT material-related (faces, logos, decorative graphics, charts, diagrams, text, random images, forests, abstract patterns that don't show actual material)
+
+            Respond ONLY with this JSON format:
+            {
+                "classification": "material_closeup" | "material_in_situ" | "non_material",
+                "confidence": 0.0-1.0,
+                "reason": "brief explanation"
+            }"""
+
+                    response = await anthropic_service.analyze_image(
+                        image_base64=image_base64,
+                        prompt=classification_prompt,
+                        model="claude-sonnet-4-20250514"  # Latest Claude model
+                    )
+
+                    # Parse response
+                    import json
+                    result = json.loads(response.get('analysis', '{}'))
+
+                    is_material = result.get('classification') in ['material_closeup', 'material_in_situ']
+
+                    return {
+                        'is_material': is_material,
+                        'classification': result.get('classification', 'non_material'),
+                        'confidence': result.get('confidence', 0.0),
+                        'reason': result.get('reason', 'Unknown')
+                    }
+
+                except Exception as e:
+                    logger.error(f"❌ Image classification failed for {image_path}: {e}")
+                    # Default to including the image if classification fails (fail-safe)
+                    return {
+                        'is_material': True,
+                        'classification': 'unknown',
+                        'confidence': 0.5,
+                        'reason': f'Classification failed: {str(e)}'
+                    }
+
+            # Classify all images in parallel (with concurrency limit)
+            from asyncio import Semaphore
+            classification_semaphore = Semaphore(5)  # Classify 5 images at a time
+
+            async def classify_with_semaphore(img_data):
+                async with classification_semaphore:
+                    image_path = img_data.get('path')
+                    if not image_path or not os.path.exists(image_path):
+                        return None
+
+                    # Extract page number from filename
+                    filename = img_data.get('filename', '')
+                    page_num = None
+                    if '-' in filename:
+                        parts = filename.split('-')
+                        if len(parts) >= 2:
+                            try:
+                                page_num = int(parts[-2]) + 1  # Convert 0-indexed to 1-indexed
+                            except:
+                                pass
+
+                    classification = await classify_image_as_material(image_path, page_num)
+                    img_data['ai_classification'] = classification
+                    return img_data
+
+            # Run classification for all images
+            classification_tasks = [classify_with_semaphore(img_data) for img_data in pdf_result_with_images.extracted_images]
+            classified_images = await asyncio.gather(*classification_tasks, return_exceptions=True)
+
+            # Filter out non-material images
+            material_images = []
+            non_material_images = []
+
+            for img_data in classified_images:
+                if img_data is None or isinstance(img_data, Exception):
+                    continue
+
+                classification = img_data.get('ai_classification', {})
+                if classification.get('is_material', False):
+                    material_images.append(img_data)
+                else:
+                    non_material_images.append(img_data)
+                    logger.info(f"   🚫 Filtered out: {img_data.get('filename')} - {classification.get('classification')} ({classification.get('reason')})")
+
+            logger.info(f"✅ AI classification complete:")
+            logger.info(f"   Material images: {len(material_images)}")
+            logger.info(f"   Non-material images filtered out: {len(non_material_images)}")
+            logger.info(f"   Classification accuracy: {len(material_images) / (len(material_images) + len(non_material_images)) * 100:.1f}% kept")
+
+            # Update tracker with filtered image count
+            await tracker.update_database_stats(
+                images_extracted=len(material_images),
+                sync_to_db=True
+            )
+
+            # Upload only material images to Supabase Storage
+            logger.info(f"📤 Uploading {len(material_images)} material images to Supabase Storage...")
+
+            async def upload_single_image(img_data):
+                """Upload a single material image to Supabase Storage"""
+                try:
+                    image_path = img_data.get('path')
+                    if not image_path or not os.path.exists(image_path):
+                        logger.warning(f"Image file not found: {image_path}")
+                        return None
+
+                    # Upload to Supabase Storage
+                    from app.services.pdf_processor import PDFProcessor
+                    pdf_processor_temp = PDFProcessor()
+
+                    upload_result = await pdf_processor_temp._upload_image_to_storage(
+                        image_path,
+                        document_id,
+                        {
+                            'filename': img_data.get('filename'),
+                            'size_bytes': img_data.get('size_bytes'),
+                            'format': img_data.get('format'),
+                            'dimensions': img_data.get('dimensions'),
+                            'width': img_data.get('width'),
+                            'height': img_data.get('height')
+                        },
+                        None  # No enhanced path
+                    )
+
+                    if upload_result.get('success'):
+                        # Update img_data with storage info
+                        img_data['storage_url'] = upload_result.get('public_url')
+                        img_data['storage_path'] = upload_result.get('storage_path')
+                        img_data['storage_bucket'] = upload_result.get('storage_bucket')
+                        logger.info(f"   ✅ Uploaded: {img_data.get('filename')}")
+                        return img_data
+                    else:
+                        logger.error(f"   ❌ Upload failed: {img_data.get('filename')} - {upload_result.get('error')}")
+                        return None
+
+                except Exception as e:
+                    logger.error(f"   ❌ Upload error for {img_data.get('filename')}: {e}")
+                    return None
+
+            # Upload material images in parallel (5 at a time)
+            upload_semaphore = Semaphore(5)
+
+            async def upload_with_semaphore(img_data):
+                async with upload_semaphore:
+                    return await upload_single_image(img_data)
+
+            upload_tasks = [upload_with_semaphore(img_data) for img_data in material_images]
+            uploaded_images = await asyncio.gather(*upload_tasks, return_exceptions=True)
+
+            # Filter out failed uploads
+            material_images = [img for img in uploaded_images if img is not None and not isinstance(img, Exception)]
+
+            logger.info(f"✅ Upload complete: {len(material_images)} material images uploaded to storage")
+
+            # Update pdf_result_with_images.extracted_images with uploaded material images
+            pdf_result_with_images.extracted_images = material_images
         except Exception as extraction_error:
             logger.error(f"❌ CRITICAL: Image extraction failed: {extraction_error}")
             logger.error(f"   Error type: {type(extraction_error).__name__}")
@@ -3117,7 +3301,7 @@ async def process_document_with_discovery(
 
         async def process_single_image(page_num, img_data, image_index, total_images):
             """Process a single image with CLIP + Llama Vision analysis"""
-            nonlocal images_processed, clip_embeddings_generated, specialized_embeddings_generated
+            nonlocal images_processed, clip_embeddings_generated, specialized_embeddings_generated, vecs_batch_records
 
             try:
                 # Read image file and convert to base64
@@ -4555,9 +4739,13 @@ async def get_workspace_statistics(
         images_response = supabase.client.table('document_images').select('id', count='exact').eq('workspace_id', workspace_id).execute()
         text_embeddings_response = supabase.client.table('embeddings').select('id', count='exact').eq('workspace_id', workspace_id).execute()
 
-        # Get VECS image embeddings count
-        vecs_service = get_vecs_service()
-        image_embeddings_count = await vecs_service.count_embeddings(workspace_id=workspace_id)
+        # Get VECS image embeddings count using SQL function (bypasses VECS connection issues)
+        try:
+            vecs_count_result = supabase.client.rpc('count_vecs_embeddings', {'p_workspace_id': workspace_id}).execute()
+            image_embeddings_count = vecs_count_result.data if isinstance(vecs_count_result.data, int) else 0
+        except Exception as vecs_error:
+            logger.warning(f"⚠️ VECS count failed: {vecs_error}")
+            image_embeddings_count = 0
 
         # Calculate totals
         products_count = products_response.count or 0
