@@ -556,18 +556,56 @@ class PDFProcessor:
 
                 page_number = processing_options.get('page_number')
 
-                # Try PyMuPDF4LLM first, fall back to OCR if it fails with "not a textpage" error
+                # Try PyMuPDF4LLM with proper error handling and batching
                 try:
+                    # If page_number is None, process entire PDF
+                    # PyMuPDF4LLM can fail with "not a textpage" for certain PDF formats
                     markdown_content = extract_pdf_to_markdown(pdf_path, page_number)
+
                 except ValueError as e:
                     if "not a textpage" in str(e):
-                        self.logger.warning(f"⚠️ PyMuPDF4LLM failed with 'not a textpage' error, falling back to OCR")
-                        self.logger.info("Switching to OCR-first extraction for this PDF")
-                        try:
-                            markdown_content = self._extract_text_with_ocr(pdf_path, processing_options, progress_callback)
-                        except Exception as ocr_error:
-                            self.logger.error(f"OCR extraction also failed: {ocr_error}")
-                            raise PDFExtractionError(f"Both PyMuPDF4LLM and OCR extraction failed: {str(e)}") from e
+                        self.logger.warning(f"⚠️ PyMuPDF4LLM failed with 'not a textpage' error")
+                        self.logger.info("Attempting page-by-page extraction with PyMuPDF4LLM to isolate problematic pages")
+
+                        # Try processing page-by-page to find which pages work
+                        import fitz
+                        doc = fitz.open(pdf_path)
+                        total_pages = len(doc)
+                        doc.close()
+
+                        markdown_content = ""
+                        failed_pages = []
+
+                        # Process in batches of 10 pages
+                        batch_size = 10
+                        for batch_start in range(0, total_pages, batch_size):
+                            batch_end = min(batch_start + batch_size, total_pages)
+                            self.logger.info(f"Processing pages {batch_start + 1}-{batch_end} with PyMuPDF4LLM")
+
+                            for page_num in range(batch_start, batch_end):
+                                try:
+                                    page_content = extract_pdf_to_markdown(pdf_path, page_num)
+                                    markdown_content += page_content + "\n\n"
+                                except ValueError as page_error:
+                                    if "not a textpage" in str(page_error):
+                                        self.logger.warning(f"Page {page_num + 1} failed with 'not a textpage', will use OCR for this page")
+                                        failed_pages.append(page_num)
+                                    else:
+                                        raise
+
+                            # Force garbage collection after each batch
+                            import gc
+                            gc.collect()
+
+                        # If we have failed pages, use OCR only for those specific pages
+                        if failed_pages:
+                            self.logger.info(f"Using OCR for {len(failed_pages)} failed pages: {failed_pages}")
+                            ocr_content = self._extract_text_with_ocr_for_pages(pdf_path, failed_pages, processing_options, progress_callback)
+                            markdown_content += ocr_content
+
+                        if len(markdown_content.strip()) < 100:
+                            raise PDFExtractionError("PyMuPDF4LLM extraction yielded minimal content")
+
                     else:
                         raise
 
@@ -653,6 +691,106 @@ class PDFProcessor:
             gc.collect()
             raise PDFExtractionError(f"Markdown extraction failed: {str(e)}") from e
 
+    def _extract_text_with_ocr_for_pages(
+        self,
+        pdf_path: str,
+        page_numbers: List[int],
+        processing_options: Dict[str, Any],
+        progress_callback: Optional[callable] = None
+    ) -> str:
+        """
+        Extract text from specific PDF pages using OCR.
+
+        Args:
+            pdf_path: Path to PDF file
+            page_numbers: List of page numbers (0-indexed) to process with OCR
+            processing_options: Processing configuration
+            progress_callback: Optional progress callback
+
+        Returns:
+            Extracted text as markdown
+        """
+        try:
+            import fitz  # PyMuPDF
+            from app.services.ocr_service import get_ocr_service, OCRConfig
+            import gc
+
+            # Initialize OCR service
+            ocr_languages = processing_options.get('ocr_languages', ['en'])
+            ocr_config = OCRConfig(
+                languages=ocr_languages,
+                confidence_threshold=0.3,
+                preprocessing_enabled=True
+            )
+            ocr_service = get_ocr_service(ocr_config)
+
+            doc = fitz.open(pdf_path)
+            all_text = []
+
+            self.logger.info(f"Processing {len(page_numbers)} pages with OCR in batches")
+
+            # Process pages in batches of 5 to manage memory
+            batch_size = 5
+            for batch_idx in range(0, len(page_numbers), batch_size):
+                batch_pages = page_numbers[batch_idx:batch_idx + batch_size]
+                self.logger.info(f"OCR Batch {batch_idx // batch_size + 1}: Processing pages {[p+1 for p in batch_pages]}")
+
+                for page_num in batch_pages:
+                    if page_num < len(doc):
+                        page = doc.load_page(page_num)
+
+                        # Render page as image (2.0x zoom for quality vs memory balance)
+                        mat = fitz.Matrix(2.0, 2.0)
+                        pix = page.get_pixmap(matrix=mat)
+                        img_data = pix.tobytes('png')
+
+                        # Explicitly free pixmap memory
+                        pix = None
+
+                        # Extract text with OCR
+                        try:
+                            from PIL import Image
+                            import io
+
+                            img = Image.open(io.BytesIO(img_data))
+                            ocr_results = ocr_service.extract_text_from_image(img)
+
+                            # Combine all OCR results for this page
+                            page_text = []
+                            for result in ocr_results:
+                                if result.text.strip() and result.confidence > 0.3:
+                                    page_text.append(result.text.strip())
+
+                            if page_text:
+                                combined_page_text = ' '.join(page_text)
+                                all_text.append(f"## Page {page_num + 1}\n\n{combined_page_text}\n")
+                                self.logger.debug(f"Page {page_num + 1}: Extracted {len(combined_page_text)} characters via OCR")
+
+                            # Explicitly free image memory
+                            img.close()
+                            img = None
+                            img_data = None
+
+                        except Exception as page_error:
+                            self.logger.warning(f"OCR failed for page {page_num + 1}: {page_error}")
+                            continue
+
+                # Force garbage collection after each batch
+                gc.collect()
+                self.logger.debug(f"Completed OCR batch {batch_idx // batch_size + 1}, memory freed")
+
+            doc.close()
+
+            # Final garbage collection
+            gc.collect()
+
+            return '\n'.join(all_text)
+
+        except Exception as e:
+            import gc
+            gc.collect()
+            raise PDFExtractionError(f"OCR extraction failed for specific pages: {str(e)}") from e
+
     def _extract_text_with_ocr(
         self,
         pdf_path: str,
@@ -687,11 +825,21 @@ class PDFProcessor:
                 page_range = [page_number - 1] if page_number > 0 else [0]
             else:
                 # Process all pages for complete extraction
-                page_range = range(len(doc))
+                page_range = list(range(len(doc)))
 
-            self.logger.info(f"Processing {len(page_range)} pages with OCR")
+            self.logger.info(f"Processing {len(page_range)} pages with OCR in batches")
 
-            for i, page_num in enumerate(page_range):
+            # Process in batches of 5 pages to manage memory
+            batch_size = 5
+            total_batches = (len(page_range) + batch_size - 1) // batch_size
+
+            for batch_idx in range(0, len(page_range), batch_size):
+                batch_end = min(batch_idx + batch_size, len(page_range))
+                batch_num = batch_idx // batch_size + 1
+                self.logger.info(f"OCR Batch {batch_num}/{total_batches}: Processing pages {batch_idx + 1}-{batch_end}")
+
+                for i in range(batch_idx, batch_end):
+                    page_num = page_range[i]
                 if page_num < len(doc):
                     page = doc.load_page(page_num)
 
@@ -731,38 +879,43 @@ class PDFProcessor:
                         self.logger.warning(f"OCR failed for page {page_num + 1}: {page_error}")
                         continue
 
-                    # Force garbage collection every 10 pages to free memory
-                    if (i + 1) % 10 == 0:
-                        import gc
-                        gc.collect()
+                # Force garbage collection after each batch
+                import gc
+                gc.collect()
+                self.logger.debug(f"Completed OCR batch {batch_num}/{total_batches}, memory freed")
 
-                # Log progress every 5 pages
-                if (i + 1) % 5 == 0 or (i + 1) == len(page_range):
-                    progress = ((i + 1) / len(page_range)) * 80  # OCR is 80% of total processing
-                    self.logger.info(f"📄 OCR Progress: {i + 1}/{len(page_range)} pages ({progress:.1f}%)")
+                # Log progress after each batch
+                progress = (batch_end / len(page_range)) * 80  # OCR is 80% of total processing
+                self.logger.info(f"📄 OCR Progress: {batch_end}/{len(page_range)} pages ({progress:.1f}%)")
 
-                    # Update job progress if callback provided
-                    if progress_callback:
-                        try:
-                            # Only call if it's not a coroutine (sync callbacks only in sync function)
-                            if not inspect.iscoroutinefunction(progress_callback):
-                                progress_callback(
-                                    progress=int(progress),
-                                    details={
-                                        "current_step": f"OCR processing: {i + 1}/{len(page_range)} pages",
-                                        "pages_processed": i + 1,
-                                        "total_pages": len(page_range),
-                                        "ocr_stage": "extracting_text"
-                                    }
-                                )
+                # Update job progress if callback provided
+                if progress_callback:
+                    try:
+                        # Only call if it's not a coroutine (sync callbacks only in sync function)
+                        if not inspect.iscoroutinefunction(progress_callback):
+                            progress_callback(
+                                progress=int(progress),
+                                details={
+                                    "current_step": f"OCR processing: {batch_end}/{len(page_range)} pages (batch {batch_num}/{total_batches})",
+                                    "pages_processed": batch_end,
+                                    "total_pages": len(page_range),
+                                    "ocr_stage": "extracting_text",
+                                    "batch_number": batch_num,
+                                    "total_batches": total_batches
+                                }
+                            )
                         except Exception as callback_error:
                             self.logger.warning(f"Progress callback failed: {callback_error}")
 
             doc.close()
 
+            # Final garbage collection
+            import gc
+            gc.collect()
+
             # Combine all extracted text
             final_text = '\n'.join(all_text)
-            self.logger.info(f"OCR extraction complete: {len(final_text)} total characters from {len(page_range)} pages")
+            self.logger.info(f"✅ OCR extraction complete: {len(final_text)} total characters from {len(page_range)} pages")
 
             # Update progress for chunk creation
             if progress_callback:
