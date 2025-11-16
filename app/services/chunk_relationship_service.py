@@ -24,7 +24,7 @@ import numpy as np
 
 from app.services.real_embeddings_service import RealEmbeddingsService
 from app.services.supabase_client import get_supabase_client
-from app.core.config import settings
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
