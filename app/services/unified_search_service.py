@@ -29,6 +29,11 @@ class SearchStrategy(str, Enum):
     HYBRID = "hybrid"
     MATERIAL = "material"
     KEYWORD = "keyword"
+    # ✅ NEW: Specialized CLIP embedding strategies
+    COLOR = "color"
+    TEXTURE = "texture"
+    STYLE = "style"
+    MATERIAL_TYPE = "material_type"
 
 
 @dataclass
@@ -181,6 +186,15 @@ class UnifiedSearchService:
             return await self._search_material(query, filters, workspace_id)
         elif strategy == SearchStrategy.KEYWORD:
             return await self._search_keyword(query, filters, workspace_id)
+        # ✅ NEW: Specialized CLIP embedding strategies
+        elif strategy == SearchStrategy.COLOR:
+            return await self._search_color(query, filters, workspace_id)
+        elif strategy == SearchStrategy.TEXTURE:
+            return await self._search_texture(query, filters, workspace_id)
+        elif strategy == SearchStrategy.STYLE:
+            return await self._search_style(query, filters, workspace_id)
+        elif strategy == SearchStrategy.MATERIAL_TYPE:
+            return await self._search_material_type(query, filters, workspace_id)
         else:
             raise ValueError(f"Unknown search strategy: {strategy}")
 
@@ -206,9 +220,14 @@ class UnifiedSearchService:
             self._search_hybrid(query, filters, workspace_id),
             self._search_material(query, filters, workspace_id),
             self._search_keyword(query, filters, workspace_id),
+            # ✅ NEW: Add specialized CLIP embedding searches
+            self._search_color(query, filters, workspace_id),
+            self._search_texture(query, filters, workspace_id),
+            self._search_style(query, filters, workspace_id),
+            self._search_material_type(query, filters, workspace_id),
         ]
 
-        strategy_names = ["semantic", "visual", "multi_vector", "hybrid", "material", "keyword"]
+        strategy_names = ["semantic", "visual", "multi_vector", "hybrid", "material", "keyword", "color", "texture", "style", "material_type"]
 
         # Execute all tasks in parallel
         results_list = await asyncio.gather(*tasks, return_exceptions=True)
@@ -432,26 +451,53 @@ class UnifiedSearchService:
             # Search using all embedding types with weights
             results_by_id = {}
             
-            # Search with text embedding (25% weight)
-            if embeddings.get("text_1536"):
-                text_results = await self._search_semantic(query, filters, workspace_id)
-                for result in text_results:
+            # ✅ UPDATED: Run all 6 embedding searches in parallel for better performance
+            tasks = [
+                self._search_semantic(query, filters, workspace_id),
+                self._search_visual(query, filters, workspace_id),
+                self._search_color(query, filters, workspace_id),
+                self._search_texture(query, filters, workspace_id),
+                self._search_style(query, filters, workspace_id),
+                self._search_material_type(query, filters, workspace_id),
+            ]
+
+            results_list = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Define weights for each embedding type (total = 1.0)
+            weights = [0.20, 0.20, 0.15, 0.15, 0.15, 0.15]
+            strategy_names = ["text", "visual", "color", "texture", "style", "material"]
+
+            # Combine results with weights
+            for i, (results, weight, name) in enumerate(zip(results_list, weights, strategy_names)):
+                if isinstance(results, Exception):
+                    self.logger.warning(f"⚠️ {name} search failed in multi-vector: {results}")
+                    continue
+
+                for result in results:
                     if result.id not in results_by_id:
                         results_by_id[result.id] = result
-                    results_by_id[result.id].similarity_score += result.similarity_score * 0.25
-            
-            # Search with visual embedding (25% weight)
-            if embeddings.get("visual_clip_512"):
-                visual_results = await self._search_visual(query, filters, workspace_id)
-                for result in visual_results:
-                    if result.id not in results_by_id:
-                        results_by_id[result.id] = result
-                    results_by_id[result.id].similarity_score += result.similarity_score * 0.25
-            
-            # Additional embeddings (color, texture, application) with lower weights
-            # These would be combined similarly
-            
-            return list(results_by_id.values())
+                        results_by_id[result.id].similarity_score = result.similarity_score * weight
+                        # Track which embeddings contributed
+                        if 'embedding_sources' not in results_by_id[result.id].metadata:
+                            results_by_id[result.id].metadata['embedding_sources'] = []
+                            results_by_id[result.id].metadata['embedding_scores'] = {}
+                        results_by_id[result.id].metadata['embedding_sources'].append(name)
+                        results_by_id[result.id].metadata['embedding_scores'][name] = result.similarity_score
+                    else:
+                        results_by_id[result.id].similarity_score += result.similarity_score * weight
+                        results_by_id[result.id].metadata['embedding_sources'].append(name)
+                        results_by_id[result.id].metadata['embedding_scores'][name] = result.similarity_score
+
+            # Sort by combined score
+            sorted_results = sorted(
+                results_by_id.values(),
+                key=lambda x: x.similarity_score,
+                reverse=True
+            )
+
+            self.logger.info(f"✅ Multi-vector search combined {len(results_by_id)} unique results from 6 embedding types")
+
+            return sorted_results[:self.config.max_results]
             
         except Exception as e:
             self.logger.error(f"Multi-vector search failed: {e}")
@@ -595,8 +641,226 @@ class UnifiedSearchService:
                     ))
 
             return results
-            
+
         except Exception as e:
             self.logger.error(f"Keyword search failed: {e}")
+            return []
+
+    # ✅ NEW: Specialized CLIP embedding search methods
+
+    async def _search_color(
+        self,
+        query: str,
+        filters: Optional[Dict[str, Any]] = None,
+        workspace_id: Optional[str] = None
+    ) -> List[SearchResult]:
+        """
+        Color palette search using specialized color CLIP embeddings.
+
+        Searches images by color similarity.
+        """
+        try:
+            from app.services.vecs_service import get_vecs_service
+            from app.services.real_embeddings_service import RealEmbeddingsService
+
+            # Generate color embedding from query
+            embeddings_service = RealEmbeddingsService()
+
+            # If query is text, generate visual embedding from text description
+            embedding_result = await embeddings_service.generate_visual_embedding(query)
+            if not embedding_result.get("success"):
+                self.logger.warning("Failed to generate color embedding")
+                return []
+
+            query_embedding = embedding_result.get("embedding", [])
+
+            # Search VECS color collection
+            vecs_service = get_vecs_service()
+            results = await vecs_service.search_specialized_embeddings(
+                embedding_type='color',
+                query_embedding=query_embedding,
+                limit=self.config.max_results,
+                filters={"workspace_id": {"$eq": workspace_id}} if workspace_id else None,
+                min_similarity=self.config.similarity_threshold
+            )
+
+            # Format results
+            search_results = []
+            for item in results:
+                search_results.append(SearchResult(
+                    id=item.get('image_id'),
+                    content=item.get('metadata', {}).get('image_url', ''),
+                    similarity_score=item.get('similarity_score', 0.0),
+                    metadata=item.get('metadata', {}),
+                    embedding_type="color",
+                    source_type="image"
+                ))
+
+            return search_results
+
+        except Exception as e:
+            self.logger.error(f"Color search failed: {e}")
+            return []
+
+    async def _search_texture(
+        self,
+        query: str,
+        filters: Optional[Dict[str, Any]] = None,
+        workspace_id: Optional[str] = None
+    ) -> List[SearchResult]:
+        """
+        Texture pattern search using specialized texture CLIP embeddings.
+
+        Searches images by texture similarity.
+        """
+        try:
+            from app.services.vecs_service import get_vecs_service
+            from app.services.real_embeddings_service import RealEmbeddingsService
+
+            # Generate texture embedding from query
+            embeddings_service = RealEmbeddingsService()
+
+            # If query is text, generate visual embedding from text description
+            embedding_result = await embeddings_service.generate_visual_embedding(query)
+            if not embedding_result.get("success"):
+                self.logger.warning("Failed to generate texture embedding")
+                return []
+
+            query_embedding = embedding_result.get("embedding", [])
+
+            # Search VECS texture collection
+            vecs_service = get_vecs_service()
+            results = await vecs_service.search_specialized_embeddings(
+                embedding_type='texture',
+                query_embedding=query_embedding,
+                limit=self.config.max_results,
+                filters={"workspace_id": {"$eq": workspace_id}} if workspace_id else None,
+                min_similarity=self.config.similarity_threshold
+            )
+
+            # Format results
+            search_results = []
+            for item in results:
+                search_results.append(SearchResult(
+                    id=item.get('image_id'),
+                    content=item.get('metadata', {}).get('image_url', ''),
+                    similarity_score=item.get('similarity_score', 0.0),
+                    metadata=item.get('metadata', {}),
+                    embedding_type="texture",
+                    source_type="image"
+                ))
+
+            return search_results
+
+        except Exception as e:
+            self.logger.error(f"Texture search failed: {e}")
+            return []
+
+    async def _search_style(
+        self,
+        query: str,
+        filters: Optional[Dict[str, Any]] = None,
+        workspace_id: Optional[str] = None
+    ) -> List[SearchResult]:
+        """
+        Design style search using specialized style CLIP embeddings.
+
+        Searches images by design style similarity.
+        """
+        try:
+            from app.services.vecs_service import get_vecs_service
+            from app.services.real_embeddings_service import RealEmbeddingsService
+
+            # Generate style embedding from query
+            embeddings_service = RealEmbeddingsService()
+
+            # If query is text, generate visual embedding from text description
+            embedding_result = await embeddings_service.generate_visual_embedding(query)
+            if not embedding_result.get("success"):
+                self.logger.warning("Failed to generate style embedding")
+                return []
+
+            query_embedding = embedding_result.get("embedding", [])
+
+            # Search VECS style collection
+            vecs_service = get_vecs_service()
+            results = await vecs_service.search_specialized_embeddings(
+                embedding_type='style',
+                query_embedding=query_embedding,
+                limit=self.config.max_results,
+                filters={"workspace_id": {"$eq": workspace_id}} if workspace_id else None,
+                min_similarity=self.config.similarity_threshold
+            )
+
+            # Format results
+            search_results = []
+            for item in results:
+                search_results.append(SearchResult(
+                    id=item.get('image_id'),
+                    content=item.get('metadata', {}).get('image_url', ''),
+                    similarity_score=item.get('similarity_score', 0.0),
+                    metadata=item.get('metadata', {}),
+                    embedding_type="style",
+                    source_type="image"
+                ))
+
+            return search_results
+
+        except Exception as e:
+            self.logger.error(f"Style search failed: {e}")
+            return []
+
+    async def _search_material_type(
+        self,
+        query: str,
+        filters: Optional[Dict[str, Any]] = None,
+        workspace_id: Optional[str] = None
+    ) -> List[SearchResult]:
+        """
+        Material type search using specialized material CLIP embeddings.
+
+        Searches images by material type similarity.
+        """
+        try:
+            from app.services.vecs_service import get_vecs_service
+            from app.services.real_embeddings_service import RealEmbeddingsService
+
+            # Generate material embedding from query
+            embeddings_service = RealEmbeddingsService()
+
+            # If query is text, generate visual embedding from text description
+            embedding_result = await embeddings_service.generate_visual_embedding(query)
+            if not embedding_result.get("success"):
+                self.logger.warning("Failed to generate material embedding")
+                return []
+
+            query_embedding = embedding_result.get("embedding", [])
+
+            # Search VECS material collection
+            vecs_service = get_vecs_service()
+            results = await vecs_service.search_specialized_embeddings(
+                embedding_type='material',
+                query_embedding=query_embedding,
+                limit=self.config.max_results,
+                filters={"workspace_id": {"$eq": workspace_id}} if workspace_id else None,
+                min_similarity=self.config.similarity_threshold
+            )
+
+            # Format results
+            search_results = []
+            for item in results:
+                search_results.append(SearchResult(
+                    id=item.get('image_id'),
+                    content=item.get('metadata', {}).get('image_url', ''),
+                    similarity_score=item.get('similarity_score', 0.0),
+                    metadata=item.get('metadata', {}),
+                    embedding_type="material",
+                    source_type="image"
+                ))
+
+            return search_results
+
+        except Exception as e:
+            self.logger.error(f"Material type search failed: {e}")
             return []
 
