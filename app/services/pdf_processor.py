@@ -695,10 +695,13 @@ class PDFProcessor:
                 if page_num < len(doc):
                     page = doc.load_page(page_num)
 
-                    # Render page as high-quality image
-                    mat = fitz.Matrix(2.5, 2.5)  # 2.5x zoom for good OCR quality
+                    # Render page as image (reduced zoom to save memory)
+                    mat = fitz.Matrix(2.0, 2.0)  # 2.0x zoom (reduced from 2.5x to save memory)
                     pix = page.get_pixmap(matrix=mat)
                     img_data = pix.tobytes('png')
+
+                    # Explicitly free pixmap memory
+                    pix = None
 
                     # Extract text with OCR
                     try:
@@ -719,9 +722,19 @@ class PDFProcessor:
                             all_text.append(f"## Page {page_num + 1}\n\n{combined_page_text}\n")
                             self.logger.debug(f"Page {page_num + 1}: Extracted {len(combined_page_text)} characters")
 
+                        # Explicitly free image memory
+                        img.close()
+                        img = None
+                        img_data = None
+
                     except Exception as page_error:
                         self.logger.warning(f"OCR failed for page {page_num + 1}: {page_error}")
                         continue
+
+                    # Force garbage collection every 10 pages to free memory
+                    if (i + 1) % 10 == 0:
+                        import gc
+                        gc.collect()
 
                 # Log progress every 5 pages
                 if (i + 1) % 5 == 0 or (i + 1) == len(page_range):
