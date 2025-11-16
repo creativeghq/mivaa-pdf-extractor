@@ -3200,6 +3200,7 @@ async def process_document_with_discovery(
                     # Prepare metadata for VECS
                     vecs_metadata = {
                         'document_id': document_id,
+                        'workspace_id': workspace_id,  # ✅ ADD: Enable workspace filtering in VECS searches
                         'page_number': page_num,
                         'image_url': storage_url,  # ✅ FIX: Use Supabase storage URL, not tmp path
                         'storage_path': storage_path,  # Include storage path for reference
@@ -3209,7 +3210,7 @@ async def process_document_with_discovery(
                         'material_properties': analysis_result.get('material_properties', {})
                     }
 
-                    # Add to batch records
+                    # Add to batch records for visual CLIP embeddings
                     vecs_batch_records.append((
                         image_id,
                         clip_result.get('embedding_512'),
@@ -3218,6 +3219,26 @@ async def process_document_with_discovery(
 
                     clip_embeddings_generated += 1
                     logger.debug(f"✅ [{image_index}/{total_images}] Queued CLIP embedding for batch upsert (image {image_id})")
+
+                    # ✅ NEW: Save specialized CLIP embeddings (color, texture, style, material)
+                    specialized_embeddings = {}
+                    if clip_result.get('color_clip_512'):
+                        specialized_embeddings['color'] = clip_result.get('color_clip_512')
+                    if clip_result.get('texture_clip_512'):
+                        specialized_embeddings['texture'] = clip_result.get('texture_clip_512')
+                    if clip_result.get('style_clip_512'):
+                        specialized_embeddings['style'] = clip_result.get('style_clip_512')
+                    if clip_result.get('material_clip_512'):
+                        specialized_embeddings['material'] = clip_result.get('material_clip_512')
+
+                    if specialized_embeddings:
+                        vecs_service = get_vecs_service()
+                        await vecs_service.upsert_specialized_embeddings(
+                            image_id=image_id,
+                            embeddings=specialized_embeddings,
+                            metadata=vecs_metadata
+                        )
+                        logger.debug(f"✅ [{image_index}/{total_images}] Saved {len(specialized_embeddings)} specialized embeddings")
 
                     # ✅ OPTIMIZATION: Batch upsert every VECS_BATCH_SIZE embeddings
                     if len(vecs_batch_records) >= VECS_BATCH_SIZE:
@@ -4448,7 +4469,7 @@ async def get_rag_statistics(
 ):
     """
     Get RAG system statistics.
-    
+
     This endpoint provides statistics about the RAG system including
     document counts, embedding statistics, and performance metrics.
     """
@@ -4475,12 +4496,78 @@ async def get_rag_statistics(
                 "timestamp": datetime.utcnow().isoformat()
             }
         )
-        
+
     except Exception as e:
         logger.error(f"Statistics retrieval failed: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Statistics retrieval failed: {str(e)}"
+        )
+
+@router.get("/workspace-stats")
+async def get_workspace_statistics(
+    workspace_id: str,
+    supabase: SupabaseClient = Depends(get_supabase_client)
+):
+    """
+    Get comprehensive workspace statistics including VECS embedding counts.
+
+    Returns counts for:
+    - Products
+    - Chunks
+    - Images
+    - Text embeddings (from embeddings table)
+    - Image embeddings (from VECS)
+    - Total embeddings (text + image)
+    """
+    try:
+        from app.services.vecs_service import get_vecs_service
+
+        # Query Supabase tables for counts
+        products_response = supabase.client.table('products').select('id', count='exact').eq('workspace_id', workspace_id).execute()
+        chunks_response = supabase.client.table('document_chunks').select('id', count='exact').eq('workspace_id', workspace_id).execute()
+        images_response = supabase.client.table('document_images').select('id', count='exact').eq('workspace_id', workspace_id).execute()
+        text_embeddings_response = supabase.client.table('embeddings').select('id', count='exact').eq('workspace_id', workspace_id).execute()
+
+        # Get VECS image embeddings count
+        vecs_service = get_vecs_service()
+        image_embeddings_count = await vecs_service.count_embeddings(workspace_id=workspace_id)
+
+        # Calculate totals
+        products_count = products_response.count or 0
+        chunks_count = chunks_response.count or 0
+        images_count = images_response.count or 0
+        text_embeddings_count = text_embeddings_response.count or 0
+        total_embeddings = text_embeddings_count + image_embeddings_count
+
+        stats = {
+            "workspace_id": workspace_id,
+            "products": products_count,
+            "chunks": chunks_count,
+            "images": images_count,
+            "embeddings": {
+                "text": text_embeddings_count,
+                "images": image_embeddings_count,
+                "total": total_embeddings
+            }
+        }
+
+        logger.info(f"✅ Workspace stats: {stats}")
+
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "status": "success",
+                "statistics": stats,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Workspace statistics retrieval failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Workspace statistics retrieval failed: {str(e)}"
         )
 
 # Advanced Search Endpoints for Phase 7 Features

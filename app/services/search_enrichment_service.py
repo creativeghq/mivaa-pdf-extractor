@@ -29,48 +29,79 @@ class SearchEnrichmentService:
         image_results: List[Dict[str, Any]],
         include_products: bool = True,
         include_chunks: bool = True,
-        min_relevance: float = 0.0
+        min_relevance: float = 0.0,
+        rerank: bool = True,
+        visual_weight: float = 0.6,
+        relevance_weight: float = 0.4
     ) -> List[Dict[str, Any]]:
         """
         Enrich image search results with related products and chunks.
-        
+        Optionally re-rank results by combining visual similarity + relationship relevance.
+
         Args:
             image_results: List of image results from VECS search
             include_products: Whether to include related products
             include_chunks: Whether to include related chunks
             min_relevance: Minimum relevance score to include (0.0-1.0)
-            
+            rerank: Whether to re-rank results by combined score (default: True)
+            visual_weight: Weight for visual similarity score (default: 0.6)
+            relevance_weight: Weight for relationship relevance score (default: 0.4)
+
         Returns:
-            Enriched results with products and chunks
+            Enriched results with products and chunks, optionally re-ranked
         """
         try:
             enriched_results = []
-            
+
             for image_result in image_results:
                 image_id = image_result.get('image_id')
                 if not image_id:
                     continue
-                
+
                 enriched = {
                     **image_result,
                     'related_products': [],
                     'related_chunks': []
                 }
-                
+
                 # Get related products
                 if include_products:
                     products = await self.get_related_products(image_id, min_relevance)
                     enriched['related_products'] = products
-                
+
+                    # ✅ NEW: Calculate combined score for re-ranking
+                    if rerank and products:
+                        # Use highest product relevance score for re-ranking
+                        max_product_relevance = max(p.get('relevance_score', 0.0) for p in products)
+                        visual_similarity = image_result.get('similarity_score', 0.0)
+
+                        # Combined score: weighted average of visual similarity + product relevance
+                        combined_score = (
+                            visual_weight * visual_similarity +
+                            relevance_weight * max_product_relevance
+                        )
+
+                        enriched['combined_score'] = combined_score
+                        enriched['max_product_relevance'] = max_product_relevance
+                    else:
+                        # No products or rerank disabled - use visual similarity only
+                        enriched['combined_score'] = image_result.get('similarity_score', 0.0)
+                        enriched['max_product_relevance'] = 0.0
+
                 # Get related chunks
                 if include_chunks:
                     chunks = await self.get_related_chunks(image_id, min_relevance)
                     enriched['related_chunks'] = chunks
-                
+
                 enriched_results.append(enriched)
-            
+
+            # ✅ NEW: Re-rank by combined score if enabled
+            if rerank:
+                enriched_results.sort(key=lambda x: x.get('combined_score', 0.0), reverse=True)
+                self.logger.info(f"✅ Re-ranked {len(enriched_results)} results by combined score (visual {visual_weight} + relevance {relevance_weight})")
+
             return enriched_results
-            
+
         except Exception as e:
             self.logger.error(f"❌ Failed to enrich image results: {e}")
             return image_results  # Return original results on error

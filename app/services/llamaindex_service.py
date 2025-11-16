@@ -5651,9 +5651,9 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
             vecs_service = get_vecs_service()
 
             # Build metadata filters
-            filters = None
+            filters = {"workspace_id": {"$eq": workspace_id}}  # ✅ ADD: Always filter by workspace
             if document_id:
-                filters = {"document_id": {"$eq": document_id}}
+                filters["document_id"] = {"$eq": document_id}  # ✅ FIX: Add to existing filters dict
 
             # Search VECS collection
             vecs_results = await vecs_service.search_similar_images(
@@ -5669,13 +5669,16 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
                 if r.get('similarity_score', 0) >= similarity_threshold
             ][:top_k]
 
-            # ✅ NEW: Enrich results with relationship data
+            # ✅ NEW: Enrich results with relationship data + re-ranking
             enrichment_service = SearchEnrichmentService()
             enriched_results = await enrichment_service.enrich_image_results(
                 image_results=filtered_results,
                 include_products=True,
                 include_chunks=True,
-                min_relevance=0.5  # Only include relationships with relevance >= 0.5
+                min_relevance=0.5,  # Only include relationships with relevance >= 0.5
+                rerank=True,  # ✅ NEW: Enable re-ranking by combined score
+                visual_weight=0.6,  # ✅ NEW: 60% weight for visual similarity
+                relevance_weight=0.4  # ✅ NEW: 40% weight for product relevance
             )
 
             # Format results
@@ -5684,10 +5687,12 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
                 results.append({
                     "image_id": item.get("image_id"),
                     "similarity_score": item.get("similarity_score"),
+                    "combined_score": item.get("combined_score"),  # ✅ NEW: Include combined score
+                    "max_product_relevance": item.get("max_product_relevance"),  # ✅ NEW: Include max relevance
                     "metadata": item.get("metadata", {}),
                     "related_products": item.get("related_products", []),
                     "related_chunks": item.get("related_chunks", []),
-                    "search_type": "vecs_image_similarity"
+                    "search_type": "vecs_image_similarity_reranked"  # ✅ NEW: Updated search type
                 })
 
             self.logger.info(f"✅ VECS image search: {len(results)} results in {time.time() - start_time:.2f}s")

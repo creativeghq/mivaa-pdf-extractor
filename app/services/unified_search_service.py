@@ -358,29 +358,30 @@ class UnifiedSearchService:
             if not self.supabase:
                 return []
             
-            # Query images table with vector similarity
-            response = self.supabase.client.rpc(
-                'search_images_by_embedding',
-                {
-                    'query_embedding': query_embedding,
-                    'workspace_id': workspace_id,
-                    'similarity_threshold': self.config.similarity_threshold,
-                    'limit': self.config.max_results * 2
-                }
-            ).execute()
-            
+            # ✅ FIX: Use VECS instead of non-existent RPC function
+            from app.services.vecs_service import get_vecs_service
+
+            vecs_service = get_vecs_service()
+            vecs_results = await vecs_service.search_similar_images(
+                query_embedding=query_embedding,
+                limit=self.config.max_results * 2,
+                filters={"workspace_id": {"$eq": workspace_id}} if workspace_id else None,
+                include_metadata=True
+            )
+
             results = []
-            if response.data:
-                for item in response.data:
+            for item in vecs_results:
+                # Filter by similarity threshold
+                if item.get('similarity_score', 0.0) >= self.config.similarity_threshold:
                     results.append(SearchResult(
-                        id=item.get('id'),
-                        content=item.get('url', ''),
-                        similarity_score=item.get('similarity', 0.0),
+                        id=item.get('image_id'),
+                        content=item.get('metadata', {}).get('image_url', ''),
+                        similarity_score=item.get('similarity_score', 0.0),
                         metadata=item.get('metadata', {}),
                         embedding_type="visual",
                         source_type="image"
                     ))
-            
+
             return results
             
         except Exception as e:

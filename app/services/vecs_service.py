@@ -184,6 +184,57 @@ class VecsService:
             logger.error(f"❌ Batch upsert failed: {e}")
             return 0
 
+    async def upsert_specialized_embeddings(
+        self,
+        image_id: str,
+        embeddings: Dict[str, List[float]],
+        metadata: Dict[str, Any]
+    ) -> Dict[str, bool]:
+        """
+        Upsert specialized CLIP embeddings to their respective collections.
+
+        Args:
+            image_id: Image UUID
+            embeddings: Dict with keys: color, texture, style, material (each 512D)
+            metadata: Metadata to store with each embedding
+
+        Returns:
+            Dict mapping collection name to success status
+        """
+        results = {}
+
+        collection_mapping = {
+            "color": "image_color_embeddings",
+            "texture": "image_texture_embeddings",
+            "style": "image_style_embeddings",
+            "material": "image_material_embeddings"
+        }
+
+        for embedding_type, collection_name in collection_mapping.items():
+            if embedding_type in embeddings and embeddings[embedding_type]:
+                try:
+                    collection = self.get_or_create_collection(
+                        name=collection_name,
+                        dimension=512
+                    )
+
+                    # Upsert single record
+                    collection.upsert(records=[(image_id, embeddings[embedding_type], metadata)])
+
+                    results[collection_name] = True
+                    logger.debug(f"✅ Upserted {embedding_type} embedding to '{collection_name}'")
+
+                except Exception as e:
+                    logger.error(f"❌ Failed to upsert {embedding_type} embedding: {e}")
+                    results[collection_name] = False
+            else:
+                results[collection_name] = False
+
+        success_count = sum(1 for v in results.values() if v)
+        logger.info(f"✅ Upserted {success_count}/4 specialized embeddings for image {image_id}")
+
+        return results
+
     async def search_similar_images(
         self,
         query_embedding: List[float],
@@ -235,6 +286,138 @@ class VecsService:
 
         except Exception as e:
             logger.error(f"❌ Image similarity search failed: {e}")
+            return []
+
+    async def count_embeddings(
+        self,
+        workspace_id: Optional[str] = None,
+        document_id: Optional[str] = None
+    ) -> int:
+        """
+        Count embeddings in the VECS collection with optional filtering.
+
+        Args:
+            workspace_id: Optional workspace ID to filter by
+            document_id: Optional document ID to filter by
+
+        Returns:
+            Number of embeddings matching the filters
+        """
+        try:
+            collection = self.get_or_create_collection(
+                name="image_clip_embeddings",
+                dimension=512
+            )
+
+            # Build filters
+            filters = None
+            if workspace_id:
+                filters = {"workspace_id": {"$eq": workspace_id}}
+                if document_id:
+                    filters["document_id"] = {"$eq": document_id}
+            elif document_id:
+                filters = {"document_id": {"$eq": document_id}}
+
+            # Query with large limit to count all
+            # Note: vecs doesn't have a direct count method, so we query and count results
+            results = collection.query(
+                data=[0.0] * 512,  # Dummy query vector
+                limit=100000,  # Large limit to get all embeddings
+                filters=filters,
+                include_value=False,
+                include_metadata=False
+            )
+
+            count = len(results)
+            logger.info(f"✅ Counted {count} embeddings (workspace_id={workspace_id}, document_id={document_id})")
+            return count
+
+        except Exception as e:
+            logger.error(f"❌ Failed to count embeddings: {e}")
+            return 0
+
+    async def search_specialized_embeddings(
+        self,
+        query_embedding: List[float],
+        embedding_type: str,  # 'color', 'texture', 'style', 'material'
+        limit: int = 10,
+        workspace_id: Optional[str] = None,
+        document_id: Optional[str] = None,
+        include_metadata: bool = True
+    ) -> List[Dict[str, Any]]:
+        """
+        Search for similar images using specialized embeddings.
+
+        Args:
+            query_embedding: Query embedding vector (512D)
+            embedding_type: Type of embedding ('color', 'texture', 'style', 'material')
+            limit: Maximum number of results
+            workspace_id: Optional workspace ID filter
+            document_id: Optional document ID filter
+            include_metadata: Whether to include metadata in results
+
+        Returns:
+            List of similar images with similarity scores
+        """
+        try:
+            collection_mapping = {
+                "color": "image_color_embeddings",
+                "texture": "image_texture_embeddings",
+                "style": "image_style_embeddings",
+                "material": "image_material_embeddings"
+            }
+
+            if embedding_type not in collection_mapping:
+                logger.error(f"Invalid embedding type: {embedding_type}")
+                return []
+
+            collection_name = collection_mapping[embedding_type]
+            collection = self.get_or_create_collection(
+                name=collection_name,
+                dimension=512
+            )
+
+            # Build filters
+            filters = None
+            if workspace_id:
+                filters = {"workspace_id": {"$eq": workspace_id}}
+                if document_id:
+                    filters["document_id"] = {"$eq": document_id}
+            elif document_id:
+                filters = {"document_id": {"$eq": document_id}}
+
+            # Search
+            results = collection.query(
+                data=query_embedding,
+                limit=limit,
+                filters=filters,
+                include_value=False,
+                include_metadata=include_metadata
+            )
+
+            # Format results
+            formatted_results = []
+            for image_id, distance, metadata in results:
+                # Convert distance to similarity score (0-1)
+                similarity_score = 1.0 / (1.0 + distance)
+
+                result = {
+                    "image_id": image_id,
+                    "similarity_score": similarity_score,
+                    "distance": distance,
+                    "search_type": f"{embedding_type}_similarity"
+                }
+
+                if include_metadata and metadata:
+                    result["metadata"] = metadata
+
+                formatted_results.append(result)
+
+            logger.info(f"✅ Found {len(formatted_results)} similar images using {embedding_type} embeddings")
+            return formatted_results
+
+        except Exception as e:
+            logger.error(f"❌ Specialized search ({embedding_type}) failed: {e}")
             return []
 
     async def delete_image_embedding(self, image_id: str) -> bool:
