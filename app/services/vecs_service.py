@@ -32,36 +32,24 @@ class VecsService:
     def _get_connection_string(self) -> str:
         """Build Supabase connection string for vecs.
 
-        CRITICAL: Supabase connection pooler does NOT work with VECS library.
-        The pooler is designed for serverless/edge functions with short-lived connections.
-        VECS requires persistent connections with pgvector extension access.
+        CRITICAL FINDINGS:
+        1. db.{project_id}.supabase.co = IPv6 ONLY (unreachable from server)
+        2. aws-0-eu-west-3.pooler.supabase.com = IPv4 ONLY (reachable)
+        3. Pooler on port 6543 = Rejects service role key ("Tenant not found")
+        4. Pooler on port 5432 = Works with service role key!
 
-        Solution: Always use direct connection (port 5432) with IPv4 resolution.
+        Solution: Use pooler hostname on port 5432 for IPv4 + service role key auth.
         """
         service_role_key = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
         if not service_role_key:
             raise ValueError("SUPABASE_SERVICE_ROLE_KEY not found in environment")
 
-        project_id = os.getenv('SUPABASE_PROJECT_ID', 'bgbavxtjlbvgplozizxu')
-
-        # Use direct connection with IPv4 resolution to avoid IPv6 issues
-        import socket
-        hostname = f"db.{project_id}.supabase.co"
-        try:
-            # Force IPv4 resolution by filtering for AF_INET
-            ipv4_addresses = [addr[4][0] for addr in socket.getaddrinfo(hostname, 5432, socket.AF_INET, socket.SOCK_STREAM)]
-            if ipv4_addresses:
-                db_host = ipv4_addresses[0]
-                logger.info(f"Resolved {hostname} to IPv4: {db_host}")
-            else:
-                db_host = hostname
-                logger.warning(f"No IPv4 address found for {hostname}, using hostname")
-        except Exception as e:
-            logger.warning(f"Failed to resolve {hostname} to IPv4: {e}, using hostname")
-            db_host = hostname
+        # Use pooler hostname for IPv4 connectivity, but on port 5432 (direct connection)
+        # This gives us both IPv4 reachability AND service role key authentication
+        db_host = "aws-0-eu-west-3.pooler.supabase.com"
 
         connection_string = f"postgresql://postgres:{service_role_key}@{db_host}:5432/postgres"
-        logger.info(f"Using service role key for VECS connection (direct mode - IPv4: {db_host})")
+        logger.info(f"Using service role key for VECS connection (pooler hostname, direct port 5432)")
 
         return connection_string
     
