@@ -47,9 +47,11 @@ class VecsService:
                 raise ValueError("Neither SUPABASE_DB_PASSWORD nor SUPABASE_SERVICE_ROLE_KEY found in environment")
 
             project_id = os.getenv('SUPABASE_PROJECT_ID', 'bgbavxtjlbvgplozizxu')
-            # Use direct connection (port 5432) with service role key
-            connection_string = f"postgresql://postgres:{service_role_key}@db.{project_id}.supabase.co:5432/postgres"
-            logger.info("Using service role key for VECS connection (direct mode)")
+            # CRITICAL FIX: Use connection pooler (port 6543) instead of direct connection (port 5432)
+            # Direct connection uses IPv6 which is not available on this server
+            # Connection pooler uses IPv4 and is more reliable
+            connection_string = f"postgresql://postgres.{project_id}:{service_role_key}@aws-0-eu-west-3.pooler.supabase.com:6543/postgres"
+            logger.info("Using service role key for VECS connection (pooler mode - IPv4)")
 
         return connection_string
     

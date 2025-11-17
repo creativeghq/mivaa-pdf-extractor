@@ -3008,12 +3008,14 @@ async def process_document_with_discovery(
 
                 except Exception as e:
                     logger.error(f"❌ Image classification failed for {image_path}: {e}")
-                    # Default to including the image if classification fails (fail-safe)
+                    # CRITICAL FIX: Default to EXCLUDING the image if classification fails
+                    # Previous behavior (is_material: True) was keeping 100% of images when Llama failed
+                    # This caused 1311 images to be extracted instead of ~94 material images
                     return {
-                        'is_material': True,
+                        'is_material': False,
                         'classification': 'unknown',
-                        'confidence': 0.5,
-                        'reason': f'Classification failed: {str(e)}'
+                        'confidence': 0.0,
+                        'reason': f'Classification failed: {str(e)} - defaulting to non-material for safety'
                     }
 
             # Classify all images in parallel (with concurrency limit)
