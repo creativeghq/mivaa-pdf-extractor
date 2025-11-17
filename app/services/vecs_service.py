@@ -32,10 +32,10 @@ class VecsService:
     def _get_connection_string(self) -> str:
         """Build Supabase connection string for vecs.
 
-        CRITICAL: VECS requires actual database password, NOT service role key.
-        Service role key is a JWT token for API authentication, not PostgreSQL auth.
+        Supabase Pooler Connection (IPv4):
+        Format: postgresql://postgres.{project_id}:{password}@aws-0-{region}.pooler.supabase.com:5432/postgres
 
-        The database password MUST be set in environment variables.
+        CRITICAL: Use port 5432 (not 6543) for pooler with database password.
         """
         db_password = os.getenv('SUPABASE_DB_PASSWORD')
         if not db_password:
@@ -45,11 +45,13 @@ class VecsService:
                 "Please set SUPABASE_DB_PASSWORD in systemd environment variables."
             )
 
-        # Use pooler hostname for IPv4 connectivity with database password
+        # Supabase pooler connection for IPv4 (port 5432, not 6543)
+        project_id = os.getenv('SUPABASE_PROJECT_ID', 'bgbavxtjlbvgplozizxu')
         db_host = "aws-0-eu-west-3.pooler.supabase.com"
+        db_user = f"postgres.{project_id}"
 
-        connection_string = f"postgresql://postgres:{db_password}@{db_host}:6543/postgres"
-        logger.info(f"Using database password for VECS connection (pooler mode - IPv4)")
+        connection_string = f"postgresql://{db_user}:{db_password}@{db_host}:5432/postgres"
+        logger.info(f"Using database password for VECS connection (pooler IPv4 mode, port 5432)")
 
         return connection_string
     
