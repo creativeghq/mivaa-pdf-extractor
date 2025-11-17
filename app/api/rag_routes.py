@@ -2693,8 +2693,21 @@ async def process_document_with_discovery(
         product_pages = set()
         if focused_extraction:
             logger.info(f"   ENABLED - Processing ONLY pages with {len(catalog.products)} products")
+            invalid_pages_found = []
             for product in catalog.products:
-                product_pages.update(product.page_range)
+                # ✅ CRITICAL FIX: Validate page numbers against PDF page count before adding
+                # Claude can hallucinate pages that don't exist (e.g., page 73 in a 71-page PDF)
+                valid_pages = [p for p in product.page_range if 1 <= p <= pdf_result.page_count]
+                invalid_pages = [p for p in product.page_range if p < 1 or p > pdf_result.page_count]
+
+                if invalid_pages:
+                    invalid_pages_found.extend(invalid_pages)
+                    logger.warning(f"   ⚠️ Product '{product.name}' has invalid pages {invalid_pages} (PDF has {pdf_result.page_count} pages) - skipping these pages")
+
+                product_pages.update(valid_pages)
+
+            if invalid_pages_found:
+                logger.warning(f"   ⚠️ Total invalid pages skipped: {sorted(set(invalid_pages_found))}")
 
             pages_to_skip = set(range(1, pdf_result.page_count + 1)) - product_pages
             for page_num in pages_to_skip:
