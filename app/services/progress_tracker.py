@@ -158,7 +158,7 @@ class ProgressTracker:
                     'completed_items': self.pages_completed,
                     'metadata': {
                         'current_page': self.current_page,
-                        'images_extracted': self.total_images_extracted,
+                        'images_extracted': self.images_stored,  # ✅ FIX: Use images_stored (material images saved to DB) not total_images_extracted (all images found in PDF)
                         'chunks_created': self.chunks_created,
                         'products_created': self.products_created
                     },
