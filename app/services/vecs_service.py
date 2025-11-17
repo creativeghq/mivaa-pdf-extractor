@@ -30,47 +30,38 @@ class VecsService:
         self._collections: Dict[str, Collection] = {}
         
     def _get_connection_string(self) -> str:
-        """Build Supabase connection string for vecs."""
-        # Try to get database password first (preferred)
-        db_password = os.getenv('SUPABASE_DB_PASSWORD')
+        """Build Supabase connection string for vecs.
 
-        if db_password:
-            # Use database password with connection pooler
-            # CRITICAL: Connection pooler username is just "postgres", NOT "postgres.{project_id}"
-            # The project_id is embedded in the pooler hostname, not the username
-            connection_string = f"postgresql://postgres:{db_password}@aws-0-eu-west-3.pooler.supabase.com:6543/postgres"
-            logger.info("Using database password for VECS connection (pooler mode)")
-        else:
-            # Fallback: Use direct connection with service role key
-            # This requires the database to accept JWT authentication
-            service_role_key = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
-            if not service_role_key:
-                raise ValueError("Neither SUPABASE_DB_PASSWORD nor SUPABASE_SERVICE_ROLE_KEY found in environment")
+        CRITICAL: Supabase connection pooler does NOT work with VECS library.
+        The pooler is designed for serverless/edge functions with short-lived connections.
+        VECS requires persistent connections with pgvector extension access.
 
-            project_id = os.getenv('SUPABASE_PROJECT_ID', 'bgbavxtjlbvgplozizxu')
+        Solution: Always use direct connection (port 5432) with IPv4 resolution.
+        """
+        service_role_key = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
+        if not service_role_key:
+            raise ValueError("SUPABASE_SERVICE_ROLE_KEY not found in environment")
 
-            # CRITICAL FIX: Connection pooler (port 6543) does NOT accept service role key as password
-            # It only accepts actual database password. Service role key only works with direct connection (port 5432)
-            # Solution: Use direct connection but resolve to IPv4 by using IP address instead of hostname
-            # Get IPv4 address for db.bgbavxtjlbvgplozizxu.supabase.co
-            import socket
-            hostname = f"db.{project_id}.supabase.co"
-            try:
-                # Force IPv4 resolution by filtering for AF_INET
-                ipv4_addresses = [addr[4][0] for addr in socket.getaddrinfo(hostname, 5432, socket.AF_INET, socket.SOCK_STREAM)]
-                if ipv4_addresses:
-                    db_host = ipv4_addresses[0]
-                    logger.info(f"Resolved {hostname} to IPv4: {db_host}")
-                else:
-                    # Fallback to hostname if no IPv4 found
-                    db_host = hostname
-                    logger.warning(f"No IPv4 address found for {hostname}, using hostname")
-            except Exception as e:
-                logger.warning(f"Failed to resolve {hostname} to IPv4: {e}, using hostname")
+        project_id = os.getenv('SUPABASE_PROJECT_ID', 'bgbavxtjlbvgplozizxu')
+
+        # Use direct connection with IPv4 resolution to avoid IPv6 issues
+        import socket
+        hostname = f"db.{project_id}.supabase.co"
+        try:
+            # Force IPv4 resolution by filtering for AF_INET
+            ipv4_addresses = [addr[4][0] for addr in socket.getaddrinfo(hostname, 5432, socket.AF_INET, socket.SOCK_STREAM)]
+            if ipv4_addresses:
+                db_host = ipv4_addresses[0]
+                logger.info(f"Resolved {hostname} to IPv4: {db_host}")
+            else:
                 db_host = hostname
+                logger.warning(f"No IPv4 address found for {hostname}, using hostname")
+        except Exception as e:
+            logger.warning(f"Failed to resolve {hostname} to IPv4: {e}, using hostname")
+            db_host = hostname
 
-            connection_string = f"postgresql://postgres:{service_role_key}@{db_host}:5432/postgres"
-            logger.info(f"Using service role key for VECS connection (direct mode - IPv4: {db_host})")
+        connection_string = f"postgresql://postgres:{service_role_key}@{db_host}:5432/postgres"
+        logger.info(f"Using service role key for VECS connection (direct mode - IPv4: {db_host})")
 
         return connection_string
     
