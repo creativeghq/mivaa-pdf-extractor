@@ -1334,6 +1334,16 @@ async def list_jobs(
         )
 
 
+@router.delete("/documents/jobs/{job_id}")
+async def delete_job_by_id(job_id: str):
+    """
+    Delete a job by ID (alias for /documents/job/{job_id}).
+
+    This endpoint matches the test script's expected path.
+    """
+    return await delete_job(job_id)
+
+
 @router.get("/chunks")
 async def get_chunks(
     document_id: Optional[str] = Query(None, description="Filter by document ID"),
