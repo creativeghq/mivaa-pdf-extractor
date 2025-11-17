@@ -2673,7 +2673,21 @@ async def process_document_with_discovery(
             )
             logger.info(f"📊 Product discovery: {pdf_result.page_count} pages, {len(extract_categories)} categories → timeout: {discovery_timeout:.0f}s")
 
-            discovery_service = ProductDiscoveryService(model=discovery_model)
+            # ✅ NORMALIZE: Map discovery_model to expected values
+            # ProductDiscoveryService expects: "claude", "gpt", or "haiku"
+            normalized_model = discovery_model.lower()
+            if "claude" in normalized_model or "sonnet" in normalized_model:
+                normalized_model = "claude"
+            elif "gpt" in normalized_model:
+                normalized_model = "gpt"
+            elif "haiku" in normalized_model:
+                normalized_model = "haiku"
+            else:
+                normalized_model = "claude"  # Default to Claude
+
+            logger.info(f"🤖 Discovery model normalized: '{discovery_model}' → '{normalized_model}'")
+
+            discovery_service = ProductDiscoveryService(model=normalized_model)
             catalog = await with_timeout(
                 discovery_service.discover_products(
                     pdf_content=file_content,
