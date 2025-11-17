@@ -32,24 +32,24 @@ class VecsService:
     def _get_connection_string(self) -> str:
         """Build Supabase connection string for vecs.
 
-        CRITICAL FINDINGS:
-        1. db.{project_id}.supabase.co = IPv6 ONLY (unreachable from server)
-        2. aws-0-eu-west-3.pooler.supabase.com = IPv4 ONLY (reachable)
-        3. Pooler on port 6543 = Rejects service role key ("Tenant not found")
-        4. Pooler on port 5432 = Works with service role key!
+        CRITICAL: VECS requires actual database password, NOT service role key.
+        Service role key is a JWT token for API authentication, not PostgreSQL auth.
 
-        Solution: Use pooler hostname on port 5432 for IPv4 + service role key auth.
+        The database password MUST be set in environment variables.
         """
-        service_role_key = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
-        if not service_role_key:
-            raise ValueError("SUPABASE_SERVICE_ROLE_KEY not found in environment")
+        db_password = os.getenv('SUPABASE_DB_PASSWORD')
+        if not db_password:
+            raise ValueError(
+                "SUPABASE_DB_PASSWORD not found in environment. "
+                "VECS requires the actual database password, not the service role key. "
+                "Please set SUPABASE_DB_PASSWORD in systemd environment variables."
+            )
 
-        # Use pooler hostname for IPv4 connectivity, but on port 5432 (direct connection)
-        # This gives us both IPv4 reachability AND service role key authentication
+        # Use pooler hostname for IPv4 connectivity with database password
         db_host = "aws-0-eu-west-3.pooler.supabase.com"
 
-        connection_string = f"postgresql://postgres:{service_role_key}@{db_host}:5432/postgres"
-        logger.info(f"Using service role key for VECS connection (pooler hostname, direct port 5432)")
+        connection_string = f"postgresql://postgres:{db_password}@{db_host}:6543/postgres"
+        logger.info(f"Using database password for VECS connection (pooler mode - IPv4)")
 
         return connection_string
     
