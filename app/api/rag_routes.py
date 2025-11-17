@@ -1304,7 +1304,7 @@ async def delete_job(job_id: str):
 
         # Delete from database
         supabase_client = get_supabase_client()
-        result = supabase_client.client.table('async_jobs').delete().eq('job_id', job_id).execute()
+        result = supabase_client.client.table('background_jobs').delete().eq('id', job_id).execute()
 
         if not result.data:
             logger.warning(f"   ⚠️ Job {job_id} not found in database")
@@ -3053,7 +3053,7 @@ async def process_document_with_discovery(
 
             # Update tracker with filtered image count
             await tracker.update_database_stats(
-                images_extracted=len(material_images),
+                images_stored=len(material_images),
                 sync_to_db=True
             )
 
