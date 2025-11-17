@@ -3119,15 +3119,14 @@ async def process_document_with_discovery(
             # Update pdf_result_with_images.extracted_images with uploaded material images
             pdf_result_with_images.extracted_images = material_images
 
-            # 🧹 CLEANUP: Delete ALL /tmp/ image files (material + non-material) after upload
-            logger.info(f"🧹 Cleaning up temporary image files from /tmp/...")
+            # 🧹 CLEANUP: Delete NON-MATERIAL /tmp/ image files after upload
+            # CRITICAL: Keep material images in /tmp/ for CLIP embedding generation!
+            logger.info(f"🧹 Cleaning up non-material temporary image files from /tmp/...")
             cleanup_count = 0
             cleanup_errors = 0
 
-            # Combine all images for cleanup (material + non-material)
-            all_images_for_cleanup = classified_images
-
-            for img_data in all_images_for_cleanup:
+            # Only cleanup non-material images (material images needed for CLIP embeddings)
+            for img_data in non_material_images:
                 if img_data is None or isinstance(img_data, Exception):
                     continue
 
@@ -3140,7 +3139,8 @@ async def process_document_with_discovery(
                         cleanup_errors += 1
                         logger.warning(f"   ⚠️  Failed to delete {image_path}: {cleanup_error}")
 
-            logger.info(f"✅ Cleanup complete: {cleanup_count} files deleted, {cleanup_errors} errors")
+            logger.info(f"✅ Non-material cleanup complete: {cleanup_count} files deleted, {cleanup_errors} errors")
+            logger.info(f"   ⚠️  Material images ({len(material_images)}) kept in /tmp/ for CLIP embedding generation")
         except Exception as extraction_error:
             logger.error(f"❌ CRITICAL: Image extraction failed: {extraction_error}")
             logger.error(f"   Error type: {type(extraction_error).__name__}")
@@ -3653,6 +3653,26 @@ async def process_document_with_discovery(
         await tracker._sync_to_database(stage="image_processing")
 
         logger.info(f"✅ [STAGE 3] Image Processing Complete: {images_processed} images processed, {clip_embeddings_generated} CLIP embeddings generated, {specialized_embeddings_generated} specialized embeddings generated (batch upserted to VECS)")
+
+        # 🧹 CLEANUP: Delete material /tmp/ image files AFTER CLIP embeddings are generated
+        logger.info(f"🧹 Cleaning up material temporary image files from /tmp/ after CLIP processing...")
+        material_cleanup_count = 0
+        material_cleanup_errors = 0
+
+        for img_data in pdf_result_with_images.extracted_images:
+            if img_data is None or isinstance(img_data, Exception):
+                continue
+
+            image_path = img_data.get('path')
+            if image_path and os.path.exists(image_path):
+                try:
+                    os.remove(image_path)
+                    material_cleanup_count += 1
+                except Exception as cleanup_error:
+                    material_cleanup_errors += 1
+                    logger.warning(f"   ⚠️  Failed to delete {image_path}: {cleanup_error}")
+
+        logger.info(f"✅ Material cleanup complete: {material_cleanup_count} files deleted, {material_cleanup_errors} errors")
 
         # Create IMAGES_EXTRACTED checkpoint
         await checkpoint_recovery_service.create_checkpoint(
