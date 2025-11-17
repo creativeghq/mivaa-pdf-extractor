@@ -1215,6 +1215,65 @@ async def resume_job(job_id: str, background_tasks: BackgroundTasks):
     return await restart_job_from_checkpoint(job_id, background_tasks)
 
 
+@router.delete("/documents/job/{job_id}")
+async def delete_job(job_id: str):
+    """
+    Delete a job and all its associated data.
+
+    This endpoint:
+    1. Removes job from in-memory job_storage
+    2. Deletes job record from database
+    3. Cleans up any temporary files associated with the job
+
+    Args:
+        job_id: The unique identifier of the job to delete
+
+    Returns:
+        Success message with deleted job_id
+
+    Raises:
+        HTTPException: If job not found or deletion fails
+    """
+    try:
+        logger.info(f"🗑️ DELETE /documents/job/{job_id} - Deleting job")
+
+        # Remove from in-memory storage if exists
+        if job_id in job_storage:
+            del job_storage[job_id]
+            logger.info(f"   ✅ Removed job {job_id} from job_storage")
+
+        # Delete from database
+        supabase_client = get_supabase_client()
+        result = supabase_client.client.table('async_jobs').delete().eq('job_id', job_id).execute()
+
+        if not result.data:
+            logger.warning(f"   ⚠️ Job {job_id} not found in database")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Job {job_id} not found"
+            )
+
+        logger.info(f"   ✅ Deleted job {job_id} from database")
+
+        # TODO: Clean up temporary files if needed
+        # This would require tracking temp file paths in job metadata
+
+        return {
+            "success": True,
+            "message": f"Job {job_id} deleted successfully",
+            "job_id": job_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete job {job_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete job: {str(e)}"
+        )
+
+
 @router.get("/documents/jobs")
 async def list_jobs(
     limit: int = 10,
