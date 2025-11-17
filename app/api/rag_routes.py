@@ -2987,15 +2987,39 @@ async def process_document_with_discovery(
                 "reason": "brief explanation"
             }"""
 
-                    response = await anthropic_service.analyze_image(
-                        image_base64=image_base64,
-                        prompt=classification_prompt,
-                        model="claude-sonnet-4-20250514"  # Latest Claude model
+                    # CRITICAL FIX: Use Anthropic SDK directly instead of non-existent anthropic_service
+                    from anthropic import AsyncAnthropic
+                    import json
+
+                    anthropic_client = AsyncAnthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
+
+                    response = await anthropic_client.messages.create(
+                        model="claude-sonnet-4-20250514",
+                        max_tokens=1024,
+                        messages=[{
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "image/jpeg",
+                                        "data": image_base64
+                                    }
+                                },
+                                {
+                                    "type": "text",
+                                    "text": classification_prompt
+                                }
+                            ]
+                        }]
                     )
 
-                    # Parse response
-                    import json
-                    result = json.loads(response.get('analysis', '{}'))
+                    # Extract text from response
+                    response_text = response.content[0].text
+
+                    # Parse JSON from response
+                    result = json.loads(response_text)
 
                     is_material = result.get('classification') in ['material_closeup', 'material_in_situ']
 
