@@ -36,9 +36,10 @@ class VecsService:
 
         if db_password:
             # Use database password with connection pooler
-            project_id = os.getenv('SUPABASE_PROJECT_ID', 'bgbavxtjlbvgplozizxu')
-            connection_string = f"postgresql://postgres.{project_id}:{db_password}@aws-0-eu-west-3.pooler.supabase.com:6543/postgres"
-            logger.info("Using database password for VECS connection")
+            # CRITICAL: Connection pooler username is just "postgres", NOT "postgres.{project_id}"
+            # The project_id is embedded in the pooler hostname, not the username
+            connection_string = f"postgresql://postgres:{db_password}@aws-0-eu-west-3.pooler.supabase.com:6543/postgres"
+            logger.info("Using database password for VECS connection (pooler mode)")
         else:
             # Fallback: Use direct connection with service role key
             # This requires the database to accept JWT authentication
