@@ -3091,7 +3091,7 @@ async def process_document_with_discovery(
                 logger.warning(f"⚠️  Cleanup after error failed: {cleanup_error}")
 
             # Update job status to failed
-            await tracker.fail(error_message=f"Image extraction failed: {str(extraction_error)}")
+            await tracker.fail_job(error=Exception(f"Image extraction failed: {str(extraction_error)}"))
             raise
 
         # Group images by page number
