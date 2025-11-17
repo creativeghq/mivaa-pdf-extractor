@@ -351,8 +351,10 @@ Respond ONLY with valid JSON, no additional text."""
                                 ],
                                 "max_tokens": 1024,
                                 "temperature": 0.1,
-                                "top_p": 0.9,
-                                "stop": ["```"]
+                                "top_p": 0.9
+                                # CRITICAL FIX: Removed "stop": ["```"] - this was cutting off responses
+                                # Llama often starts with ```json which immediately triggered the stop sequence
+                                # causing empty responses (1066 failures)
                             }
                         )
 
