@@ -11,15 +11,16 @@ import numpy as np
 from datetime import datetime
 import logging
 from openai import AsyncOpenAI
-import os
 
 from app.services.supabase_client import get_supabase_client
+from app.config import Settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/category-prototypes", tags=["Category Prototypes"])
 
-# Initialize OpenAI client
-openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Initialize settings and OpenAI client
+settings = Settings()
+openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
 
 # Category prototype descriptions
 CATEGORY_PROTOTYPES: Dict[str, List[str]] = {
