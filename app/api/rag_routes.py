@@ -1088,9 +1088,9 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
 
             # Check if file_path is a full URL (starts with http:// or https://)
             if file_path.startswith('http://') or file_path.startswith('https://'):
-                # Download from URL
+                # Download from URL with extended timeout for large PDFs
                 import httpx
-                async with httpx.AsyncClient() as client:
+                async with httpx.AsyncClient(timeout=60.0) as client:  # 60 second timeout for large files
                     response = await client.get(file_path)
                     response.raise_for_status()
                     file_response = response.content
