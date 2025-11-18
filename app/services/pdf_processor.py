@@ -607,8 +607,8 @@ class PDFProcessor:
                                         page_content = extract_pdf_to_markdown_with_doc(doc, page_num)
                                         markdown_content += page_content + "\n\n"
                                     except ValueError as page_error:
-                                        if "not a textpage" in str(page_error):
-                                            self.logger.warning(f"Page {page_num + 1} failed with 'not a textpage', will use OCR for this page")
+                                        if "not a textpage" in str(page_error) or "bad page number" in str(page_error):
+                                            self.logger.warning(f"Page {page_num + 1} failed with PyMuPDF error, will use OCR for this page")
                                             failed_pages.append(page_num)
                                         else:
                                             self.logger.error(f"Page {page_num + 1} failed with unexpected error: {page_error}")
