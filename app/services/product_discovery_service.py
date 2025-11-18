@@ -214,7 +214,8 @@ class ProductDiscoveryService:
         workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
         enable_prompt_enhancement: bool = True,
         job_id: Optional[str] = None,
-        pdf_path: Optional[str] = None
+        pdf_path: Optional[str] = None,
+        tracker: Optional[Any] = None
     ) -> ProductCatalog:
         """
         TWO-STAGE DISCOVERY ARCHITECTURE for handling large catalogs (1000+ pages).
@@ -300,7 +301,8 @@ class ProductDiscoveryService:
                 catalog = await self._enrich_products_with_focused_extraction(
                     catalog,
                     pdf_path,
-                    job_id
+                    job_id,
+                    tracker
                 )
             elif "products" in categories and catalog.products:
                 # Fallback: Use full PDF text if pdf_path not provided
@@ -1056,7 +1058,8 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
         self,
         catalog: ProductCatalog,
         pdf_path: str,
-        job_id: Optional[str] = None
+        job_id: Optional[str] = None,
+        tracker: Optional[Any] = None
     ) -> ProductCatalog:
         """
         STAGE 0B: Extract detailed metadata for each product using focused page extraction.
@@ -1080,6 +1083,9 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
 
             # Initialize metadata extractor
             metadata_extractor = DynamicMetadataExtractor(model=self.model, job_id=job_id)
+
+            # Store tracker for heartbeat updates
+            self.tracker = tracker
 
             enriched_products = []
 
@@ -1135,6 +1141,10 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
             # Now process each product with its pre-extracted text
             for i, product in enumerate(catalog.products):
                 try:
+                    # ✅ UPDATE HEARTBEAT: Keep job alive during long metadata extraction
+                    if self.tracker:
+                        await self.tracker.update_heartbeat()
+
                     self.logger.info(f"   🔍 [{i+1}/{len(catalog.products)}] Processing {product.name} metadata...")
 
                     # Get this product's pages from the mapping

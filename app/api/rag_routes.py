@@ -2698,7 +2698,8 @@ async def process_document_with_discovery(
                     workspace_id=workspace_id,
                     enable_prompt_enhancement=enable_prompt_enhancement,
                     job_id=job_id,
-                    pdf_path=temp_pdf_path  # ✅ NEW: Enable two-stage discovery
+                    pdf_path=temp_pdf_path,  # ✅ NEW: Enable two-stage discovery
+                    tracker=tracker  # ✅ HEARTBEAT: Pass tracker for heartbeat updates
                 ),
                 timeout_seconds=discovery_timeout,
                 operation_name="Product discovery (Stage 0A + 0B)"
