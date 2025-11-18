@@ -180,15 +180,22 @@ def extract_json_and_images(file_path, output_dir, page_number, batch_size=5, pa
 
     # If processing specific page, use original method
     if page_number_list is not None:
-        md_text_images = pymupdf4llm.to_markdown(
-            doc=file_path,
-            pages=page_number_list,
-            page_chunks=True,
-            write_images=True,
-            image_path=image_path,
-            image_format="jpg",
-            dpi=200
-        )
+        try:
+            md_text_images = pymupdf4llm.to_markdown(
+                doc=file_path,
+                pages=page_number_list,
+                page_chunks=True,
+                write_images=True,
+                image_path=image_path,
+                image_format="jpg",
+                dpi=200
+            )
+        except (ValueError, ReferenceError) as e:
+            if "not a textpage" in str(e) or "weakly-referenced object" in str(e):
+                # Skip this page - no images to extract
+                md_text_images = ""
+            else:
+                raise
 
         # ✅ FIX GLYPH NAMES
         md_text_images = _fix_glyph_names(str(md_text_images))
@@ -209,17 +216,24 @@ def extract_json_and_images(file_path, output_dir, page_number, batch_size=5, pa
             batch_pages = pages_to_process[batch_start:batch_end]
 
             # Extract markdown and images for this batch
-            batch_markdown = pymupdf4llm.to_markdown(
-                doc=file_path,
-                pages=batch_pages,
-                page_chunks=True,
-                write_images=True,
-                image_path=image_path,
-                image_format="jpg",
-                dpi=200
-            )
+            try:
+                batch_markdown = pymupdf4llm.to_markdown(
+                    doc=file_path,
+                    pages=batch_pages,
+                    page_chunks=True,
+                    write_images=True,
+                    image_path=image_path,
+                    image_format="jpg",
+                    dpi=200
+                )
+                all_markdown.append(batch_markdown)
+            except (ValueError, ReferenceError) as e:
+                if "not a textpage" in str(e) or "weakly-referenced object" in str(e):
+                    # Skip this batch - problematic pages
+                    pass
+                else:
+                    raise
 
-            all_markdown.append(batch_markdown)
             gc.collect()
 
         # Combine all batches
@@ -244,17 +258,23 @@ def extract_json_and_images(file_path, output_dir, page_number, batch_size=5, pa
             batch_pages = list(range(batch_start, batch_end))
 
             # Extract markdown and images for this batch
-            batch_markdown = pymupdf4llm.to_markdown(
-                doc=file_path,
-                pages=batch_pages,
-                page_chunks=True,
-                write_images=True,
-                image_path=image_path,
-                image_format="jpg",
-                dpi=200
-            )
-
-            all_markdown.append(batch_markdown)
+            try:
+                batch_markdown = pymupdf4llm.to_markdown(
+                    doc=file_path,
+                    pages=batch_pages,
+                    page_chunks=True,
+                    write_images=True,
+                    image_path=image_path,
+                    image_format="jpg",
+                    dpi=200
+                )
+                all_markdown.append(batch_markdown)
+            except (ValueError, ReferenceError) as e:
+                if "not a textpage" in str(e) or "weakly-referenced object" in str(e):
+                    # Skip this batch - problematic pages
+                    pass
+                else:
+                    raise
 
             # Force garbage collection after each batch to free memory
             gc.collect()
@@ -304,15 +324,22 @@ def extract_json_and_images_streaming(file_path, output_dir, batch_size=5):
             batch_pages = list(range(batch_start, batch_end))
 
             # Extract markdown and images for this batch
-            batch_markdown = pymupdf4llm.to_markdown(
-                doc=file_path,
-                pages=batch_pages,
-                page_chunks=True,
-                write_images=True,
-                image_path=image_path,
-                image_format="jpg",
-                dpi=200
-            )
+            try:
+                batch_markdown = pymupdf4llm.to_markdown(
+                    doc=file_path,
+                    pages=batch_pages,
+                    page_chunks=True,
+                    write_images=True,
+                    image_path=image_path,
+                    image_format="jpg",
+                    dpi=200
+                )
+            except (ValueError, ReferenceError) as e:
+                if "not a textpage" in str(e) or "weakly-referenced object" in str(e):
+                    # Skip this batch - problematic pages
+                    batch_markdown = ""
+                else:
+                    raise
 
             # Count images in this batch
             image_files = os.listdir(image_path) if os.path.exists(image_path) else []
