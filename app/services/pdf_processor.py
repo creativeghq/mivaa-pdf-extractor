@@ -1103,7 +1103,16 @@ class PDFProcessor:
                 from app.services.supabase_client import get_supabase_client
                 supabase_client = get_supabase_client()
 
+                # Get VECS service for CLIP embeddings
+                from app.services.vecs_service import VecsService
+                vecs_service = VecsService()
+
+                # Get embedding service for CLIP generation (reuse instance)
+                from app.services.real_embeddings_service import RealEmbeddingsService
+                embedding_service = RealEmbeddingsService()
+
                 images_saved_count = 0
+                clip_embeddings_count = 0
                 images_metadata = []  # Keep only minimal metadata, not full image data
 
                 for absolute_idx, image_file in enumerate(valid_image_files):
@@ -1141,6 +1150,76 @@ class PDFProcessor:
                             })
 
                             self.logger.info(f"   ✅ Saved image {absolute_idx + 1}/{len(valid_image_files)} to DB: {image_id}")
+
+                            # Extract metadata before clearing processed_image_info
+                            page_number = processed_image_info.get('page_number', 1)
+                            quality_score = processed_image_info.get('quality_score', 0.5)
+
+                            # ✅ GENERATE CLIP EMBEDDINGS IMMEDIATELY (5 types)
+                            # This eliminates the need for a separate CLIP generation stage
+                            try:
+                                self.logger.info(f"   🎨 Generating CLIP embeddings for image {absolute_idx + 1}/{len(valid_image_files)}")
+
+                                # Read image as base64 for embedding generation
+                                import base64
+                                with open(image_path, 'rb') as img_file:
+                                    image_bytes = img_file.read()
+                                    image_base64 = f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('utf-8')}"
+
+                                # Generate all embeddings (visual, color, texture, application, material)
+                                embedding_result = await embedding_service.generate_all_embeddings(
+                                    entity_id=image_id,
+                                    entity_type="image",
+                                    text_content="",
+                                    image_data=image_base64,
+                                    material_properties={}
+                                )
+
+                                if embedding_result and embedding_result.get('success'):
+                                    embeddings = embedding_result.get('embeddings', {})
+
+                                    # Save visual CLIP embedding to VECS
+                                    visual_embedding = embeddings.get('visual_512')
+                                    if visual_embedding:
+                                        await vecs_service.upsert_image_embedding(
+                                            image_id=image_id,
+                                            clip_embedding=visual_embedding,
+                                            metadata={
+                                                'document_id': document_id,
+                                                'page_number': page_number,
+                                                'quality_score': quality_score
+                                            }
+                                        )
+
+                                    # Save specialized embeddings (color, texture, application, material)
+                                    specialized_embeddings = {}
+                                    if embeddings.get('color_512'):
+                                        specialized_embeddings['color'] = embeddings.get('color_512')
+                                    if embeddings.get('texture_512'):
+                                        specialized_embeddings['texture'] = embeddings.get('texture_512')
+                                    if embeddings.get('application_512'):
+                                        specialized_embeddings['application'] = embeddings.get('application_512')
+                                    if embeddings.get('material_512'):
+                                        specialized_embeddings['material'] = embeddings.get('material_512')
+
+                                    if specialized_embeddings:
+                                        await vecs_service.upsert_specialized_embeddings(
+                                            image_id=image_id,
+                                            embeddings=specialized_embeddings,
+                                            metadata={
+                                                'document_id': document_id,
+                                                'page_number': page_number
+                                            }
+                                        )
+
+                                    clip_embeddings_count += 1
+                                    self.logger.info(f"   ✅ Generated {1 + len(specialized_embeddings)} CLIP embeddings for image {image_id}")
+                                else:
+                                    self.logger.warning(f"   ⚠️ CLIP embedding generation failed for image {image_id}")
+
+                            except Exception as clip_error:
+                                self.logger.error(f"   ❌ Failed to generate CLIP embeddings: {clip_error}")
+                                # Continue processing even if CLIP fails
                         else:
                             self.logger.warning(f"   ⚠️ Failed to save image {absolute_idx + 1} to DB")
 
@@ -1163,20 +1242,22 @@ class PDFProcessor:
                                     await progress_callback(
                                         progress=int(progress_pct),
                                         details={
-                                            "current_step": f"Processing images ({absolute_idx + 1}/{len(valid_image_files)})",
+                                            "current_step": f"Processing images + CLIP ({absolute_idx + 1}/{len(valid_image_files)})",
                                             "total_images": len(valid_image_files),
                                             "images_processed": absolute_idx + 1,
-                                            "images_saved": images_saved_count
+                                            "images_saved": images_saved_count,
+                                            "clip_embeddings_generated": clip_embeddings_count
                                         }
                                     )
                                 else:
                                     progress_callback(
                                         progress=int(progress_pct),
                                         details={
-                                            "current_step": f"Processing images ({absolute_idx + 1}/{len(valid_image_files)})",
+                                            "current_step": f"Processing images + CLIP ({absolute_idx + 1}/{len(valid_image_files)})",
                                             "total_images": len(valid_image_files),
                                             "images_processed": absolute_idx + 1,
-                                            "images_saved": images_saved_count
+                                            "images_saved": images_saved_count,
+                                            "clip_embeddings_generated": clip_embeddings_count
                                         }
                                     )
                             except Exception as e:
@@ -1191,6 +1272,7 @@ class PDFProcessor:
                 # Replace images list with minimal metadata
                 images = images_metadata
                 self.logger.info(f"   ✅ Completed processing {images_saved_count}/{len(valid_image_files)} images")
+                self.logger.info(f"   ✅ Generated CLIP embeddings for {clip_embeddings_count}/{images_saved_count} images")
             else:
                 self.logger.warning(f"⚠️ Image directory does not exist: {image_dir}")
                 self.logger.warning(f"   Output directory contents: {os.listdir(output_dir) if os.path.exists(output_dir) else 'N/A'}")
