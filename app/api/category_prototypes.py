@@ -12,7 +12,7 @@ from datetime import datetime
 import logging
 
 from app.services.real_embeddings_service import RealEmbeddingsService
-from app.core.database import get_supabase_client
+from app.services.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/category-prototypes", tags=["Category Prototypes"])
@@ -110,13 +110,13 @@ async def update_category_prototype(category_key: str, descriptions: List[str]) 
         embedding = await generate_clip_text_embedding(descriptions)
         
         # Update database
-        supabase = get_supabase_client()
-        result = supabase.table('material_categories').update({
+        supabase_client = get_supabase_client()
+        result = supabase_client.client.table('material_categories').update({
             'prototype_descriptions': descriptions,
             'text_embedding_512': embedding,
             'prototype_updated_at': datetime.utcnow().isoformat()
         }).eq('category_key', category_key).execute()
-        
+
         if result.data:
             logger.info(f"✅ Updated {category_key} with {len(descriptions)} descriptions")
             return {
@@ -183,11 +183,11 @@ async def verify_prototypes():
     Verify that prototypes were populated correctly
     """
     try:
-        supabase = get_supabase_client()
-        result = supabase.table('material_categories').select(
+        supabase_client = get_supabase_client()
+        result = supabase_client.client.table('material_categories').select(
             'category_key, prototype_descriptions, prototype_updated_at'
         ).not_.is_('text_embedding_512', 'null').execute()
-        
+
         if result.data:
             return {
                 "success": True,
