@@ -1800,13 +1800,13 @@ class PDFProcessor:
             
             image = Image.open(image_path).convert('RGB')
             
-            # Initialize CLIP model for OCR filtering (cached after first use)
-            from llama_index.embeddings.clip import ClipEmbedding
-            if not hasattr(self, '_clip_model_for_ocr'):
-                self._clip_model_for_ocr = ClipEmbedding(model_name="ViT-B/32")
-                self.logger.info("✅ Initialized CLIP model for OCR filtering: ViT-B/32")
-            
-            clip_model = self._clip_model_for_ocr
+            # Initialize SigLIP model for OCR filtering (cached after first use)
+            from sentence_transformers import SentenceTransformer
+            if not hasattr(self, '_siglip_model_for_ocr'):
+                self._siglip_model_for_ocr = SentenceTransformer('google/siglip-so400m-patch14-384')
+                self.logger.info("✅ Initialized SigLIP model for OCR filtering: google/siglip-so400m-patch14-384")
+
+            siglip_model = self._siglip_model_for_ocr
             
             # Define text prompts for classification
             relevant_prompts = [
@@ -1837,25 +1837,30 @@ class PDFProcessor:
             ]
             
             # Get image embedding
-            # CLIP model accepts PIL Image object directly
+            # SigLIP model accepts PIL Image object directly
             loop = asyncio.get_event_loop()
-            image_embedding = await loop.run_in_executor(
+            import numpy as np
+            image_embedding_raw = await loop.run_in_executor(
                 None,
-                clip_model.get_image_embedding,
-                image  # Pass PIL Image object, not bytes
+                siglip_model.encode,
+                image  # Pass PIL Image object
             )
-            image_embedding = image_embedding.tolist() if hasattr(image_embedding, 'tolist') else list(image_embedding)
-            
+            # Normalize
+            image_embedding_raw = image_embedding_raw / np.linalg.norm(image_embedding_raw)
+            image_embedding = image_embedding_raw.tolist() if hasattr(image_embedding_raw, 'tolist') else list(image_embedding_raw)
+
             # Get text embeddings for all prompts
             all_prompts = relevant_prompts + irrelevant_prompts
             text_embeddings = []
             for prompt in all_prompts:
-                text_emb = await loop.run_in_executor(
+                text_emb_raw = await loop.run_in_executor(
                     None,
-                    clip_model.get_text_embedding,
+                    siglip_model.encode,
                     prompt
                 )
-                text_emb_list = text_emb.tolist() if hasattr(text_emb, 'tolist') else list(text_emb)
+                # Normalize
+                text_emb_raw = text_emb_raw / np.linalg.norm(text_emb_raw)
+                text_emb_list = text_emb_raw.tolist() if hasattr(text_emb_raw, 'tolist') else list(text_emb_raw)
                 text_embeddings.append(text_emb_list)
             
             # Calculate similarities

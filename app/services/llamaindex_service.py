@@ -5211,26 +5211,39 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
         query: str,
         workspace_id: str,
         top_k: int = 10,
-        text_weight: float = 0.4,
-        visual_weight: float = 0.3,
-        multimodal_weight: float = 0.3,
+        material_filters: Optional[Dict[str, Any]] = None,
+        text_weight: float = 0.20,
+        visual_weight: float = 0.20,
+        color_weight: float = 0.15,
+        texture_weight: float = 0.15,
+        style_weight: float = 0.15,
+        material_weight: float = 0.15,
         similarity_threshold: float = 0.7
     ) -> Dict[str, Any]:
         """
-        Multi-vector search combining 3 embedding types with weighted scoring.
+        🎯 ENHANCED Multi-vector search combining 6 specialized CLIP embeddings + metadata filtering.
 
         Combines:
-        - text_embedding_1536 (40% weight)
-        - visual_clip_embedding_512 (30% weight)
-        - multimodal_fusion_embedding_2048 (30% weight)
+        - text_embedding_1536 (20% weight) - Semantic understanding
+        - visual_clip_embedding_512 (20% weight) - Visual similarity
+        - color_clip_embedding_512 (15% weight) - Color palette matching
+        - texture_clip_embedding_512 (15% weight) - Texture pattern matching
+        - style_clip_embedding_512 (15% weight) - Design style matching
+        - material_clip_embedding_512 (15% weight) - Material type matching
+
+        + JSONB metadata filtering for properties (waterproof, outdoor, finish, etc.)
 
         Args:
             query: Search query text
             workspace_id: Workspace ID to filter results
             top_k: Number of results to return
-            text_weight: Weight for text embeddings (default 0.4)
-            visual_weight: Weight for visual embeddings (default 0.3)
-            multimodal_weight: Weight for multimodal embeddings (default 0.3)
+            material_filters: Optional JSONB metadata filters (e.g., {"finish": "matte", "properties": ["waterproof"]})
+            text_weight: Weight for text embeddings (default 0.20)
+            visual_weight: Weight for visual embeddings (default 0.20)
+            color_weight: Weight for color embeddings (default 0.15)
+            texture_weight: Weight for texture embeddings (default 0.15)
+            style_weight: Weight for style embeddings (default 0.15)
+            material_weight: Weight for material embeddings (default 0.15)
             similarity_threshold: Minimum similarity score (default 0.7)
 
         Returns:
@@ -5269,7 +5282,29 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
             # Convert embedding to PostgreSQL vector format
             embedding_str = f"[{','.join(map(str, query_embedding))}]"
 
-            # Multi-vector search query combining all 3 embedding types
+            # Build JSONB metadata filter conditions
+            metadata_conditions = []
+            if material_filters:
+                for key, value in material_filters.items():
+                    if isinstance(value, dict) and "contains" in value:
+                        # Array containment (e.g., properties contains ["waterproof", "outdoor"])
+                        contains_values = value["contains"]
+                        if isinstance(contains_values, list):
+                            for item in contains_values:
+                                metadata_conditions.append(f"p.metadata->'{key}' ? '{item}'")
+                    elif isinstance(value, list):
+                        # IN clause (e.g., color IN ["beige", "white"])
+                        values_str = "', '".join(str(v) for v in value)
+                        metadata_conditions.append(f"p.metadata->>'{key}' IN ('{values_str}')")
+                    else:
+                        # Exact match (e.g., finish = "matte")
+                        metadata_conditions.append(f"p.metadata->>'{key}' = '{value}'")
+
+            metadata_filter_sql = ""
+            if metadata_conditions:
+                metadata_filter_sql = "AND " + " AND ".join(metadata_conditions)
+
+            # 🎯 Enhanced multi-vector search query combining all 6 embedding types + metadata filters
             query_sql = f"""
             SELECT
                 p.id,
@@ -5281,17 +5316,27 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
                 (
                     ({text_weight} * (1 - (p.text_embedding_1536 <=> '{embedding_str}'::vector(1536)))) +
                     ({visual_weight} * (1 - (p.visual_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
-                    ({multimodal_weight} * (1 - (p.multimodal_fusion_embedding_2048 <=> '{embedding_str}'::vector(2048))))
+                    ({color_weight} * (1 - (p.color_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
+                    ({texture_weight} * (1 - (p.texture_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
+                    ({style_weight} * (1 - (p.style_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
+                    ({material_weight} * (1 - (p.material_clip_embedding_512 <=> '{embedding_str}'::vector(512))))
                 ) as weighted_score
             FROM products p
             WHERE p.workspace_id = '{workspace_id}'
                 AND p.text_embedding_1536 IS NOT NULL
                 AND p.visual_clip_embedding_512 IS NOT NULL
-                AND p.multimodal_fusion_embedding_2048 IS NOT NULL
+                AND p.color_clip_embedding_512 IS NOT NULL
+                AND p.texture_clip_embedding_512 IS NOT NULL
+                AND p.style_clip_embedding_512 IS NOT NULL
+                AND p.material_clip_embedding_512 IS NOT NULL
+                {metadata_filter_sql}
                 AND (
                     ({text_weight} * (1 - (p.text_embedding_1536 <=> '{embedding_str}'::vector(1536)))) +
                     ({visual_weight} * (1 - (p.visual_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
-                    ({multimodal_weight} * (1 - (p.multimodal_fusion_embedding_2048 <=> '{embedding_str}'::vector(2048))))
+                    ({color_weight} * (1 - (p.color_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
+                    ({texture_weight} * (1 - (p.texture_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
+                    ({style_weight} * (1 - (p.style_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
+                    ({material_weight} * (1 - (p.material_clip_embedding_512 <=> '{embedding_str}'::vector(512))))
                 ) >= {similarity_threshold}
             ORDER BY weighted_score DESC
             LIMIT {top_k}
@@ -5321,9 +5366,14 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
                 "weights": {
                     "text": text_weight,
                     "visual": visual_weight,
-                    "multimodal": multimodal_weight
+                    "color": color_weight,
+                    "texture": texture_weight,
+                    "style": style_weight,
+                    "material": material_weight
                 },
-                "query": query
+                "material_filters_applied": material_filters if material_filters else None,
+                "query": query,
+                "search_type": "multi_vector_enhanced"
             }
 
         except Exception as e:

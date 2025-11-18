@@ -98,7 +98,8 @@ class UnifiedSearchService:
         strategy: Optional[SearchStrategy] = None,
         filters: Optional[Dict[str, Any]] = None,
         workspace_id: Optional[str] = None,
-        run_all_strategies: bool = False
+        run_all_strategies: bool = False,
+        enable_query_understanding: bool = False
     ) -> SearchResponse:
         """
         Perform search using the configured strategy or all strategies.
@@ -109,11 +110,34 @@ class UnifiedSearchService:
             filters: Additional filters for search
             workspace_id: Workspace ID for scoped search
             run_all_strategies: If True, run all strategies in parallel and merge
+            enable_query_understanding: If True, parse query with AI to extract structured filters
 
         Returns:
             SearchResponse with results
         """
         try:
+            # 🧠 STEP 1: Query Understanding (if enabled)
+            # Parse natural language query into structured filters BEFORE multi-strategy search
+            if enable_query_understanding:
+                parsed_query, parsed_filters = await self._parse_query_with_ai(query)
+
+                # Merge parsed filters with user-provided filters (user filters take precedence)
+                if parsed_filters:
+                    if filters:
+                        # User-provided filters override AI-parsed filters
+                        merged_filters = {**parsed_filters, **filters}
+                    else:
+                        merged_filters = parsed_filters
+
+                    filters = merged_filters
+
+                    # Use visual query for embedding (not full query)
+                    query = parsed_query
+
+                    self.logger.info(f"🧠 Query understanding enabled: parsed_query='{parsed_query}', filters={parsed_filters}")
+
+            # 🔍 STEP 2: Multi-Strategy Search (existing logic)
+            # All 10 strategies now use the parsed query + extracted filters
             start_time = datetime.utcnow()
 
             # If run_all_strategies is True, execute all strategies in parallel
@@ -863,4 +887,88 @@ class UnifiedSearchService:
         except Exception as e:
             self.logger.error(f"Material type search failed: {e}")
             return []
+
+    async def _parse_query_with_ai(self, query: str) -> tuple[str, Dict[str, Any]]:
+        """
+        🧠 Parse natural language query using GPT-4o-mini to extract structured filters.
+
+        This is the PREPROCESSING step that runs BEFORE multi-strategy search.
+
+        Args:
+            query: Natural language query (e.g., "waterproof ceramic tiles for outdoor patio, matte finish, light beige")
+
+        Returns:
+            Tuple of (visual_query, filters):
+            - visual_query: Core visual concept for embedding (e.g., "ceramic tiles matte")
+            - filters: Extracted structured filters (e.g., {"material_type": "ceramic tiles", "properties": ["waterproof", "outdoor"], ...})
+
+        Cost: ~$0.0001 per query (GPT-4o-mini)
+        """
+        try:
+            from openai import AsyncOpenAI
+            import json
+            import os
+
+            client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+            # Call GPT-4o-mini to parse query
+            response = await client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{
+                    "role": "system",
+                    "content": """You are a material search query parser. Extract structured search parameters from natural language queries.
+
+Focus on extracting:
+- material_type: Type of material (ceramic, porcelain, fabric, wood, metal, etc.)
+- properties: Functional properties (waterproof, outdoor, slip-resistant, fire-resistant, etc.)
+- finish: Surface finish (matte, glossy, textured, polished, brushed, etc.)
+- colors: Color names or descriptions (beige, white, gray, blue, etc.)
+- application: Use case or location (patio, bathroom, kitchen, flooring, wall, etc.)
+- style: Design style (modern, rustic, minimalist, industrial, etc.)
+- dimensions: Size specifications if mentioned
+
+Return ONLY valid JSON with these fields. Use null for missing fields.
+For visual_query, combine material_type + style + finish (the core visual concept)."""
+                }, {
+                    "role": "user",
+                    "content": f"Parse this query: {query}"
+                }],
+                response_format={"type": "json_object"},
+                temperature=0.3  # Low temperature for consistent parsing
+            )
+
+            # Parse response
+            parsed_data = json.loads(response.choices[0].message.content)
+
+            # Build visual query (core concept for embedding)
+            visual_parts = []
+            if parsed_data.get("material_type"):
+                visual_parts.append(parsed_data["material_type"])
+            if parsed_data.get("style"):
+                visual_parts.append(parsed_data["style"])
+            if parsed_data.get("finish"):
+                visual_parts.append(parsed_data["finish"])
+
+            visual_query = " ".join(visual_parts) if visual_parts else query
+
+            # Build filters dictionary (remove null values and visual_query)
+            filters = {}
+            for key, value in parsed_data.items():
+                if key == "visual_query":
+                    continue
+                if value is not None and value != [] and value != "":
+                    # Handle properties as array containment
+                    if key == "properties" and isinstance(value, list):
+                        filters[key] = {"contains": value}
+                    else:
+                        filters[key] = value
+
+            self.logger.info(f"🧠 Query parsed: '{query}' → visual_query='{visual_query}', filters={filters}")
+
+            return visual_query, filters
+
+        except Exception as e:
+            self.logger.error(f"Query parsing failed: {e}, using original query")
+            # Fallback: return original query with no filters
+            return query, {}
 

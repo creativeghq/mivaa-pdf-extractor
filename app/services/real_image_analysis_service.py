@@ -711,15 +711,15 @@ Respond ONLY with valid JSON, no additional text."""
             raise RuntimeError(f"Claude 4.5 Sonnet Vision analysis failed: {str(e)}") from e
 
     async def _generate_clip_embedding(self, image_base64: str) -> List[float]:
-        """Generate CLIP embedding for image using MIVAA gateway"""
+        """Generate SigLIP embedding for image using MIVAA gateway"""
         try:
-            # Try to call MIVAA gateway for CLIP embeddings
+            # Try to call MIVAA gateway for SigLIP embeddings
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     "http://localhost:8000/api/embeddings/clip-image",
                     json={
                         "image_data": image_base64,
-                        "model": "clip-vit-base-patch32",
+                        "model": "siglip-so400m-patch14-384",
                         "normalize": True
                     }
                 )
@@ -729,9 +729,9 @@ Respond ONLY with valid JSON, no additional text."""
                     if result.get("success") and result.get("embedding"):
                         return result["embedding"]
         except Exception as e:
-            self.logger.warning(f"CLIP embedding generation failed: {e}")
+            self.logger.warning(f"SigLIP embedding generation failed: {e}")
 
-        # Return placeholder 512D vector if CLIP fails
+        # Return placeholder 512D vector if SigLIP fails
         return [0.0] * 512
 
     def _extract_material_properties(
