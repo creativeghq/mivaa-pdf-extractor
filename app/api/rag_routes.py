@@ -126,10 +126,7 @@ async def initialize_job_recovery():
         stats = await job_recovery_service.get_job_statistics()
         logger.info(f"📊 Job statistics: {stats}")
 
-        # Cleanup old jobs (older than 7 days)
-        cleaned = await job_recovery_service.cleanup_old_jobs(days=7)
-        if cleaned > 0:
-            logger.info(f"🧹 Cleaned up {cleaned} old jobs")
+        # NOTE: Job cleanup moved to admin panel cron job
 
         logger.info("✅ Job recovery service initialized successfully")
 
@@ -1315,8 +1312,7 @@ async def delete_job(job_id: str):
 
         logger.info(f"   ✅ Deleted job {job_id} from database")
 
-        # TODO: Clean up temporary files if needed
-        # This would require tracking temp file paths in job metadata
+        # NOTE: Temporary file cleanup moved to admin panel cron job
 
         return {
             "success": True,
@@ -2881,7 +2877,7 @@ async def process_document_with_discovery(
         # Force garbage collection after chunking to free memory
         import gc
         gc.collect()
-        logger.info("🧹 Memory cleanup after Stage 2 (Chunking)")
+        logger.info("💾 Memory freed after Stage 2 (Chunking)")
 
         # Stage 3: Image Processing (50-70%)
         logger.info("🖼️ [STAGE 3] Image Processing - Starting...")
@@ -3155,28 +3151,8 @@ async def process_document_with_discovery(
             # Update pdf_result_with_images.extracted_images with uploaded material images
             pdf_result_with_images.extracted_images = material_images
 
-            # 🧹 CLEANUP: Delete NON-MATERIAL /tmp/ image files after upload
-            # CRITICAL: Keep material images in /tmp/ for CLIP embedding generation!
-            logger.info(f"🧹 Cleaning up non-material temporary image files from /tmp/...")
-            cleanup_count = 0
-            cleanup_errors = 0
-
-            # Only cleanup non-material images (material images needed for CLIP embeddings)
-            for img_data in non_material_images:
-                if img_data is None or isinstance(img_data, Exception):
-                    continue
-
-                image_path = img_data.get('path')
-                if image_path and os.path.exists(image_path):
-                    try:
-                        os.remove(image_path)
-                        cleanup_count += 1
-                    except Exception as cleanup_error:
-                        cleanup_errors += 1
-                        logger.warning(f"   ⚠️  Failed to delete {image_path}: {cleanup_error}")
-
-            logger.info(f"✅ Non-material cleanup complete: {cleanup_count} files deleted, {cleanup_errors} errors")
-            logger.info(f"   ⚠️  Material images ({len(material_images)}) kept in /tmp/ for CLIP embedding generation")
+            # NOTE: Temporary file cleanup moved to admin panel cron job
+            logger.info(f"📊 Image extraction complete: {len(material_images)} material images, {len(non_material_images)} non-material images")
         except Exception as extraction_error:
             logger.error(f"❌ CRITICAL: Image extraction failed: {extraction_error}")
             logger.error(f"   Error type: {type(extraction_error).__name__}")
@@ -3184,19 +3160,7 @@ async def process_document_with_discovery(
             import traceback
             logger.error(f"   Traceback: {traceback.format_exc()}")
 
-            # 🧹 CLEANUP ON ERROR: Delete any /tmp/ files that were created before the error
-            try:
-                if 'pdf_result_with_images' in locals() and hasattr(pdf_result_with_images, 'extracted_images'):
-                    logger.info(f"🧹 Cleaning up {len(pdf_result_with_images.extracted_images)} temporary files after error...")
-                    for img_data in pdf_result_with_images.extracted_images:
-                        image_path = img_data.get('path')
-                        if image_path and os.path.exists(image_path):
-                            try:
-                                os.remove(image_path)
-                            except:
-                                pass
-            except Exception as cleanup_error:
-                logger.warning(f"⚠️  Cleanup after error failed: {cleanup_error}")
+            # NOTE: Temporary file cleanup moved to admin panel cron job
 
             # Update job status to failed
             await tracker.fail_job(error=Exception(f"Image extraction failed: {str(extraction_error)}"))
@@ -3611,13 +3575,7 @@ async def process_document_with_discovery(
                 if analysis_result:
                     del analysis_result
 
-                # ✅ NEW: Delete temp file immediately after processing (don't wait for batch end)
-                if image_path and os.path.exists(image_path):
-                    try:
-                        os.remove(image_path)
-                        logger.debug(f"🗑️ [{image_index}/{total_images}] Deleted temp file: {image_path}")
-                    except Exception as cleanup_error:
-                        logger.warning(f"⚠️ [{image_index}/{total_images}] Failed to delete temp file: {cleanup_error}")
+                # NOTE: Temporary file cleanup moved to admin panel cron job
 
             except Exception as e:
                 logger.error(f"❌ [{image_index}/{total_images}] Failed to process image on page {page_num}: {e}")
@@ -3707,30 +3665,7 @@ async def process_document_with_discovery(
 
         logger.info(f"✅ [STAGE 3] Image Processing Complete: {images_processed} images processed, {clip_embeddings_generated} CLIP embeddings generated, {specialized_embeddings_generated} specialized embeddings generated (batch upserted to VECS)")
 
-        # 🧹 CLEANUP: Delete remaining material /tmp/ image files (if any weren't deleted during processing)
-        logger.info(f"🧹 Final cleanup: Checking for remaining temporary image files...")
-        material_cleanup_count = 0
-        material_cleanup_errors = 0
-
-        for img_data in pdf_result_with_images.extracted_images:
-            if img_data is None or isinstance(img_data, Exception):
-                continue
-
-            image_path = img_data.get('path')
-            # Only delete if file still exists (most should already be deleted during processing)
-            if image_path and os.path.exists(image_path):
-                try:
-                    os.remove(image_path)
-                    material_cleanup_count += 1
-                    logger.debug(f"   🗑️ Deleted remaining temp file: {image_path}")
-                except Exception as cleanup_error:
-                    material_cleanup_errors += 1
-                    logger.warning(f"   ⚠️ Failed to delete {image_path}: {cleanup_error}")
-
-        if material_cleanup_count > 0:
-            logger.info(f"✅ Final cleanup: {material_cleanup_count} remaining files deleted, {material_cleanup_errors} errors")
-        else:
-            logger.info(f"✅ Final cleanup: All temp files already deleted during processing (streaming cleanup)")
+        # NOTE: Temporary file cleanup moved to admin panel cron job
 
         # Create IMAGES_EXTRACTED checkpoint
         await checkpoint_recovery_service.create_checkpoint(
@@ -3765,7 +3700,7 @@ async def process_document_with_discovery(
         # Force garbage collection after image processing to free memory
         import gc
         gc.collect()
-        logger.info("🧹 Memory cleanup after Stage 3 (Image Processing)")
+        logger.info("💾 Memory freed after Stage 3 (Image Processing)")
 
         # Stage 4: Product Creation & Linking (70-90%)
         logger.info("🏭 [STAGE 4] Product Creation & Linking - Starting...")
@@ -3931,7 +3866,7 @@ async def process_document_with_discovery(
         # Force garbage collection after product creation to free memory
         import gc
         gc.collect()
-        logger.info("🧹 Memory cleanup after Stage 4 (Product Creation)")
+        logger.info("💾 Memory freed after Stage 4 (Product Creation)")
 
         # Stage 5: Quality Enhancement (90-100%) - ASYNC
         logger.info("⚡ [STAGE 5] Quality Enhancement - Starting (Async)...")
@@ -3954,27 +3889,7 @@ async def process_document_with_discovery(
 
         await tracker._sync_to_database(stage="quality_enhancement")
 
-        # Cleanup
-        logger.info("🧹 Cleanup - Starting...")
-        from app.services.cleanup_service import CleanupService
-
-        cleanup_service = CleanupService()
-        cleanup_results = await cleanup_service.cleanup_after_processing(
-            document_id=document_id,
-            job_id=job_id,
-            temp_image_paths=[]  # Images already cleaned by PDF processor
-        )
-
-        logger.info(f"   Cleanup complete: {cleanup_results.get('images_deleted', 0)} images deleted, {cleanup_results.get('processes_killed', 0)} processes killed")
-
-        # Cleanup temp PDF directory if it exists
-        if hasattr(pdf_result, 'temp_dir') and pdf_result.temp_dir:
-            try:
-                pdf_processor = PDFProcessor()
-                pdf_processor._cleanup_temp_files(pdf_result.temp_dir)
-                logger.info(f"✅ Cleaned up temp PDF directory: {pdf_result.temp_dir}")
-            except Exception as cleanup_error:
-                logger.warning(f"⚠️ Failed to cleanup temp PDF directory: {cleanup_error}")
+        # NOTE: Cleanup moved to admin panel cron job
 
         # Mark job as complete
         result = {
@@ -4019,65 +3934,35 @@ async def process_document_with_discovery(
         logger.info(f"   Images: {images_processed}")
         logger.info("=" * 80)
 
-        # LAZY LOADING: Cleanup all loaded components after successful completion
-        logger.info("🧹 Cleaning up all loaded components...")
+        # LAZY LOADING: Unload all loaded components after successful completion
+        logger.info("🧹 Unloading all loaded components...")
         for component_name in loaded_components:
             try:
                 await component_manager.unload(component_name)
                 logger.info(f"✅ Unloaded {component_name}")
-            except Exception as cleanup_error:
-                logger.warning(f"⚠️ Failed to unload {component_name}: {cleanup_error}")
+            except Exception as unload_error:
+                logger.warning(f"⚠️ Failed to unload {component_name}: {unload_error}")
 
         # Force garbage collection
         import gc
         gc.collect()
-        logger.info("✅ All components cleaned up, memory freed")
+        logger.info("✅ All components unloaded, memory freed")
 
-        # ✅ CLEANUP: Remove temp PDF directory after successful completion
-        if hasattr(pdf_result, 'temp_dir') and pdf_result.temp_dir:
-            try:
-                pdf_processor = PDFProcessor()
-                pdf_processor._cleanup_temp_files(pdf_result.temp_dir)
-                logger.info(f"✅ Cleaned up temp PDF directory: {pdf_result.temp_dir}")
-            except Exception as cleanup_error:
-                logger.warning(f"⚠️ Failed to cleanup temp PDF directory: {cleanup_error}")
-
-        # ✅ CLEANUP: Remove temp PDF file after successful completion
-        if temp_pdf_path and os.path.exists(temp_pdf_path):
-            try:
-                os.unlink(temp_pdf_path)
-                logger.info(f"✅ Cleaned up temp PDF file: {temp_pdf_path}")
-            except Exception as cleanup_error:
-                logger.warning(f"⚠️ Failed to cleanup temp PDF file: {cleanup_error}")
+        # NOTE: Temporary file cleanup moved to admin panel cron job
 
     except Exception as e:
         logger.error(f"❌ [PRODUCT DISCOVERY PIPELINE] FAILED: {e}", exc_info=True)
 
-        # LAZY LOADING: Cleanup all loaded components on error
-        logger.info("🧹 Cleaning up loaded components due to error...")
+        # LAZY LOADING: Unload all loaded components on error
+        logger.info("🧹 Unloading loaded components due to error...")
         for component_name in loaded_components:
             try:
                 await component_manager.unload(component_name)
                 logger.info(f"✅ Unloaded {component_name}")
-            except Exception as cleanup_error:
-                logger.warning(f"⚠️ Failed to unload {component_name}: {cleanup_error}")
+            except Exception as unload_error:
+                logger.warning(f"⚠️ Failed to unload {component_name}: {unload_error}")
 
-        # Cleanup temp PDF directory on error
-        if 'pdf_result' in locals() and hasattr(pdf_result, 'temp_dir') and pdf_result.temp_dir:
-            try:
-                pdf_processor = PDFProcessor()
-                pdf_processor._cleanup_temp_files(pdf_result.temp_dir)
-                logger.info(f"✅ Cleaned up temp PDF directory on error: {pdf_result.temp_dir}")
-            except Exception as cleanup_error:
-                logger.warning(f"⚠️ Failed to cleanup temp PDF directory on error: {cleanup_error}")
-
-        # Cleanup temp PDF file on error
-        if 'temp_pdf_path' in locals() and temp_pdf_path and os.path.exists(temp_pdf_path):
-            try:
-                os.unlink(temp_pdf_path)
-                logger.info(f"✅ Cleaned up temp PDF file on error: {temp_pdf_path}")
-            except Exception as cleanup_error:
-                logger.warning(f"⚠️ Failed to cleanup temp PDF file on error: {cleanup_error}")
+        # NOTE: Temporary file cleanup moved to admin panel cron job
 
         # Force garbage collection
         import gc

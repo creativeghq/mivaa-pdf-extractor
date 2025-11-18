@@ -264,21 +264,17 @@ class PDFProcessor:
                     document_id, processing_time
                 )
 
-                # Store temp_dir in result so caller can clean it up when job completes
+                # Store temp_dir in result for reference (cleanup handled by admin cron job)
                 result.temp_dir = temp_dir
 
                 return result
 
             except asyncio.TimeoutError:
-                # Cleanup on timeout
-                if temp_dir:
-                    self._cleanup_temp_files(temp_dir)
+                # NOTE: Cleanup moved to admin panel cron job
                 raise PDFTimeoutError(f"PDF processing timed out after {timeout} seconds")
 
         except Exception as e:
-            # Cleanup on error
-            if temp_dir:
-                self._cleanup_temp_files(temp_dir)
+            # NOTE: Cleanup moved to admin panel cron job
             self.logger.error("PDF processing failed for document %s: %s", document_id, str(e))
             if isinstance(e, (PDFProcessingError, PDFTimeoutError)):
                 raise
@@ -1161,10 +1157,7 @@ class PDFProcessor:
                 self.logger.warning(f"⚠️ Image directory does not exist: {image_dir}")
                 self.logger.warning(f"   Output directory contents: {os.listdir(output_dir) if os.path.exists(output_dir) else 'N/A'}")
 
-            # NOTE: Do NOT clean up temporary directory here - images are needed for llamaindex processing
-            # The llamaindex_service will clean up image files after processing
-            # (CLIP embeddings, Anthropic analysis, database storage, etc.)
-            # Directory cleanup will happen in llamaindex_service after image processing completes
+            # NOTE: Temporary file cleanup moved to admin panel cron job
 
             # Apply post-processing filters if requested
             if processing_options.get('remove_duplicates', True):
@@ -1460,9 +1453,7 @@ class PDFProcessor:
             if upload_result.get('success'):
                 self.logger.info(f"Successfully uploaded image to storage: {upload_result.get('public_url')}")
 
-                # NOTE: Do NOT clean up local files here - they're needed for llamaindex processing
-                # (CLIP embeddings, Anthropic analysis, etc.)
-                # Files will be cleaned up after llamaindex processing completes
+                # NOTE: Temporary file cleanup moved to admin panel cron job
 
             return upload_result
 
