@@ -6,7 +6,8 @@ for database operations and storage management.
 """
 
 import logging
-from typing import Optional
+from datetime import datetime
+from typing import Any, Dict, Optional
 from supabase import create_client, Client
 from app.config import Settings
 
@@ -190,6 +191,89 @@ class SupabaseClient:
         except Exception as e:
             logger.error(f"Failed to get images for document {document_id}: {str(e)}")
             return []
+
+    async def save_single_image(
+        self,
+        image_info: Dict[str, Any],
+        document_id: str,
+        workspace_id: Optional[str] = None,
+        image_index: int = 0
+    ) -> Optional[str]:
+        """
+        Save a single image to document_images table.
+
+        This is a lightweight method for saving images one at a time during processing
+        to avoid memory accumulation.
+
+        Args:
+            image_info: Image metadata dict with keys like storage_url, page_number, etc.
+            document_id: Document UUID
+            workspace_id: Workspace UUID (optional)
+            image_index: Index of image in processing sequence
+
+        Returns:
+            Image ID if successful, None otherwise
+        """
+        try:
+            # Extract image URL (try multiple possible keys)
+            image_url = (
+                image_info.get('storage_url') or
+                image_info.get('url') or
+                image_info.get('public_url') or
+                image_info.get('path')
+            )
+
+            if not image_url or image_url.startswith('placeholder_'):
+                logger.debug(f"⏭️  Skipping image {image_index} - no valid URL")
+                return None
+
+            # Extract metadata
+            page_num = image_info.get('page') or image_info.get('page_number') or 1
+            caption = image_info.get('caption') or image_info.get('description') or f"Image from page {page_num}"
+
+            # Prepare image entry (same format as batch save)
+            image_entry = {
+                'document_id': document_id,
+                'image_url': image_url,
+                'image_type': 'material_sample',
+                'caption': caption,
+                'page_number': page_num,
+                'confidence': 0.95,
+                'processing_status': 'completed',
+                'metadata': {
+                    'source': 'mivaa_pdf_extraction',
+                    'image_index': image_index,
+                    'extraction_method': 'pymupdf4llm',
+                    'storage_uploaded': image_info.get('storage_uploaded', False),
+                    'storage_bucket': image_info.get('storage_bucket', 'material-images'),
+                    'storage_path': image_info.get('storage_path'),
+                    'width': image_info.get('width'),
+                    'height': image_info.get('height'),
+                    'format': image_info.get('format'),
+                    'quality_score': image_info.get('quality_score'),
+                    'file_size': image_info.get('size_bytes'),
+                    'extracted_at': datetime.utcnow().isoformat()
+                }
+            }
+
+            # Add workspace_id if provided
+            if workspace_id:
+                image_entry['workspace_id'] = workspace_id
+
+            # Insert into database
+            response = self._client.table('document_images').insert(image_entry).execute()
+
+            if response.data and len(response.data) > 0:
+                image_id = response.data[0]['id']
+                logger.debug(f"✅ Saved image to DB: {image_id} (page {page_num})")
+                return image_id
+            else:
+                logger.warning(f"⚠️ Failed to save image {image_index}: No data returned")
+                return None
+
+        except Exception as e:
+            logger.error(f"❌ Failed to save image {image_index} to database: {e}")
+            return None
 
     async def save_pdf_processing_result(self, result, original_filename: str = None, file_url: str = None) -> str:
         """

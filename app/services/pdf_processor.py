@@ -1040,8 +1040,8 @@ class PDFProcessor:
             page_number = processing_options.get('page_number')
 
             # 🚀 OPTIMIZATION: Use smaller batch size for memory efficiency
-            # Process 2 pages at a time instead of 5 to reduce memory from 400MB to ~160MB (60% reduction)
-            batch_size = processing_options.get('image_batch_size', 2)
+            # Process 1 page at a time for maximum stability (prevents memory crashes with 900+ images)
+            batch_size = processing_options.get('image_batch_size', 1)
 
             # ✅ OPTIMIZATION: Get page_list for focused extraction (only extract images from specific pages)
             page_list = processing_options.get('page_list')  # List of page numbers (1-indexed)
@@ -1092,67 +1092,105 @@ class PDFProcessor:
                     except Exception as e:
                         self.logger.warning(f"Progress callback failed: {e}")
 
-                # Process images in batches to reduce memory usage
-                batch_size = 1  # Process 1 image at a time for maximum memory efficiency
+                # 🚀 MEMORY OPTIMIZATION: Process images one at a time and save immediately
+                # This prevents memory accumulation with large PDFs (900+ images)
                 valid_image_files = [f for f in image_files if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'))]
 
-                for batch_start in range(0, len(valid_image_files), batch_size):
-                    batch_end = min(batch_start + batch_size, len(valid_image_files))
-                    batch_files = valid_image_files[batch_start:batch_end]
+                # Get workspace_id from processing options
+                workspace_id = processing_options.get('workspace_id')
 
-                    self.logger.info(f"   Processing batch {batch_start // batch_size + 1}: images {batch_start + 1}-{batch_end} of {len(valid_image_files)}")
+                # Get Supabase client for immediate saves
+                from app.services.supabase_client import get_supabase_client
+                supabase_client = get_supabase_client()
 
-                    # Process each image in the batch
-                    for idx, image_file in enumerate(batch_files):
-                        absolute_idx = batch_start + idx
-                        self.logger.debug(f"   Processing file: {image_file}")
-                        image_path = os.path.join(image_dir, image_file)
+                images_saved_count = 0
+                images_metadata = []  # Keep only minimal metadata, not full image data
 
-                        # Process each image with advanced capabilities (now async)
-                        skip_upload = processing_options.get('skip_upload', False)
-                        processed_image_info = await self._process_extracted_image(
-                            image_path,
-                            document_id,
-                            processing_options,
-                            skip_upload=skip_upload
+                for absolute_idx, image_file in enumerate(valid_image_files):
+                    self.logger.debug(f"   Processing image {absolute_idx + 1}/{len(valid_image_files)}: {image_file}")
+                    image_path = os.path.join(image_dir, image_file)
+
+                    # Process image (upload to storage, extract metadata)
+                    skip_upload = processing_options.get('skip_upload', False)
+                    processed_image_info = await self._process_extracted_image(
+                        image_path,
+                        document_id,
+                        processing_options,
+                        skip_upload=skip_upload
+                    )
+
+                    if processed_image_info:
+                        # ✅ SAVE TO DATABASE IMMEDIATELY (don't accumulate in memory)
+                        image_id = await supabase_client.save_single_image(
+                            image_info=processed_image_info,
+                            document_id=document_id,
+                            workspace_id=workspace_id,
+                            image_index=absolute_idx
                         )
 
-                        if processed_image_info:
-                            images.append(processed_image_info)
-                            self.logger.info(f"   ✅ Processed image: {image_file}")
+                        if image_id:
+                            images_saved_count += 1
 
-                            # Report progress: Image processing progress
-                            if progress_callback and absolute_idx % 5 == 0:  # Update every 5 images
-                                try:
-                                    import inspect
-                                    progress_pct = 25 + (absolute_idx / len(valid_image_files)) * 10  # 25-35% range
-                                    if inspect.iscoroutinefunction(progress_callback):
-                                        await progress_callback(
-                                            progress=int(progress_pct),
-                                            details={
-                                                "current_step": f"Processing images ({absolute_idx + 1}/{len(valid_image_files)})",
-                                                "total_images": len(valid_image_files),
-                                                "images_processed": absolute_idx + 1
-                                            }
-                                        )
-                                    else:
-                                        progress_callback(
-                                            progress=int(progress_pct),
-                                            details={
-                                                "current_step": f"Processing images ({absolute_idx + 1}/{len(valid_image_files)})",
-                                                "total_images": len(valid_image_files),
-                                                "images_processed": absolute_idx + 1
-                                            }
-                                        )
-                                except Exception as e:
-                                    self.logger.warning(f"Progress callback failed: {e}")
+                            # Keep only minimal metadata for return value
+                            images_metadata.append({
+                                'id': image_id,
+                                'storage_url': processed_image_info.get('storage_url'),
+                                'page_number': processed_image_info.get('page_number'),
+                                'width': processed_image_info.get('width'),
+                                'height': processed_image_info.get('height')
+                            })
+
+                            self.logger.info(f"   ✅ Saved image {absolute_idx + 1}/{len(valid_image_files)} to DB: {image_id}")
                         else:
-                            self.logger.warning(f"   ⚠️ Failed to process image: {image_file}")
+                            self.logger.warning(f"   ⚠️ Failed to save image {absolute_idx + 1} to DB")
 
-                    # Force garbage collection after each batch to free memory
+                        # ✅ DELETE FROM DISK IMMEDIATELY (free disk space)
+                        try:
+                            os.remove(image_path)
+                            self.logger.debug(f"   🗑️  Deleted from disk: {image_file}")
+                        except Exception as e:
+                            self.logger.warning(f"   ⚠️  Could not delete {image_file}: {e}")
+
+                        # ✅ CLEAR FROM MEMORY (don't keep processed_image_info)
+                        del processed_image_info
+
+                        # Report progress every 5 images
+                        if progress_callback and absolute_idx % 5 == 0:
+                            try:
+                                import inspect
+                                progress_pct = 25 + (absolute_idx / len(valid_image_files)) * 10  # 25-35% range
+                                if inspect.iscoroutinefunction(progress_callback):
+                                    await progress_callback(
+                                        progress=int(progress_pct),
+                                        details={
+                                            "current_step": f"Processing images ({absolute_idx + 1}/{len(valid_image_files)})",
+                                            "total_images": len(valid_image_files),
+                                            "images_processed": absolute_idx + 1,
+                                            "images_saved": images_saved_count
+                                        }
+                                    )
+                                else:
+                                    progress_callback(
+                                        progress=int(progress_pct),
+                                        details={
+                                            "current_step": f"Processing images ({absolute_idx + 1}/{len(valid_image_files)})",
+                                            "total_images": len(valid_image_files),
+                                            "images_processed": absolute_idx + 1,
+                                            "images_saved": images_saved_count
+                                        }
+                                    )
+                            except Exception as e:
+                                self.logger.warning(f"Progress callback failed: {e}")
+                    else:
+                        self.logger.warning(f"   ⚠️ Failed to process image: {image_file}")
+
+                    # Force garbage collection after each image
                     import gc
                     gc.collect()
-                    self.logger.info(f"   ✅ Batch {batch_start // batch_size + 1} completed, memory freed")
+
+                # Replace images list with minimal metadata
+                images = images_metadata
+                self.logger.info(f"   ✅ Completed processing {images_saved_count}/{len(valid_image_files)} images")
             else:
                 self.logger.warning(f"⚠️ Image directory does not exist: {image_dir}")
                 self.logger.warning(f"   Output directory contents: {os.listdir(output_dir) if os.path.exists(output_dir) else 'N/A'}")
@@ -1463,6 +1501,8 @@ class PDFProcessor:
                 'success': False,
                 'error': str(e)
             }
+
+
 
     def _extract_exif_metadata(self, pil_image: Image.Image) -> Dict[str, Any]:
         """Extract EXIF metadata from PIL Image."""
