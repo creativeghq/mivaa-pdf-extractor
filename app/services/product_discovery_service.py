@@ -1241,13 +1241,37 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                         category_hint=category_hint
                     )
 
-                    # Merge extracted metadata with existing metadata
-                    # Priority: existing metadata > extracted critical > extracted discovered
+                    # NEW: Validate metadata against prototypes
+                    from app.services.metadata_prototype_validator import get_metadata_validator
+
+                    try:
+                        validator = get_metadata_validator(job_id=job_id)
+                        validation_result = await validator.validate_metadata(
+                            extracted_metadata=extracted,
+                            confidence_threshold=0.80
+                        )
+
+                        validated_metadata = validation_result["validated_metadata"]
+                        validation_info = validation_result["validation_info"]
+
+                        self.logger.info(f"      ✅ Validated {len(validation_info)} metadata fields")
+                    except Exception as e:
+                        self.logger.warning(f"Metadata validation failed, using unvalidated: {e}")
+                        # Fallback: flatten without validation
+                        validated_metadata = {}
+                        for category, fields in extracted.get("discovered", {}).items():
+                            if isinstance(fields, dict):
+                                validated_metadata.update(fields)
+                        validated_metadata.update(extracted.get("critical", {}))
+                        validation_info = {}
+
+                    # Merge validated metadata with existing metadata
+                    # Priority: existing metadata > validated metadata > extraction metadata
                     enriched_metadata = {
-                        **extracted.get("discovered", {}),  # Lowest priority
-                        **extracted.get("critical", {}),    # Medium priority
+                        **validated_metadata,               # Validated extracted metadata
                         **product.metadata,                 # Highest priority (from discovery)
-                        "_extraction_metadata": extracted.get("metadata", {})
+                        "_extraction_metadata": extracted.get("metadata", {}),
+                        "_validation": validation_info      # Track validation details
                     }
 
                     # Flatten nested values (extract "value" from {"value": "...", "confidence": ...})
@@ -1262,7 +1286,8 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                     product.metadata = flattened_metadata
                     enriched_products.append(product)
 
-                    self.logger.info(f"      ✅ Extracted {len(flattened_metadata)} metadata fields")
+                    validated_count = sum(1 for v in validation_info.values() if v.get("prototype_matched"))
+                    self.logger.info(f"      ✅ Extracted {len(flattened_metadata)} fields ({validated_count} validated)")
 
                 except Exception as e:
                     self.logger.error(f"Failed to enrich metadata for {product.name}: {e}")

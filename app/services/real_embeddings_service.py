@@ -147,8 +147,19 @@ class RealEmbeddingsService:
             self.logger.error(f"❌ Embedding generation failed: {e}")
             return {"success": False, "error": str(e)}
     
-    async def _generate_text_embedding(self, text: str, job_id: Optional[str] = None) -> Optional[List[float]]:
-        """Generate text embedding using OpenAI."""
+    async def _generate_text_embedding(
+        self,
+        text: str,
+        job_id: Optional[str] = None,
+        dimensions: int = 1536
+    ) -> Optional[List[float]]:
+        """Generate text embedding using OpenAI.
+
+        Args:
+            text: Text to embed
+            job_id: Optional job ID for logging
+            dimensions: Embedding dimensions (512 or 1536, default 1536)
+        """
         start_time = time.time()
         try:
             if not self.openai_api_key:
@@ -162,7 +173,8 @@ class RealEmbeddingsService:
                     json={
                         "model": "text-embedding-3-small",
                         "input": text[:8191],  # OpenAI limit
-                        "encoding_format": "float"
+                        "encoding_format": "float",
+                        "dimensions": dimensions  # Support custom dimensions
                     },
                     timeout=30.0
                 )
