@@ -2704,14 +2704,9 @@ async def process_document_with_discovery(
                 operation_name="Product discovery (Stage 0A + 0B)"
             )
 
-        finally:
-            # Clean up temp PDF file after discovery
-            if temp_pdf_path and os.path.exists(temp_pdf_path):
-                try:
-                    os.unlink(temp_pdf_path)
-                    logger.info(f"🗑️ Cleaned up temp PDF file: {temp_pdf_path}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to clean up temp PDF: {e}")
+        except Exception as discovery_error:
+            # Re-raise discovery errors to be handled by outer exception handler
+            raise discovery_error
 
         logger.info(f"✅ [STAGE 0] Discovery Complete:")
         logger.info(f"   Categories: {', '.join(extract_categories)}")
@@ -4037,6 +4032,23 @@ async def process_document_with_discovery(
         gc.collect()
         logger.info("✅ All components cleaned up, memory freed")
 
+        # ✅ CLEANUP: Remove temp PDF directory after successful completion
+        if hasattr(pdf_result, 'temp_dir') and pdf_result.temp_dir:
+            try:
+                pdf_processor = PDFProcessor()
+                pdf_processor._cleanup_temp_files(pdf_result.temp_dir)
+                logger.info(f"✅ Cleaned up temp PDF directory: {pdf_result.temp_dir}")
+            except Exception as cleanup_error:
+                logger.warning(f"⚠️ Failed to cleanup temp PDF directory: {cleanup_error}")
+
+        # ✅ CLEANUP: Remove temp PDF file after successful completion
+        if temp_pdf_path and os.path.exists(temp_pdf_path):
+            try:
+                os.unlink(temp_pdf_path)
+                logger.info(f"✅ Cleaned up temp PDF file: {temp_pdf_path}")
+            except Exception as cleanup_error:
+                logger.warning(f"⚠️ Failed to cleanup temp PDF file: {cleanup_error}")
+
     except Exception as e:
         logger.error(f"❌ [PRODUCT DISCOVERY PIPELINE] FAILED: {e}", exc_info=True)
 
@@ -4057,6 +4069,14 @@ async def process_document_with_discovery(
                 logger.info(f"✅ Cleaned up temp PDF directory on error: {pdf_result.temp_dir}")
             except Exception as cleanup_error:
                 logger.warning(f"⚠️ Failed to cleanup temp PDF directory on error: {cleanup_error}")
+
+        # Cleanup temp PDF file on error
+        if 'temp_pdf_path' in locals() and temp_pdf_path and os.path.exists(temp_pdf_path):
+            try:
+                os.unlink(temp_pdf_path)
+                logger.info(f"✅ Cleaned up temp PDF file on error: {temp_pdf_path}")
+            except Exception as cleanup_error:
+                logger.warning(f"⚠️ Failed to cleanup temp PDF file on error: {cleanup_error}")
 
         # Force garbage collection
         import gc
