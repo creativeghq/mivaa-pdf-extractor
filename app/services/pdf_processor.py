@@ -613,6 +613,13 @@ class PDFProcessor:
                                         else:
                                             self.logger.error(f"Page {page_num + 1} failed with unexpected error: {page_error}")
                                             raise
+                                    except ReferenceError as page_error:
+                                        if "weakly-referenced object no longer exists" in str(page_error):
+                                            self.logger.warning(f"Page {page_num + 1} failed with PyMuPDF garbage collection issue, will use OCR for this page")
+                                            failed_pages.append(page_num)
+                                        else:
+                                            self.logger.error(f"Page {page_num + 1} failed with unexpected ReferenceError: {page_error}")
+                                            raise
                                     except Exception as page_error:
                                         self.logger.error(f"Page {page_num + 1} failed with error: {page_error}")
                                         raise
