@@ -49,7 +49,7 @@ from scipy import ndimage
 # Import existing extraction functions
 try:
     # Try to import from the proper location first
-    from ..core.extractor import extract_pdf_to_markdown, extract_pdf_tables, extract_json_and_images
+    from ..core.extractor import extract_pdf_to_markdown, extract_pdf_to_markdown_with_doc, extract_pdf_tables, extract_json_and_images
 except ImportError:
     # Fall back to the root level extractor if it exists
     import sys
@@ -58,7 +58,7 @@ except ImportError:
     if root_path not in sys.path:
         sys.path.append(root_path)
     try:
-        from extractor import extract_pdf_to_markdown, extract_pdf_tables, extract_json_and_images
+        from extractor import extract_pdf_to_markdown, extract_pdf_to_markdown_with_doc, extract_pdf_tables, extract_json_and_images
     except ImportError as e:
         # Log the error and provide a fallback
         import logging
@@ -66,6 +66,8 @@ except ImportError:
         logger.error(f"Failed to import extractor functions: {e}")
         # Define placeholder functions that will raise NotImplementedError
         def extract_pdf_to_markdown(*args, **kwargs):
+            raise NotImplementedError("PDF extraction functions not available")
+        def extract_pdf_to_markdown_with_doc(*args, **kwargs):
             raise NotImplementedError("PDF extraction functions not available")
         def extract_pdf_tables(*args, **kwargs):
             raise NotImplementedError("PDF table extraction functions not available")
@@ -580,44 +582,48 @@ class PDFProcessor:
                         if not os.path.exists(pdf_path):
                             raise PDFExtractionError(f"PDF file not found: {pdf_path}")
 
-                        # Get total pages
+                        # Open document ONCE and keep it open during entire extraction
+                        # This prevents garbage collection issues with PyMuPDF weak references
                         doc = fitz.open(pdf_path)
                         total_pages = len(doc)
-                        doc.close()
 
-                        self.logger.info(f"PDF has {total_pages} pages, will process page-by-page")
+                        self.logger.info(f"PDF has {total_pages} pages, will process page-by-page with persistent document object")
 
                         markdown_content = ""
                         failed_pages = []
 
-                        # Process in SMALLER batches of 5 pages to reduce memory and avoid hanging
-                        batch_size = 5
-                        for batch_start in range(0, total_pages, batch_size):
-                            batch_end = min(batch_start + batch_size, total_pages)
-                            self.logger.info(f"Processing pages {batch_start + 1}-{batch_end} with PyMuPDF4LLM")
+                        try:
+                            # Process in SMALLER batches of 5 pages to reduce memory and avoid hanging
+                            batch_size = 5
+                            for batch_start in range(0, total_pages, batch_size):
+                                batch_end = min(batch_start + batch_size, total_pages)
+                                self.logger.info(f"Processing pages {batch_start + 1}-{batch_end} with PyMuPDF4LLM")
 
-                            for page_num in range(batch_start, batch_end):
-                                # Verify page number is valid
-                                if page_num >= total_pages:
-                                    self.logger.warning(f"Skipping page {page_num + 1} - out of range (total: {total_pages})")
-                                    continue
+                                for page_num in range(batch_start, batch_end):
+                                    # Verify page number is valid
+                                    if page_num >= total_pages:
+                                        self.logger.warning(f"Skipping page {page_num + 1} - out of range (total: {total_pages})")
+                                        continue
 
-                                try:
-                                    self.logger.debug(f"Extracting page {page_num + 1}/{total_pages} (0-indexed: {page_num})")
-                                    # Reopen file for each page to avoid garbage collection issues
-                                    # This is slower but more stable than keeping document open
-                                    page_content = extract_pdf_to_markdown(pdf_path, page_num)
-                                    markdown_content += page_content + "\n\n"
-                                except ValueError as page_error:
-                                    if "not a textpage" in str(page_error):
-                                        self.logger.warning(f"Page {page_num + 1} failed with 'not a textpage', will use OCR for this page")
-                                        failed_pages.append(page_num)
-                                    else:
-                                        self.logger.error(f"Page {page_num + 1} failed with unexpected error: {page_error}")
+                                    try:
+                                        self.logger.debug(f"Extracting page {page_num + 1}/{total_pages} (0-indexed: {page_num})")
+                                        # Use document object to avoid garbage collection issues
+                                        page_content = extract_pdf_to_markdown_with_doc(doc, page_num)
+                                        markdown_content += page_content + "\n\n"
+                                    except ValueError as page_error:
+                                        if "not a textpage" in str(page_error):
+                                            self.logger.warning(f"Page {page_num + 1} failed with 'not a textpage', will use OCR for this page")
+                                            failed_pages.append(page_num)
+                                        else:
+                                            self.logger.error(f"Page {page_num + 1} failed with unexpected error: {page_error}")
+                                            raise
+                                    except Exception as page_error:
+                                        self.logger.error(f"Page {page_num + 1} failed with error: {page_error}")
                                         raise
-                                except Exception as page_error:
-                                    self.logger.error(f"Page {page_num + 1} failed with error: {page_error}")
-                                    raise
+                        finally:
+                            # Always close the document when done
+                            doc.close()
+                            self.logger.debug(f"Closed PDF document after processing {total_pages} pages")
 
                             # Force garbage collection after each batch
                             import gc
