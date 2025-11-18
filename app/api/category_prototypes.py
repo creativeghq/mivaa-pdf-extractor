@@ -10,12 +10,16 @@ from typing import List, Dict, Optional, Any
 import numpy as np
 from datetime import datetime
 import logging
+from openai import AsyncOpenAI
+import os
 
-from app.services.real_embeddings_service import RealEmbeddingsService
 from app.services.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/category-prototypes", tags=["Category Prototypes"])
+
+# Initialize OpenAI client
+openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Category prototype descriptions
 CATEGORY_PROTOTYPES: Dict[str, List[str]] = {
@@ -84,18 +88,20 @@ class PrototypePopulationResponse(BaseModel):
 async def generate_clip_text_embedding(texts: List[str]) -> List[float]:
     """Generate CLIP text embedding by averaging embeddings of multiple descriptions"""
     try:
-        embeddings_service = RealEmbeddingsService()
-        
-        # Generate embeddings for each text
-        all_embeddings = []
-        for text in texts:
-            result = await embeddings_service.generate_text_embedding(text, dimensions=512)
-            all_embeddings.append(result['embedding'])
-        
+        # Generate embeddings for all texts at once
+        response = await openai_client.embeddings.create(
+            model="text-embedding-3-small",
+            input=texts,
+            dimensions=512
+        )
+
+        # Extract embeddings
+        all_embeddings = [item.embedding for item in response.data]
+
         # Average all embeddings
         avg_embedding = np.mean(all_embeddings, axis=0).tolist()
         return avg_embedding
-        
+
     except Exception as e:
         logger.error(f"Error generating embedding: {str(e)}")
         raise
