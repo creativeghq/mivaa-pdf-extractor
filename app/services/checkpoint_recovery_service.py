@@ -19,6 +19,7 @@ from typing import Dict, Any, Optional, List
 from enum import Enum
 
 from app.services.supabase_client import get_supabase_client
+from app.utils.timestamp_utils import normalize_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +148,7 @@ class CheckpointRecoveryService:
             return False, None
         
         # Check if checkpoint is recent (within 24 hours)
-        checkpoint_time = datetime.fromisoformat(checkpoint["created_at"].replace("Z", "+00:00"))
+        checkpoint_time = datetime.fromisoformat(normalize_timestamp(checkpoint["created_at"]))
         age = datetime.utcnow() - checkpoint_time.replace(tzinfo=None)
         
         if age > timedelta(hours=24):

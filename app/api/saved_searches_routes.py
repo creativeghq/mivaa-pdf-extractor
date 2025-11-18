@@ -25,6 +25,7 @@ from ..services.search_deduplication_service import (
     SearchDeduplicationService
 )
 from ..services.supabase_client import get_supabase_client
+from ..utils.timestamp_utils import normalize_timestamp
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -533,7 +534,7 @@ async def execute_saved_search(
 
         # Calculate relevance score based on usage
         # More recent and frequent usage = higher relevance
-        days_since_created = (datetime.utcnow() - datetime.fromisoformat(search["created_at"].replace("Z", "+00:00"))).days
+        days_since_created = (datetime.utcnow() - datetime.fromisoformat(normalize_timestamp(search["created_at"]))).days
         usage_frequency = (search["use_count"] + 1) / max(days_since_created, 1)
         update_data["relevance_score"] = min(usage_frequency * 10, 10.0)  # Cap at 10.0
 

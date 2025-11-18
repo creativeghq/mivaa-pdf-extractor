@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from app.services.supabase_client import get_supabase_client
 from app.services.job_monitor_service import job_monitor_service
 from app.services.stuck_job_analyzer import stuck_job_analyzer
+from app.utils.timestamp_utils import normalize_timestamp
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/job-health", tags=["job-health"])
@@ -57,7 +58,7 @@ async def get_job_health_dashboard() -> Dict[str, Any]:
         for job in active_jobs:
             # Check heartbeat timeout (2 minutes)
             if job.get('last_heartbeat'):
-                last_heartbeat = datetime.fromisoformat(job['last_heartbeat'].replace('Z', '+00:00'))
+                last_heartbeat = datetime.fromisoformat(normalize_timestamp(job['last_heartbeat']))
                 if (datetime.utcnow() - last_heartbeat.replace(tzinfo=None)) > timedelta(minutes=2):
                     stuck_jobs.append({
                         **job,
@@ -67,7 +68,7 @@ async def get_job_health_dashboard() -> Dict[str, Any]:
             
             # Check updated_at timeout (5 minutes)
             elif job.get('updated_at'):
-                updated_at = datetime.fromisoformat(job['updated_at'].replace('Z', '+00:00'))
+                updated_at = datetime.fromisoformat(normalize_timestamp(job['updated_at']))
                 if (datetime.utcnow() - updated_at.replace(tzinfo=None)) > timedelta(minutes=5):
                     stuck_jobs.append({
                         **job,
@@ -83,8 +84,8 @@ async def get_job_health_dashboard() -> Dict[str, Any]:
         processing_times = []
         for job in completed_jobs:
             if job.get('started_at') and job.get('completed_at'):
-                started = datetime.fromisoformat(job['started_at'].replace('Z', '+00:00'))
-                completed = datetime.fromisoformat(job['completed_at'].replace('Z', '+00:00'))
+                started = datetime.fromisoformat(normalize_timestamp(job['started_at']))
+                completed = datetime.fromisoformat(normalize_timestamp(job['completed_at']))
                 duration = (completed - started).total_seconds()
                 processing_times.append(duration)
         

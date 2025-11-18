@@ -19,6 +19,8 @@ import psutil
 import os
 from pathlib import Path
 
+from app.utils.timestamp_utils import normalize_timestamp
+
 from ..schemas.jobs import (
     JobResponse, JobStatusResponse, JobListResponse, JobListItem,
     BulkProcessingRequest, BulkProcessingResponse,
@@ -268,8 +270,8 @@ async def get_job_statistics():
         # Recent activity (last 24 hours)
         recent_cutoff = datetime.utcnow() - timedelta(hours=24)
         recent_jobs = [
-            job for job in all_jobs 
-            if datetime.fromisoformat(job["created_at"].replace('Z', '+00:00')) > recent_cutoff
+            job for job in all_jobs
+            if datetime.fromisoformat(normalize_timestamp(job["created_at"])) > recent_cutoff
         ]
         
         # Average processing time for completed jobs
@@ -278,8 +280,8 @@ async def get_job_statistics():
         if completed_jobs:
             processing_times = []
             for job in completed_jobs:
-                created = datetime.fromisoformat(job["created_at"].replace('Z', '+00:00'))
-                updated = datetime.fromisoformat(job["updated_at"].replace('Z', '+00:00'))
+                created = datetime.fromisoformat(normalize_timestamp(job["created_at"]))
+                updated = datetime.fromisoformat(normalize_timestamp(job["updated_at"]))
                 processing_times.append((updated - created).total_seconds())
             avg_processing_time = sum(processing_times) / len(processing_times)
         
@@ -1111,7 +1113,7 @@ async def cleanup_old_data(
         # Find old job history entries
         old_jobs = [
             job for job in job_history
-            if datetime.fromisoformat(job["created_at"].replace('Z', '+00:00')) < cutoff_date
+            if datetime.fromisoformat(normalize_timestamp(job["created_at"])) < cutoff_date
         ]
 
         cleanup_summary = {
@@ -1124,7 +1126,7 @@ async def cleanup_old_data(
             # Actually remove old jobs from history
             job_history = [
                 job for job in job_history
-                if datetime.fromisoformat(job["created_at"].replace('Z', '+00:00')) >= cutoff_date
+                if datetime.fromisoformat(normalize_timestamp(job["created_at"])) >= cutoff_date
             ]
             cleanup_summary["jobs_deleted"] = len(old_jobs)
         
