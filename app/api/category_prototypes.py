@@ -6,7 +6,7 @@ Endpoints for populating and managing material category prototypes
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 import numpy as np
 from datetime import datetime
 import logging
@@ -78,7 +78,7 @@ class PrototypePopulationResponse(BaseModel):
     categories_processed: int
     categories_succeeded: int
     categories_failed: int
-    details: List[Dict[str, any]]
+    details: List[Dict[str, Any]]
 
 
 async def generate_clip_text_embedding(texts: List[str]) -> List[float]:
@@ -101,7 +101,7 @@ async def generate_clip_text_embedding(texts: List[str]) -> List[float]:
         raise
 
 
-async def update_category_prototype(category_key: str, descriptions: List[str]) -> Dict[str, any]:
+async def update_category_prototype(category_key: str, descriptions: List[str]) -> Dict[str, Any]:
     """Update a category with prototype descriptions and embedding"""
     try:
         logger.info(f"Processing category: {category_key}")
