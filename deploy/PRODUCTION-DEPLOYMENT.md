@@ -24,15 +24,21 @@ cd /var/www/mivaa-pdf-extractor
 # Pull latest code
 git pull origin main
 
+# Install/update dependencies (CRITICAL - always run after git pull)
+source .venv/bin/activate
+pip install -r requirements.txt
+
 # Restart service
-sudo systemctl restart mivaa-api
+sudo systemctl restart mivaa-pdf-extractor
 
 # Check status
-sudo systemctl status mivaa-api
+sudo systemctl status mivaa-pdf-extractor
 
 # View logs
-sudo journalctl -u mivaa-api -f
+sudo journalctl -u mivaa-pdf-extractor -f
 ```
+
+**IMPORTANT:** Always run `pip install -r requirements.txt` after pulling code changes to ensure all dependencies (including new ones like `sentencepiece`) are installed.
 
 ### 2. Service Configuration
 
