@@ -2944,21 +2944,15 @@ async def process_document_with_discovery(
             )
             logger.info(f"✅ Image extraction completed: {len(pdf_result_with_images.extracted_images)} images found")
 
-            # AI-BASED IMAGE CLASSIFICATION: Filter out non-material images BEFORE processing
-            # This prevents wasting money on AI processing for irrelevant images (faces, logos, etc.)
+            # AI-BASED IMAGE CLASSIFICATION: Use Llama Vision for fast filtering (cheap & fast)
+            # Only use Claude for validation of uncertain cases (expensive but accurate)
             logger.info(f"🤖 Starting AI-based image classification for {len(pdf_result_with_images.extracted_images)} images...")
+            logger.info(f"   Strategy: Llama Vision (fast filter) → Claude Sonnet (validation for uncertain cases)")
 
-            async def classify_image_as_material(image_path: str, page_num: int) -> Dict[str, Any]:
+            async def classify_image_with_llama(image_path: str) -> Dict[str, Any]:
                 """
-                Classify an image as material-related or not using Claude/GPT-5.
-
-                Returns:
-                    {
-                        'is_material': bool,
-                        'classification': 'material_closeup' | 'material_in_situ' | 'non_material',
-                        'confidence': float,
-                        'reason': str
-                    }
+                Fast classification using Llama Vision (TogetherAI).
+                Returns confidence score - low confidence cases will be validated with Claude.
                 """
                 try:
                     # Read image and convert to base64
@@ -2966,24 +2960,93 @@ async def process_document_with_discovery(
                         image_bytes = f.read()
                         image_base64 = base64.b64encode(image_bytes).decode('utf-8')
 
-                    # Use Claude for classification (faster and cheaper than GPT-5 for this task)
+                    # Use Llama Vision for fast classification
+                    classification_prompt = """Analyze this image and classify it as:
+1. MATERIAL: Shows building/interior materials (tiles, wood, fabric, stone, metal, flooring, wallpaper, etc.) - either close-up texture or in application
+2. NOT_MATERIAL: Faces, logos, charts, diagrams, text, decorative graphics, abstract patterns
+
+Respond ONLY with JSON:
+{"is_material": true/false, "confidence": 0.0-1.0, "reason": "brief explanation"}"""
+
+                    import httpx
+                    together_api_key = os.getenv('TOGETHER_API_KEY')
+
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        response = await client.post(
+                            "https://api.together.xyz/v1/chat/completions",
+                            headers={
+                                "Authorization": f"Bearer {together_api_key}",
+                                "Content-Type": "application/json"
+                            },
+                            json={
+                                "model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+                                "messages": [{
+                                    "role": "user",
+                                    "content": [
+                                        {
+                                            "type": "image_url",
+                                            "image_url": {
+                                                "url": f"data:image/jpeg;base64,{image_base64}"
+                                            }
+                                        },
+                                        {
+                                            "type": "text",
+                                            "text": classification_prompt
+                                        }
+                                    ]
+                                }],
+                                "max_tokens": 512,
+                                "temperature": 0.1
+                            }
+                        )
+
+                        result_text = response.json()['choices'][0]['message']['content']
+
+                        # Parse JSON from response
+                        import json
+                        result = json.loads(result_text)
+
+                        return {
+                            'is_material': result.get('is_material', False),
+                            'confidence': result.get('confidence', 0.5),
+                            'reason': result.get('reason', 'Unknown'),
+                            'model': 'llama'
+                        }
+
+                except Exception as e:
+                    logger.warning(f"⚠️ Llama classification failed for {image_path}: {e}")
+                    # Return low confidence to trigger Claude validation
+                    return {
+                        'is_material': False,
+                        'confidence': 0.0,
+                        'reason': f'Llama failed: {str(e)}',
+                        'model': 'llama_failed'
+                    }
+
+            async def validate_with_claude(image_path: str) -> Dict[str, Any]:
+                """
+                Validate uncertain cases with Claude Sonnet (more accurate but expensive).
+                """
+                try:
+                    with open(image_path, 'rb') as f:
+                        image_bytes = f.read()
+                        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+
                     classification_prompt = """Analyze this image and classify it into ONE of these categories:
 
-            1. **material_closeup**: Close-up photo showing material texture, surface, pattern, or finish (tiles, wood, fabric, stone, metal, etc.)
-            2. **material_in_situ**: Material shown in application/context (bathroom with tiles, furniture with fabric, room with flooring, etc.)
-            3. **non_material**: NOT material-related (faces, logos, decorative graphics, charts, diagrams, text, random images, forests, abstract patterns that don't show actual material)
+1. **material_closeup**: Close-up photo showing material texture, surface, pattern, or finish (tiles, wood, fabric, stone, metal, etc.)
+2. **material_in_situ**: Material shown in application/context (bathroom with tiles, furniture with fabric, room with flooring, etc.)
+3. **non_material**: NOT material-related (faces, logos, decorative graphics, charts, diagrams, text, random images)
 
-            Respond ONLY with this JSON format:
-            {
-                "classification": "material_closeup" | "material_in_situ" | "non_material",
-                "confidence": 0.0-1.0,
-                "reason": "brief explanation"
-            }"""
+Respond ONLY with this JSON format:
+{
+    "classification": "material_closeup" | "material_in_situ" | "non_material",
+    "confidence": 0.0-1.0,
+    "reason": "brief explanation"
+}"""
 
-                    # CRITICAL FIX: Use Anthropic SDK directly instead of non-existent anthropic_service
                     from anthropic import AsyncAnthropic
                     import json
-                    # base64 is already imported globally at line 10 - DO NOT import again here!
 
                     anthropic_client = AsyncAnthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
 
@@ -3009,10 +3072,7 @@ async def process_document_with_discovery(
                         }]
                     )
 
-                    # Extract text from response
                     response_text = response.content[0].text
-
-                    # Parse JSON from response
                     result = json.loads(response_text)
 
                     is_material = result.get('classification') in ['material_closeup', 'material_in_situ']
@@ -3021,49 +3081,47 @@ async def process_document_with_discovery(
                         'is_material': is_material,
                         'classification': result.get('classification', 'non_material'),
                         'confidence': result.get('confidence', 0.0),
-                        'reason': result.get('reason', 'Unknown')
+                        'reason': result.get('reason', 'Unknown'),
+                        'model': 'claude'
                     }
 
                 except Exception as e:
-                    logger.error(f"❌ Image classification failed for {image_path}: {e}")
-                    # CRITICAL FIX: Default to EXCLUDING the image if classification fails
-                    # Previous behavior (is_material: True) was keeping 100% of images when Llama failed
-                    # This caused 1311 images to be extracted instead of ~94 material images
+                    logger.error(f"❌ Claude validation failed for {image_path}: {e}")
                     return {
                         'is_material': False,
                         'classification': 'unknown',
                         'confidence': 0.0,
-                        'reason': f'Classification failed: {str(e)} - defaulting to non-material for safety'
+                        'reason': f'Claude failed: {str(e)}',
+                        'model': 'claude_failed'
                     }
 
-            # Classify all images in parallel (with concurrency limit)
-            # REDUCED from 5 to 3 to prevent OOM kills during classification
+            # TWO-STAGE CLASSIFICATION: Llama (fast) → Claude (validation for uncertain)
             from asyncio import Semaphore
-            classification_semaphore = Semaphore(3)  # Classify 3 images at a time (memory optimized)
+            llama_semaphore = Semaphore(10)  # Llama is fast, can handle more concurrent requests
+            claude_semaphore = Semaphore(3)  # Claude is slower, limit concurrency
 
-            async def classify_with_semaphore(img_data):
-                async with classification_semaphore:
-                    image_path = img_data.get('path')
-                    if not image_path or not os.path.exists(image_path):
-                        return None
+            async def classify_with_two_stage(img_data):
+                image_path = img_data.get('path')
+                if not image_path or not os.path.exists(image_path):
+                    return None
 
-                    # Extract page number from filename
-                    filename = img_data.get('filename', '')
-                    page_num = None
-                    if '-' in filename:
-                        parts = filename.split('-')
-                        if len(parts) >= 2:
-                            try:
-                                page_num = int(parts[-2]) + 1  # Convert 0-indexed to 1-indexed
-                            except:
-                                pass
+                # STAGE 1: Fast Llama classification
+                async with llama_semaphore:
+                    llama_result = await classify_image_with_llama(image_path)
 
-                    classification = await classify_image_as_material(image_path, page_num)
-                    img_data['ai_classification'] = classification
-                    return img_data
+                # STAGE 2: If confidence is low (< 0.7), validate with Claude
+                if llama_result['confidence'] < 0.7:
+                    logger.debug(f"   🔍 Low confidence ({llama_result['confidence']:.2f}) - validating with Claude: {img_data.get('filename')}")
+                    async with claude_semaphore:
+                        claude_result = await validate_with_claude(image_path)
+                    img_data['ai_classification'] = claude_result
+                else:
+                    img_data['ai_classification'] = llama_result
 
-            # Run classification for all images
-            classification_tasks = [classify_with_semaphore(img_data) for img_data in pdf_result_with_images.extracted_images]
+                return img_data
+
+            # Run two-stage classification for all images
+            classification_tasks = [classify_with_two_stage(img_data) for img_data in pdf_result_with_images.extracted_images]
             classified_images = await asyncio.gather(*classification_tasks, return_exceptions=True)
 
             # Filter out non-material images
@@ -3194,9 +3252,6 @@ async def process_document_with_discovery(
                         if image_path and os.path.exists(image_path):
                             try:
                                 logger.info(f"   🎨 Generating CLIP embeddings for image {idx + 1}/{len(material_images)}")
-
-                                # Read image as base64
-                                import base64
                                 with open(image_path, 'rb') as img_file:
                                     image_bytes = img_file.read()
                                     image_base64 = f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('utf-8')}"
