@@ -458,8 +458,8 @@ class JobMonitorService:
 
 # Global instance
 job_monitor_service = JobMonitorService(
-    check_interval_seconds=30,  # Check every 30 seconds (was 60s)
-    stuck_job_timeout_minutes=5,  # Consider stuck after 5 minutes (was 30min) - 6x faster detection
+    check_interval_seconds=60,  # Check every 60 seconds (reasonable for monitoring)
+    stuck_job_timeout_minutes=30,  # Consider stuck after 30 minutes (PDF processing can take 20+ minutes)
     auto_restart_enabled=True  # Auto-restart enabled
 )
 
