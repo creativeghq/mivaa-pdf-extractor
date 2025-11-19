@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Centralized AI Client Service
 
@@ -10,10 +12,13 @@ configuration across the application.
 """
 
 import logging
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from anthropic import Anthropic, AsyncAnthropic
 import openai
 import httpx
+
+if TYPE_CHECKING:
+    from openai import OpenAI, AsyncOpenAI
 
 from ..config import get_settings
 from .ai_call_logger import AICallLogger
@@ -89,23 +94,23 @@ class AIClientService:
         return self._anthropic_async_client
     
     @property
-    def openai(self) -> openai.OpenAI:
+    def openai(self) -> "OpenAI":
         """Get synchronous OpenAI client (lazy initialization)."""
         if self._openai_client is None:
             if not self.settings.openai_api_key:
                 raise ValueError("OPENAI_API_KEY not configured")
-            
+
             self._openai_client = openai.OpenAI(
                 api_key=self.settings.openai_api_key,
                 timeout=self.settings.openai_timeout,
                 max_retries=3
             )
             logger.info("✅ OpenAI sync client initialized")
-        
+
         return self._openai_client
-    
+
     @property
-    def openai_async(self) -> openai.AsyncOpenAI:
+    def openai_async(self) -> "AsyncOpenAI":
         """Get asynchronous OpenAI client (lazy initialization)."""
         if self._openai_async_client is None:
             if not self.settings.openai_api_key:
