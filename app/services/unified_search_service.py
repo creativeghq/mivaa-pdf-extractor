@@ -17,6 +17,7 @@ from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
 from datetime import datetime
+from app.services.ai_client_service import get_ai_client_service
 
 logger = logging.getLogger(__name__)
 
@@ -905,11 +906,11 @@ class UnifiedSearchService:
         Cost: ~$0.0001 per query (GPT-4o-mini)
         """
         try:
-            from openai import AsyncOpenAI
             import json
-            import os
 
-            client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            # Use centralized AI client service
+            ai_service = get_ai_client_service()
+            client = ai_service.openai_async
 
             # Call GPT-4o-mini to parse query
             response = await client.chat.completions.create(

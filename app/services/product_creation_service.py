@@ -12,6 +12,7 @@ from datetime import datetime
 import json
 import time
 from app.services.ai_call_logger import AICallLogger
+from app.services.ai_client_service import get_ai_client_service
 
 logger = logging.getLogger(__name__)
 
@@ -1106,11 +1107,9 @@ class ProductCreationService:
             List of product candidates with classification metadata
         """
         try:
-            from app.config import get_settings
-            import anthropic
-
-            settings = get_settings()
-            client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+            # Use centralized AI client service
+            ai_service = get_ai_client_service()
+            client = ai_service.anthropic
 
             product_candidates = []
             batch_size = 10  # Process chunks in batches for efficiency

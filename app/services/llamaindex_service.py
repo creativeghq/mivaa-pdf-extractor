@@ -28,6 +28,7 @@ from .advanced_search_service import (
 )
 from .chunk_type_classification_service import ChunkTypeClassificationService
 from .async_queue_service import get_async_queue_service
+from .ai_client_service import get_ai_client_service
 
 # ✅ NEW: Import chunking enhancement services
 from .chunk_relationship_service import ChunkRelationshipService
@@ -4288,127 +4289,9 @@ Summary:"""
 
             self.logger.info(f"🤖 Calling Claude Vision API for image analysis: {os.path.basename(image_path)}")
 
-            # Initialize Anthropic client
-            anthropic_client = anthropic.Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
-
-            # Build prompt for material analysis
-            prompt = """You are an expert material and product analyst. Analyze this image and provide detailed material properties in JSON format:
-
-{
-  "material_type": "<primary material type>",
-  "color": "<dominant color>",
-  "texture": "<surface texture>",
-  "finish": "<surface finish>",
-  "pattern": "<visible pattern>",
-  "confidence": <0-1 confidence score>,
-  "quality_score": <0-1 image quality>,
-  "validation_status": "<valid/needs_review/invalid>",
-  "content_description": "<what you see>",
-  "materials_identified": ["<material1>", "<material2>"],
-  "issues": ["<any quality issues>"],
-  "recommendations": ["<improvement suggestions>"]
-}
-
-Focus on identifying construction materials, tiles, flooring, wall coverings, and architectural elements."""
-
-            # Call Claude Vision API directly
-            response = anthropic_client.messages.create(
-                model="claude-3-5-sonnet-20241022",
-                max_tokens=2048,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/jpeg",
-                                "data": image_base64
-                            }
-                        },
-                        {
-                            "type": "text",
-                            "text": prompt
-                        }
-                    ]
-                }]
-            )
-
-            # Parse response
-            response_text = response.content[0].text.strip()
-            try:
-                # Handle Claude's tendency to add extra text after JSON
-                # Find the last closing brace to extract only the JSON portion
-                last_brace = response_text.rfind('}')
-                if last_brace != -1:
-                    json_text = response_text[:last_brace + 1]
-                    analysis_result = json.loads(json_text)
-                else:
-                    # No JSON found, raise error to trigger fallback
-                    raise json.JSONDecodeError("No JSON object found", response_text, 0)
-
-            except json.JSONDecodeError as e:
-                # If JSON parsing fails, extract what we can
-                self.logger.warning(f"Failed to parse Claude response as JSON: {e}")
-                self.logger.debug(f"Raw response (first 500 chars): {response_text[:500]}")
-                analysis_result = {
-                    "material_type": "unknown",
-                    "color": "unknown",
-                    "texture": "unknown",
-                    "finish": "unknown",
-                    "pattern": "unknown",
-                    "confidence": 0.0,
-                    "quality_score": 0.5,
-                    "validation_status": "needs_review",
-                    "content_description": response_text[:200],
-                    "materials_identified": [],
-                    "issues": [f"Failed to parse Claude response: {str(e)}"],
-                    "recommendations": []
-                }
-
-            # Transform Claude response to our expected format
-            claude_analysis = {
-                "success": True,
-                "analysis": {
-                    "material_type": analysis_result.get('material_type', 'unknown'),
-                    "color": analysis_result.get('color', 'unknown'),
-                    "texture": analysis_result.get('texture', 'unknown'),
-                    "finish": analysis_result.get('finish', 'unknown'),
-                    "pattern": analysis_result.get('pattern', 'unknown'),
-                    "confidence": analysis_result.get('confidence', 0.0),
-                    "quality_score": analysis_result.get('quality_score', 0.0),
-                    "validation_status": analysis_result.get('validation_status', 'unknown'),
-                    "extracted_features": {
-                        "content_description": analysis_result.get('content_description', ''),
-                        "materials_identified": analysis_result.get('materials_identified', []),
-                        "issues": analysis_result.get('issues', []),
-                        "recommendations": analysis_result.get('recommendations', [])
-                    },
-                    "composition": {},
-                    "mechanical_properties": {},
-                    "thermal_properties": {},
-                    "safety_ratings": {}
-                },
-                "processing_time_ms": 0
-            }
-
-            self.logger.info(f"✅ Claude analysis successful: {claude_analysis['analysis']['material_type']} (confidence: {claude_analysis['analysis']['confidence']:.3f})")
-            return claude_analysis
-
-        except Exception as e:
-            self.logger.error(f"Failed to call Claude Vision API: {e}")
-            return {"success": False, "error": str(e)}
-
-    async def _call_claude_image_analysis(self, image_base64: str, image_path: str) -> Dict[str, Any]:
-        """Call Claude Vision API directly for comprehensive image analysis."""
-        try:
-            import anthropic
-            import json
-
-            self.logger.info(f"🤖 Calling Claude Vision API for image analysis: {os.path.basename(image_path)}")
-
-            # Initialize Anthropic client
-            anthropic_client = anthropic.Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
+            # Use centralized AI client service
+            ai_service = get_ai_client_service()
+            anthropic_client = ai_service.anthropic
 
             # Build prompt for material analysis
             prompt = """You are an expert material and product analyst. Analyze this image and provide detailed material properties in JSON format:

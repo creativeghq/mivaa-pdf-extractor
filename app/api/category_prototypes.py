@@ -13,14 +13,16 @@ import logging
 from openai import AsyncOpenAI
 
 from app.services.supabase_client import get_supabase_client
+from app.services.ai_client_service import get_ai_client_service
 from app.config import Settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/category-prototypes", tags=["Category Prototypes"])
 
-# Initialize settings and OpenAI client
+# Initialize settings and use centralized AI client service
 settings = Settings()
-openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
+ai_service = get_ai_client_service()
+openai_client = ai_service.openai_async
 
 # Category prototype descriptions
 CATEGORY_PROTOTYPES: Dict[str, List[str]] = {

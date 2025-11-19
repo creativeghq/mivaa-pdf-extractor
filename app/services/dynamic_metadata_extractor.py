@@ -26,6 +26,7 @@ import anthropic
 import openai
 
 from app.services.ai_call_logger import AICallLogger
+from app.services.ai_client_service import get_ai_client_service
 
 logger = logging.getLogger(__name__)
 
@@ -293,7 +294,9 @@ class DynamicMetadataExtractor:
         start_time = datetime.now()
 
         try:
-            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+            # Use centralized AI client service
+            ai_service = get_ai_client_service()
+            client = ai_service.anthropic
 
             response = client.messages.create(
                 model="claude-sonnet-4-5",
@@ -333,7 +336,9 @@ class DynamicMetadataExtractor:
         start_time = datetime.now()
 
         try:
-            client = openai.OpenAI(api_key=OPENAI_API_KEY)
+            # Use centralized AI client service
+            ai_service = get_ai_client_service()
+            client = ai_service.openai
 
             response = client.chat.completions.create(
                 model="gpt-4o",

@@ -25,6 +25,7 @@ from datetime import datetime
 
 from app.services.ai_call_logger import AICallLogger
 from app.services.supabase_client import SupabaseClient
+from app.services.ai_client_service import get_ai_client_service
 
 logger = logging.getLogger(__name__)
 
@@ -188,13 +189,14 @@ class EnhancedMaterialClassifier:
 
 Respond ONLY with valid JSON, no additional text."""
 
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    "https://api.together.xyz/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {TOGETHER_API_KEY}",
-                        "Content-Type": "application/json"
-                    },
+            # Use centralized httpx client
+            ai_service = get_ai_client_service()
+            response = await ai_service.httpx.post(
+                "https://api.together.xyz/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {TOGETHER_API_KEY}",
+                    "Content-Type": "application/json"
+                },
                     json={
                         "model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
                         "messages": [

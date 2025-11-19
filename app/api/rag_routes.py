@@ -36,6 +36,7 @@ from app.services.product_relationship_service import ProductRelationshipService
 from app.services.search_prompt_service import SearchPromptService
 from app.services.stuck_job_analyzer import stuck_job_analyzer
 from app.services.vecs_service import get_vecs_service
+from app.services.ai_client_service import get_ai_client_service
 from app.utils.logging import PDFProcessingLogger
 from app.utils.timeout_guard import with_timeout, TimeoutConstants, TimeoutError, ProgressiveTimeoutStrategy
 from app.utils.circuit_breaker import claude_breaker, llama_breaker, clip_breaker, CircuitBreakerError
@@ -2590,6 +2591,10 @@ async def process_document_with_discovery(
         # This allows ProductDiscoveryService to extract specific page ranges
         temp_pdf_path = None
         try:
+            # EVENT-BASED CLEANUP: Register resource manager
+            from app.utils.resource_manager import get_resource_manager
+            resource_manager = get_resource_manager()
+
             # Create temp file that persists during processing
             temp_fd, temp_pdf_path = tempfile.mkstemp(suffix='.pdf', prefix=f'{document_id}_')
             os.close(temp_fd)  # Close file descriptor, we'll write with aiofiles
@@ -2599,6 +2604,18 @@ async def process_document_with_discovery(
                 await f.write(file_content)
 
             logger.info(f"📁 Saved PDF to temp file: {temp_pdf_path}")
+
+            # Register temp file with resource manager
+            await resource_manager.register_resource(
+                resource_id=f"temp_pdf_{document_id}",
+                resource_type="file",
+                path=temp_pdf_path,
+                job_id=job_id,
+                metadata={"document_id": document_id, "filename": filename}
+            )
+
+            # Mark as IN_USE before PyMuPDF opens it
+            await resource_manager.mark_in_use(f"temp_pdf_{document_id}", job_id)
 
             # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on document size
             file_size_mb = len(file_content) / (1024 * 1024)
@@ -3045,12 +3062,12 @@ Respond ONLY with this JSON format:
     "reason": "brief explanation"
 }"""
 
-                    from anthropic import AsyncAnthropic
                     import json
 
-                    anthropic_client = AsyncAnthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
+                    # Use centralized AI client service
+                    ai_service = get_ai_client_service()
 
-                    response = await anthropic_client.messages.create(
+                    response = await ai_service.anthropic_async.messages.create(
                         model="claude-sonnet-4-20250514",
                         max_tokens=1024,
                         messages=[{
@@ -3331,21 +3348,29 @@ Respond ONLY with this JSON format:
             # Update pdf_result_with_images.extracted_images with uploaded material images
             pdf_result_with_images.extracted_images = material_images
 
-            # Cleanup temporary files for ALL images (material + non-material)
-            logger.info(f"🧹 Cleaning up temporary files...")
+            # EVENT-BASED CLEANUP: Register image files and mark ready for cleanup
+            logger.info(f"🧹 Registering temporary image files for cleanup...")
+            from app.utils.resource_manager import get_resource_manager
+            resource_manager = get_resource_manager()
+
             all_images_for_cleanup = material_images + non_material_images
-            files_deleted = 0
             for img_data in all_images_for_cleanup:
                 image_path = img_data.get('path')
-                if image_path and os.path.exists(image_path):
-                    try:
-                        os.remove(image_path)
-                        files_deleted += 1
-                        logger.debug(f"   🗑️  Deleted: {os.path.basename(image_path)}")
-                    except Exception as e:
-                        logger.warning(f"   ⚠️  Could not delete {image_path}: {e}")
+                if image_path:
+                    # Register the image file
+                    await resource_manager.register_resource(
+                        resource_id=f"image_{os.path.basename(image_path)}",
+                        resource_type="file",
+                        path=image_path,
+                        job_id=job_id,
+                        metadata={"document_id": document_id}
+                    )
+                    # Immediately release it (processing complete)
+                    await resource_manager.release_resource(f"image_{os.path.basename(image_path)}", job_id)
 
-            logger.info(f"✅ Deleted {files_deleted}/{len(all_images_for_cleanup)} temporary image files")
+            # Cleanup all ready resources
+            cleaned_count = await resource_manager.cleanup_ready_resources()
+            logger.info(f"✅ Cleaned up {cleaned_count} temporary image files")
             logger.info(f"📊 Image extraction complete: {len(material_images)} material images, {len(non_material_images)} non-material images")
         except Exception as extraction_error:
             logger.error(f"❌ CRITICAL: Image extraction failed: {extraction_error}")
@@ -4154,7 +4179,16 @@ Respond ONLY with this JSON format:
         gc.collect()
         logger.info("✅ All components unloaded, memory freed")
 
-        # NOTE: Temporary file cleanup moved to admin panel cron job
+        # EVENT-BASED CLEANUP: Release temp PDF file and cleanup
+        from app.utils.resource_manager import get_resource_manager
+        resource_manager = get_resource_manager()
+
+        # Release the temp PDF file
+        await resource_manager.release_resource(f"temp_pdf_{document_id}", job_id)
+
+        # Cleanup all ready resources
+        cleaned_count = await resource_manager.cleanup_ready_resources()
+        logger.info(f"✅ Cleaned up {cleaned_count} temporary files")
 
     except Exception as e:
         logger.error(f"❌ [PRODUCT DISCOVERY PIPELINE] FAILED: {e}", exc_info=True)
@@ -4168,7 +4202,16 @@ Respond ONLY with this JSON format:
             except Exception as unload_error:
                 logger.warning(f"⚠️ Failed to unload {component_name}: {unload_error}")
 
-        # NOTE: Temporary file cleanup moved to admin panel cron job
+        # EVENT-BASED CLEANUP: Release resources on error
+        from app.utils.resource_manager import get_resource_manager
+        resource_manager = get_resource_manager()
+
+        # Release the temp PDF file
+        await resource_manager.release_resource(f"temp_pdf_{document_id}", job_id)
+
+        # Cleanup all ready resources
+        cleaned_count = await resource_manager.cleanup_ready_resources()
+        logger.info(f"✅ Cleaned up {cleaned_count} temporary files after error")
 
         # Force garbage collection
         import gc

@@ -44,6 +44,7 @@ import io
 
 from app.services.ai_call_logger import AICallLogger
 from app.services.dynamic_metadata_extractor import DynamicMetadataExtractor
+from app.services.ai_client_service import get_ai_client_service
 
 logger = logging.getLogger(__name__)
 
@@ -817,10 +818,12 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
     ) -> Dict[str, Any]:
         """Use Claude Sonnet 4.5 for product discovery"""
         start_time = datetime.now()
-        
+
         try:
-            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-            
+            # Use centralized AI client service
+            ai_service = get_ai_client_service()
+            client = ai_service.anthropic
+
             response = client.messages.create(
                 model="claude-sonnet-4-5",
                 max_tokens=16000,  # Large response for comprehensive catalog
@@ -898,10 +901,12 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
     ) -> Dict[str, Any]:
         """Use GPT-5 for product discovery"""
         start_time = datetime.now()
-        
+
         try:
-            client = openai.OpenAI(api_key=OPENAI_API_KEY)
-            
+            # Use centralized AI client service
+            ai_service = get_ai_client_service()
+            client = ai_service.openai
+
             response = client.chat.completions.create(
                 model="gpt-4o",  # Will be GPT-5 when available
                 messages=[

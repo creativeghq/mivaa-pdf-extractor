@@ -836,11 +836,9 @@ class PDFProcessor:
                             self.logger.warning(f"OCR failed for page {page_num + 1}: {page_error}")
                             continue
 
-                # AGGRESSIVE MEMORY CLEANUP: Force garbage collection after each batch
-                import gc
-                gc.collect()
-                gc.collect()  # Run twice for better cleanup
-                self.logger.debug(f"Completed OCR batch {batch_idx // batch_size + 1}, memory freed")
+                # MEMORY CLEANUP: Defer gc.collect() until after doc.close()
+                # Calling gc.collect() here destroys PyMuPDF textpage objects still in use
+                self.logger.debug(f"Completed OCR batch {batch_idx // batch_size + 1}")
 
                 # Log memory usage after batch
                 try:
@@ -853,9 +851,8 @@ class PDFProcessor:
 
             doc.close()
 
-            # Final aggressive garbage collection
+            # Final garbage collection AFTER doc.close()
             import gc
-            gc.collect()
             gc.collect()
 
             return '\n'.join(all_text)

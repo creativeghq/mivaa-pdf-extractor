@@ -28,6 +28,7 @@ import anthropic
 
 from app.services.ai_call_logger import AICallLogger
 from app.services.supabase_client import SupabaseClient
+from app.services.ai_client_service import get_ai_client_service
 
 logger = logging.getLogger(__name__)
 
@@ -323,8 +324,9 @@ Respond ONLY with valid JSON, no additional text."""
 
             for attempt in range(1, max_retries + 1):
                 try:
-                    async with httpx.AsyncClient(timeout=120.0) as client:
-                        response = await client.post(
+                    # Use centralized httpx client
+                    ai_service = get_ai_client_service()
+                    response = await ai_service.httpx.post(
                             "https://api.together.xyz/v1/chat/completions",
                             headers={
                                 "Authorization": f"Bearer {TOGETHER_API_KEY}",
@@ -497,10 +499,9 @@ Respond ONLY with valid JSON, no additional text."""
         """Analyze image with Claude 4.5 Sonnet Vision"""
         start_time = time.time()
         try:
-            if not ANTHROPIC_API_KEY:
-                raise ValueError("ANTHROPIC_API_KEY not set - cannot perform Claude vision analysis")
-
-            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+            # Use centralized AI client service
+            ai_service = get_ai_client_service()
+            client = ai_service.anthropic
 
             prompt = """Validate and analyze this material/product image. Provide response in JSON format:
 {
@@ -631,10 +632,9 @@ Respond ONLY with valid JSON, no additional text."""
     ) -> Dict[str, Any]:
         """Analyze image with Claude 4.5 Sonnet Vision from base64 data"""
         try:
-            if not ANTHROPIC_API_KEY:
-                raise ValueError("ANTHROPIC_API_KEY not set - cannot perform Claude vision analysis")
-
-            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+            # Use centralized AI client service
+            ai_service = get_ai_client_service()
+            client = ai_service.anthropic
 
             prompt = """Validate and analyze this material/product image. Provide response in JSON format:
 {
