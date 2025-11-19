@@ -1136,109 +1136,134 @@ class PDFProcessor:
                     )
 
                     if processed_image_info:
-                        # ✅ SAVE TO DATABASE IMMEDIATELY (don't accumulate in memory)
-                        image_id = await supabase_client.save_single_image(
-                            image_info=processed_image_info,
-                            document_id=document_id,
-                            workspace_id=workspace_id,
-                            image_index=absolute_idx
-                        )
-
-                        if image_id:
-                            images_saved_count += 1
-
-                            # Keep only minimal metadata for return value
+                        # When skip_upload=True, we're doing AI classification first
+                        # So we skip DB save and CLIP generation until after classification
+                        if skip_upload:
+                            # Keep full metadata for classification (including path)
                             images_metadata.append({
-                                'id': image_id,
-                                'storage_url': processed_image_info.get('storage_url'),
+                                'path': image_path,
+                                'filename': processed_image_info.get('filename'),
                                 'page_number': processed_image_info.get('page_number'),
                                 'width': processed_image_info.get('width'),
-                                'height': processed_image_info.get('height')
+                                'height': processed_image_info.get('height'),
+                                'size_bytes': processed_image_info.get('size_bytes'),
+                                'format': processed_image_info.get('format'),
+                                'quality_score': processed_image_info.get('quality_score', 0.5),
+                                'dimensions': processed_image_info.get('dimensions'),
+                                # Keep storage info even though not uploaded yet
+                                'storage_url': processed_image_info.get('storage_url'),
+                                'storage_path': processed_image_info.get('storage_path'),
+                                'storage_bucket': processed_image_info.get('storage_bucket')
                             })
+                            self.logger.debug(f"   ⏭️  Skipped DB save for AI classification: {processed_image_info.get('filename')}")
 
-                            self.logger.info(f"   ✅ Saved image {absolute_idx + 1}/{len(valid_image_files)} to DB: {image_id}")
+                            # Don't delete temp file - needed for classification
+                            # Don't clear from memory yet - needed for classification
 
-                            # Extract metadata before clearing processed_image_info
-                            page_number = processed_image_info.get('page_number', 1)
-                            quality_score = processed_image_info.get('quality_score', 0.5)
-
-                            # ✅ GENERATE CLIP EMBEDDINGS IMMEDIATELY (5 types)
-                            # This eliminates the need for a separate CLIP generation stage
-                            try:
-                                self.logger.info(f"   🎨 Generating CLIP embeddings for image {absolute_idx + 1}/{len(valid_image_files)}")
-
-                                # Read image as base64 for embedding generation
-                                import base64
-                                with open(image_path, 'rb') as img_file:
-                                    image_bytes = img_file.read()
-                                    image_base64 = f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('utf-8')}"
-
-                                # Generate all embeddings (visual, color, texture, application, material)
-                                embedding_result = await embedding_service.generate_all_embeddings(
-                                    entity_id=image_id,
-                                    entity_type="image",
-                                    text_content="",
-                                    image_data=image_base64,
-                                    material_properties={}
-                                )
-
-                                if embedding_result and embedding_result.get('success'):
-                                    embeddings = embedding_result.get('embeddings', {})
-
-                                    # Save visual CLIP embedding to VECS
-                                    visual_embedding = embeddings.get('visual_512')
-                                    if visual_embedding:
-                                        await vecs_service.upsert_image_embedding(
-                                            image_id=image_id,
-                                            clip_embedding=visual_embedding,
-                                            metadata={
-                                                'document_id': document_id,
-                                                'page_number': page_number,
-                                                'quality_score': quality_score
-                                            }
-                                        )
-
-                                    # Save specialized embeddings (color, texture, application, material)
-                                    specialized_embeddings = {}
-                                    if embeddings.get('color_512'):
-                                        specialized_embeddings['color'] = embeddings.get('color_512')
-                                    if embeddings.get('texture_512'):
-                                        specialized_embeddings['texture'] = embeddings.get('texture_512')
-                                    if embeddings.get('application_512'):
-                                        specialized_embeddings['application'] = embeddings.get('application_512')
-                                    if embeddings.get('material_512'):
-                                        specialized_embeddings['material'] = embeddings.get('material_512')
-
-                                    if specialized_embeddings:
-                                        await vecs_service.upsert_specialized_embeddings(
-                                            image_id=image_id,
-                                            embeddings=specialized_embeddings,
-                                            metadata={
-                                                'document_id': document_id,
-                                                'page_number': page_number
-                                            }
-                                        )
-
-                                    clip_embeddings_count += 1
-                                    self.logger.info(f"   ✅ Generated {1 + len(specialized_embeddings)} CLIP embeddings for image {image_id}")
-                                else:
-                                    self.logger.warning(f"   ⚠️ CLIP embedding generation failed for image {image_id}")
-
-                            except Exception as clip_error:
-                                self.logger.error(f"   ❌ Failed to generate CLIP embeddings: {clip_error}")
-                                # Continue processing even if CLIP fails
                         else:
-                            self.logger.warning(f"   ⚠️ Failed to save image {absolute_idx + 1} to DB")
+                            # Normal flow: Save to DB immediately
+                            image_id = await supabase_client.save_single_image(
+                                image_info=processed_image_info,
+                                document_id=document_id,
+                                workspace_id=workspace_id,
+                                image_index=absolute_idx
+                            )
 
-                        # ✅ DELETE FROM DISK IMMEDIATELY (free disk space)
-                        try:
-                            os.remove(image_path)
-                            self.logger.debug(f"   🗑️  Deleted from disk: {image_file}")
-                        except Exception as e:
-                            self.logger.warning(f"   ⚠️  Could not delete {image_file}: {e}")
+                            if image_id:
+                                images_saved_count += 1
 
-                        # ✅ CLEAR FROM MEMORY (don't keep processed_image_info)
-                        del processed_image_info
+                                # Keep only minimal metadata for return value
+                                images_metadata.append({
+                                    'id': image_id,
+                                    'storage_url': processed_image_info.get('storage_url'),
+                                    'page_number': processed_image_info.get('page_number'),
+                                    'width': processed_image_info.get('width'),
+                                    'height': processed_image_info.get('height')
+                                })
+
+                                self.logger.info(f"   ✅ Saved image {absolute_idx + 1}/{len(valid_image_files)} to DB: {image_id}")
+
+                                # Extract metadata before clearing processed_image_info
+                                page_number = processed_image_info.get('page_number', 1)
+                                quality_score = processed_image_info.get('quality_score', 0.5)
+
+                                # ✅ GENERATE CLIP EMBEDDINGS IMMEDIATELY (5 types)
+                                # This eliminates the need for a separate CLIP generation stage
+                                try:
+                                    self.logger.info(f"   🎨 Generating CLIP embeddings for image {absolute_idx + 1}/{len(valid_image_files)}")
+
+                                    # Read image as base64 for embedding generation
+                                    import base64
+                                    with open(image_path, 'rb') as img_file:
+                                        image_bytes = img_file.read()
+                                        image_base64 = f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('utf-8')}"
+
+                                    # Generate all embeddings (visual, color, texture, application, material)
+                                    embedding_result = await embedding_service.generate_all_embeddings(
+                                        entity_id=image_id,
+                                        entity_type="image",
+                                        text_content="",
+                                        image_data=image_base64,
+                                        material_properties={}
+                                    )
+
+                                    if embedding_result and embedding_result.get('success'):
+                                        embeddings = embedding_result.get('embeddings', {})
+
+                                        # Save visual CLIP embedding to VECS
+                                        visual_embedding = embeddings.get('visual_512')
+                                        if visual_embedding:
+                                            await vecs_service.upsert_image_embedding(
+                                                image_id=image_id,
+                                                clip_embedding=visual_embedding,
+                                                metadata={
+                                                    'document_id': document_id,
+                                                    'page_number': page_number,
+                                                    'quality_score': quality_score
+                                                }
+                                            )
+
+                                        # Save specialized embeddings (color, texture, application, material)
+                                        specialized_embeddings = {}
+                                        if embeddings.get('color_512'):
+                                            specialized_embeddings['color'] = embeddings.get('color_512')
+                                        if embeddings.get('texture_512'):
+                                            specialized_embeddings['texture'] = embeddings.get('texture_512')
+                                        if embeddings.get('application_512'):
+                                            specialized_embeddings['application'] = embeddings.get('application_512')
+                                        if embeddings.get('material_512'):
+                                            specialized_embeddings['material'] = embeddings.get('material_512')
+
+                                        if specialized_embeddings:
+                                            await vecs_service.upsert_specialized_embeddings(
+                                                image_id=image_id,
+                                                embeddings=specialized_embeddings,
+                                                metadata={
+                                                    'document_id': document_id,
+                                                    'page_number': page_number
+                                                }
+                                            )
+
+                                        clip_embeddings_count += 1
+                                        self.logger.info(f"   ✅ Generated {1 + len(specialized_embeddings)} CLIP embeddings for image {image_id}")
+                                    else:
+                                        self.logger.warning(f"   ⚠️ CLIP embedding generation failed for image {image_id}")
+
+                                except Exception as clip_error:
+                                    self.logger.error(f"   ❌ Failed to generate CLIP embeddings: {clip_error}")
+                                    # Continue processing even if CLIP fails
+                            else:
+                                self.logger.warning(f"   ⚠️ Failed to save image {absolute_idx + 1} to DB")
+
+                            # ✅ DELETE FROM DISK IMMEDIATELY (free disk space) - only when not skipping upload
+                            try:
+                                os.remove(image_path)
+                                self.logger.debug(f"   🗑️  Deleted from disk: {image_file}")
+                            except Exception as e:
+                                self.logger.warning(f"   ⚠️  Could not delete {image_file}: {e}")
+
+                            # ✅ CLEAR FROM MEMORY (don't keep processed_image_info)
+                            del processed_image_info
 
                         # Report progress every 5 images
                         if progress_callback and absolute_idx % 5 == 0:
@@ -1278,23 +1303,37 @@ class PDFProcessor:
 
                 # Replace images list with minimal metadata
                 images = images_metadata
-                self.logger.info(f"   ✅ Completed processing {images_saved_count}/{len(valid_image_files)} images")
-                self.logger.info(f"   ✅ Generated CLIP embeddings for {clip_embeddings_count}/{images_saved_count} images")
+
+                # Log different messages based on skip_upload mode
+                skip_upload = processing_options.get('skip_upload', False)
+                if skip_upload:
+                    self.logger.info(f"   ✅ Extracted {len(valid_image_files)} images (DB save deferred for AI classification)")
+                    self.logger.info(f"   📁 Temporary files kept for classification: {len(images)} images")
+                else:
+                    self.logger.info(f"   ✅ Completed processing {images_saved_count}/{len(valid_image_files)} images")
+                    self.logger.info(f"   ✅ Generated CLIP embeddings for {clip_embeddings_count}/{images_saved_count} images")
             else:
                 self.logger.warning(f"⚠️ Image directory does not exist: {image_dir}")
                 self.logger.warning(f"   Output directory contents: {os.listdir(output_dir) if os.path.exists(output_dir) else 'N/A'}")
 
-            # NOTE: Temporary file cleanup moved to admin panel cron job
+            # NOTE: Temporary file cleanup - when skip_upload=True, files are kept for classification
+            # Files will be deleted after classification in rag_routes.py
 
-            # Apply post-processing filters if requested
-            if processing_options.get('remove_duplicates', True):
-                images = self._remove_duplicate_images(images)
+            # Apply post-processing filters if requested (only when not skipping upload)
+            skip_upload = processing_options.get('skip_upload', False)
+            if not skip_upload:
+                if processing_options.get('remove_duplicates', True):
+                    images = self._remove_duplicate_images(images)
 
-            if processing_options.get('quality_filter', True):
-                min_quality = processing_options.get('min_quality_score', 0.3)
-                images = [img for img in images if img.get('quality_score', 1.0) >= min_quality]
+                if processing_options.get('quality_filter', True):
+                    min_quality = processing_options.get('min_quality_score', 0.3)
+                    images = [img for img in images if img.get('quality_score', 1.0) >= min_quality]
 
-            self.logger.info(f"Successfully extracted and uploaded {len(images)} images to Supabase Storage")
+            if skip_upload:
+                self.logger.info(f"Successfully extracted {len(images)} images (ready for AI classification)")
+            else:
+                self.logger.info(f"Successfully extracted and uploaded {len(images)} images to Supabase Storage")
+
             return images
 
         except Exception as e:
