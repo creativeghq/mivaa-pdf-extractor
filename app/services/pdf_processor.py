@@ -916,44 +916,44 @@ class PDFProcessor:
 
                 for i in range(batch_idx, batch_end):
                     page_num = page_range[i]
-                if page_num < len(doc):
-                    page = doc.load_page(page_num)
+                    if page_num < len(doc):
+                        page = doc.load_page(page_num)
 
-                    # Render page as image (reduced zoom to save memory)
-                    mat = fitz.Matrix(2.0, 2.0)  # 2.0x zoom (reduced from 2.5x to save memory)
-                    pix = page.get_pixmap(matrix=mat)
-                    img_data = pix.tobytes('png')
+                        # Render page as image (reduced zoom to save memory)
+                        mat = fitz.Matrix(2.0, 2.0)  # 2.0x zoom (reduced from 2.5x to save memory)
+                        pix = page.get_pixmap(matrix=mat)
+                        img_data = pix.tobytes('png')
 
-                    # Explicitly free pixmap memory
-                    pix = None
+                        # Explicitly free pixmap memory
+                        pix = None
 
-                    # Extract text with OCR
-                    try:
-                        from PIL import Image
-                        import io
+                        # Extract text with OCR
+                        try:
+                            from PIL import Image
+                            import io
 
-                        img = Image.open(io.BytesIO(img_data))
-                        ocr_results = ocr_service.extract_text_from_image(img)
+                            img = Image.open(io.BytesIO(img_data))
+                            ocr_results = ocr_service.extract_text_from_image(img)
 
-                        # Combine all OCR results for this page
-                        page_text = []
-                        for result in ocr_results:
-                            if result.text.strip() and result.confidence > 0.3:
-                                page_text.append(result.text.strip())
+                            # Combine all OCR results for this page
+                            page_text = []
+                            for result in ocr_results:
+                                if result.text.strip() and result.confidence > 0.3:
+                                    page_text.append(result.text.strip())
 
-                        if page_text:
-                            combined_page_text = ' '.join(page_text)
-                            all_text.append(f"## Page {page_num + 1}\n\n{combined_page_text}\n")
-                            self.logger.debug(f"Page {page_num + 1}: Extracted {len(combined_page_text)} characters")
+                            if page_text:
+                                combined_page_text = ' '.join(page_text)
+                                all_text.append(f"## Page {page_num + 1}\n\n{combined_page_text}\n")
+                                self.logger.debug(f"Page {page_num + 1}: Extracted {len(combined_page_text)} characters")
 
-                        # Explicitly free image memory
-                        img.close()
-                        img = None
-                        img_data = None
+                            # Explicitly free image memory
+                            img.close()
+                            img = None
+                            img_data = None
 
-                    except Exception as page_error:
-                        self.logger.warning(f"OCR failed for page {page_num + 1}: {page_error}")
-                        continue
+                        except Exception as page_error:
+                            self.logger.warning(f"OCR failed for page {page_num + 1}: {page_error}")
+                            continue
 
                 # AGGRESSIVE MEMORY CLEANUP: Force garbage collection after each batch
                 import gc
