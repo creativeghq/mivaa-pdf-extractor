@@ -590,8 +590,10 @@ class PDFProcessor:
                         failed_pages = []
 
                         try:
-                            # Process in SMALLER batches of 5 pages to reduce memory and avoid hanging
-                            batch_size = 5
+                            # Process in SMALLER batches of 3 pages to reduce memory and avoid OOM kills
+                            # With 2 workers × 3 pages = 6 pages max in memory (was 10 pages, originally 20)
+                            # Slower but MUCH more stable - prioritize success over speed
+                            batch_size = 3
                             for batch_start in range(0, total_pages, batch_size):
                                 batch_end = min(batch_start + batch_size, total_pages)
                                 self.logger.info(f"Processing pages {batch_start + 1}-{batch_end} with PyMuPDF4LLM")
@@ -788,8 +790,9 @@ class PDFProcessor:
 
             self.logger.info(f"Processing {len(page_numbers)} pages with OCR in batches")
 
-            # Process pages in batches of 5 to manage memory
-            batch_size = 5
+            # Process pages in batches of 3 to manage memory and prevent OOM kills
+            # Slower but more stable - prioritize success over speed
+            batch_size = 3
             for batch_idx in range(0, len(page_numbers), batch_size):
                 batch_pages = page_numbers[batch_idx:batch_idx + batch_size]
                 self.logger.info(f"OCR Batch {batch_idx // batch_size + 1}: Processing pages {[p+1 for p in batch_pages]}")
@@ -901,8 +904,9 @@ class PDFProcessor:
 
             self.logger.info(f"Processing {len(page_range)} pages with OCR in batches")
 
-            # Process in batches of 5 pages to manage memory
-            batch_size = 5
+            # Process in batches of 3 pages to manage memory and prevent OOM kills
+            # Slower but more stable - prioritize success over speed
+            batch_size = 3
             total_batches = (len(page_range) + batch_size - 1) // batch_size
 
             for batch_idx in range(0, len(page_range), batch_size):
