@@ -2983,6 +2983,7 @@ async def process_document_with_discovery(
                     # CRITICAL FIX: Use Anthropic SDK directly instead of non-existent anthropic_service
                     from anthropic import AsyncAnthropic
                     import json
+                    import base64
 
                     anthropic_client = AsyncAnthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
 
