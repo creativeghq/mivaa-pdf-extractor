@@ -3,11 +3,13 @@ Real Embeddings Service - Step 4 Implementation
 
 Generates 3 real embedding types using AI models:
 1. Text (1536D) - OpenAI text-embedding-3-small
-2. Visual SigLIP (512D) - Google SigLIP ViT-SO400M visual embeddings (+19-29% accuracy)
+2. Visual CLIP (512D) - OpenAI CLIP ViT-B/32 visual embeddings
 3. Multimodal Fusion (2048D) - Combined text+visual
 
 Removed fake embeddings (color, texture, application) as they were just
 downsampled versions of text embeddings - redundant and wasteful.
+
+Note: Switched from SigLIP to CLIP due to sentence-transformers compatibility issues.
 """
 
 import logging
@@ -250,18 +252,21 @@ class RealEmbeddingsService:
         image_url: Optional[str],
         image_data: Optional[str]
     ) -> Optional[List[float]]:
-        """Generate visual SigLIP embedding using Google SigLIP ViT-SO400M model."""
+        """Generate visual CLIP embedding using OpenAI CLIP ViT-B/32 model."""
         try:
-            from sentence_transformers import SentenceTransformer
+            from transformers import CLIPProcessor, CLIPModel
+            import torch
             import base64
             from PIL import Image
             import io
             import numpy as np
 
-            # Initialize SigLIP model (cached after first use)
-            if not hasattr(self, '_siglip_model'):
-                self._siglip_model = SentenceTransformer('google/siglip-so400m-patch14-384')
-                self.logger.info("✅ Initialized SigLIP model: google/siglip-so400m-patch14-384")
+            # Initialize CLIP model (cached after first use)
+            if not hasattr(self, '_clip_model'):
+                self._clip_model = CLIPModel.from_pretrained('openai/clip-vit-base-patch32')
+                self._clip_processor = CLIPProcessor.from_pretrained('openai/clip-vit-base-patch32')
+                self._clip_model.eval()  # Set to evaluation mode
+                self.logger.info("✅ Initialized CLIP model: openai/clip-vit-base-patch32")
 
             # Convert base64 image data to PIL Image
             if image_data:
@@ -281,13 +286,16 @@ class RealEmbeddingsService:
                 elif pil_image.mode != 'RGB':
                     pil_image = pil_image.convert('RGB')
 
-                # Generate embedding using SigLIP model
-                embedding = self._siglip_model.encode(pil_image, convert_to_numpy=True)
+                # Generate embedding using CLIP model
+                with torch.no_grad():
+                    inputs = self._clip_processor(images=pil_image, return_tensors="pt")
+                    image_features = self._clip_model.get_image_features(**inputs)
 
-                # Normalize to unit vector
-                embedding = embedding / np.linalg.norm(embedding)
+                    # Normalize to unit vector
+                    embedding = image_features / image_features.norm(dim=-1, keepdim=True)
+                    embedding = embedding.squeeze().cpu().numpy()
 
-                self.logger.info(f"✅ Generated SigLIP embedding: {len(embedding)}D")
+                self.logger.info(f"✅ Generated CLIP visual embedding: {len(embedding)}D")
                 return embedding.tolist()
 
             elif image_url:
@@ -306,13 +314,16 @@ class RealEmbeddingsService:
                         elif pil_image.mode != 'RGB':
                             pil_image = pil_image.convert('RGB')
 
-                        # Generate embedding using SigLIP model
-                        embedding = self._siglip_model.encode(pil_image, convert_to_numpy=True)
+                        # Generate embedding using CLIP model
+                        with torch.no_grad():
+                            inputs = self._clip_processor(images=pil_image, return_tensors="pt")
+                            image_features = self._clip_model.get_image_features(**inputs)
 
-                        # Normalize to unit vector
-                        embedding = embedding / np.linalg.norm(embedding)
+                            # Normalize to unit vector
+                            embedding = image_features / image_features.norm(dim=-1, keepdim=True)
+                            embedding = embedding.squeeze().cpu().numpy()
 
-                        self.logger.info(f"✅ Generated SigLIP embedding from URL: {len(embedding)}D")
+                        self.logger.info(f"✅ Generated CLIP visual embedding from URL: {len(embedding)}D")
                         return embedding.tolist()
 
         except Exception as e:
@@ -328,7 +339,7 @@ class RealEmbeddingsService:
         image_data: Optional[str]
     ) -> Optional[Dict[str, List[float]]]:
         """
-        Generate specialized SigLIP embeddings for different search types.
+        Generate specialized CLIP embeddings for different search types.
 
         This creates 4 specialized embeddings for different search types:
         - Color: Focuses on color palette and color relationships
@@ -336,19 +347,22 @@ class RealEmbeddingsService:
         - Style: Focuses on design style and aesthetic
         - Material: Focuses on material type and properties
 
-        Uses SigLIP's superior visual understanding to create specialized embeddings.
+        Uses CLIP's visual understanding to create specialized embeddings.
         """
         try:
-            from sentence_transformers import SentenceTransformer
+            from transformers import CLIPProcessor, CLIPModel
+            import torch
             import base64
             from PIL import Image
             import io
             import numpy as np
 
-            # Initialize SigLIP model (cached after first use)
-            if not hasattr(self, '_siglip_model'):
-                self._siglip_model = SentenceTransformer('google/siglip-so400m-patch14-384')
-                self.logger.info("✅ Initialized SigLIP model for specialized embeddings")
+            # Initialize CLIP model (cached after first use)
+            if not hasattr(self, '_clip_model'):
+                self._clip_model = CLIPModel.from_pretrained('openai/clip-vit-base-patch32')
+                self._clip_processor = CLIPProcessor.from_pretrained('openai/clip-vit-base-patch32')
+                self._clip_model.eval()  # Set to evaluation mode
+                self.logger.info("✅ Initialized CLIP model for specialized embeddings")
 
             # Get PIL image
             pil_image = None
@@ -379,16 +393,20 @@ class RealEmbeddingsService:
             elif pil_image.mode != 'RGB':
                 pil_image = pil_image.convert('RGB')
 
-            # Generate base embedding using SigLIP model
-            base_embedding = self._siglip_model.encode(pil_image, convert_to_numpy=True)
+            # Generate base embedding using CLIP model
+            with torch.no_grad():
+                inputs = self._clip_processor(images=pil_image, return_tensors="pt")
+                image_features = self._clip_model.get_image_features(**inputs)
 
-            # Normalize to unit vector
-            base_embedding = base_embedding / np.linalg.norm(base_embedding)
+                # Normalize to unit vector
+                embedding = image_features / image_features.norm(dim=-1, keepdim=True)
+                base_embedding = embedding.squeeze().cpu().numpy()
+
             base_list = base_embedding.tolist()
 
             # For specialized embeddings, we use the base embedding
             # In a more advanced implementation, you could:
-            # 1. Use SigLIP text encoder with prompts
+            # 1. Use CLIP text encoder with prompts
             # 2. Fine-tune separate models for each aspect
             # 3. Use attention mechanisms to focus on different features
 
