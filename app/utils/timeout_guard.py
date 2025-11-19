@@ -171,22 +171,22 @@ class ProgressiveTimeoutStrategy:
         """
         Calculate timeout for PDF extraction based on document size.
 
-        Base: 10s per page
-        Scaling: +2s per page for large PDFs (>50 pages)
-        Max: 30min
+        Base: 20s per page (increased from 10s due to memory optimizations)
+        Scaling: +5s per page for large PDFs (>50 pages)
+        Max: 60min (increased from 30min)
         """
-        base_timeout = page_count * 10  # 10s per page
+        base_timeout = page_count * 20  # 20s per page (memory-optimized processing is slower)
 
         # Add extra time for large PDFs
         if page_count > 50:
-            extra_time = (page_count - 50) * 2
+            extra_time = (page_count - 50) * 5  # Increased from 2s to 5s
             base_timeout += extra_time
 
-        # Add time based on file size (1s per MB)
-        base_timeout += file_size_mb
+        # Add time based on file size (2s per MB, increased from 1s)
+        base_timeout += file_size_mb * 2
 
-        # Cap at 30 minutes
-        return min(base_timeout, 1800)
+        # Cap at 60 minutes (increased from 30min to accommodate slower memory-optimized processing)
+        return min(base_timeout, 3600)
 
     @staticmethod
     def calculate_product_discovery_timeout(page_count: int, categories: list) -> float:
