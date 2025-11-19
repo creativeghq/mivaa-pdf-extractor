@@ -3037,8 +3037,9 @@ async def process_document_with_discovery(
                     }
 
             # Classify all images in parallel (with concurrency limit)
+            # REDUCED from 5 to 3 to prevent OOM kills during classification
             from asyncio import Semaphore
-            classification_semaphore = Semaphore(5)  # Classify 5 images at a time
+            classification_semaphore = Semaphore(3)  # Classify 3 images at a time (memory optimized)
 
             async def classify_with_semaphore(img_data):
                 async with classification_semaphore:

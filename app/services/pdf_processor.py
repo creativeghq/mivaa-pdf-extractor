@@ -143,12 +143,13 @@ class PDFProcessor:
         self.default_timeout = self.config.get('timeout_seconds', 7200)  # 2 hours for large PDFs with OCR
         self.max_file_size = self.config.get('max_file_size_mb', 50) * 1024 * 1024  # Convert to bytes
         self.temp_dir_base = self.config.get('temp_dir', tempfile.gettempdir())
-        
+
         # Initialize thread pool executor for async processing
-        max_workers = self.config.get('max_workers', 4)
+        # REDUCED from 4 to 2 workers to prevent OOM kills (each worker processes 5 pages = 10 pages max in memory)
+        max_workers = self.config.get('max_workers', 2)
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
-        
-        self.logger.info("PDFProcessor initialized with config: %s", self.config)
+
+        self.logger.info("PDFProcessor initialized with config: %s (max_workers=%d for memory efficiency)", self.config, max_workers)
     
     def __del__(self):
         """Cleanup resources when the processor is destroyed."""
@@ -595,6 +596,15 @@ class PDFProcessor:
                                 batch_end = min(batch_start + batch_size, total_pages)
                                 self.logger.info(f"Processing pages {batch_start + 1}-{batch_end} with PyMuPDF4LLM")
 
+                                # MEMORY MONITORING: Log memory before batch
+                                try:
+                                    import psutil
+                                    process = psutil.Process()
+                                    mem_mb = process.memory_info().rss / 1024 / 1024
+                                    self.logger.info(f"   💾 Memory before batch: {mem_mb:.1f} MB")
+                                except:
+                                    pass
+
                                 for page_num in range(batch_start, batch_end):
                                     # Verify page number is valid
                                     if page_num >= total_pages:
@@ -623,6 +633,20 @@ class PDFProcessor:
                                     except Exception as page_error:
                                         self.logger.error(f"Page {page_num + 1} failed with error: {page_error}")
                                         raise
+
+                                # AGGRESSIVE MEMORY CLEANUP after each batch
+                                import gc
+                                gc.collect()
+                                gc.collect()  # Run twice for better cleanup
+
+                                # Log memory after batch
+                                try:
+                                    import psutil
+                                    process = psutil.Process()
+                                    mem_mb = process.memory_info().rss / 1024 / 1024
+                                    self.logger.info(f"   💾 Memory after batch: {mem_mb:.1f} MB (freed memory)")
+                                except:
+                                    pass
                         finally:
                             # Always close the document when done
                             doc.close()
@@ -810,13 +834,26 @@ class PDFProcessor:
                             self.logger.warning(f"OCR failed for page {page_num + 1}: {page_error}")
                             continue
 
-                # Force garbage collection after each batch
+                # AGGRESSIVE MEMORY CLEANUP: Force garbage collection after each batch
+                import gc
                 gc.collect()
+                gc.collect()  # Run twice for better cleanup
                 self.logger.debug(f"Completed OCR batch {batch_idx // batch_size + 1}, memory freed")
+
+                # Log memory usage after batch
+                try:
+                    import psutil
+                    process = psutil.Process()
+                    mem_mb = process.memory_info().rss / 1024 / 1024
+                    self.logger.info(f"   💾 Memory after OCR batch {batch_idx // batch_size + 1}: {mem_mb:.1f} MB")
+                except:
+                    pass
 
             doc.close()
 
-            # Final garbage collection
+            # Final aggressive garbage collection
+            import gc
+            gc.collect()
             gc.collect()
 
             return '\n'.join(all_text)
@@ -914,10 +951,20 @@ class PDFProcessor:
                         self.logger.warning(f"OCR failed for page {page_num + 1}: {page_error}")
                         continue
 
-                # Force garbage collection after each batch
+                # AGGRESSIVE MEMORY CLEANUP: Force garbage collection after each batch
                 import gc
                 gc.collect()
+                gc.collect()  # Run twice for better cleanup
                 self.logger.debug(f"Completed OCR batch {batch_num}/{total_batches}, memory freed")
+
+                # Log memory usage after batch
+                try:
+                    import psutil
+                    process = psutil.Process()
+                    mem_mb = process.memory_info().rss / 1024 / 1024
+                    self.logger.info(f"   💾 Memory after OCR batch {batch_num}/{total_batches}: {mem_mb:.1f} MB")
+                except:
+                    pass
 
                 # Log progress after each batch
                 progress = (batch_end / len(page_range)) * 80  # OCR is 80% of total processing
