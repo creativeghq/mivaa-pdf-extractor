@@ -711,28 +711,30 @@ Respond ONLY with valid JSON, no additional text."""
             raise RuntimeError(f"Claude 4.5 Sonnet Vision analysis failed: {str(e)}") from e
 
     async def _generate_clip_embedding(self, image_base64: str) -> List[float]:
-        """Generate SigLIP embedding for image using MIVAA gateway"""
+        """Generate SigLIP embedding for image using RealEmbeddingsService"""
         try:
-            # Try to call MIVAA gateway for SigLIP embeddings
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    "http://localhost:8000/api/embeddings/clip-image",
-                    json={
-                        "image_data": image_base64,
-                        "model": "siglip-so400m-patch14-384",
-                        "normalize": True
-                    }
-                )
+            # Use RealEmbeddingsService directly instead of HTTP call
+            from .real_embeddings_service import RealEmbeddingsService
 
-                if response.status_code == 200:
-                    result = response.json()
-                    if result.get("success") and result.get("embedding"):
-                        return result["embedding"]
+            if not hasattr(self, '_embeddings_service'):
+                self._embeddings_service = RealEmbeddingsService()
+
+            # Generate visual embedding using SigLIP
+            visual_embedding = await self._embeddings_service._generate_visual_embedding(
+                image_url=None,
+                image_data=image_base64
+            )
+
+            if visual_embedding and len(visual_embedding) == 512:
+                self.logger.info(f"✅ Generated SigLIP embedding: {len(visual_embedding)}D")
+                return visual_embedding
+            else:
+                self.logger.error("SigLIP embedding generation returned invalid result")
+                raise RuntimeError("Failed to generate valid SigLIP embedding")
+
         except Exception as e:
-            self.logger.warning(f"SigLIP embedding generation failed: {e}")
-
-        # Return placeholder 512D vector if SigLIP fails
-        return [0.0] * 512
+            self.logger.error(f"❌ SigLIP embedding generation failed: {e}")
+            raise RuntimeError(f"CLIP embedding generation failed: {str(e)}") from e
 
     def _extract_material_properties(
         self,

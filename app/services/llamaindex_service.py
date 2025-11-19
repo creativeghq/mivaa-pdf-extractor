@@ -979,6 +979,50 @@ class LlamaIndexService:
             self.logger.error(f"Failed to initialize advanced search service: {e}")
             self.advanced_search_service = None
 
+    def _extract_topics_from_text(self, text: str, max_topics: int = 5) -> List[str]:
+        """
+        Extract key topics from text using simple keyword extraction.
+
+        Args:
+            text: Text to analyze
+            max_topics: Maximum number of topics to return
+
+        Returns:
+            List of key topics/keywords
+        """
+        try:
+            # Simple keyword extraction using word frequency
+            # Remove common words and extract most frequent meaningful words
+            import re
+            from collections import Counter
+
+            # Common stop words to exclude
+            stop_words = {
+                'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+                'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'be',
+                'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
+                'would', 'should', 'could', 'may', 'might', 'must', 'can', 'this',
+                'that', 'these', 'those', 'it', 'its', 'they', 'their', 'them'
+            }
+
+            # Extract words (lowercase, alphanumeric only)
+            words = re.findall(r'\b[a-z]{3,}\b', text.lower())
+
+            # Filter out stop words
+            meaningful_words = [w for w in words if w not in stop_words]
+
+            # Count frequency
+            word_counts = Counter(meaningful_words)
+
+            # Get top N most common words
+            topics = [word for word, count in word_counts.most_common(max_topics)]
+
+            return topics if topics else ["document", "content", "analysis"]
+
+        except Exception as e:
+            self.logger.warning(f"Topic extraction failed: {e}")
+            return ["document", "content"]
+
     async def _load_existing_documents(self):
         """Load existing documents from database and create indices for search."""
         if not self.available:
