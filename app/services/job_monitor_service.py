@@ -133,14 +133,15 @@ class JobMonitorService:
         except Exception as e:
             logger.error(f"❌ Error in check_and_recover: {e}", exc_info=True)
 
-    async def _detect_heartbeat_timeout_jobs(self, heartbeat_timeout_seconds: int = 120) -> List[Dict[str, Any]]:
+    async def _detect_heartbeat_timeout_jobs(self, heartbeat_timeout_seconds: int = 900) -> List[Dict[str, Any]]:
         """
         Detect jobs that haven't sent a heartbeat in heartbeat_timeout_seconds.
 
-        This provides FAST crash detection (2min) compared to stuck_job_timeout (5min).
+        This provides crash detection compared to stuck_job_timeout.
+        Increased to 900s (15min) to accommodate long-running PDF processing operations.
 
         Args:
-            heartbeat_timeout_seconds: Consider job crashed if no heartbeat for this long (default: 120s = 2min)
+            heartbeat_timeout_seconds: Consider job crashed if no heartbeat for this long (default: 900s = 15min)
 
         Returns:
             List of stuck jobs detected by heartbeat timeout
