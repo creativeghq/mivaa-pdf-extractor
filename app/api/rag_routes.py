@@ -2582,6 +2582,7 @@ async def process_document_with_discovery(
 
         from app.services.product_discovery_service import ProductDiscoveryService
         from app.services.pdf_processor import PDFProcessor
+        from app.services.supabase_client import get_supabase_client
         import tempfile
         import aiofiles
 
