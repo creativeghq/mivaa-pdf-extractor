@@ -773,6 +773,16 @@ jobs:
           WantedBy=multi-user.target
           SERVICE_EOF
 
+          echo "🔒 Securing systemd service file permissions..."
+          ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          # Restrict permissions to root-only (600)
+          sudo chmod 600 /etc/systemd/system/mivaa-pdf-extractor.service
+
+          # Verify permissions
+          echo '✅ Service file permissions:'
+          ls -la /etc/systemd/system/mivaa-pdf-extractor.service
+          "
+
       # 4.6. Restart service
       - name: 🔄 Restart service
         run: |
