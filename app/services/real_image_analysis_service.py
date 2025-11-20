@@ -357,94 +357,94 @@ Respond ONLY with valid JSON, no additional text."""
                             }
                         )
 
-                        if response.status_code != 200:
-                            error_text = response.text
-                            self.logger.error(f"Llama API error {response.status_code}: {error_text}")
-                            raise RuntimeError(f"Llama API returned error {response.status_code}: {error_text}")
+                    if response.status_code != 200:
+                        error_text = response.text
+                        self.logger.error(f"Llama API error {response.status_code}: {error_text}")
+                        raise RuntimeError(f"Llama API returned error {response.status_code}: {error_text}")
 
-                        result = response.json()
-                        content = result["choices"][0]["message"]["content"]
+                    result = response.json()
+                    content = result["choices"][0]["message"]["content"]
 
-                        # Parse JSON from response
-                        try:
-                            # Clean up response - remove markdown code blocks if present
-                            content = content.strip()
-                            if content.startswith("```json"):
-                                content = content[7:]
-                            if content.startswith("```"):
-                                content = content[3:]
-                            if content.endswith("```"):
-                                content = content[:-3]
-                            content = content.strip()
+                    # Parse JSON from response
+                    try:
+                        # Clean up response - remove markdown code blocks if present
+                        content = content.strip()
+                        if content.startswith("```json"):
+                            content = content[7:]
+                        if content.startswith("```"):
+                            content = content[3:]
+                        if content.endswith("```"):
+                            content = content[:-3]
+                        content = content.strip()
 
-                            # Check if content is empty
-                            if not content:
-                                error_msg = f"Llama returned empty response (attempt {attempt}/{max_retries})"
-                                self.logger.warning(error_msg)
-                                if attempt < max_retries:
-                                    # Exponential backoff: 2^attempt seconds
-                                    import asyncio
-                                    await asyncio.sleep(2 ** attempt)
-                                    continue
-                                else:
-                                    raise RuntimeError(f"Llama returned empty response after {max_retries} attempts")
-
-                            # Handle extra text after JSON (similar to Claude fix)
-                            last_brace = content.rfind('}')
-                            if last_brace != -1:
-                                json_text = content[:last_brace + 1]
-                                analysis = json.loads(json_text)
-                            else:
-                                # Try parsing as-is
-                                analysis = json.loads(content)
-
-                            self.logger.info(f"✅ Llama analysis successful on attempt {attempt}")
-
-                            # Log AI call
-                            latency_ms = int((time.time() - start_time) * 1000)
-                            usage = result.get("usage", {})
-                            input_tokens = usage.get("prompt_tokens", 0)
-                            output_tokens = usage.get("completion_tokens", 0)
-
-                            confidence_breakdown = {
-                                "model_confidence": 0.90,
-                                "completeness": analysis.get("confidence", 0.85),
-                                "consistency": 0.88,
-                                "validation": 0.80
-                            }
-                            confidence_score = (
-                                0.30 * confidence_breakdown["model_confidence"] +
-                                0.30 * confidence_breakdown["completeness"] +
-                                0.25 * confidence_breakdown["consistency"] +
-                                0.15 * confidence_breakdown["validation"]
-                            )
-
-                            await self.ai_logger.log_llama_call(
-                                task="image_vision_analysis",
-                                model="llama-4-scout-17b",
-                                response=result,
-                                latency_ms=latency_ms,
-                                confidence_score=confidence_score,
-                                confidence_breakdown=confidence_breakdown,
-                                action="use_ai_result",
-                                job_id=job_id
-                            )
-
-                            return {
-                                "model": "llama-4-scout-17b-vision",
-                                "analysis": analysis,
-                                "success": True
-                            }
-                        except json.JSONDecodeError as e:
-                            error_msg = f"Failed to parse Llama response as JSON (attempt {attempt}/{max_retries}): {e}. Content: {content[:200]}"
+                        # Check if content is empty
+                        if not content:
+                            error_msg = f"Llama returned empty response (attempt {attempt}/{max_retries})"
                             self.logger.warning(error_msg)
                             if attempt < max_retries:
+                                # Exponential backoff: 2^attempt seconds
                                 import asyncio
                                 await asyncio.sleep(2 ** attempt)
                                 continue
                             else:
-                                self.logger.error(f"Full response: {result}")
-                                raise RuntimeError(f"Llama returned invalid JSON after {max_retries} attempts: {e}")
+                                raise RuntimeError(f"Llama returned empty response after {max_retries} attempts")
+
+                        # Handle extra text after JSON (similar to Claude fix)
+                        last_brace = content.rfind('}')
+                        if last_brace != -1:
+                            json_text = content[:last_brace + 1]
+                            analysis = json.loads(json_text)
+                        else:
+                            # Try parsing as-is
+                            analysis = json.loads(content)
+
+                        self.logger.info(f"✅ Llama analysis successful on attempt {attempt}")
+
+                        # Log AI call
+                        latency_ms = int((time.time() - start_time) * 1000)
+                        usage = result.get("usage", {})
+                        input_tokens = usage.get("prompt_tokens", 0)
+                        output_tokens = usage.get("completion_tokens", 0)
+
+                        confidence_breakdown = {
+                            "model_confidence": 0.90,
+                            "completeness": analysis.get("confidence", 0.85),
+                            "consistency": 0.88,
+                            "validation": 0.80
+                        }
+                        confidence_score = (
+                            0.30 * confidence_breakdown["model_confidence"] +
+                            0.30 * confidence_breakdown["completeness"] +
+                            0.25 * confidence_breakdown["consistency"] +
+                            0.15 * confidence_breakdown["validation"]
+                        )
+
+                        await self.ai_logger.log_llama_call(
+                            task="image_vision_analysis",
+                            model="llama-4-scout-17b",
+                            response=result,
+                            latency_ms=latency_ms,
+                            confidence_score=confidence_score,
+                            confidence_breakdown=confidence_breakdown,
+                            action="use_ai_result",
+                            job_id=job_id
+                        )
+
+                        return {
+                            "model": "llama-4-scout-17b-vision",
+                            "analysis": analysis,
+                            "success": True
+                        }
+                    except json.JSONDecodeError as e:
+                        error_msg = f"Failed to parse Llama response as JSON (attempt {attempt}/{max_retries}): {e}. Content: {content[:200]}"
+                        self.logger.warning(error_msg)
+                        if attempt < max_retries:
+                            import asyncio
+                            await asyncio.sleep(2 ** attempt)
+                            continue
+                        else:
+                            self.logger.error(f"Full response: {result}")
+                            raise RuntimeError(f"Llama returned invalid JSON after {max_retries} attempts: {e}")
 
                 except Exception as e:
                     last_error = e
