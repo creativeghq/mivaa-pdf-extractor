@@ -235,6 +235,9 @@ jobs:
 
           cd \"\$APP_DIR\"
 
+          # Configure git to use HTTPS with token instead of SSH
+          git remote set-url origin https://x-access-token:${{ secrets.GH_PAT }}@github.com/creativeghq/mivaa-pdf-extractor.git
+
           # Pull latest changes for the branch
           git fetch origin \"\$DEPLOY_BRANCH\"
           git reset --hard origin/\"\$DEPLOY_BRANCH\"
