@@ -637,8 +637,7 @@ class LlamaIndexService:
         if not self.available or not self.enable_multimodal:
             self.logger.info("Multi-modal capabilities disabled")
             self.multimodal_llm = None
-            self._image_embeddings = None
-            self._image_embeddings_loaded = True  # Mark as loaded (disabled) to prevent retry
+            self.image_embeddings = None
             self.image_reader = None
             return
 
@@ -662,11 +661,14 @@ class LlamaIndexService:
                 self.logger.warning(f"Unsupported multi-modal LLM model: {self.multimodal_llm_model}")
                 self.multimodal_llm = None
 
-            # MEMORY OPTIMIZATION: Defer CLIP initialization to prevent OOM (7-8GB RAM)
-            # CLIP will be loaded lazily on first access via the image_embeddings property
-            self._image_embeddings = None
-            self._image_embeddings_loaded = False
-            self.logger.info("ℹ️  CLIP embeddings deferred (memory optimization) - will load on first use")
+            # Initialize CLIP embeddings - CRITICAL for multimodal image-text association
+            try:
+                self.image_embeddings = ClipEmbedding(model_name=self.image_embedding_model)
+                self.logger.info(f"✅ CLIP image embeddings initialized: {self.image_embedding_model}")
+            except Exception as e:
+                self.logger.error(f"❌ CRITICAL: Failed to initialize CLIP embeddings: {e}")
+                self.logger.warning("⚠️  Service will continue without CLIP - multimodal capabilities limited")
+                self.image_embeddings = None
 
             # Initialize image reader
             self.image_reader = ImageReader()
@@ -675,25 +677,8 @@ class LlamaIndexService:
         except Exception as e:
             self.logger.error(f"Failed to initialize multi-modal components: {e}")
             self.multimodal_llm = None
-            self._image_embeddings = None
-            self._image_embeddings_loaded = True  # Mark as loaded (failed) to prevent retry
+            self.image_embeddings = None
             self.image_reader = None
-
-    @property
-    def image_embeddings(self):
-        """Lazy-load CLIP embeddings only when first accessed (memory optimization)."""
-        if not self._image_embeddings_loaded:
-            self._image_embeddings_loaded = True
-            try:
-                from llama_index.embeddings.clip import ClipEmbedding
-                self.logger.info(f"🔄 Loading CLIP embeddings on-demand: {self.image_embedding_model}")
-                self._image_embeddings = ClipEmbedding(model_name=self.image_embedding_model)
-                self.logger.info(f"✅ CLIP image embeddings initialized: {self.image_embedding_model}")
-            except Exception as e:
-                self.logger.error(f"❌ CRITICAL: Failed to initialize CLIP embeddings: {e}")
-                self.logger.warning("⚠️  Service will continue without CLIP - multimodal capabilities limited")
-                self._image_embeddings = None
-        return self._image_embeddings
 
     def process_images_with_ocr(self, image_paths: List[str]) -> List[Any]:
         """Process images with OCR to extract text for Phase 8 multi-modal capabilities."""
@@ -993,50 +978,6 @@ class LlamaIndexService:
         except Exception as e:
             self.logger.error(f"Failed to initialize advanced search service: {e}")
             self.advanced_search_service = None
-
-    def _extract_topics_from_text(self, text: str, max_topics: int = 5) -> List[str]:
-        """
-        Extract key topics from text using simple keyword extraction.
-
-        Args:
-            text: Text to analyze
-            max_topics: Maximum number of topics to return
-
-        Returns:
-            List of key topics/keywords
-        """
-        try:
-            # Simple keyword extraction using word frequency
-            # Remove common words and extract most frequent meaningful words
-            import re
-            from collections import Counter
-
-            # Common stop words to exclude
-            stop_words = {
-                'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
-                'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'be',
-                'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
-                'would', 'should', 'could', 'may', 'might', 'must', 'can', 'this',
-                'that', 'these', 'those', 'it', 'its', 'they', 'their', 'them'
-            }
-
-            # Extract words (lowercase, alphanumeric only)
-            words = re.findall(r'\b[a-z]{3,}\b', text.lower())
-
-            # Filter out stop words
-            meaningful_words = [w for w in words if w not in stop_words]
-
-            # Count frequency
-            word_counts = Counter(meaningful_words)
-
-            # Get top N most common words
-            topics = [word for word, count in word_counts.most_common(max_topics)]
-
-            return topics if topics else ["document", "content", "analysis"]
-
-        except Exception as e:
-            self.logger.warning(f"Topic extraction failed: {e}")
-            return ["document", "content"]
 
     async def _load_existing_documents(self):
         """Load existing documents from database and create indices for search."""
@@ -5246,39 +5187,65 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
             if metadata_conditions:
                 metadata_filter_sql = "AND " + " AND ".join(metadata_conditions)
 
-            # 🎯 Enhanced multi-vector search query combining all 6 embedding types + metadata filters
+            # 🎯 Enhanced multi-vector search query combining all embedding types + metadata filters
+            # Architecture: Products have text embeddings, Images have visual embeddings, connected via relationships
             query_sql = f"""
+            WITH product_image_scores AS (
+                SELECT
+                    p.id as product_id,
+                    p.product_name,
+                    p.description,
+                    p.metadata,
+                    p.workspace_id,
+                    p.document_id,
+                    p.text_embedding_1536,
+                    img.visual_clip_embedding_512,
+                    img.multimodal_fusion_embedding_2048,
+                    rel.relevance_score as image_relevance,
+                    ROW_NUMBER() OVER (PARTITION BY p.id ORDER BY rel.relevance_score DESC) as rn
+                FROM products p
+                LEFT JOIN product_image_relationships rel ON p.id = rel.product_id
+                LEFT JOIN document_images img ON rel.image_id = img.id
+                WHERE p.workspace_id = '{workspace_id}'
+                    AND p.text_embedding_1536 IS NOT NULL
+                    {metadata_filter_sql}
+            )
             SELECT
-                p.id,
-                p.product_name,
-                p.description,
-                p.metadata,
-                p.workspace_id,
-                p.document_id,
+                product_id as id,
+                product_name,
+                description,
+                metadata,
+                workspace_id,
+                document_id,
                 (
-                    ({text_weight} * (1 - (p.text_embedding_1536 <=> '{embedding_str}'::vector(1536)))) +
-                    ({visual_weight} * (1 - (p.visual_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
-                    ({color_weight} * (1 - (p.color_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
-                    ({texture_weight} * (1 - (p.texture_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
-                    ({style_weight} * (1 - (p.style_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
-                    ({material_weight} * (1 - (p.material_clip_embedding_512 <=> '{embedding_str}'::vector(512))))
+                    ({text_weight} * (1 - (text_embedding_1536 <=> '{embedding_str}'::vector(1536)))) +
+                    CASE
+                        WHEN visual_clip_embedding_512 IS NOT NULL THEN
+                            ({visual_weight} * (1 - (visual_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) * image_relevance
+                        ELSE 0
+                    END +
+                    CASE
+                        WHEN multimodal_fusion_embedding_2048 IS NOT NULL THEN
+                            ({color_weight} + {texture_weight} + {style_weight} + {material_weight}) *
+                            (1 - (multimodal_fusion_embedding_2048 <=> '{embedding_str}'::vector(2048))) * image_relevance / 4
+                        ELSE 0
+                    END
                 ) as weighted_score
-            FROM products p
-            WHERE p.workspace_id = '{workspace_id}'
-                AND p.text_embedding_1536 IS NOT NULL
-                AND p.visual_clip_embedding_512 IS NOT NULL
-                AND p.color_clip_embedding_512 IS NOT NULL
-                AND p.texture_clip_embedding_512 IS NOT NULL
-                AND p.style_clip_embedding_512 IS NOT NULL
-                AND p.material_clip_embedding_512 IS NOT NULL
-                {metadata_filter_sql}
+            FROM product_image_scores
+            WHERE rn = 1  -- Use highest relevance image per product
                 AND (
-                    ({text_weight} * (1 - (p.text_embedding_1536 <=> '{embedding_str}'::vector(1536)))) +
-                    ({visual_weight} * (1 - (p.visual_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
-                    ({color_weight} * (1 - (p.color_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
-                    ({texture_weight} * (1 - (p.texture_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
-                    ({style_weight} * (1 - (p.style_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
-                    ({material_weight} * (1 - (p.material_clip_embedding_512 <=> '{embedding_str}'::vector(512))))
+                    ({text_weight} * (1 - (text_embedding_1536 <=> '{embedding_str}'::vector(1536)))) +
+                    CASE
+                        WHEN visual_clip_embedding_512 IS NOT NULL THEN
+                            ({visual_weight} * (1 - (visual_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) * image_relevance
+                        ELSE 0
+                    END +
+                    CASE
+                        WHEN multimodal_fusion_embedding_2048 IS NOT NULL THEN
+                            ({color_weight} + {texture_weight} + {style_weight} + {material_weight}) *
+                            (1 - (multimodal_fusion_embedding_2048 <=> '{embedding_str}'::vector(2048))) * image_relevance / 4
+                        ELSE 0
+                    END
                 ) >= {similarity_threshold}
             ORDER BY weighted_score DESC
             LIMIT {top_k}

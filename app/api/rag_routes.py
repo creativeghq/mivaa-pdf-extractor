@@ -3285,7 +3285,10 @@ Respond ONLY with this JSON format:
                                 if embedding_result and embedding_result.get('success'):
                                     embeddings = embedding_result.get('embeddings', {})
 
-                                    # Save visual CLIP embedding
+                                    # Prepare database update for document_images table
+                                    db_update = {}
+
+                                    # Save visual CLIP embedding to VECS
                                     visual_embedding = embeddings.get('visual_512')
                                     if visual_embedding:
                                         await vecs_service.upsert_image_embedding(
@@ -3293,21 +3296,24 @@ Respond ONLY with this JSON format:
                                             clip_embedding=visual_embedding,
                                             metadata={
                                                 'document_id': document_id,
+                                                'workspace_id': workspace_id,
                                                 'page_number': img_data.get('page_number', 1),
                                                 'quality_score': img_data.get('quality_score', 0.5)
                                             }
                                         )
+                                        # Also save to document_images table for JOIN queries
+                                        db_update['visual_clip_embedding_512'] = visual_embedding
 
-                                    # Save specialized embeddings
+                                    # Save specialized embeddings to VECS
                                     specialized_embeddings = {}
-                                    if embeddings.get('color_512'):
-                                        specialized_embeddings['color'] = embeddings.get('color_512')
-                                    if embeddings.get('texture_512'):
-                                        specialized_embeddings['texture'] = embeddings.get('texture_512')
-                                    if embeddings.get('application_512'):
-                                        specialized_embeddings['application'] = embeddings.get('application_512')
-                                    if embeddings.get('material_512'):
-                                        specialized_embeddings['material'] = embeddings.get('material_512')
+                                    if embeddings.get('color_clip_512'):
+                                        specialized_embeddings['color'] = embeddings.get('color_clip_512')
+                                    if embeddings.get('texture_clip_512'):
+                                        specialized_embeddings['texture'] = embeddings.get('texture_clip_512')
+                                    if embeddings.get('style_clip_512'):
+                                        specialized_embeddings['style'] = embeddings.get('style_clip_512')
+                                    if embeddings.get('material_clip_512'):
+                                        specialized_embeddings['material'] = embeddings.get('material_clip_512')
 
                                     if specialized_embeddings:
                                         await vecs_service.upsert_specialized_embeddings(
@@ -3315,9 +3321,26 @@ Respond ONLY with this JSON format:
                                             embeddings=specialized_embeddings,
                                             metadata={
                                                 'document_id': document_id,
+                                                'workspace_id': workspace_id,
                                                 'page_number': img_data.get('page_number', 1)
                                             }
                                         )
+
+                                    # Save multimodal fusion embedding
+                                    multimodal_embedding = embeddings.get('multimodal_2048')
+                                    if multimodal_embedding:
+                                        db_update['multimodal_fusion_embedding_2048'] = multimodal_embedding
+
+                                    # Update document_images table columns
+                                    if db_update:
+                                        try:
+                                            supabase_client.client.table('document_images')\
+                                                .update(db_update)\
+                                                .eq('id', image_id)\
+                                                .execute()
+                                            logger.debug(f"   ✅ Updated {len(db_update)} embedding columns in document_images")
+                                        except Exception as db_error:
+                                            logger.error(f"   ❌ Failed to update document_images: {db_error}")
 
                                     clip_embeddings_count += 1
                                     logger.info(f"   ✅ Generated {1 + len(specialized_embeddings)} CLIP embeddings for image {image_id}")
