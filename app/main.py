@@ -1253,19 +1253,19 @@ async def health_check() -> HealthResponse:
         }
 
     # 4. Check LlamaIndex Service
+    # MEMORY OPTIMIZATION: Don't eagerly initialize LlamaIndex during health check
+    # This was causing the service to load CLIP (7-8GB RAM) and trigger OOM kills
     try:
-        from app.services.llamaindex_service import LlamaIndexService
-        llamaindex_service = LlamaIndexService()
-
-        if llamaindex_service.available:
+        # Check if the service is registered for lazy loading instead of instantiating it
+        if hasattr(app.state, 'component_manager'):
             services_status["llamaindex"] = {
                 "status": "healthy",
-                "message": "Service operational"
+                "message": "Service registered for lazy loading (memory optimized)"
             }
         else:
             services_status["llamaindex"] = {
                 "status": "degraded",
-                "message": "Service not fully initialized"
+                "message": "Service not registered"
             }
             if overall_status == "healthy":
                 overall_status = "degraded"

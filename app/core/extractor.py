@@ -82,16 +82,54 @@ def extract_pdf_to_markdown(file_name, page_number):
     if page_number is not None:
         page_number_list = [page_number]
 
-    # Extract markdown
-    # ALWAYS disable header identification to avoid PyMuPDF4LLM hanging
-    # PyMuPDF4LLM's header identification can cause indefinite hangs on some PDFs
-    hdr_info = False
-    markdown_text = pymupdf4llm.to_markdown(file_name, pages=page_number_list, hdr_info=hdr_info)
+    try:
+        # Extract markdown
+        # ALWAYS disable header identification to avoid PyMuPDF4LLM hanging
+        # PyMuPDF4LLM's header identification can cause indefinite hangs on some PDFs
+        hdr_info = False
 
-    # ✅ FIX GLYPH NAMES
-    markdown_text = _fix_glyph_names(markdown_text)
+        # Keep document open to prevent garbage collection
+        try:
+            doc = fitz.open(file_name)
+        except Exception as open_error:
+            # If opening fails (e.g., "bad xref"), try with repair mode
+            if "xref" in str(open_error).lower() or "damaged" in str(open_error).lower():
+                import logging
+                logging.getLogger(__name__).warning(f"PDF has structural issues ({open_error}), attempting repair...")
+                # PyMuPDF can sometimes repair PDFs automatically on open
+                doc = fitz.open(file_name, filetype="pdf")
+            else:
+                raise
 
-    return markdown_text
+        try:
+            markdown_text = pymupdf4llm.to_markdown(doc, pages=page_number_list, hdr_info=hdr_info)
+        finally:
+            doc.close()
+
+        # ✅ FIX GLYPH NAMES
+        markdown_text = _fix_glyph_names(markdown_text)
+
+        return markdown_text
+
+    except (RuntimeError, ValueError) as e:
+        error_msg = str(e).lower()
+        if "xref" in error_msg or "damaged" in error_msg or "corrupt" in error_msg:
+            # PDF is corrupted, raise a more informative error
+            raise ValueError(f"PDF file is corrupted or damaged: {e}") from e
+        else:
+            raise
+    except ReferenceError as e:
+        if "weakly-referenced object no longer exists" in str(e):
+            # Retry with a fresh document object
+            doc = fitz.open(file_name)
+            try:
+                markdown_text = pymupdf4llm.to_markdown(doc, pages=page_number_list, hdr_info=hdr_info)
+                markdown_text = _fix_glyph_names(markdown_text)
+                return markdown_text
+            finally:
+                doc.close()
+        else:
+            raise
 
 
 def extract_pdf_to_markdown_with_doc(doc, page_number):
@@ -112,15 +150,34 @@ def extract_pdf_to_markdown_with_doc(doc, page_number):
     if page_number is not None:
         page_number_list = [page_number]
 
-    # Extract markdown using the document object
-    # Disable header identification to avoid PyMuPDF4LLM bug
-    hdr_info = False if page_number is not None else None
-    markdown_text = pymupdf4llm.to_markdown(doc, pages=page_number_list, hdr_info=hdr_info)
+    try:
+        # Extract markdown using the document object
+        # Disable header identification to avoid PyMuPDF4LLM bug
+        hdr_info = False if page_number is not None else None
+        markdown_text = pymupdf4llm.to_markdown(doc, pages=page_number_list, hdr_info=hdr_info)
 
-    # ✅ FIX GLYPH NAMES
-    markdown_text = _fix_glyph_names(markdown_text)
+        # ✅ FIX GLYPH NAMES
+        markdown_text = _fix_glyph_names(markdown_text)
 
-    return markdown_text
+        return markdown_text
+
+    except (IndexError, ValueError, RuntimeError) as e:
+        error_msg = str(e).lower()
+        if "xref" in error_msg or "damaged" in error_msg or "corrupt" in error_msg:
+            # PDF is corrupted
+            raise ValueError(f"PDF file is corrupted or damaged: {e}") from e
+        elif "not in document" in error_msg or "bad page number" in error_msg or "page" in error_msg:
+            # Page doesn't exist in document
+            total_pages = len(doc) if hasattr(doc, '__len__') else "unknown"
+            raise ValueError(f"Page {page_number} not in document (total pages: {total_pages})") from e
+        else:
+            raise
+    except ReferenceError as e:
+        if "weakly-referenced object no longer exists" in str(e):
+            # Document was garbage collected, raise a more informative error
+            raise ValueError(f"Document object was garbage collected while processing page {page_number}. Try using extract_pdf_to_markdown() instead.") from e
+        else:
+            raise
 
 
 def extract_pdf_tables(file_name, page_number):

@@ -637,7 +637,8 @@ class LlamaIndexService:
         if not self.available or not self.enable_multimodal:
             self.logger.info("Multi-modal capabilities disabled")
             self.multimodal_llm = None
-            self.image_embeddings = None
+            self._image_embeddings = None
+            self._image_embeddings_loaded = True  # Mark as loaded (disabled) to prevent retry
             self.image_reader = None
             return
 
@@ -661,14 +662,11 @@ class LlamaIndexService:
                 self.logger.warning(f"Unsupported multi-modal LLM model: {self.multimodal_llm_model}")
                 self.multimodal_llm = None
 
-            # Initialize CLIP embeddings - CRITICAL for multimodal image-text association
-            try:
-                self.image_embeddings = ClipEmbedding(model_name=self.image_embedding_model)
-                self.logger.info(f"✅ CLIP image embeddings initialized: {self.image_embedding_model}")
-            except Exception as e:
-                self.logger.error(f"❌ CRITICAL: Failed to initialize CLIP embeddings: {e}")
-                self.logger.warning("⚠️  Service will continue without CLIP - multimodal capabilities limited")
-                self.image_embeddings = None
+            # MEMORY OPTIMIZATION: Defer CLIP initialization to prevent OOM (7-8GB RAM)
+            # CLIP will be loaded lazily on first access via the image_embeddings property
+            self._image_embeddings = None
+            self._image_embeddings_loaded = False
+            self.logger.info("ℹ️  CLIP embeddings deferred (memory optimization) - will load on first use")
 
             # Initialize image reader
             self.image_reader = ImageReader()
@@ -677,8 +675,25 @@ class LlamaIndexService:
         except Exception as e:
             self.logger.error(f"Failed to initialize multi-modal components: {e}")
             self.multimodal_llm = None
-            self.image_embeddings = None
+            self._image_embeddings = None
+            self._image_embeddings_loaded = True  # Mark as loaded (failed) to prevent retry
             self.image_reader = None
+
+    @property
+    def image_embeddings(self):
+        """Lazy-load CLIP embeddings only when first accessed (memory optimization)."""
+        if not self._image_embeddings_loaded:
+            self._image_embeddings_loaded = True
+            try:
+                from llama_index.embeddings.clip import ClipEmbedding
+                self.logger.info(f"🔄 Loading CLIP embeddings on-demand: {self.image_embedding_model}")
+                self._image_embeddings = ClipEmbedding(model_name=self.image_embedding_model)
+                self.logger.info(f"✅ CLIP image embeddings initialized: {self.image_embedding_model}")
+            except Exception as e:
+                self.logger.error(f"❌ CRITICAL: Failed to initialize CLIP embeddings: {e}")
+                self.logger.warning("⚠️  Service will continue without CLIP - multimodal capabilities limited")
+                self._image_embeddings = None
+        return self._image_embeddings
 
     def process_images_with_ocr(self, image_paths: List[str]) -> List[Any]:
         """Process images with OCR to extract text for Phase 8 multi-modal capabilities."""

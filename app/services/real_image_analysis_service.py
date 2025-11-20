@@ -354,7 +354,6 @@ Respond ONLY with valid JSON, no additional text."""
                                 "max_tokens": 1024,
                                 "temperature": 0.1,
                                 "top_p": 0.9
-                                # Note: Removed "stop": ["```"] to prevent cutting off responses
                             }
                         )
 
