@@ -144,12 +144,6 @@ class EntityLinkingService:
                         'created_at': datetime.utcnow().isoformat()
                     })
 
-                    # Also update image with product_id for backward compatibility
-                    self.supabase.client.table('document_images')\
-                        .update({'product_id': product_id, 'updated_at': datetime.utcnow().isoformat()})\
-                        .eq('id', image_id)\
-                        .execute()
-
                     linked_count += 1
                     self.logger.debug(f"✅ Linked image {image_id} to product {product_name} (relevance: {relevance_score:.2f})")
 
