@@ -305,6 +305,75 @@ class ProgressTracker:
         if sync_to_db:
             await self._sync_to_database()
 
+    async def sync_counts_from_database(self):
+        """
+        Query database for actual counts and update tracker to match reality.
+
+        This ensures job metadata reflects actual database state, not just in-memory tracking.
+        Should be called after each major stage completes.
+        """
+        if not self._supabase:
+            logger.warning("Cannot sync counts from database - Supabase client not initialized")
+            return
+
+        try:
+            logger.info(f"🔄 Syncing counts from database for document {self.document_id}")
+
+            # Query actual counts from database
+            # 1. Count chunks
+            chunks_result = self._supabase.client.table('document_chunks')\
+                .select('id', count='exact')\
+                .eq('document_id', self.document_id)\
+                .execute()
+            actual_chunks = chunks_result.count if chunks_result.count is not None else 0
+
+            # 2. Count images
+            images_result = self._supabase.client.table('document_images')\
+                .select('id', count='exact')\
+                .eq('document_id', self.document_id)\
+                .execute()
+            actual_images = images_result.count if images_result.count is not None else 0
+
+            # 3. Count products
+            products_result = self._supabase.client.table('products')\
+                .select('id', count='exact')\
+                .eq('source_document_id', self.document_id)\
+                .execute()
+            actual_products = products_result.count if products_result.count is not None else 0
+
+            # 4. Count embeddings
+            embeddings_result = self._supabase.client.table('embeddings')\
+                .select('id', count='exact')\
+                .eq('chunk_id.document_id', self.document_id)\
+                .execute()
+            actual_embeddings = embeddings_result.count if embeddings_result.count is not None else 0
+
+            # Log differences if any
+            if actual_chunks != self.chunks_created:
+                logger.warning(f"⚠️ Chunk count mismatch: tracker={self.chunks_created}, DB={actual_chunks}")
+            if actual_images != self.images_stored:
+                logger.warning(f"⚠️ Image count mismatch: tracker={self.images_stored}, DB={actual_images}")
+            if actual_products != self.products_created:
+                logger.warning(f"⚠️ Product count mismatch: tracker={self.products_created}, DB={actual_products}")
+
+            # Update tracker with actual counts
+            self.chunks_created = actual_chunks
+            self.images_stored = actual_images
+            self.products_created = actual_products
+
+            logger.info(f"✅ Synced counts from database:")
+            logger.info(f"   Chunks: {actual_chunks}")
+            logger.info(f"   Images: {actual_images}")
+            logger.info(f"   Products: {actual_products}")
+            logger.info(f"   Embeddings: {actual_embeddings}")
+
+            # Sync updated counts to database
+            await self._sync_to_database()
+
+        except Exception as e:
+            logger.error(f"❌ Failed to sync counts from database: {e}")
+            # Don't raise - count sync failures shouldn't block processing
+
     def add_error(self, title: str, message: str, context: Dict[str, Any] = None):
         """Add an error to the tracking."""
         error = {

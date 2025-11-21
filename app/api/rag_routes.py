@@ -3285,10 +3285,7 @@ Respond ONLY with this JSON format:
                                 if embedding_result and embedding_result.get('success'):
                                     embeddings = embedding_result.get('embeddings', {})
 
-                                    # Prepare database update for document_images table
-                                    db_update = {}
-
-                                    # Save visual CLIP embedding to VECS
+                                    # Save visual CLIP embedding
                                     visual_embedding = embeddings.get('visual_512')
                                     if visual_embedding:
                                         await vecs_service.upsert_image_embedding(
@@ -3296,24 +3293,21 @@ Respond ONLY with this JSON format:
                                             clip_embedding=visual_embedding,
                                             metadata={
                                                 'document_id': document_id,
-                                                'workspace_id': workspace_id,
                                                 'page_number': img_data.get('page_number', 1),
                                                 'quality_score': img_data.get('quality_score', 0.5)
                                             }
                                         )
-                                        # Also save to document_images table for JOIN queries
-                                        db_update['visual_clip_embedding_512'] = visual_embedding
 
-                                    # Save specialized embeddings to VECS
+                                    # Save specialized embeddings
                                     specialized_embeddings = {}
-                                    if embeddings.get('color_clip_512'):
-                                        specialized_embeddings['color'] = embeddings.get('color_clip_512')
-                                    if embeddings.get('texture_clip_512'):
-                                        specialized_embeddings['texture'] = embeddings.get('texture_clip_512')
-                                    if embeddings.get('style_clip_512'):
-                                        specialized_embeddings['style'] = embeddings.get('style_clip_512')
-                                    if embeddings.get('material_clip_512'):
-                                        specialized_embeddings['material'] = embeddings.get('material_clip_512')
+                                    if embeddings.get('color_512'):
+                                        specialized_embeddings['color'] = embeddings.get('color_512')
+                                    if embeddings.get('texture_512'):
+                                        specialized_embeddings['texture'] = embeddings.get('texture_512')
+                                    if embeddings.get('application_512'):
+                                        specialized_embeddings['application'] = embeddings.get('application_512')
+                                    if embeddings.get('material_512'):
+                                        specialized_embeddings['material'] = embeddings.get('material_512')
 
                                     if specialized_embeddings:
                                         await vecs_service.upsert_specialized_embeddings(
@@ -3321,26 +3315,9 @@ Respond ONLY with this JSON format:
                                             embeddings=specialized_embeddings,
                                             metadata={
                                                 'document_id': document_id,
-                                                'workspace_id': workspace_id,
                                                 'page_number': img_data.get('page_number', 1)
                                             }
                                         )
-
-                                    # Save multimodal fusion embedding
-                                    multimodal_embedding = embeddings.get('multimodal_2048')
-                                    if multimodal_embedding:
-                                        db_update['multimodal_fusion_embedding_2048'] = multimodal_embedding
-
-                                    # Update document_images table columns
-                                    if db_update:
-                                        try:
-                                            supabase_client.client.table('document_images')\
-                                                .update(db_update)\
-                                                .eq('id', image_id)\
-                                                .execute()
-                                            logger.debug(f"   ✅ Updated {len(db_update)} embedding columns in document_images")
-                                        except Exception as db_error:
-                                            logger.error(f"   ❌ Failed to update document_images: {db_error}")
 
                                     clip_embeddings_count += 1
                                     logger.info(f"   ✅ Generated {1 + len(specialized_embeddings)} CLIP embeddings for image {image_id}")
@@ -3941,6 +3918,10 @@ Respond ONLY with this JSON format:
         )
         logger.info(f"✅ Created IMAGES_EXTRACTED checkpoint for job {job_id}: {images_processed} images, {clip_embeddings_generated} CLIP embeddings, {specialized_embeddings_generated} specialized embeddings")
 
+        # ✅ FIX: Sync counts from database to ensure job metadata matches reality
+        logger.info("🔄 Syncing counts from database after Stage 3...")
+        await tracker.sync_counts_from_database()
+
         # LAZY LOADING: Unload LlamaIndex service after image processing to free memory
         if "llamaindex_service" in loaded_components:
             logger.info("🧹 Unloading LlamaIndex service after Stage 3...")
@@ -4085,6 +4066,44 @@ Respond ONLY with this JSON format:
         logger.info(f"   Entity linking complete:")
         logger.info(f"     - Image-to-product links: {linking_results['image_product_links']}")
         logger.info(f"     - Image-to-chunk links: {linking_results['image_chunk_links']}")
+        logger.info(f"     - Chunk-to-product links: {linking_results['chunk_product_links']}")
+
+        # ✅ VERIFICATION: Query database to confirm relationships were created
+        logger.info("🔍 Verifying entity relationships in database...")
+        try:
+            # Count product-image relationships
+            product_image_count = supabase.client.table('product_image_relationships')\
+                .select('id', count='exact')\
+                .in_('product_id', list(product_id_map.values()))\
+                .execute()
+
+            # Count chunk-image relationships
+            chunk_image_count = supabase.client.table('chunk_image_relationships')\
+                .select('id', count='exact')\
+                .eq('chunk_id.document_id', document_id)\
+                .execute()
+
+            # Count chunk-product relationships
+            chunk_product_count = supabase.client.table('chunk_product_relationships')\
+                .select('id', count='exact')\
+                .in_('product_id', list(product_id_map.values()))\
+                .execute()
+
+            logger.info(f"✅ Database verification complete:")
+            logger.info(f"   - Product-Image relationships in DB: {product_image_count.count or 0}")
+            logger.info(f"   - Chunk-Image relationships in DB: {chunk_image_count.count or 0}")
+            logger.info(f"   - Chunk-Product relationships in DB: {chunk_product_count.count or 0}")
+
+            # Warn if counts don't match
+            if (product_image_count.count or 0) != linking_results['image_product_links']:
+                logger.warning(f"⚠️ Product-Image count mismatch: expected {linking_results['image_product_links']}, found {product_image_count.count or 0}")
+            if (chunk_image_count.count or 0) != linking_results['image_chunk_links']:
+                logger.warning(f"⚠️ Chunk-Image count mismatch: expected {linking_results['image_chunk_links']}, found {chunk_image_count.count or 0}")
+            if (chunk_product_count.count or 0) != linking_results['chunk_product_links']:
+                logger.warning(f"⚠️ Chunk-Product count mismatch: expected {linking_results['chunk_product_links']}, found {chunk_product_count.count or 0}")
+
+        except Exception as verify_error:
+            logger.error(f"❌ Failed to verify entity relationships: {verify_error}")
 
         await tracker._sync_to_database(stage="product_creation")
 
@@ -4116,6 +4135,10 @@ Respond ONLY with this JSON format:
             metadata=checkpoint_metadata
         )
         logger.info(f"✅ Created PRODUCTS_CREATED checkpoint for job {job_id}")
+
+        # ✅ FIX: Sync counts from database to ensure job metadata matches reality
+        logger.info("🔄 Syncing counts from database after Stage 4...")
+        await tracker.sync_counts_from_database()
 
         # Force garbage collection after product creation to free memory
         import gc
