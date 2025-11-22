@@ -4438,7 +4438,7 @@ async def search_documents(
     request: SearchRequest,
     strategy: Optional[str] = Query(
         "multi_vector",
-        description="Search strategy: 'multi_vector' (RECOMMENDED - default), 'semantic', 'vector', 'hybrid', 'material', 'image', 'color', 'texture', 'style', 'material_type', 'all'"
+        description="Search strategy: 'multi_vector' (RECOMMENDED - default), 'semantic', 'vector', 'hybrid', 'material', 'image', 'color', 'texture', 'style', 'material_type'"
     ),
     enable_query_understanding: bool = Query(
         True,  # ✅ ENABLED BY DEFAULT - Makes platform smarter with minimal cost ($0.0001/query)
@@ -4468,7 +4468,7 @@ async def search_documents(
     - **+ JSONB Metadata Filtering**: Supports `material_filters` for property-based filtering
     - **+ Query Understanding**: ✅ **ENABLED BY DEFAULT** - Auto-extracts filters from natural language (set `enable_query_understanding=false` to disable)
     - **Performance**: Fast (~250-350ms with query understanding, ~200-300ms without), comprehensive, accurate
-    - **Best For:** ALL queries - replaces need for `strategy="all"`
+    - **Best For:** ALL queries - single intelligent search with 6 embeddings
     - **Example:** "waterproof ceramic tiles for outdoor patio, matte finish"
 
     ### Semantic Search (`strategy="semantic"`) ✅
@@ -4505,7 +4505,13 @@ async def search_documents(
     - **Material Type Search** (`strategy="material_type"`): Material type matching using specialized CLIP embeddings
       - Best for: "Find similar material types", "materials like this"
 
-
+    ### All Strategies (`strategy="all"`) ⚠️ DEPRECATED
+    - ⚠️ **DEPRECATED**: Use `strategy="multi_vector"` instead
+    - **Why Deprecated:**
+      - 10x slower (~800ms vs ~200ms)
+      - 10x higher cost (10 separate searches)
+      - Lower accuracy (simple averaging vs intelligent weighting)
+      - Multi-vector already includes all 6 embedding types
     - **Parallel execution** of ALL 10 strategies using `asyncio.gather()`
     - **Only use if:** User explicitly requests "comprehensive search" or "all strategies"
     - **Recommendation:** Use `multi_vector` with `enable_query_understanding=true` instead
@@ -4549,7 +4555,7 @@ async def search_documents(
 
     ### All Strategies (Parallel Execution - 3-4x Faster!)
     ```bash
-    curl -X POST "/api/rag/search?strategy=all" \\
+    curl -X POST "/api/rag/search?strategy=multi_vector" \\
       -H "Content-Type: application/json" \\
       -d '{"query": "modern oak furniture", "workspace_id": "xxx", "top_k": 10}'
     ```
@@ -4624,7 +4630,7 @@ async def search_documents(
 
     - **60 requests/minute** per user
     - **1000 requests/hour** per workspace
-    - Parallel execution (`strategy="all"`) counts as 1 request
+    - Multi-vector search (`strategy="multi_vector"`) counts as 1 request
     """
     start_time = datetime.utcnow()
 
@@ -4762,22 +4768,23 @@ async def search_documents(
             )
 
         elif strategy == "all":
-            # Redirect to multi_vector strategy (better performance and accuracy)
-            logger.info(f"🔄 Redirecting strategy='all' to 'multi_vector' for better performance")
-            strategy = "multi_vector"
+            # ⚠️ DEPRECATED: Use strategy="multi_vector" instead
+            logger.warning(f"⚠️ DEPRECATED: strategy='all' is deprecated. Use strategy='multi_vector' instead for 10x better performance and accuracy.")
+            logger.warning(f"   Current: 10 separate searches (~800ms, 10x cost, simple averaging)")
+            logger.warning(f"   Recommended: 1 intelligent search (~200ms, 1x cost, weighted scoring with 6 embeddings)")
 
-            # Use multi_vector search instead
+            # Run all strategies in parallel (DEPRECATED - use multi_vector instead)
             material_filters = getattr(request, 'material_filters', None)
             image_url = getattr(request, 'image_url', None)
             image_base64 = getattr(request, 'image_base64', None)
 
-            results = await llamaindex_service.search_multi_vector(
+            results = await llamaindex_service.search_all_strategies(
                 query=query_to_use,
                 workspace_id=request.workspace_id,
+                top_k=request.top_k,
                 material_filters=material_filters,
                 image_url=image_url,
-                image_base64=image_base64,
-                top_k=request.top_k
+                image_base64=image_base64
             )
 
         # Get raw results
@@ -4813,15 +4820,15 @@ async def search_documents(
             'related_products_included': request.include_related_products
         }
 
-        # Add parallel execution metadata for 'all' strategy
-        if strategy == "all":
+        # Add execution metadata for 'all' or 'multi_vector' strategy
+        if strategy == "all" or strategy == "multi_vector":
             search_metadata.update({
                 'strategies_executed': results.get('strategies_executed', 0),
                 'strategies_successful': results.get('strategies_successful', 0),
                 'strategies_failed': results.get('strategies_failed', 0),
                 'strategy_breakdown': results.get('strategy_breakdown', {}),
-                'parallel_execution': True,
-                'parallel_processing_time': results.get('processing_time', 0)
+                'multi_vector_search': True,
+                'processing_time': results.get('processing_time', 0)
             })
 
         return SearchResponse(

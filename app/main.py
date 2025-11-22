@@ -844,7 +844,7 @@ Get your token from the frontend application or Supabase authentication.
             },
             {
                 "name": "Search",
-                "description": "🔍 **ALL 6 STRATEGIES IMPLEMENTED** - Single `/api/rag/search?strategy={strategy}` endpoint with complete multi-strategy search system (100% complete). Strategies: semantic (<150ms), vector (<100ms), multi_vector (<200ms), hybrid (<180ms), material (<50ms), image (<150ms), all (<800ms). 85-95% accuracy across strategies."
+                "description": "🔍 **ALL 6 STRATEGIES IMPLEMENTED** - Single `/api/rag/search?strategy={strategy}` endpoint with complete multi-strategy search system (100% complete). Strategies: semantic (<150ms), vector (<100ms), multi_vector (<200ms - RECOMMENDED), hybrid (<180ms), material (<50ms), image (<150ms). 85-95% accuracy across strategies."
             },
             {
                 "name": "Embeddings",
