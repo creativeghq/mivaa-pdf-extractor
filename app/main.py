@@ -1436,10 +1436,9 @@ from app.api.products import router as products_router
 from app.api.document_entities import router as document_entities_router
 from app.api.embeddings import router as embeddings_router
 from app.api.monitoring_routes import router as monitoring_router
-from app.api.ai_metrics_routes import router as ai_metrics_router
+from app.api.ai_metrics_router import router as ai_metrics_router
 from app.api.ai_services_routes import router as ai_services_router
 from app.api.admin_prompts import router as admin_prompts_router, config_router as extraction_config_router
-from app.api.metadata import router as metadata_router
 from app.api.saved_searches_routes import router as saved_searches_router
 from app.api.duplicate_detection_routes import router as duplicate_detection_router
 from app.api.suggestions import router as suggestions_router
@@ -1464,7 +1463,6 @@ app.include_router(ai_metrics_router)
 app.include_router(ai_services_router)
 app.include_router(admin_prompts_router)  # Admin prompts management
 app.include_router(extraction_config_router)  # Extraction configuration
-app.include_router(metadata_router)  # NEW: Metadata management (scope detection, application, listing)
 app.include_router(saved_searches_router)  # NEW: Saved searches with AI deduplication
 app.include_router(duplicate_detection_router)  # NEW: Duplicate detection and product merging (same factory only)
 app.include_router(suggestions_router)  # NEW: Search suggestions, auto-complete, trending, typo correction
