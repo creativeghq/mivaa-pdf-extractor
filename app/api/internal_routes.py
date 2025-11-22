@@ -22,7 +22,7 @@ from app.services.image_processing_service import ImageProcessingService
 from app.services.chunking_service import ChunkingService
 from app.services.relevancy_service import RelevancyService
 from app.services.supabase_client import get_supabase_client
-from app.services.job_tracker import JobTracker
+from app.services.progress_tracker import ProgressTracker
 from app.models.ai_config import AIModelConfig, DEFAULT_AI_CONFIG
 
 logger = logging.getLogger(__name__)
