@@ -826,7 +826,7 @@ Get your token from the frontend application or Supabase authentication.
 
         """,
         docs_url="/docs",  # Always enable docs
-        redoc_url="/redoc",  # Always enable redoc
+        redoc_url=None,  # Disable default ReDoc (we'll create custom one with stable CDN)
         openapi_tags=[
             {
                 "name": "Knowledge Base",
@@ -1480,6 +1480,43 @@ app.include_router(knowledge_base_router)  # NEW: Knowledge Base & Documentation
 app.include_router(category_prototypes_router)  # NEW: Category prototype management for material validation
 app.include_router(internal_router)  # NEW: Internal modular endpoints for PDF processing pipeline stages
 app.include_router(prompt_templates_router)  # NEW: Customizable AI prompt templates for different industries
+
+
+# ============================================================================
+# CUSTOM REDOC ENDPOINT (with stable CDN version)
+# ============================================================================
+
+from fastapi.responses import HTMLResponse
+
+@app.get("/redoc", include_in_schema=False)
+async def custom_redoc():
+    """
+    Custom ReDoc documentation with stable CDN version.
+
+    Fixes the "ReDoc requires Javascript" error by using a stable CDN version
+    instead of @next which may have compatibility issues.
+    """
+    return HTMLResponse(content=f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>MIVAA - Material Intelligence Vision and Analysis Agent - ReDoc</title>
+        <meta charset="utf-8"/>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link href="https://fonts.googleapis.com/css?family=Montserrat:300,400,700|Roboto:300,400,700" rel="stylesheet">
+        <style>
+            body {{
+                margin: 0;
+                padding: 0;
+            }}
+        </style>
+    </head>
+    <body>
+        <redoc spec-url="/openapi.json"></redoc>
+        <script src="https://cdn.jsdelivr.net/npm/redoc@2.1.3/bundles/redoc.standalone.js"></script>
+    </body>
+    </html>
+    """)
 
 
 # ============================================================================
