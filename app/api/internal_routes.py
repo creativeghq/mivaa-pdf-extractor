@@ -176,16 +176,36 @@ async def classify_images(
 ):
     """
     Classify images as material or non-material using Llama Vision + Claude validation.
-    
+
     This endpoint:
     1. Uses Llama Vision for fast initial classification
     2. Validates uncertain cases (confidence < threshold) with Claude Sonnet
     3. Returns separated lists of material and non-material images
-    
+
+    AI Configuration (Optional):
+    - classification_primary_model: Primary classification model (default: Llama Vision)
+    - classification_validation_model: Validation model (default: Claude Sonnet 4.5)
+    - classification_confidence_threshold: Threshold for validation (default: 0.7)
+    - classification_temperature: Temperature setting (default: 0.1)
+    - classification_max_tokens: Max tokens for responses (default: 512)
+
+    Example with custom AI config:
+    ```json
+    {
+      "job_id": "abc123",
+      "extracted_images": [...],
+      "ai_config": {
+        "classification_primary_model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+        "classification_validation_model": "claude-sonnet-4-20250514",
+        "classification_confidence_threshold": 0.8
+      }
+    }
+    ```
+
     Args:
         job_id: Job ID for tracking
-        request: Classification request with extracted images
-        
+        request: Classification request with extracted images and optional AI config
+
     Returns:
         ClassifyImagesResponse with material and non-material images
     """
@@ -300,19 +320,38 @@ async def save_images_to_db(
     request: SaveImagesRequest
 ):
     """
-    Save images to database and generate CLIP embeddings.
+    Save images to database and generate visual embeddings (SigLIP/CLIP).
 
     This endpoint:
     1. Saves images to document_images table
-    2. Generates CLIP embeddings (visual + specialized)
-    3. Saves embeddings to database table AND VECS collection
+    2. Generates visual embeddings using SigLIP (primary) or CLIP (fallback)
+    3. Creates 5 specialized embeddings per image (visual, color, texture, style, material)
+    4. Saves embeddings to database table AND VECS collection
+
+    AI Configuration (Optional):
+    - visual_embedding_primary: Primary visual model (default: SigLIP ViT-SO400M)
+    - visual_embedding_fallback: Fallback visual model (default: CLIP ViT-B/32)
+
+    Example with custom AI config:
+    ```json
+    {
+      "job_id": "abc123",
+      "material_images": [...],
+      "document_id": "doc123",
+      "workspace_id": "ws123",
+      "ai_config": {
+        "visual_embedding_primary": "google/siglip-so400m-patch14-384",
+        "visual_embedding_fallback": "openai/clip-vit-base-patch32"
+      }
+    }
+    ```
 
     Args:
         job_id: Job ID for tracking
-        request: Save request with material images
+        request: Save request with material images and optional AI config
 
     Returns:
-        SaveImagesResponse with counts
+        SaveImagesResponse with counts and model used
     """
     try:
         logger.info(f"💾 [Job {job_id}] Starting DB save and CLIP generation for {len(request.material_images)} images")
