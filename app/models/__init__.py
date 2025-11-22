@@ -10,23 +10,13 @@ from .processing import (
     ProcessingOptions,
     PDFProcessingRequest,
     PDFProcessingResponse,
-    TableExtractionRequest,
-    TableExtractionResponse,
-    ImageExtractionRequest,
-    ImageExtractionResponse,
-    ProcessingStatus,
-    ProcessingResult
+    ProcessingStatus
 )
 
 __all__ = [
     "ImageFormat",
-    "ProcessingOptions", 
+    "ProcessingOptions",
     "PDFProcessingRequest",
     "PDFProcessingResponse",
-    "TableExtractionRequest",
-    "TableExtractionResponse",
-    "ImageExtractionRequest", 
-    "ImageExtractionResponse",
-    "ProcessingStatus",
-    "ProcessingResult"
+    "ProcessingStatus"
 ]
