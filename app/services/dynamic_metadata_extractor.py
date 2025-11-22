@@ -208,16 +208,32 @@ class DynamicMetadataExtractor:
     Extracts metadata dynamically using AI, without hardcoded attribute checks.
     """
 
-    def __init__(self, model: str = "claude", job_id: Optional[str] = None):
+    def __init__(
+        self,
+        model: str = "claude",
+        job_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+        custom_prompt: Optional[str] = None,
+        custom_system_prompt: Optional[str] = None,
+        industry: Optional[str] = None
+    ):
         """
         Initialize extractor.
 
         Args:
             model: "claude" for Claude Sonnet 4.5 or "gpt" for GPT-4o
             job_id: Optional job ID for AI call logging
+            workspace_id: Optional workspace ID for loading custom prompts
+            custom_prompt: Optional custom prompt template (overrides database)
+            custom_system_prompt: Optional custom system prompt
+            industry: Optional industry hint for prompt selection (construction, interior_design, etc.)
         """
         self.model = model
         self.job_id = job_id
+        self.workspace_id = workspace_id
+        self.custom_prompt = custom_prompt
+        self.custom_system_prompt = custom_system_prompt
+        self.industry = industry
         self.logger = logging.getLogger(__name__)
         self.ai_logger = AICallLogger()
 
@@ -253,14 +269,15 @@ class DynamicMetadataExtractor:
             }
         """
         try:
-            # Step 1: AI extraction
-            prompt = get_dynamic_extraction_prompt(pdf_text, category_hint)
+            # Step 1: Get prompt (custom or from database or default)
+            prompt = await self._get_prompt(pdf_text, category_hint)
+            system_prompt = await self._get_system_prompt()
 
             # Call AI model
             if self.model == "claude":
-                ai_response = await self._call_claude(prompt)
+                ai_response = await self._call_claude(prompt, system_prompt)
             else:
-                ai_response = await self._call_gpt(prompt)
+                ai_response = await self._call_gpt(prompt, system_prompt)
 
             extracted_data = self._parse_ai_response(ai_response)
 
@@ -288,8 +305,61 @@ class DynamicMetadataExtractor:
         except Exception as e:
             self.logger.error(f"Metadata extraction failed: {e}")
             return self._get_empty_result(error=str(e))
-    
-    async def _call_claude(self, prompt: str) -> str:
+
+    async def _get_prompt(self, pdf_text: str, category_hint: Optional[str] = None) -> str:
+        """Get prompt template (custom, database, or default)."""
+        # Priority 1: Custom prompt provided directly
+        if self.custom_prompt:
+            return self.custom_prompt.format(pdf_text=pdf_text[:4000])
+
+        # Priority 2: Load from database if workspace_id provided
+        if self.workspace_id:
+            try:
+                from app.services.prompt_template_service import PromptTemplateService
+                service = PromptTemplateService()
+                template = await service.get_template(
+                    workspace_id=self.workspace_id,
+                    stage='metadata_extraction',
+                    category='products',
+                    industry=self.industry
+                )
+
+                if template:
+                    self.logger.info(f"📝 Using custom prompt template: {template['name']} (industry: {template.get('industry', 'general')})")
+                    return template['prompt_template'].format(pdf_text=pdf_text[:4000])
+            except Exception as e:
+                self.logger.warning(f"Failed to load custom prompt from database: {e}, using default")
+
+        # Priority 3: Default prompt
+        return get_dynamic_extraction_prompt(pdf_text, category_hint)
+
+    async def _get_system_prompt(self) -> str:
+        """Get system prompt (custom, database, or default)."""
+        # Priority 1: Custom system prompt provided directly
+        if self.custom_system_prompt:
+            return self.custom_system_prompt
+
+        # Priority 2: Load from database if workspace_id provided
+        if self.workspace_id:
+            try:
+                from app.services.prompt_template_service import PromptTemplateService
+                service = PromptTemplateService()
+                template = await service.get_template(
+                    workspace_id=self.workspace_id,
+                    stage='metadata_extraction',
+                    category='products',
+                    industry=self.industry
+                )
+
+                if template and template.get('system_prompt'):
+                    return template['system_prompt']
+            except Exception as e:
+                self.logger.warning(f"Failed to load custom system prompt from database: {e}, using default")
+
+        # Priority 3: Default system prompt
+        return "You are an expert at extracting structured metadata from product specifications. Always respond with valid JSON."
+
+    async def _call_claude(self, prompt: str, system_prompt: str) -> str:
         """Call Claude Sonnet 4.5 for metadata extraction."""
         start_time = datetime.now()
 
@@ -302,6 +372,7 @@ class DynamicMetadataExtractor:
                 model="claude-sonnet-4-5",
                 max_tokens=8000,
                 temperature=0.1,  # Low temperature for consistent extraction
+                system=system_prompt,
                 messages=[
                     {
                         "role": "user",
@@ -331,7 +402,7 @@ class DynamicMetadataExtractor:
             self.logger.error(f"Claude metadata extraction failed: {e}")
             raise RuntimeError(f"Claude metadata extraction failed: {str(e)}") from e
 
-    async def _call_gpt(self, prompt: str) -> str:
+    async def _call_gpt(self, prompt: str, system_prompt: str) -> str:
         """Call GPT-4o for metadata extraction."""
         start_time = datetime.now()
 
@@ -345,7 +416,7 @@ class DynamicMetadataExtractor:
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are an expert at extracting structured metadata from product specifications. Always respond with valid JSON."
+                        "content": system_prompt
                     },
                     {
                         "role": "user",
@@ -473,92 +544,6 @@ class DynamicMetadataExtractor:
                 "error": error
             }
         }
-
-    async def _ensure_properties_exist(self, extracted_data: Dict[str, Any]):
-        """Auto-create material_properties entries for newly discovered fields.
-
-        This integrates with the prototype validation system by ensuring that
-        all discovered metadata fields have corresponding entries in the
-        material_properties table.
-
-        Args:
-            extracted_data: Extracted metadata from AI
-        """
-        from app.services.supabase_client import get_supabase_client
-
-        try:
-            supabase = get_supabase_client()
-
-            # Collect all discovered property keys
-            property_keys = set()
-
-            # From critical metadata
-            if "critical" in extracted_data:
-                for key in extracted_data["critical"].keys():
-                    property_keys.add(key)
-
-            # From discovered metadata (nested by category)
-            if "discovered" in extracted_data:
-                for category, fields in extracted_data["discovered"].items():
-                    if isinstance(fields, dict):
-                        for key in fields.keys():
-                            property_keys.add(key)
-
-            # From unknown metadata (custom fields)
-            if "unknown" in extracted_data:
-                for key in extracted_data["unknown"].keys():
-                    if not key.startswith('_'):  # Skip internal fields
-                        property_keys.add(key)
-
-            # Check which properties already exist
-            existing_result = supabase.client.table('material_properties').select('property_key').execute()
-            existing_keys = {row['property_key'] for row in existing_result.data}
-
-            # Create missing properties
-            new_properties = []
-            for property_key in property_keys:
-                if property_key not in existing_keys:
-                    # Determine category from METADATA_CATEGORY_HINTS
-                    category = self._determine_property_category(property_key)
-
-                    # Create property definition
-                    new_properties.append({
-                        'property_key': property_key,
-                        'name': property_key.replace('_', ' ').title(),
-                        'display_name': property_key.replace('_', ' ').title(),
-                        'description': f'Auto-discovered property: {property_key}',
-                        'data_type': 'string',  # Default to string
-                        'validation_rules': {},
-                        'is_searchable': True,
-                        'is_filterable': True,
-                        'is_ai_extractable': True,
-                        'category': category,
-                        'created_at': datetime.utcnow().isoformat(),
-                        'updated_at': datetime.utcnow().isoformat()
-                    })
-
-            # Batch insert new properties
-            if new_properties:
-                supabase.client.table('material_properties').insert(new_properties).execute()
-                self.logger.info(f"Auto-created {len(new_properties)} new material_properties entries")
-
-        except Exception as e:
-            # Don't fail extraction if property creation fails
-            self.logger.warning(f"Failed to auto-create material_properties: {e}")
-
-    def _determine_property_category(self, property_key: str) -> str:
-        """Determine which category a property belongs to."""
-        # Check each category's hints
-        for category, hints in METADATA_CATEGORY_HINTS.items():
-            if property_key in hints:
-                return category
-
-        # Check if it's a custom field
-        if property_key.startswith('_custom_'):
-            return 'custom'
-
-        # Default to 'other'
-        return 'other'
 
 
 # ============================================================================
@@ -766,4 +751,90 @@ Analyze now:"""
                 "applies_to": [],
                 "extracted_metadata": {}
             }
+
+    async def _ensure_properties_exist(self, extracted_data: Dict[str, Any]):
+        """Auto-create material_properties entries for newly discovered fields.
+
+        This integrates with the prototype validation system by ensuring that
+        all discovered metadata fields have corresponding entries in the
+        material_properties table.
+
+        Args:
+            extracted_data: Extracted metadata from AI
+        """
+        from app.core.supabase_client import get_supabase_client
+
+        try:
+            supabase = get_supabase_client()
+
+            # Collect all discovered property keys
+            property_keys = set()
+
+            # From critical metadata
+            if "critical" in extracted_data:
+                for key in extracted_data["critical"].keys():
+                    property_keys.add(key)
+
+            # From discovered metadata (nested by category)
+            if "discovered" in extracted_data:
+                for category, fields in extracted_data["discovered"].items():
+                    if isinstance(fields, dict):
+                        for key in fields.keys():
+                            property_keys.add(key)
+
+            # From unknown metadata (custom fields)
+            if "unknown" in extracted_data:
+                for key in extracted_data["unknown"].keys():
+                    if not key.startswith('_'):  # Skip internal fields
+                        property_keys.add(key)
+
+            # Check which properties already exist
+            existing_result = supabase.client.table('material_properties').select('property_key').execute()
+            existing_keys = {row['property_key'] for row in existing_result.data}
+
+            # Create missing properties
+            new_properties = []
+            for property_key in property_keys:
+                if property_key not in existing_keys:
+                    # Determine category from METADATA_CATEGORY_HINTS
+                    category = self._determine_property_category(property_key)
+
+                    # Create property definition
+                    new_properties.append({
+                        'property_key': property_key,
+                        'name': property_key.replace('_', ' ').title(),
+                        'display_name': property_key.replace('_', ' ').title(),
+                        'description': f'Auto-discovered property: {property_key}',
+                        'data_type': 'string',  # Default to string
+                        'validation_rules': {},
+                        'is_searchable': True,
+                        'is_filterable': True,
+                        'is_ai_extractable': True,
+                        'category': category,
+                        'created_at': datetime.utcnow().isoformat(),
+                        'updated_at': datetime.utcnow().isoformat()
+                    })
+
+            # Batch insert new properties
+            if new_properties:
+                supabase.client.table('material_properties').insert(new_properties).execute()
+                self.logger.info(f"Auto-created {len(new_properties)} new material_properties entries")
+
+        except Exception as e:
+            # Don't fail extraction if property creation fails
+            self.logger.warning(f"Failed to auto-create material_properties: {e}")
+
+    def _determine_property_category(self, property_key: str) -> str:
+        """Determine which category a property belongs to."""
+        # Check each category's hints
+        for category, hints in METADATA_CATEGORY_HINTS.items():
+            if property_key in hints:
+                return category
+
+        # Check if it's a custom field
+        if property_key.startswith('_custom_'):
+            return 'custom'
+
+        # Default to 'other'
+        return 'other'
 
