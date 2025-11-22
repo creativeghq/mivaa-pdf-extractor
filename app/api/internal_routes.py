@@ -19,6 +19,8 @@ from typing import List, Dict, Any, Optional
 import logging
 
 from app.services.image_processing_service import ImageProcessingService
+from app.services.chunking_service import ChunkingService
+from app.services.relevancy_service import RelevancyService
 from app.services.supabase_client import get_supabase_client
 from app.services.job_tracker import JobTracker
 
@@ -76,6 +78,40 @@ class SaveImagesResponse(BaseModel):
     success: bool
     images_saved: int
     clip_embeddings_generated: int
+
+
+class CreateChunksRequest(BaseModel):
+    """Request model for creating chunks."""
+    job_id: str
+    document_id: str
+    workspace_id: str
+    extracted_text: str
+    product_ids: Optional[List[str]] = None
+    chunk_size: int = 512
+    chunk_overlap: int = 50
+
+
+class CreateChunksResponse(BaseModel):
+    """Response model for creating chunks."""
+    success: bool
+    chunks_created: int
+    embeddings_generated: int
+    relationships_created: int
+
+
+class CreateRelationshipsRequest(BaseModel):
+    """Request model for creating relationships."""
+    job_id: str
+    document_id: str
+    product_ids: List[str]
+    similarity_threshold: float = 0.5
+
+
+class CreateRelationshipsResponse(BaseModel):
+    """Response model for creating relationships."""
+    success: bool
+    chunk_image_relationships: int
+    product_image_relationships: int
 
 
 # ============================================================================
@@ -260,4 +296,130 @@ async def save_images_to_db(
     except Exception as e:
         logger.error(f"❌ [Job {job_id}] Image save and CLIP generation failed: {e}")
         raise HTTPException(status_code=500, detail=f"Image save and CLIP generation failed: {str(e)}")
+
+
+@router.post("/create-chunks/{job_id}", response_model=CreateChunksResponse)
+async def create_chunks(
+    job_id: str,
+    request: CreateChunksRequest
+):
+    """
+    Create semantic chunks and generate text embeddings.
+
+    This endpoint:
+    1. Creates semantic chunks from extracted text
+    2. Generates text embeddings for each chunk
+    3. Creates chunk-to-product relationships
+
+    Args:
+        job_id: Job ID for tracking
+        request: Chunking request with extracted text
+
+    Returns:
+        CreateChunksResponse with counts
+    """
+    try:
+        logger.info(f"📝 [Job {job_id}] Starting chunking for document {request.document_id}")
+
+        # Initialize tracker
+        tracker = JobTracker(job_id)
+        await tracker.update_stage("CHUNKING", 0, sync_to_db=True)
+
+        # Initialize service
+        chunking_service = ChunkingService()
+
+        # Create chunks and embeddings
+        result = await chunking_service.create_chunks_and_embeddings(
+            document_id=request.document_id,
+            workspace_id=request.workspace_id,
+            extracted_text=request.extracted_text,
+            product_ids=request.product_ids,
+            chunk_size=request.chunk_size,
+            chunk_overlap=request.chunk_overlap
+        )
+
+        # Update tracker
+        await tracker.update_stage(
+            "CHUNKING",
+            100,
+            metadata={
+                'chunks_created': result['chunks_created'],
+                'embeddings_generated': result['embeddings_generated'],
+                'relationships_created': result['relationships_created']
+            },
+            sync_to_db=True
+        )
+
+        logger.info(f"✅ [Job {job_id}] Chunking complete: {result['chunks_created']} chunks, {result['embeddings_generated']} embeddings")
+
+        return CreateChunksResponse(
+            success=True,
+            chunks_created=result['chunks_created'],
+            embeddings_generated=result['embeddings_generated'],
+            relationships_created=result['relationships_created']
+        )
+
+    except Exception as e:
+        logger.error(f"❌ [Job {job_id}] Chunking failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Chunking failed: {str(e)}")
+
+
+@router.post("/create-relationships/{job_id}", response_model=CreateRelationshipsResponse)
+async def create_relationships(
+    job_id: str,
+    request: CreateRelationshipsRequest
+):
+    """
+    Create all relationships between chunks, images, and products.
+
+    This endpoint:
+    1. Creates chunk-to-image relationships based on embedding similarity
+    2. Creates product-to-image relationships based on page ranges
+
+    Args:
+        job_id: Job ID for tracking
+        request: Relationships request
+
+    Returns:
+        CreateRelationshipsResponse with counts
+    """
+    try:
+        logger.info(f"🔗 [Job {job_id}] Starting relationship creation for document {request.document_id}")
+
+        # Initialize tracker
+        tracker = JobTracker(job_id)
+        await tracker.update_stage("RELATIONSHIPS", 0, sync_to_db=True)
+
+        # Initialize service
+        relevancy_service = RelevancyService()
+
+        # Create all relationships
+        result = await relevancy_service.create_all_relationships(
+            document_id=request.document_id,
+            product_ids=request.product_ids,
+            similarity_threshold=request.similarity_threshold
+        )
+
+        # Update tracker
+        await tracker.update_stage(
+            "RELATIONSHIPS",
+            100,
+            metadata={
+                'chunk_image_relationships': result['chunk_image_relationships'],
+                'product_image_relationships': result['product_image_relationships']
+            },
+            sync_to_db=True
+        )
+
+        logger.info(f"✅ [Job {job_id}] Relationships complete: {result['chunk_image_relationships']} chunk-image, {result['product_image_relationships']} product-image")
+
+        return CreateRelationshipsResponse(
+            success=True,
+            chunk_image_relationships=result['chunk_image_relationships'],
+            product_image_relationships=result['product_image_relationships']
+        )
+
+    except Exception as e:
+        logger.error(f"❌ [Job {job_id}] Relationship creation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Relationship creation failed: {str(e)}")
 
