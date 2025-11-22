@@ -1559,9 +1559,9 @@ def custom_openapi():
         "agentic_queries": "Factory/group filtering for certificates, logos, specifications"
     }
 
-    # Add custom paths info (UPDATED - Legacy endpoints removed)
+    # Add custom paths info (UPDATED - New relationship endpoints added)
     openapi_schema["info"]["x-endpoint-categories"] = {
-        "rag_routes": "/api/rag/* (23 endpoints) - Document upload, search, query, chat, embeddings, jobs",
+        "rag_routes": "/api/rag/* (25 endpoints) - Document upload, search, query, chat, embeddings, jobs, relationships",
         "utilities_routes": "/api/bulk/*, /api/data/*, /api/monitoring/*, /api/system/* (12 endpoints)",
         "admin_routes": "/admin/* (10 endpoints) - Chunk quality, extraction config, prompts management",
         "ai_services_routes": "/api/v1/ai-services/* (10 endpoints) - Classification, validation, boundary detection",
@@ -1574,13 +1574,14 @@ def custom_openapi():
         "ai_analysis_routes": "/api/semantic-analysis, /api/analyze/* (4 endpoints) - TogetherAI, multimodal analysis",
         "anthropic_routes": "/api/v1/anthropic/* (3 endpoints) - Claude image validation, product enrichment",
         "products_routes": "/api/products/* (3 endpoints) - Product creation from chunks/layout",
-        "ai_metrics_routes": "/api/v1/ai-metrics/* (2 endpoints) - Job metrics, summary"
+        "ai_metrics_routes": "/api/v1/ai-metrics/* (2 endpoints) - Job metrics, summary",
+        "relationship_routes": "/api/rag/product-image-relationships, /api/rag/chunk-product-relationships (2 NEW endpoints) - Relationship queries for validation"
     }
 
-    # Add platform statistics (UPDATED - Multi-Vector Enhancement)
+    # Add platform statistics (UPDATED - Relationship Endpoints + Embedding Improvements)
     openapi_schema["info"]["x-platform-stats"] = {
-        "total_endpoints": 106,
-        "endpoint_categories": 15,
+        "total_endpoints": 108,
+        "endpoint_categories": 16,
         "ai_models": 13,
         "processing_stages": 14,
         "embedding_types": 6,
@@ -1589,8 +1590,8 @@ def custom_openapi():
         "users": "5,000+",
         "uptime": "99.5%+",
         "version": "2.3.0",
-        "last_updated": "2025-11-17",
-        "latest_enhancement": "Multi-Vector Search Enhanced: 6 specialized CLIP embeddings + JSONB filtering + query understanding (enabled by default)",
+        "last_updated": "2025-11-22",
+        "latest_enhancement": "Relationship Query Endpoints + Comprehensive Embedding Generation (batching, retry, checkpointing)",
         "deprecated": "strategy='all' deprecated - use 'multi_vector' instead (10x faster, better accuracy)"
     }
 
