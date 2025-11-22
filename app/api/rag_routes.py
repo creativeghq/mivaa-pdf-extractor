@@ -3288,6 +3288,17 @@ Respond ONLY with this JSON format:
                                     # Save visual CLIP embedding
                                     visual_embedding = embeddings.get('visual_512')
                                     if visual_embedding:
+                                        # ✅ CRITICAL: Save to document_images table first
+                                        try:
+                                            supabase_client.client.table('document_images')\
+                                                .update({'visual_clip_embedding_512': visual_embedding})\
+                                                .eq('id', image_id)\
+                                                .execute()
+                                            logger.debug(f"   ✅ Saved visual CLIP to document_images table for {image_id}")
+                                        except Exception as db_error:
+                                            logger.error(f"   ❌ Failed to save visual CLIP to DB: {db_error}")
+
+                                        # Then save to VECS collection
                                         await vecs_service.upsert_image_embedding(
                                             image_id=image_id,
                                             clip_embedding=visual_embedding,
@@ -3418,16 +3429,166 @@ Respond ONLY with this JSON format:
             else:
                 logger.warning(f"Could not extract page number from filename: {filename}")
 
-        # ✅ FIX ISSUE #1 (PART 2): REMOVED second duplicate image save operation
-        # This section was saving ALL extracted images (388) to database BEFORE AI classification
-        # Images are already saved at lines 3238-3340 (material images only, AFTER AI classification)
-        # Removing this duplicate save operation eliminates 256 wasted non-material images in database
-        logger.info(f"✅ Image save operation skipped - images already saved during CLIP embedding generation (lines 3238-3340)")
+        # CRITICAL: Save images to database FIRST before AI processing
+        # This ensures images are persisted even if AI processing fails
+        # IMPORTANT: Respect focused_extraction flag and extract_categories
+        logger.info(f"💾 Saving images to database...")
+        logger.info(f"   Focused extraction: {focused_extraction}")
+        logger.info(f"   Extract categories: {', '.join(extract_categories)}")
+        images_saved = 0
+        images_skipped = 0
 
-        # Update tracker with images_extracted count from material_images
-        tracker.images_extracted = len(material_images)
+        # 🚀 DYNAMIC BATCH SIZE: Calculate optimal batch size for database inserts
+        DEFAULT_INSERT_BATCH_SIZE = 100
+        BATCH_INSERT_SIZE = memory_monitor.calculate_optimal_batch_size(
+            default_batch_size=DEFAULT_INSERT_BATCH_SIZE,
+            min_batch_size=10,  # At least 10 records per batch
+            max_batch_size=200,  # Max 200 records per batch
+            memory_per_item_mb=0.5  # Estimate 0.5MB per image record (metadata only)
+        )
+        logger.info(f"   🔧 DYNAMIC DB BATCH SIZE: {BATCH_INSERT_SIZE} records per batch (adaptive)")
+
+        image_records_batch = []
+
+        for idx, img_data in enumerate(pdf_result_with_images.extracted_images):
+            try:
+                # Extract page number from filename
+                filename = img_data.get('filename', '')
+                match = re.search(r'page_(\d+)_', filename) or re.search(r'\.pdf-(\d+)-\d+\.', filename)
+                page_num = int(match.group(1)) if match else None
+
+                # DETAILED LOGGING: Log every image being processed
+                logger.info(f"   [{idx+1}/{len(pdf_result_with_images.extracted_images)}] Processing image: {filename} (page {page_num})")
+                logger.info(f"      storage_url: {img_data.get('storage_url')}")
+                logger.info(f"      storage_path: {img_data.get('storage_path')}")
+                logger.info(f"      storage_bucket: {img_data.get('storage_bucket')}")
+
+                # Determine image category
+                image_category = 'product' if (page_num and page_num in product_pages) else 'other'
+                logger.info(f"      category: {image_category} (product_pages: {sorted(product_pages)[:5]}...)")
+
+                # Skip images based on focused_extraction and extract_categories
+                if focused_extraction and 'all' not in extract_categories:
+                    # Only save images from categories specified in extract_categories
+                    if 'products' in extract_categories and image_category != 'product':
+                        logger.info(f"      ⏭️  SKIPPED: Not a product image (focused_extraction=True, categories={extract_categories})")
+                        images_skipped += 1
+                        continue
+                    # Note: Other categories (certificates, logos, specifications) are handled
+                    # by the document_entities system, not the images table
+
+                # Validate required fields
+                if not img_data.get('storage_url'):
+                    logger.warning(f"      ⚠️  SKIPPED: Missing storage_url")
+                    images_skipped += 1
+                    continue
+
+                # Prepare image record for database
+                image_record = {
+                    'document_id': document_id,
+                    'workspace_id': workspace_id,
+                    'image_url': img_data.get('storage_url'),
+                    'image_type': 'extracted',
+                    'caption': f"Image from page {page_num}" if page_num else "Extracted image",
+                    'page_number': page_num,
+                    'confidence': img_data.get('confidence_score', 0.5),
+                    'processing_status': 'pending_analysis',
+                    'metadata': {
+                        'filename': filename,
+                        'storage_path': img_data.get('storage_path'),
+                        'storage_bucket': img_data.get('storage_bucket', 'pdf-tiles'),
+                        'quality_score': img_data.get('quality_score', 0.5),
+                        'extracted_at': datetime.utcnow().isoformat(),
+                        'source': 'pdf_extraction',
+                        'focused_extraction': focused_extraction,
+                        'extract_categories': extract_categories,
+                        'category': image_category,
+                        'product_page': page_num in product_pages if page_num else False
+                    }
+                }
+
+                # Add to batch instead of inserting immediately
+                image_records_batch.append(image_record)
+                images_saved += 1
+                logger.info(f"      ✅ Added to batch (total: {images_saved})")
+
+                # ⚡ OPTIMIZATION: Insert batch when it reaches BATCH_INSERT_SIZE
+                if len(image_records_batch) >= BATCH_INSERT_SIZE:
+                    try:
+                        result = supabase.client.table('document_images').insert(image_records_batch).execute()
+                        logger.info(f"   💾 Batch inserted {len(image_records_batch)} images to database")
+
+                        # 🔑 CRITICAL: Store returned IDs back into extracted_images for VECS lookup
+                        if result.data:
+                            for inserted_record in result.data:
+                                # Find matching image in extracted_images and add the ID
+                                for img in pdf_result_with_images.extracted_images:
+                                    if img.get('filename') == inserted_record.get('metadata', {}).get('filename'):
+                                        img['id'] = inserted_record['id']
+                                        break
+
+                        image_records_batch = []  # Clear batch
+                    except Exception as batch_error:
+                        logger.error(f"   ❌ Batch insert failed: {batch_error}")
+                        # Fallback: Insert individually
+                        for record in image_records_batch:
+                            try:
+                                result = supabase.client.table('document_images').insert(record).execute()
+                                # Store ID back into extracted_images
+                                if result.data and len(result.data) > 0:
+                                    for img in pdf_result_with_images.extracted_images:
+                                        if img.get('filename') == record.get('metadata', {}).get('filename'):
+                                            img['id'] = result.data[0]['id']
+                                            break
+                            except Exception as individual_error:
+                                logger.error(f"   ❌ Individual insert failed: {individual_error}")
+                        image_records_batch = []
+
+            except Exception as e:
+                logger.error(f"      ❌ FAILED to prepare image {filename} for database: {e}")
+                logger.error(f"         Error type: {type(e).__name__}")
+                logger.error(f"         Error details: {str(e)}")
+                import traceback
+                logger.error(f"         Traceback: {traceback.format_exc()}")
+
+        # ⚡ OPTIMIZATION: Insert remaining images in final batch
+        if image_records_batch:
+            try:
+                result = supabase.client.table('document_images').insert(image_records_batch).execute()
+                logger.info(f"   💾 Final batch inserted {len(image_records_batch)} images to database")
+
+                # 🔑 CRITICAL: Store returned IDs back into extracted_images for VECS lookup
+                if result.data:
+                    for inserted_record in result.data:
+                        # Find matching image in extracted_images and add the ID
+                        for img in pdf_result_with_images.extracted_images:
+                            if img.get('filename') == inserted_record.get('metadata', {}).get('filename'):
+                                img['id'] = inserted_record['id']
+                                break
+
+            except Exception as batch_error:
+                logger.error(f"   ❌ Final batch insert failed: {batch_error}")
+                # Fallback: Insert individually
+                for record in image_records_batch:
+                    try:
+                        result = supabase.client.table('document_images').insert(record).execute()
+                        # Store ID back into extracted_images
+                        if result.data and len(result.data) > 0:
+                            for img in pdf_result_with_images.extracted_images:
+                                if img.get('filename') == record.get('metadata', {}).get('filename'):
+                                    img['id'] = result.data[0]['id']
+                                    break
+                    except Exception as individual_error:
+                        logger.error(f"   ❌ Individual insert failed: {individual_error}")
+
+        logger.info(f"✅ Saved {images_saved}/{len(pdf_result_with_images.extracted_images)} images to database")
+        if images_skipped > 0:
+            logger.info(f"   Skipped {images_skipped} images (not in extract_categories: {', '.join(extract_categories)})")
+
+        # Update tracker with images_extracted count
+        tracker.images_extracted = images_saved
         await tracker.update_database_stats(
-            images_stored=len(material_images),
+            images_stored=images_saved,
             sync_to_db=True
         )
 
