@@ -2736,7 +2736,7 @@ async def process_document_with_discovery(
 
         # Update tracker
         tracker.products_created = len(catalog.products)
-        await tracker._sync_to_database(stage="product_discovery")
+        await tracker.update_stage(ProcessingStage.ANALYZING_STRUCTURE, stage_name="product_discovery", progress_percentage=20)
 
         # Create PRODUCTS_DETECTED checkpoint (now includes all categories)
         checkpoint_data = {
@@ -2875,6 +2875,9 @@ async def process_document_with_discovery(
 
         logger.info(f"✅ [STAGE 2] Chunking Complete: {tracker.chunks_created} chunks created")
 
+        # Update progress (Stage 2 = 20-40%)
+        await tracker.update_stage(ProcessingStage.EXTRACTING_TEXT, stage_name="chunking", progress_percentage=40)
+
         # Create CHUNKS_CREATED checkpoint
         await checkpoint_recovery_service.create_checkpoint(
             job_id=job_id,
@@ -2899,7 +2902,7 @@ async def process_document_with_discovery(
 
         # Stage 3: Image Processing (50-70%)
         logger.info("🖼️ [STAGE 3] Image Processing - Starting...")
-        await tracker.update_stage(ProcessingStage.EXTRACTING_IMAGES, stage_name="image_processing")
+        await tracker.update_stage(ProcessingStage.EXTRACTING_IMAGES, stage_name="image_processing", progress_percentage=40)
 
         # LAZY LOADING: Load LlamaIndex service only for image processing
         logger.info("📦 Loading LlamaIndex service for image analysis...")
@@ -3896,6 +3899,9 @@ Respond ONLY with this JSON format:
 
         logger.info(f"✅ [STAGE 3] Image Processing Complete: {images_processed} images processed, {clip_embeddings_generated} CLIP embeddings generated, {specialized_embeddings_generated} specialized embeddings generated (batch upserted to VECS)")
 
+        # Update progress (Stage 3 = 40-70%)
+        await tracker.update_stage(ProcessingStage.GENERATING_EMBEDDINGS, stage_name="image_embeddings", progress_percentage=70)
+
         # NOTE: Temporary file cleanup moved to admin panel cron job
 
         # Create IMAGES_EXTRACTED checkpoint
@@ -3935,7 +3941,7 @@ Respond ONLY with this JSON format:
 
         # Stage 4: Product Creation & Linking (70-90%)
         logger.info("🏭 [STAGE 4] Product Creation & Linking - Starting...")
-        await tracker.update_stage(ProcessingStage.FINALIZING, stage_name="product_creation")
+        await tracker.update_stage(ProcessingStage.FINALIZING, stage_name="product_creation", progress_percentage=70)
 
         from app.services.entity_linking_service import EntityLinkingService
         from app.services.document_entity_service import DocumentEntityService
@@ -4067,6 +4073,9 @@ Respond ONLY with this JSON format:
 
         logger.info(f"✅ [STAGE 4] Product Creation & Linking Complete")
 
+        # Update progress (Stage 4 = 70-85%)
+        await tracker.update_stage(ProcessingStage.FINALIZING, stage_name="product_linking", progress_percentage=85)
+
         # Create PRODUCTS_CREATED checkpoint
         checkpoint_metadata = {
             "entity_links": linking_results,
@@ -4099,9 +4108,68 @@ Respond ONLY with this JSON format:
         gc.collect()
         logger.info("💾 Memory freed after Stage 4 (Product Creation)")
 
-        # Stage 5: Quality Enhancement (90-100%) - ASYNC
+        # Stage 5: Quality Enhancement (95-100%) - ASYNC
+
+        # ========================================
+        # STAGE 4.5: Create Relationships (85-95%)
+        # ========================================
+        logger.info("🔗 [STAGE 4.5] Creating Relationships - Starting...")
+        await tracker.update_stage(ProcessingStage.GENERATING_EMBEDDINGS, stage_name="relationships", progress_percentage=85)
+        
+        # Get product IDs for relationship creation
+        product_ids_for_relationships = []
+        if catalog and catalog.products:
+            # Get product IDs from database
+            products_result = supabase.client.table('products')\
+                .select('id')\
+                .eq('source_document_id', document_id)\
+                .execute()
+            
+            if products_result.data:
+                product_ids_for_relationships = [p['id'] for p in products_result.data]
+                logger.info(f"   Found {len(product_ids_for_relationships)} products for relationship creation")
+        
+        # Create relationships if we have products and images
+        chunk_image_rels = 0
+        product_image_rels = 0
+        
+        if product_ids_for_relationships and images_processed > 0:
+            try:
+                from app.services.relevancy_service import RelevancyService
+                relevancy_service = RelevancyService()
+                
+                logger.info(f"   Creating relationships for {len(product_ids_for_relationships)} products and {images_processed} images...")
+                
+                # Create all relationships (chunk-image, product-image)
+                relationships_result = await relevancy_service.create_all_relationships(
+                    document_id=document_id,
+                    product_ids=product_ids_for_relationships,
+                    similarity_threshold=0.5  # Default threshold
+                )
+                
+                chunk_image_rels = relationships_result.get('chunk_image_relationships', 0)
+                product_image_rels = relationships_result.get('product_image_relationships', 0)
+                
+                logger.info(f"✅ [STAGE 4.5] Relationships Created:")
+                logger.info(f"   Chunk-image relationships: {chunk_image_rels}")
+                logger.info(f"   Product-image relationships: {product_image_rels}")
+                
+                # Update tracker progress to 95%
+                await tracker.update_stage(ProcessingStage.GENERATING_EMBEDDINGS, stage_name="relationships_complete", progress_percentage=95)
+                
+            except Exception as rel_error:
+                logger.error(f"❌ Relationship creation failed: {rel_error}")
+                logger.error(f"   Error type: {type(rel_error).__name__}")
+                # Don't fail the entire job if relationships fail
+                await tracker.add_error(
+                    error_type="relationship_creation_failed",
+                    error_message=str(rel_error),
+                    context={"document_id": document_id, "products": len(product_ids_for_relationships)}
+                )
+        else:
+            logger.info(f"⚠️ [STAGE 4.5] Skipping relationships - Products: {len(product_ids_for_relationships)}, Images: {images_processed}")
         logger.info("⚡ [STAGE 5] Quality Enhancement - Starting (Async)...")
-        await tracker.update_stage(ProcessingStage.COMPLETED, stage_name="quality_enhancement")
+        await tracker.update_stage(ProcessingStage.COMPLETED, stage_name="quality_enhancement", progress_percentage=95)
 
         from app.services.claude_validation_service import ClaudeValidationService
 
@@ -4123,11 +4191,16 @@ Respond ONLY with this JSON format:
         # NOTE: Cleanup moved to admin panel cron job
 
         # Mark job as complete
+        # Mark job as complete with 100% progress
+        await tracker.update_stage(ProcessingStage.COMPLETED, stage_name="completed", progress_percentage=100)
+        
         result = {
             "document_id": document_id,
             "products_discovered": len(catalog.products),
             "products_created": products_created,
             "product_names": [p.name for p in catalog.products],
+            "chunk_image_relationships": chunk_image_rels,
+            "product_image_relationships": product_image_rels,
             "chunks_created": tracker.chunks_created,
             "images_processed": images_processed,
             "claude_validations": validation_results.get('validated', 0),
@@ -4147,7 +4220,9 @@ Respond ONLY with this JSON format:
                 "document_id": document_id,
                 "products_created": products_created,
                 "chunks_created": tracker.chunks_created,
-                "images_processed": images_processed
+                "images_processed": images_processed,
+                "chunk_image_relationships": chunk_image_rels,
+                "product_image_relationships": product_image_rels,
             },
             metadata={
                 "processing_time": (datetime.utcnow() - start_time).total_seconds(),
@@ -4163,6 +4238,8 @@ Respond ONLY with this JSON format:
         logger.info(f"   Products: {products_created}")
         logger.info(f"   Chunks: {tracker.chunks_created}")
         logger.info(f"   Images: {images_processed}")
+        logger.info(f"   Chunk-Image Relationships: {chunk_image_rels}")
+        logger.info(f"   Product-Image Relationships: {product_image_rels}")
         logger.info("=" * 80)
 
         # LAZY LOADING: Unload all loaded components after successful completion

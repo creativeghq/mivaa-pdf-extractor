@@ -55,6 +55,7 @@ class ProgressTracker:
     pages_failed: int = 0
     pages_skipped: int = 0
     current_page: Optional[int] = None
+    manual_progress_override: Optional[int] = None  # Manual progress percentage (0-100)
 
     # Page-level tracking
     page_statuses: Dict[int, PageProcessingStatus] = field(default_factory=dict)
@@ -122,7 +123,11 @@ class ProgressTracker:
 
         try:
             # 1. Update background_jobs table
-            progress_pct = self.calculate_progress_percentage()
+            # Use manual progress override if set, otherwise calculate from pages
+            if self.manual_progress_override is not None:
+                progress_pct = self.manual_progress_override
+            else:
+                progress_pct = self.calculate_progress_percentage()
 
             job_update = {
                 'status': 'processing',
@@ -201,7 +206,7 @@ class ProgressTracker:
         # Sync to database
         await self._sync_to_database()
 
-    async def update_stage(self, stage: ProcessingStage, stage_name: Optional[str] = None):
+    async def update_stage(self, stage: ProcessingStage, stage_name: Optional[str] = None, progress_percentage: Optional[int] = None):
         """
         Update the current processing stage.
 
@@ -210,7 +215,9 @@ class ProgressTracker:
             stage_name: Optional stage name for job_progress table (e.g., 'product_discovery')
         """
         self.current_stage = stage
-        logger.info(f"Job {self.job_id} moved to stage: {stage.value}")
+        if progress_percentage is not None:
+            self.manual_progress_override = progress_percentage
+        logger.info(f"Job {self.job_id} moved to stage: {stage.value}" + (f" ({progress_percentage}%)" if progress_percentage is not None else ""))
 
         # Sync to database
         await self._sync_to_database(stage=stage_name)

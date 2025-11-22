@@ -1,0 +1,30 @@
+{
+  "timestamp": "2025-11-22T05:31:59.802Z",
+  "job": {
+    "id": "3f96d0a3-400e-4de1-82bb-1448f95f9ca5",
+    "document_id": "0455d603-ab21-4e98-89f9-c4587ec1546d"
+  },
+  "data": {
+    "chunks": [],
+    "images": [],
+    "products": [],
+    "embeddings": {
+      "text": [],
+      "image": [],
+      "visual": [],
+      "multimodal": []
+    }
+  },
+  "summary": {
+    "total_chunks": 0,
+    "total_images": 0,
+    "total_products": 0,
+    "total_embeddings": 0,
+    "embeddings_by_type": {
+      "text": 0,
+      "image": 0,
+      "visual": 0,
+      "multimodal": 0
+    }
+  }
+}
