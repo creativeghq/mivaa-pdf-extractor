@@ -638,9 +638,9 @@ def create_app() -> FastAPI:
     
     app = FastAPI(
         title=settings.app_name,
-        version="2.3.0",
+        version="2.3.1",
         description="""
-**Production API v2.3.0** - AI-powered material recognition and knowledge management platform serving 5,000+ users.
+**Production API v2.3.1** - AI-powered material recognition and knowledge management platform serving 5,000+ users.
 
 ## 🎯 Overview
 
