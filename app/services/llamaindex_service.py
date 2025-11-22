@@ -3054,6 +3054,15 @@ Summary:"""
                         classification_result = None
 
                     # Store chunk in document_chunks table
+                    # ✅ FIX ISSUE #3: Extract page_number from node.metadata for chunk-image relationships
+                    # LlamaIndex PDFReader provides 'page_label' (1-based page number as string)
+                    page_number = None
+                    if 'page_label' in node.metadata:
+                        try:
+                            page_number = int(node.metadata['page_label'])
+                        except (ValueError, TypeError):
+                            self.logger.warning(f"Could not convert page_label '{node.metadata.get('page_label')}' to int")
+                    
                     chunk_data = {
                         'document_id': document_id,
                         'workspace_id': metadata.get('workspace_id'),
@@ -3068,6 +3077,7 @@ Summary:"""
                             'quality_score': quality_score,  # ✅ NEW: Store quality score
                             'has_parent': node.parent_node is not None,
                             'has_children': len(node.child_nodes) > 0 if hasattr(node, 'child_nodes') and node.child_nodes is not None else False,
+                            'page_number': page_number,  # ✅ FIX: Add page_number for chunk-image relationships
                             **node.metadata
                         }
                     }

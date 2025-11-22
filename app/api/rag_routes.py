@@ -3319,6 +3319,25 @@ Respond ONLY with this JSON format:
                                             }
                                         )
 
+                                    # ✅ CRITICAL FIX: Update document_images table with CLIP embeddings
+                                    # This is required for the test validation to pass
+                                    try:
+                                        update_data = {
+                                            'visual_clip_embedding_512': embeddings.get('visual_512'),
+                                            'multimodal_fusion_embedding_2048': embeddings.get('fusion_2048'),
+                                            'embedding_metadata': {
+                                                'quality_score': img_data.get('quality_score', 0.5),
+                                                'confidence_score': img_data.get('confidence', 0.5),
+                                                'classification': img_data.get('classification', 'material'),
+                                                'material_properties': {}
+                                            }
+                                        }
+                                        
+                                        supabase_client.client.table('document_images').update(update_data).eq('id', image_id).execute()
+                                        logger.info(f"   ✅ Updated document_images table with CLIP embeddings for image {image_id}")
+                                    except Exception as update_error:
+                                        logger.error(f"   ❌ Failed to update document_images with embeddings: {update_error}")
+
                                     clip_embeddings_count += 1
                                     logger.info(f"   ✅ Generated {1 + len(specialized_embeddings)} CLIP embeddings for image {image_id}")
                                 else:
@@ -3754,6 +3773,25 @@ Respond ONLY with this JSON format:
                     clip_embeddings_generated += 1
                     logger.debug(f"✅ [{image_index}/{total_images}] Queued CLIP embedding for batch upsert (image {image_id})")
 
+
+                    # ✅ CRITICAL FIX: Update document_images table with CLIP embeddings
+                    # This is required for the test validation to pass
+                    try:
+                        update_data = {
+                            'visual_clip_embedding_512': clip_result.get('embedding_512'),
+                            'multimodal_fusion_embedding_2048': clip_result.get('fusion_embedding_2048'),
+                            'embedding_metadata': {
+                                'quality_score': analysis_result.get('quality_score'),
+                                'confidence_score': analysis_result.get('confidence_score'),
+                                'llama_analysis': analysis_result.get('llama_analysis'),
+                                'material_properties': analysis_result.get('material_properties', {})
+                            }
+                        }
+                        
+                        supabase.client.table('document_images').update(update_data).eq('id', image_id).execute()
+                        logger.debug(f"✅ [{image_index}/{total_images}] Updated document_images table with CLIP embeddings")
+                    except Exception as update_error:
+                        logger.error(f"❌ [{image_index}/{total_images}] Failed to update document_images with embeddings: {update_error}")
                     # ✅ NEW: Save specialized CLIP embeddings (color, texture, style, material)
                     specialized_embeddings = {}
                     if clip_result.get('color_clip_512'):
@@ -4077,11 +4115,21 @@ Respond ONLY with this JSON format:
                 .in_('product_id', list(product_id_map.values()))\
                 .execute()
 
-            # Count chunk-image relationships
-            chunk_image_count = supabase.client.table('chunk_image_relationships')\
-                .select('id', count='exact')\
-                .eq('chunk_id.document_id', document_id)\
+            # Count chunk-image relationships - First get chunk IDs
+            chunks_for_verification = supabase.client.table('document_chunks')\
+                .select('id')\
+                .eq('document_id', document_id)\
                 .execute()
+            
+            chunk_ids_for_verification = [chunk['id'] for chunk in (chunks_for_verification.data or [])]
+            
+            if chunk_ids_for_verification:
+                chunk_image_count = supabase.client.table('chunk_image_relationships')\
+                    .select('id', count='exact')\
+                    .in_('chunk_id', chunk_ids_for_verification)\
+                    .execute()
+            else:
+                chunk_image_count = type('obj', (object,), {'count': 0})()
 
             # Count chunk-product relationships
             chunk_product_count = supabase.client.table('chunk_product_relationships')\
