@@ -525,7 +525,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         Returns:
             True if token is blacklisted, False otherwise
         """
-        # TODO: Implement Redis blacklist checking if Redis is configured
+
         # For now, return False (no blacklist check)
         return False
     

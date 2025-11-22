@@ -3054,15 +3054,6 @@ Summary:"""
                         classification_result = None
 
                     # Store chunk in document_chunks table
-                    # ✅ FIX ISSUE #3: Extract page_number from node.metadata for chunk-image relationships
-                    # LlamaIndex PDFReader provides 'page_label' (1-based page number as string)
-                    page_number = None
-                    if 'page_label' in node.metadata:
-                        try:
-                            page_number = int(node.metadata['page_label'])
-                        except (ValueError, TypeError):
-                            self.logger.warning(f"Could not convert page_label '{node.metadata.get('page_label')}' to int")
-                    
                     chunk_data = {
                         'document_id': document_id,
                         'workspace_id': metadata.get('workspace_id'),
@@ -3077,7 +3068,6 @@ Summary:"""
                             'quality_score': quality_score,  # ✅ NEW: Store quality score
                             'has_parent': node.parent_node is not None,
                             'has_children': len(node.child_nodes) > 0 if hasattr(node, 'child_nodes') and node.child_nodes is not None else False,
-                            'page_number': page_number,  # ✅ FIX: Add page_number for chunk-image relationships
                             **node.metadata
                         }
                     }
@@ -5197,65 +5187,39 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
             if metadata_conditions:
                 metadata_filter_sql = "AND " + " AND ".join(metadata_conditions)
 
-            # 🎯 Enhanced multi-vector search query combining all embedding types + metadata filters
-            # Architecture: Products have text embeddings, Images have visual embeddings, connected via relationships
+            # 🎯 Enhanced multi-vector search query combining all 6 embedding types + metadata filters
             query_sql = f"""
-            WITH product_image_scores AS (
-                SELECT
-                    p.id as product_id,
-                    p.product_name,
-                    p.description,
-                    p.metadata,
-                    p.workspace_id,
-                    p.document_id,
-                    p.text_embedding_1536,
-                    img.visual_clip_embedding_512,
-                    img.multimodal_fusion_embedding_2048,
-                    rel.relevance_score as image_relevance,
-                    ROW_NUMBER() OVER (PARTITION BY p.id ORDER BY rel.relevance_score DESC) as rn
-                FROM products p
-                LEFT JOIN product_image_relationships rel ON p.id = rel.product_id
-                LEFT JOIN document_images img ON rel.image_id = img.id
-                WHERE p.workspace_id = '{workspace_id}'
-                    AND p.text_embedding_1536 IS NOT NULL
-                    {metadata_filter_sql}
-            )
             SELECT
-                product_id as id,
-                product_name,
-                description,
-                metadata,
-                workspace_id,
-                document_id,
+                p.id,
+                p.product_name,
+                p.description,
+                p.metadata,
+                p.workspace_id,
+                p.document_id,
                 (
-                    ({text_weight} * (1 - (text_embedding_1536 <=> '{embedding_str}'::vector(1536)))) +
-                    CASE
-                        WHEN visual_clip_embedding_512 IS NOT NULL THEN
-                            ({visual_weight} * (1 - (visual_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) * image_relevance
-                        ELSE 0
-                    END +
-                    CASE
-                        WHEN multimodal_fusion_embedding_2048 IS NOT NULL THEN
-                            ({color_weight} + {texture_weight} + {style_weight} + {material_weight}) *
-                            (1 - (multimodal_fusion_embedding_2048 <=> '{embedding_str}'::vector(2048))) * image_relevance / 4
-                        ELSE 0
-                    END
+                    ({text_weight} * (1 - (p.text_embedding_1536 <=> '{embedding_str}'::vector(1536)))) +
+                    ({visual_weight} * (1 - (p.visual_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
+                    ({color_weight} * (1 - (p.color_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
+                    ({texture_weight} * (1 - (p.texture_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
+                    ({style_weight} * (1 - (p.style_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
+                    ({material_weight} * (1 - (p.material_clip_embedding_512 <=> '{embedding_str}'::vector(512))))
                 ) as weighted_score
-            FROM product_image_scores
-            WHERE rn = 1  -- Use highest relevance image per product
+            FROM products p
+            WHERE p.workspace_id = '{workspace_id}'
+                AND p.text_embedding_1536 IS NOT NULL
+                AND p.visual_clip_embedding_512 IS NOT NULL
+                AND p.color_clip_embedding_512 IS NOT NULL
+                AND p.texture_clip_embedding_512 IS NOT NULL
+                AND p.style_clip_embedding_512 IS NOT NULL
+                AND p.material_clip_embedding_512 IS NOT NULL
+                {metadata_filter_sql}
                 AND (
-                    ({text_weight} * (1 - (text_embedding_1536 <=> '{embedding_str}'::vector(1536)))) +
-                    CASE
-                        WHEN visual_clip_embedding_512 IS NOT NULL THEN
-                            ({visual_weight} * (1 - (visual_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) * image_relevance
-                        ELSE 0
-                    END +
-                    CASE
-                        WHEN multimodal_fusion_embedding_2048 IS NOT NULL THEN
-                            ({color_weight} + {texture_weight} + {style_weight} + {material_weight}) *
-                            (1 - (multimodal_fusion_embedding_2048 <=> '{embedding_str}'::vector(2048))) * image_relevance / 4
-                        ELSE 0
-                    END
+                    ({text_weight} * (1 - (p.text_embedding_1536 <=> '{embedding_str}'::vector(1536)))) +
+                    ({visual_weight} * (1 - (p.visual_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
+                    ({color_weight} * (1 - (p.color_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
+                    ({texture_weight} * (1 - (p.texture_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
+                    ({style_weight} * (1 - (p.style_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
+                    ({material_weight} * (1 - (p.material_clip_embedding_512 <=> '{embedding_str}'::vector(512))))
                 ) >= {similarity_threshold}
             ORDER BY weighted_score DESC
             LIMIT {top_k}
@@ -5828,11 +5792,24 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
             List of floats representing the CLIP embedding (512 dimensions)
         """
         try:
-            # TODO: Integrate with actual CLIP model
-            # For now, return a placeholder embedding
-            # In production, this should call the CLIP embedding service
-            self.logger.warning("CLIP embedding generation not yet implemented - using placeholder")
-            return [0.0] * 512  # Placeholder 512-dimensional embedding
+            # Use RealEmbeddingsService for actual CLIP embedding generation
+            from .real_embeddings_service import RealEmbeddingsService
+
+            if not hasattr(self, '_embeddings_service'):
+                self._embeddings_service = RealEmbeddingsService()
+
+            # Generate visual embedding using SigLIP with CLIP fallback
+            visual_embedding, model_used = await self._embeddings_service._generate_visual_embedding(
+                image_url=image_url,
+                image_data=image_base64
+            )
+
+            if visual_embedding:
+                self.logger.info(f"✅ Generated CLIP embedding using {model_used}")
+                return visual_embedding
+
+            self.logger.error("❌ CLIP embedding generation failed")
+            return [0.0] * 512  # Fallback to zeros if generation fails
 
         except Exception as e:
             self.logger.error(f"Failed to generate CLIP embedding: {e}")

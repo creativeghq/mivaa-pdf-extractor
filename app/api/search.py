@@ -1641,7 +1641,7 @@ async def search_by_material(
 
 # ============================================================================
 # ============================================================================
-# REMOVED DEPRECATED ENDPOINTS
+
 # ============================================================================
 # The following endpoint has been removed and consolidated into /api/rag/search:
 # - POST /unified-search - Use /api/rag/search with strategy parameter
