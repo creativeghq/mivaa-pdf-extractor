@@ -7,16 +7,15 @@ Manages customizable AI prompts for different extraction stages and industries.
 import logging
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-import asyncpg
 
-from app.database import get_db_pool
+from app.services.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
 
 class PromptTemplateService:
     """Service for managing prompt templates."""
-    
+
     async def get_template(
         self,
         workspace_id: str,
@@ -26,66 +25,91 @@ class PromptTemplateService:
     ) -> Optional[Dict[str, Any]]:
         """
         Get the best matching prompt template for a stage/category/industry.
-        
+
         Priority:
         1. Custom template for specific industry + category
         2. Custom template for specific industry (any category)
         3. Custom template for specific category (any industry)
         4. Default template for stage
-        
+
         Args:
             workspace_id: Workspace UUID
             stage: Processing stage (metadata_extraction, discovery, classification, chunking)
             category: Optional category (products, certificates, etc.)
             industry: Optional industry (construction, interior_design, etc.)
-            
+
         Returns:
             Template dict or None if not found
         """
-        pool = await get_db_pool()
-        
-        async with pool.acquire() as conn:
-            # Try to find best match
-            query = """
-                SELECT 
-                    id, name, description, industry, stage, category,
-                    prompt_template, system_prompt, model_preference,
-                    temperature, max_tokens, version, created_at, updated_at
-                FROM prompt_templates
-                WHERE workspace_id = $1 
-                    AND stage = $2
-                    AND is_active = TRUE
-                    AND (
-                        -- Exact match: industry + category
-                        (industry = $3 AND category = $4)
-                        OR
-                        -- Industry match, any category
-                        (industry = $3 AND category IS NULL)
-                        OR
-                        -- Category match, any industry
-                        (category = $4 AND industry IS NULL)
-                        OR
-                        -- Default template
-                        (is_default = TRUE AND industry IS NULL AND category IS NULL)
-                    )
-                ORDER BY 
-                    -- Prioritize exact matches
-                    CASE 
-                        WHEN industry = $3 AND category = $4 THEN 1
-                        WHEN industry = $3 AND category IS NULL THEN 2
-                        WHEN category = $4 AND industry IS NULL THEN 3
-                        WHEN is_default = TRUE THEN 4
-                        ELSE 5
-                    END,
-                    updated_at DESC
-                LIMIT 1
-            """
-            
-            row = await conn.fetchrow(query, workspace_id, stage, industry, category)
-            
-            if row:
-                return dict(row)
-            
+        try:
+            supabase = get_supabase_client().client
+
+            # Try exact match first: industry + category
+            if industry and category:
+                response = supabase.table('prompt_templates')\
+                    .select('*')\
+                    .eq('workspace_id', workspace_id)\
+                    .eq('stage', stage)\
+                    .eq('industry', industry)\
+                    .eq('category', category)\
+                    .eq('is_active', True)\
+                    .order('updated_at', desc=True)\
+                    .limit(1)\
+                    .execute()
+
+                if response.data:
+                    return response.data[0]
+
+            # Try industry match (any category)
+            if industry:
+                response = supabase.table('prompt_templates')\
+                    .select('*')\
+                    .eq('workspace_id', workspace_id)\
+                    .eq('stage', stage)\
+                    .eq('industry', industry)\
+                    .is_('category', 'null')\
+                    .eq('is_active', True)\
+                    .order('updated_at', desc=True)\
+                    .limit(1)\
+                    .execute()
+
+                if response.data:
+                    return response.data[0]
+
+            # Try category match (any industry)
+            if category:
+                response = supabase.table('prompt_templates')\
+                    .select('*')\
+                    .eq('workspace_id', workspace_id)\
+                    .eq('stage', stage)\
+                    .eq('category', category)\
+                    .is_('industry', 'null')\
+                    .eq('is_active', True)\
+                    .order('updated_at', desc=True)\
+                    .limit(1)\
+                    .execute()
+
+                if response.data:
+                    return response.data[0]
+
+            # Try default template
+            response = supabase.table('prompt_templates')\
+                .select('*')\
+                .eq('workspace_id', workspace_id)\
+                .eq('stage', stage)\
+                .eq('is_default', True)\
+                .eq('is_active', True)\
+                .order('updated_at', desc=True)\
+                .limit(1)\
+                .execute()
+
+            if response.data:
+                return response.data[0]
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to get template: {str(e)}")
             return None
     
     async def list_templates(
@@ -97,45 +121,33 @@ class PromptTemplateService:
         include_inactive: bool = False
     ) -> List[Dict[str, Any]]:
         """List all prompt templates with optional filtering."""
-        pool = await get_db_pool()
-        
-        async with pool.acquire() as conn:
-            conditions = ["workspace_id = $1"]
-            params: List[Any] = [workspace_id]
-            param_count = 1
-            
+        try:
+            supabase = get_supabase_client().client
+
+            query = supabase.table('prompt_templates').select('*').eq('workspace_id', workspace_id)
+
             if stage:
-                param_count += 1
-                conditions.append(f"stage = ${param_count}")
-                params.append(stage)
-            
+                query = query.eq('stage', stage)
+
             if category:
-                param_count += 1
-                conditions.append(f"category = ${param_count}")
-                params.append(category)
-            
+                query = query.eq('category', category)
+
             if industry:
-                param_count += 1
-                conditions.append(f"industry = ${param_count}")
-                params.append(industry)
-            
+                query = query.eq('industry', industry)
+
             if not include_inactive:
-                conditions.append("is_active = TRUE")
-            
-            query = f"""
-                SELECT 
-                    id, name, description, industry, stage, category,
-                    prompt_template, system_prompt, model_preference,
-                    temperature, max_tokens, is_default, is_active,
-                    version, created_by, created_at, updated_at
-                FROM prompt_templates
-                WHERE {' AND '.join(conditions)}
-                ORDER BY is_default DESC, industry NULLS LAST, category NULLS LAST, name
-            """
-            
-            rows = await conn.fetch(query, *params)
-            return [dict(row) for row in rows]
-    
+                query = query.eq('is_active', True)
+
+            # Order by default first, then by name
+            query = query.order('is_default', desc=True).order('name')
+
+            response = query.execute()
+            return response.data if response.data else []
+
+        except Exception as e:
+            logger.error(f"Failed to list templates: {str(e)}")
+            return []
+
     async def create_template(
         self,
         workspace_id: str,
@@ -152,28 +164,35 @@ class PromptTemplateService:
         created_by: Optional[str] = None
     ) -> Dict[str, Any]:
         """Create a new prompt template."""
-        pool = await get_db_pool()
-        
-        async with pool.acquire() as conn:
-            query = """
-                INSERT INTO prompt_templates (
-                    workspace_id, name, description, industry, stage, category,
-                    prompt_template, system_prompt, model_preference,
-                    temperature, max_tokens, created_by
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                RETURNING id, name, created_at
-            """
-            
-            row = await conn.fetchrow(
-                query,
-                workspace_id, name, description, industry, stage, category,
-                prompt_template, system_prompt, model_preference,
-                temperature, max_tokens, created_by
-            )
-            
-            logger.info(f"✅ Created prompt template: {name} (ID: {row['id']})")
-            return dict(row)
+        try:
+            supabase = get_supabase_client().client
+
+            data = {
+                'workspace_id': workspace_id,
+                'name': name,
+                'stage': stage,
+                'prompt_template': prompt_template,
+                'description': description,
+                'industry': industry,
+                'category': category,
+                'system_prompt': system_prompt,
+                'model_preference': model_preference,
+                'temperature': temperature,
+                'max_tokens': max_tokens,
+                'created_by': created_by
+            }
+
+            response = supabase.table('prompt_templates').insert(data).execute()
+
+            if response.data:
+                logger.info(f"✅ Created prompt template: {name} (ID: {response.data[0]['id']})")
+                return response.data[0]
+
+            raise Exception("Failed to create template")
+
+        except Exception as e:
+            logger.error(f"Failed to create template: {str(e)}")
+            raise
 
     async def update_template(
         self,
@@ -191,135 +210,117 @@ class PromptTemplateService:
         change_reason: Optional[str] = None
     ) -> Dict[str, Any]:
         """Update an existing prompt template."""
-        pool = await get_db_pool()
+        try:
+            supabase = get_supabase_client().client
 
-        async with pool.acquire() as conn:
             # Get current template for history
-            current = await conn.fetchrow(
-                "SELECT prompt_template, system_prompt FROM prompt_templates WHERE id = $1 AND workspace_id = $2",
-                template_id, workspace_id
-            )
+            current_response = supabase.table('prompt_templates')\
+                .select('prompt_template, system_prompt, version')\
+                .eq('id', template_id)\
+                .eq('workspace_id', workspace_id)\
+                .execute()
 
-            if not current:
+            if not current_response.data:
                 raise ValueError(f"Template {template_id} not found")
 
-            # Build update query dynamically
-            updates = []
-            params = []
-            param_count = 0
+            current = current_response.data[0]
+
+            # Build update data
+            update_data = {}
 
             if prompt_template is not None:
-                param_count += 1
-                updates.append(f"prompt_template = ${param_count}")
-                params.append(prompt_template)
+                update_data['prompt_template'] = prompt_template
 
             if system_prompt is not None:
-                param_count += 1
-                updates.append(f"system_prompt = ${param_count}")
-                params.append(system_prompt)
+                update_data['system_prompt'] = system_prompt
 
             if name is not None:
-                param_count += 1
-                updates.append(f"name = ${param_count}")
-                params.append(name)
+                update_data['name'] = name
 
             if description is not None:
-                param_count += 1
-                updates.append(f"description = ${param_count}")
-                params.append(description)
+                update_data['description'] = description
 
             if model_preference is not None:
-                param_count += 1
-                updates.append(f"model_preference = ${param_count}")
-                params.append(model_preference)
+                update_data['model_preference'] = model_preference
 
             if temperature is not None:
-                param_count += 1
-                updates.append(f"temperature = ${param_count}")
-                params.append(temperature)
+                update_data['temperature'] = temperature
 
             if max_tokens is not None:
-                param_count += 1
-                updates.append(f"max_tokens = ${param_count}")
-                params.append(max_tokens)
+                update_data['max_tokens'] = max_tokens
 
             if is_active is not None:
-                param_count += 1
-                updates.append(f"is_active = ${param_count}")
-                params.append(is_active)
+                update_data['is_active'] = is_active
 
-            if not updates:
+            if not update_data:
                 raise ValueError("No fields to update")
 
             # Increment version
-            param_count += 1
-            updates.append(f"version = version + 1")
-            updates.append(f"updated_at = NOW()")
+            update_data['version'] = current['version'] + 1
+            update_data['updated_at'] = datetime.utcnow().isoformat()
 
-            # Add WHERE clause params
-            param_count += 1
-            params.append(template_id)
-            param_count += 1
-            params.append(workspace_id)
+            # Update template
+            response = supabase.table('prompt_templates')\
+                .update(update_data)\
+                .eq('id', template_id)\
+                .eq('workspace_id', workspace_id)\
+                .execute()
 
-            query = f"""
-                UPDATE prompt_templates
-                SET {', '.join(updates)}
-                WHERE id = ${param_count - 1} AND workspace_id = ${param_count}
-                RETURNING id, name, version, updated_at
-            """
-
-            row = await conn.fetchrow(query, *params)
+            if not response.data:
+                raise Exception("Failed to update template")
 
             # Record history if prompt changed
             if prompt_template is not None or system_prompt is not None:
-                await conn.execute(
-                    """
-                    INSERT INTO prompt_template_history (
-                        template_id, old_prompt, new_prompt, old_system_prompt, new_system_prompt,
-                        changed_by, change_reason
-                    )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
-                    """,
-                    template_id,
-                    current['prompt_template'],
-                    prompt_template or current['prompt_template'],
-                    current['system_prompt'],
-                    system_prompt or current['system_prompt'],
-                    changed_by,
-                    change_reason
-                )
+                history_data = {
+                    'template_id': template_id,
+                    'old_prompt': current['prompt_template'],
+                    'new_prompt': prompt_template or current['prompt_template'],
+                    'old_system_prompt': current.get('system_prompt'),
+                    'new_system_prompt': system_prompt or current.get('system_prompt'),
+                    'changed_by': changed_by,
+                    'change_reason': change_reason
+                }
 
-            logger.info(f"✅ Updated prompt template: {row['name']} (version {row['version']})")
-            return dict(row)
+                supabase.table('prompt_template_history').insert(history_data).execute()
+
+            logger.info(f"✅ Updated prompt template: {response.data[0]['name']} (version {response.data[0]['version']})")
+            return response.data[0]
+
+        except Exception as e:
+            logger.error(f"Failed to update template: {str(e)}")
+            raise
 
     async def delete_template(self, template_id: str, workspace_id: str) -> bool:
         """Delete a prompt template (soft delete by setting is_active=False)."""
-        pool = await get_db_pool()
+        try:
+            supabase = get_supabase_client().client
 
-        async with pool.acquire() as conn:
-            result = await conn.execute(
-                "UPDATE prompt_templates SET is_active = FALSE WHERE id = $1 AND workspace_id = $2",
-                template_id, workspace_id
-            )
+            response = supabase.table('prompt_templates')\
+                .update({'is_active': False})\
+                .eq('id', template_id)\
+                .eq('workspace_id', workspace_id)\
+                .execute()
 
-            return result == "UPDATE 1"
+            return len(response.data) > 0
+
+        except Exception as e:
+            logger.error(f"Failed to delete template: {str(e)}")
+            return False
 
     async def get_template_history(self, template_id: str) -> List[Dict[str, Any]]:
         """Get change history for a template."""
-        pool = await get_db_pool()
+        try:
+            supabase = get_supabase_client().client
 
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT id, old_prompt, new_prompt, old_system_prompt, new_system_prompt,
-                       changed_by, change_reason, changed_at
-                FROM prompt_template_history
-                WHERE template_id = $1
-                ORDER BY changed_at DESC
-                """,
-                template_id
-            )
+            response = supabase.table('prompt_template_history')\
+                .select('*')\
+                .eq('template_id', template_id)\
+                .order('changed_at', desc=True)\
+                .execute()
 
-            return [dict(row) for row in rows]
+            return response.data if response.data else []
+
+        except Exception as e:
+            logger.error(f"Failed to get template history: {str(e)}")
+            return []
 
