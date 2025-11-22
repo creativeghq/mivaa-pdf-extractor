@@ -5783,7 +5783,7 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
 
     async def _generate_clip_embedding(self, image: 'Image') -> Optional[List[float]]:
         """
-        Generate CLIP embedding for an image.
+        Generate CLIP embedding for an image (used for image search queries).
 
         Args:
             image: PIL Image object
@@ -5794,22 +5794,29 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
         try:
             # Use RealEmbeddingsService for actual CLIP embedding generation
             from .real_embeddings_service import RealEmbeddingsService
+            from io import BytesIO
+            import base64
 
             if not hasattr(self, '_embeddings_service'):
                 self._embeddings_service = RealEmbeddingsService()
 
-            # Generate visual embedding using SigLIP with CLIP fallback
+            # Convert PIL Image to base64
+            buffered = BytesIO()
+            image.save(buffered, format="PNG")
+            image_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+
+            # Generate visual embedding using RealEmbeddingsService
             visual_embedding, model_used = await self._embeddings_service._generate_visual_embedding(
-                image_url=image_url,
+                image_url=None,
                 image_data=image_base64
             )
 
             if visual_embedding:
-                self.logger.info(f"✅ Generated CLIP embedding using {model_used}")
+                self.logger.info(f"✅ Generated CLIP embedding for search query using {model_used}")
                 return visual_embedding
 
-            self.logger.error("❌ CLIP embedding generation failed")
-            return [0.0] * 512  # Fallback to zeros if generation fails
+            self.logger.error("❌ CLIP embedding generation failed for search query")
+            return None
 
         except Exception as e:
             self.logger.error(f"Failed to generate CLIP embedding: {e}")
