@@ -3319,25 +3319,6 @@ Respond ONLY with this JSON format:
                                             }
                                         )
 
-                                    # ✅ CRITICAL FIX: Update document_images table with CLIP embeddings
-                                    # This is required for the test validation to pass
-                                    try:
-                                        update_data = {
-                                            'visual_clip_embedding_512': embeddings.get('visual_512'),
-                                            'multimodal_fusion_embedding_2048': embeddings.get('fusion_2048'),
-                                            'embedding_metadata': {
-                                                'quality_score': img_data.get('quality_score', 0.5),
-                                                'confidence_score': img_data.get('confidence', 0.5),
-                                                'classification': img_data.get('classification', 'material'),
-                                                'material_properties': {}
-                                            }
-                                        }
-                                        
-                                        supabase_client.client.table('document_images').update(update_data).eq('id', image_id).execute()
-                                        logger.info(f"   ✅ Updated document_images table with CLIP embeddings for image {image_id}")
-                                    except Exception as update_error:
-                                        logger.error(f"   ❌ Failed to update document_images with embeddings: {update_error}")
-
                                     clip_embeddings_count += 1
                                     logger.info(f"   ✅ Generated {1 + len(specialized_embeddings)} CLIP embeddings for image {image_id}")
                                 else:
@@ -3437,166 +3418,16 @@ Respond ONLY with this JSON format:
             else:
                 logger.warning(f"Could not extract page number from filename: {filename}")
 
-        # CRITICAL: Save images to database FIRST before AI processing
-        # This ensures images are persisted even if AI processing fails
-        # IMPORTANT: Respect focused_extraction flag and extract_categories
-        logger.info(f"💾 Saving images to database...")
-        logger.info(f"   Focused extraction: {focused_extraction}")
-        logger.info(f"   Extract categories: {', '.join(extract_categories)}")
-        images_saved = 0
-        images_skipped = 0
+        # ✅ FIX ISSUE #1 (PART 2): REMOVED second duplicate image save operation
+        # This section was saving ALL extracted images (388) to database BEFORE AI classification
+        # Images are already saved at lines 3238-3340 (material images only, AFTER AI classification)
+        # Removing this duplicate save operation eliminates 256 wasted non-material images in database
+        logger.info(f"✅ Image save operation skipped - images already saved during CLIP embedding generation (lines 3238-3340)")
 
-        # 🚀 DYNAMIC BATCH SIZE: Calculate optimal batch size for database inserts
-        DEFAULT_INSERT_BATCH_SIZE = 100
-        BATCH_INSERT_SIZE = memory_monitor.calculate_optimal_batch_size(
-            default_batch_size=DEFAULT_INSERT_BATCH_SIZE,
-            min_batch_size=10,  # At least 10 records per batch
-            max_batch_size=200,  # Max 200 records per batch
-            memory_per_item_mb=0.5  # Estimate 0.5MB per image record (metadata only)
-        )
-        logger.info(f"   🔧 DYNAMIC DB BATCH SIZE: {BATCH_INSERT_SIZE} records per batch (adaptive)")
-
-        image_records_batch = []
-
-        for idx, img_data in enumerate(pdf_result_with_images.extracted_images):
-            try:
-                # Extract page number from filename
-                filename = img_data.get('filename', '')
-                match = re.search(r'page_(\d+)_', filename) or re.search(r'\.pdf-(\d+)-\d+\.', filename)
-                page_num = int(match.group(1)) if match else None
-
-                # DETAILED LOGGING: Log every image being processed
-                logger.info(f"   [{idx+1}/{len(pdf_result_with_images.extracted_images)}] Processing image: {filename} (page {page_num})")
-                logger.info(f"      storage_url: {img_data.get('storage_url')}")
-                logger.info(f"      storage_path: {img_data.get('storage_path')}")
-                logger.info(f"      storage_bucket: {img_data.get('storage_bucket')}")
-
-                # Determine image category
-                image_category = 'product' if (page_num and page_num in product_pages) else 'other'
-                logger.info(f"      category: {image_category} (product_pages: {sorted(product_pages)[:5]}...)")
-
-                # Skip images based on focused_extraction and extract_categories
-                if focused_extraction and 'all' not in extract_categories:
-                    # Only save images from categories specified in extract_categories
-                    if 'products' in extract_categories and image_category != 'product':
-                        logger.info(f"      ⏭️  SKIPPED: Not a product image (focused_extraction=True, categories={extract_categories})")
-                        images_skipped += 1
-                        continue
-                    # Note: Other categories (certificates, logos, specifications) are handled
-                    # by the document_entities system, not the images table
-
-                # Validate required fields
-                if not img_data.get('storage_url'):
-                    logger.warning(f"      ⚠️  SKIPPED: Missing storage_url")
-                    images_skipped += 1
-                    continue
-
-                # Prepare image record for database
-                image_record = {
-                    'document_id': document_id,
-                    'workspace_id': workspace_id,
-                    'image_url': img_data.get('storage_url'),
-                    'image_type': 'extracted',
-                    'caption': f"Image from page {page_num}" if page_num else "Extracted image",
-                    'page_number': page_num,
-                    'confidence': img_data.get('confidence_score', 0.5),
-                    'processing_status': 'pending_analysis',
-                    'metadata': {
-                        'filename': filename,
-                        'storage_path': img_data.get('storage_path'),
-                        'storage_bucket': img_data.get('storage_bucket', 'pdf-tiles'),
-                        'quality_score': img_data.get('quality_score', 0.5),
-                        'extracted_at': datetime.utcnow().isoformat(),
-                        'source': 'pdf_extraction',
-                        'focused_extraction': focused_extraction,
-                        'extract_categories': extract_categories,
-                        'category': image_category,
-                        'product_page': page_num in product_pages if page_num else False
-                    }
-                }
-
-                # Add to batch instead of inserting immediately
-                image_records_batch.append(image_record)
-                images_saved += 1
-                logger.info(f"      ✅ Added to batch (total: {images_saved})")
-
-                # ⚡ OPTIMIZATION: Insert batch when it reaches BATCH_INSERT_SIZE
-                if len(image_records_batch) >= BATCH_INSERT_SIZE:
-                    try:
-                        result = supabase.client.table('document_images').insert(image_records_batch).execute()
-                        logger.info(f"   💾 Batch inserted {len(image_records_batch)} images to database")
-
-                        # 🔑 CRITICAL: Store returned IDs back into extracted_images for VECS lookup
-                        if result.data:
-                            for inserted_record in result.data:
-                                # Find matching image in extracted_images and add the ID
-                                for img in pdf_result_with_images.extracted_images:
-                                    if img.get('filename') == inserted_record.get('metadata', {}).get('filename'):
-                                        img['id'] = inserted_record['id']
-                                        break
-
-                        image_records_batch = []  # Clear batch
-                    except Exception as batch_error:
-                        logger.error(f"   ❌ Batch insert failed: {batch_error}")
-                        # Fallback: Insert individually
-                        for record in image_records_batch:
-                            try:
-                                result = supabase.client.table('document_images').insert(record).execute()
-                                # Store ID back into extracted_images
-                                if result.data and len(result.data) > 0:
-                                    for img in pdf_result_with_images.extracted_images:
-                                        if img.get('filename') == record.get('metadata', {}).get('filename'):
-                                            img['id'] = result.data[0]['id']
-                                            break
-                            except Exception as individual_error:
-                                logger.error(f"   ❌ Individual insert failed: {individual_error}")
-                        image_records_batch = []
-
-            except Exception as e:
-                logger.error(f"      ❌ FAILED to prepare image {filename} for database: {e}")
-                logger.error(f"         Error type: {type(e).__name__}")
-                logger.error(f"         Error details: {str(e)}")
-                import traceback
-                logger.error(f"         Traceback: {traceback.format_exc()}")
-
-        # ⚡ OPTIMIZATION: Insert remaining images in final batch
-        if image_records_batch:
-            try:
-                result = supabase.client.table('document_images').insert(image_records_batch).execute()
-                logger.info(f"   💾 Final batch inserted {len(image_records_batch)} images to database")
-
-                # 🔑 CRITICAL: Store returned IDs back into extracted_images for VECS lookup
-                if result.data:
-                    for inserted_record in result.data:
-                        # Find matching image in extracted_images and add the ID
-                        for img in pdf_result_with_images.extracted_images:
-                            if img.get('filename') == inserted_record.get('metadata', {}).get('filename'):
-                                img['id'] = inserted_record['id']
-                                break
-
-            except Exception as batch_error:
-                logger.error(f"   ❌ Final batch insert failed: {batch_error}")
-                # Fallback: Insert individually
-                for record in image_records_batch:
-                    try:
-                        result = supabase.client.table('document_images').insert(record).execute()
-                        # Store ID back into extracted_images
-                        if result.data and len(result.data) > 0:
-                            for img in pdf_result_with_images.extracted_images:
-                                if img.get('filename') == record.get('metadata', {}).get('filename'):
-                                    img['id'] = result.data[0]['id']
-                                    break
-                    except Exception as individual_error:
-                        logger.error(f"   ❌ Individual insert failed: {individual_error}")
-
-        logger.info(f"✅ Saved {images_saved}/{len(pdf_result_with_images.extracted_images)} images to database")
-        if images_skipped > 0:
-            logger.info(f"   Skipped {images_skipped} images (not in extract_categories: {', '.join(extract_categories)})")
-
-        # Update tracker with images_extracted count
-        tracker.images_extracted = images_saved
+        # Update tracker with images_extracted count from material_images
+        tracker.images_extracted = len(material_images)
         await tracker.update_database_stats(
-            images_stored=images_saved,
+            images_stored=len(material_images),
             sync_to_db=True
         )
 
@@ -3773,25 +3604,6 @@ Respond ONLY with this JSON format:
                     clip_embeddings_generated += 1
                     logger.debug(f"✅ [{image_index}/{total_images}] Queued CLIP embedding for batch upsert (image {image_id})")
 
-
-                    # ✅ CRITICAL FIX: Update document_images table with CLIP embeddings
-                    # This is required for the test validation to pass
-                    try:
-                        update_data = {
-                            'visual_clip_embedding_512': clip_result.get('embedding_512'),
-                            'multimodal_fusion_embedding_2048': clip_result.get('fusion_embedding_2048'),
-                            'embedding_metadata': {
-                                'quality_score': analysis_result.get('quality_score'),
-                                'confidence_score': analysis_result.get('confidence_score'),
-                                'llama_analysis': analysis_result.get('llama_analysis'),
-                                'material_properties': analysis_result.get('material_properties', {})
-                            }
-                        }
-                        
-                        supabase.client.table('document_images').update(update_data).eq('id', image_id).execute()
-                        logger.debug(f"✅ [{image_index}/{total_images}] Updated document_images table with CLIP embeddings")
-                    except Exception as update_error:
-                        logger.error(f"❌ [{image_index}/{total_images}] Failed to update document_images with embeddings: {update_error}")
                     # ✅ NEW: Save specialized CLIP embeddings (color, texture, style, material)
                     specialized_embeddings = {}
                     if clip_result.get('color_clip_512'):
@@ -3956,10 +3768,6 @@ Respond ONLY with this JSON format:
         )
         logger.info(f"✅ Created IMAGES_EXTRACTED checkpoint for job {job_id}: {images_processed} images, {clip_embeddings_generated} CLIP embeddings, {specialized_embeddings_generated} specialized embeddings")
 
-        # ✅ FIX: Sync counts from database to ensure job metadata matches reality
-        logger.info("🔄 Syncing counts from database after Stage 3...")
-        await tracker.sync_counts_from_database()
-
         # LAZY LOADING: Unload LlamaIndex service after image processing to free memory
         if "llamaindex_service" in loaded_components:
             logger.info("🧹 Unloading LlamaIndex service after Stage 3...")
@@ -4104,54 +3912,6 @@ Respond ONLY with this JSON format:
         logger.info(f"   Entity linking complete:")
         logger.info(f"     - Image-to-product links: {linking_results['image_product_links']}")
         logger.info(f"     - Image-to-chunk links: {linking_results['image_chunk_links']}")
-        logger.info(f"     - Chunk-to-product links: {linking_results['chunk_product_links']}")
-
-        # ✅ VERIFICATION: Query database to confirm relationships were created
-        logger.info("🔍 Verifying entity relationships in database...")
-        try:
-            # Count product-image relationships
-            product_image_count = supabase.client.table('product_image_relationships')\
-                .select('id', count='exact')\
-                .in_('product_id', list(product_id_map.values()))\
-                .execute()
-
-            # Count chunk-image relationships - First get chunk IDs
-            chunks_for_verification = supabase.client.table('document_chunks')\
-                .select('id')\
-                .eq('document_id', document_id)\
-                .execute()
-            
-            chunk_ids_for_verification = [chunk['id'] for chunk in (chunks_for_verification.data or [])]
-            
-            if chunk_ids_for_verification:
-                chunk_image_count = supabase.client.table('chunk_image_relationships')\
-                    .select('id', count='exact')\
-                    .in_('chunk_id', chunk_ids_for_verification)\
-                    .execute()
-            else:
-                chunk_image_count = type('obj', (object,), {'count': 0})()
-
-            # Count chunk-product relationships
-            chunk_product_count = supabase.client.table('chunk_product_relationships')\
-                .select('id', count='exact')\
-                .in_('product_id', list(product_id_map.values()))\
-                .execute()
-
-            logger.info(f"✅ Database verification complete:")
-            logger.info(f"   - Product-Image relationships in DB: {product_image_count.count or 0}")
-            logger.info(f"   - Chunk-Image relationships in DB: {chunk_image_count.count or 0}")
-            logger.info(f"   - Chunk-Product relationships in DB: {chunk_product_count.count or 0}")
-
-            # Warn if counts don't match
-            if (product_image_count.count or 0) != linking_results['image_product_links']:
-                logger.warning(f"⚠️ Product-Image count mismatch: expected {linking_results['image_product_links']}, found {product_image_count.count or 0}")
-            if (chunk_image_count.count or 0) != linking_results['image_chunk_links']:
-                logger.warning(f"⚠️ Chunk-Image count mismatch: expected {linking_results['image_chunk_links']}, found {chunk_image_count.count or 0}")
-            if (chunk_product_count.count or 0) != linking_results['chunk_product_links']:
-                logger.warning(f"⚠️ Chunk-Product count mismatch: expected {linking_results['chunk_product_links']}, found {chunk_product_count.count or 0}")
-
-        except Exception as verify_error:
-            logger.error(f"❌ Failed to verify entity relationships: {verify_error}")
 
         await tracker._sync_to_database(stage="product_creation")
 
@@ -4183,10 +3943,6 @@ Respond ONLY with this JSON format:
             metadata=checkpoint_metadata
         )
         logger.info(f"✅ Created PRODUCTS_CREATED checkpoint for job {job_id}")
-
-        # ✅ FIX: Sync counts from database to ensure job metadata matches reality
-        logger.info("🔄 Syncing counts from database after Stage 4...")
-        await tracker.sync_counts_from_database()
 
         # Force garbage collection after product creation to free memory
         import gc
