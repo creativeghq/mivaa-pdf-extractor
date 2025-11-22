@@ -1453,6 +1453,7 @@ from app.api.data_import_routes import router as data_import_router
 from app.api.job_health_routes import router as job_health_router
 from app.api.knowledge_base import router as knowledge_base_router
 from app.api.category_prototypes import router as category_prototypes_router
+from app.api.internal_routes import router as internal_router
 
 app.include_router(search_router)
 app.include_router(images_router)
@@ -1476,6 +1477,7 @@ app.include_router(data_import_router)  # NEW: Data import (XML, web scraping) w
 app.include_router(job_health_router)  # NEW: Job health monitoring (heartbeat, stuck jobs, performance metrics)
 app.include_router(knowledge_base_router)  # NEW: Knowledge Base & Documentation System
 app.include_router(category_prototypes_router)  # NEW: Category prototype management for material validation
+app.include_router(internal_router)  # NEW: Internal modular endpoints for PDF processing pipeline stages
 
 
 # ============================================================================

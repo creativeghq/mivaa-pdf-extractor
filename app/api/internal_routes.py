@@ -1,0 +1,263 @@
+"""
+Internal API Routes - Modular endpoints for PDF processing pipeline stages.
+
+These endpoints are called internally by the main orchestrator to execute
+individual stages of the PDF processing pipeline. Each endpoint is focused
+on a single responsibility and can be tested/debugged independently.
+
+Endpoints:
+- POST /api/internal/classify-images/{job_id} - Classify images as material/non-material
+- POST /api/internal/upload-images/{job_id} - Upload material images to storage
+- POST /api/internal/save-images-db/{job_id} - Save images to DB and generate CLIP embeddings
+- POST /api/internal/detect-products/{job_id} - Product discovery
+- POST /api/internal/generate-chunks/{job_id} - Text chunking
+"""
+
+from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel
+from typing import List, Dict, Any, Optional
+import logging
+
+from app.services.image_processing_service import ImageProcessingService
+from app.services.supabase_client import get_supabase_client
+from app.services.job_tracker import JobTracker
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/internal", tags=["internal"])
+
+
+# ============================================================================
+# REQUEST/RESPONSE MODELS
+# ============================================================================
+
+class ClassifyImagesRequest(BaseModel):
+    """Request model for image classification."""
+    job_id: str
+    extracted_images: List[Dict[str, Any]]
+    confidence_threshold: float = 0.7
+
+
+class ClassifyImagesResponse(BaseModel):
+    """Response model for image classification."""
+    success: bool
+    material_images: List[Dict[str, Any]]
+    non_material_images: List[Dict[str, Any]]
+    total_classified: int
+    material_count: int
+    non_material_count: int
+
+
+class UploadImagesRequest(BaseModel):
+    """Request model for image upload."""
+    job_id: str
+    material_images: List[Dict[str, Any]]
+    document_id: str
+
+
+class UploadImagesResponse(BaseModel):
+    """Response model for image upload."""
+    success: bool
+    uploaded_images: List[Dict[str, Any]]
+    uploaded_count: int
+    failed_count: int
+
+
+class SaveImagesRequest(BaseModel):
+    """Request model for saving images to DB and generating CLIP embeddings."""
+    job_id: str
+    material_images: List[Dict[str, Any]]
+    document_id: str
+    workspace_id: str
+
+
+class SaveImagesResponse(BaseModel):
+    """Response model for saving images."""
+    success: bool
+    images_saved: int
+    clip_embeddings_generated: int
+
+
+# ============================================================================
+# ENDPOINTS
+# ============================================================================
+
+@router.post("/classify-images/{job_id}", response_model=ClassifyImagesResponse)
+async def classify_images(
+    job_id: str,
+    request: ClassifyImagesRequest
+):
+    """
+    Classify images as material or non-material using Llama Vision + Claude validation.
+    
+    This endpoint:
+    1. Uses Llama Vision for fast initial classification
+    2. Validates uncertain cases (confidence < threshold) with Claude Sonnet
+    3. Returns separated lists of material and non-material images
+    
+    Args:
+        job_id: Job ID for tracking
+        request: Classification request with extracted images
+        
+    Returns:
+        ClassifyImagesResponse with material and non-material images
+    """
+    try:
+        logger.info(f"🤖 [Job {job_id}] Starting image classification for {len(request.extracted_images)} images")
+        
+        # Initialize tracker
+        tracker = JobTracker(job_id)
+        await tracker.update_stage("IMAGE_CLASSIFICATION", 0, sync_to_db=True)
+        
+        # Initialize service
+        image_service = ImageProcessingService()
+        
+        # Classify images
+        material_images, non_material_images = await image_service.classify_images(
+            extracted_images=request.extracted_images,
+            confidence_threshold=request.confidence_threshold
+        )
+        
+        # Update tracker
+        await tracker.update_stage(
+            "IMAGE_CLASSIFICATION",
+            100,
+            metadata={'material_count': len(material_images), 'non_material_count': len(non_material_images)},
+            sync_to_db=True
+        )
+        
+        logger.info(f"✅ [Job {job_id}] Classification complete: {len(material_images)} material, {len(non_material_images)} non-material")
+        
+        return ClassifyImagesResponse(
+            success=True,
+            material_images=material_images,
+            non_material_images=non_material_images,
+            total_classified=len(material_images) + len(non_material_images),
+            material_count=len(material_images),
+            non_material_count=len(non_material_images)
+        )
+    
+    except Exception as e:
+        logger.error(f"❌ [Job {job_id}] Image classification failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Image classification failed: {str(e)}")
+
+
+@router.post("/upload-images/{job_id}", response_model=UploadImagesResponse)
+async def upload_images(
+    job_id: str,
+    request: UploadImagesRequest
+):
+    """
+    Upload material images to Supabase Storage.
+
+    This endpoint:
+    1. Uploads material images to Supabase Storage bucket
+    2. Returns uploaded images with storage URLs
+
+    Args:
+        job_id: Job ID for tracking
+        request: Upload request with material images
+
+    Returns:
+        UploadImagesResponse with uploaded images
+    """
+    try:
+        logger.info(f"📤 [Job {job_id}] Starting upload for {len(request.material_images)} material images")
+
+        # Initialize tracker
+        tracker = JobTracker(job_id)
+        await tracker.update_stage("IMAGE_UPLOAD", 0, sync_to_db=True)
+
+        # Initialize service
+        image_service = ImageProcessingService()
+
+        # Upload images
+        uploaded_images = await image_service.upload_images_to_storage(
+            material_images=request.material_images,
+            document_id=request.document_id
+        )
+
+        failed_count = len(request.material_images) - len(uploaded_images)
+
+        # Update tracker
+        await tracker.update_stage(
+            "IMAGE_UPLOAD",
+            100,
+            metadata={'uploaded_count': len(uploaded_images), 'failed_count': failed_count},
+            sync_to_db=True
+        )
+
+        logger.info(f"✅ [Job {job_id}] Upload complete: {len(uploaded_images)} uploaded, {failed_count} failed")
+
+        return UploadImagesResponse(
+            success=True,
+            uploaded_images=uploaded_images,
+            uploaded_count=len(uploaded_images),
+            failed_count=failed_count
+        )
+
+    except Exception as e:
+        logger.error(f"❌ [Job {job_id}] Image upload failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Image upload failed: {str(e)}")
+
+
+@router.post("/save-images-db/{job_id}", response_model=SaveImagesResponse)
+async def save_images_to_db(
+    job_id: str,
+    request: SaveImagesRequest
+):
+    """
+    Save images to database and generate CLIP embeddings.
+
+    This endpoint:
+    1. Saves images to document_images table
+    2. Generates CLIP embeddings (visual + specialized)
+    3. Saves embeddings to database table AND VECS collection
+
+    Args:
+        job_id: Job ID for tracking
+        request: Save request with material images
+
+    Returns:
+        SaveImagesResponse with counts
+    """
+    try:
+        logger.info(f"💾 [Job {job_id}] Starting DB save and CLIP generation for {len(request.material_images)} images")
+
+        # Initialize tracker
+        tracker = JobTracker(job_id)
+        await tracker.update_stage("IMAGE_SAVE_AND_CLIP", 0, sync_to_db=True)
+
+        # Initialize service
+        image_service = ImageProcessingService()
+
+        # Save images and generate CLIP embeddings
+        result = await image_service.save_images_and_generate_clips(
+            material_images=request.material_images,
+            document_id=request.document_id,
+            workspace_id=request.workspace_id
+        )
+
+        # Update tracker
+        await tracker.update_stage(
+            "IMAGE_SAVE_AND_CLIP",
+            100,
+            metadata={
+                'images_saved': result['images_saved'],
+                'clip_embeddings_generated': result['clip_embeddings_generated']
+            },
+            sync_to_db=True
+        )
+
+        logger.info(f"✅ [Job {job_id}] DB save complete: {result['images_saved']} saved, {result['clip_embeddings_generated']} CLIP embeddings")
+
+        return SaveImagesResponse(
+            success=True,
+            images_saved=result['images_saved'],
+            clip_embeddings_generated=result['clip_embeddings_generated']
+        )
+
+    except Exception as e:
+        logger.error(f"❌ [Job {job_id}] Image save and CLIP generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Image save and CLIP generation failed: {str(e)}")
+
