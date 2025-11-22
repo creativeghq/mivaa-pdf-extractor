@@ -3288,6 +3288,17 @@ Respond ONLY with this JSON format:
                                     # Save visual CLIP embedding
                                     visual_embedding = embeddings.get('visual_512')
                                     if visual_embedding:
+                                        # ✅ CRITICAL FIX: Save to document_images table FIRST
+                                        try:
+                                            supabase_client.client.table('document_images')\
+                                                .update({'visual_clip_embedding_512': visual_embedding})\
+                                                .eq('id', image_id)\
+                                                .execute()
+                                            logger.debug(f"   ✅ Saved visual CLIP to document_images table for {image_id}")
+                                        except Exception as db_error:
+                                            logger.error(f"   ❌ Failed to save visual CLIP to DB: {db_error}")
+
+                                        # Then save to VECS collection
                                         await vecs_service.upsert_image_embedding(
                                             image_id=image_id,
                                             clip_embedding=visual_embedding,
@@ -3780,18 +3791,6 @@ Respond ONLY with this JSON format:
                         vecs_service = get_vecs_service()
                         batch_count = await vecs_service.batch_upsert_image_embeddings(vecs_batch_records)
                         logger.info(f"✅ Batch upserted {batch_count} CLIP embeddings to VECS")
-
-                        # ✅ CRITICAL FIX: Also save visual CLIP embeddings to document_images table
-                        try:
-                            for image_id, clip_embedding, metadata in vecs_batch_records:
-                                supabase.client.table('document_images')\
-                                    .update({'visual_clip_embedding_512': clip_embedding})\
-                                    .eq('id', image_id)\
-                                    .execute()
-                            logger.info(f"✅ Saved {batch_count} visual CLIP embeddings to document_images table")
-                        except Exception as db_error:
-                            logger.error(f"❌ Failed to save CLIP embeddings to document_images: {db_error}")
-
                         vecs_batch_records = []  # Clear batch
 
                 elif not image_id:
@@ -3899,18 +3898,6 @@ Respond ONLY with this JSON format:
             vecs_service = get_vecs_service()
             batch_count = await vecs_service.batch_upsert_image_embeddings(vecs_batch_records)
             logger.info(f"✅ Final batch upserted {batch_count} CLIP embeddings to VECS")
-
-            # ✅ CRITICAL FIX: Also save visual CLIP embeddings to document_images table
-            try:
-                for image_id, clip_embedding, metadata in vecs_batch_records:
-                    supabase.client.table('document_images')\
-                        .update({'visual_clip_embedding_512': clip_embedding})\
-                        .eq('id', image_id)\
-                        .execute()
-                logger.info(f"✅ Saved {batch_count} visual CLIP embeddings to document_images table")
-            except Exception as db_error:
-                logger.error(f"❌ Failed to save CLIP embeddings to document_images: {db_error}")
-
             vecs_batch_records = []
 
         # Don't overwrite tracker.images_stored - it was already set correctly from images_saved
