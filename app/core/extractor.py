@@ -435,42 +435,4 @@ def extract_json_and_images_streaming(file_path, output_dir, batch_size=5):
         gc.collect()
 
 
-def extract_functional_metadata(file_path, page_number=None, extract_mode="comprehensive"):
-    """
-    Extract comprehensive functional metadata from material tile specification PDFs.
 
-    Args:
-        file_path: Path to the PDF file
-        page_number: Specific page to extract (optional, extracts all pages if None)
-        extract_mode: Extraction mode - "comprehensive", "safety", "surface", etc.
-
-    Returns:
-        Dictionary containing structured functional metadata for the 9 categories
-    """
-    # Import and call the actual implementation from root-level extractor.py
-    import sys
-    from pathlib import Path
-
-    # Add root directory to path to import extractor.py
-    root_dir = Path(__file__).parent.parent.parent
-    if str(root_dir) not in sys.path:
-        sys.path.insert(0, str(root_dir))
-
-    try:
-        from extractor import extract_functional_metadata as _extract_functional_metadata
-        return _extract_functional_metadata(file_path, page_number, extract_mode)
-    except ImportError as e:
-        # Fallback to empty metadata if import fails
-        import logging
-        logging.warning(f"Could not import root-level extractor.py: {e}. Returning empty metadata.")
-        return {
-            "surface_properties": {},
-            "dimensional_properties": {},
-            "mechanical_properties": {},
-            "thermal_properties": {},
-            "chemical_properties": {},
-            "electrical_properties": {},
-            "optical_properties": {},
-            "environmental_properties": {},
-            "safety_properties": {}
-        }
