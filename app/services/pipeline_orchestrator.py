@@ -52,7 +52,8 @@ class PipelineOrchestrator:
         chunk_size: int = 512,
         chunk_overlap: int = 50,
         focused_extraction: bool = True,
-        extract_categories: List[str] = None
+        extract_categories: List[str] = None,
+        ai_config: Optional[Dict[str, Any]] = None  # Dynamic AI model configuration
     ) -> Dict[str, Any]:
         """
         Orchestrate the modular PDF processing pipeline.
@@ -86,6 +87,16 @@ class PipelineOrchestrator:
             chunk_overlap: Overlap between chunks (default: 50)
             focused_extraction: If True, only process material images (default: True)
             extract_categories: List of categories to extract (default: ['products'])
+            ai_config: Optional AI model configuration dict with parameters:
+                - visual_embedding_primary: Primary visual model (default: SigLIP)
+                - visual_embedding_fallback: Fallback visual model (default: CLIP)
+                - classification_primary_model: Primary classification model (default: Llama)
+                - classification_validation_model: Validation model (default: Claude)
+                - classification_confidence_threshold: Confidence threshold (default: 0.7)
+                - discovery_model: Product discovery model (default: Claude)
+                - metadata_extraction_model: Metadata extraction model (default: Claude)
+                - chunking_model: Chunking model (default: GPT-4o)
+                - text_embedding_model: Text embedding model (default: text-embedding-3-small)
 
         Returns:
             Dict with complete pipeline results including:
@@ -97,6 +108,7 @@ class PipelineOrchestrator:
             - text_embeddings_generated: Number of text embeddings generated
             - chunk_image_relationships: Number of chunk-image relationships
             - product_image_relationships: Number of product-image relationships
+            - ai_models_used: Dict of AI models used at each stage
         """
         if extract_categories is None:
             extract_categories = ['products']
@@ -138,13 +150,17 @@ class PipelineOrchestrator:
 
             await tracker.update_stage(ProcessingStage.EXTRACTING_IMAGES, stage_name="image_classification")
 
+            classify_payload = {
+                "job_id": job_id,
+                "extracted_images": extracted_images,
+                "confidence_threshold": confidence_threshold
+            }
+            if ai_config:
+                classify_payload["ai_config"] = ai_config
+
             classify_result = await self._call_internal_endpoint(
                 endpoint=f"/api/internal/classify-images/{job_id}",
-                data={
-                    "job_id": job_id,
-                    "extracted_images": extracted_images,
-                    "confidence_threshold": confidence_threshold
-                }
+                data=classify_payload
             )
 
             if not classify_result.get('success'):
@@ -226,14 +242,18 @@ class PipelineOrchestrator:
                 logger.info(f"   Saving {len(uploaded_images)} images to database...")
                 logger.info(f"   Generating 5 CLIP embeddings per image (visual, color, texture, application, material)...")
 
+                save_payload = {
+                    "job_id": job_id,
+                    "material_images": uploaded_images,
+                    "document_id": document_id,
+                    "workspace_id": workspace_id
+                }
+                if ai_config:
+                    save_payload["ai_config"] = ai_config
+
                 save_result = await self._call_internal_endpoint(
                     endpoint=f"/api/internal/save-images-db/{job_id}",
-                    data={
-                        "job_id": job_id,
-                        "material_images": uploaded_images,
-                        "document_id": document_id,
-                        "workspace_id": workspace_id
-                    }
+                    data=save_payload
                 )
 
                 if not save_result.get('success'):
@@ -293,17 +313,21 @@ class PipelineOrchestrator:
 
             await tracker.update_stage(ProcessingStage.CHUNKING, stage_name="chunking")
 
+            chunks_payload = {
+                "job_id": job_id,
+                "document_id": document_id,
+                "workspace_id": workspace_id,
+                "extracted_text": extracted_text,
+                "product_ids": product_ids,
+                "chunk_size": chunk_size,
+                "chunk_overlap": chunk_overlap
+            }
+            if ai_config:
+                chunks_payload["ai_config"] = ai_config
+
             chunks_result = await self._call_internal_endpoint(
                 endpoint=f"/api/internal/create-chunks/{job_id}",
-                data={
-                    "job_id": job_id,
-                    "document_id": document_id,
-                    "workspace_id": workspace_id,
-                    "extracted_text": extracted_text,
-                    "product_ids": product_ids,
-                    "chunk_size": chunk_size,
-                    "chunk_overlap": chunk_overlap
-                }
+                data=chunks_payload
             )
 
             if not chunks_result.get('success'):

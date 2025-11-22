@@ -1359,8 +1359,8 @@ async def root() -> Dict[str, Any]:
             "api_health": "/api/v1/health",
             "metrics": "/metrics",
             "performance": "/performance/summary",
-            "docs": "/docs" if settings.debug else "disabled",
-            "redoc": "/redoc" if settings.debug else "disabled",
+            "docs": "/docs",  # Always enabled
+            "redoc": "/redoc",  # Always enabled
             "openapi": "/openapi.json",
 
             # PDF Processing APIs
