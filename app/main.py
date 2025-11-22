@@ -654,7 +654,7 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 - ✅ **Knowledge Base**: `/api/kb/*` - Document management with AI embeddings, semantic search, PDF extraction, categories, and product attachments (NEW)
 - ✅ **Consolidated Upload**: `/api/rag/documents/upload` with processing modes (quick/standard/deep) and categories
 - 🎯 **Enhanced Multi-Vector Search**: 6 specialized CLIP embeddings + JSONB filtering + query understanding (ENABLED BY DEFAULT)
-- ✅ **10 Search Strategies**: `/api/rag/search?strategy={strategy}` - multi_vector (⭐ default), semantic, vector, hybrid, material, keyword, color, texture, style, material_type, all (deprecated)
+- ✅ **10 Search Strategies**: `/api/rag/search?strategy={strategy}` - multi_vector (⭐ default), semantic, vector, hybrid, material, keyword, color, texture, style, material_type
 - ✅ **Query Understanding**: GPT-4o-mini auto-extracts filters from natural language ($0.0001/query, enabled by default)
 - ✅ **Comprehensive Health**: `/health` for all services (database, storage, AI models)
 - ✅ **Well-Organized**: 16 endpoint categories covering RAG, documents, search, AI services, admin, knowledge base, and more
@@ -725,7 +725,6 @@ Get your token from the frontend application or Supabase authentication.
   - **Accuracy**: 30-40% improvement for complex queries
   - **Cost**: $0.0001 per query (negligible)
   - **Example**: "waterproof ceramic tiles for outdoor patio, matte finish" → auto-extracts all filters
-  - **Deprecation**: strategy='all' deprecated (use 'multi_vector' instead - 10x faster, better accuracy)
 
 ✅ **10 Search Strategies** - Complete multi-strategy search system (100% implemented)
   - Multi-Vector Search: ⭐ RECOMMENDED DEFAULT - 6 embeddings + filters + query understanding (~250ms)
@@ -735,7 +734,6 @@ Get your token from the frontend application or Supabase authentication.
   - Material Search: JSONB property filtering (<50ms)
   - Image Search: Visual similarity with CLIP (<150ms)
   - Color/Texture/Style/Material Type: Specialized CLIP embeddings (<150ms each)
-  - All Strategies: ⚠️ DEPRECATED - Use multi_vector instead (<800ms)
 
 ✅ **Product Detection Pipeline** - 60-70% false positive reduction with 4-layer validation
 ✅ **Chunk Quality System** - Hash-based + semantic deduplication, quality scoring
@@ -880,10 +878,6 @@ Get your token from the frontend application or Supabase authentication.
             {
                 "name": "Health & Monitoring",
                 "description": "🏥 Service health and monitoring - Health checks, performance metrics, system statistics, and comprehensive monitoring endpoints"
-            },
-            {
-                "name": "Legacy APIs",
-                "description": "🔄 Backward compatibility - Legacy endpoints maintained for existing integrations (deprecated, use new endpoints)"
             }
         ],
         contact={
@@ -1587,7 +1581,7 @@ def custom_openapi():
         "category_extraction": "Products, certificates, logos, specifications (PRESERVED)",
         "rag_system": "Retrieval-Augmented Generation with enhanced multi-vector search",
         "vector_search": "6 specialized CLIP embedding types (text, visual, color, texture, style, material)",
-        "search_strategies": "10 strategies: multi_vector (⭐ default), semantic, vector, hybrid, material, keyword, color, texture, style, material_type, all (deprecated)",
+        "search_strategies": "10 strategies: multi_vector (⭐ default), semantic, vector, hybrid, material, keyword, color, texture, style, material_type",
         "ai_models": "13 models: Claude Sonnet 4.5, Haiku 4.5, GPT-4o-mini, GPT-5, Llama 4 Scout 17B Vision, CLIP",
         "material_recognition": "Llama 4 Scout 17B Vision (69.4% MMMU, #1 OCR)",
         "embedding_models": "OpenAI text-embedding-3-small (1536D), SigLIP ViT-SO400M (512D) for 6 specialized embeddings",
@@ -1618,7 +1612,7 @@ def custom_openapi():
     # Add platform statistics (UPDATED - Relationship Endpoints + Embedding Improvements)
     openapi_schema["info"]["x-platform-stats"] = {
         "total_endpoints": 108,
-        "endpoint_categories": 16,
+        "endpoint_categories": 15,
         "ai_models": 13,
         "processing_stages": 14,
         "embedding_types": 6,
@@ -1628,8 +1622,7 @@ def custom_openapi():
         "uptime": "99.5%+",
         "version": "2.3.0",
         "last_updated": "2025-11-22",
-        "latest_enhancement": "Relationship Query Endpoints + Comprehensive Embedding Generation (batching, retry, checkpointing)",
-        "deprecated": "strategy='all' deprecated - use 'multi_vector' instead (10x faster, better accuracy)"
+        "latest_enhancement": "Relationship Query Endpoints + Comprehensive Embedding Generation (batching, retry, checkpointing)"
     }
 
     app.openapi_schema = openapi_schema
