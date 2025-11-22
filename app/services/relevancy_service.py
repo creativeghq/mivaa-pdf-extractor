@@ -120,57 +120,62 @@ class RelevancyService:
     ) -> int:
         """
         Create product-to-image relationships based on page numbers and metadata.
-        
+
         Args:
             document_id: Document ID
             product_ids: List of product IDs
-            
+
         Returns:
             Number of relationships created
         """
         logger.info(f"🔗 Creating product-image relationships for {len(product_ids)} products...")
-        
+
         relationships_created = 0
-        
+        products_processed = 0
+        products_without_pages = 0
+
         for product_id in product_ids:
             try:
                 # Get product metadata (page ranges)
                 product_result = self.supabase_client.client.table('products')\
-                    .select('id, metadata')\
+                    .select('id, name, metadata')\
                     .eq('id', product_id)\
                     .execute()
-                
+
                 if not product_result.data or len(product_result.data) == 0:
+                    logger.warning(f"   ⚠️ Product {product_id} not found in database")
                     continue
-                
+
                 product = product_result.data[0]
+                product_name = product.get('name', 'Unknown')
                 metadata = product.get('metadata', {})
                 page_ranges = metadata.get('page_ranges', [])
-                
+
+                logger.debug(f"   Processing product: {product_name} (ID: {product_id})")
+                logger.debug(f"   Page ranges: {page_ranges}")
+
                 if not page_ranges:
-                    continue
-                
-                # Get images within product page ranges
-                for page_range in page_ranges:
-                    start_page = page_range.get('start', 0)
-                    end_page = page_range.get('end', 0)
-                    
+                    logger.warning(f"   ⚠️ Product {product_name} has no page_ranges in metadata")
+                    products_without_pages += 1
+
+                    # FALLBACK: Try to link ALL images from this document to this product
+                    # This ensures products get linked even without page range metadata
+                    logger.info(f"   🔄 Fallback: Linking all document images to product {product_name}")
                     images_result = self.supabase_client.client.table('document_images')\
-                        .select('id')\
+                        .select('id, page_number')\
                         .eq('document_id', document_id)\
-                        .gte('metadata->>page_number', start_page)\
-                        .lte('metadata->>page_number', end_page)\
                         .execute()
 
                     images = images_result.data if images_result.data else []
+                    logger.info(f"   Found {len(images)} images to link (fallback mode)")
 
-                    # Create relationships
                     for image in images:
                         try:
                             relationship = {
                                 'product_id': product_id,
                                 'image_id': image['id'],
-                                'relevance_score': 1.0  # High score for page-based matching
+                                'relevance_score': 0.7,  # Lower score for fallback matching
+                                'relationship_type': 'document_association'
                             }
 
                             self.supabase_client.client.table('product_image_relationships')\
@@ -178,15 +183,62 @@ class RelevancyService:
                                 .execute()
 
                             relationships_created += 1
+                            logger.debug(f"   ✅ Linked image {image['id']} to product {product_name} (fallback)")
+
+                        except Exception as e:
+                            logger.warning(f"   ⚠️ Failed to create fallback relationship: {e}")
+
+                    products_processed += 1
+                    continue
+
+                # Get images within product page ranges
+                for page_range in page_ranges:
+                    start_page = page_range.get('start', 0)
+                    end_page = page_range.get('end', 0)
+
+                    logger.debug(f"   Searching for images in pages {start_page}-{end_page}")
+
+                    # ✅ FIX: Use page_number column directly (integer), not JSONB operator
+                    images_result = self.supabase_client.client.table('document_images')\
+                        .select('id, page_number')\
+                        .eq('document_id', document_id)\
+                        .gte('page_number', start_page)\
+                        .lte('page_number', end_page)\
+                        .execute()
+
+                    images = images_result.data if images_result.data else []
+                    logger.info(f"   Found {len(images)} images in pages {start_page}-{end_page}")
+
+                    # Create relationships
+                    for image in images:
+                        try:
+                            relationship = {
+                                'product_id': product_id,
+                                'image_id': image['id'],
+                                'relevance_score': 1.0,  # High score for page-based matching
+                                'relationship_type': 'page_proximity'
+                            }
+
+                            self.supabase_client.client.table('product_image_relationships')\
+                                .insert(relationship)\
+                                .execute()
+
+                            relationships_created += 1
+                            logger.debug(f"   ✅ Linked image {image['id']} (page {image.get('page_number')}) to product {product_name}")
 
                         except Exception as e:
                             logger.warning(f"   ⚠️ Failed to create product-image relationship: {e}")
 
+                products_processed += 1
+
             except Exception as e:
-                logger.error(f"   ❌ Error processing product {product_id}: {e}")
+                logger.error(f"   ❌ Error processing product {product_id}: {e}", exc_info=True)
                 continue
 
-        logger.info(f"✅ Created {relationships_created} product-image relationships")
+        logger.info(f"✅ Product-image relationship creation complete:")
+        logger.info(f"   Products processed: {products_processed}/{len(product_ids)}")
+        logger.info(f"   Products without page ranges: {products_without_pages}")
+        logger.info(f"   Relationships created: {relationships_created}")
 
         return relationships_created
 

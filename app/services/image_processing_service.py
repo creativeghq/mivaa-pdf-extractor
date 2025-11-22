@@ -293,29 +293,57 @@ Respond ONLY with this JSON format:
 
         return successful_uploads
 
-    async def save_images_and_generate_clips(
-        self,
-        material_images: List[Dict[str, Any]],
-        document_id: str,
-        workspace_id: str
-    ) -> Dict[str, Any]:
+    async def _get_embedding_checkpoint(self, document_id: str) -> Optional[int]:
         """
-        Save images to database and generate CLIP embeddings.
+        Get the last successfully processed image index for embedding generation.
 
         Args:
-            material_images: List of material image data
             document_id: Document ID
-            workspace_id: Workspace ID
 
         Returns:
-            Dict with counts: {images_saved, clip_embeddings_generated}
+            Last processed index or None if no checkpoint exists
         """
-        logger.info(f"💾 Saving {len(material_images)} material images to database and generating CLIP embeddings...")
+        try:
+            result = self.supabase_client.client.table('document_images')\
+                .select('id')\
+                .eq('document_id', document_id)\
+                .not_.is_('visual_clip_embedding_512', 'null')\
+                .execute()
 
-        images_saved_count = 0
-        clip_embeddings_count = 0
+            if result.data:
+                return len(result.data)  # Number of images with embeddings
+            return 0
+        except Exception as e:
+            logger.warning(f"   ⚠️ Failed to get embedding checkpoint: {e}")
+            return 0
 
-        for idx, img_data in enumerate(material_images):
+    async def _process_single_image_with_retry(
+        self,
+        img_data: Dict[str, Any],
+        document_id: str,
+        workspace_id: str,
+        idx: int,
+        total: int,
+        max_retries: int = 3
+    ) -> Tuple[bool, bool, Optional[str]]:
+        """
+        Process a single image with retry logic.
+
+        Args:
+            img_data: Image data
+            document_id: Document ID
+            workspace_id: Workspace ID
+            idx: Image index
+            total: Total images
+            max_retries: Maximum retry attempts
+
+        Returns:
+            Tuple of (image_saved, embedding_generated, error_message)
+        """
+        retry_count = 0
+        last_error = None
+
+        while retry_count < max_retries:
             try:
                 # Save to database
                 image_id = await self.supabase_client.save_single_image(
@@ -325,102 +353,217 @@ Respond ONLY with this JSON format:
                     image_index=idx
                 )
 
-                if image_id:
-                    images_saved_count += 1
-                    img_data['id'] = image_id
-                    logger.info(f"   ✅ Saved image {idx + 1}/{len(material_images)} to DB: {image_id}")
+                if not image_id:
+                    last_error = "Failed to save image to database"
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        await asyncio.sleep(2 ** retry_count)  # Exponential backoff
+                    continue
 
-                    # Generate CLIP embeddings
-                    image_path = img_data.get('path')
-                    if image_path and os.path.exists(image_path):
-                        try:
-                            logger.info(f"   🎨 Generating CLIP embeddings for image {idx + 1}/{len(material_images)}")
+                img_data['id'] = image_id
+                logger.info(f"   ✅ Saved image {idx + 1}/{total} to DB: {image_id}")
 
-                            # Read image and convert to base64
-                            with open(image_path, 'rb') as img_file:
-                                image_bytes = img_file.read()
-                                image_base64 = f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('utf-8')}"
+                # Generate CLIP embeddings
+                image_path = img_data.get('path')
+                if not image_path or not os.path.exists(image_path):
+                    logger.warning(f"   ⚠️ Image file not found for CLIP generation: {image_path}")
+                    return (True, False, "Image file not found")
 
-                            # Generate all embeddings
-                            embedding_result = await self.embedding_service.generate_all_embeddings(
-                                entity_id=image_id,
-                                entity_type="image",
-                                text_content="",
-                                image_data=image_base64,
-                                material_properties={}
-                            )
+                logger.info(f"   🎨 Generating CLIP embeddings for image {idx + 1}/{total}")
 
-                            if embedding_result and embedding_result.get('success'):
-                                embeddings = embedding_result.get('embeddings', {})
+                # Read image and convert to base64
+                with open(image_path, 'rb') as img_file:
+                    image_bytes = img_file.read()
+                    image_base64 = f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('utf-8')}"
 
-                                # Save visual CLIP embedding
-                                visual_embedding = embeddings.get('visual_512')
-                                if visual_embedding:
-                                    # ✅ CRITICAL: Save to document_images table first
-                                    try:
-                                        self.supabase_client.client.table('document_images')\
-                                            .update({'visual_clip_embedding_512': visual_embedding})\
-                                            .eq('id', image_id)\
-                                            .execute()
-                                        logger.debug(f"   ✅ Saved visual CLIP to document_images table for {image_id}")
-                                    except Exception as db_error:
-                                        logger.error(f"   ❌ Failed to save visual CLIP to DB: {db_error}")
+                # Generate all embeddings
+                embedding_result = await self.embedding_service.generate_all_embeddings(
+                    entity_id=image_id,
+                    entity_type="image",
+                    text_content="",
+                    image_data=image_base64,
+                    material_properties={}
+                )
 
-                                    # Then save to VECS collection
-                                    await self.vecs_service.upsert_image_embedding(
-                                        image_id=image_id,
-                                        clip_embedding=visual_embedding,
-                                        metadata={
-                                            'document_id': document_id,
-                                            'page_number': img_data.get('page_number', 1),
-                                            'quality_score': img_data.get('quality_score', 0.5)
-                                        }
-                                    )
+                if not embedding_result or not embedding_result.get('success'):
+                    last_error = "Failed to generate CLIP embeddings"
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        logger.warning(f"   ⚠️ Retry {retry_count}/{max_retries} for image {image_id}")
+                        await asyncio.sleep(2 ** retry_count)
+                    continue
 
-                                # Save specialized embeddings
-                                specialized_embeddings = {}
-                                if embeddings.get('color_512'):
-                                    specialized_embeddings['color'] = embeddings.get('color_512')
-                                if embeddings.get('texture_512'):
-                                    specialized_embeddings['texture'] = embeddings.get('texture_512')
-                                if embeddings.get('application_512'):
-                                    specialized_embeddings['application'] = embeddings.get('application_512')
-                                if embeddings.get('material_512'):
-                                    specialized_embeddings['material'] = embeddings.get('material_512')
+                embeddings = embedding_result.get('embeddings', {})
 
-                                if specialized_embeddings:
-                                    await self.vecs_service.upsert_specialized_embeddings(
-                                        image_id=image_id,
-                                        embeddings=specialized_embeddings,
-                                        metadata={
-                                            'document_id': document_id,
-                                            'page_number': img_data.get('page_number', 1)
-                                        }
-                                    )
+                # Save visual CLIP embedding
+                visual_embedding = embeddings.get('visual_512')
+                if visual_embedding:
+                    # ✅ CRITICAL: Save to document_images table first
+                    try:
+                        self.supabase_client.client.table('document_images')\
+                            .update({'visual_clip_embedding_512': visual_embedding})\
+                            .eq('id', image_id)\
+                            .execute()
+                        logger.debug(f"   ✅ Saved visual CLIP to document_images table for {image_id}")
+                    except Exception as db_error:
+                        logger.error(f"   ❌ Failed to save visual CLIP to DB: {db_error}")
+                        last_error = f"Failed to save visual CLIP: {db_error}"
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            await asyncio.sleep(2 ** retry_count)
+                        continue
 
-                                clip_embeddings_count += 1
-                                logger.info(f"   ✅ Generated {1 + len(specialized_embeddings)} CLIP embeddings for image {image_id}")
-                            else:
-                                logger.warning(f"   ⚠️ Failed to generate CLIP embeddings for image {image_id}")
+                    # Then save to VECS collection
+                    await self.vecs_service.upsert_image_embedding(
+                        image_id=image_id,
+                        clip_embedding=visual_embedding,
+                        metadata={
+                            'document_id': document_id,
+                            'page_number': img_data.get('page_number', 1),
+                            'quality_score': img_data.get('quality_score', 0.5)
+                        }
+                    )
 
-                        except Exception as clip_error:
-                            logger.error(f"   ❌ CLIP generation error for image {image_id}: {clip_error}")
-                    else:
-                        logger.warning(f"   ⚠️ Image file not found for CLIP generation: {image_path}")
-                else:
-                    logger.warning(f"   ⚠️ Failed to save image {idx + 1} to database")
+                # Save specialized embeddings
+                specialized_embeddings = {}
+                if embeddings.get('color_512'):
+                    specialized_embeddings['color'] = embeddings.get('color_512')
+                if embeddings.get('texture_512'):
+                    specialized_embeddings['texture'] = embeddings.get('texture_512')
+                if embeddings.get('application_512'):
+                    specialized_embeddings['application'] = embeddings.get('application_512')
+                if embeddings.get('material_512'):
+                    specialized_embeddings['material'] = embeddings.get('material_512')
+
+                if specialized_embeddings:
+                    await self.vecs_service.upsert_specialized_embeddings(
+                        image_id=image_id,
+                        embeddings=specialized_embeddings,
+                        metadata={
+                            'document_id': document_id,
+                            'page_number': img_data.get('page_number', 1)
+                        }
+                    )
+
+                logger.info(f"   ✅ Generated {1 + len(specialized_embeddings)} CLIP embeddings for image {image_id}")
+                return (True, True, None)
 
             except Exception as e:
-                logger.error(f"   ❌ Error processing image {idx + 1}: {e}")
-                continue
+                last_error = str(e)
+                retry_count += 1
+                if retry_count < max_retries:
+                    logger.warning(f"   ⚠️ Retry {retry_count}/{max_retries} for image {idx + 1}: {e}")
+                    await asyncio.sleep(2 ** retry_count)
+                else:
+                    logger.error(f"   ❌ Failed after {max_retries} retries for image {idx + 1}: {e}")
 
+        return (False, False, last_error)
+
+    async def save_images_and_generate_clips(
+        self,
+        material_images: List[Dict[str, Any]],
+        document_id: str,
+        workspace_id: str,
+        batch_size: int = 20,
+        max_retries: int = 3
+    ) -> Dict[str, Any]:
+        """
+        Save images to database and generate CLIP embeddings with batching and retry logic.
+
+        This method implements:
+        1. Batch processing (default: 20 images per batch)
+        2. Retry logic with exponential backoff (up to 3 retries per image)
+        3. Checkpoint recovery (resume from last successful batch)
+        4. Detailed error tracking (log which images fail and why)
+
+        Args:
+            material_images: List of material image data
+            document_id: Document ID
+            workspace_id: Workspace ID
+            batch_size: Number of images to process per batch (default: 20)
+            max_retries: Maximum retry attempts per image (default: 3)
+
+        Returns:
+            Dict with counts and failed images: {
+                images_saved,
+                clip_embeddings_generated,
+                failed_images: [{index, path, error}]
+            }
+        """
+        logger.info(f"💾 Saving {len(material_images)} material images to database and generating CLIP embeddings...")
+        logger.info(f"   📦 Batch size: {batch_size}, Max retries: {max_retries}")
+
+        images_saved_count = 0
+        clip_embeddings_count = 0
+        failed_images = []
+
+        # Check checkpoint - get number of images already processed
+        checkpoint_index = await self._get_embedding_checkpoint(document_id)
+        if checkpoint_index > 0:
+            logger.info(f"   ⏭️ Resuming from checkpoint: {checkpoint_index} images already have embeddings")
+            # Skip already processed images
+            material_images = material_images[checkpoint_index:]
+            if not material_images:
+                logger.info(f"   ✅ All images already processed!")
+                return {
+                    'images_saved': checkpoint_index,
+                    'clip_embeddings_generated': checkpoint_index,
+                    'failed_images': []
+                }
+
+        # Process in batches
+        total_images = len(material_images)
+        for batch_start in range(0, total_images, batch_size):
+            batch_end = min(batch_start + batch_size, total_images)
+            batch = material_images[batch_start:batch_end]
+
+            logger.info(f"   📦 Processing batch {batch_start // batch_size + 1}/{(total_images + batch_size - 1) // batch_size} ({batch_start + 1}-{batch_end}/{total_images})")
+
+            # Process batch images with retry logic
+            for idx, img_data in enumerate(batch):
+                global_idx = batch_start + idx + checkpoint_index
+
+                image_saved, embedding_generated, error = await self._process_single_image_with_retry(
+                    img_data=img_data,
+                    document_id=document_id,
+                    workspace_id=workspace_id,
+                    idx=global_idx,
+                    total=total_images + checkpoint_index,
+                    max_retries=max_retries
+                )
+
+                if image_saved:
+                    images_saved_count += 1
+                if embedding_generated:
+                    clip_embeddings_count += 1
+
+                if error:
+                    failed_images.append({
+                        'index': global_idx,
+                        'path': img_data.get('path'),
+                        'page_number': img_data.get('page_number'),
+                        'error': error
+                    })
+
+            # Log batch completion
+            logger.info(f"   ✅ Batch {batch_start // batch_size + 1} complete: {len(batch)} images processed")
+
+        # Final summary
         logger.info(f"✅ Image processing complete:")
-        logger.info(f"   Images saved to DB: {images_saved_count}")
-        logger.info(f"   CLIP embeddings generated: {clip_embeddings_count}")
+        logger.info(f"   Images saved to DB: {images_saved_count + checkpoint_index}")
+        logger.info(f"   CLIP embeddings generated: {clip_embeddings_count + checkpoint_index}")
+
+        if failed_images:
+            logger.warning(f"   ⚠️ Failed images: {len(failed_images)}")
+            for failed in failed_images[:5]:  # Log first 5 failures
+                logger.warning(f"      - Image {failed['index']} (page {failed['page_number']}): {failed['error']}")
+            if len(failed_images) > 5:
+                logger.warning(f"      ... and {len(failed_images) - 5} more")
 
         return {
-            'images_saved': images_saved_count,
-            'clip_embeddings_generated': clip_embeddings_count
+            'images_saved': images_saved_count + checkpoint_index,
+            'clip_embeddings_generated': clip_embeddings_count + checkpoint_index,
+            'failed_images': failed_images
         }
 
 
