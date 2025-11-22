@@ -1606,12 +1606,12 @@ def custom_openapi():
         "anthropic_routes": "/api/v1/anthropic/* (3 endpoints) - Claude image validation, product enrichment",
         "products_routes": "/api/products/* (3 endpoints) - Product creation from chunks/layout",
         "ai_metrics_routes": "/api/v1/ai-metrics/* (2 endpoints) - Job metrics, summary",
-        "relationship_routes": "/api/rag/product-image-relationships, /api/rag/chunk-product-relationships (2 NEW endpoints) - Relationship queries for validation"
+        "relationship_routes": "/api/rag/product-image-relationships, /api/rag/chunk-product-relationships (2 NEW endpoints) - Relationship queries for validation and testing"
     }
 
     # Add platform statistics (UPDATED - Relationship Endpoints + Embedding Improvements)
     openapi_schema["info"]["x-platform-stats"] = {
-        "total_endpoints": 108,
+        "total_endpoints": 110,
         "endpoint_categories": 15,
         "ai_models": 13,
         "processing_stages": 14,
@@ -1620,9 +1620,9 @@ def custom_openapi():
         "specialized_clip_embeddings": 6,
         "users": "5,000+",
         "uptime": "99.5%+",
-        "version": "2.3.0",
+        "version": "2.3.1",
         "last_updated": "2025-11-22",
-        "latest_enhancement": "Relationship Query Endpoints + Comprehensive Embedding Generation (batching, retry, checkpointing)"
+        "latest_enhancement": "Relationship Query Endpoints (product-image, chunk-product) + Comprehensive Embedding Generation (batching, retry, checkpointing)"
     }
 
     app.openapi_schema = openapi_schema
