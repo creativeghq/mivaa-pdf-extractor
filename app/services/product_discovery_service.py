@@ -1146,11 +1146,16 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
             # Now process each product with its pre-extracted text
             for i, product in enumerate(catalog.products):
                 try:
-                    # ✅ UPDATE HEARTBEAT: Keep job alive during long metadata extraction
+                    # ✅ UPDATE PROGRESS: Show real-time progress during metadata extraction
+                    # Stage 0B progress: 0-10% (Stage 0A was discovery, this is metadata enrichment)
+                    progress_pct = int((i / len(catalog.products)) * 10)  # 0-10% range
                     if self.tracker:
                         await self.tracker.update_heartbeat()
+                        # Update progress with current stage info
+                        self.tracker.manual_progress_override = progress_pct
+                        await self.tracker._sync_to_database(stage='product_discovery')
 
-                    self.logger.info(f"   🔍 [{i+1}/{len(catalog.products)}] Processing {product.name} metadata...")
+                    self.logger.info(f"   🔍 [{i+1}/{len(catalog.products)}] Processing {product.name} metadata... ({progress_pct}%)")
 
                     # Get this product's pages from the mapping
                     page_indices = product_page_mapping.get(i)
@@ -1204,6 +1209,12 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                     self.logger.error(f"Failed to enrich metadata for {product.name}: {e}")
                     # Keep original product if enrichment fails
                     enriched_products.append(product)
+
+            # ✅ UPDATE PROGRESS: Mark Stage 0B complete (10% progress)
+            if self.tracker:
+                self.tracker.manual_progress_override = 10
+                await self.tracker._sync_to_database(stage='product_discovery')
+                self.logger.info(f"✅ Stage 0B complete: Metadata extraction finished (10%)")
 
             # Update catalog with enriched products
             catalog.products = enriched_products
