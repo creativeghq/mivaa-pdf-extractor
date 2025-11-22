@@ -59,24 +59,30 @@ def _fix_glyph_names(text: str) -> str:
         '/question.LP': '?', '/exclam.LP': '!',
         '/bracketleft.LP': '[', '/bracketright.LP': ']',
         '/braceleft.LP': '{', '/braceright.LP': '}',
-
-        # Additional common patterns
-        '/f_ter': 'fter',  # Common ligature issue
-        '/f_i': 'fi',      # fi ligature
-        '/f_l': 'fl',      # fl ligature
-        '/f_f': 'ff',      # ff ligature
-        '/f_f_i': 'ffi',   # ffi ligature
-        '/f_f_l': 'ffl',   # ffl ligature
     }
 
+    # First pass: Replace known glyph names
     for glyph, char in replacements.items():
         text = text.replace(glyph, char)
+
+    # Second pass: Fix ligature patterns using regex
+    # Pattern: /letter_letter or /letter_letter_letter
+    # Examples: /f_ter -> fter, /t_terns -> tterns, /a/t_tentive -> attentive
+    text = re.sub(r'/([a-z])_([a-z]+)', r'\1\2', text)  # /f_ter -> fter
+    text = re.sub(r'/([a-z])/([a-z])_([a-z]+)', r'\1\2\3', text)  # /a/t_tentive -> attentive
+
+    # Third pass: Fix any remaining slash-letter patterns that might be ligatures
+    # Pattern: /letter (single letter after slash)
+    text = re.sub(r'/([a-z])\b', r'\1', text)  # /f -> f (but only at word boundaries)
 
     # Fix excessive newlines (more than 2 consecutive newlines)
     text = re.sub(r'\n{3,}', '\n\n', text)
 
     # Fix spaces before newlines
     text = re.sub(r' +\n', '\n', text)
+
+    # Fix double spaces
+    text = re.sub(r'  +', ' ', text)
 
     return text
 
