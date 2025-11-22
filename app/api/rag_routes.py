@@ -3235,129 +3235,15 @@ Respond ONLY with this JSON format:
 
             logger.info(f"✅ Upload complete: {len(material_images)} material images uploaded to storage")
 
-            # Now save material images to database and generate CLIP embeddings
-            logger.info(f"💾 Saving {len(material_images)} material images to database...")
-
-            from app.services.supabase_client import get_supabase_client
-            from app.services.vecs_service import VecsService
-            from app.services.real_embeddings_service import RealEmbeddingsService
-
-            supabase_client = get_supabase_client()
-            vecs_service = VecsService()
-            embedding_service = RealEmbeddingsService()
-
-            images_saved_count = 0
-            clip_embeddings_count = 0
-
-            for idx, img_data in enumerate(material_images):
-                try:
-                    # Save to database
-                    image_id = await supabase_client.save_single_image(
-                        image_info=img_data,
-                        document_id=document_id,
-                        workspace_id=workspace_id,
-                        image_index=idx
-                    )
-
-                    if image_id:
-                        images_saved_count += 1
-                        img_data['id'] = image_id  # Add ID to img_data
-                        logger.info(f"   ✅ Saved image {idx + 1}/{len(material_images)} to DB: {image_id}")
-
-                        # Generate CLIP embeddings
-                        image_path = img_data.get('path')
-                        if image_path and os.path.exists(image_path):
-                            try:
-                                logger.info(f"   🎨 Generating CLIP embeddings for image {idx + 1}/{len(material_images)}")
-                                with open(image_path, 'rb') as img_file:
-                                    image_bytes = img_file.read()
-                                    image_base64 = f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('utf-8')}"
-
-                                # Generate all embeddings
-                                embedding_result = await embedding_service.generate_all_embeddings(
-                                    entity_id=image_id,
-                                    entity_type="image",
-                                    text_content="",
-                                    image_data=image_base64,
-                                    material_properties={}
-                                )
-
-                                if embedding_result and embedding_result.get('success'):
-                                    embeddings = embedding_result.get('embeddings', {})
-
-                                    # Save visual CLIP embedding
-                                    visual_embedding = embeddings.get('visual_512')
-                                    if visual_embedding:
-                                        # ✅ CRITICAL FIX: Save to document_images table FIRST
-                                        try:
-                                            supabase_client.client.table('document_images')\
-                                                .update({'visual_clip_embedding_512': visual_embedding})\
-                                                .eq('id', image_id)\
-                                                .execute()
-                                            logger.debug(f"   ✅ Saved visual CLIP to document_images table for {image_id}")
-                                        except Exception as db_error:
-                                            logger.error(f"   ❌ Failed to save visual CLIP to DB: {db_error}")
-
-                                        # Then save to VECS collection
-                                        await vecs_service.upsert_image_embedding(
-                                            image_id=image_id,
-                                            clip_embedding=visual_embedding,
-                                            metadata={
-                                                'document_id': document_id,
-                                                'page_number': img_data.get('page_number', 1),
-                                                'quality_score': img_data.get('quality_score', 0.5)
-                                            }
-                                        )
-
-                                    # Save specialized embeddings
-                                    specialized_embeddings = {}
-                                    if embeddings.get('color_512'):
-                                        specialized_embeddings['color'] = embeddings.get('color_512')
-                                    if embeddings.get('texture_512'):
-                                        specialized_embeddings['texture'] = embeddings.get('texture_512')
-                                    if embeddings.get('application_512'):
-                                        specialized_embeddings['application'] = embeddings.get('application_512')
-                                    if embeddings.get('material_512'):
-                                        specialized_embeddings['material'] = embeddings.get('material_512')
-
-                                    if specialized_embeddings:
-                                        await vecs_service.upsert_specialized_embeddings(
-                                            image_id=image_id,
-                                            embeddings=specialized_embeddings,
-                                            metadata={
-                                                'document_id': document_id,
-                                                'page_number': img_data.get('page_number', 1)
-                                            }
-                                        )
-
-                                    clip_embeddings_count += 1
-                                    logger.info(f"   ✅ Generated {1 + len(specialized_embeddings)} CLIP embeddings for image {image_id}")
-                                else:
-                                    logger.warning(f"   ⚠️ CLIP embedding generation failed for image {image_id}")
-
-                            except Exception as clip_error:
-                                logger.error(f"   ❌ Failed to generate CLIP embeddings: {clip_error}")
-                                # Continue processing even if CLIP fails
-                        else:
-                            logger.warning(f"   ⚠️ Image file not found for CLIP generation: {image_path}")
-                    else:
-                        logger.warning(f"   ⚠️ Failed to save image {idx + 1} to DB")
-
-                except Exception as save_error:
-                    logger.error(f"   ❌ Failed to save image {idx + 1}: {save_error}")
-                    # Continue with next image
-
-            logger.info(f"✅ Saved {images_saved_count}/{len(material_images)} material images to database")
-            logger.info(f"✅ Generated CLIP embeddings for {clip_embeddings_count}/{images_saved_count} images")
-
-            # Update tracker with final counts
-            await tracker.update_database_stats(
-                images_stored=images_saved_count,
-                sync_to_db=True
-            )
+            # ✅ REMOVED OLD SEQUENTIAL CODE (lines 3238-3349)
+            # This code was redundant - it saved images sequentially one-by-one,
+            # then the batched code below (lines 3421+) would try to save them AGAIN.
+            # Now using ONLY the optimized batched processing below.
 
             # Update pdf_result_with_images.extracted_images with uploaded material images
             pdf_result_with_images.extracted_images = material_images
+
+            logger.info(f"✅ {len(material_images)} material images ready for batched DB save + CLIP generation")
 
             # EVENT-BASED CLEANUP: Register image files and mark ready for cleanup
             logger.info(f"🧹 Registering temporary image files for cleanup...")
