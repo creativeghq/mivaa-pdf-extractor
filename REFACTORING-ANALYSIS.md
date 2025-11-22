@@ -16,8 +16,9 @@
 
 2. **Full Metadata Extraction** - `app/core/extractor.py` (Line 464)
    - **TODO:** Implement full metadata extraction logic with pattern matching
-   - **Status:** NOT IMPLEMENTED - placeholder function exists
-   - **Action:** Keep TODO, implement in future
+   - **Status:** ✅ ALREADY IMPLEMENTED in `/extractor.py` (root level, lines 75-614)
+   - **Action:** REMOVE TODO - full implementation exists with comprehensive pattern matching for all 9 categories
+   - **Note:** The stub in `app/core/extractor.py` should either call the real implementation or be removed
 
 3. **AI Model Testing** - `app/services/admin_prompt_service.py` (Line 200)
    - **TODO:** Implement actual AI model testing (currently returns mock results)
