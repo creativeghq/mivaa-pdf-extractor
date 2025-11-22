@@ -1650,153 +1650,6 @@ async def get_relevancies(
         )
 
 
-@router.get("/product-image-relationships")
-async def get_product_image_relationships(
-    document_id: Optional[str] = Query(None, description="Filter by document ID"),
-    product_id: Optional[str] = Query(None, description="Filter by product ID"),
-    limit: int = Query(100, ge=1, le=1000, description="Maximum number of relationships to return"),
-    offset: int = Query(0, ge=0, description="Number of relationships to skip"),
-    min_score: float = Query(0.0, ge=0.0, le=1.0, description="Minimum relevance score")
-):
-    """
-    Get product-to-image relationships for a document or product.
-
-    Args:
-        document_id: Document ID to filter relationships
-        product_id: Product ID to filter relationships
-        limit: Maximum number of relationships to return
-        offset: Pagination offset
-        min_score: Minimum relevance score threshold
-
-    Returns:
-        List of product-image relationships with relevance scores
-    """
-    try:
-        supabase_client = get_supabase_client()
-
-        if not document_id and not product_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Either document_id or product_id is required"
-            )
-
-        # Query product-image relationships
-        if document_id:
-            # Query through products to filter by document
-            query = supabase_client.client.table('product_image_relationships').select(
-                '*, products!inner(source_document_id, name), document_images(id, image_url, page_number, caption)'
-            ).eq('products.source_document_id', document_id)
-        else:
-            # Query directly by product_id
-            query = supabase_client.client.table('product_image_relationships').select(
-                '*, products(source_document_id, name), document_images(id, image_url, page_number, caption)'
-            ).eq('product_id', product_id)
-
-        if min_score > 0:
-            query = query.gte('relevance_score', min_score)
-
-        query = query.order('relevance_score', desc=True)
-        query = query.range(offset, offset + limit - 1)
-        result = query.execute()
-
-        relationships = result.data if result.data else []
-
-        # Calculate statistics
-        relationship_types = {}
-        for rel in relationships:
-            rel_type = rel.get('relationship_type', 'unknown')
-            if rel_type not in relationship_types:
-                relationship_types[rel_type] = 0
-            relationship_types[rel_type] += 1
-
-        return JSONResponse(content={
-            "document_id": document_id,
-            "product_id": product_id,
-            "relationships": relationships,
-            "count": len(relationships),
-            "limit": limit,
-            "offset": offset,
-            "statistics": {
-                "total_relationships": len(relationships),
-                "by_relationship_type": relationship_types,
-                "min_score_filter": min_score
-            }
-        })
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get product-image relationships: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve product-image relationships: {str(e)}"
-        )
-
-
-@router.get("/chunk-product-relationships")
-async def get_chunk_product_relationships(
-    document_id: Optional[str] = Query(None, description="Filter by document ID"),
-    product_id: Optional[str] = Query(None, description="Filter by product ID"),
-    limit: int = Query(100, ge=1, le=1000, description="Maximum number of relationships to return"),
-    offset: int = Query(0, ge=0, description="Number of relationships to skip")
-):
-    """
-    Get chunk-to-product relationships for a document or product.
-
-    Args:
-        document_id: Document ID to filter relationships
-        product_id: Product ID to filter relationships
-        limit: Maximum number of relationships to return
-        offset: Pagination offset
-
-    Returns:
-        List of chunk-product relationships
-    """
-    try:
-        supabase_client = get_supabase_client()
-
-        if not document_id and not product_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Either document_id or product_id is required"
-            )
-
-        # Query chunk-product relationships
-        if document_id:
-            # Query through chunks to filter by document
-            query = supabase_client.client.table('chunk_product_relationships').select(
-                '*, document_chunks!inner(document_id, content), products(id, name)'
-            ).eq('document_chunks.document_id', document_id)
-        else:
-            # Query directly by product_id
-            query = supabase_client.client.table('chunk_product_relationships').select(
-                '*, document_chunks(document_id, content), products(id, name)'
-            ).eq('product_id', product_id)
-
-        query = query.range(offset, offset + limit - 1)
-        result = query.execute()
-
-        relationships = result.data if result.data else []
-
-        return JSONResponse(content={
-            "document_id": document_id,
-            "product_id": product_id,
-            "relationships": relationships,
-            "count": len(relationships),
-            "limit": limit,
-            "offset": offset
-        })
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get chunk-product relationships: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve chunk-product relationships: {str(e)}"
-        )
-
-
 # REMOVED: Duplicate endpoint - use /api/admin/jobs/{job_id}/status instead
 # This endpoint was conflicting with admin.py and never being reached due to router registration order
 
@@ -3927,6 +3780,18 @@ Respond ONLY with this JSON format:
                         vecs_service = get_vecs_service()
                         batch_count = await vecs_service.batch_upsert_image_embeddings(vecs_batch_records)
                         logger.info(f"✅ Batch upserted {batch_count} CLIP embeddings to VECS")
+
+                        # ✅ CRITICAL FIX: Also save visual CLIP embeddings to document_images table
+                        try:
+                            for image_id, clip_embedding, metadata in vecs_batch_records:
+                                supabase.client.table('document_images')\
+                                    .update({'visual_clip_embedding_512': clip_embedding})\
+                                    .eq('id', image_id)\
+                                    .execute()
+                            logger.info(f"✅ Saved {batch_count} visual CLIP embeddings to document_images table")
+                        except Exception as db_error:
+                            logger.error(f"❌ Failed to save CLIP embeddings to document_images: {db_error}")
+
                         vecs_batch_records = []  # Clear batch
 
                 elif not image_id:
@@ -4034,6 +3899,18 @@ Respond ONLY with this JSON format:
             vecs_service = get_vecs_service()
             batch_count = await vecs_service.batch_upsert_image_embeddings(vecs_batch_records)
             logger.info(f"✅ Final batch upserted {batch_count} CLIP embeddings to VECS")
+
+            # ✅ CRITICAL FIX: Also save visual CLIP embeddings to document_images table
+            try:
+                for image_id, clip_embedding, metadata in vecs_batch_records:
+                    supabase.client.table('document_images')\
+                        .update({'visual_clip_embedding_512': clip_embedding})\
+                        .eq('id', image_id)\
+                        .execute()
+                logger.info(f"✅ Saved {batch_count} visual CLIP embeddings to document_images table")
+            except Exception as db_error:
+                logger.error(f"❌ Failed to save CLIP embeddings to document_images: {db_error}")
+
             vecs_batch_records = []
 
         # Don't overwrite tracker.images_stored - it was already set correctly from images_saved

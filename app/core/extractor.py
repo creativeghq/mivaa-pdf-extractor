@@ -19,7 +19,7 @@ from typing import Dict, Any, Optional
 
 def _fix_glyph_names(text: str) -> str:
     """
-    Convert PDF glyph names to actual Unicode characters.
+    Convert PDF glyph names to actual Unicode characters and fix common text issues.
 
     PyMuPDF4LLM sometimes outputs glyph names instead of actual characters.
     This function post-processes the text to fix these issues.
@@ -59,10 +59,24 @@ def _fix_glyph_names(text: str) -> str:
         '/question.LP': '?', '/exclam.LP': '!',
         '/bracketleft.LP': '[', '/bracketright.LP': ']',
         '/braceleft.LP': '{', '/braceright.LP': '}',
+
+        # Additional common patterns
+        '/f_ter': 'fter',  # Common ligature issue
+        '/f_i': 'fi',      # fi ligature
+        '/f_l': 'fl',      # fl ligature
+        '/f_f': 'ff',      # ff ligature
+        '/f_f_i': 'ffi',   # ffi ligature
+        '/f_f_l': 'ffl',   # ffl ligature
     }
 
     for glyph, char in replacements.items():
         text = text.replace(glyph, char)
+
+    # Fix excessive newlines (more than 2 consecutive newlines)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    # Fix spaces before newlines
+    text = re.sub(r' +\n', '\n', text)
 
     return text
 
