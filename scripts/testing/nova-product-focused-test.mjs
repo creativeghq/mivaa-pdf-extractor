@@ -206,7 +206,10 @@ async function validateDataSaved(documentId, jobData) {
     chunks: 0,
     images: 0,
     products: 0,
-    embeddings: 0
+    embeddings: 0,
+    chunkImageRelationships: 0,
+    productImageRelationships: 0,
+    chunkProductRelationships: 0
   };
 
   try {
@@ -238,24 +241,58 @@ async function validateDataSaved(documentId, jobData) {
       validation.embeddings = Array.isArray(embeddingsData) ? embeddingsData.length : (embeddingsData.embeddings?.length || 0);
     }
 
+    // Check chunk-image relationships
+    const chunkImageRelsResponse = await fetch(`${MIVAA_API}/api/rag/relevancies?document_id=${documentId}&limit=10000`);
+    if (chunkImageRelsResponse.ok) {
+      const chunkImageRelsData = await chunkImageRelsResponse.json();
+      validation.chunkImageRelationships = chunkImageRelsData.count || 0;
+    }
+
+    // Check product-image relationships
+    const productImageRelsResponse = await fetch(`${MIVAA_API}/api/rag/product-image-relationships?document_id=${documentId}&limit=10000`);
+    if (productImageRelsResponse.ok) {
+      const productImageRelsData = await productImageRelsResponse.json();
+      validation.productImageRelationships = productImageRelsData.count || 0;
+    }
+
+    // Check chunk-product relationships
+    const chunkProductRelsResponse = await fetch(`${MIVAA_API}/api/rag/chunk-product-relationships?document_id=${documentId}&limit=10000`);
+    if (chunkProductRelsResponse.ok) {
+      const chunkProductRelsData = await chunkProductRelsResponse.json();
+      validation.chunkProductRelationships = chunkProductRelsData.count || 0;
+    }
+
     // Compare with job metadata
     const jobChunks = jobData.metadata?.chunks_created || 0;
     const jobImages = jobData.metadata?.images_extracted || 0;
     const jobProducts = jobData.metadata?.products_created || 0;
+    const jobChunkImageRels = jobData.metadata?.chunk_image_relationships || 0;
+    const jobProductImageRels = jobData.metadata?.product_image_relationships || 0;
 
     const chunksMatch = validation.chunks === jobChunks;
     const imagesMatch = validation.images === jobImages;
     const productsMatch = validation.products === jobProducts;
+    const chunkImageRelsMatch = jobChunkImageRels === 0 || validation.chunkImageRelationships === jobChunkImageRels;
+    const productImageRelsMatch = jobProductImageRels === 0 || validation.productImageRelationships === jobProductImageRels;
 
     log('VALIDATE', `Chunks: ${validation.chunks}/${jobChunks} ${chunksMatch ? '✅' : '❌'}`, chunksMatch ? 'success' : 'error');
     log('VALIDATE', `Images: ${validation.images}/${jobImages} ${imagesMatch ? '✅' : '❌'}`, imagesMatch ? 'success' : 'error');
     log('VALIDATE', `Products: ${validation.products}/${jobProducts} ${productsMatch ? '✅' : '❌'}`, productsMatch ? 'success' : 'error');
     log('VALIDATE', `Embeddings: ${validation.embeddings}`, 'info');
+    log('VALIDATE', `Chunk-Image Relationships: ${validation.chunkImageRelationships}${jobChunkImageRels > 0 ? `/${jobChunkImageRels}` : ''} ${chunkImageRelsMatch ? '✅' : '❌'}`, chunkImageRelsMatch ? 'success' : 'error');
+    log('VALIDATE', `Product-Image Relationships: ${validation.productImageRelationships}${jobProductImageRels > 0 ? `/${jobProductImageRels}` : ''} ${productImageRelsMatch ? '✅' : '❌'}`, productImageRelsMatch ? 'success' : 'error');
+    log('VALIDATE', `Chunk-Product Relationships: ${validation.chunkProductRelationships}`, 'info');
 
     return {
-      valid: chunksMatch && imagesMatch && productsMatch,
+      valid: chunksMatch && imagesMatch && productsMatch && chunkImageRelsMatch && productImageRelsMatch,
       validation,
-      expected: { chunks: jobChunks, images: jobImages, products: jobProducts }
+      expected: {
+        chunks: jobChunks,
+        images: jobImages,
+        products: jobProducts,
+        chunkImageRelationships: jobChunkImageRels,
+        productImageRelationships: jobProductImageRels
+      }
     };
   } catch (error) {
     log('VALIDATE', `Validation error: ${error.message}`, 'error');
@@ -382,6 +419,11 @@ async function retrieveNovaProductData(documentId) {
       image: [],
       visual: [],
       multimodal: []
+    },
+    relationships: {
+      chunkImage: [],
+      productImage: [],
+      chunkProduct: []
     }
   };
 
@@ -434,6 +476,37 @@ async function retrieveNovaProductData(documentId) {
   } else {
     log('RETRIEVE', `Failed to fetch embeddings: ${embeddingsResponse.status} ${embeddingsResponse.statusText}`, 'error');
   }
+
+  // Retrieve chunk-image relationships
+  const chunkImageRelsResponse = await fetch(`${MIVAA_API}/api/rag/relevancies?document_id=${documentId}&limit=10000`);
+  if (chunkImageRelsResponse.ok) {
+    const chunkImageRelsData = await chunkImageRelsResponse.json();
+    allData.relationships.chunkImage = chunkImageRelsData.relevancies || [];
+    log('RETRIEVE', `Found ${allData.relationships.chunkImage.length} chunk-image relationships`, 'success');
+  } else {
+    log('RETRIEVE', `Failed to fetch chunk-image relationships: ${chunkImageRelsResponse.status}`, 'error');
+  }
+
+  // Retrieve product-image relationships
+  const productImageRelsResponse = await fetch(`${MIVAA_API}/api/rag/product-image-relationships?document_id=${documentId}&limit=10000`);
+  if (productImageRelsResponse.ok) {
+    const productImageRelsData = await productImageRelsResponse.json();
+    allData.relationships.productImage = productImageRelsData.relationships || [];
+    log('RETRIEVE', `Found ${allData.relationships.productImage.length} product-image relationships`, 'success');
+  } else {
+    log('RETRIEVE', `Failed to fetch product-image relationships: ${productImageRelsResponse.status}`, 'error');
+  }
+
+  // Retrieve chunk-product relationships
+  const chunkProductRelsResponse = await fetch(`${MIVAA_API}/api/rag/chunk-product-relationships?document_id=${documentId}&limit=10000`);
+  if (chunkProductRelsResponse.ok) {
+    const chunkProductRelsData = await chunkProductRelsResponse.json();
+    allData.relationships.chunkProduct = chunkProductRelsData.relationships || [];
+    log('RETRIEVE', `Found ${allData.relationships.chunkProduct.length} chunk-product relationships`, 'success');
+  } else {
+    log('RETRIEVE', `Failed to fetch chunk-product relationships: ${chunkProductRelsResponse.status}`, 'error');
+  }
+
   return allData;
 }
 
@@ -466,6 +539,11 @@ async function generateDetailedReport(allData, jobResult) {
         image: allData.embeddings.image.length,
         visual: allData.embeddings.visual.length,
         multimodal: allData.embeddings.multimodal.length
+      },
+      relationships: {
+        chunk_image: allData.relationships.chunkImage.length,
+        product_image: allData.relationships.productImage.length,
+        chunk_product: allData.relationships.chunkProduct.length
       }
     }
   };
@@ -480,6 +558,10 @@ async function generateDetailedReport(allData, jobResult) {
   console.log(`   - Image Embeddings: ${allData.embeddings.image.length}`);
   console.log(`   - Visual Embeddings: ${allData.embeddings.visual.length}`);
   console.log(`   - Multimodal Embeddings: ${allData.embeddings.multimodal.length}`);
+  console.log(`\n🔗 Total Relationships:`);
+  console.log(`   - Chunk-Image Relationships: ${report.summary.relationships.chunk_image}`);
+  console.log(`   - Product-Image Relationships: ${report.summary.relationships.product_image}`);
+  console.log(`   - Chunk-Product Relationships: ${report.summary.relationships.chunk_product}`);
 
   // Print sample chunks (first 3)
   console.log('\n📝 SAMPLE CHUNKS (First 3):');

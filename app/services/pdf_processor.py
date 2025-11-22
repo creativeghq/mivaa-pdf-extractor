@@ -340,14 +340,24 @@ class PDFProcessor:
         loop = asyncio.get_event_loop()
 
         try:
-            # Extract markdown content using existing function
-            markdown_content, metadata = await loop.run_in_executor(
-                None,
-                self._extract_markdown_sync,
-                pdf_path,
-                processing_options,
-                progress_callback
-            )
+            # Extract markdown content using existing function with timeout
+            # Set a reasonable timeout for markdown extraction (5 minutes for large PDFs)
+            markdown_timeout = processing_options.get('markdown_timeout', 300)  # 5 minutes default
+
+            try:
+                markdown_content, metadata = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None,
+                        self._extract_markdown_sync,
+                        pdf_path,
+                        processing_options,
+                        progress_callback
+                    ),
+                    timeout=markdown_timeout
+                )
+            except asyncio.TimeoutError:
+                self.logger.error(f"Markdown extraction timed out after {markdown_timeout} seconds")
+                raise PDFTimeoutError(f"Markdown extraction timed out after {markdown_timeout} seconds. The PDF may be corrupted or too complex.")
             
             # Extract images if requested
             extracted_images = []

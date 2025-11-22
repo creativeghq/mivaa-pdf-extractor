@@ -1650,6 +1650,158 @@ async def get_relevancies(
         )
 
 
+@router.get("/product-image-relationships")
+async def get_product_image_relationships(
+    document_id: Optional[str] = Query(None, description="Filter by document ID"),
+    product_id: Optional[str] = Query(None, description="Filter by product ID"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of relationships to return"),
+    offset: int = Query(0, ge=0, description="Number of relationships to skip"),
+    min_score: float = Query(0.0, ge=0.0, le=1.0, description="Minimum relevance score")
+):
+    """
+    Get product-image relevancy relationships.
+
+    Args:
+        document_id: Document ID to filter relationships
+        product_id: Product ID to filter relationships
+        limit: Maximum number of relationships to return
+        offset: Pagination offset
+        min_score: Minimum relevance score threshold
+
+    Returns:
+        List of product-image relationships with relevance scores
+    """
+    try:
+        supabase_client = get_supabase_client()
+
+        # Build query
+        query = supabase_client.client.table('product_image_relationships').select(
+            '*, products!inner(id, name, source_document_id), document_images(image_url, caption, page_number)'
+        )
+
+        if document_id:
+            query = query.eq('products.source_document_id', document_id)
+
+        if product_id:
+            query = query.eq('product_id', product_id)
+
+        if min_score > 0:
+            query = query.gte('relevance_score', min_score)
+
+        query = query.order('relevance_score', desc=True)
+        query = query.range(offset, offset + limit - 1)
+        result = query.execute()
+
+        relationships = result.data if result.data else []
+
+        # Calculate statistics
+        relationship_types = {}
+        for rel in relationships:
+            rel_type = rel.get('relationship_type', 'unknown')
+            if rel_type not in relationship_types:
+                relationship_types[rel_type] = 0
+            relationship_types[rel_type] += 1
+
+        return JSONResponse(content={
+            "document_id": document_id,
+            "product_id": product_id,
+            "relationships": relationships,
+            "count": len(relationships),
+            "limit": limit,
+            "offset": offset,
+            "statistics": {
+                "total_relationships": len(relationships),
+                "by_relationship_type": relationship_types,
+                "min_score_filter": min_score
+            }
+        })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get product-image relationships: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve product-image relationships: {str(e)}"
+        )
+
+
+@router.get("/chunk-product-relationships")
+async def get_chunk_product_relationships(
+    document_id: Optional[str] = Query(None, description="Filter by document ID"),
+    product_id: Optional[str] = Query(None, description="Filter by product ID"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of relationships to return"),
+    offset: int = Query(0, ge=0, description="Number of relationships to skip"),
+    min_score: float = Query(0.0, ge=0.0, le=1.0, description="Minimum relevance score")
+):
+    """
+    Get chunk-product relevancy relationships.
+
+    Args:
+        document_id: Document ID to filter relationships
+        product_id: Product ID to filter relationships
+        limit: Maximum number of relationships to return
+        offset: Pagination offset
+        min_score: Minimum relevance score threshold
+
+    Returns:
+        List of chunk-product relationships with relevance scores
+    """
+    try:
+        supabase_client = get_supabase_client()
+
+        # Build query
+        query = supabase_client.client.table('chunk_product_relationships').select(
+            '*, document_chunks!inner(document_id, content, chunk_index), products(id, name)'
+        )
+
+        if document_id:
+            query = query.eq('document_chunks.document_id', document_id)
+
+        if product_id:
+            query = query.eq('product_id', product_id)
+
+        if min_score > 0:
+            query = query.gte('relevance_score', min_score)
+
+        query = query.order('relevance_score', desc=True)
+        query = query.range(offset, offset + limit - 1)
+        result = query.execute()
+
+        relationships = result.data if result.data else []
+
+        # Calculate statistics
+        relationship_types = {}
+        for rel in relationships:
+            rel_type = rel.get('relationship_type', 'unknown')
+            if rel_type not in relationship_types:
+                relationship_types[rel_type] = 0
+            relationship_types[rel_type] += 1
+
+        return JSONResponse(content={
+            "document_id": document_id,
+            "product_id": product_id,
+            "relationships": relationships,
+            "count": len(relationships),
+            "limit": limit,
+            "offset": offset,
+            "statistics": {
+                "total_relationships": len(relationships),
+                "by_relationship_type": relationship_types,
+                "min_score_filter": min_score
+            }
+        })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get chunk-product relationships: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve chunk-product relationships: {str(e)}"
+        )
+
+
 # REMOVED: Duplicate endpoint - use /api/admin/jobs/{job_id}/status instead
 # This endpoint was conflicting with admin.py and never being reached due to router registration order
 
@@ -4438,7 +4590,7 @@ async def search_documents(
     request: SearchRequest,
     strategy: Optional[str] = Query(
         "multi_vector",
-        description="Search strategy: 'multi_vector' (RECOMMENDED - default), 'semantic', 'vector', 'hybrid', 'material', 'image', 'color', 'texture', 'style', 'material_type'"
+        description="Search strategy: 'multi_vector' (RECOMMENDED - default), 'semantic', 'vector', 'hybrid', 'material', 'image', 'color', 'texture', 'style', 'material_type', 'all'"
     ),
     enable_query_understanding: bool = Query(
         True,  # ✅ ENABLED BY DEFAULT - Makes platform smarter with minimal cost ($0.0001/query)
@@ -4468,7 +4620,7 @@ async def search_documents(
     - **+ JSONB Metadata Filtering**: Supports `material_filters` for property-based filtering
     - **+ Query Understanding**: ✅ **ENABLED BY DEFAULT** - Auto-extracts filters from natural language (set `enable_query_understanding=false` to disable)
     - **Performance**: Fast (~250-350ms with query understanding, ~200-300ms without), comprehensive, accurate
-    - **Best For:** ALL queries - single intelligent search with 6 embeddings
+    - **Best For:** ALL queries - replaces need for `strategy="all"`
     - **Example:** "waterproof ceramic tiles for outdoor patio, matte finish"
 
     ### Semantic Search (`strategy="semantic"`) ✅
@@ -4555,7 +4707,7 @@ async def search_documents(
 
     ### All Strategies (Parallel Execution - 3-4x Faster!)
     ```bash
-    curl -X POST "/api/rag/search?strategy=multi_vector" \\
+    curl -X POST "/api/rag/search?strategy=all" \\
       -H "Content-Type: application/json" \\
       -d '{"query": "modern oak furniture", "workspace_id": "xxx", "top_k": 10}'
     ```
@@ -4630,7 +4782,7 @@ async def search_documents(
 
     - **60 requests/minute** per user
     - **1000 requests/hour** per workspace
-    - Multi-vector search (`strategy="multi_vector"`) counts as 1 request
+    - Parallel execution (`strategy="all"`) counts as 1 request
     """
     start_time = datetime.utcnow()
 
@@ -4820,15 +4972,15 @@ async def search_documents(
             'related_products_included': request.include_related_products
         }
 
-        # Add execution metadata for 'all' or 'multi_vector' strategy
-        if strategy == "all" or strategy == "multi_vector":
+        # Add parallel execution metadata for 'all' strategy
+        if strategy == "all":
             search_metadata.update({
                 'strategies_executed': results.get('strategies_executed', 0),
                 'strategies_successful': results.get('strategies_successful', 0),
                 'strategies_failed': results.get('strategies_failed', 0),
                 'strategy_breakdown': results.get('strategy_breakdown', {}),
-                'multi_vector_search': True,
-                'processing_time': results.get('processing_time', 0)
+                'parallel_execution': True,
+                'parallel_processing_time': results.get('processing_time', 0)
             })
 
         return SearchResponse(
