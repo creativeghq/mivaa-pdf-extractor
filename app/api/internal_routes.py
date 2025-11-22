@@ -23,6 +23,7 @@ from app.services.chunking_service import ChunkingService
 from app.services.relevancy_service import RelevancyService
 from app.services.supabase_client import get_supabase_client
 from app.services.job_tracker import JobTracker
+from app.models.ai_config import AIModelConfig, DEFAULT_AI_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,29 @@ router = APIRouter(
 
 
 # ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def _extract_product_text(full_text: str, page_range: List[int]) -> str:
+    """
+    Extract text for a specific product based on page range.
+
+    Args:
+        full_text: Full PDF text
+        page_range: List of page numbers for this product
+
+    Returns:
+        Product-specific text
+    """
+    if not page_range:
+        return full_text
+
+    # Split text by page markers (if available)
+    # For now, return full text - can be enhanced with page-specific extraction
+    return full_text
+
+
+# ============================================================================
 # REQUEST/RESPONSE MODELS
 # ============================================================================
 
@@ -44,7 +68,7 @@ class ClassifyImagesRequest(BaseModel):
     """Request model for image classification."""
     job_id: str
     extracted_images: List[Dict[str, Any]]
-    confidence_threshold: float = 0.7
+    ai_config: Optional[AIModelConfig] = None  # Uses DEFAULT_AI_CONFIG if not provided
 
 
 class ClassifyImagesResponse(BaseModel):
@@ -73,11 +97,12 @@ class UploadImagesResponse(BaseModel):
 
 
 class SaveImagesRequest(BaseModel):
-    """Request model for saving images to DB and generating CLIP embeddings."""
+    """Request model for saving images to DB and generating visual embeddings."""
     job_id: str
     material_images: List[Dict[str, Any]]
     document_id: str
     workspace_id: str
+    ai_config: Optional[AIModelConfig] = None  # Uses DEFAULT_AI_CONFIG if not provided
 
 
 class SaveImagesResponse(BaseModel):
@@ -96,6 +121,7 @@ class CreateChunksRequest(BaseModel):
     product_ids: Optional[List[str]] = None
     chunk_size: int = 512
     chunk_overlap: int = 50
+    ai_config: Optional[AIModelConfig] = None  # Uses DEFAULT_AI_CONFIG if not provided
 
 
 class CreateChunksResponse(BaseModel):
@@ -112,6 +138,24 @@ class CreateRelationshipsRequest(BaseModel):
     document_id: str
     product_ids: List[str]
     similarity_threshold: float = 0.5
+
+
+class ExtractMetadataRequest(BaseModel):
+    """Request model for metadata extraction."""
+    job_id: str
+    document_id: str
+    product_ids: List[str]
+    pdf_text: str
+    ai_config: Optional[AIModelConfig] = None  # Uses DEFAULT_AI_CONFIG if not provided
+
+
+class ExtractMetadataResponse(BaseModel):
+    """Response model for metadata extraction."""
+    success: bool
+    products_enriched: int
+    metadata_fields_extracted: int
+    extraction_method: str
+    model_used: str
 
 
 class CreateRelationshipsResponse(BaseModel):
@@ -146,19 +190,25 @@ async def classify_images(
         ClassifyImagesResponse with material and non-material images
     """
     try:
+        # Use provided AI config or default
+        ai_config = request.ai_config or DEFAULT_AI_CONFIG
+
         logger.info(f"🤖 [Job {job_id}] Starting image classification for {len(request.extracted_images)} images")
-        
+        logger.info(f"   AI Config: Primary={ai_config.classification_primary_model}, Validation={ai_config.classification_validation_model}, Threshold={ai_config.classification_confidence_threshold}")
+
         # Initialize tracker
         tracker = JobTracker(job_id)
         await tracker.update_stage("IMAGE_CLASSIFICATION", 0, sync_to_db=True)
-        
+
         # Initialize service
         image_service = ImageProcessingService()
-        
-        # Classify images
+
+        # Classify images with AI config
         material_images, non_material_images = await image_service.classify_images(
             extracted_images=request.extracted_images,
-            confidence_threshold=request.confidence_threshold
+            confidence_threshold=ai_config.classification_confidence_threshold,
+            primary_model=ai_config.classification_primary_model,
+            validation_model=ai_config.classification_validation_model
         )
         
         # Update tracker
@@ -428,5 +478,120 @@ async def create_relationships(
 
     except Exception as e:
         logger.error(f"❌ [Job {job_id}] Relationship creation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/extract-metadata/{job_id}", response_model=ExtractMetadataResponse)
+async def extract_metadata(
+    job_id: str,
+    request: ExtractMetadataRequest
+):
+    """
+    Extract comprehensive metadata from PDF text for products.
+
+    This endpoint:
+    1. Extracts product-specific text from PDF
+    2. Uses AI (Claude or GPT) to extract structured metadata
+    3. Enriches product records with extracted metadata
+    4. Tracks which model was used and extraction method
+
+    Args:
+        job_id: Job ID for tracking
+        request: Metadata extraction request with product IDs and PDF text
+
+    Returns:
+        ExtractMetadataResponse with extraction results
+    """
+    try:
+        # Use provided AI config or default
+        ai_config = request.ai_config or DEFAULT_AI_CONFIG
+
+        logger.info(f"📋 [Job {job_id}] Starting metadata extraction for {len(request.product_ids)} products")
+        logger.info(f"   AI Config: Model={ai_config.metadata_extraction_model}, Temperature={ai_config.metadata_temperature}, MaxTokens={ai_config.metadata_max_tokens}")
+
+        # Initialize tracker
+        tracker = JobTracker(job_id)
+        await tracker.update_stage("METADATA_EXTRACTION", 0, sync_to_db=True)
+
+        # Initialize metadata extractor
+        from app.services.dynamic_metadata_extractor import DynamicMetadataExtractor
+        metadata_extractor = DynamicMetadataExtractor(
+            model=ai_config.metadata_extraction_model,
+            job_id=job_id
+        )
+
+        # Get products from database
+        supabase = get_supabase_client()
+        products_response = supabase.table('products').select('*').in_('id', request.product_ids).execute()
+        products = products_response.data
+
+        total_metadata_fields = 0
+        enriched_count = 0
+
+        # Extract metadata for each product
+        for i, product in enumerate(products):
+            try:
+                # Extract product-specific text from page range
+                product_text = _extract_product_text(request.pdf_text, product.get('page_range', []))
+
+                # Get category hint from existing metadata
+                category_hint = product.get('metadata', {}).get('category') or product.get('metadata', {}).get('material')
+
+                # Extract comprehensive metadata
+                logger.info(f"   🔍 Extracting metadata for: {product.get('name')}")
+                extracted = await metadata_extractor.extract_metadata(
+                    pdf_text=product_text,
+                    category_hint=category_hint
+                )
+
+                # Merge extracted metadata with existing metadata
+                existing_metadata = product.get('metadata', {})
+                enriched_metadata = {
+                    **extracted.get("discovered", {}),  # Lowest priority
+                    **extracted.get("critical", {}),    # Medium priority
+                    **existing_metadata,                 # Highest priority (from discovery)
+                    "_extraction_metadata": extracted.get("metadata", {})
+                }
+
+                # Update product in database
+                supabase.table('products').update({
+                    'metadata': enriched_metadata
+                }).eq('id', product['id']).execute()
+
+                enriched_count += 1
+                total_metadata_fields += len(extracted.get("critical", {})) + len(extracted.get("discovered", {}))
+
+                # Update progress
+                progress = int((i + 1) / len(products) * 100)
+                await tracker.update_stage("METADATA_EXTRACTION", progress, sync_to_db=True)
+
+            except Exception as e:
+                logger.error(f"   ❌ Failed to extract metadata for product {product.get('id')}: {e}")
+                continue
+
+        # Update tracker
+        await tracker.update_stage(
+            "METADATA_EXTRACTION",
+            100,
+            metadata={
+                'products_enriched': enriched_count,
+                'metadata_fields_extracted': total_metadata_fields,
+                'model_used': ai_config.metadata_extraction_model
+            },
+            sync_to_db=True
+        )
+
+        logger.info(f"✅ [Job {job_id}] Metadata extraction complete: {enriched_count} products enriched, {total_metadata_fields} fields extracted")
+
+        return ExtractMetadataResponse(
+            success=True,
+            products_enriched=enriched_count,
+            metadata_fields_extracted=total_metadata_fields,
+            extraction_method=f"ai_dynamic_{ai_config.metadata_extraction_model}",
+            model_used=ai_config.metadata_extraction_model
+        )
+
+    except Exception as e:
+        logger.error(f"❌ [Job {job_id}] Metadata extraction failed: {e}")
         raise HTTPException(status_code=500, detail=f"Relationship creation failed: {str(e)}")
 

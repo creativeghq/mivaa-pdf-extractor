@@ -36,20 +36,24 @@ class ImageProcessingService:
     async def classify_images(
         self,
         extracted_images: List[Dict[str, Any]],
-        confidence_threshold: float = 0.7
+        confidence_threshold: float = 0.7,
+        primary_model: str = "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+        validation_model: str = "claude-sonnet-4-20250514"
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Classify images as material or non-material using Llama Vision + Claude validation.
-        
+
         Args:
             extracted_images: List of extracted image data
             confidence_threshold: Threshold for Claude validation (default: 0.7)
-            
+            primary_model: Primary classification model (default: Llama Vision)
+            validation_model: Validation model for uncertain cases (default: Claude Sonnet)
+
         Returns:
             Tuple of (material_images, non_material_images)
         """
         logger.info(f"🤖 Starting AI-based image classification for {len(extracted_images)} images...")
-        logger.info(f"   Strategy: Llama Vision (fast filter) → Claude Sonnet (validation for uncertain cases)")
+        logger.info(f"   Strategy: {primary_model} (fast filter) → {validation_model} (validation for uncertain cases)")
         
         # Import AI services
         from app.services.ai_client_service import get_ai_client_service
