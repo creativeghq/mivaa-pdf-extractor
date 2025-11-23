@@ -2514,8 +2514,7 @@ async def process_document_with_discovery(
     Stage 2: Chunking (30-50%) - Create chunks for extracted content
     Stage 3: Image Processing (50-70%) - Extract images from specified categories only
     Stage 4: Product Creation (70-90%) - Create products from discovery
-    Stage 5: Quality Enhancement (90-95%) - Claude validation (async)
-    Stage 6: Relationship Creation (95-100%) - Create chunk-image and product-image relationships
+    Stage 5: Quality Enhancement (90-100%) - Claude validation (async)
 
     Args:
         focused_extraction: If True (default), only process pages/images from extract_categories.
@@ -4128,8 +4127,11 @@ Respond ONLY with this JSON format:
         chunk_image_relationships = 0
         product_image_relationships = 0
 
-        # Only create relationships if we have chunks and images
-        if tracker.chunks_created > 0 and images_processed > 0:
+        # ✅ FIX: Better validation and error messages
+        logger.info(f"   Validation: chunks_created={tracker.chunks_created}, images_processed={images_processed}, clip_embeddings={clip_embeddings_generated}")
+
+        # Only create relationships if we have chunks, images, AND embeddings
+        if tracker.chunks_created > 0 and images_processed > 0 and clip_embeddings_generated > 0:
             try:
                 from app.services.relevancy_service import RelevancyService
                 relevancy_service = RelevancyService()
@@ -4159,11 +4161,58 @@ Respond ONLY with this JSON format:
                 logger.error(f"❌ Relationship creation failed: {rel_error}", exc_info=True)
                 # Don't fail the entire job if relationships fail
         else:
-            logger.info("⏭️ [STAGE 6] Skipping relationships (no chunks or images)")
+            # ✅ FIX: Better error message explaining WHY relationships were skipped
+            skip_reasons = []
+            if tracker.chunks_created == 0:
+                skip_reasons.append("no chunks created")
+            if images_processed == 0:
+                skip_reasons.append("no images processed")
+            if clip_embeddings_generated == 0:
+                skip_reasons.append("no CLIP embeddings generated")
+
+            logger.warning(f"⚠️ [STAGE 6] Skipping relationships: {', '.join(skip_reasons)}")
+            logger.warning(f"   This indicates a pipeline failure - relationships require chunks, images, and embeddings!")
 
         await tracker._sync_to_database(stage="relationship_creation")
 
         # NOTE: Cleanup moved to admin panel cron job
+
+        # ✅ FIX: Validate pipeline completion before marking job as complete
+        logger.info("🔍 Validating pipeline completion...")
+        validation_warnings = []
+        validation_errors = []
+
+        # Check critical data was created
+        if tracker.chunks_created == 0:
+            validation_errors.append("No chunks created")
+
+        if images_processed == 0 and len(material_images) > 0:
+            validation_errors.append(f"No images processed (expected {len(material_images)})")
+
+        if clip_embeddings_generated == 0 and images_processed > 0:
+            validation_errors.append(f"No CLIP embeddings generated (expected {images_processed * 8})")
+
+        if chunk_image_relationships == 0 and tracker.chunks_created > 0 and images_processed > 0:
+            validation_warnings.append("No chunk-image relationships created")
+
+        if product_image_relationships == 0 and products_created > 0 and images_processed > 0:
+            validation_warnings.append("No product-image relationships created")
+
+        # Log validation results
+        if validation_errors:
+            logger.error("❌ PIPELINE VALIDATION FAILED:")
+            for error in validation_errors:
+                logger.error(f"   ❌ {error}")
+            # Don't fail the job, but log the errors prominently
+            logger.error("⚠️ Job will be marked as complete, but data is incomplete!")
+
+        if validation_warnings:
+            logger.warning("⚠️ PIPELINE VALIDATION WARNINGS:")
+            for warning in validation_warnings:
+                logger.warning(f"   ⚠️ {warning}")
+
+        if not validation_errors and not validation_warnings:
+            logger.info("✅ Pipeline validation passed - all data created successfully")
 
         # Mark job as complete
         result = {
@@ -4173,13 +4222,16 @@ Respond ONLY with this JSON format:
             "product_names": [p.name for p in catalog.products],
             "chunks_created": tracker.chunks_created,
             "images_processed": images_processed,
+            "clip_embeddings_generated": clip_embeddings_generated,  # ✅ ADD: Track embeddings in result
+            "chunk_image_relationships": chunk_image_relationships,  # ✅ ADD: Track relationships
+            "product_image_relationships": product_image_relationships,  # ✅ ADD: Track relationships
             "claude_validations": validation_results.get('validated', 0),
-            "chunk_image_relationships": chunk_image_relationships,
-            "product_image_relationships": product_image_relationships,
             "focused_extraction": focused_extraction,
             "pages_processed": len(product_pages),
             "pages_skipped": pdf_result.page_count - len(product_pages),
-            "confidence_score": catalog.confidence_score
+            "confidence_score": catalog.confidence_score,
+            "validation_errors": validation_errors,  # ✅ ADD: Include validation results
+            "validation_warnings": validation_warnings  # ✅ ADD: Include validation results
         }
 
         await tracker.complete_job(result=result)
