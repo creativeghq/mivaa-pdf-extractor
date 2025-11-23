@@ -194,7 +194,7 @@ Return JSON in this exact format:
 }}
 
 PDF Content:
-{pdf_text[:10000]}
+{pdf_text[:4000]}
 
 Extract all metadata now:"""
 
@@ -230,8 +230,7 @@ class DynamicMetadataExtractor:
         self,
         pdf_text: str,
         category_hint: Optional[str] = None,
-        manual_overrides: Optional[Dict[str, Any]] = None,
-        confidence_threshold: float = 0.70
+        manual_overrides: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Extract metadata dynamically from PDF text.
@@ -240,7 +239,6 @@ class DynamicMetadataExtractor:
             pdf_text: Text content from PDF
             category_hint: Optional material category hint
             manual_overrides: Manual values from admin (override AI extraction)
-            confidence_threshold: Minimum confidence to keep field (default: 0.70)
 
         Returns:
             {
@@ -250,10 +248,7 @@ class DynamicMetadataExtractor:
                 "metadata": {
                     "extraction_timestamp": "...",
                     "extraction_method": "ai_dynamic",
-                    "confidence_scores": {...},
-                    "filtered_fields": [...],  # Fields removed due to low confidence
-                    "total_fields_extracted": int,
-                    "total_fields_kept": int
+                    "confidence_scores": {...}
                 }
             }
         """
@@ -276,24 +271,16 @@ class DynamicMetadataExtractor:
             # Step 3: Validate critical fields
             validation_result = self._validate_critical_fields(extracted_data)
 
-            # Step 4: Filter low-confidence fields (NEW - Priority 1)
-            filtered_result = self._filter_low_confidence_fields(extracted_data, confidence_threshold)
-            extracted_data = filtered_result["filtered_data"]
-
-            # Step 5: Auto-create material_properties entries for new discovered fields
+            # Step 4: Auto-create material_properties entries for new discovered fields
             await self._ensure_properties_exist(extracted_data)
 
-            # Step 6: Add metadata
+            # Step 5: Add metadata
             extracted_data["metadata"] = {
                 "extraction_timestamp": datetime.utcnow().isoformat(),
                 "extraction_method": f"ai_dynamic_{self.model}",
                 "validation_passed": validation_result["valid"],
                 "validation_errors": validation_result.get("errors", []),
-                "manual_overrides_applied": bool(manual_overrides),
-                "confidence_threshold": confidence_threshold,
-                "filtered_fields": filtered_result["filtered_fields"],
-                "total_fields_extracted": filtered_result["total_extracted"],
-                "total_fields_kept": filtered_result["total_kept"]
+                "manual_overrides_applied": bool(manual_overrides)
             }
 
             return extracted_data
@@ -487,393 +474,14 @@ class DynamicMetadataExtractor:
             }
         }
 
-    def _filter_low_confidence_fields(
-        self,
-        extracted_data: Dict[str, Any],
-        confidence_threshold: float
-    ) -> Dict[str, Any]:
-        """
-        Filter out fields with confidence below threshold.
-
-        Priority 1 Fix: Remove low-confidence extractions to improve search quality.
-
-        Args:
-            extracted_data: Extracted metadata with confidence scores
-            confidence_threshold: Minimum confidence to keep (default: 0.70)
-
-        Returns:
-            {
-                "filtered_data": {...},  # Data with low-confidence fields removed
-                "filtered_fields": [...],  # List of removed fields
-                "total_extracted": int,
-                "total_kept": int
-            }
-        """
-        filtered_data = {
-            "critical": {},
-            "discovered": {},
-            "unknown": {}
-        }
-
-        filtered_fields = []
-        total_extracted = 0
-        total_kept = 0
-
-        # Filter critical fields (ALWAYS keep - they're required)
-        for field_key, field_value in extracted_data.get("critical", {}).items():
-            total_extracted += 1
-            filtered_data["critical"][field_key] = field_value
-            total_kept += 1
-
-        # Filter discovered fields (apply threshold)
-        for category, fields in extracted_data.get("discovered", {}).items():
-            if not isinstance(fields, dict):
-                continue
-
-            filtered_data["discovered"][category] = {}
-
-            for field_key, field_value in fields.items():
-                total_extracted += 1
-
-                # Extract confidence score
-                confidence = 1.0  # Default if not specified
-                if isinstance(field_value, dict):
-                    confidence = field_value.get("confidence", 1.0)
-
-                # Keep if confidence >= threshold
-                if confidence >= confidence_threshold:
-                    filtered_data["discovered"][category][field_key] = field_value
-                    total_kept += 1
-                else:
-                    # Track filtered field
-                    filtered_fields.append({
-                        "field": f"{category}.{field_key}",
-                        "value": field_value.get("value") if isinstance(field_value, dict) else field_value,
-                        "confidence": confidence,
-                        "reason": f"confidence {confidence:.2f} < threshold {confidence_threshold}"
-                    })
-                    self.logger.info(f"Filtered low-confidence field: {category}.{field_key} (confidence: {confidence:.2f})")
-
-            # Remove empty categories
-            if not filtered_data["discovered"][category]:
-                del filtered_data["discovered"][category]
-
-        # Filter unknown fields (apply threshold)
-        for field_key, field_value in extracted_data.get("unknown", {}).items():
-            total_extracted += 1
-
-            confidence = 1.0
-            if isinstance(field_value, dict):
-                confidence = field_value.get("confidence", 1.0)
-
-            if confidence >= confidence_threshold:
-                filtered_data["unknown"][field_key] = field_value
-                total_kept += 1
-            else:
-                filtered_fields.append({
-                    "field": f"unknown.{field_key}",
-                    "value": field_value.get("value") if isinstance(field_value, dict) else field_value,
-                    "confidence": confidence,
-                    "reason": f"confidence {confidence:.2f} < threshold {confidence_threshold}"
-                })
-
-        return {
-            "filtered_data": filtered_data,
-            "filtered_fields": filtered_fields,
-            "total_extracted": total_extracted,
-            "total_kept": total_kept
-        }
-
 
 # ============================================================================
 # SCOPE DETECTION (Product-Specific vs Catalog-General)
 # ============================================================================
-
-class MetadataScopeDetector:
-    """
-    Detects if metadata applies to:
-    - Specific product (e.g., "NOVA has R11")
-    - All products (e.g., "All tiles made in Spain")
-    - Product category (e.g., "All matte tiles have R11")
-    """
-
-    def __init__(self, ai_client=None):
-        self.ai_client = ai_client
-        self.logger = logging.getLogger(__name__)
-
-    async def detect_scope(
-        self,
-        chunk_content: str,
-        product_names: List[str],
-        document_context: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        Detect if chunk metadata is product-specific or catalog-general.
-
-        Args:
-            chunk_content: Text content of chunk
-            product_names: List of product names in catalog
-            document_context: Optional document context
-
-        Returns:
-            {
-                "scope": "product_specific|catalog_general|category_specific",
-                "confidence": 0.95,
-                "reasoning": "...",
-                "applies_to": ["NOVA"] or "all" or ["matte_tiles"],
-                "extracted_metadata": {...}
-            }
-        """
-        try:
-            prompt = self._build_scope_detection_prompt(
-                chunk_content, product_names, document_context
-            )
-
-            if self.ai_client:
-                response = await self._call_ai(prompt)
-                return self._parse_scope_response(response)
-            else:
-                # Fallback to pattern-based detection
-                return self._fallback_scope_detection(chunk_content, product_names)
-
-        except Exception as e:
-            self.logger.error(f"Scope detection failed: {e}")
-            return {
-                "scope": "unknown",
-                "confidence": 0.0,
-                "reasoning": f"Error: {e}",
-                "applies_to": [],
-                "extracted_metadata": {}
-            }
-
-    def _build_scope_detection_prompt(
-        self,
-        chunk_content: str,
-        product_names: List[str],
-        document_context: Optional[str]
-    ) -> str:
-        """Build AI prompt for scope detection."""
-
-        product_list = ", ".join(product_names) if product_names else "Unknown"
-
-        return f"""Analyze this text chunk and determine its metadata scope.
-
-Chunk Content:
-"{chunk_content}"
-
-Product Names in Catalog: {product_list}
-
-Classify the scope as:
-1. "product_specific" - Mentions specific product name and applies only to that product
-   Example: "NOVA tile features R11 slip resistance"
-
-2. "catalog_general_explicit" - Explicitly says "all products" or "entire catalog"
-   Example: "All tiles in this catalog are made in Spain"
-
-3. "catalog_general_implicit" - Metadata mentioned WITHOUT product context (applies to all)
-   Example: "Available in 15×38" (no product name, applies to all unless overridden)
-   Example: "Factory: Castellón Ceramics" (general info, applies to all)
-
-4. "category_specific" - Applies to a category of products
-   Example: "All matte finish tiles have R11 slip resistance"
-
-CRITICAL RULES:
-- If chunk mentions dimensions/size WITHOUT product name → catalog_general_implicit
-- If chunk mentions factory/country WITHOUT product name → catalog_general_implicit
-- If chunk says "available in" or "comes in" WITHOUT product name → catalog_general_implicit
-- Product-specific metadata can OVERRIDE catalog-general metadata
-
-Extract ALL metadata mentioned in the chunk.
-
-Return JSON in this exact format:
-{{
-  "scope": "product_specific|catalog_general_explicit|catalog_general_implicit|category_specific",
-  "confidence": 0.95,
-  "reasoning": "Chunk mentions 'NOVA' specifically, so metadata applies only to NOVA product",
-  "applies_to": ["NOVA"],  // or "all" for catalog-general, or ["matte_tiles"] for category
-  "extracted_metadata": {{
-    "slip_resistance": "R11",
-    "dimensions": "15×38",
-    "designer": "SG NY"
-  }},
-  "is_override": false  // true if product-specific metadata overrides catalog-general
-}}
-
-Analyze now:"""
-
-    def _fallback_scope_detection(
-        self,
-        chunk_content: str,
-        product_names: List[str]
-    ) -> Dict[str, Any]:
-        """Fallback pattern-based scope detection."""
-
-        chunk_lower = chunk_content.lower()
-
-        # Check if any product name is mentioned
-        mentioned_products = [
-            name for name in product_names
-            if name.lower() in chunk_lower
-        ]
-
-        # Check for explicit catalog-general keywords
-        explicit_catalog_keywords = ["all tiles", "all products", "entire catalog", "every product"]
-        is_catalog_general_explicit = any(keyword in chunk_lower for keyword in explicit_catalog_keywords)
-
-        # Check for implicit catalog-general patterns
-        implicit_patterns = [
-            r"available in\s+\d+",  # "Available in 15×38"
-            r"comes in\s+\d+",      # "Comes in 20×40"
-            r"factory:\s*\w+",      # "Factory: Castellón"
-            r"made in\s+\w+",       # "Made in Spain" (without "all")
-            r"dimensions?:\s*\d+",  # "Dimensions: 15×38"
-        ]
-        is_catalog_general_implicit = any(
-            re.search(pattern, chunk_lower) for pattern in implicit_patterns
-        ) and not mentioned_products  # Only if no product name mentioned
-
-        # Determine scope
-        if mentioned_products:
-            # Check if this is an override (product-specific dimensions when catalog-general exists)
-            is_override = bool(re.search(r"dimensions?:\s*\d+", chunk_lower))
-
-            return {
-                "scope": "product_specific",
-                "confidence": 0.7,
-                "reasoning": f"Mentions product names: {', '.join(mentioned_products)}",
-                "applies_to": mentioned_products,
-                "extracted_metadata": {},
-                "is_override": is_override
-            }
-        elif is_catalog_general_explicit:
-            return {
-                "scope": "catalog_general_explicit",
-                "confidence": 0.6,
-                "reasoning": "Contains explicit catalog-general keywords",
-                "applies_to": "all",
-                "extracted_metadata": {},
-                "is_override": False
-            }
-        elif is_catalog_general_implicit:
-            return {
-                "scope": "catalog_general_implicit",
-                "confidence": 0.5,
-                "reasoning": "Metadata mentioned without product context (implicit catalog-general)",
-                "applies_to": "all",
-                "extracted_metadata": {},
-                "is_override": False
-            }
-        else:
-            return {
-                "scope": "unknown",
-                "confidence": 0.3,
-                "reasoning": "Cannot determine scope from patterns",
-                "applies_to": [],
-                "extracted_metadata": {},
-                "is_override": False
-            }
-
-    async def _call_ai(self, prompt: str) -> str:
-        """Call AI service for scope detection."""
-        raise NotImplementedError("AI client integration needed")
-
-    def _parse_scope_response(self, response: str) -> Dict[str, Any]:
-        """Parse AI JSON response."""
-        try:
-            return json.loads(response)
-        except json.JSONDecodeError:
-            self.logger.error("Failed to parse scope detection response")
-            return {
-                "scope": "unknown",
-                "confidence": 0.0,
-                "reasoning": "Failed to parse AI response",
-                "applies_to": [],
-                "extracted_metadata": {}
-            }
-
-    async def _ensure_properties_exist(self, extracted_data: Dict[str, Any]):
-        """Auto-create material_properties entries for newly discovered fields.
-
-        This integrates with the prototype validation system by ensuring that
-        all discovered metadata fields have corresponding entries in the
-        material_properties table.
-
-        Args:
-            extracted_data: Extracted metadata from AI
-        """
-        from app.core.supabase_client import get_supabase_client
-
-        try:
-            supabase = get_supabase_client()
-
-            # Collect all discovered property keys
-            property_keys = set()
-
-            # From critical metadata
-            if "critical" in extracted_data:
-                for key in extracted_data["critical"].keys():
-                    property_keys.add(key)
-
-            # From discovered metadata (nested by category)
-            if "discovered" in extracted_data:
-                for category, fields in extracted_data["discovered"].items():
-                    if isinstance(fields, dict):
-                        for key in fields.keys():
-                            property_keys.add(key)
-
-            # From unknown metadata (custom fields)
-            if "unknown" in extracted_data:
-                for key in extracted_data["unknown"].keys():
-                    if not key.startswith('_'):  # Skip internal fields
-                        property_keys.add(key)
-
-            # Check which properties already exist
-            existing_result = supabase.client.table('material_properties').select('property_key').execute()
-            existing_keys = {row['property_key'] for row in existing_result.data}
-
-            # Create missing properties
-            new_properties = []
-            for property_key in property_keys:
-                if property_key not in existing_keys:
-                    # Determine category from METADATA_CATEGORY_HINTS
-                    category = self._determine_property_category(property_key)
-
-                    # Create property definition
-                    new_properties.append({
-                        'property_key': property_key,
-                        'name': property_key.replace('_', ' ').title(),
-                        'display_name': property_key.replace('_', ' ').title(),
-                        'description': f'Auto-discovered property: {property_key}',
-                        'data_type': 'string',  # Default to string
-                        'validation_rules': {},
-                        'is_searchable': True,
-                        'is_filterable': True,
-                        'is_ai_extractable': True,
-                        'category': category,
-                        'created_at': datetime.utcnow().isoformat(),
-                        'updated_at': datetime.utcnow().isoformat()
-                    })
-
-            # Batch insert new properties
-            if new_properties:
-                supabase.client.table('material_properties').insert(new_properties).execute()
-                self.logger.info(f"Auto-created {len(new_properties)} new material_properties entries")
-
-        except Exception as e:
-            # Don't fail extraction if property creation fails
-            self.logger.warning(f"Failed to auto-create material_properties: {e}")
-
-    def _determine_property_category(self, property_key: str) -> str:
-        """Determine which category a property belongs to."""
-        # Check each category's hints
-        for category, hints in METADATA_CATEGORY_HINTS.items():
-            if property_key in hints:
-                return category
-
-        # Check if it's a custom field
-        if property_key.startswith('_custom_'):
-            return 'custom'
-
-        # Default to 'other'
-        return 'other'
+# LEGACY CODE REMOVED: MetadataScopeDetector
+# ============================================================================
+# The MetadataScopeDetector class was part of the old chunk-based architecture.
+# Current architecture uses per-product focused extraction (Stage 0B),
+# eliminating the need for scope detection.
+# ============================================================================
 
