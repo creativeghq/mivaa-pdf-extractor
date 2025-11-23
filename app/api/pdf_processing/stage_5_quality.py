@@ -7,7 +7,7 @@ This module handles async quality enhancement using Claude validation.
 from typing import Dict, Any
 from datetime import datetime
 from app.schemas.jobs import ProcessingStage
-from app.services.checkpoint_recovery_service import CheckpointStage
+from app.services.checkpoint_recovery_service import ProcessingStage as CheckpointStage
 from app.utils.circuit_breaker import CircuitBreakerError
 
 

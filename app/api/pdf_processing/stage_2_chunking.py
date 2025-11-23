@@ -6,8 +6,8 @@ This module handles text chunking and embedding generation for PDF content.
 
 from typing import Dict, Any, Set
 from app.schemas.jobs import ProcessingStage
-from app.services.checkpoint_recovery_service import CheckpointStage
-from app.utils.timeout_utils import with_timeout, ProgressiveTimeoutStrategy
+from app.services.checkpoint_recovery_service import ProcessingStage as CheckpointStage
+from app.utils.timeout_guard import with_timeout, ProgressiveTimeoutStrategy
 
 
 async def process_stage_2_chunking(

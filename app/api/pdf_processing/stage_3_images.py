@@ -25,7 +25,7 @@ from app.services.pdf_processor import PDFProcessor
 from app.utils.timeout_guard import with_timeout, TimeoutConstants, ProgressiveTimeoutStrategy
 from app.utils.circuit_breaker import CircuitBreaker, CircuitBreakerError
 from app.utils.memory_monitor import memory_monitor
-from app.models.checkpoint_models import CheckpointStage
+from app.services.checkpoint_recovery_service import ProcessingStage as CheckpointStage
 
 logger = logging.getLogger(__name__)
 

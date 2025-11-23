@@ -6,7 +6,7 @@ This module handles product creation in database and entity linking.
 
 from typing import Dict, Any
 from app.schemas.jobs import ProcessingStage
-from app.services.checkpoint_recovery_service import CheckpointStage
+from app.services.checkpoint_recovery_service import ProcessingStage as CheckpointStage
 
 
 async def process_stage_4_products(

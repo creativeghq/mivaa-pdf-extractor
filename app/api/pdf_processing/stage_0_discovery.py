@@ -13,9 +13,9 @@ import aiofiles
 from typing import Dict, Any, List, Set
 from datetime import datetime
 
-from app.utils.timeout_utils import with_timeout, ProgressiveTimeoutStrategy
+from app.utils.timeout_guard import with_timeout, ProgressiveTimeoutStrategy
 from app.schemas.jobs import ProcessingStage, PageProcessingStatus
-from app.services.checkpoint_recovery_service import CheckpointStage
+from app.services.checkpoint_recovery_service import ProcessingStage as CheckpointStage
 
 
 async def process_stage_0_discovery(
