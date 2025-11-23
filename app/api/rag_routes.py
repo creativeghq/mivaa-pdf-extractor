@@ -2892,10 +2892,20 @@ async def process_document_with_discovery(
         )
         logger.info(f"✅ Created CHUNKS_CREATED checkpoint for job {job_id}")
 
+        # 🧹 CRITICAL MEMORY CLEANUP: Delete LlamaIndex instance to free 2-3 GB before Stage 3
+        logger.info("🧹 Deleting LlamaIndex instance after Stage 2 to free memory...")
+        try:
+            # Explicitly delete the instance and all its components
+            if 'llamaindex_service' in locals():
+                del llamaindex_service
+                logger.info("   ✅ LlamaIndex instance deleted")
+        except Exception as e:
+            logger.warning(f"   ⚠️ Error deleting LlamaIndex instance: {e}")
+
         # Force garbage collection after chunking to free memory
         import gc
         gc.collect()
-        logger.info("💾 Memory freed after Stage 2 (Chunking)")
+        logger.info("💾 Memory freed after Stage 2 (Chunking) - LlamaIndex unloaded")
 
         # Stage 3: Image Processing (50-70%)
         logger.info("🖼️ [STAGE 3] Image Processing - Starting...")
@@ -3927,22 +3937,6 @@ Respond ONLY with this JSON format:
                 logger.info("✅ LlamaIndex service unloaded, memory freed")
             except Exception as e:
                 logger.warning(f"⚠️ Failed to unload LlamaIndex service: {e}")
-
-        # 🧹 MEMORY CLEANUP: Clear image data from memory after Stage 3
-        logger.info("🧹 Clearing image data from memory...")
-        try:
-            # Clear pdf_result_with_images (contains extracted_images with base64 data)
-            if 'pdf_result_with_images' in locals():
-                del pdf_result_with_images
-                logger.info("   ✅ Cleared pdf_result_with_images")
-
-            # Clear any other large image-related variables
-            if 'classified_images' in locals():
-                del classified_images
-                logger.info("   ✅ Cleared classified_images")
-
-        except Exception as e:
-            logger.warning(f"⚠️ Error during image data cleanup: {e}")
 
         # Force garbage collection after image processing to free memory
         import gc

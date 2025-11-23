@@ -1182,8 +1182,9 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                     page_indices = product_page_mapping.get(i)
 
                     if not page_indices:
-                        self.logger.warning(f"   ⚠️ No valid pages for {product.name}, skipping")
-                        enriched_products.append(product)
+                        self.logger.warning(f"   ⚠️ Product '{product.name}' has no valid pages in this PDF - REMOVING from catalog")
+                        self.logger.warning(f"      Original page_range: {product.page_range} (PDF has {pdf_page_count} pages)")
+                        # DO NOT add to enriched_products - this product doesn't exist in this PDF
                         continue
 
                     # Combine text from this product's pages
