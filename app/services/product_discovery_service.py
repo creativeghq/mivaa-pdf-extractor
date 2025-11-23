@@ -621,20 +621,23 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
             Optimized prompt for index scanning
         """
 
-        prompt = f"""You are analyzing the TABLE OF CONTENTS / INDEX section of a product catalog PDF with {total_pages} total pages.
+        prompt = f"""You are analyzing a product catalog PDF with {total_pages} pages (numbered 1 to {total_pages} in this file).
 
-**YOUR TASK**: Quickly identify ALL products and their page locations from the index/TOC.
+**YOUR TASK**: Identify ALL products that actually exist in THIS PDF by analyzing the content.
 
-**CRITICAL INSTRUCTIONS**:
-1. **Focus on the INDEX/TOC** - Look for product listings with page numbers
-2. **Extract product names and page ranges** - This is the PRIMARY goal
-3. **DO NOT extract detailed metadata yet** - That comes in Stage 2
-4. **Be comprehensive** - Find ALL products mentioned in the index
-5. **Page ranges**: If a product spans multiple pages (e.g., "NOVA ... 24-27"), include ALL pages [24,25,26,27]
-6. **⚠️ CRITICAL PAGE VALIDATION**: This PDF has EXACTLY {total_pages} pages. ALL page numbers MUST be between 1 and {total_pages}.
-   - If the index references pages beyond {total_pages}, this PDF is an EXCERPT from a larger catalog
-   - ONLY include pages that exist in THIS PDF (1-{total_pages})
-   - SKIP any products that only appear on pages > {total_pages}
+**⚠️ CRITICAL - PDF EXCERPT DETECTION**:
+This PDF may be an EXCERPT from a larger catalog. The index/TOC might reference page numbers from the ORIGINAL catalog that don't exist in this file.
+
+**INSTRUCTIONS**:
+1. **Scan the ACTUAL CONTENT** - Don't rely solely on the index/TOC page numbers
+2. **Validate page numbers**: This PDF has pages 1-{total_pages}. Any page number > {total_pages} does NOT exist in this file
+3. **For each product in the index**:
+   - If index says "Product X ... pages 50-55" but this PDF only has {total_pages} pages
+   - Check if Product X actually appears in the PDF content on pages 1-{total_pages}
+   - If YES: Include it with the ACTUAL pages where it appears in THIS PDF
+   - If NO: SKIP this product entirely (it's not in this excerpt)
+4. **Page ranges**: Include ALL consecutive pages where the product appears in THIS PDF
+5. **Be comprehensive**: Find ALL products that actually exist in pages 1-{total_pages}
 
 **WHAT TO LOOK FOR**:
 - Product names in uppercase or bold (e.g., "VALENOVA", "FOLD", "PIQUÉ")
@@ -699,18 +702,28 @@ Return ONLY valid JSON with ALL products found in the index."""
 Your task is to identify and extract content across the following categories:
 {chr(10).join(category_sections)}
 
-**GENERAL INSTRUCTIONS:**
-1. For PRODUCTS: Identify ONLY main featured products using ANY of these criteria:
+**⚠️ CRITICAL - PDF EXCERPT HANDLING**:
+This PDF has {total_pages} pages (numbered 1 to {total_pages}). It may be an EXCERPT from a larger catalog.
+
+**VALIDATION RULES**:
+1. **Scan ACTUAL CONTENT** - Don't just copy page numbers from the index/TOC
+2. **Page number validation**: ALL page_range values MUST be between 1 and {total_pages}
+3. **If a product's index entry references pages > {total_pages}**:
+   - Search for that product name in the ACTUAL PDF content (pages 1-{total_pages})
+   - If found: Use the ACTUAL pages where it appears in THIS PDF
+   - If NOT found: SKIP this product (it's not in this excerpt)
+4. **Example**: Index says "LOG ... pages 74-79" but PDF has only {total_pages} pages
+   - Search pages 1-{total_pages} for "LOG" product
+   - If found on pages 45-48: Use [45,46,47,48]
+   - If not found: SKIP LOG entirely
+
+**PRODUCT IDENTIFICATION**:
+1. Identify ONLY main featured products using ANY of these criteria:
    - EXCLUDE index pages, thumbnails, cross-references, and catalog grids (this is critical!)
    - INCLUDE if product has: dedicated page spread (1-12 pages) OR comprehensive metadata OR visual prominence OR content depth
    - Use multiple identification methods: page spread, metadata presence, visual prominence, or content depth
    - Even single-page products count if they have comprehensive metadata and visual prominence
-2. **CRITICAL: For page_range, you MUST identify the COMPLETE page range for each product:**
-   - Include ALL consecutive pages where the product appears (not just 2 representative pages)
-3. **⚠️ CRITICAL PAGE VALIDATION**: This PDF has EXACTLY {total_pages} pages. ALL page numbers MUST be between 1 and {total_pages}.
-   - If you see references to pages beyond {total_pages}, this PDF is an EXCERPT from a larger catalog
-   - ONLY include pages that exist in THIS PDF (1-{total_pages})
-   - SKIP any products that only appear on pages > {total_pages}
+2. **For page_range**: Include ALL consecutive pages where the product appears in THIS PDF (pages 1-{total_pages})
    - Example: If a product spans pages 22-27, return [22, 23, 24, 25, 26, 27], NOT just [22, 23]
    - Look for: product name continuity, related images, variant displays, technical specs across multiple pages
    - A product's page range ends when a new product begins or when content becomes unrelated
