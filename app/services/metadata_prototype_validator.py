@@ -21,7 +21,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 import numpy as np
 
-from app.core.supabase_client import get_supabase_client
+from app.services.supabase_client import get_supabase_client
 from app.services.real_embeddings_service import RealEmbeddingsService
 
 logger = logging.getLogger(__name__)

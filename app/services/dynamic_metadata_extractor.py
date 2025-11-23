@@ -476,6 +476,211 @@ class DynamicMetadataExtractor:
 
 
 # ============================================================================
+# SCOPE DETECTION (Product-Specific vs Catalog-General)
+# ============================================================================
+
+class MetadataScopeDetector:
+    """
+    Detects if metadata applies to:
+    - Specific product (e.g., "NOVA has R11")
+    - All products (e.g., "All tiles made in Spain")
+    - Product category (e.g., "All matte tiles have R11")
+    """
+
+    def __init__(self, ai_client=None):
+        self.ai_client = ai_client
+        self.logger = logging.getLogger(__name__)
+
+    async def detect_scope(
+        self,
+        chunk_content: str,
+        product_names: List[str],
+        document_context: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Detect if chunk metadata is product-specific or catalog-general.
+
+        Args:
+            chunk_content: Text content of chunk
+            product_names: List of product names in catalog
+            document_context: Optional document context
+
+        Returns:
+            {
+                "scope": "product_specific|catalog_general|category_specific",
+                "confidence": 0.95,
+                "reasoning": "...",
+                "applies_to": ["NOVA"] or "all" or ["matte_tiles"],
+                "extracted_metadata": {...}
+            }
+        """
+        try:
+            prompt = self._build_scope_detection_prompt(
+                chunk_content, product_names, document_context
+            )
+
+            if self.ai_client:
+                response = await self._call_ai(prompt)
+                return self._parse_scope_response(response)
+            else:
+                # Fallback to pattern-based detection
+                return self._fallback_scope_detection(chunk_content, product_names)
+
+        except Exception as e:
+            self.logger.error(f"Scope detection failed: {e}")
+            return {
+                "scope": "unknown",
+                "confidence": 0.0,
+                "reasoning": f"Error: {e}",
+                "applies_to": [],
+                "extracted_metadata": {}
+            }
+
+    def _build_scope_detection_prompt(
+        self,
+        chunk_content: str,
+        product_names: List[str],
+        document_context: Optional[str]
+    ) -> str:
+        """Build AI prompt for scope detection."""
+
+        product_list = ", ".join(product_names) if product_names else "Unknown"
+
+        return f"""Analyze this text chunk and determine its metadata scope.
+
+Chunk Content:
+"{chunk_content}"
+
+Product Names in Catalog: {product_list}
+
+Classify the scope as:
+1. "product_specific" - Mentions specific product name and applies only to that product
+   Example: "NOVA tile features R11 slip resistance"
+
+2. "catalog_general_explicit" - Explicitly says "all products" or "entire catalog"
+   Example: "All tiles in this catalog are made in Spain"
+
+3. "catalog_general_implicit" - Metadata mentioned WITHOUT product context (applies to all)
+   Example: "Available in 15×38" (no product name, applies to all unless overridden)
+   Example: "Factory: Castellón Ceramics" (general info, applies to all)
+
+4. "category_specific" - Applies to a category of products
+   Example: "All matte finish tiles have R11 slip resistance"
+
+CRITICAL RULES:
+- If chunk mentions dimensions/size WITHOUT product name → catalog_general_implicit
+- If chunk mentions factory/country WITHOUT product name → catalog_general_implicit
+- If chunk says "available in" or "comes in" WITHOUT product name → catalog_general_implicit
+- Product-specific metadata can OVERRIDE catalog-general metadata
+
+Extract ALL metadata mentioned in the chunk.
+
+Return JSON in this exact format:
+{{
+  "scope": "product_specific|catalog_general_explicit|catalog_general_implicit|category_specific",
+  "confidence": 0.95,
+  "reasoning": "Chunk mentions 'NOVA' specifically, so metadata applies only to NOVA product",
+  "applies_to": ["NOVA"],  // or "all" for catalog-general, or ["matte_tiles"] for category
+  "extracted_metadata": {{
+    "slip_resistance": "R11",
+    "dimensions": "15×38",
+    "designer": "SG NY"
+  }},
+  "is_override": false  // true if product-specific metadata overrides catalog-general
+}}
+
+Analyze now:"""
+
+    def _fallback_scope_detection(
+        self,
+        chunk_content: str,
+        product_names: List[str]
+    ) -> Dict[str, Any]:
+        """Fallback pattern-based scope detection."""
+
+        chunk_lower = chunk_content.lower()
+
+        # Check if any product name is mentioned
+        mentioned_products = [
+            name for name in product_names
+            if name.lower() in chunk_lower
+        ]
+
+        # Check for explicit catalog-general keywords
+        explicit_catalog_keywords = ["all tiles", "all products", "entire catalog", "every product"]
+        is_catalog_general_explicit = any(keyword in chunk_lower for keyword in explicit_catalog_keywords)
+
+        # Check for implicit catalog-general patterns
+        implicit_patterns = [
+            r"available in\s+\d+",  # "Available in 15×38"
+            r"comes in\s+\d+",      # "Comes in 20×40"
+            r"factory:\s*\w+",      # "Factory: Castellón"
+            r"made in\s+\w+",       # "Made in Spain" (without "all")
+            r"dimensions?:\s*\d+",  # "Dimensions: 15×38"
+        ]
+        is_catalog_general_implicit = any(
+            re.search(pattern, chunk_lower) for pattern in implicit_patterns
+        ) and not mentioned_products  # Only if no product name mentioned
+
+        # Determine scope
+        if mentioned_products:
+            # Check if this is an override (product-specific dimensions when catalog-general exists)
+            is_override = bool(re.search(r"dimensions?:\s*\d+", chunk_lower))
+
+            return {
+                "scope": "product_specific",
+                "confidence": 0.7,
+                "reasoning": f"Mentions product names: {', '.join(mentioned_products)}",
+                "applies_to": mentioned_products,
+                "extracted_metadata": {},
+                "is_override": is_override
+            }
+        elif is_catalog_general_explicit:
+            return {
+                "scope": "catalog_general_explicit",
+                "confidence": 0.6,
+                "reasoning": "Contains explicit catalog-general keywords",
+                "applies_to": "all",
+                "extracted_metadata": {},
+                "is_override": False
+            }
+        elif is_catalog_general_implicit:
+            return {
+                "scope": "catalog_general_implicit",
+                "confidence": 0.5,
+                "reasoning": "Metadata mentioned without product context (implicit catalog-general)",
+                "applies_to": "all",
+                "extracted_metadata": {},
+                "is_override": False
+            }
+        else:
+            return {
+                "scope": "unknown",
+                "confidence": 0.3,
+                "reasoning": "Cannot determine scope from patterns",
+                "applies_to": [],
+                "extracted_metadata": {},
+                "is_override": False
+            }
+
+    async def _call_ai(self, prompt: str) -> str:
+        """Call AI service for scope detection."""
+        raise NotImplementedError("AI client integration needed")
+
+    def _parse_scope_response(self, response: str) -> Dict[str, Any]:
+        """Parse AI JSON response."""
+        try:
+            return json.loads(response)
+        except json.JSONDecodeError:
+            self.logger.error("Failed to parse scope detection response")
+            return {
+                "scope": "unknown",
+                "confidence": 0.0,
+                "reasoning": "Failed to parse AI response",
+                "applies_to": [],
+                "extracted_metadata": {}
+            }
+
     async def _ensure_properties_exist(self, extracted_data: Dict[str, Any]):
         """Auto-create material_properties entries for newly discovered fields.
 
@@ -486,7 +691,7 @@ class DynamicMetadataExtractor:
         Args:
             extracted_data: Extracted metadata from AI
         """
-        from app.core.supabase_client import get_supabase_client
+        from app.services.supabase_client import get_supabase_client
 
         try:
             supabase = get_supabase_client()
@@ -561,13 +766,4 @@ class DynamicMetadataExtractor:
 
         # Default to 'other'
         return 'other'
-
-# SCOPE DETECTION (Product-Specific vs Catalog-General)
-# ============================================================================
-# LEGACY CODE REMOVED: MetadataScopeDetector
-# ============================================================================
-# The MetadataScopeDetector class was part of the old chunk-based architecture.
-# Current architecture uses per-product focused extraction (Stage 0B),
-# eliminating the need for scope detection.
-# ============================================================================
 

@@ -15,7 +15,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 import asyncio
 
-from app.core.supabase_client import get_supabase_client
+from app.services.supabase_client import get_supabase_client
 from app.services.metadata_prototype_validator import get_metadata_validator
 
 logger = logging.getLogger(__name__)
