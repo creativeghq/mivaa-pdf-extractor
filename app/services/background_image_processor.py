@@ -160,14 +160,30 @@ class BackgroundImageProcessor:
                 material_properties=analysis_result.get('llama_analysis', {})
             )
             
-            # Update database with all results
+            # Update database with analysis results (embeddings saved separately to embeddings table + VECS)
             update_data = {
                 "llama_analysis": analysis_result.get('llama_analysis'),
                 "claude_validation": analysis_result.get('claude_validation'),
-                "visual_clip_embedding_512": analysis_result.get('clip_embedding'),
                 "processing_status": "completed",
                 "updated_at": datetime.utcnow().isoformat()
             }
+
+            # Save CLIP embedding to embeddings table (not document_images)
+            clip_embedding = analysis_result.get('clip_embedding')
+            if clip_embedding:
+                try:
+                    embedding_data = {
+                        "entity_id": image_id,
+                        "entity_type": "image",
+                        "embedding_type": "visual_512",
+                        "embedding": clip_embedding,
+                        "dimension": len(clip_embedding),
+                        "model": "clip-vit-base-patch32"
+                    }
+                    self.supabase.client.table('embeddings').insert(embedding_data).execute()
+                    self.logger.debug(f"✅ Saved CLIP embedding to embeddings table for {image_id}")
+                except Exception as emb_error:
+                    self.logger.warning(f"⚠️ Failed to save CLIP embedding: {emb_error}")
             
             # Add specialized embeddings if available
             if embeddings_result and embeddings_result.get('success'):

@@ -399,21 +399,6 @@ Respond ONLY with this JSON format:
                 # Save visual CLIP embedding
                 visual_embedding = embeddings.get('visual_512')
                 if visual_embedding:
-                    # ✅ CRITICAL: Save to document_images table first
-                    try:
-                        self.supabase_client.client.table('document_images')\
-                            .update({'visual_clip_embedding_512': visual_embedding})\
-                            .eq('id', image_id)\
-                            .execute()
-                        logger.debug(f"   ✅ Saved visual CLIP to document_images table for {image_id}")
-                    except Exception as db_error:
-                        logger.error(f"   ❌ Failed to save visual CLIP to DB: {db_error}")
-                        last_error = f"Failed to save visual CLIP: {db_error}"
-                        retry_count += 1
-                        if retry_count < max_retries:
-                            await asyncio.sleep(2 ** retry_count)
-                        continue
-
                     # Save to embeddings table for tracking
                     try:
                         embedding_data = {
@@ -428,18 +413,27 @@ Respond ONLY with this JSON format:
                         self.supabase_client.client.table('embeddings').insert(embedding_data).execute()
                         logger.debug(f"   ✅ Saved visual embedding to embeddings table for {image_id}")
                     except Exception as emb_error:
-                        logger.warning(f"   ⚠️ Failed to save to embeddings table: {emb_error}")
+                        logger.error(f"   ❌ Failed to save visual embedding to embeddings table: {emb_error}")
+                        last_error = f"Failed to save visual embedding: {emb_error}"
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            await asyncio.sleep(2 ** retry_count)
+                        continue
 
-                    # Then save to VECS collection
-                    await self.vecs_service.upsert_image_embedding(
-                        image_id=image_id,
-                        clip_embedding=visual_embedding,
-                        metadata={
-                            'document_id': document_id,
-                            'page_number': img_data.get('page_number', 1),
-                            'quality_score': img_data.get('quality_score', 0.5)
-                        }
-                    )
+                    # Save to VECS collection for fast similarity search
+                    try:
+                        await self.vecs_service.upsert_image_embedding(
+                            image_id=image_id,
+                            clip_embedding=visual_embedding,
+                            metadata={
+                                'document_id': document_id,
+                                'page_number': img_data.get('page_number', 1),
+                                'quality_score': img_data.get('quality_score', 0.5)
+                            }
+                        )
+                        logger.debug(f"   ✅ Saved visual embedding to VECS for {image_id}")
+                    except Exception as vecs_error:
+                        logger.warning(f"   ⚠️ Failed to save to VECS: {vecs_error}")
 
                 # Save specialized embeddings
                 specialized_embeddings = {}
