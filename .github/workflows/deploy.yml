@@ -494,6 +494,10 @@ jobs:
           python -c 'import pymupdf4llm; print(\"pymupdf4llm import: SUCCESS\")' 2>/dev/null || echo 'pymupdf4llm import: FAILED'
           python -c 'import llama_index; print(\"llama_index import: SUCCESS\")' 2>/dev/null || echo 'llama_index import: FAILED'
 
+          # Test modular stage imports (CRITICAL for new architecture)
+          echo 'Testing modular PDF processing stages...'
+          python -c 'from app.api.pdf_processing import process_stage_0_discovery, process_stage_1_focused_extraction, process_stage_2_chunking, process_stage_3_images, process_stage_4_products, process_stage_5_quality; print(\"✅ All modular stages import successfully\")' 2>/dev/null || echo '❌ Modular stages import: FAILED'
+
           # Debug: Check system libraries
           echo 'Checking system MuPDF libraries...'
           find /usr -name '*mupdf*' 2>/dev/null | head -10 || echo 'No MuPDF libraries found in /usr'
@@ -542,6 +546,46 @@ jobs:
             echo '| **llama-index** | AI/ML | LLM framework | 🔴 Missing | N/A |' >> package_status_report.txt
             echo 'llama-index status: FAILED'
             python -c 'import llama_index' 2>&1 | head -3 || echo 'Import test failed'
+          fi
+
+          # Check modular PDF processing stages (CRITICAL)
+          echo '' >> package_status_report.txt
+          echo '| **--- Modular Architecture ---** | --- | --- | --- | --- |' >> package_status_report.txt
+          if python -c 'from app.api.pdf_processing import process_stage_0_discovery; print(f\"| **Stage 0: Discovery** | PDF Processing | Product discovery stage | 🟢 Ready | N/A |\")' >> package_status_report.txt 2>/dev/null; then
+            echo 'Stage 0 import: OK'
+          else
+            echo '| **Stage 0: Discovery** | PDF Processing | Product discovery stage | 🔴 Failed | N/A |' >> package_status_report.txt
+            echo 'Stage 0 import: FAILED'
+          fi
+          if python -c 'from app.api.pdf_processing import process_stage_1_focused_extraction; print(f\"| **Stage 1: Extraction** | PDF Processing | Focused extraction stage | 🟢 Ready | N/A |\")' >> package_status_report.txt 2>/dev/null; then
+            echo 'Stage 1 import: OK'
+          else
+            echo '| **Stage 1: Extraction** | PDF Processing | Focused extraction stage | 🔴 Failed | N/A |' >> package_status_report.txt
+            echo 'Stage 1 import: FAILED'
+          fi
+          if python -c 'from app.api.pdf_processing import process_stage_2_chunking; print(f\"| **Stage 2: Chunking** | PDF Processing | Text chunking stage | 🟢 Ready | N/A |\")' >> package_status_report.txt 2>/dev/null; then
+            echo 'Stage 2 import: OK'
+          else
+            echo '| **Stage 2: Chunking** | PDF Processing | Text chunking stage | 🔴 Failed | N/A |' >> package_status_report.txt
+            echo 'Stage 2 import: FAILED'
+          fi
+          if python -c 'from app.api.pdf_processing import process_stage_3_images; print(f\"| **Stage 3: Images** | PDF Processing | Image processing stage | 🟢 Ready | N/A |\")' >> package_status_report.txt 2>/dev/null; then
+            echo 'Stage 3 import: OK'
+          else
+            echo '| **Stage 3: Images** | PDF Processing | Image processing stage | 🔴 Failed | N/A |' >> package_status_report.txt
+            echo 'Stage 3 import: FAILED'
+          fi
+          if python -c 'from app.api.pdf_processing import process_stage_4_products; print(f\"| **Stage 4: Products** | PDF Processing | Product creation stage | 🟢 Ready | N/A |\")' >> package_status_report.txt 2>/dev/null; then
+            echo 'Stage 4 import: OK'
+          else
+            echo '| **Stage 4: Products** | PDF Processing | Product creation stage | 🔴 Failed | N/A |' >> package_status_report.txt
+            echo 'Stage 4 import: FAILED'
+          fi
+          if python -c 'from app.api.pdf_processing import process_stage_5_quality; print(f\"| **Stage 5: Quality** | PDF Processing | Quality enhancement stage | 🟢 Ready | N/A |\")' >> package_status_report.txt 2>/dev/null; then
+            echo 'Stage 5 import: OK'
+          else
+            echo '| **Stage 5: Quality** | PDF Processing | Quality enhancement stage | 🔴 Failed | N/A |' >> package_status_report.txt
+            echo 'Stage 5 import: FAILED'
           fi
 
           echo '' >> package_status_report.txt
