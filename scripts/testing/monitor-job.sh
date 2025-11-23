@@ -78,17 +78,26 @@ import sys, json
 data = json.load(sys.stdin)
 images = data.get('images', [])
 print(f'   ✅ Total Images: {len(images)}')
-visual = sum(1 for img in images if img.get('visual_clip_embedding_512'))
-color = sum(1 for img in images if img.get('color_clip_embedding_512'))
-texture = sum(1 for img in images if img.get('texture_clip_embedding_512'))
-application = sum(1 for img in images if img.get('application_clip_embedding_512'))
-material = sum(1 for img in images if img.get('material_clip_embedding_512'))
-total_clip = visual + color + texture + application + material
-print(f'   ✅ CLIP Embeddings:')
+"
+
+# Query embeddings table for image embeddings (document_images columns were dropped)
+echo "   ✅ CLIP Embeddings (from embeddings table):"
+curl -s "http://127.0.0.1:8000/api/supabase/query" \
+  -H "Content-Type: application/json" \
+  -d "{\"table\": \"embeddings\", \"filters\": {\"entity_type\": \"image\"}}" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+embeddings = data.get('data', [])
+visual = sum(1 for e in embeddings if e.get('embedding_type') == 'visual_512')
+color = sum(1 for e in embeddings if e.get('embedding_type') == 'color_512')
+texture = sum(1 for e in embeddings if e.get('embedding_type') == 'texture_512')
+style = sum(1 for e in embeddings if e.get('embedding_type') == 'style_512')
+material = sum(1 for e in embeddings if e.get('embedding_type') == 'material_512')
+total_clip = visual + color + texture + style + material
 print(f'      • Visual: {visual}')
 print(f'      • Color: {color}')
 print(f'      • Texture: {texture}')
-print(f'      • Application: {application}')
+print(f'      • Style: {style}')
 print(f'      • Material: {material}')
 print(f'      • TOTAL: {total_clip}')
 "

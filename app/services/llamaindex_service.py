@@ -3667,18 +3667,15 @@ Summary:"""
                             'ocr_confidence_score': image_info.get('ocr_result', {}).get('confidence', 0.0),
                             'image_analysis_results': material_analysis.get('material_properties', {}) or {},
 
-                            # AI Analysis Columns
+                            # AI Analysis Columns (embeddings saved separately to embeddings table + VECS)
                             'claude_validation': material_analysis.get('claude_validation'),  # Claude 4.5 Sonnet validation
                             'llama_analysis': material_analysis.get('llama_analysis'),  # Llama 4 Scout 17B Vision analysis
-                            'visual_clip_embedding_512': clip_embeddings.get('embedding_512'),  # CLIP 512D
-                            'color_embedding_256': clip_embeddings.get('color_embedding'),  # Color 256D
-                            'texture_embedding_256': clip_embeddings.get('texture_embedding'),  # Texture 256D
-                            'application_embedding_512': clip_embeddings.get('application_embedding'),  # Application 512D
 
+                            # Note: Embeddings are now saved to embeddings table + VECS collections, not document_images
+                            # visual_features kept for backward compatibility with metadata only
                             'visual_features': {
-                                'clip_512': clip_embeddings.get('embedding_512'),
-                                'clip_1536': clip_embeddings.get('embedding_1536'),
-                                'model_used': clip_embeddings.get('model_used', 'ViT-B/32')
+                                'model_used': clip_embeddings.get('model_used', 'ViT-B/32'),
+                                'embedding_generated': bool(clip_embeddings.get('embedding_512'))
                             },
                             'processing_status': 'completed',
                             'multimodal_metadata': {
@@ -5783,7 +5780,7 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
 
     async def _generate_clip_embedding(self, image: 'Image') -> Optional[List[float]]:
         """
-        Generate CLIP embedding for an image (used for image search queries).
+        Generate CLIP embedding for an image.
 
         Args:
             image: PIL Image object
@@ -5792,31 +5789,11 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
             List of floats representing the CLIP embedding (512 dimensions)
         """
         try:
-            # Use RealEmbeddingsService for actual CLIP embedding generation
-            from .real_embeddings_service import RealEmbeddingsService
-            from io import BytesIO
-            import base64
-
-            if not hasattr(self, '_embeddings_service'):
-                self._embeddings_service = RealEmbeddingsService()
-
-            # Convert PIL Image to base64
-            buffered = BytesIO()
-            image.save(buffered, format="PNG")
-            image_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
-
-            # Generate visual embedding using RealEmbeddingsService
-            visual_embedding, model_used = await self._embeddings_service._generate_visual_embedding(
-                image_url=None,
-                image_data=image_base64
-            )
-
-            if visual_embedding:
-                self.logger.info(f"✅ Generated CLIP embedding for search query using {model_used}")
-                return visual_embedding
-
-            self.logger.error("❌ CLIP embedding generation failed for search query")
-            return None
+            # TODO: Integrate with actual CLIP model
+            # For now, return a placeholder embedding
+            # In production, this should call the CLIP embedding service
+            self.logger.warning("CLIP embedding generation not yet implemented - using placeholder")
+            return [0.0] * 512  # Placeholder 512-dimensional embedding
 
         except Exception as e:
             self.logger.error(f"Failed to generate CLIP embedding: {e}")

@@ -202,6 +202,8 @@ class CLIPEmbeddingJobService:
         """
         Get all images for a document that don't have CLIP embeddings.
 
+        Queries embeddings table to find images without visual_512 embeddings.
+
         Args:
             document_id: Document ID
 
@@ -209,14 +211,32 @@ class CLIPEmbeddingJobService:
             List of image records
         """
         try:
-            # Query images without visual_clip_embedding_512
-            result = self.supabase.client.table('document_images')\
+            # Get all images for this document
+            images_result = self.supabase.client.table('document_images')\
                 .select('id, image_url, storage_path, page_number, metadata')\
                 .eq('document_id', document_id)\
-                .is_('visual_clip_embedding_512', 'null')\
                 .execute()
 
-            return result.data or []
+            if not images_result.data:
+                return []
+
+            all_images = images_result.data
+
+            # Get image IDs that already have visual embeddings
+            embeddings_result = self.supabase.client.table('embeddings')\
+                .select('entity_id')\
+                .eq('entity_type', 'image')\
+                .eq('embedding_type', 'visual_512')\
+                .in_('entity_id', [img['id'] for img in all_images])\
+                .execute()
+
+            images_with_embeddings = {emb['entity_id'] for emb in (embeddings_result.data or [])}
+
+            # Filter to images without embeddings
+            images_without_clip = [img for img in all_images if img['id'] not in images_with_embeddings]
+
+            logger.info(f"Found {len(images_without_clip)}/{len(all_images)} images without CLIP embeddings")
+            return images_without_clip
 
         except Exception as e:
             logger.error(f"❌ Failed to get images without CLIP: {e}")

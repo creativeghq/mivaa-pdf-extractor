@@ -2018,13 +2018,18 @@ class PDFProcessor:
             image = Image.open(image_path).convert('RGB')
             
             # Initialize SigLIP model for OCR filtering (cached after first use)
-            from sentence_transformers import SentenceTransformer
-            if not hasattr(self, '_siglip_model_for_ocr'):
-                self._siglip_model_for_ocr = SentenceTransformer('google/siglip-so400m-patch14-384')
-                self.logger.info("✅ Initialized SigLIP model for OCR filtering: google/siglip-so400m-patch14-384")
+            # Use transformers directly instead of sentence-transformers to avoid 'hidden_size' error
+            from transformers import AutoModel, AutoProcessor
+            import torch
+            import numpy as np
 
-            siglip_model = self._siglip_model_for_ocr
-            
+            if not hasattr(self, '_siglip_model_for_ocr'):
+                self.logger.info("🔄 Loading SigLIP model for OCR filtering: google/siglip-so400m-patch14-384")
+                self._siglip_model_for_ocr = AutoModel.from_pretrained('google/siglip-so400m-patch14-384')
+                self._siglip_processor_for_ocr = AutoProcessor.from_pretrained('google/siglip-so400m-patch14-384')
+                self._siglip_model_for_ocr.eval()
+                self.logger.info("✅ Initialized SigLIP model for OCR filtering")
+
             # Define text prompts for classification
             relevant_prompts = [
                 "product specification table with dimensions and measurements",
@@ -2038,7 +2043,7 @@ class PDFProcessor:
                 "CAD drawing with dimension annotations",
                 "engineering diagram with measurements"
             ]
-            
+
             irrelevant_prompts = [
                 "historical photograph of people without technical content",
                 "biography or portrait photo with captions",
@@ -2052,33 +2057,32 @@ class PDFProcessor:
                 "brand logo or company name only",
                 "artistic typography without technical information"
             ]
-            
-            # Get image embedding
-            # SigLIP model accepts PIL Image object directly
-            loop = asyncio.get_event_loop()
-            import numpy as np
-            image_embedding_raw = await loop.run_in_executor(
-                None,
-                siglip_model.encode,
-                image  # Pass PIL Image object
-            )
-            # Normalize
-            image_embedding_raw = image_embedding_raw / np.linalg.norm(image_embedding_raw)
+
+            # Get image embedding using transformers directly
+            with torch.no_grad():
+                inputs = self._siglip_processor_for_ocr(images=image, return_tensors="pt")
+                image_features = self._siglip_model_for_ocr.get_image_features(**inputs)
+
+                # L2 normalize to unit vector
+                image_embedding_tensor = image_features / image_features.norm(dim=-1, keepdim=True)
+                image_embedding_raw = image_embedding_tensor.squeeze().cpu().numpy()
+
             image_embedding = image_embedding_raw.tolist() if hasattr(image_embedding_raw, 'tolist') else list(image_embedding_raw)
 
-            # Get text embeddings for all prompts
+            # Get text embeddings for all prompts using transformers directly
             all_prompts = relevant_prompts + irrelevant_prompts
             text_embeddings = []
-            for prompt in all_prompts:
-                text_emb_raw = await loop.run_in_executor(
-                    None,
-                    siglip_model.encode,
-                    prompt
-                )
-                # Normalize
-                text_emb_raw = text_emb_raw / np.linalg.norm(text_emb_raw)
-                text_emb_list = text_emb_raw.tolist() if hasattr(text_emb_raw, 'tolist') else list(text_emb_raw)
-                text_embeddings.append(text_emb_list)
+
+            with torch.no_grad():
+                for prompt in all_prompts:
+                    text_inputs = self._siglip_processor_for_ocr(text=prompt, return_tensors="pt")
+                    text_features = self._siglip_model_for_ocr.get_text_features(**text_inputs)
+
+                    # L2 normalize to unit vector
+                    text_emb_tensor = text_features / text_features.norm(dim=-1, keepdim=True)
+                    text_emb_raw = text_emb_tensor.squeeze().cpu().numpy()
+                    text_emb_list = text_emb_raw.tolist() if hasattr(text_emb_raw, 'tolist') else list(text_emb_raw)
+                    text_embeddings.append(text_emb_list)
             
             # Calculate similarities
             image_embedding_tensor = torch.tensor(image_embedding).unsqueeze(0)
