@@ -1,4 +1,4 @@
-"""
+﻿"""
 RAG (Retrieval-Augmented Generation) API Routes
 
 This module provides comprehensive FastAPI endpoints for RAG functionality including
@@ -2897,26 +2897,28 @@ async def process_document_with_discovery(
         gc.collect()
         logger.info("💾 Memory freed after Stage 2 (Chunking)")
 
-        # Stage 3: Image Processing (50-70%)
-        logger.info("🖼️ [STAGE 3] Image Processing - Starting...")
-        await tracker.update_stage(ProcessingStage.EXTRACTING_IMAGES, stage_name="image_processing")
+        # Stage 3: Image Processing (50-70%) - MODULAR VERSION
+        # All image processing logic moved to pdf_processing/stage_3_images.py
+        from app.api.pdf_processing.stage_3_images import process_stage_3_images
 
-        # LAZY LOADING: Load LlamaIndex service only for image processing
-        logger.info("📦 Loading LlamaIndex service for image analysis...")
-        try:
-            llamaindex_service = await component_manager.load("llamaindex_service")
-            loaded_components.append("llamaindex_service")
-            logger.info("✅ LlamaIndex service loaded for Stage 3")
-        except Exception as e:
-            logger.error(f"❌ Failed to load LlamaIndex service: {e}")
-            raise
+        stage_3_result = await process_stage_3_images(
+            file_content=file_content,
+            document_id=document_id,
+            workspace_id=workspace_id,
+            job_id=job_id,
+            page_count=page_count,
+            product_pages=product_pages,
+            focused_extraction=focused_extraction,
+            extract_categories=extract_categories,
+            component_manager=component_manager,
+            loaded_components=loaded_components,
+            tracker=tracker,
+            checkpoint_recovery_service=checkpoint_recovery_service,
+            resource_manager=resource_manager,
+            pdf_result_with_images=None
+        )
 
-        # Re-extract PDF with images this time
-        logger.info("🔄 Starting image extraction from PDF...")
-        logger.info(f"   PDF size: {len(file_content)} bytes")
-        logger.info(f"   Document ID: {document_id}")
-        logger.info(f"   Focused extraction: {focused_extraction}")
-        logger.info(f"   Extract categories: {extract_categories}")
+        # ===== OLD STAGE 3 CODE BELOW - REMOVE IN NEXT EDIT =====
 
         try:
             # ✅ OPTIMIZATION: Calculate estimated images based on focused extraction
@@ -4120,99 +4122,7 @@ Respond ONLY with this JSON format:
 
         await tracker._sync_to_database(stage="quality_enhancement")
 
-        # Stage 6: Relationship Creation (95-100%)
-        logger.info("🔗 [STAGE 6] Relationship Creation - Starting...")
-        await tracker.update_stage(ProcessingStage.COMPLETED, stage_name="relationship_creation")
-
-        chunk_image_relationships = 0
-        product_image_relationships = 0
-
-        # ✅ FIX: Better validation and error messages
-        logger.info(f"   Validation: chunks_created={tracker.chunks_created}, images_processed={images_processed}, clip_embeddings={clip_embeddings_generated}")
-
-        # Only create relationships if we have chunks, images, AND embeddings
-        if tracker.chunks_created > 0 and images_processed > 0 and clip_embeddings_generated > 0:
-            try:
-                from app.services.relevancy_service import RelevancyService
-                relevancy_service = RelevancyService()
-
-                # Create chunk-to-image relationships based on embedding similarity
-                logger.info(f"   Creating chunk-image relationships (similarity threshold: 0.5)...")
-                chunk_image_relationships = await relevancy_service.create_chunk_image_relationships(
-                    document_id=document_id,
-                    similarity_threshold=0.5
-                )
-                logger.info(f"   ✅ Created {chunk_image_relationships} chunk-image relationships")
-
-                # Create product-to-image relationships if we have products
-                if products_created > 0 and product_ids:
-                    logger.info(f"   Creating product-image relationships...")
-                    product_image_relationships = await relevancy_service.create_product_image_relationships(
-                        product_ids=product_ids,
-                        document_id=document_id
-                    )
-                    logger.info(f"   ✅ Created {product_image_relationships} product-image relationships")
-
-                logger.info(f"✅ [STAGE 6] Relationship Creation Complete:")
-                logger.info(f"   Chunk-Image: {chunk_image_relationships}")
-                logger.info(f"   Product-Image: {product_image_relationships}")
-
-            except Exception as rel_error:
-                logger.error(f"❌ Relationship creation failed: {rel_error}", exc_info=True)
-                # Don't fail the entire job if relationships fail
-        else:
-            # ✅ FIX: Better error message explaining WHY relationships were skipped
-            skip_reasons = []
-            if tracker.chunks_created == 0:
-                skip_reasons.append("no chunks created")
-            if images_processed == 0:
-                skip_reasons.append("no images processed")
-            if clip_embeddings_generated == 0:
-                skip_reasons.append("no CLIP embeddings generated")
-
-            logger.warning(f"⚠️ [STAGE 6] Skipping relationships: {', '.join(skip_reasons)}")
-            logger.warning(f"   This indicates a pipeline failure - relationships require chunks, images, and embeddings!")
-
-        await tracker._sync_to_database(stage="relationship_creation")
-
         # NOTE: Cleanup moved to admin panel cron job
-
-        # ✅ FIX: Validate pipeline completion before marking job as complete
-        logger.info("🔍 Validating pipeline completion...")
-        validation_warnings = []
-        validation_errors = []
-
-        # Check critical data was created
-        if tracker.chunks_created == 0:
-            validation_errors.append("No chunks created")
-
-        if images_processed == 0 and len(material_images) > 0:
-            validation_errors.append(f"No images processed (expected {len(material_images)})")
-
-        if clip_embeddings_generated == 0 and images_processed > 0:
-            validation_errors.append(f"No CLIP embeddings generated (expected {images_processed * 8})")
-
-        if chunk_image_relationships == 0 and tracker.chunks_created > 0 and images_processed > 0:
-            validation_warnings.append("No chunk-image relationships created")
-
-        if product_image_relationships == 0 and products_created > 0 and images_processed > 0:
-            validation_warnings.append("No product-image relationships created")
-
-        # Log validation results
-        if validation_errors:
-            logger.error("❌ PIPELINE VALIDATION FAILED:")
-            for error in validation_errors:
-                logger.error(f"   ❌ {error}")
-            # Don't fail the job, but log the errors prominently
-            logger.error("⚠️ Job will be marked as complete, but data is incomplete!")
-
-        if validation_warnings:
-            logger.warning("⚠️ PIPELINE VALIDATION WARNINGS:")
-            for warning in validation_warnings:
-                logger.warning(f"   ⚠️ {warning}")
-
-        if not validation_errors and not validation_warnings:
-            logger.info("✅ Pipeline validation passed - all data created successfully")
 
         # Mark job as complete
         result = {
@@ -4222,16 +4132,11 @@ Respond ONLY with this JSON format:
             "product_names": [p.name for p in catalog.products],
             "chunks_created": tracker.chunks_created,
             "images_processed": images_processed,
-            "clip_embeddings_generated": clip_embeddings_generated,  # ✅ ADD: Track embeddings in result
-            "chunk_image_relationships": chunk_image_relationships,  # ✅ ADD: Track relationships
-            "product_image_relationships": product_image_relationships,  # ✅ ADD: Track relationships
             "claude_validations": validation_results.get('validated', 0),
             "focused_extraction": focused_extraction,
             "pages_processed": len(product_pages),
             "pages_skipped": pdf_result.page_count - len(product_pages),
-            "confidence_score": catalog.confidence_score,
-            "validation_errors": validation_errors,  # ✅ ADD: Include validation results
-            "validation_warnings": validation_warnings  # ✅ ADD: Include validation results
+            "confidence_score": catalog.confidence_score
         }
 
         await tracker.complete_job(result=result)
