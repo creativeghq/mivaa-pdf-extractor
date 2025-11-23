@@ -2016,7 +2016,6 @@ async def process_document_background(
     try:
         # Create placeholder document record FIRST (required for foreign key constraint)
         supabase_client = get_supabase_client()
-        supabase = supabase_client  # Alias for modular stages
 
         # Skip document creation if resuming from checkpoint
         if not resume_from_stage:
@@ -3928,6 +3927,22 @@ Respond ONLY with this JSON format:
                 logger.info("✅ LlamaIndex service unloaded, memory freed")
             except Exception as e:
                 logger.warning(f"⚠️ Failed to unload LlamaIndex service: {e}")
+
+        # 🧹 MEMORY CLEANUP: Clear image data from memory after Stage 3
+        logger.info("🧹 Clearing image data from memory...")
+        try:
+            # Clear pdf_result_with_images (contains extracted_images with base64 data)
+            if 'pdf_result_with_images' in locals():
+                del pdf_result_with_images
+                logger.info("   ✅ Cleared pdf_result_with_images")
+
+            # Clear any other large image-related variables
+            if 'classified_images' in locals():
+                del classified_images
+                logger.info("   ✅ Cleared classified_images")
+
+        except Exception as e:
+            logger.warning(f"⚠️ Error during image data cleanup: {e}")
 
         # Force garbage collection after image processing to free memory
         import gc

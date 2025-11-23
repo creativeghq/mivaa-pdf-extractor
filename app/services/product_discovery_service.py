@@ -631,6 +631,10 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
 3. **DO NOT extract detailed metadata yet** - That comes in Stage 2
 4. **Be comprehensive** - Find ALL products mentioned in the index
 5. **Page ranges**: If a product spans multiple pages (e.g., "NOVA ... 24-27"), include ALL pages [24,25,26,27]
+6. **⚠️ CRITICAL PAGE VALIDATION**: This PDF has EXACTLY {total_pages} pages. ALL page numbers MUST be between 1 and {total_pages}.
+   - If the index references pages beyond {total_pages}, this PDF is an EXCERPT from a larger catalog
+   - ONLY include pages that exist in THIS PDF (1-{total_pages})
+   - SKIP any products that only appear on pages > {total_pages}
 
 **WHAT TO LOOK FOR**:
 - Product names in uppercase or bold (e.g., "VALENOVA", "FOLD", "PIQUÉ")
@@ -703,6 +707,10 @@ Your task is to identify and extract content across the following categories:
    - Even single-page products count if they have comprehensive metadata and visual prominence
 2. **CRITICAL: For page_range, you MUST identify the COMPLETE page range for each product:**
    - Include ALL consecutive pages where the product appears (not just 2 representative pages)
+3. **⚠️ CRITICAL PAGE VALIDATION**: This PDF has EXACTLY {total_pages} pages. ALL page numbers MUST be between 1 and {total_pages}.
+   - If you see references to pages beyond {total_pages}, this PDF is an EXCERPT from a larger catalog
+   - ONLY include pages that exist in THIS PDF (1-{total_pages})
+   - SKIP any products that only appear on pages > {total_pages}
    - Example: If a product spans pages 22-27, return [22, 23, 24, 25, 26, 27], NOT just [22, 23]
    - Look for: product name continuity, related images, variant displays, technical specs across multiple pages
    - A product's page range ends when a new product begins or when content becomes unrelated
