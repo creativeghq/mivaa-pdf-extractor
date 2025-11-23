@@ -2016,6 +2016,7 @@ async def process_document_background(
     try:
         # Create placeholder document record FIRST (required for foreign key constraint)
         supabase_client = get_supabase_client()
+        supabase = supabase_client  # Alias for modular stages
 
         # Skip document creation if resuming from checkpoint
         if not resume_from_stage:
@@ -2577,139 +2578,1618 @@ async def process_document_with_discovery(
         )
         logger.info(f"✅ Created INITIALIZED checkpoint for job {job_id}")
 
-        # Stage 0: Product Discovery (0-15%) - MODULAR VERSION
-        # All product discovery logic moved to pdf_processing/stage_0_discovery.py
-        from app.api.pdf_processing.stage_0_discovery import process_stage_0_discovery
+        # Stage 0: Product Discovery (0-15%)
+        logger.info("🔍 [STAGE 0] Product Discovery - Starting...")
+        await tracker.update_stage(ProcessingStage.INITIALIZING, stage_name="product_discovery")
 
-        stage_0_result = await process_stage_0_discovery(
-            file_content=file_content,
-            document_id=document_id,
-            workspace_id=workspace_id,
+        from app.services.product_discovery_service import ProductDiscoveryService
+        from app.services.pdf_processor import PDFProcessor
+        from app.services.supabase_client import get_supabase_client
+        import tempfile
+        import aiofiles
+
+        # Save PDF to temporary file for two-stage discovery
+        # This allows ProductDiscoveryService to extract specific page ranges
+        temp_pdf_path = None
+        try:
+            # EVENT-BASED CLEANUP: Register resource manager
+            from app.utils.resource_manager import get_resource_manager
+            resource_manager = get_resource_manager()
+
+            # Create temp file that persists during processing
+            temp_fd, temp_pdf_path = tempfile.mkstemp(suffix='.pdf', prefix=f'{document_id}_')
+            os.close(temp_fd)  # Close file descriptor, we'll write with aiofiles
+
+            # Write PDF bytes to temp file
+            async with aiofiles.open(temp_pdf_path, 'wb') as f:
+                await f.write(file_content)
+
+            logger.info(f"📁 Saved PDF to temp file: {temp_pdf_path}")
+
+            # Register temp file with resource manager
+            await resource_manager.register_resource(
+                resource_id=f"temp_pdf_{document_id}",
+                resource_type="file",
+                path=temp_pdf_path,
+                job_id=job_id,
+                metadata={"document_id": document_id, "filename": filename}
+            )
+
+            # Mark as IN_USE before PyMuPDF opens it
+            await resource_manager.mark_in_use(f"temp_pdf_{document_id}", job_id)
+
+            # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on document size
+            file_size_mb = len(file_content) / (1024 * 1024)
+
+            # Quick page count check (fast, doesn't extract content)
+            import fitz
+            quick_doc = fitz.open(temp_pdf_path)
+            page_count = len(quick_doc)
+            quick_doc.close()
+
+            # Calculate progressive timeout for PDF extraction
+            pdf_extraction_timeout = ProgressiveTimeoutStrategy.calculate_pdf_extraction_timeout(
+                page_count=page_count,
+                file_size_mb=file_size_mb
+            )
+            logger.info(f"📊 Document: {page_count} pages, {file_size_mb:.1f} MB → timeout: {pdf_extraction_timeout:.0f}s")
+
+            # Extract PDF text first (with progressive timeout guard)
+            pdf_processor = PDFProcessor()
+            pdf_result = await with_timeout(
+                pdf_processor.process_pdf_from_bytes(
+                    pdf_bytes=file_content,
+                    document_id=document_id,
+                    processing_options={'extract_images': False, 'extract_tables': False}
+                ),
+                timeout_seconds=pdf_extraction_timeout,
+                operation_name="PDF text extraction"
+            )
+
+            # Create processed_documents record IMMEDIATELY (required for job_progress foreign key)
+            # This MUST happen BEFORE any _sync_to_database() calls
+            supabase = get_supabase_client()
+            try:
+                supabase.client.table('processed_documents').upsert({
+                    "id": document_id,
+                    "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+                    "pdf_document_id": document_id,
+                    "content": pdf_result.markdown_content or "",
+                    "processing_status": "processing",
+                    "metadata": {
+                        "filename": filename,
+                        "file_size": len(file_content),
+                        "page_count": pdf_result.page_count
+                    }
+                }).execute()
+                logger.info(f"✅ Created processed_documents record for {document_id}")
+            except Exception as e:
+                logger.error(f"❌ CRITICAL: Failed to create processed_documents record: {e}")
+                raise  # Don't continue if this fails
+
+            # Update tracker with total pages
+            tracker.total_pages = pdf_result.page_count
+            for page_num in range(1, pdf_result.page_count + 1):
+                from app.schemas.jobs import PageProcessingStatus
+                tracker.page_statuses[page_num] = PageProcessingStatus(
+                    page_number=page_num,
+                    stage=ProcessingStage.INITIALIZING,  # Changed from PENDING (doesn't exist)
+                    status="pending"
+                )
+
+            # Run TWO-STAGE category-based discovery with prompt enhancement (with progressive timeout)
+            # Stage 0A: Index scan (first 50-100 pages)
+            # Stage 0B: Focused extraction (specific pages per product)
+
+            # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on pages and categories
+            discovery_timeout = ProgressiveTimeoutStrategy.calculate_product_discovery_timeout(
+                page_count=pdf_result.page_count,
+                categories=extract_categories
+            )
+            logger.info(f"📊 Product discovery: {pdf_result.page_count} pages, {len(extract_categories)} categories → timeout: {discovery_timeout:.0f}s")
+
+            # ✅ NORMALIZE: Map discovery_model to expected values
+            # ProductDiscoveryService expects: "claude", "gpt", or "haiku"
+            normalized_model = discovery_model.lower()
+            if "claude" in normalized_model or "sonnet" in normalized_model:
+                normalized_model = "claude"
+            elif "gpt" in normalized_model:
+                normalized_model = "gpt"
+            elif "haiku" in normalized_model:
+                normalized_model = "haiku"
+            else:
+                normalized_model = "claude"  # Default to Claude
+
+            logger.info(f"🤖 Discovery model normalized: '{discovery_model}' → '{normalized_model}'")
+
+            discovery_service = ProductDiscoveryService(model=normalized_model)
+            catalog = await with_timeout(
+                discovery_service.discover_products(
+                    pdf_content=file_content,
+                    pdf_text=pdf_result.markdown_content,
+                    total_pages=pdf_result.page_count,
+                    categories=extract_categories,
+                    agent_prompt=agent_prompt,  # From unified_upload request
+                    workspace_id=workspace_id,
+                    enable_prompt_enhancement=enable_prompt_enhancement,
+                    job_id=job_id,
+                    pdf_path=temp_pdf_path,  # ✅ NEW: Enable two-stage discovery
+                    tracker=tracker  # ✅ HEARTBEAT: Pass tracker for heartbeat updates
+                ),
+                timeout_seconds=discovery_timeout,
+                operation_name="Product discovery (Stage 0A + 0B)"
+            )
+
+        except Exception as discovery_error:
+            # Re-raise discovery errors to be handled by outer exception handler
+            raise discovery_error
+
+        logger.info(f"✅ [STAGE 0] Discovery Complete:")
+        logger.info(f"   Categories: {', '.join(extract_categories)}")
+        logger.info(f"   Products: {len(catalog.products)}")
+        if "certificates" in extract_categories:
+            logger.info(f"   Certificates: {len(catalog.certificates)}")
+        if "logos" in extract_categories:
+            logger.info(f"   Logos: {len(catalog.logos)}")
+        if "specifications" in extract_categories:
+            logger.info(f"   Specifications: {len(catalog.specifications)}")
+        logger.info(f"   Confidence: {catalog.confidence_score:.2f}")
+
+        # Update tracker
+        tracker.products_created = len(catalog.products)
+        await tracker._sync_to_database(stage="product_discovery")
+
+        # Create PRODUCTS_DETECTED checkpoint (now includes all categories)
+        checkpoint_data = {
+            "document_id": document_id,
+            "categories": extract_categories,
+            "products_detected": len(catalog.products),
+            "product_names": [p.name for p in catalog.products],
+            "total_pages": pdf_result.page_count
+        }
+
+        # Add other categories if discovered
+        if "certificates" in extract_categories:
+            checkpoint_data["certificates_detected"] = len(catalog.certificates)
+            checkpoint_data["certificate_names"] = [c.name for c in catalog.certificates]
+        if "logos" in extract_categories:
+            checkpoint_data["logos_detected"] = len(catalog.logos)
+            checkpoint_data["logo_names"] = [l.name for l in catalog.logos]
+        if "specifications" in extract_categories:
+            checkpoint_data["specifications_detected"] = len(catalog.specifications)
+            checkpoint_data["specification_names"] = [s.name for s in catalog.specifications]
+
+        await checkpoint_recovery_service.create_checkpoint(
             job_id=job_id,
-            filename=filename,
-            title=title,
-            description=description,
-            extract_categories=extract_categories,
-            discovery_model=discovery_model,
-            agent_prompt=agent_prompt,
-            enable_prompt_enhancement=enable_prompt_enhancement,
-            tracker=tracker,
-            checkpoint_recovery_service=checkpoint_recovery_service,
-            logger=logger
+            stage=CheckpointStage.PRODUCTS_DETECTED,
+            data=checkpoint_data,
+            metadata={
+                "confidence_score": catalog.confidence_score,
+                "discovery_model": discovery_model
+            }
+        )
+        logger.info(f"✅ Created PRODUCTS_DETECTED checkpoint for job {job_id}")
+
+        # Stage 1: Focused Extraction (15-30%)
+        logger.info("🎯 [STAGE 1] Focused Extraction - Starting...")
+        await tracker.update_stage(ProcessingStage.EXTRACTING_TEXT, stage_name="focused_extraction")
+
+        product_pages = set()
+        if focused_extraction:
+            logger.info(f"   ENABLED - Processing ONLY pages with {len(catalog.products)} products")
+            invalid_pages_found = []
+            for product in catalog.products:
+                # ✅ CRITICAL FIX: Validate page numbers against PDF page count before adding
+                # Claude can hallucinate pages that don't exist (e.g., page 73 in a 71-page PDF)
+                valid_pages = [p for p in product.page_range if 1 <= p <= pdf_result.page_count]
+                invalid_pages = [p for p in product.page_range if p < 1 or p > pdf_result.page_count]
+
+                if invalid_pages:
+                    invalid_pages_found.extend(invalid_pages)
+                    logger.warning(f"   ⚠️ Product '{product.name}' has invalid pages {invalid_pages} (PDF has {pdf_result.page_count} pages) - skipping these pages")
+
+                product_pages.update(valid_pages)
+
+            if invalid_pages_found:
+                logger.warning(f"   ⚠️ Total invalid pages skipped: {sorted(set(invalid_pages_found))}")
+
+            pages_to_skip = set(range(1, pdf_result.page_count + 1)) - product_pages
+            for page_num in pages_to_skip:
+                tracker.skip_page_processing(page_num, "Not a product page (focused extraction)")
+
+            logger.info(f"   Product pages: {sorted(product_pages)}")
+            logger.info(f"   Processing: {len(product_pages)} / {pdf_result.page_count} pages")
+        else:
+            logger.info(f"   DISABLED - Processing ALL {pdf_result.page_count} pages")
+            product_pages = set(range(1, pdf_result.page_count + 1))
+
+        await tracker._sync_to_database(stage="focused_extraction")
+
+        # Stage 2: Chunking (30-50%)
+        logger.info("📝 [STAGE 2] Chunking - Starting...")
+        await tracker.update_stage(ProcessingStage.SAVING_TO_DATABASE, stage_name="chunking")
+
+        from app.services.llamaindex_service import LlamaIndexService
+        llamaindex_service = LlamaIndexService()
+
+        # Create document in database
+        doc_data = {
+            'id': document_id,
+            'workspace_id': "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",  # Default workspace
+            'filename': filename,
+            'content_type': 'application/pdf',
+            'file_size': len(file_content),
+            'file_path': f'pdf-documents/{document_id}/{filename}',
+            'processing_status': 'processing',
+            'metadata': {
+                'title': title or filename,
+                'description': description,
+                'page_count': pdf_result.page_count,
+                'tags': document_tags,
+                'products_discovered': len(catalog.products),
+                'product_names': [p.name for p in catalog.products],
+                'focused_extraction': focused_extraction,
+                'discovery_model': discovery_model
+            }
+        }
+        supabase.client.table('documents').upsert(doc_data).execute()
+        logger.info(f"✅ Created documents table record for {document_id}")
+
+        # Process chunks using LlamaIndex (with progressive timeout)
+        logger.info(f"📝 Calling index_pdf_content with {len(file_content)} bytes, product_pages={sorted(product_pages)}")
+        logger.info(f"📝 LlamaIndex service available: {llamaindex_service.available}")
+
+        # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on page count
+        chunking_timeout = ProgressiveTimeoutStrategy.calculate_chunking_timeout(
+            page_count=pdf_result.page_count,
+            chunk_size=chunk_size
+        )
+        logger.info(f"📊 Chunking: {pdf_result.page_count} pages, chunk_size={chunk_size} → timeout: {chunking_timeout:.0f}s")
+
+        chunk_result = await with_timeout(
+            llamaindex_service.index_pdf_content(
+                pdf_content=file_content,
+                document_id=document_id,
+                metadata={
+                    'filename': filename,
+                    'title': title,
+                    'page_count': pdf_result.page_count,
+                    'product_pages': sorted(product_pages),
+                    'chunk_size': chunk_size,
+                    'chunk_overlap': chunk_overlap,
+                    'workspace_id': workspace_id  # ✅ FIX: Pass workspace_id to chunks
+                }
+            ),
+            timeout_seconds=chunking_timeout,
+            operation_name="Chunking operation"
         )
 
-        catalog = stage_0_result["catalog"]
-        pdf_result = stage_0_result["pdf_result"]
-        temp_pdf_path = stage_0_result["temp_pdf_path"]
+        logger.info(f"📝 index_pdf_content returned: {chunk_result}")
 
-        # Stage 1: Focused Extraction (15-30%) - MODULAR VERSION
-        # All focused extraction logic moved to pdf_processing/stage_1_focused_extraction.py
-        from app.api.pdf_processing.stage_1_focused_extraction import process_stage_1_focused_extraction
-
-        stage_1_result = await process_stage_1_focused_extraction(
-            catalog=catalog,
-            pdf_result=pdf_result,
-            focused_extraction=focused_extraction,
-            tracker=tracker,
-            logger=logger
+        tracker.chunks_created = chunk_result.get('chunks_created', 0)
+        # NOTE: Don't pass chunks_created to update_database_stats because it increments!
+        # We already set tracker.chunks_created directly above.
+        await tracker.update_database_stats(
+            kb_entries=tracker.chunks_created,
+            sync_to_db=True
         )
 
-        product_pages = stage_1_result["product_pages"]
+        logger.info(f"✅ [STAGE 2] Chunking Complete: {tracker.chunks_created} chunks created")
 
-        # Stage 2: Chunking (30-50%) - MODULAR VERSION
-        # All chunking logic moved to pdf_processing/stage_2_chunking.py
-        from app.api.pdf_processing.stage_2_chunking import process_stage_2_chunking
-
-        stage_2_result = await process_stage_2_chunking(
-            file_content=file_content,
-            document_id=document_id,
-            workspace_id=workspace_id,
+        # Create CHUNKS_CREATED checkpoint
+        await checkpoint_recovery_service.create_checkpoint(
             job_id=job_id,
-            filename=filename,
-            title=title,
-            description=description,
-            document_tags=document_tags,
-            catalog=catalog,
-            pdf_result=pdf_result,
-            product_pages=product_pages,
-            focused_extraction=focused_extraction,
-            discovery_model=discovery_model,
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            tracker=tracker,
-            checkpoint_recovery_service=checkpoint_recovery_service,
-            supabase=supabase,
-            logger=logger
+            stage=CheckpointStage.CHUNKS_CREATED,
+            data={
+                "document_id": document_id,
+                "chunks_created": tracker.chunks_created,
+                "chunk_ids": chunk_result.get('chunk_ids', [])
+            },
+            metadata={
+                "chunk_size": chunk_size,
+                "chunk_overlap": chunk_overlap,
+                "product_pages": sorted(product_pages)
+            }
+        )
+        logger.info(f"✅ Created CHUNKS_CREATED checkpoint for job {job_id}")
+
+        # Force garbage collection after chunking to free memory
+        import gc
+        gc.collect()
+        logger.info("💾 Memory freed after Stage 2 (Chunking)")
+
+        # Stage 3: Image Processing (50-70%)
+        logger.info("🖼️ [STAGE 3] Image Processing - Starting...")
+        await tracker.update_stage(ProcessingStage.EXTRACTING_IMAGES, stage_name="image_processing")
+
+        # LAZY LOADING: Load LlamaIndex service only for image processing
+        logger.info("📦 Loading LlamaIndex service for image analysis...")
+        try:
+            llamaindex_service = await component_manager.load("llamaindex_service")
+            loaded_components.append("llamaindex_service")
+            logger.info("✅ LlamaIndex service loaded for Stage 3")
+        except Exception as e:
+            logger.error(f"❌ Failed to load LlamaIndex service: {e}")
+            raise
+
+        # Re-extract PDF with images this time
+        logger.info("🔄 Starting image extraction from PDF...")
+        logger.info(f"   PDF size: {len(file_content)} bytes")
+        logger.info(f"   Document ID: {document_id}")
+        logger.info(f"   Focused extraction: {focused_extraction}")
+        logger.info(f"   Extract categories: {extract_categories}")
+
+        try:
+            # ✅ OPTIMIZATION: Calculate estimated images based on focused extraction
+            if focused_extraction and 'products' in extract_categories and product_pages:
+                # Only extract images from product pages
+                estimated_images = len(product_pages) * 2  # ~2 images per product page
+                logger.info(f"   🎯 Focused extraction: Only extracting from {len(product_pages)} product pages")
+                logger.info(f"   📄 Product pages: {sorted(product_pages)}")
+            else:
+                # Extract images from all pages
+                estimated_images = page_count * 2
+                logger.info(f"   📄 Full extraction: Extracting from all {page_count} pages")
+
+            # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on estimated images
+            image_extraction_timeout = ProgressiveTimeoutStrategy.calculate_image_processing_timeout(
+                image_count=estimated_images,
+                concurrent_limit=1  # Extraction is sequential
+            )
+            logger.info(f"📊 Image extraction: ~{estimated_images} estimated images → timeout: {image_extraction_timeout:.0f}s")
+
+            # ✅ OPTIMIZATION: Build processing options with page_list for focused extraction
+            processing_options = {
+                'extract_images': True,
+                'extract_tables': False,
+                'skip_upload': True  # Skip upload - will classify first, then upload only material images
+            }
+
+            # Add page_list for focused extraction (only extract images from product pages)
+            if focused_extraction and 'products' in extract_categories and product_pages:
+                processing_options['page_list'] = sorted(list(product_pages))  # Convert set to sorted list
+                logger.info(f"   ✅ Passing page_list to PyMuPDF: {len(processing_options['page_list'])} pages")
+
+            # ⏱️ PROGRESSIVE TIMEOUT GUARD: Prevent indefinite hangs during image extraction
+            pdf_result_with_images = await with_timeout(
+                pdf_processor.process_pdf_from_bytes(
+                    pdf_bytes=file_content,
+                    document_id=document_id,
+                    processing_options=processing_options
+                ),
+                timeout_seconds=image_extraction_timeout,
+                operation_name="PyMuPDF4LLM image extraction"
+            )
+            logger.info(f"✅ Image extraction completed: {len(pdf_result_with_images.extracted_images)} images found")
+
+            # AI-BASED IMAGE CLASSIFICATION: Use Llama Vision for fast filtering (cheap & fast)
+            # Only use Claude for validation of uncertain cases (expensive but accurate)
+            logger.info(f"🤖 Starting AI-based image classification for {len(pdf_result_with_images.extracted_images)} images...")
+            logger.info(f"   Strategy: Llama Vision (fast filter) → Claude Sonnet (validation for uncertain cases)")
+
+            async def classify_image_with_llama(image_path: str) -> Dict[str, Any]:
+                """
+                Fast classification using Llama Vision (TogetherAI).
+                Returns confidence score - low confidence cases will be validated with Claude.
+                """
+                try:
+                    # Read image and convert to base64
+                    with open(image_path, 'rb') as f:
+                        image_bytes = f.read()
+                        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+
+                    # Use Llama Vision for fast classification
+                    classification_prompt = """Analyze this image and classify it as:
+1. MATERIAL: Shows building/interior materials (tiles, wood, fabric, stone, metal, flooring, wallpaper, etc.) - either close-up texture or in application
+2. NOT_MATERIAL: Faces, logos, charts, diagrams, text, decorative graphics, abstract patterns
+
+Respond ONLY with JSON:
+{"is_material": true/false, "confidence": 0.0-1.0, "reason": "brief explanation"}"""
+
+                    import httpx
+                    together_api_key = os.getenv('TOGETHER_API_KEY')
+
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        response = await client.post(
+                            "https://api.together.xyz/v1/chat/completions",
+                            headers={
+                                "Authorization": f"Bearer {together_api_key}",
+                                "Content-Type": "application/json"
+                            },
+                            json={
+                                "model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+                                "messages": [{
+                                    "role": "user",
+                                    "content": [
+                                        {
+                                            "type": "image_url",
+                                            "image_url": {
+                                                "url": f"data:image/jpeg;base64,{image_base64}"
+                                            }
+                                        },
+                                        {
+                                            "type": "text",
+                                            "text": classification_prompt
+                                        }
+                                    ]
+                                }],
+                                "max_tokens": 512,
+                                "temperature": 0.1
+                            }
+                        )
+
+                        result_text = response.json()['choices'][0]['message']['content']
+
+                        # Parse JSON from response
+                        import json
+                        result = json.loads(result_text)
+
+                        return {
+                            'is_material': result.get('is_material', False),
+                            'confidence': result.get('confidence', 0.5),
+                            'reason': result.get('reason', 'Unknown'),
+                            'model': 'llama'
+                        }
+
+                except Exception as e:
+                    logger.warning(f"⚠️ Llama classification failed for {image_path}: {e}")
+                    # Return low confidence to trigger Claude validation
+                    return {
+                        'is_material': False,
+                        'confidence': 0.0,
+                        'reason': f'Llama failed: {str(e)}',
+                        'model': 'llama_failed'
+                    }
+
+            async def validate_with_claude(image_path: str) -> Dict[str, Any]:
+                """
+                Validate uncertain cases with Claude Sonnet (more accurate but expensive).
+                """
+                try:
+                    with open(image_path, 'rb') as f:
+                        image_bytes = f.read()
+                        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+
+                    classification_prompt = """Analyze this image and classify it into ONE of these categories:
+
+1. **material_closeup**: Close-up photo showing material texture, surface, pattern, or finish (tiles, wood, fabric, stone, metal, etc.)
+2. **material_in_situ**: Material shown in application/context (bathroom with tiles, furniture with fabric, room with flooring, etc.)
+3. **non_material**: NOT material-related (faces, logos, decorative graphics, charts, diagrams, text, random images)
+
+Respond ONLY with this JSON format:
+{
+    "classification": "material_closeup" | "material_in_situ" | "non_material",
+    "confidence": 0.0-1.0,
+    "reason": "brief explanation"
+}"""
+
+                    import json
+
+                    # Use centralized AI client service
+                    ai_service = get_ai_client_service()
+
+                    response = await ai_service.anthropic_async.messages.create(
+                        model="claude-sonnet-4-20250514",
+                        max_tokens=1024,
+                        messages=[{
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "image/jpeg",
+                                        "data": image_base64
+                                    }
+                                },
+                                {
+                                    "type": "text",
+                                    "text": classification_prompt
+                                }
+                            ]
+                        }]
+                    )
+
+                    response_text = response.content[0].text
+                    result = json.loads(response_text)
+
+                    is_material = result.get('classification') in ['material_closeup', 'material_in_situ']
+
+                    return {
+                        'is_material': is_material,
+                        'classification': result.get('classification', 'non_material'),
+                        'confidence': result.get('confidence', 0.0),
+                        'reason': result.get('reason', 'Unknown'),
+                        'model': 'claude'
+                    }
+
+                except Exception as e:
+                    logger.error(f"❌ Claude validation failed for {image_path}: {e}")
+                    return {
+                        'is_material': False,
+                        'classification': 'unknown',
+                        'confidence': 0.0,
+                        'reason': f'Claude failed: {str(e)}',
+                        'model': 'claude_failed'
+                    }
+
+            # TWO-STAGE CLASSIFICATION: Llama (fast) → Claude (validation for uncertain)
+            from asyncio import Semaphore
+            llama_semaphore = Semaphore(10)  # Llama is fast, can handle more concurrent requests
+            claude_semaphore = Semaphore(3)  # Claude is slower, limit concurrency
+
+            async def classify_with_two_stage(img_data):
+                image_path = img_data.get('path')
+                if not image_path or not os.path.exists(image_path):
+                    return None
+
+                # STAGE 1: Fast Llama classification
+                async with llama_semaphore:
+                    llama_result = await classify_image_with_llama(image_path)
+
+                # STAGE 2: If confidence is low (< 0.7), validate with Claude
+                if llama_result['confidence'] < 0.7:
+                    logger.debug(f"   🔍 Low confidence ({llama_result['confidence']:.2f}) - validating with Claude: {img_data.get('filename')}")
+                    async with claude_semaphore:
+                        claude_result = await validate_with_claude(image_path)
+                    img_data['ai_classification'] = claude_result
+                else:
+                    img_data['ai_classification'] = llama_result
+
+                return img_data
+
+            # Run two-stage classification for all images
+            classification_tasks = [classify_with_two_stage(img_data) for img_data in pdf_result_with_images.extracted_images]
+            classified_images = await asyncio.gather(*classification_tasks, return_exceptions=True)
+
+            # Filter out non-material images
+            material_images = []
+            non_material_images = []
+
+            for img_data in classified_images:
+                if img_data is None or isinstance(img_data, Exception):
+                    # If classification failed (e.g., file not found), skip this image
+                    # This can happen if temporary files were already cleaned up
+                    logger.debug(f"   ⚠️ Skipping image due to classification failure: {img_data if isinstance(img_data, Exception) else 'None'}")
+                    continue
+
+                classification = img_data.get('ai_classification', {})
+                if classification.get('is_material', False):
+                    material_images.append(img_data)
+                else:
+                    non_material_images.append(img_data)
+                    logger.info(f"   🚫 Filtered out: {img_data.get('filename')} - {classification.get('classification')} ({classification.get('reason')})")
+
+            logger.info(f"✅ AI classification complete:")
+            logger.info(f"   Material images: {len(material_images)}")
+            logger.info(f"   Non-material images filtered out: {len(non_material_images)}")
+
+            # Calculate classification accuracy (avoid division by zero)
+            total_classified = len(material_images) + len(non_material_images)
+            if total_classified > 0:
+                logger.info(f"   Classification accuracy: {len(material_images) / total_classified * 100:.1f}% kept")
+            else:
+                logger.warning(f"   ⚠️ No images were classified - classification may have failed or no images to classify")
+
+            # Update tracker with filtered image count
+            await tracker.update_database_stats(
+                images_stored=len(material_images),
+                sync_to_db=True
+            )
+
+            # Upload only material images to Supabase Storage
+            logger.info(f"📤 Uploading {len(material_images)} material images to Supabase Storage...")
+
+            async def upload_single_image(img_data):
+                """Upload a single material image to Supabase Storage"""
+                try:
+                    image_path = img_data.get('path')
+                    if not image_path or not os.path.exists(image_path):
+                        logger.warning(f"Image file not found: {image_path}")
+                        return None
+
+                    # Upload to Supabase Storage
+                    from app.services.pdf_processor import PDFProcessor
+                    pdf_processor_temp = PDFProcessor()
+
+                    upload_result = await pdf_processor_temp._upload_image_to_storage(
+                        image_path,
+                        document_id,
+                        {
+                            'filename': img_data.get('filename'),
+                            'size_bytes': img_data.get('size_bytes'),
+                            'format': img_data.get('format'),
+                            'dimensions': img_data.get('dimensions'),
+                            'width': img_data.get('width'),
+                            'height': img_data.get('height')
+                        },
+                        None  # No enhanced path
+                    )
+
+                    if upload_result.get('success'):
+                        # Update img_data with storage info
+                        img_data['storage_url'] = upload_result.get('public_url')
+                        img_data['storage_path'] = upload_result.get('storage_path')
+                        img_data['storage_bucket'] = upload_result.get('storage_bucket')
+                        logger.info(f"   ✅ Uploaded: {img_data.get('filename')}")
+                        return img_data
+                    else:
+                        logger.error(f"   ❌ Upload failed: {img_data.get('filename')} - {upload_result.get('error')}")
+                        return None
+
+                except Exception as e:
+                    logger.error(f"   ❌ Upload error for {img_data.get('filename')}: {e}")
+                    return None
+
+            # Upload material images in parallel (5 at a time)
+            upload_semaphore = Semaphore(5)
+
+            async def upload_with_semaphore(img_data):
+                async with upload_semaphore:
+                    return await upload_single_image(img_data)
+
+            upload_tasks = [upload_with_semaphore(img_data) for img_data in material_images]
+            uploaded_images = await asyncio.gather(*upload_tasks, return_exceptions=True)
+
+            # Filter out failed uploads
+            material_images = [img for img in uploaded_images if img is not None and not isinstance(img, Exception)]
+
+            logger.info(f"✅ Upload complete: {len(material_images)} material images uploaded to storage")
+
+            # Now save material images to database and generate CLIP embeddings
+            logger.info(f"💾 Saving {len(material_images)} material images to database...")
+
+            from app.services.supabase_client import get_supabase_client
+            from app.services.vecs_service import VecsService
+            from app.services.real_embeddings_service import RealEmbeddingsService
+
+            supabase_client = get_supabase_client()
+            vecs_service = VecsService()
+            embedding_service = RealEmbeddingsService()
+
+            images_saved_count = 0
+            clip_embeddings_count = 0
+
+            for idx, img_data in enumerate(material_images):
+                try:
+                    # Save to database
+                    image_id = await supabase_client.save_single_image(
+                        image_info=img_data,
+                        document_id=document_id,
+                        workspace_id=workspace_id,
+                        image_index=idx
+                    )
+
+                    if image_id:
+                        images_saved_count += 1
+                        img_data['id'] = image_id  # Add ID to img_data
+                        logger.info(f"   ✅ Saved image {idx + 1}/{len(material_images)} to DB: {image_id}")
+
+                        # Generate CLIP embeddings
+                        image_path = img_data.get('path')
+                        if image_path and os.path.exists(image_path):
+                            try:
+                                logger.info(f"   🎨 Generating CLIP embeddings for image {idx + 1}/{len(material_images)}")
+                                with open(image_path, 'rb') as img_file:
+                                    image_bytes = img_file.read()
+                                    image_base64 = f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('utf-8')}"
+
+                                # Generate all embeddings
+                                embedding_result = await embedding_service.generate_all_embeddings(
+                                    entity_id=image_id,
+                                    entity_type="image",
+                                    text_content="",
+                                    image_data=image_base64,
+                                    material_properties={}
+                                )
+
+                                if embedding_result and embedding_result.get('success'):
+                                    embeddings = embedding_result.get('embeddings', {})
+
+                                    # Save visual CLIP embedding
+                                    visual_embedding = embeddings.get('visual_512')
+                                    if visual_embedding:
+                                        await vecs_service.upsert_image_embedding(
+                                            image_id=image_id,
+                                            clip_embedding=visual_embedding,
+                                            metadata={
+                                                'document_id': document_id,
+                                                'page_number': img_data.get('page_number', 1),
+                                                'quality_score': img_data.get('quality_score', 0.5)
+                                            }
+                                        )
+
+                                    # Save specialized embeddings
+                                    specialized_embeddings = {}
+                                    if embeddings.get('color_512'):
+                                        specialized_embeddings['color'] = embeddings.get('color_512')
+                                    if embeddings.get('texture_512'):
+                                        specialized_embeddings['texture'] = embeddings.get('texture_512')
+                                    if embeddings.get('application_512'):
+                                        specialized_embeddings['application'] = embeddings.get('application_512')
+                                    if embeddings.get('material_512'):
+                                        specialized_embeddings['material'] = embeddings.get('material_512')
+
+                                    if specialized_embeddings:
+                                        await vecs_service.upsert_specialized_embeddings(
+                                            image_id=image_id,
+                                            embeddings=specialized_embeddings,
+                                            metadata={
+                                                'document_id': document_id,
+                                                'page_number': img_data.get('page_number', 1)
+                                            }
+                                        )
+
+                                    clip_embeddings_count += 1
+                                    logger.info(f"   ✅ Generated {1 + len(specialized_embeddings)} CLIP embeddings for image {image_id}")
+                                else:
+                                    logger.warning(f"   ⚠️ CLIP embedding generation failed for image {image_id}")
+
+                            except Exception as clip_error:
+                                logger.error(f"   ❌ Failed to generate CLIP embeddings: {clip_error}")
+                                # Continue processing even if CLIP fails
+                        else:
+                            logger.warning(f"   ⚠️ Image file not found for CLIP generation: {image_path}")
+                    else:
+                        logger.warning(f"   ⚠️ Failed to save image {idx + 1} to DB")
+
+                except Exception as save_error:
+                    logger.error(f"   ❌ Failed to save image {idx + 1}: {save_error}")
+                    # Continue with next image
+
+            logger.info(f"✅ Saved {images_saved_count}/{len(material_images)} material images to database")
+            logger.info(f"✅ Generated CLIP embeddings for {clip_embeddings_count}/{images_saved_count} images")
+
+            # Update tracker with final counts
+            await tracker.update_database_stats(
+                images_stored=images_saved_count,
+                sync_to_db=True
+            )
+
+            # Update pdf_result_with_images.extracted_images with uploaded material images
+            pdf_result_with_images.extracted_images = material_images
+
+            # EVENT-BASED CLEANUP: Register image files and mark ready for cleanup
+            logger.info(f"🧹 Registering temporary image files for cleanup...")
+            from app.utils.resource_manager import get_resource_manager
+            resource_manager = get_resource_manager()
+
+            all_images_for_cleanup = material_images + non_material_images
+            for img_data in all_images_for_cleanup:
+                image_path = img_data.get('path')
+                if image_path:
+                    # Register the image file
+                    await resource_manager.register_resource(
+                        resource_id=f"image_{os.path.basename(image_path)}",
+                        resource_type="file",
+                        path=image_path,
+                        job_id=job_id,
+                        metadata={"document_id": document_id}
+                    )
+                    # Immediately release it (processing complete)
+                    await resource_manager.release_resource(f"image_{os.path.basename(image_path)}", job_id)
+
+            # Cleanup all ready resources
+            cleaned_count = await resource_manager.cleanup_ready_resources()
+            logger.info(f"✅ Cleaned up {cleaned_count} temporary image files")
+            logger.info(f"📊 Image extraction complete: {len(material_images)} material images, {len(non_material_images)} non-material images")
+        except Exception as extraction_error:
+            logger.error(f"❌ CRITICAL: Image extraction failed: {extraction_error}")
+            logger.error(f"   Error type: {type(extraction_error).__name__}")
+            logger.error(f"   Error details: {str(extraction_error)}")
+            import traceback
+            logger.error(f"   Traceback: {traceback.format_exc()}")
+
+            # Cleanup temporary files on error
+            try:
+                if 'extracted_images' in locals():
+                    logger.info(f"🧹 Cleaning up temporary files after error...")
+                    for img_data in extracted_images:
+                        image_path = img_data.get('path')
+                        if image_path and os.path.exists(image_path):
+                            try:
+                                os.remove(image_path)
+                            except Exception as cleanup_error:
+                                logger.warning(f"   ⚠️  Could not delete {image_path}: {cleanup_error}")
+            except Exception as cleanup_error:
+                logger.warning(f"⚠️ Cleanup failed: {cleanup_error}")
+
+            # Update job status to failed
+            await tracker.fail_job(error=Exception(f"Image extraction failed: {str(extraction_error)}"))
+            raise
+
+        # Group images by page number
+        # Filename formats: "page_X_image_Y.png" OR "document_id.pdf-PAGE-IMAGE.jpg"
+        images_by_page = {}
+        for img_data in pdf_result_with_images.extracted_images:
+            filename = img_data.get('filename', '')
+            import re
+
+            # Try format 1: page_X_image_Y.png
+            match = re.search(r'page_(\d+)_', filename)
+            if not match:
+                # Try format 2: document_id.pdf-PAGE-IMAGE.jpg
+                match = re.search(r'\.pdf-(\d+)-\d+\.', filename)
+
+            if match:
+                page_num = int(match.group(1))
+                if page_num not in images_by_page:
+                    images_by_page[page_num] = []
+                images_by_page[page_num].append(img_data)
+            else:
+                logger.warning(f"Could not extract page number from filename: {filename}")
+
+        # CRITICAL: Save images to database FIRST before AI processing
+        # This ensures images are persisted even if AI processing fails
+        # IMPORTANT: Respect focused_extraction flag and extract_categories
+        logger.info(f"💾 Saving images to database...")
+        logger.info(f"   Focused extraction: {focused_extraction}")
+        logger.info(f"   Extract categories: {', '.join(extract_categories)}")
+        images_saved = 0
+        images_skipped = 0
+
+        # 🚀 DYNAMIC BATCH SIZE: Calculate optimal batch size for database inserts
+        DEFAULT_INSERT_BATCH_SIZE = 100
+        BATCH_INSERT_SIZE = memory_monitor.calculate_optimal_batch_size(
+            default_batch_size=DEFAULT_INSERT_BATCH_SIZE,
+            min_batch_size=10,  # At least 10 records per batch
+            max_batch_size=200,  # Max 200 records per batch
+            memory_per_item_mb=0.5  # Estimate 0.5MB per image record (metadata only)
+        )
+        logger.info(f"   🔧 DYNAMIC DB BATCH SIZE: {BATCH_INSERT_SIZE} records per batch (adaptive)")
+
+        image_records_batch = []
+
+        for idx, img_data in enumerate(pdf_result_with_images.extracted_images):
+            try:
+                # Extract page number from filename
+                filename = img_data.get('filename', '')
+                match = re.search(r'page_(\d+)_', filename) or re.search(r'\.pdf-(\d+)-\d+\.', filename)
+                page_num = int(match.group(1)) if match else None
+
+                # DETAILED LOGGING: Log every image being processed
+                logger.info(f"   [{idx+1}/{len(pdf_result_with_images.extracted_images)}] Processing image: {filename} (page {page_num})")
+                logger.info(f"      storage_url: {img_data.get('storage_url')}")
+                logger.info(f"      storage_path: {img_data.get('storage_path')}")
+                logger.info(f"      storage_bucket: {img_data.get('storage_bucket')}")
+
+                # Determine image category
+                image_category = 'product' if (page_num and page_num in product_pages) else 'other'
+                logger.info(f"      category: {image_category} (product_pages: {sorted(product_pages)[:5]}...)")
+
+                # Skip images based on focused_extraction and extract_categories
+                if focused_extraction and 'all' not in extract_categories:
+                    # Only save images from categories specified in extract_categories
+                    if 'products' in extract_categories and image_category != 'product':
+                        logger.info(f"      ⏭️  SKIPPED: Not a product image (focused_extraction=True, categories={extract_categories})")
+                        images_skipped += 1
+                        continue
+                    # Note: Other categories (certificates, logos, specifications) are handled
+                    # by the document_entities system, not the images table
+
+                # Validate required fields
+                if not img_data.get('storage_url'):
+                    logger.warning(f"      ⚠️  SKIPPED: Missing storage_url")
+                    images_skipped += 1
+                    continue
+
+                # Prepare image record for database
+                image_record = {
+                    'document_id': document_id,
+                    'workspace_id': workspace_id,
+                    'image_url': img_data.get('storage_url'),
+                    'image_type': 'extracted',
+                    'caption': f"Image from page {page_num}" if page_num else "Extracted image",
+                    'page_number': page_num,
+                    'confidence': img_data.get('confidence_score', 0.5),
+                    'processing_status': 'pending_analysis',
+                    'metadata': {
+                        'filename': filename,
+                        'storage_path': img_data.get('storage_path'),
+                        'storage_bucket': img_data.get('storage_bucket', 'pdf-tiles'),
+                        'quality_score': img_data.get('quality_score', 0.5),
+                        'extracted_at': datetime.utcnow().isoformat(),
+                        'source': 'pdf_extraction',
+                        'focused_extraction': focused_extraction,
+                        'extract_categories': extract_categories,
+                        'category': image_category,
+                        'product_page': page_num in product_pages if page_num else False
+                    }
+                }
+
+                # Add to batch instead of inserting immediately
+                image_records_batch.append(image_record)
+                images_saved += 1
+                logger.info(f"      ✅ Added to batch (total: {images_saved})")
+
+                # ⚡ OPTIMIZATION: Insert batch when it reaches BATCH_INSERT_SIZE
+                if len(image_records_batch) >= BATCH_INSERT_SIZE:
+                    try:
+                        result = supabase.client.table('document_images').insert(image_records_batch).execute()
+                        logger.info(f"   💾 Batch inserted {len(image_records_batch)} images to database")
+
+                        # 🔑 CRITICAL: Store returned IDs back into extracted_images for VECS lookup
+                        if result.data:
+                            for inserted_record in result.data:
+                                # Find matching image in extracted_images and add the ID
+                                for img in pdf_result_with_images.extracted_images:
+                                    if img.get('filename') == inserted_record.get('metadata', {}).get('filename'):
+                                        img['id'] = inserted_record['id']
+                                        break
+
+                        image_records_batch = []  # Clear batch
+                    except Exception as batch_error:
+                        logger.error(f"   ❌ Batch insert failed: {batch_error}")
+                        # Fallback: Insert individually
+                        for record in image_records_batch:
+                            try:
+                                result = supabase.client.table('document_images').insert(record).execute()
+                                # Store ID back into extracted_images
+                                if result.data and len(result.data) > 0:
+                                    for img in pdf_result_with_images.extracted_images:
+                                        if img.get('filename') == record.get('metadata', {}).get('filename'):
+                                            img['id'] = result.data[0]['id']
+                                            break
+                            except Exception as individual_error:
+                                logger.error(f"   ❌ Individual insert failed: {individual_error}")
+                        image_records_batch = []
+
+            except Exception as e:
+                logger.error(f"      ❌ FAILED to prepare image {filename} for database: {e}")
+                logger.error(f"         Error type: {type(e).__name__}")
+                logger.error(f"         Error details: {str(e)}")
+                import traceback
+                logger.error(f"         Traceback: {traceback.format_exc()}")
+
+        # ⚡ OPTIMIZATION: Insert remaining images in final batch
+        if image_records_batch:
+            try:
+                result = supabase.client.table('document_images').insert(image_records_batch).execute()
+                logger.info(f"   💾 Final batch inserted {len(image_records_batch)} images to database")
+
+                # 🔑 CRITICAL: Store returned IDs back into extracted_images for VECS lookup
+                if result.data:
+                    for inserted_record in result.data:
+                        # Find matching image in extracted_images and add the ID
+                        for img in pdf_result_with_images.extracted_images:
+                            if img.get('filename') == inserted_record.get('metadata', {}).get('filename'):
+                                img['id'] = inserted_record['id']
+                                break
+
+            except Exception as batch_error:
+                logger.error(f"   ❌ Final batch insert failed: {batch_error}")
+                # Fallback: Insert individually
+                for record in image_records_batch:
+                    try:
+                        result = supabase.client.table('document_images').insert(record).execute()
+                        # Store ID back into extracted_images
+                        if result.data and len(result.data) > 0:
+                            for img in pdf_result_with_images.extracted_images:
+                                if img.get('filename') == record.get('metadata', {}).get('filename'):
+                                    img['id'] = result.data[0]['id']
+                                    break
+                    except Exception as individual_error:
+                        logger.error(f"   ❌ Individual insert failed: {individual_error}")
+
+        logger.info(f"✅ Saved {images_saved}/{len(pdf_result_with_images.extracted_images)} images to database")
+        if images_skipped > 0:
+            logger.info(f"   Skipped {images_skipped} images (not in extract_categories: {', '.join(extract_categories)})")
+
+        # Update tracker with images_extracted count
+        tracker.images_extracted = images_saved
+        await tracker.update_database_stats(
+            images_stored=images_saved,
+            sync_to_db=True
         )
 
-        chunk_result = stage_2_result["chunk_result"]
+        # Process images with Llama + CLIP (always extract images, even in focused mode)
+        # OPTIMIZATION: Process in batches to reduce memory consumption
+        images_processed = 0
+        clip_embeddings_generated = 0
+        specialized_embeddings_generated = 0  # ✅ NEW: Track specialized embeddings
 
-        # Stage 3: Image Processing (50-70%) - MODULAR VERSION
-        # All image processing logic moved to pdf_processing/stage_3_images.py
-        from app.api.pdf_processing.stage_3_images import process_stage_3_images
+        # ✅ OPTIMIZATION: Collect VECS records for batch upsert
+        vecs_batch_records = []
+        VECS_BATCH_SIZE = 50  # Batch upsert every 50 embeddings
 
-        stage_3_result = await process_stage_3_images(
-            file_content=file_content,
-            document_id=document_id,
-            workspace_id=workspace_id,
+        # 🚀 DYNAMIC BATCH SIZE: Calculate optimal batch size based on available memory
+        DEFAULT_BATCH_SIZE = 10
+        BATCH_SIZE = memory_monitor.calculate_optimal_batch_size(
+            default_batch_size=DEFAULT_BATCH_SIZE,
+            min_batch_size=2,  # At least 2 images per batch
+            max_batch_size=20,  # Max 20 images per batch
+            memory_per_item_mb=15.0  # Estimate 15MB per image (CLIP + Llama + image data)
+        )
+
+        logger.info(f"   Total images extracted from PDF: {len(pdf_result_with_images.extracted_images)}")
+        logger.info(f"   Images grouped by page: {len(images_by_page)} pages with images")
+        logger.info(f"   Product pages to process: {sorted(product_pages)}")
+        logger.info(f"   🔧 DYNAMIC BATCH PROCESSING: {BATCH_SIZE} images per batch (adaptive based on memory)")
+        memory_monitor.log_memory_stats(prefix="   ")
+
+        # ✅ FIX: Filter images to process based on focused_extraction and product_pages
+        # Only process images that were saved to database (i.e., product images when focused_extraction=True)
+        all_images_to_process = []
+        images_filtered_out = 0
+
+        for page_num, images in images_by_page.items():
+            for img_data in images:
+                # Apply same filtering logic as database save
+                if focused_extraction and 'all' not in extract_categories:
+                    # Only process images from categories specified in extract_categories
+                    image_category = 'product' if (page_num and page_num in product_pages) else 'other'
+
+                    if 'products' in extract_categories and image_category != 'product':
+                        # Skip non-product images when focused_extraction is enabled
+                        images_filtered_out += 1
+                        continue
+
+                # Only process images that have storage_url (were successfully saved to database)
+                if not img_data.get('storage_url'):
+                    images_filtered_out += 1
+                    continue
+
+                all_images_to_process.append((page_num, img_data))
+
+        total_images = len(all_images_to_process)
+        logger.info(f"   📊 Total images to process for CLIP: {total_images} (filtered out: {images_filtered_out})")
+        logger.info(f"   🎯 Focused extraction: {focused_extraction}, Categories: {extract_categories}")
+        logger.info(f"   📄 Product pages: {sorted(product_pages)}")
+
+        # ⚡ OPTIMIZATION: Parallel image processing with concurrency limit
+        # Process images in batches with parallel processing within each batch
+        # DYNAMIC CONCURRENCY: Adjust based on available memory
+        mem_stats = memory_monitor.get_memory_stats()
+        if mem_stats.percent_used < 50:
+            CONCURRENT_IMAGES = 8  # Low memory pressure: 8 concurrent (60% faster)
+        elif mem_stats.percent_used < 70:
+            CONCURRENT_IMAGES = 5  # Medium pressure: 5 concurrent (default)
+        else:
+            CONCURRENT_IMAGES = 3  # High pressure: 3 concurrent (conservative)
+
+        logger.info(f"   🚀 Concurrency level: {CONCURRENT_IMAGES} images (memory: {mem_stats.percent_used:.1f}%)")
+
+        async def process_single_image(page_num, img_data, image_index, total_images):
+            """Process a single image with CLIP + Llama Vision analysis"""
+            nonlocal images_processed, clip_embeddings_generated, specialized_embeddings_generated, vecs_batch_records
+
+            try:
+                # Read image file and convert to base64
+                image_path = img_data.get('path')
+                if not image_path or not os.path.exists(image_path):
+                    logger.warning(f"Image file not found: {image_path}")
+                    return
+
+                logger.info(f"📖 [{image_index}/{total_images}] Reading image file: {image_path}")
+                with open(image_path, 'rb') as f:
+                    image_bytes = f.read()
+                    image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+                logger.info(f"✅ [{image_index}/{total_images}] Image read successfully: {len(image_bytes)} bytes")
+
+                # CRITICAL: Generate CLIP embeddings for this image (with timeout guard + circuit breaker)
+                logger.info(f"🎨 [{image_index}/{total_images}] Generating CLIP embeddings for page {page_num}")
+                try:
+                    # Wrap with circuit breaker to fail fast on API outages
+                    clip_result = await clip_breaker.call(
+                        with_timeout,
+                        llamaindex_service._generate_clip_embeddings(
+                            image_base64=image_base64,
+                            image_path=image_path
+                        ),
+                        timeout_seconds=TimeoutConstants.CLIP_EMBEDDING,
+                        operation_name=f"CLIP embedding generation (image {image_index}/{total_images})"
+                    )
+                    logger.info(f"✅ [{image_index}/{total_images}] CLIP embeddings generated successfully")
+                except CircuitBreakerError as cb_error:
+                    logger.warning(f"⚠️ [{image_index}/{total_images}] CLIP embedding skipped (circuit breaker open): {cb_error}")
+                    clip_result = None
+                except Exception as clip_error:
+                    logger.error(f"❌ [{image_index}/{total_images}] CLIP embedding generation failed: {clip_error}")
+                    logger.error(f"   Error type: {type(clip_error).__name__}")
+                    clip_result = None
+
+                # 🔍 Get image ID from the extracted_images list (already has UUID from batch insert)
+                image_filename = os.path.basename(image_path)
+
+                # Find image_id from the extracted_images list by matching filename
+                image_id = None
+                for img in pdf_result_with_images.extracted_images:
+                    if img.get('filename') == image_filename:
+                        image_id = img.get('id')
+                        logger.debug(f"📌 [{image_index}/{total_images}] Found image ID from extracted list: {image_id}")
+                        break
+
+                if not image_id:
+                    logger.warning(f"⚠️ [{image_index}/{total_images}] Could not find image ID for {image_filename} in extracted images list")
+
+                # Analyze with Llama Vision (with timeout guard + circuit breaker)
+                logger.info(f"🔍 [{image_index}/{total_images}] Analyzing image with Llama Vision...")
+                try:
+                    # Wrap with circuit breaker to fail fast on API outages
+                    analysis_result = await llama_breaker.call(
+                        with_timeout,
+                        llamaindex_service._analyze_image_material(
+                            image_base64=image_base64,
+                            image_path=image_path,
+                            image_id=image_id,  # Pass actual image ID for Claude validation queue
+                            document_id=document_id
+                        ),
+                        timeout_seconds=TimeoutConstants.LLAMA_VISION_CALL,
+                        operation_name=f"Llama Vision analysis (image {image_index}/{total_images})"
+                    )
+                    logger.info(f"✅ [{image_index}/{total_images}] Llama Vision analysis completed")
+                except CircuitBreakerError as cb_error:
+                    logger.warning(f"⚠️ [{image_index}/{total_images}] Llama Vision analysis skipped (circuit breaker open): {cb_error}")
+                    analysis_result = {}
+                except Exception as llama_error:
+                    logger.error(f"❌ [{image_index}/{total_images}] Llama Vision analysis failed: {llama_error}")
+                    logger.error(f"   Error type: {type(llama_error).__name__}")
+                    analysis_result = {}
+
+                # ✅ OPTIMIZATION: Collect CLIP embeddings for batch upsert to VECS
+                if clip_result and clip_result.get('embedding_512') and image_id:
+                    # ✅ FIX: Use storage_url from img_data instead of tmp image_path
+                    storage_url = img_data.get('storage_url') or img_data.get('public_url')
+                    storage_path = img_data.get('storage_path')
+
+                    # Prepare metadata for VECS
+                    vecs_metadata = {
+                        'document_id': document_id,
+                        'workspace_id': workspace_id,  # ✅ ADD: Enable workspace filtering in VECS searches
+                        'page_number': page_num,
+                        'image_url': storage_url,  # ✅ FIX: Use Supabase storage URL, not tmp path
+                        'storage_path': storage_path,  # Include storage path for reference
+                        'quality_score': analysis_result.get('quality_score'),
+                        'confidence_score': analysis_result.get('confidence_score'),
+                        'llama_analysis': analysis_result.get('llama_analysis'),
+                        'material_properties': analysis_result.get('material_properties', {})
+                    }
+
+                    # Add to batch records for visual CLIP embeddings
+                    vecs_batch_records.append((
+                        image_id,
+                        clip_result.get('embedding_512'),
+                        vecs_metadata
+                    ))
+
+                    clip_embeddings_generated += 1
+                    logger.debug(f"✅ [{image_index}/{total_images}] Queued CLIP embedding for batch upsert (image {image_id})")
+
+                    # ✅ NEW: Save specialized CLIP embeddings (color, texture, style, material)
+                    specialized_embeddings = {}
+                    if clip_result.get('color_clip_512'):
+                        specialized_embeddings['color'] = clip_result.get('color_clip_512')
+                    if clip_result.get('texture_clip_512'):
+                        specialized_embeddings['texture'] = clip_result.get('texture_clip_512')
+                    if clip_result.get('style_clip_512'):
+                        specialized_embeddings['style'] = clip_result.get('style_clip_512')
+                    if clip_result.get('material_clip_512'):
+                        specialized_embeddings['material'] = clip_result.get('material_clip_512')
+
+                    if specialized_embeddings:
+                        vecs_service = get_vecs_service()
+                        await vecs_service.upsert_specialized_embeddings(
+                            image_id=image_id,
+                            embeddings=specialized_embeddings,
+                            metadata=vecs_metadata
+                        )
+                        specialized_embeddings_generated += len(specialized_embeddings)  # ✅ NEW: Track count
+                        logger.debug(f"✅ [{image_index}/{total_images}] Saved {len(specialized_embeddings)} specialized embeddings")
+
+                    # ✅ OPTIMIZATION: Batch upsert every VECS_BATCH_SIZE embeddings
+                    if len(vecs_batch_records) >= VECS_BATCH_SIZE:
+                        vecs_service = get_vecs_service()
+                        batch_count = await vecs_service.batch_upsert_image_embeddings(vecs_batch_records)
+                        logger.info(f"✅ Batch upserted {batch_count} CLIP embeddings to VECS")
+                        vecs_batch_records = []  # Clear batch
+
+                elif not image_id:
+                    logger.warning(f"⚠️ [{image_index}/{total_images}] Skipping VECS save - image ID not found for {image_filename}")
+
+                images_processed += 1
+
+                # 📊 REAL-TIME PROGRESS: Update progress after each image (every 5 images to reduce DB load)
+                if image_index % 5 == 0:
+                    try:
+                        await tracker.update_database_stats(
+                            images_stored=images_processed,
+                            sync_to_db=True
+                        )
+                        logger.debug(f"📊 Progress updated: {images_processed}/{total_images} images processed")
+                    except Exception as progress_error:
+                        logger.warning(f"⚠️ Failed to update progress: {progress_error}")
+
+                # ✅ MEMORY OPTIMIZATION: Clear image data from memory immediately after processing
+                del image_bytes
+                del image_base64
+                if clip_result:
+                    del clip_result
+                if analysis_result:
+                    del analysis_result
+
+                # NOTE: Temporary file cleanup moved to admin panel cron job
+
+            except Exception as e:
+                logger.error(f"❌ [{image_index}/{total_images}] Failed to process image on page {page_num}: {e}")
+                logger.error(f"   Error type: {type(e).__name__}")
+                logger.error(f"   Image path: {img_data.get('path')}")
+                import traceback
+                logger.error(f"   Traceback: {traceback.format_exc()}")
+                # Continue processing other images even if one fails
+
+        # Process images in batches with parallel processing
+        for batch_start in range(0, total_images, BATCH_SIZE):
+            batch_end = min(batch_start + BATCH_SIZE, total_images)
+            batch_images = all_images_to_process[batch_start:batch_end]
+            batch_num = (batch_start // BATCH_SIZE) + 1
+            total_batches = (total_images + BATCH_SIZE - 1) // BATCH_SIZE
+
+            logger.info(f"   🔄 Processing batch {batch_num}/{total_batches} ({len(batch_images)} images)")
+
+            # 🚀 MEMORY PRESSURE MONITORING: Check memory before processing batch
+            try:
+                await memory_monitor.wait_for_memory_available(
+                    required_mb=50,  # Need at least 50MB free for image processing
+                    max_wait_seconds=120,  # Wait up to 2 minutes for memory
+                    operation_name=f"batch {batch_num}/{total_batches}"
+                )
+            except MemoryError as mem_error:
+                logger.error(f"❌ Insufficient memory for batch {batch_num}: {mem_error}")
+                # Continue anyway, but log the warning
+                memory_monitor.log_memory_stats(prefix=f"   [Batch {batch_num}] ")
+
+            # Log memory before batch
+            import psutil
+            process = psutil.Process()
+            mem_before = process.memory_info().rss / 1024 / 1024  # MB
+            logger.info(f"   💾 Memory before batch: {mem_before:.1f} MB")
+
+            # ⚡ PARALLEL PROCESSING: Process CONCURRENT_IMAGES images at a time
+            from asyncio import Semaphore
+            semaphore = Semaphore(CONCURRENT_IMAGES)
+
+            async def process_with_semaphore(page_num, img_data, image_index):
+                async with semaphore:
+                    await process_single_image(page_num, img_data, image_index, total_images)
+
+            # Create tasks for all images in this batch
+            tasks = [
+                process_with_semaphore(page_num, img_data, batch_start + idx + 1)
+                for idx, (page_num, img_data) in enumerate(batch_images)
+            ]
+
+            # Execute all tasks in parallel (with concurrency limit)
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+            # CRITICAL: Force garbage collection after each batch to free memory
+            import gc
+            gc.collect()
+
+            # 🚀 MEMORY MONITORING: Log memory stats and check pressure after batch
+            mem_after = process.memory_info().rss / 1024 / 1024  # MB
+            mem_freed = mem_before - mem_after
+            logger.info(f"   💾 Memory after batch: {mem_after:.1f} MB (freed: {mem_freed:.1f} MB)")
+
+            # Check memory pressure and trigger cleanup if needed
+            mem_stats = await memory_monitor.check_memory_pressure()
+            if mem_stats.is_high_pressure:
+                logger.warning(f"   ⚠️ High memory pressure detected: {mem_stats.percent_used:.1f}%")
+
+            logger.info(f"   ✅ Batch {batch_num}/{total_batches} complete: {clip_embeddings_generated} CLIP embeddings generated so far")
+
+            # Update progress after each batch
+            await tracker.update_database_stats(
+                images_stored=images_processed,
+                sync_to_db=True
+            )
+
+        # ✅ OPTIMIZATION: Final batch upsert for remaining VECS records
+        if vecs_batch_records:
+            vecs_service = get_vecs_service()
+            batch_count = await vecs_service.batch_upsert_image_embeddings(vecs_batch_records)
+            logger.info(f"✅ Final batch upserted {batch_count} CLIP embeddings to VECS")
+            vecs_batch_records = []
+
+        # Don't overwrite tracker.images_stored - it was already set correctly from images_saved
+        # tracker.images_stored is the count of images saved to database (line 2570)
+        # images_processed is the count of images analyzed with Llama Vision (may be 0 if files don't exist)
+        await tracker._sync_to_database(stage="image_processing")
+
+        logger.info(f"✅ [STAGE 3] Image Processing Complete: {images_processed} images processed, {clip_embeddings_generated} CLIP embeddings generated, {specialized_embeddings_generated} specialized embeddings generated (batch upserted to VECS)")
+
+        # NOTE: Temporary file cleanup moved to admin panel cron job
+
+        # Create IMAGES_EXTRACTED checkpoint
+        await checkpoint_recovery_service.create_checkpoint(
             job_id=job_id,
-            page_count=page_count,
-            product_pages=product_pages,
-            focused_extraction=focused_extraction,
-            extract_categories=extract_categories,
-            component_manager=component_manager,
-            loaded_components=loaded_components,
-            tracker=tracker,
-            checkpoint_recovery_service=checkpoint_recovery_service,
-            resource_manager=resource_manager,
-            pdf_result_with_images=None
+            stage=CheckpointStage.IMAGES_EXTRACTED,
+            data={
+                "document_id": document_id,
+                "images_processed": images_processed,
+                "clip_embeddings_generated": clip_embeddings_generated,
+                "specialized_embeddings_generated": specialized_embeddings_generated,  # ✅ NEW: Track specialized embeddings
+                "images_by_page": {str(k): len(v) for k, v in images_by_page.items()}
+            },
+            metadata={
+                "total_images": images_processed,
+                "clip_embeddings": clip_embeddings_generated,
+                "specialized_embeddings": specialized_embeddings_generated,  # ✅ NEW: Add to metadata
+                "product_pages_with_images": len(images_by_page)
+            }
         )
+        logger.info(f"✅ Created IMAGES_EXTRACTED checkpoint for job {job_id}: {images_processed} images, {clip_embeddings_generated} CLIP embeddings, {specialized_embeddings_generated} specialized embeddings")
 
+        # LAZY LOADING: Unload LlamaIndex service after image processing to free memory
+        if "llamaindex_service" in loaded_components:
+            logger.info("🧹 Unloading LlamaIndex service after Stage 3...")
+            try:
+                await component_manager.unload("llamaindex_service")
+                loaded_components.remove("llamaindex_service")
+                logger.info("✅ LlamaIndex service unloaded, memory freed")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to unload LlamaIndex service: {e}")
 
-        # Stage 4: Product Creation & Linking (70-90%) - MODULAR VERSION
-        # All product creation logic moved to pdf_processing/stage_4_products.py
-        from app.api.pdf_processing.stage_4_products import process_stage_4_products
+        # Force garbage collection after image processing to free memory
+        import gc
+        gc.collect()
+        logger.info("💾 Memory freed after Stage 3 (Image Processing)")
 
-        stage_4_result = await process_stage_4_products(
+        # Stage 4: Product Creation & Linking (70-90%)
+        logger.info("🏭 [STAGE 4] Product Creation & Linking - Starting...")
+        await tracker.update_stage(ProcessingStage.FINALIZING, stage_name="product_creation")
+
+        from app.services.entity_linking_service import EntityLinkingService
+        from app.services.document_entity_service import DocumentEntityService
+
+        # Create products in database (with metadata)
+        products_created = 0
+        product_id_map = {}  # Map product name to product ID for entity linking
+
+        for product in catalog.products:
+            try:
+                # Use product.metadata field (new architecture - products + metadata inseparable)
+                metadata = product.metadata or {}
+
+                # Ensure page_range and confidence are in metadata
+                if 'page_range' not in metadata:
+                    metadata['page_range'] = product.page_range
+                if 'confidence' not in metadata:
+                    metadata['confidence'] = product.confidence
+
+                product_data = {
+                    'source_document_id': document_id,
+                    'workspace_id': workspace_id,
+                    'name': product.name,
+                    'description': product.description or '',
+                    'metadata': metadata  # ALL product metadata stored here
+                }
+
+                result = supabase.client.table('products').insert(product_data).execute()
+
+                if result.data and len(result.data) > 0:
+                    product_id = result.data[0]['id']
+                    product_id_map[product.name] = product_id
+                    products_created += 1
+                    logger.info(f"   ✅ Created product: {product.name} (ID: {product_id})")
+
+            except Exception as e:
+                logger.error(f"Failed to create product {product.name}: {e}")
+
+        tracker.products_created = products_created
+        logger.info(f"   Products created: {products_created}")
+
+        # Save document entities (certificates, logos, specifications) if discovered
+        document_entity_service = DocumentEntityService(supabase.client)
+        entities_created = 0
+        entity_id_map = {}  # Map entity name to entity ID
+
+        # Combine all entities from catalog
+        all_entities = []
+
+        if "certificates" in extract_categories and catalog.certificates:
+            from app.services.document_entity_service import DocumentEntity
+            for cert in catalog.certificates:
+                entity = DocumentEntity(
+                    entity_type="certificate",
+                    name=cert.name,
+                    page_range=cert.page_range,
+                    description=f"{cert.certificate_type or 'Certificate'} issued by {cert.issuer or 'Unknown'}",
+                    metadata={
+                        "certificate_type": cert.certificate_type,
+                        "issuer": cert.issuer,
+                        "issue_date": cert.issue_date,
+                        "expiry_date": cert.expiry_date,
+                        "standards": cert.standards or [],
+                        "confidence": cert.confidence
+                    }
+                )
+                all_entities.append(entity)
+
+        if "logos" in extract_categories and catalog.logos:
+            from app.services.document_entity_service import DocumentEntity
+            for logo in catalog.logos:
+                entity = DocumentEntity(
+                    entity_type="logo",
+                    name=logo.name,
+                    page_range=logo.page_range,
+                    description=logo.description,
+                    metadata={
+                        "logo_type": logo.logo_type,
+                        "confidence": logo.confidence
+                    }
+                )
+                all_entities.append(entity)
+
+        if "specifications" in extract_categories and catalog.specifications:
+            from app.services.document_entity_service import DocumentEntity
+            for spec in catalog.specifications:
+                entity = DocumentEntity(
+                    entity_type="specification",
+                    name=spec.name,
+                    page_range=spec.page_range,
+                    description=spec.description,
+                    metadata={
+                        "spec_type": spec.spec_type,
+                        "confidence": spec.confidence
+                    }
+                )
+                all_entities.append(entity)
+
+        # Save all entities to database
+        if all_entities:
+            entity_ids = await document_entity_service.save_entities(
+                entities=all_entities,
+                source_document_id=document_id,
+                workspace_id=workspace_id
+            )
+            entities_created = len(entity_ids)
+
+            # Map entity names to IDs
+            for entity, entity_id in zip(all_entities, entity_ids):
+                entity_id_map[entity.name] = entity_id
+
+            logger.info(f"   Document entities created: {entities_created}")
+            logger.info(f"     - Certificates: {len([e for e in all_entities if e.entity_type == 'certificate'])}")
+            logger.info(f"     - Logos: {len([e for e in all_entities if e.entity_type == 'logo'])}")
+            logger.info(f"     - Specifications: {len([e for e in all_entities if e.entity_type == 'specification'])}")
+
+        # Link entities (images, chunks, products)
+        linking_service = EntityLinkingService()
+        linking_results = await linking_service.link_all_entities(
             document_id=document_id,
-            workspace_id=workspace_id,
-            job_id=job_id,
-            catalog=catalog,
-            extract_categories=extract_categories,
-            tracker=tracker,
-            checkpoint_recovery_service=checkpoint_recovery_service,
-            supabase=supabase,
-            logger=logger
+            catalog=catalog
         )
 
-        products_created = stage_4_result["products_created"]
-        entities_created = stage_4_result["entities_created"]
-        linking_results = stage_4_result["linking_results"]
+        logger.info(f"   Entity linking complete:")
+        logger.info(f"     - Image-to-product links: {linking_results['image_product_links']}")
+        logger.info(f"     - Image-to-chunk links: {linking_results['image_chunk_links']}")
 
-        # Stage 5: Quality Enhancement (90-100%) - MODULAR VERSION
-        # All quality enhancement logic moved to pdf_processing/stage_5_quality.py
-        from app.api.pdf_processing.stage_5_quality import process_stage_5_quality
+        await tracker._sync_to_database(stage="product_creation")
 
-        stage_5_result = await process_stage_5_quality(
-            document_id=document_id,
+        logger.info(f"✅ [STAGE 4] Product Creation & Linking Complete")
+
+        # Create PRODUCTS_CREATED checkpoint
+        checkpoint_metadata = {
+            "entity_links": linking_results,
+            "product_names": [p.name for p in catalog.products]
+        }
+
+        # Add document entity info if any were created
+        if entities_created > 0:
+            checkpoint_metadata["document_entities_created"] = entities_created
+            checkpoint_metadata["entity_types"] = {
+                "certificates": len([e for e in all_entities if e.entity_type == 'certificate']),
+                "logos": len([e for e in all_entities if e.entity_type == 'logo']),
+                "specifications": len([e for e in all_entities if e.entity_type == 'specification'])
+            }
+
+        await checkpoint_recovery_service.create_checkpoint(
             job_id=job_id,
-            workspace_id=workspace_id,
-            catalog=catalog,
-            product_pages=product_pages,
-            products_created=products_created,
-            images_processed=images_processed,
-            focused_extraction=focused_extraction,
-            start_time=start_time,
-            tracker=tracker,
-            checkpoint_recovery_service=checkpoint_recovery_service,
-            component_manager=component_manager,
-            loaded_components=loaded_components,
-            claude_breaker=claude_breaker,
-            logger=logger
+            stage=CheckpointStage.PRODUCTS_CREATED,
+            data={
+                "document_id": document_id,
+                "products_created": products_created,
+                "document_entities_created": entities_created
+            },
+            metadata=checkpoint_metadata
         )
+        logger.info(f"✅ Created PRODUCTS_CREATED checkpoint for job {job_id}")
 
-        result = stage_5_result["result"]
-        validation_results = stage_5_result["validation_results"]
+        # Force garbage collection after product creation to free memory
+        import gc
+        gc.collect()
+        logger.info("💾 Memory freed after Stage 4 (Product Creation)")
+
+        # Stage 5: Quality Enhancement (90-100%) - ASYNC
+        logger.info("⚡ [STAGE 5] Quality Enhancement - Starting (Async)...")
+        await tracker.update_stage(ProcessingStage.COMPLETED, stage_name="quality_enhancement")
+
+        from app.services.claude_validation_service import ClaudeValidationService
+
+        # Process Claude validation queue (for low-scoring images) with circuit breaker
+        claude_service = ClaudeValidationService()
+        try:
+            validation_results = await claude_breaker.call(
+                claude_service.process_validation_queue,
+                document_id=document_id
+            )
+            logger.info(f"   Claude validation: {validation_results.get('validated', 0)} images validated")
+            logger.info(f"   Average quality improvement: {validation_results.get('avg_improvement', 0):.2f}")
+        except CircuitBreakerError as cb_error:
+            logger.warning(f"⚠️ Claude validation skipped (circuit breaker open): {cb_error}")
+            validation_results = {'validated': 0, 'avg_improvement': 0}
+
+        await tracker._sync_to_database(stage="quality_enhancement")
+
+        # NOTE: Cleanup moved to admin panel cron job
+
+        # Mark job as complete
+        result = {
+            "document_id": document_id,
+            "products_discovered": len(catalog.products),
+            "products_created": products_created,
+            "product_names": [p.name for p in catalog.products],
+            "chunks_created": tracker.chunks_created,
+            "images_processed": images_processed,
+            "claude_validations": validation_results.get('validated', 0),
+            "focused_extraction": focused_extraction,
+            "pages_processed": len(product_pages),
+            "pages_skipped": pdf_result.page_count - len(product_pages),
+            "confidence_score": catalog.confidence_score
+        }
+
+        await tracker.complete_job(result=result)
+
+        # Create COMPLETED checkpoint
+        await checkpoint_recovery_service.create_checkpoint(
+            job_id=job_id,
+            stage=CheckpointStage.COMPLETED,
+            data={
+                "document_id": document_id,
+                "products_created": products_created,
+                "chunks_created": tracker.chunks_created,
+                "images_processed": images_processed
+            },
+            metadata={
+                "processing_time": (datetime.utcnow() - start_time).total_seconds(),
+                "confidence_score": catalog.confidence_score,
+                "focused_extraction": focused_extraction,
+                "pages_processed": len(product_pages)
+            }
+        )
+        logger.info(f"✅ Created COMPLETED checkpoint for job {job_id}")
+
+        logger.info("=" * 80)
+        logger.info(f"✅ [PRODUCT DISCOVERY PIPELINE] COMPLETED")
+        logger.info(f"   Products: {products_created}")
+        logger.info(f"   Chunks: {tracker.chunks_created}")
+        logger.info(f"   Images: {images_processed}")
+        logger.info("=" * 80)
+
+        # LAZY LOADING: Unload all loaded components after successful completion
+        logger.info("🧹 Unloading all loaded components...")
+        for component_name in loaded_components:
+            try:
+                await component_manager.unload(component_name)
+                logger.info(f"✅ Unloaded {component_name}")
+            except Exception as unload_error:
+                logger.warning(f"⚠️ Failed to unload {component_name}: {unload_error}")
+
+        # Force garbage collection
+        import gc
+        gc.collect()
+        logger.info("✅ All components unloaded, memory freed")
+
+        # EVENT-BASED CLEANUP: Release temp PDF file and cleanup
+        from app.utils.resource_manager import get_resource_manager
+        resource_manager = get_resource_manager()
+
+        # Release the temp PDF file
+        await resource_manager.release_resource(f"temp_pdf_{document_id}", job_id)
+
+        # Cleanup all ready resources
+        cleaned_count = await resource_manager.cleanup_ready_resources()
+        logger.info(f"✅ Cleaned up {cleaned_count} temporary files")
 
     except Exception as e:
         logger.error(f"❌ [PRODUCT DISCOVERY PIPELINE] FAILED: {e}", exc_info=True)
