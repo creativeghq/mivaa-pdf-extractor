@@ -1120,28 +1120,60 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
             all_product_pages = set()
             product_page_mapping = {}  # Map product index to its pages
 
-            # 🔍 VALIDATION: Get PDF page count to validate page ranges
+            # 🔍 VALIDATION: Get PDF page count and detect 2-page spread layout
             import fitz
             doc = fitz.open(pdf_path)
             pdf_page_count = doc.page_count
+
+            # 📐 AUTO-DETECT 2-PAGE SPREADS: Check if PDF uses 2 pages per sheet layout
+            # This happens when catalog pages are displayed side-by-side (e.g., pages 1-2 on one PDF page)
+            pages_per_sheet = 1  # Default: 1 catalog page = 1 PDF page
+
+            if pdf_page_count > 0:
+                # Get first page dimensions
+                first_page = doc[0]
+                rect = first_page.rect
+                width = rect.width
+                height = rect.height
+                aspect_ratio = width / height if height > 0 else 1.0
+
+                # Detect 2-page spread layout:
+                # - Landscape orientation (width > height)
+                # - Aspect ratio close to 2:1 (between 1.7 and 2.3 to account for margins)
+                if width > height and 1.7 <= aspect_ratio <= 2.3:
+                    pages_per_sheet = 2
+                    self.logger.info(f"   📐 Detected 2-page spread layout (aspect ratio: {aspect_ratio:.2f})")
+                    self.logger.info(f"      → Catalog pages 1-{pdf_page_count * 2} mapped to PDF pages 1-{pdf_page_count}")
+                else:
+                    self.logger.info(f"   📐 Standard layout detected (aspect ratio: {aspect_ratio:.2f})")
+
             doc.close()
-            self.logger.info(f"   📄 PDF has {pdf_page_count} pages")
+            self.logger.info(f"   📄 PDF has {pdf_page_count} pages ({pdf_page_count * pages_per_sheet} catalog pages)")
 
             for i, product in enumerate(catalog.products):
-                # Convert to 0-based indices and validate against PDF page count
+                # Convert catalog pages to PDF pages and validate
                 page_indices = []
                 invalid_pages = []
 
-                for p in product.page_range:
-                    if p > 0:
-                        page_idx = p - 1  # Convert to 0-based
+                for catalog_page in product.page_range:
+                    if catalog_page > 0:
+                        # 📐 CONVERT CATALOG PAGE TO PDF PAGE
+                        # For 2-page spreads: catalog page 84 → PDF page 42
+                        # For standard layout: catalog page 84 → PDF page 84
+                        pdf_page = (catalog_page + pages_per_sheet - 1) // pages_per_sheet
+                        page_idx = pdf_page - 1  # Convert to 0-based
+
+                        # Validate against actual PDF page count
                         if page_idx < pdf_page_count:
                             page_indices.append(page_idx)
                         else:
-                            invalid_pages.append(p)
+                            invalid_pages.append(catalog_page)
 
                 if invalid_pages:
-                    self.logger.warning(f"   ⚠️ Product '{product.name}' has invalid pages {invalid_pages} (PDF has {pdf_page_count} pages) - skipping these pages")
+                    if pages_per_sheet == 2:
+                        self.logger.warning(f"   ⚠️ Product '{product.name}' has invalid catalog pages {invalid_pages} (PDF has {pdf_page_count} pages = {pdf_page_count * 2} catalog pages) - skipping these pages")
+                    else:
+                        self.logger.warning(f"   ⚠️ Product '{product.name}' has invalid pages {invalid_pages} (PDF has {pdf_page_count} pages) - skipping these pages")
 
                 if page_indices:
                     all_product_pages.update(page_indices)
@@ -1182,8 +1214,12 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                     page_indices = product_page_mapping.get(i)
 
                     if not page_indices:
-                        self.logger.warning(f"   ⚠️ Product '{product.name}' has no valid pages in this PDF - REMOVING from catalog")
-                        self.logger.warning(f"      Original page_range: {product.page_range} (PDF has {pdf_page_count} pages)")
+                        if pages_per_sheet == 2:
+                            self.logger.warning(f"   ⚠️ Product '{product.name}' has no valid pages in this PDF - REMOVING from catalog")
+                            self.logger.warning(f"      Catalog pages: {product.page_range} (PDF has {pdf_page_count} pages = {pdf_page_count * 2} catalog pages)")
+                        else:
+                            self.logger.warning(f"   ⚠️ Product '{product.name}' has no valid pages in this PDF - REMOVING from catalog")
+                            self.logger.warning(f"      Original page_range: {product.page_range} (PDF has {pdf_page_count} pages)")
                         # DO NOT add to enriched_products - this product doesn't exist in this PDF
                         continue
 
