@@ -1650,158 +1650,6 @@ async def get_relevancies(
         )
 
 
-@router.get("/product-image-relationships")
-async def get_product_image_relationships(
-    document_id: Optional[str] = Query(None, description="Filter by document ID"),
-    product_id: Optional[str] = Query(None, description="Filter by product ID"),
-    limit: int = Query(100, ge=1, le=1000, description="Maximum number of relationships to return"),
-    offset: int = Query(0, ge=0, description="Number of relationships to skip"),
-    min_score: float = Query(0.0, ge=0.0, le=1.0, description="Minimum relevance score")
-):
-    """
-    Get product-image relevancy relationships.
-
-    Args:
-        document_id: Document ID to filter relationships
-        product_id: Product ID to filter relationships
-        limit: Maximum number of relationships to return
-        offset: Pagination offset
-        min_score: Minimum relevance score threshold
-
-    Returns:
-        List of product-image relationships with relevance scores
-    """
-    try:
-        supabase_client = get_supabase_client()
-
-        # Build query
-        query = supabase_client.client.table('product_image_relationships').select(
-            '*, products!inner(id, name, source_document_id), document_images(image_url, caption, page_number)'
-        )
-
-        if document_id:
-            query = query.eq('products.source_document_id', document_id)
-
-        if product_id:
-            query = query.eq('product_id', product_id)
-
-        if min_score > 0:
-            query = query.gte('relevance_score', min_score)
-
-        query = query.order('relevance_score', desc=True)
-        query = query.range(offset, offset + limit - 1)
-        result = query.execute()
-
-        relationships = result.data if result.data else []
-
-        # Calculate statistics
-        relationship_types = {}
-        for rel in relationships:
-            rel_type = rel.get('relationship_type', 'unknown')
-            if rel_type not in relationship_types:
-                relationship_types[rel_type] = 0
-            relationship_types[rel_type] += 1
-
-        return JSONResponse(content={
-            "document_id": document_id,
-            "product_id": product_id,
-            "relationships": relationships,
-            "count": len(relationships),
-            "limit": limit,
-            "offset": offset,
-            "statistics": {
-                "total_relationships": len(relationships),
-                "by_relationship_type": relationship_types,
-                "min_score_filter": min_score
-            }
-        })
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get product-image relationships: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve product-image relationships: {str(e)}"
-        )
-
-
-@router.get("/chunk-product-relationships")
-async def get_chunk_product_relationships(
-    document_id: Optional[str] = Query(None, description="Filter by document ID"),
-    product_id: Optional[str] = Query(None, description="Filter by product ID"),
-    limit: int = Query(100, ge=1, le=1000, description="Maximum number of relationships to return"),
-    offset: int = Query(0, ge=0, description="Number of relationships to skip"),
-    min_score: float = Query(0.0, ge=0.0, le=1.0, description="Minimum relevance score")
-):
-    """
-    Get chunk-product relevancy relationships.
-
-    Args:
-        document_id: Document ID to filter relationships
-        product_id: Product ID to filter relationships
-        limit: Maximum number of relationships to return
-        offset: Pagination offset
-        min_score: Minimum relevance score threshold
-
-    Returns:
-        List of chunk-product relationships with relevance scores
-    """
-    try:
-        supabase_client = get_supabase_client()
-
-        # Build query
-        query = supabase_client.client.table('chunk_product_relationships').select(
-            '*, document_chunks!inner(document_id, content, chunk_index), products(id, name)'
-        )
-
-        if document_id:
-            query = query.eq('document_chunks.document_id', document_id)
-
-        if product_id:
-            query = query.eq('product_id', product_id)
-
-        if min_score > 0:
-            query = query.gte('relevance_score', min_score)
-
-        query = query.order('relevance_score', desc=True)
-        query = query.range(offset, offset + limit - 1)
-        result = query.execute()
-
-        relationships = result.data if result.data else []
-
-        # Calculate statistics
-        relationship_types = {}
-        for rel in relationships:
-            rel_type = rel.get('relationship_type', 'unknown')
-            if rel_type not in relationship_types:
-                relationship_types[rel_type] = 0
-            relationship_types[rel_type] += 1
-
-        return JSONResponse(content={
-            "document_id": document_id,
-            "product_id": product_id,
-            "relationships": relationships,
-            "count": len(relationships),
-            "limit": limit,
-            "offset": offset,
-            "statistics": {
-                "total_relationships": len(relationships),
-                "by_relationship_type": relationship_types,
-                "min_score_filter": min_score
-            }
-        })
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get chunk-product relationships: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve chunk-product relationships: {str(e)}"
-        )
-
-
 # REMOVED: Duplicate endpoint - use /api/admin/jobs/{job_id}/status instead
 # This endpoint was conflicting with admin.py and never being reached due to router registration order
 
@@ -2666,7 +2514,8 @@ async def process_document_with_discovery(
     Stage 2: Chunking (30-50%) - Create chunks for extracted content
     Stage 3: Image Processing (50-70%) - Extract images from specified categories only
     Stage 4: Product Creation (70-90%) - Create products from discovery
-    Stage 5: Quality Enhancement (90-100%) - Claude validation (async)
+    Stage 5: Quality Enhancement (90-95%) - Claude validation (async)
+    Stage 6: Relationship Creation (95-100%) - Create chunk-image and product-image relationships
 
     Args:
         focused_extraction: If True (default), only process pages/images from extract_categories.
@@ -4272,6 +4121,48 @@ Respond ONLY with this JSON format:
 
         await tracker._sync_to_database(stage="quality_enhancement")
 
+        # Stage 6: Relationship Creation (95-100%)
+        logger.info("🔗 [STAGE 6] Relationship Creation - Starting...")
+        await tracker.update_stage(ProcessingStage.COMPLETED, stage_name="relationship_creation")
+
+        chunk_image_relationships = 0
+        product_image_relationships = 0
+
+        # Only create relationships if we have chunks and images
+        if tracker.chunks_created > 0 and images_processed > 0:
+            try:
+                from app.services.relevancy_service import RelevancyService
+                relevancy_service = RelevancyService()
+
+                # Create chunk-to-image relationships based on embedding similarity
+                logger.info(f"   Creating chunk-image relationships (similarity threshold: 0.5)...")
+                chunk_image_relationships = await relevancy_service.create_chunk_image_relationships(
+                    document_id=document_id,
+                    similarity_threshold=0.5
+                )
+                logger.info(f"   ✅ Created {chunk_image_relationships} chunk-image relationships")
+
+                # Create product-to-image relationships if we have products
+                if products_created > 0 and product_ids:
+                    logger.info(f"   Creating product-image relationships...")
+                    product_image_relationships = await relevancy_service.create_product_image_relationships(
+                        product_ids=product_ids,
+                        document_id=document_id
+                    )
+                    logger.info(f"   ✅ Created {product_image_relationships} product-image relationships")
+
+                logger.info(f"✅ [STAGE 6] Relationship Creation Complete:")
+                logger.info(f"   Chunk-Image: {chunk_image_relationships}")
+                logger.info(f"   Product-Image: {product_image_relationships}")
+
+            except Exception as rel_error:
+                logger.error(f"❌ Relationship creation failed: {rel_error}", exc_info=True)
+                # Don't fail the entire job if relationships fail
+        else:
+            logger.info("⏭️ [STAGE 6] Skipping relationships (no chunks or images)")
+
+        await tracker._sync_to_database(stage="relationship_creation")
+
         # NOTE: Cleanup moved to admin panel cron job
 
         # Mark job as complete
@@ -4283,6 +4174,8 @@ Respond ONLY with this JSON format:
             "chunks_created": tracker.chunks_created,
             "images_processed": images_processed,
             "claude_validations": validation_results.get('validated', 0),
+            "chunk_image_relationships": chunk_image_relationships,
+            "product_image_relationships": product_image_relationships,
             "focused_extraction": focused_extraction,
             "pages_processed": len(product_pages),
             "pages_skipped": pdf_result.page_count - len(product_pages),
