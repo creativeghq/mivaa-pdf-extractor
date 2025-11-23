@@ -2546,6 +2546,17 @@ async def process_document_with_discovery(
         from app.services.progress_tracker import ProgressTracker
         from app.schemas.jobs import ProcessingStage
         from app.services.checkpoint_recovery_service import checkpoint_recovery_service, ProcessingStage as CheckpointStage
+        from app.services.supabase_client import get_supabase_client
+
+        # Import modular stage processors
+        from app.api.pdf_processing import (
+            process_stage_0_discovery,
+            process_stage_1_focused_extraction,
+            process_stage_2_chunking,
+            process_stage_3_images,
+            process_stage_4_products,
+            process_stage_5_quality
+        )
 
         tracker = ProgressTracker(
             job_id=job_id,
@@ -2577,151 +2588,33 @@ async def process_document_with_discovery(
         )
         logger.info(f"✅ Created INITIALIZED checkpoint for job {job_id}")
 
-        # Stage 0: Product Discovery (0-15%)
-        logger.info("🔍 [STAGE 0] Product Discovery - Starting...")
-        await tracker.update_stage(ProcessingStage.INITIALIZING, stage_name="product_discovery")
+        # Get Supabase client for stages
+        supabase = get_supabase_client()
 
-        from app.services.product_discovery_service import ProductDiscoveryService
-        from app.services.pdf_processor import PDFProcessor
-        from app.services.supabase_client import get_supabase_client
-        import tempfile
-        import aiofiles
+        # ========================================
+        # STAGE 0: Product Discovery (0-15%)
+        # ========================================
+        stage_0_result = await process_stage_0_discovery(
+            file_content=file_content,
+            document_id=document_id,
+            workspace_id=workspace_id,
+            job_id=job_id,
+            filename=filename,
+            title=title or filename,
+            description=description or "",
+            extract_categories=extract_categories,
+            discovery_model=discovery_model,
+            agent_prompt=agent_prompt or "",
+            enable_prompt_enhancement=enable_prompt_enhancement,
+            tracker=tracker,
+            checkpoint_recovery_service=checkpoint_recovery_service,
+            logger=logger
+        )
 
-        # Save PDF to temporary file for two-stage discovery
-        # This allows ProductDiscoveryService to extract specific page ranges
-        temp_pdf_path = None
-        try:
-            # EVENT-BASED CLEANUP: Register resource manager
-            from app.utils.resource_manager import get_resource_manager
-            resource_manager = get_resource_manager()
-
-            # Create temp file that persists during processing
-            temp_fd, temp_pdf_path = tempfile.mkstemp(suffix='.pdf', prefix=f'{document_id}_')
-            os.close(temp_fd)  # Close file descriptor, we'll write with aiofiles
-
-            # Write PDF bytes to temp file
-            async with aiofiles.open(temp_pdf_path, 'wb') as f:
-                await f.write(file_content)
-
-            logger.info(f"📁 Saved PDF to temp file: {temp_pdf_path}")
-
-            # Register temp file with resource manager
-            await resource_manager.register_resource(
-                resource_id=f"temp_pdf_{document_id}",
-                resource_type="file",
-                path=temp_pdf_path,
-                job_id=job_id,
-                metadata={"document_id": document_id, "filename": filename}
-            )
-
-            # Mark as IN_USE before PyMuPDF opens it
-            await resource_manager.mark_in_use(f"temp_pdf_{document_id}", job_id)
-
-            # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on document size
-            file_size_mb = len(file_content) / (1024 * 1024)
-
-            # Quick page count check (fast, doesn't extract content)
-            import fitz
-            quick_doc = fitz.open(temp_pdf_path)
-            page_count = len(quick_doc)
-            quick_doc.close()
-
-            # Calculate progressive timeout for PDF extraction
-            pdf_extraction_timeout = ProgressiveTimeoutStrategy.calculate_pdf_extraction_timeout(
-                page_count=page_count,
-                file_size_mb=file_size_mb
-            )
-            logger.info(f"📊 Document: {page_count} pages, {file_size_mb:.1f} MB → timeout: {pdf_extraction_timeout:.0f}s")
-
-            # Extract PDF text first (with progressive timeout guard)
-            pdf_processor = PDFProcessor()
-            pdf_result = await with_timeout(
-                pdf_processor.process_pdf_from_bytes(
-                    pdf_bytes=file_content,
-                    document_id=document_id,
-                    processing_options={'extract_images': False, 'extract_tables': False}
-                ),
-                timeout_seconds=pdf_extraction_timeout,
-                operation_name="PDF text extraction"
-            )
-
-            # Create processed_documents record IMMEDIATELY (required for job_progress foreign key)
-            # This MUST happen BEFORE any _sync_to_database() calls
-            supabase = get_supabase_client()
-            try:
-                supabase.client.table('processed_documents').upsert({
-                    "id": document_id,
-                    "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
-                    "pdf_document_id": document_id,
-                    "content": pdf_result.markdown_content or "",
-                    "processing_status": "processing",
-                    "metadata": {
-                        "filename": filename,
-                        "file_size": len(file_content),
-                        "page_count": pdf_result.page_count
-                    }
-                }).execute()
-                logger.info(f"✅ Created processed_documents record for {document_id}")
-            except Exception as e:
-                logger.error(f"❌ CRITICAL: Failed to create processed_documents record: {e}")
-                raise  # Don't continue if this fails
-
-            # Update tracker with total pages
-            tracker.total_pages = pdf_result.page_count
-            for page_num in range(1, pdf_result.page_count + 1):
-                from app.schemas.jobs import PageProcessingStatus
-                tracker.page_statuses[page_num] = PageProcessingStatus(
-                    page_number=page_num,
-                    stage=ProcessingStage.INITIALIZING,  # Changed from PENDING (doesn't exist)
-                    status="pending"
-                )
-
-            # Run TWO-STAGE category-based discovery with prompt enhancement (with progressive timeout)
-            # Stage 0A: Index scan (first 50-100 pages)
-            # Stage 0B: Focused extraction (specific pages per product)
-
-            # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on pages and categories
-            discovery_timeout = ProgressiveTimeoutStrategy.calculate_product_discovery_timeout(
-                page_count=pdf_result.page_count,
-                categories=extract_categories
-            )
-            logger.info(f"📊 Product discovery: {pdf_result.page_count} pages, {len(extract_categories)} categories → timeout: {discovery_timeout:.0f}s")
-
-            # ✅ NORMALIZE: Map discovery_model to expected values
-            # ProductDiscoveryService expects: "claude", "gpt", or "haiku"
-            normalized_model = discovery_model.lower()
-            if "claude" in normalized_model or "sonnet" in normalized_model:
-                normalized_model = "claude"
-            elif "gpt" in normalized_model:
-                normalized_model = "gpt"
-            elif "haiku" in normalized_model:
-                normalized_model = "haiku"
-            else:
-                normalized_model = "claude"  # Default to Claude
-
-            logger.info(f"🤖 Discovery model normalized: '{discovery_model}' → '{normalized_model}'")
-
-            discovery_service = ProductDiscoveryService(model=normalized_model)
-            catalog = await with_timeout(
-                discovery_service.discover_products(
-                    pdf_content=file_content,
-                    pdf_text=pdf_result.markdown_content,
-                    total_pages=pdf_result.page_count,
-                    categories=extract_categories,
-                    agent_prompt=agent_prompt,  # From unified_upload request
-                    workspace_id=workspace_id,
-                    enable_prompt_enhancement=enable_prompt_enhancement,
-                    job_id=job_id,
-                    pdf_path=temp_pdf_path,  # ✅ NEW: Enable two-stage discovery
-                    tracker=tracker  # ✅ HEARTBEAT: Pass tracker for heartbeat updates
-                ),
-                timeout_seconds=discovery_timeout,
-                operation_name="Product discovery (Stage 0A + 0B)"
-            )
-
-        except Exception as discovery_error:
-            # Re-raise discovery errors to be handled by outer exception handler
-            raise discovery_error
+        # Extract results from Stage 0
+        catalog = stage_0_result['catalog']
+        pdf_result = stage_0_result['pdf_result']
+        temp_pdf_path = stage_0_result['temp_pdf_path']
 
         logger.info(f"✅ [STAGE 0] Discovery Complete:")
         logger.info(f"   Categories: {', '.join(extract_categories)}")
@@ -2733,10 +2626,6 @@ async def process_document_with_discovery(
         if "specifications" in extract_categories:
             logger.info(f"   Specifications: {len(catalog.specifications)}")
         logger.info(f"   Confidence: {catalog.confidence_score:.2f}")
-
-        # Update tracker
-        tracker.products_created = len(catalog.products)
-        await tracker._sync_to_database(stage="product_discovery")
 
         # Create PRODUCTS_DETECTED checkpoint (now includes all categories)
         checkpoint_data = {
@@ -2769,143 +2658,49 @@ async def process_document_with_discovery(
         )
         logger.info(f"✅ Created PRODUCTS_DETECTED checkpoint for job {job_id}")
 
-        # Stage 1: Focused Extraction (15-30%)
-        logger.info("🎯 [STAGE 1] Focused Extraction - Starting...")
-        await tracker.update_stage(ProcessingStage.EXTRACTING_TEXT, stage_name="focused_extraction")
-
-        product_pages = set()
-        if focused_extraction:
-            logger.info(f"   ENABLED - Processing ONLY pages with {len(catalog.products)} products")
-            invalid_pages_found = []
-            for product in catalog.products:
-                # ✅ CRITICAL FIX: Validate page numbers against PDF page count before adding
-                # Claude can hallucinate pages that don't exist (e.g., page 73 in a 71-page PDF)
-                valid_pages = [p for p in product.page_range if 1 <= p <= pdf_result.page_count]
-                invalid_pages = [p for p in product.page_range if p < 1 or p > pdf_result.page_count]
-
-                if invalid_pages:
-                    invalid_pages_found.extend(invalid_pages)
-                    logger.warning(f"   ⚠️ Product '{product.name}' has invalid pages {invalid_pages} (PDF has {pdf_result.page_count} pages) - skipping these pages")
-
-                product_pages.update(valid_pages)
-
-            if invalid_pages_found:
-                logger.warning(f"   ⚠️ Total invalid pages skipped: {sorted(set(invalid_pages_found))}")
-
-            pages_to_skip = set(range(1, pdf_result.page_count + 1)) - product_pages
-            for page_num in pages_to_skip:
-                tracker.skip_page_processing(page_num, "Not a product page (focused extraction)")
-
-            logger.info(f"   Product pages: {sorted(product_pages)}")
-            logger.info(f"   Processing: {len(product_pages)} / {pdf_result.page_count} pages")
-        else:
-            logger.info(f"   DISABLED - Processing ALL {pdf_result.page_count} pages")
-            product_pages = set(range(1, pdf_result.page_count + 1))
-
-        await tracker._sync_to_database(stage="focused_extraction")
-
-        # Stage 2: Chunking (30-50%)
-        logger.info("📝 [STAGE 2] Chunking - Starting...")
-        await tracker.update_stage(ProcessingStage.SAVING_TO_DATABASE, stage_name="chunking")
-
-        from app.services.llamaindex_service import LlamaIndexService
-        llamaindex_service = LlamaIndexService()
-
-        # Create document in database
-        doc_data = {
-            'id': document_id,
-            'workspace_id': "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",  # Default workspace
-            'filename': filename,
-            'content_type': 'application/pdf',
-            'file_size': len(file_content),
-            'file_path': f'pdf-documents/{document_id}/{filename}',
-            'processing_status': 'processing',
-            'metadata': {
-                'title': title or filename,
-                'description': description,
-                'page_count': pdf_result.page_count,
-                'tags': document_tags,
-                'products_discovered': len(catalog.products),
-                'product_names': [p.name for p in catalog.products],
-                'focused_extraction': focused_extraction,
-                'discovery_model': discovery_model
-            }
-        }
-        supabase.client.table('documents').upsert(doc_data).execute()
-        logger.info(f"✅ Created documents table record for {document_id}")
-
-        # Process chunks using LlamaIndex (with progressive timeout)
-        logger.info(f"📝 Calling index_pdf_content with {len(file_content)} bytes, product_pages={sorted(product_pages)}")
-        logger.info(f"📝 LlamaIndex service available: {llamaindex_service.available}")
-
-        # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on page count
-        chunking_timeout = ProgressiveTimeoutStrategy.calculate_chunking_timeout(
-            page_count=pdf_result.page_count,
-            chunk_size=chunk_size
-        )
-        logger.info(f"📊 Chunking: {pdf_result.page_count} pages, chunk_size={chunk_size} → timeout: {chunking_timeout:.0f}s")
-
-        chunk_result = await with_timeout(
-            llamaindex_service.index_pdf_content(
-                pdf_content=file_content,
-                document_id=document_id,
-                metadata={
-                    'filename': filename,
-                    'title': title,
-                    'page_count': pdf_result.page_count,
-                    'product_pages': sorted(product_pages),
-                    'chunk_size': chunk_size,
-                    'chunk_overlap': chunk_overlap,
-                    'workspace_id': workspace_id  # ✅ FIX: Pass workspace_id to chunks
-                }
-            ),
-            timeout_seconds=chunking_timeout,
-            operation_name="Chunking operation"
+        # ========================================
+        # STAGE 1: Focused Extraction (15-30%)
+        # ========================================
+        stage_1_result = await process_stage_1_focused_extraction(
+            catalog=catalog,
+            pdf_result=pdf_result,
+            focused_extraction=focused_extraction,
+            tracker=tracker,
+            logger=logger
         )
 
-        logger.info(f"📝 index_pdf_content returned: {chunk_result}")
+        # Extract results from Stage 1
+        product_pages = stage_1_result['product_pages']
 
-        tracker.chunks_created = chunk_result.get('chunks_created', 0)
-        # NOTE: Don't pass chunks_created to update_database_stats because it increments!
-        # We already set tracker.chunks_created directly above.
-        await tracker.update_database_stats(
-            kb_entries=tracker.chunks_created,
-            sync_to_db=True
+        # ========================================
+        # STAGE 2: Text Chunking (30-50%)
+        # ========================================
+        stage_2_result = await process_stage_2_chunking(
+            file_content=file_content,
+            document_id=document_id,
+            workspace_id=workspace_id,
+            job_id=job_id,
+            filename=filename,
+            title=title or filename,
+            description=description or "",
+            document_tags=document_tags,
+            catalog=catalog,
+            pdf_result=pdf_result,
+            product_pages=product_pages,
+            focused_extraction=focused_extraction,
+            discovery_model=discovery_model,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            tracker=tracker,
+            checkpoint_recovery_service=checkpoint_recovery_service,
+            supabase=supabase,
+            logger=logger
         )
+
+        # Extract results from Stage 2
+        chunk_result = stage_2_result['chunk_result']
 
         logger.info(f"✅ [STAGE 2] Chunking Complete: {tracker.chunks_created} chunks created")
-
-        # Create CHUNKS_CREATED checkpoint
-        await checkpoint_recovery_service.create_checkpoint(
-            job_id=job_id,
-            stage=CheckpointStage.CHUNKS_CREATED,
-            data={
-                "document_id": document_id,
-                "chunks_created": tracker.chunks_created,
-                "chunk_ids": chunk_result.get('chunk_ids', [])
-            },
-            metadata={
-                "chunk_size": chunk_size,
-                "chunk_overlap": chunk_overlap,
-                "product_pages": sorted(product_pages)
-            }
-        )
-        logger.info(f"✅ Created CHUNKS_CREATED checkpoint for job {job_id}")
-
-        # 🧹 CRITICAL MEMORY CLEANUP: Delete LlamaIndex instance to free 2-3 GB before Stage 3
-        logger.info("🧹 Deleting LlamaIndex instance after Stage 2 to free memory...")
-        try:
-            # Explicitly delete the instance and all its components
-            if 'llamaindex_service' in locals():
-                del llamaindex_service
-                logger.info("   ✅ LlamaIndex instance deleted")
-        except Exception as e:
-            logger.warning(f"   ⚠️ Error deleting LlamaIndex instance: {e}")
-
-        # Force garbage collection after chunking to free memory
-        import gc
-        gc.collect()
-        logger.info("💾 Memory freed after Stage 2 (Chunking) - LlamaIndex unloaded")
 
         # Stage 3: Image Processing (50-70%)
         logger.info("🖼️ [STAGE 3] Image Processing - Starting...")
