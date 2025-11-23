@@ -394,6 +394,7 @@ Respond ONLY with this JSON format:
                     continue
 
                 embeddings = embedding_result.get('embeddings', {})
+                model_used = embedding_result.get('model_used', 'unknown')
 
                 # Save visual CLIP embedding
                 visual_embedding = embeddings.get('visual_512')
@@ -412,6 +413,22 @@ Respond ONLY with this JSON format:
                         if retry_count < max_retries:
                             await asyncio.sleep(2 ** retry_count)
                         continue
+
+                    # Save to embeddings table for tracking
+                    try:
+                        embedding_data = {
+                            "entity_id": image_id,
+                            "entity_type": "image",
+                            "embedding_type": "visual_512",
+                            "embedding": visual_embedding,
+                            "dimension": len(visual_embedding),
+                            "model": model_used,
+                            "workspace_id": workspace_id
+                        }
+                        self.supabase_client.client.table('embeddings').insert(embedding_data).execute()
+                        logger.debug(f"   ✅ Saved visual embedding to embeddings table for {image_id}")
+                    except Exception as emb_error:
+                        logger.warning(f"   ⚠️ Failed to save to embeddings table: {emb_error}")
 
                     # Then save to VECS collection
                     await self.vecs_service.upsert_image_embedding(
@@ -436,6 +453,7 @@ Respond ONLY with this JSON format:
                     specialized_embeddings['material'] = embeddings.get('material_512')
 
                 if specialized_embeddings:
+                    # Save to VECS collections
                     await self.vecs_service.upsert_specialized_embeddings(
                         image_id=image_id,
                         embeddings=specialized_embeddings,
@@ -445,7 +463,25 @@ Respond ONLY with this JSON format:
                         }
                     )
 
-                logger.info(f"   ✅ Generated {1 + len(specialized_embeddings)} CLIP embeddings for image {image_id}")
+                    # Save to embeddings table for tracking
+                    for emb_type, emb_vector in specialized_embeddings.items():
+                        try:
+                            embedding_data = {
+                                "entity_id": image_id,
+                                "entity_type": "image",
+                                "embedding_type": f"{emb_type}_512",
+                                "embedding": emb_vector,
+                                "dimension": len(emb_vector),
+                                "model": model_used,
+                                "workspace_id": workspace_id
+                            }
+                            self.supabase_client.client.table('embeddings').insert(embedding_data).execute()
+                            logger.debug(f"   ✅ Saved {emb_type} embedding to embeddings table for {image_id}")
+                        except Exception as emb_error:
+                            logger.warning(f"   ⚠️ Failed to save {emb_type} to embeddings table: {emb_error}")
+
+                total_embeddings = 1 + len(specialized_embeddings)
+                logger.info(f"   ✅ Generated and saved {total_embeddings} CLIP embeddings for image {image_id}")
                 return (True, True, None)
 
             except Exception as e:

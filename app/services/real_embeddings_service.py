@@ -297,9 +297,15 @@ class RealEmbeddingsService:
         image_url: Optional[str],
         image_data: Optional[str]
     ) -> Optional[List[float]]:
-        """Generate visual embedding using Google SigLIP ViT-SO400M."""
+        """
+        Generate visual embedding using Google SigLIP ViT-SO400M.
+
+        Uses transformers library directly instead of sentence-transformers
+        to avoid 'hidden_size' attribute error with SiglipConfig.
+        """
         try:
-            from sentence_transformers import SentenceTransformer
+            from transformers import AutoModel, AutoProcessor
+            import torch
             import base64
             from PIL import Image
             import io
@@ -307,7 +313,10 @@ class RealEmbeddingsService:
 
             # Initialize SigLIP model (cached after first use)
             if not hasattr(self, '_siglip_model'):
-                self._siglip_model = SentenceTransformer('google/siglip-so400m-patch14-384')
+                self.logger.info("🔄 Loading SigLIP model: google/siglip-so400m-patch14-384")
+                self._siglip_model = AutoModel.from_pretrained('google/siglip-so400m-patch14-384')
+                self._siglip_processor = AutoProcessor.from_pretrained('google/siglip-so400m-patch14-384')
+                self._siglip_model.eval()  # Set to evaluation mode
                 self.logger.info("✅ Initialized SigLIP model: google/siglip-so400m-patch14-384")
 
             # Convert base64 image data to PIL Image
@@ -329,10 +338,14 @@ class RealEmbeddingsService:
                     pil_image = pil_image.convert('RGB')
 
                 # Generate embedding using SigLIP model
-                embedding = self._siglip_model.encode(pil_image, convert_to_numpy=True)
+                with torch.no_grad():
+                    inputs = self._siglip_processor(images=pil_image, return_tensors="pt")
+                    # Get image features from vision model
+                    image_features = self._siglip_model.get_image_features(**inputs)
 
-                # L2 normalize to unit vector
-                embedding = embedding / np.linalg.norm(embedding)
+                    # L2 normalize to unit vector
+                    embedding = image_features / image_features.norm(dim=-1, keepdim=True)
+                    embedding = embedding.squeeze().cpu().numpy()
 
                 self.logger.info(f"✅ Generated SigLIP visual embedding: {len(embedding)}D")
                 return embedding.tolist()
@@ -355,10 +368,14 @@ class RealEmbeddingsService:
                             pil_image = pil_image.convert('RGB')
 
                         # Generate embedding using SigLIP model
-                        embedding = self._siglip_model.encode(pil_image, convert_to_numpy=True)
+                        with torch.no_grad():
+                            inputs = self._siglip_processor(images=pil_image, return_tensors="pt")
+                            # Get image features from vision model
+                            image_features = self._siglip_model.get_image_features(**inputs)
 
-                        # L2 normalize to unit vector
-                        embedding = embedding / np.linalg.norm(embedding)
+                            # L2 normalize to unit vector
+                            embedding = image_features / image_features.norm(dim=-1, keepdim=True)
+                            embedding = embedding.squeeze().cpu().numpy()
 
                         self.logger.info(f"✅ Generated SigLIP visual embedding from URL: {len(embedding)}D")
                         return embedding.tolist()
