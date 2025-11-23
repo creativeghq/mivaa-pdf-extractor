@@ -36,47 +36,61 @@ class ImageProcessingService:
     async def classify_images(
         self,
         extracted_images: List[Dict[str, Any]],
-        confidence_threshold: float = 0.7,
+        confidence_threshold: float = 0.6,  # ✅ OPTIMIZED: Lowered from 0.7 to reduce Claude calls
         primary_model: str = "meta-llama/Llama-4-Scout-17B-16E-Instruct",
-        validation_model: str = "claude-sonnet-4-20250514"
+        validation_model: str = "claude-sonnet-4-20250514",
+        batch_size: int = 15  # ✅ NEW: Process images in batches to prevent OOM
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Classify images as material or non-material using Llama Vision + Claude validation.
 
+        MEMORY OPTIMIZATIONS:
+        - Processes images in batches (default: 15) to prevent OOM crashes
+        - Explicit garbage collection after each batch
+        - Cleanup of base64 strings after API calls
+        - Lower confidence threshold (0.6) to reduce expensive Claude validations
+
         Args:
             extracted_images: List of extracted image data
-            confidence_threshold: Threshold for Claude validation (default: 0.7)
+            confidence_threshold: Threshold for Claude validation (default: 0.6, lowered from 0.7)
             primary_model: Primary classification model (default: Llama Vision)
             validation_model: Validation model for uncertain cases (default: Claude Sonnet)
+            batch_size: Number of images to process per batch (default: 15)
 
         Returns:
             Tuple of (material_images, non_material_images)
         """
+        import gc  # ✅ NEW: For explicit garbage collection
+
         logger.info(f"🤖 Starting AI-based image classification for {len(extracted_images)} images...")
         logger.info(f"   Strategy: {primary_model} (fast filter) → {validation_model} (validation for uncertain cases)")
-        
+        logger.info(f"   Batch size: {batch_size} images per batch (memory optimization)")
+        logger.info(f"   Confidence threshold: {confidence_threshold} (lower = fewer Claude calls)")
+
         # Import AI services
         from app.services.ai_client_service import get_ai_client_service
         import httpx
         import json
-        
+
         ai_service = get_ai_client_service()
         together_api_key = os.getenv('TOGETHER_API_KEY')
-        
+
         async def classify_image_with_llama(image_path: str) -> Dict[str, Any]:
             """Fast classification using Llama Vision (TogetherAI)."""
+            image_bytes = None
+            image_base64 = None
             try:
                 with open(image_path, 'rb') as f:
                     image_bytes = f.read()
                     image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-                
+
                 classification_prompt = """Analyze this image and classify it as:
 1. MATERIAL: Shows building/interior materials (tiles, wood, fabric, stone, metal, flooring, wallpaper, etc.) - either close-up texture or in application
 2. NOT_MATERIAL: Faces, logos, charts, diagrams, text, decorative graphics, abstract patterns
 
 Respond ONLY with JSON:
 {"is_material": true/false, "confidence": 0.0-1.0, "reason": "brief explanation"}"""
-                
+
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     response = await client.post(
                         "https://api.together.xyz/v1/chat/completions",
@@ -97,17 +111,17 @@ Respond ONLY with JSON:
                             "temperature": 0.1
                         }
                     )
-                    
+
                     result_text = response.json()['choices'][0]['message']['content']
                     result = json.loads(result_text)
-                    
+
                     return {
                         'is_material': result.get('is_material', False),
                         'confidence': result.get('confidence', 0.5),
                         'reason': result.get('reason', 'Unknown'),
                         'model': 'llama'
                     }
-            
+
             except Exception as e:
                 logger.warning(f"⚠️ Llama classification failed for {image_path}: {e}")
                 return {
@@ -116,14 +130,20 @@ Respond ONLY with JSON:
                     'reason': f'Llama failed: {str(e)}',
                     'model': 'llama_failed'
                 }
-        
+            finally:
+                # ✅ NEW: Explicit cleanup to free memory
+                del image_bytes
+                del image_base64
+
         async def validate_with_claude(image_path: str) -> Dict[str, Any]:
             """Validate uncertain cases with Claude Sonnet."""
+            image_bytes = None
+            image_base64 = None
             try:
                 with open(image_path, 'rb') as f:
                     image_bytes = f.read()
                     image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-                
+
                 classification_prompt = """Analyze this image and classify it into ONE of these categories:
 
 1. **material_closeup**: Close-up photo showing material texture, surface, pattern, or finish (tiles, wood, fabric, stone, metal, etc.)
@@ -136,7 +156,7 @@ Respond ONLY with this JSON format:
     "confidence": 0.0-1.0,
     "reason": "brief explanation"
 }"""
-                
+
                 response = await ai_service.anthropic_async.messages.create(
                     model="claude-sonnet-4-20250514",
                     max_tokens=1024,
@@ -170,6 +190,10 @@ Respond ONLY with this JSON format:
                     'reason': f'Claude failed: {str(e)}',
                     'model': 'claude_failed'
                 }
+            finally:
+                # ✅ NEW: Explicit cleanup to free memory
+                del image_bytes
+                del image_base64
 
         # Two-stage classification with semaphores for rate limiting
         llama_semaphore = Semaphore(5)  # 5 concurrent Llama requests
@@ -195,25 +219,42 @@ Respond ONLY with this JSON format:
 
             return img_data
 
-        # Classify all images
-        classification_tasks = [classify_with_two_stage(img_data) for img_data in extracted_images]
-        classified_images = await asyncio.gather(*classification_tasks, return_exceptions=True)
-
-        # Filter into material and non-material
+        # ✅ NEW: Process images in batches to prevent OOM
         material_images = []
         non_material_images = []
+        total_images = len(extracted_images)
 
-        for img_data in classified_images:
-            if img_data is None or isinstance(img_data, Exception):
-                logger.debug(f"   ⚠️ Skipping image due to classification failure")
-                continue
+        for batch_start in range(0, total_images, batch_size):
+            batch_end = min(batch_start + batch_size, total_images)
+            batch_images = extracted_images[batch_start:batch_end]
+            batch_num = (batch_start // batch_size) + 1
+            total_batches = (total_images + batch_size - 1) // batch_size
 
-            classification = img_data.get('ai_classification', {})
-            if classification.get('is_material', False):
-                material_images.append(img_data)
-            else:
-                non_material_images.append(img_data)
-                logger.info(f"   🚫 Filtered out: {img_data.get('filename')} - {classification.get('classification')} ({classification.get('reason')})")
+            logger.info(f"📦 Processing batch {batch_num}/{total_batches} ({len(batch_images)} images)")
+
+            # Classify batch
+            classification_tasks = [classify_with_two_stage(img_data) for img_data in batch_images]
+            classified_batch = await asyncio.gather(*classification_tasks, return_exceptions=True)
+
+            # Filter batch results
+            for img_data in classified_batch:
+                if img_data is None or isinstance(img_data, Exception):
+                    logger.debug(f"   ⚠️ Skipping image due to classification failure")
+                    continue
+
+                classification = img_data.get('ai_classification', {})
+                if classification.get('is_material', False):
+                    material_images.append(img_data)
+                else:
+                    non_material_images.append(img_data)
+                    logger.debug(f"   🚫 Filtered out: {img_data.get('filename')} - {classification.get('classification')} ({classification.get('reason')})")
+
+            # ✅ NEW: Explicit garbage collection after each batch
+            del classification_tasks
+            del classified_batch
+            gc.collect()
+
+            logger.info(f"   ✅ Batch {batch_num}/{total_batches} complete: {len(material_images)} material, {len(non_material_images)} filtered")
 
         logger.info(f"✅ AI classification complete:")
         logger.info(f"   Material images: {len(material_images)}")
