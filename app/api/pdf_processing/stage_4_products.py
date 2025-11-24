@@ -15,6 +15,7 @@ async def process_stage_4_products(
     job_id: str,
     catalog: Any,
     extract_categories: list,
+    product_creation_model: str,
     tracker: Any,
     checkpoint_recovery_service: Any,
     supabase: Any,

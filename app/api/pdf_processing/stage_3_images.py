@@ -39,11 +39,12 @@ async def process_stage_3_images(
     product_pages: Set[int],
     focused_extraction: bool,
     extract_categories: List[str],
+    image_analysis_model: str,
     component_manager: Any,
     loaded_components: List[str],
     tracker: Any,
     checkpoint_recovery_service: Any,
-    resource_manager: Any,
+    logger: Any,
     pdf_result_with_images: Any = None
 ) -> Dict[str, Any]:
     """

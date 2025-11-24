@@ -20,6 +20,7 @@ async def process_stage_5_quality(
     products_created: int,
     images_processed: int,
     focused_extraction: bool,
+    quality_validation_model: str,
     start_time: datetime,
     tracker: Any,
     checkpoint_recovery_service: Any,
