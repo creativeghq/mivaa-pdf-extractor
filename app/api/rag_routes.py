@@ -2617,6 +2617,8 @@ async def process_document_with_discovery(
             file_size_mb=file_size_mb,
             focused_extraction=focused_extraction,
             tracker=tracker,
+            checkpoint_recovery_service=checkpoint_recovery_service,
+            job_id=job_id,
             logger=logger
         )
 

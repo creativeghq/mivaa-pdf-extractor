@@ -18,6 +18,8 @@ async def process_stage_1_focused_extraction(
     file_size_mb: float,
     focused_extraction: bool,
     tracker: Any,
+    checkpoint_recovery_service: Any,
+    job_id: str,
     logger: Any
 ) -> Dict[str, Any]:
     """
@@ -121,6 +123,24 @@ async def process_stage_1_focused_extraction(
         logger.info(f"✅ Updated processed_documents with extracted content")
     except Exception as e:
         logger.warning(f"⚠️ Failed to update processed_documents content: {e}")
+
+    # Create PDF_EXTRACTED checkpoint
+    from app.services.checkpoint_recovery_service import ProcessingStage as CheckpointStage
+    await checkpoint_recovery_service.create_checkpoint(
+        job_id=job_id,
+        stage=CheckpointStage.PDF_EXTRACTED,
+        data={
+            "document_id": document_id,
+            "product_pages": sorted(list(product_pages)),
+            "total_pages": page_count,
+            "extracted_pages": len(product_pages)
+        },
+        metadata={
+            "focused_extraction": focused_extraction,
+            "file_size_mb": file_size_mb
+        }
+    )
+    logger.info(f"✅ Created PDF_EXTRACTED checkpoint for job {job_id}")
 
     return {
         "product_pages": product_pages,
