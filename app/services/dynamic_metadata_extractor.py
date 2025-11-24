@@ -272,7 +272,14 @@ class DynamicMetadataExtractor:
             validation_result = self._validate_critical_fields(extracted_data)
 
             # Step 4: Auto-create material_properties entries for new discovered fields
-            await self._ensure_properties_exist(extracted_data)
+            try:
+                await self._ensure_properties_exist(extracted_data)
+            except AttributeError as ae:
+                self.logger.error(f"AttributeError in _ensure_properties_exist: {ae}")
+                self.logger.error(f"Available methods: {[m for m in dir(self) if not m.startswith('__')]}")
+                # Don't fail extraction if property creation fails
+            except Exception as prop_error:
+                self.logger.warning(f"Failed to auto-create material_properties: {prop_error}")
 
             # Step 5: Add metadata
             extracted_data["metadata"] = {
