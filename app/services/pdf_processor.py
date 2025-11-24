@@ -793,67 +793,74 @@ class PDFProcessor:
             doc = fitz.open(pdf_path)
             all_text = []
 
-            self.logger.info(f"Processing {len(page_numbers)} pages with OCR in batches")
+            self.logger.info(f"Processing {len(page_numbers)} pages with OCR ONE AT A TIME (memory-optimized)")
 
-            # Process pages in batches of 3 to manage memory and prevent OOM kills
-            # Slower but more stable - prioritize success over speed
-            batch_size = 3
-            for batch_idx in range(0, len(page_numbers), batch_size):
-                batch_pages = page_numbers[batch_idx:batch_idx + batch_size]
-                self.logger.info(f"OCR Batch {batch_idx // batch_size + 1}: Processing pages {[p+1 for p in batch_pages]}")
+            # ⚠️ CRITICAL FIX: Process pages ONE AT A TIME to prevent OOM kills
+            # EasyOCR model uses ~2-3GB RAM, processing multiple pages causes memory to grow uncontrollably
+            # This is MUCH slower but prevents service crashes
+            for idx, page_num in enumerate(page_numbers):
+                self.logger.info(f"OCR Page {idx + 1}/{len(page_numbers)}: Processing page {page_num + 1}")
 
-                for page_num in batch_pages:
-                    if page_num < len(doc):
-                        page = doc.load_page(page_num)
-
-                        # Render page as image (2.0x zoom for quality vs memory balance)
-                        mat = fitz.Matrix(2.0, 2.0)
-                        pix = page.get_pixmap(matrix=mat)
-                        img_data = pix.tobytes('png')
-
-                        # Explicitly free pixmap memory
-                        pix = None
-
-                        # Extract text with OCR
-                        try:
-                            from PIL import Image
-                            import io
-
-                            img = Image.open(io.BytesIO(img_data))
-                            ocr_results = ocr_service.extract_text_from_image(img)
-
-                            # Combine all OCR results for this page
-                            page_text = []
-                            for result in ocr_results:
-                                if result.text.strip() and result.confidence > 0.3:
-                                    page_text.append(result.text.strip())
-
-                            if page_text:
-                                combined_page_text = ' '.join(page_text)
-                                all_text.append(f"## Page {page_num + 1}\n\n{combined_page_text}\n")
-                                self.logger.debug(f"Page {page_num + 1}: Extracted {len(combined_page_text)} characters via OCR")
-
-                            # Explicitly free image memory
-                            img.close()
-                            img = None
-                            img_data = None
-
-                        except Exception as page_error:
-                            self.logger.warning(f"OCR failed for page {page_num + 1}: {page_error}")
-                            continue
-
-                # MEMORY CLEANUP: Defer gc.collect() until after doc.close()
-                # Calling gc.collect() here destroys PyMuPDF textpage objects still in use
-                self.logger.debug(f"Completed OCR batch {batch_idx // batch_size + 1}")
-
-                # Log memory usage after batch
+                # Log memory before page
                 try:
                     import psutil
                     process = psutil.Process()
                     mem_mb = process.memory_info().rss / 1024 / 1024
-                    self.logger.info(f"   💾 Memory after OCR batch {batch_idx // batch_size + 1}: {mem_mb:.1f} MB")
+                    self.logger.info(f"   💾 Memory before page: {mem_mb:.1f} MB")
                 except:
                     pass
+                if page_num < len(doc):
+                    page = doc.load_page(page_num)
+
+                    # Render page as image (2.0x zoom for quality vs memory balance)
+                    mat = fitz.Matrix(2.0, 2.0)
+                    pix = page.get_pixmap(matrix=mat)
+                    img_data = pix.tobytes('png')
+
+                    # Explicitly free pixmap memory
+                    pix = None
+
+                    # Extract text with OCR
+                    try:
+                        from PIL import Image
+                        import io
+
+                        img = Image.open(io.BytesIO(img_data))
+                        ocr_results = ocr_service.extract_text_from_image(img)
+
+                        # Combine all OCR results for this page
+                        page_text = []
+                        for result in ocr_results:
+                            if result.text.strip() and result.confidence > 0.3:
+                                page_text.append(result.text.strip())
+
+                        if page_text:
+                            combined_page_text = ' '.join(page_text)
+                            all_text.append(f"## Page {page_num + 1}\n\n{combined_page_text}\n")
+                            self.logger.debug(f"Page {page_num + 1}: Extracted {len(combined_page_text)} characters via OCR")
+
+                        # Explicitly free image memory
+                        img.close()
+                        img = None
+                        img_data = None
+
+                    except Exception as page_error:
+                        self.logger.warning(f"OCR failed for page {page_num + 1}: {page_error}")
+                        continue
+
+                    # ⚠️ CRITICAL: Aggressive memory cleanup after EACH page
+                    # Force garbage collection to free EasyOCR temporary objects
+                    import gc
+                    gc.collect()
+
+                    # Log memory usage after page
+                    try:
+                        import psutil
+                        process = psutil.Process()
+                        mem_mb = process.memory_info().rss / 1024 / 1024
+                        self.logger.info(f"   💾 Memory after page {page_num + 1}: {mem_mb:.1f} MB")
+                    except:
+                        pass
 
             doc.close()
 
@@ -904,93 +911,93 @@ class PDFProcessor:
                 # Process all pages for complete extraction
                 page_range = list(range(len(doc)))
 
-            self.logger.info(f"Processing {len(page_range)} pages with OCR in batches")
+            self.logger.info(f"Processing {len(page_range)} pages with OCR ONE AT A TIME (memory-optimized)")
 
-            # Process in batches of 3 pages to manage memory and prevent OOM kills
-            # Slower but more stable - prioritize success over speed
-            batch_size = 3
-            total_batches = (len(page_range) + batch_size - 1) // batch_size
+            # ⚠️ CRITICAL FIX: Process pages ONE AT A TIME to prevent OOM kills
+            # EasyOCR model uses ~2-3GB RAM, processing multiple pages causes memory to grow uncontrollably
+            # This is MUCH slower but prevents service crashes
+            for idx, page_num in enumerate(page_range):
+                self.logger.info(f"OCR Page {idx + 1}/{len(page_range)}: Processing page {page_num + 1}")
 
-            for batch_idx in range(0, len(page_range), batch_size):
-                batch_end = min(batch_idx + batch_size, len(page_range))
-                batch_num = batch_idx // batch_size + 1
-                self.logger.info(f"OCR Batch {batch_num}/{total_batches}: Processing pages {batch_idx + 1}-{batch_end}")
-
-                for i in range(batch_idx, batch_end):
-                    page_num = page_range[i]
-                    if page_num < len(doc):
-                        page = doc.load_page(page_num)
-
-                        # Render page as image (reduced zoom to save memory)
-                        mat = fitz.Matrix(2.0, 2.0)  # 2.0x zoom (reduced from 2.5x to save memory)
-                        pix = page.get_pixmap(matrix=mat)
-                        img_data = pix.tobytes('png')
-
-                        # Explicitly free pixmap memory
-                        pix = None
-
-                        # Extract text with OCR
-                        try:
-                            from PIL import Image
-                            import io
-
-                            img = Image.open(io.BytesIO(img_data))
-                            ocr_results = ocr_service.extract_text_from_image(img)
-
-                            # Combine all OCR results for this page
-                            page_text = []
-                            for result in ocr_results:
-                                if result.text.strip() and result.confidence > 0.3:
-                                    page_text.append(result.text.strip())
-
-                            if page_text:
-                                combined_page_text = ' '.join(page_text)
-                                all_text.append(f"## Page {page_num + 1}\n\n{combined_page_text}\n")
-                                self.logger.debug(f"Page {page_num + 1}: Extracted {len(combined_page_text)} characters")
-
-                            # Explicitly free image memory
-                            img.close()
-                            img = None
-                            img_data = None
-
-                        except Exception as page_error:
-                            self.logger.warning(f"OCR failed for page {page_num + 1}: {page_error}")
-                            continue
-
-                # MEMORY CLEANUP: Force garbage collection after each batch (single pass to avoid issues)
-                import gc
-                gc.collect()
-                self.logger.debug(f"Completed OCR batch {batch_num}/{total_batches}, memory freed")
-
-                # Log memory usage after batch
+                # Log memory before page
                 try:
                     import psutil
                     process = psutil.Process()
                     mem_mb = process.memory_info().rss / 1024 / 1024
-                    self.logger.info(f"   💾 Memory after OCR batch {batch_num}/{total_batches}: {mem_mb:.1f} MB")
+                    self.logger.info(f"   💾 Memory before page: {mem_mb:.1f} MB")
                 except:
                     pass
+                if page_num < len(doc):
+                    page = doc.load_page(page_num)
 
-                # Log progress after each batch
-                progress = (batch_end / len(page_range)) * 80  # OCR is 80% of total processing
-                self.logger.info(f"📄 OCR Progress: {batch_end}/{len(page_range)} pages ({progress:.1f}%)")
+                    # Render page as image (reduced zoom to save memory)
+                    mat = fitz.Matrix(2.0, 2.0)  # 2.0x zoom (reduced from 2.5x to save memory)
+                    pix = page.get_pixmap(matrix=mat)
+                    img_data = pix.tobytes('png')
 
-                # Update job progress if callback provided
-                if progress_callback:
+                    # Explicitly free pixmap memory
+                    pix = None
+
+                    # Extract text with OCR
                     try:
-                        # Only call if it's not a coroutine (sync callbacks only in sync function)
-                        if not inspect.iscoroutinefunction(progress_callback):
-                            progress_callback(
-                                progress=int(progress),
-                                details={
-                                    "current_step": f"OCR processing: {batch_end}/{len(page_range)} pages (batch {batch_num}/{total_batches})",
-                                    "pages_processed": batch_end,
-                                    "total_pages": len(page_range),
-                                    "ocr_stage": "extracting_text",
-                                    "batch_number": batch_num,
-                                    "total_batches": total_batches
-                                }
-                            )
+                        from PIL import Image
+                        import io
+
+                        img = Image.open(io.BytesIO(img_data))
+                        ocr_results = ocr_service.extract_text_from_image(img)
+
+                        # Combine all OCR results for this page
+                        page_text = []
+                        for result in ocr_results:
+                            if result.text.strip() and result.confidence > 0.3:
+                                page_text.append(result.text.strip())
+
+                        if page_text:
+                            combined_page_text = ' '.join(page_text)
+                            all_text.append(f"## Page {page_num + 1}\n\n{combined_page_text}\n")
+                            self.logger.debug(f"Page {page_num + 1}: Extracted {len(combined_page_text)} characters")
+
+                        # Explicitly free image memory
+                        img.close()
+                        img = None
+                        img_data = None
+
+                    except Exception as page_error:
+                        self.logger.warning(f"OCR failed for page {page_num + 1}: {page_error}")
+                        continue
+
+                    # ⚠️ CRITICAL: Aggressive memory cleanup after EACH page
+                    # Force garbage collection to free EasyOCR temporary objects
+                    import gc
+                    gc.collect()
+
+                    # Log memory usage after page
+                    try:
+                        import psutil
+                        process = psutil.Process()
+                        mem_mb = process.memory_info().rss / 1024 / 1024
+                        self.logger.info(f"   💾 Memory after page {page_num + 1}: {mem_mb:.1f} MB")
+                    except:
+                        pass
+
+                    # Log progress after each page
+                    progress = ((idx + 1) / len(page_range)) * 80  # OCR is 80% of total processing
+                    self.logger.info(f"📄 OCR Progress: {idx + 1}/{len(page_range)} pages ({progress:.1f}%)")
+
+                    # Update job progress if callback provided
+                    if progress_callback:
+                        try:
+                            # Only call if it's not a coroutine (sync callbacks only in sync function)
+                            if not inspect.iscoroutinefunction(progress_callback):
+                                progress_callback(
+                                    progress=int(progress),
+                                    details={
+                                        "current_step": f"OCR processing: {idx + 1}/{len(page_range)} pages",
+                                        "pages_processed": idx + 1,
+                                        "total_pages": len(page_range),
+                                        "ocr_stage": "extracting_text"
+                                    }
+                                )
                     except Exception as callback_error:
                         self.logger.warning(f"Progress callback failed: {callback_error}")
 
