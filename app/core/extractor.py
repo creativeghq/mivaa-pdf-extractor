@@ -133,7 +133,14 @@ def extract_pdf_to_markdown(file_name, page_number):
 
     except (RuntimeError, ValueError) as e:
         error_msg = str(e).lower()
-        if "xref" in error_msg or "damaged" in error_msg or "corrupt" in error_msg:
+        if "not a textpage" in error_msg:
+            # ✅ FIX: PyMuPDF bug with table extraction on certain pages
+            # This is a known PyMuPDF library issue - skip problematic pages
+            import logging
+            logging.getLogger(__name__).warning(f"PyMuPDF 'not a textpage' error - attempting page-by-page extraction")
+            # Re-raise to trigger page-by-page extraction in pdf_processor.py
+            raise
+        elif "xref" in error_msg or "damaged" in error_msg or "corrupt" in error_msg:
             # PDF is corrupted, raise a more informative error
             raise ValueError(f"PDF file is corrupted or damaged: {e}") from e
         else:
