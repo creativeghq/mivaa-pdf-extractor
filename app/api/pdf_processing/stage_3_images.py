@@ -541,12 +541,13 @@ async def process_stage_3_images(
 
     return {
         "status": "completed",
-        "images_saved": images_saved_count,
-        "clip_embeddings": clip_embeddings_generated,
+        "pdf_result_with_images": pdf_result_with_images,  # ✅ Return the PDF result object
+        "material_images": material_images,  # ✅ Return the list of material images
+        "images_saved_count": images_saved_count,  # ✅ Return count of saved images
+        "clip_embeddings_count": clip_embeddings_generated,  # ✅ Return count of CLIP embeddings
         "specialized_embeddings": specialized_embeddings_generated,
         "images_analyzed": images_processed,
         "total_images_extracted": len(all_images),
-        "material_images": len(material_images),
         "non_material_images": non_material_count
     }
 
