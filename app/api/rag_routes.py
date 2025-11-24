@@ -2691,8 +2691,8 @@ async def process_document_with_discovery(
 
         pdf_result_with_images = stage_3_result["pdf_result_with_images"]
         material_images = stage_3_result["material_images"]
-        images_saved_count = stage_3_result["images_saved_count"]
-        clip_embeddings_count = stage_3_result["clip_embeddings_count"]
+        images_saved_count = stage_3_result.get("images_extracted", 0)
+        clip_embeddings_count = stage_3_result.get("clip_embeddings_generated", 0)
 
         # ============================================================================
         # STAGE 4: PRODUCT CREATION (MODULAR)

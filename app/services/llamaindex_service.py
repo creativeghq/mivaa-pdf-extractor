@@ -6017,3 +6017,110 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
                 if 'results' in strategy_data and strategy_data['results']:
                     return strategy_data['results'][:top_k]
             return []
+
+    async def _classify_image_material(
+        self,
+        image_base64: str,
+        confidence_threshold: float = 0.6
+    ) -> Dict[str, Any]:
+        """
+        Classify if an image contains material/product content.
+        
+        Uses Llama Vision to determine if image shows:
+        - Material samples/swatches
+        - Product photos
+        - Technical specifications
+        - Application examples
+        
+        Args:
+            image_base64: Base64-encoded image
+            confidence_threshold: Minimum confidence to classify as material (default: 0.6)
+            
+        Returns:
+            Dict with keys:
+            - is_material: bool
+            - confidence: float (0.0-1.0)
+            - reasoning: str
+        """
+        try:
+            # Prepare classification prompt
+            classification_prompt = """Analyze this image and determine if it contains material/product content.
+
+Material/Product content includes:
+- Material samples, swatches, or textures
+- Product photographs or renderings
+- Technical specifications or dimension diagrams
+- Application examples showing materials in use
+- Color palettes or finish options
+
+NON-material content includes:
+- Index pages or table of contents
+- Text-only pages
+- Company logos or branding
+- Navigation elements
+- Blank or placeholder images
+
+Respond in JSON format:
+{
+    "is_material": true/false,
+    "confidence": 0.0-1.0,
+    "reasoning": "brief explanation"
+}"""
+
+            # Call Llama Vision
+            response = await self.llama_client.chat.completions.create(
+                model=self.llama_vision_model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": classification_prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{image_base64}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=200,
+                temperature=0.1  # Low temperature for consistent classification
+            )
+
+            # Parse response
+            response_text = response.choices[0].message.content.strip()
+            
+            # Extract JSON from response (handle markdown code blocks)
+            if "```json" in response_text:
+                json_start = response_text.find("```json") + 7
+                json_end = response_text.find("```", json_start)
+                response_text = response_text[json_start:json_end].strip()
+            elif "```" in response_text:
+                json_start = response_text.find("```") + 3
+                json_end = response_text.find("```", json_start)
+                response_text = response_text[json_start:json_end].strip()
+
+            import json
+            classification = json.loads(response_text)
+
+            # Validate confidence threshold
+            is_material = classification.get('is_material', False)
+            confidence = classification.get('confidence', 0.0)
+            
+            if is_material and confidence < confidence_threshold:
+                # Confidence too low - reject
+                is_material = False
+                classification['is_material'] = False
+                classification['reasoning'] = f"Confidence {confidence:.2f} below threshold {confidence_threshold}"
+
+            return classification
+
+        except Exception as e:
+            self.logger.error(f"❌ Image classification failed: {e}")
+            # Default to accepting image if classification fails (fail-open)
+            return {
+                "is_material": True,  # Accept by default to avoid losing images
+                "confidence": 0.5,
+                "reasoning": f"Classification failed: {str(e)}"
+            }

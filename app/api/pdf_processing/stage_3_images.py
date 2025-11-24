@@ -189,14 +189,22 @@ async def process_stage_3_images(
         logger.warning("⚠️ No images extracted from PDF")
         return {
             "status": "completed",
-            "pdf_result_with_images": pdf_result_with_images,  # ✅ FIX: Include required key
-            "material_images": [],  # ✅ FIX: Include required key
-            "images_saved_count": 0,  # ✅ FIX: Use correct key name
-            "clip_embeddings_count": 0,  # ✅ FIX: Use correct key name
+            "pdf_result_with_images": pdf_result_with_images,
+            "material_images": [],
+            "images_extracted": 0,
+            "images_processed": 0,
+            "clip_embeddings_generated": 0,
+            "clip_embeddings_expected": 0,
+            "clip_completion_rate": 0,
             "specialized_embeddings": 0,
             "images_analyzed": 0,
             "total_images_extracted": 0,
-            "non_material_images": 0
+            "non_material_images": 0,
+            "quality_flags": {
+                "clip_embeddings_complete": True,  # No images = nothing to fail
+                "all_images_analyzed": True,
+                "specialized_embeddings_complete": True
+            }
         }
 
     logger.info(f"📊 Total images to process: {len(all_images)}")
@@ -275,14 +283,22 @@ async def process_stage_3_images(
         logger.warning("⚠️ No material images identified")
         return {
             "status": "completed",
-            "pdf_result_with_images": pdf_result_with_images,  # ✅ FIX: Include required key
-            "material_images": [],  # ✅ FIX: Include required key (empty list)
-            "images_saved_count": 0,  # ✅ FIX: Use correct key name
-            "clip_embeddings_count": 0,  # ✅ FIX: Use correct key name
+            "pdf_result_with_images": pdf_result_with_images,
+            "material_images": [],
+            "images_extracted": 0,
+            "images_processed": 0,
+            "clip_embeddings_generated": 0,
+            "clip_embeddings_expected": 0,
+            "clip_completion_rate": 0,
             "specialized_embeddings": 0,
             "images_analyzed": 0,
-            "total_images_extracted": len(all_images),  # ✅ FIX: Include total extracted
-            "non_material_images": len(all_images)  # ✅ FIX: All images were non-material
+            "total_images_extracted": len(all_images),
+            "non_material_images": len(all_images),
+            "quality_flags": {
+                "clip_embeddings_complete": True,  # No material images = nothing to fail
+                "all_images_analyzed": True,
+                "specialized_embeddings_complete": True
+            }
         }
 
     # Step 3: Consolidated batch processing (Upload → Save → CLIP → Llama Vision)
@@ -547,15 +563,34 @@ async def process_stage_3_images(
     gc.collect()
     logger.info("💾 Memory freed after Stage 3 (Image Processing)")
 
+    # Calculate quality metrics
+    expected_clip_embeddings = images_saved_count * 5  # 5 types per image
+    clip_completion_rate = (clip_embeddings_generated / expected_clip_embeddings) if expected_clip_embeddings > 0 else 0
+    
+    quality_flags = {
+        "clip_embeddings_complete": clip_completion_rate >= 0.9,  # 90% threshold
+        "all_images_analyzed": images_processed == images_saved_count,
+        "specialized_embeddings_complete": specialized_embeddings_generated >= (images_saved_count * 4)  # 4 specialized types
+    }
+    
+    logger.info(f"📊 Quality Metrics:")
+    logger.info(f"   CLIP Completion Rate: {clip_completion_rate:.1%} ({clip_embeddings_generated}/{expected_clip_embeddings})")
+    logger.info(f"   Images Analyzed: {images_processed}/{images_saved_count}")
+    logger.info(f"   Quality Flags: {quality_flags}")
+    
     return {
         "status": "completed",
-        "pdf_result_with_images": pdf_result_with_images,  # ✅ Return the PDF result object
-        "material_images": material_images,  # ✅ Return the list of material images
-        "images_saved_count": images_saved_count,  # ✅ Return count of saved images
-        "clip_embeddings_count": clip_embeddings_generated,  # ✅ Return count of CLIP embeddings
+        "pdf_result_with_images": pdf_result_with_images,
+        "material_images": material_images,
+        "images_extracted": images_saved_count,
+        "images_processed": images_processed,
+        "clip_embeddings_generated": clip_embeddings_generated,
+        "clip_embeddings_expected": expected_clip_embeddings,
+        "clip_completion_rate": clip_completion_rate,
         "specialized_embeddings": specialized_embeddings_generated,
         "images_analyzed": images_processed,
         "total_images_extracted": len(all_images),
-        "non_material_images": non_material_count
+        "non_material_images": non_material_count,
+        "quality_flags": quality_flags
     }
 
