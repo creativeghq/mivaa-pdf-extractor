@@ -998,8 +998,8 @@ class PDFProcessor:
                                         "ocr_stage": "extracting_text"
                                     }
                                 )
-                    except Exception as callback_error:
-                        self.logger.warning(f"Progress callback failed: {callback_error}")
+                        except Exception as callback_error:
+                            self.logger.warning(f"Progress callback failed: {callback_error}")
 
             doc.close()
 
