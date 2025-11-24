@@ -2542,7 +2542,7 @@ async def process_document_with_discovery(
     logger.info("=" * 80)
     # Get image analysis model from config
     settings = get_settings()
-    image_analysis_model = settings.multimodal_config.image_analysis_model
+    image_analysis_model = settings.image_analysis_model  # ✅ FIXED: Direct property access
 
 
     try:
