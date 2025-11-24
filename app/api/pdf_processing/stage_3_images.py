@@ -168,11 +168,10 @@ async def process_stage_3_images(
         # Extract images with timeout
         try:
             pdf_result_with_images = await with_timeout(
-                pdf_processor.process_pdf(
-                    file_content,
-                    document_id,
-                    workspace_id,
-                    processing_options
+                pdf_processor.process_pdf_from_bytes(
+                    pdf_bytes=file_content,
+                    document_id=document_id,
+                    processing_options=processing_options
                 ),
                 timeout_seconds=image_extraction_timeout,
                 operation_name="Image extraction from PDF"
