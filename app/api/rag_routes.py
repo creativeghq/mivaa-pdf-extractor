@@ -2540,9 +2540,15 @@ async def process_document_with_discovery(
     logger.info(f"🎯 Focused Extraction: {'ENABLED' if focused_extraction else 'DISABLED (Full PDF)'}")
     logger.info(f"📦 Extract Categories: {', '.join(extract_categories).upper()}")
     logger.info("=" * 80)
-    # Get image analysis model from config
+
+    # Get AI model configuration
     settings = get_settings()
     image_analysis_model = settings.image_analysis_model  # ✅ FIXED: Direct property access
+
+    # ✅ FIX: Define missing model variables from AI config
+    from app.models.ai_config import DEFAULT_AI_CONFIG
+    product_creation_model = DEFAULT_AI_CONFIG.discovery_model  # Use discovery model for product creation
+    quality_validation_model = DEFAULT_AI_CONFIG.classification_validation_model  # Claude for quality validation
 
 
     try:
