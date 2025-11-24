@@ -267,6 +267,20 @@ class ProductDiscoveryService:
 
             # Use first 50-100 pages for index scan (most catalogs have TOC in first pages)
             index_scan_pages = min(100, total_pages)
+            
+            # ✅ FIX: Extract text from PDF if not provided
+            if pdf_text is None:
+                if pdf_path is None:
+                    raise ValueError("Either pdf_text or pdf_path must be provided for index scan")
+                
+                self.logger.info(f"   Extracting text from first {index_scan_pages} pages for index scan...")
+                import pymupdf4llm
+                
+                # Extract only the pages we need for index scan
+                pages_to_extract = list(range(0, min(index_scan_pages, total_pages)))
+                pdf_text = pymupdf4llm.to_markdown(pdf_path, pages=pages_to_extract)
+                self.logger.info(f"   Extracted {len(pdf_text)} characters from {len(pages_to_extract)} pages")
+            
             index_text = self._extract_index_text(pdf_text, index_scan_pages, total_pages)
 
             self.logger.info(f"   Analyzing first {index_scan_pages} pages ({len(index_text)} chars)")

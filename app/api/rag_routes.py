@@ -2540,6 +2540,10 @@ async def process_document_with_discovery(
     logger.info(f"🎯 Focused Extraction: {'ENABLED' if focused_extraction else 'DISABLED (Full PDF)'}")
     logger.info(f"📦 Extract Categories: {', '.join(extract_categories).upper()}")
     logger.info("=" * 80)
+    # Get image analysis model from config
+    settings = get_settings()
+    image_analysis_model = settings.multimodal_config.image_analysis_model
+
 
     try:
         # Initialize Progress Tracker
