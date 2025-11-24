@@ -6,7 +6,7 @@ import logging
 import time
 from typing import List, Dict, Any, Optional
 from uuid import uuid4
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, status, Query
 
 from app.services.llamaindex_service import LlamaIndexService
 from app.services.advanced_search_service import AdvancedSearchService, QueryType, SearchOperator
@@ -733,4 +733,5 @@ async def advanced_query_search(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Advanced query search failed: {str(e)}"
         )
-
+
+

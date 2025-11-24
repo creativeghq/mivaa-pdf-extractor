@@ -8,12 +8,13 @@ import base64
 from datetime import datetime
 from typing import Optional, List
 from uuid import uuid4
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query, status, BackgroundTasks
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query, status, BackgroundTasks, Depends
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.services.supabase_client import get_supabase_client
-from .shared import job_storage, run_async_in_background
+from app.services.llamaindex_service import LlamaIndexService
+from .shared import job_storage, run_async_in_background, get_llamaindex_service
 from .models import DocumentListResponse
 
 logger = logging.getLogger(__name__)
