@@ -1144,22 +1144,41 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
             pages_per_sheet = 1  # Default: 1 catalog page = 1 PDF page
 
             if pdf_page_count > 0:
-                # Get first page dimensions
-                first_page = doc[0]
-                rect = first_page.rect
-                width = rect.width
-                height = rect.height
-                aspect_ratio = width / height if height > 0 else 1.0
+                # ✅ FIX: Check MULTIPLE pages to detect dominant layout (not just first page)
+                # Many PDFs have portrait cover page but landscape content pages
+                pages_to_check = min(5, pdf_page_count)  # Check first 5 pages
+                spread_count = 0
+                standard_count = 0
 
-                # Detect 2-page spread layout:
-                # - Landscape orientation (width > height)
-                # - Aspect ratio close to 2:1 (between 1.7 and 2.3 to account for margins)
-                if width > height and 1.7 <= aspect_ratio <= 2.3:
+                for page_idx in range(pages_to_check):
+                    page = doc[page_idx]
+                    rect = page.rect
+                    width = rect.width
+                    height = rect.height
+                    aspect_ratio = width / height if height > 0 else 1.0
+
+                    # Detect 2-page spread layout:
+                    # - Landscape orientation (width > height)
+                    # - Aspect ratio close to 2:1 (between 1.4 and 2.3 to account for margins)
+                    # Note: Lowered from 1.7 to 1.4 to catch spreads with wider margins
+                    if width > height and 1.4 <= aspect_ratio <= 2.3:
+                        spread_count += 1
+                        if page_idx == 0:
+                            self.logger.info(f"   📐 Page {page_idx + 1}: 2-page spread (aspect: {aspect_ratio:.2f})")
+                        elif page_idx == 1:
+                            self.logger.info(f"   📐 Page {page_idx + 1}: 2-page spread (aspect: {aspect_ratio:.2f})")
+                    else:
+                        standard_count += 1
+                        if page_idx == 0:
+                            self.logger.info(f"   📐 Page {page_idx + 1}: Standard layout (aspect: {aspect_ratio:.2f})")
+
+                # Use majority vote: if most pages are spreads, treat entire PDF as spreads
+                if spread_count > standard_count:
                     pages_per_sheet = 2
-                    self.logger.info(f"   📐 Detected 2-page spread layout (aspect ratio: {aspect_ratio:.2f})")
+                    self.logger.info(f"   ✅ DOMINANT LAYOUT: 2-page spreads ({spread_count}/{pages_to_check} pages)")
                     self.logger.info(f"      → Catalog pages 1-{pdf_page_count * 2} mapped to PDF pages 1-{pdf_page_count}")
                 else:
-                    self.logger.info(f"   📐 Standard layout detected (aspect ratio: {aspect_ratio:.2f})")
+                    self.logger.info(f"   ✅ DOMINANT LAYOUT: Standard ({standard_count}/{pages_to_check} pages)")
 
             doc.close()
             self.logger.info(f"   📄 PDF has {pdf_page_count} pages ({pdf_page_count * pages_per_sheet} catalog pages)")
