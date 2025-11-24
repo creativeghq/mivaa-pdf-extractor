@@ -122,6 +122,7 @@ def extract_pdf_to_markdown(file_name, page_number):
                 raise
 
         try:
+            # Use default table_strategy for table extraction
             markdown_text = pymupdf4llm.to_markdown(doc, pages=page_number_list, hdr_info=hdr_info)
         finally:
             doc.close()
@@ -134,8 +135,6 @@ def extract_pdf_to_markdown(file_name, page_number):
     except (RuntimeError, ValueError) as e:
         error_msg = str(e).lower()
         if "not a textpage" in error_msg:
-            # ✅ FIX: PyMuPDF bug with table extraction on certain pages
-            # This is a known PyMuPDF library issue - skip problematic pages
             import logging
             logging.getLogger(__name__).warning(f"PyMuPDF 'not a textpage' error - attempting page-by-page extraction")
             # Re-raise to trigger page-by-page extraction in pdf_processor.py
