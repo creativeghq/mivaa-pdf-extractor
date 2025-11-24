@@ -189,10 +189,14 @@ async def process_stage_3_images(
         logger.warning("⚠️ No images extracted from PDF")
         return {
             "status": "completed",
-            "images_saved": 0,
-            "clip_embeddings": 0,
+            "pdf_result_with_images": pdf_result_with_images,  # ✅ FIX: Include required key
+            "material_images": [],  # ✅ FIX: Include required key
+            "images_saved_count": 0,  # ✅ FIX: Use correct key name
+            "clip_embeddings_count": 0,  # ✅ FIX: Use correct key name
             "specialized_embeddings": 0,
-            "images_analyzed": 0
+            "images_analyzed": 0,
+            "total_images_extracted": 0,
+            "non_material_images": 0
         }
 
     logger.info(f"📊 Total images to process: {len(all_images)}")
@@ -271,10 +275,14 @@ async def process_stage_3_images(
         logger.warning("⚠️ No material images identified")
         return {
             "status": "completed",
-            "images_saved": 0,
-            "clip_embeddings": 0,
+            "pdf_result_with_images": pdf_result_with_images,  # ✅ FIX: Include required key
+            "material_images": [],  # ✅ FIX: Include required key (empty list)
+            "images_saved_count": 0,  # ✅ FIX: Use correct key name
+            "clip_embeddings_count": 0,  # ✅ FIX: Use correct key name
             "specialized_embeddings": 0,
-            "images_analyzed": 0
+            "images_analyzed": 0,
+            "total_images_extracted": len(all_images),  # ✅ FIX: Include total extracted
+            "non_material_images": len(all_images)  # ✅ FIX: All images were non-material
         }
 
     # Step 3: Consolidated batch processing (Upload → Save → CLIP → Llama Vision)
