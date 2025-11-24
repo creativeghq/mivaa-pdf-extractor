@@ -106,13 +106,31 @@ async def process_stage_0_discovery(
         quick_doc = fitz.open(temp_pdf_path)
         page_count = len(quick_doc)
         quick_doc.close()
-        
-        # ✅ ARCHITECTURE FIX: Do NOT extract full PDF here
-        # Product discovery will happen first, then Stage 1 will extract ONLY product pages
-        # This prevents OCR from being triggered on all pages
 
-        logger.info(f"📊 Document: {page_count} pages, {file_size_mb:.1f} MB")
-        logger.info(f"⏭️  Skipping full PDF extraction - will extract ONLY product pages after discovery")
+        # Calculate progressive timeout for PDF extraction
+        pdf_extraction_timeout = ProgressiveTimeoutStrategy.calculate_pdf_extraction_timeout(
+            page_count=page_count,
+            file_size_mb=file_size_mb
+        )
+        logger.info(f"📊 Document: {page_count} pages, {file_size_mb:.1f} MB → timeout: {pdf_extraction_timeout:.0f}s")
+
+        
+        # This ensures product discovery has complete text to work with
+        # The 200K char limit in discovery service will handle large PDFs
+        logger.info(f"📄 Extracting FULL PDF text for product discovery...")
+
+        pdf_processor = PDFProcessor()
+        pdf_result = await with_timeout(
+            pdf_processor.process_pdf_from_bytes(
+                pdf_bytes=file_content,
+                document_id=document_id,
+                processing_options={'extract_images': False, 'extract_tables': False}
+            ),
+            timeout_seconds=pdf_extraction_timeout,
+            operation_name="PDF text extraction"
+        )
+
+        logger.info(f"✅ Extracted {len(pdf_result.markdown_content)} characters from {pdf_result.page_count} pages")
 
         # Create processed_documents record IMMEDIATELY (required for job_progress foreign key)
         supabase = get_supabase_client()
@@ -121,12 +139,12 @@ async def process_stage_0_discovery(
                 "id": document_id,
                 "workspace_id": workspace_id,
                 "pdf_document_id": document_id,
-                "content": "",  # Will be filled after focused extraction in Stage 1
+                "content": pdf_result.markdown_content or "",
                 "processing_status": "processing",
                 "metadata": {
                     "filename": filename,
                     "file_size": len(file_content),
-                    "page_count": page_count  # Use quick page count
+                    "page_count": pdf_result.page_count
                 }
             }).execute()
             logger.info(f"✅ Created processed_documents record for {document_id}")
@@ -135,8 +153,8 @@ async def process_stage_0_discovery(
             raise  # Don't continue if this fails
 
         # Update tracker with total pages
-        tracker.total_pages = page_count
-        for page_num in range(1, page_count + 1):
+        tracker.total_pages = pdf_result.page_count
+        for page_num in range(1, pdf_result.page_count + 1):
             tracker.page_statuses[page_num] = PageProcessingStatus(
                 page_number=page_num,
                 stage=ProcessingStage.INITIALIZING,
@@ -149,12 +167,12 @@ async def process_stage_0_discovery(
 
         # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on pages and categories
         discovery_timeout = ProgressiveTimeoutStrategy.calculate_product_discovery_timeout(
-            page_count=page_count,  # Use quick page count
+            page_count=pdf_result.page_count,
             categories=extract_categories
         )
-        logger.info(f"📊 Product discovery: {page_count} pages, {len(extract_categories)} categories → timeout: {discovery_timeout:.0f}s")
+        logger.info(f"📊 Product discovery: {pdf_result.page_count} pages, {len(extract_categories)} categories → timeout: {discovery_timeout:.0f}s")
 
-        # ✅ NORMALIZE: Map discovery_model to expected values
+        #NORMALIZE: Map discovery_model to expected values
         # ProductDiscoveryService expects: "claude", "gpt", or "haiku"
         normalized_model = discovery_model.lower()
         if "claude" in normalized_model or "sonnet" in normalized_model:
@@ -172,8 +190,8 @@ async def process_stage_0_discovery(
         catalog = await with_timeout(
             discovery_service.discover_products(
                 pdf_content=file_content,
-                pdf_text=None,  # ✅ FIX: No text extracted yet - discovery will extract what it needs
-                total_pages=page_count,  # Use quick page count
+                pdf_text=pdf_result.markdown_content,  # ✅ PASS FULL PDF TEXT
+                total_pages=pdf_result.page_count,
                 categories=extract_categories,
                 agent_prompt=agent_prompt,
                 workspace_id=workspace_id,
@@ -211,7 +229,7 @@ async def process_stage_0_discovery(
         "categories": extract_categories,
         "products_detected": len(catalog.products),
         "product_names": [p.name for p in catalog.products],
-        "total_pages": page_count  # Use quick page count
+        "total_pages": pdf_result.page_count
     }
 
     # Add other categories if discovered
@@ -238,8 +256,9 @@ async def process_stage_0_discovery(
 
     return {
         "catalog": catalog,
-        "page_count": page_count,  # Return page count for Stage 1
-        "file_size_mb": file_size_mb,  # Return file size for Stage 1
+        "pdf_result": pdf_result,  # Return full PDF result
+        "page_count": pdf_result.page_count,
+        "file_size_mb": file_size_mb,
         "temp_pdf_path": temp_pdf_path
     }
 

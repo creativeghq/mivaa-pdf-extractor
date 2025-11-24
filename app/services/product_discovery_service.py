@@ -261,48 +261,32 @@ class ProductDiscoveryService:
                 self.logger.info(f"   Prompt Enhancement: ENABLED")
 
             # ============================================================
-            # STAGE 0A: INDEX SCAN - Quick discovery from TOC/Index
+            # STAGE 0A: ITERATIVE BATCH DISCOVERY - Smart scanning with early stopping
             # ============================================================
-            self.logger.info(f"📋 STAGE 0A: Scanning index/TOC for product locations...")
+            self.logger.info(f"📋 STAGE 0A: Iterative batch discovery with early stopping...")
 
-            # Use first 50-100 pages for index scan (most catalogs have TOC in first pages)
-            index_scan_pages = min(100, total_pages)
-            
             # ✅ FIX: Extract text from PDF if not provided
             if pdf_text is None:
                 if pdf_path is None:
                     raise ValueError("Either pdf_text or pdf_path must be provided for index scan")
-                
-                self.logger.info(f"   Extracting text from first {index_scan_pages} pages for index scan...")
+
+                self.logger.info(f"   Extracting full PDF text for iterative discovery...")
                 import pymupdf4llm
-                
-                # Extract only the pages we need for index scan
-                pages_to_extract = list(range(0, min(index_scan_pages, total_pages)))
-                pdf_text = pymupdf4llm.to_markdown(pdf_path, pages=pages_to_extract)
-                self.logger.info(f"   Extracted {len(pdf_text)} characters from {len(pages_to_extract)} pages")
-            
-            index_text = self._extract_index_text(pdf_text, index_scan_pages, total_pages)
 
-            self.logger.info(f"   Analyzing first {index_scan_pages} pages ({len(index_text)} chars)")
+                # Extract ALL pages
+                pdf_text = pymupdf4llm.to_markdown(pdf_path)
+                self.logger.info(f"   Extracted {len(pdf_text)} characters from {total_pages} pages")
 
-            # Build index scan prompt (lightweight, focused on finding product names + page ranges)
-            index_prompt = await self._build_index_scan_prompt(
-                index_text,
+            # Iterative batch discovery
+            catalog = await self._iterative_batch_discovery(
+                pdf_text,
                 total_pages,
                 categories,
                 agent_prompt,
                 workspace_id,
-                enable_prompt_enhancement
+                enable_prompt_enhancement,
+                job_id
             )
-
-            # Call AI model for index scan
-            if self.model == "claude":
-                index_result = await self._discover_with_claude(index_prompt, job_id)
-            else:
-                index_result = await self._discover_with_gpt(index_prompt, job_id)
-
-            # Parse index scan results (product names + page ranges)
-            catalog = self._parse_discovery_results(index_result, total_pages, categories)
 
             self.logger.info(f"✅ STAGE 0A complete: Found {len(catalog.products)} products")
             for product in catalog.products:
@@ -643,21 +627,25 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
 This PDF may be an EXCERPT from a larger catalog. The index/TOC might reference page numbers from the ORIGINAL catalog that don't exist in this file.
 
 **INSTRUCTIONS**:
-1. **Scan the ACTUAL CONTENT** - Don't rely solely on the index/TOC page numbers
-2. **Validate page numbers**: This PDF has pages 1-{total_pages}. Any page number > {total_pages} does NOT exist in this file
-3. **For each product in the index**:
+1. **Look for any product index/listing section** - May have various names like "INDEX", "COLLECTIONS", "PRODUCTS", etc.
+2. **Scan the content** to identify all products by looking for:
+   - Product names in uppercase or bold
+   - Page numbers associated with products
+   - Designer/studio attributions
+3. **Validate page numbers**: This PDF has pages 1-{total_pages}. Any page number > {total_pages} does NOT exist in this file
+4. **For each product found**:
    - If index says "Product X ... pages 50-55" but this PDF only has {total_pages} pages
    - Check if Product X actually appears in the PDF content on pages 1-{total_pages}
    - If YES: Include it with the ACTUAL pages where it appears in THIS PDF
    - If NO: SKIP this product entirely (it's not in this excerpt)
-4. **Page ranges**: Include ALL consecutive pages where the product appears in THIS PDF
-5. **Be comprehensive**: Find ALL products that actually exist in pages 1-{total_pages}
+5. **Page ranges**: Include ALL consecutive pages where the product appears in THIS PDF
+6. **Be comprehensive**: Find ALL products that actually exist in pages 1-{total_pages}
 
 **WHAT TO LOOK FOR**:
 - Product names in uppercase or bold (e.g., "VALENOVA", "FOLD", "PIQUÉ")
-- Page numbers next to product names (e.g., "NOVA ... 24", "FOLD ... 32-35")
+- Page numbers next to product names (e.g., "— **24**", "FOLD ... 32-35")
+- Designer names (e.g., "by SG NY", "by ESTUDI{{H}}AC", "by DSIGNIO")
 - Section headers indicating product categories
-- Designer/studio names associated with products
 
 **OUTPUT FORMAT** (JSON only):
 ```json
@@ -1456,38 +1444,110 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
 
         return page_texts
 
-    def _extract_index_text(self, pdf_text: str, index_pages: int, total_pages: int) -> str:
+    async def _iterative_batch_discovery(
+        self,
+        pdf_text: str,
+        total_pages: int,
+        categories: List[str],
+        agent_prompt: str,
+        workspace_id: str,
+        enable_prompt_enhancement: bool,
+        job_id: Optional[str] = None
+    ) -> ProductCatalog:
         """
-        Extract text from index/TOC pages for Stage 0A discovery.
+        Iterative batch discovery with early stopping.
 
-        Uses smart extraction to get the most relevant content:
-        1. First 30 pages (usually contains TOC/Index)
-        2. Last 10 pages (sometimes contains product index)
-        3. Limits to reasonable size for AI processing
+        Sends text in 100K char batches until no new products are found.
+        This is much smarter than arbitrary limits:
+        - Small PDFs: Stops after 1-2 batches
+        - Large PDFs: Continues until all products found
+        - Saves money by not processing unnecessary text
 
         Args:
             pdf_text: Full PDF text
-            index_pages: Number of pages to scan for index
             total_pages: Total pages in PDF
+            categories: Categories to extract
+            agent_prompt: Custom prompt
+            workspace_id: Workspace ID
+            enable_prompt_enhancement: Whether to enhance prompts
+            job_id: Job ID for logging
 
         Returns:
-            Extracted index text (limited to ~100K chars)
+            ProductCatalog with all discovered products
         """
-        # Strategy: Extract first N pages which usually contain TOC/Index
-        # Most catalogs have comprehensive index in first 20-50 pages
+        BATCH_SIZE = 100000  # 100K chars per batch
+        all_products = []
+        all_certificates = []
+        all_logos = []
+        all_specifications = []
+        seen_product_names = set()
 
-        # Calculate character limit based on index pages
-        # Assume ~1500 chars per page average
-        char_limit = index_pages * 1500
+        batch_num = 0
+        offset = 0
 
-        # Cap at 100K characters to avoid token limits in Stage 0A
-        char_limit = min(char_limit, 100000)
+        while offset < len(pdf_text):
+            batch_num += 1
+            batch_text = pdf_text[offset:offset + BATCH_SIZE]
 
-        index_text = pdf_text[:char_limit]
+            self.logger.info(f"   📦 Batch {batch_num}: Processing chars {offset:,} to {offset + len(batch_text):,}")
 
-        self.logger.info(f"   Extracted {len(index_text)} characters from first {index_pages} pages")
+            # Build prompt for this batch
+            index_prompt = await self._build_index_scan_prompt(
+                batch_text,
+                total_pages,
+                categories,
+                agent_prompt,
+                workspace_id,
+                enable_prompt_enhancement
+            )
 
-        return index_text
+            # Call AI model
+            if self.model == "claude":
+                batch_result = await self._discover_with_claude(index_prompt, job_id)
+            else:
+                batch_result = await self._discover_with_gpt(index_prompt, job_id)
+
+            # Parse results
+            batch_catalog = self._parse_discovery_results(batch_result, total_pages, categories)
+
+            # Count new products found in this batch
+            new_products_count = 0
+            for product in batch_catalog.products:
+                if product.name not in seen_product_names:
+                    all_products.append(product)
+                    seen_product_names.add(product.name)
+                    new_products_count += 1
+
+            # Add other categories
+            all_certificates.extend(batch_catalog.certificates)
+            all_logos.extend(batch_catalog.logos)
+            all_specifications.extend(batch_catalog.specifications)
+
+            self.logger.info(f"      ✅ Found {new_products_count} NEW products (total: {len(all_products)})")
+
+            # Early stopping: If no new products found, stop
+            if new_products_count == 0:
+                self.logger.info(f"   🛑 EARLY STOP: No new products in batch {batch_num}, stopping discovery")
+                break
+
+            # Move to next batch
+            offset += BATCH_SIZE
+
+            # Safety limit: Max 10 batches (1M chars)
+            if batch_num >= 10:
+                self.logger.warning(f"   ⚠️ Reached max batch limit (10 batches = 1M chars), stopping")
+                break
+
+        # Create final catalog
+        catalog = ProductCatalog(
+            products=all_products,
+            certificates=all_certificates,
+            logos=all_logos,
+            specifications=all_specifications,
+            confidence_score=0.9  # High confidence from iterative discovery
+        )
+
+        return catalog
 
     def _extract_product_text(self, pdf_text: str, page_range: List[int]) -> str:
         """
