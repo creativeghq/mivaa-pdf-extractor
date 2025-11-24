@@ -78,7 +78,7 @@ async def process_stage_3_images(
         Dict with processing results and statistics
     """
     logger.info("🖼️ [STAGE 3] Image Processing - Starting...")
-    await tracker.update_stage("EXTRACTING_IMAGES", stage_name="image_processing")
+    await tracker.update_stage(CheckpointStage.EXTRACTING_IMAGES, stage_name="image_processing")
     
     # Initialize services
     supabase_client = get_supabase_client()
