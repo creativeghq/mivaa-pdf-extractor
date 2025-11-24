@@ -2617,235 +2617,51 @@ async def process_document_with_discovery(
             # Mark as IN_USE before PyMuPDF opens it
             await resource_manager.mark_in_use(f"temp_pdf_{document_id}", job_id)
 
-            # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on document size
-            file_size_mb = len(file_content) / (1024 * 1024)
+            # ✅ MODULAR ARCHITECTURE: Call Stage 0 - Product Discovery
+            from app.api.pdf_processing.stage_0_discovery import process_stage_0_discovery
 
-            # Quick page count check (fast, doesn't extract content)
-            import fitz
-            quick_doc = fitz.open(temp_pdf_path)
-            page_count = len(quick_doc)
-            quick_doc.close()
-
-            # Calculate progressive timeout for PDF extraction
-            pdf_extraction_timeout = ProgressiveTimeoutStrategy.calculate_pdf_extraction_timeout(
-                page_count=page_count,
-                file_size_mb=file_size_mb
-            )
-            logger.info(f"📊 Document: {page_count} pages, {file_size_mb:.1f} MB → timeout: {pdf_extraction_timeout:.0f}s")
-
-            # Extract PDF text first (with progressive timeout guard)
-            pdf_processor = PDFProcessor()
-            pdf_result = await with_timeout(
-                pdf_processor.process_pdf_from_bytes(
-                    pdf_bytes=file_content,
-                    document_id=document_id,
-                    processing_options={'extract_images': False, 'extract_tables': False}
-                ),
-                timeout_seconds=pdf_extraction_timeout,
-                operation_name="PDF text extraction"
+            stage_0_result = await process_stage_0_discovery(
+                file_content=file_content,
+                document_id=document_id,
+                workspace_id=workspace_id,
+                job_id=job_id,
+                filename=filename,
+                title=title,
+                description=description,
+                extract_categories=extract_categories,
+                discovery_model=discovery_model,
+                agent_prompt=agent_prompt,
+                enable_prompt_enhancement=enable_prompt_enhancement,
+                tracker=tracker,
+                checkpoint_recovery_service=checkpoint_recovery_service,
+                logger=logger
             )
 
-            # Create processed_documents record IMMEDIATELY (required for job_progress foreign key)
-            # This MUST happen BEFORE any _sync_to_database() calls
-            supabase = get_supabase_client()
-            try:
-                supabase.client.table('processed_documents').upsert({
-                    "id": document_id,
-                    "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
-                    "pdf_document_id": document_id,
-                    "content": pdf_result.markdown_content or "",
-                    "processing_status": "processing",
-                    "metadata": {
-                        "filename": filename,
-                        "file_size": len(file_content),
-                        "page_count": pdf_result.page_count
-                    }
-                }).execute()
-                logger.info(f"✅ Created processed_documents record for {document_id}")
-            except Exception as e:
-                logger.error(f"❌ CRITICAL: Failed to create processed_documents record: {e}")
-                raise  # Don't continue if this fails
-
-            # Update tracker with total pages
-            tracker.total_pages = pdf_result.page_count
-            for page_num in range(1, pdf_result.page_count + 1):
-                from app.schemas.jobs import PageProcessingStatus
-                tracker.page_statuses[page_num] = PageProcessingStatus(
-                    page_number=page_num,
-                    stage=ProcessingStage.INITIALIZING,  # Changed from PENDING (doesn't exist)
-                    status="pending"
-                )
-
-            # Run TWO-STAGE category-based discovery with prompt enhancement (with progressive timeout)
-            # Stage 0A: Index scan (first 50-100 pages)
-            # Stage 0B: Focused extraction (specific pages per product)
-
-            # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on pages and categories
-            discovery_timeout = ProgressiveTimeoutStrategy.calculate_product_discovery_timeout(
-                page_count=pdf_result.page_count,
-                categories=extract_categories
-            )
-            logger.info(f"📊 Product discovery: {pdf_result.page_count} pages, {len(extract_categories)} categories → timeout: {discovery_timeout:.0f}s")
-
-            # ✅ NORMALIZE: Map discovery_model to expected values
-            # ProductDiscoveryService expects: "claude", "gpt", or "haiku"
-            normalized_model = discovery_model.lower()
-            if "claude" in normalized_model or "sonnet" in normalized_model:
-                normalized_model = "claude"
-            elif "gpt" in normalized_model:
-                normalized_model = "gpt"
-            elif "haiku" in normalized_model:
-                normalized_model = "haiku"
-            else:
-                normalized_model = "claude"  # Default to Claude
-
-            logger.info(f"🤖 Discovery model normalized: '{discovery_model}' → '{normalized_model}'")
-
-            discovery_service = ProductDiscoveryService(model=normalized_model)
-            catalog = await with_timeout(
-                discovery_service.discover_products(
-                    pdf_content=file_content,
-                    pdf_text=pdf_result.markdown_content,
-                    total_pages=pdf_result.page_count,
-                    categories=extract_categories,
-                    agent_prompt=agent_prompt,  # From unified_upload request
-                    workspace_id=workspace_id,
-                    enable_prompt_enhancement=enable_prompt_enhancement,
-                    job_id=job_id,
-                    pdf_path=temp_pdf_path,  # ✅ NEW: Enable two-stage discovery
-                    tracker=tracker  # ✅ HEARTBEAT: Pass tracker for heartbeat updates
-                ),
-                timeout_seconds=discovery_timeout,
-                operation_name="Product discovery (Stage 0A + 0B)"
-            )
+            catalog = stage_0_result["catalog"]
+            page_count = stage_0_result["page_count"]
+            file_size_mb = stage_0_result["file_size_mb"]
+            temp_pdf_path = stage_0_result["temp_pdf_path"]
 
         except Exception as discovery_error:
             # Re-raise discovery errors to be handled by outer exception handler
             raise discovery_error
 
-        logger.info(f"✅ [STAGE 0] Discovery Complete:")
-        logger.info(f"   Categories: {', '.join(extract_categories)}")
-        logger.info(f"   Products: {len(catalog.products)}")
-        if "certificates" in extract_categories:
-            logger.info(f"   Certificates: {len(catalog.certificates)}")
-        if "logos" in extract_categories:
-            logger.info(f"   Logos: {len(catalog.logos)}")
-        if "specifications" in extract_categories:
-            logger.info(f"   Specifications: {len(catalog.specifications)}")
-        logger.info(f"   Confidence: {catalog.confidence_score:.2f}")
+        # ✅ MODULAR ARCHITECTURE: Call Stage 1 - Focused Extraction
+        from app.api.pdf_processing.stage_1_focused_extraction import process_stage_1_focused_extraction
 
-        # Update tracker
-        tracker.products_created = len(catalog.products)
-        await tracker._sync_to_database(stage="product_discovery")
-
-        # Create PRODUCTS_DETECTED checkpoint (now includes all categories)
-        checkpoint_data = {
-            "document_id": document_id,
-            "categories": extract_categories,
-            "products_detected": len(catalog.products),
-            "product_names": [p.name for p in catalog.products],
-            "total_pages": pdf_result.page_count
-        }
-
-        # Add other categories if discovered
-        if "certificates" in extract_categories:
-            checkpoint_data["certificates_detected"] = len(catalog.certificates)
-            checkpoint_data["certificate_names"] = [c.name for c in catalog.certificates]
-        if "logos" in extract_categories:
-            checkpoint_data["logos_detected"] = len(catalog.logos)
-            checkpoint_data["logo_names"] = [l.name for l in catalog.logos]
-        if "specifications" in extract_categories:
-            checkpoint_data["specifications_detected"] = len(catalog.specifications)
-            checkpoint_data["specification_names"] = [s.name for s in catalog.specifications]
-
-        await checkpoint_recovery_service.create_checkpoint(
-            job_id=job_id,
-            stage=CheckpointStage.PRODUCTS_DETECTED,
-            data=checkpoint_data,
-            metadata={
-                "confidence_score": catalog.confidence_score,
-                "discovery_model": discovery_model
-            }
-        )
-        logger.info(f"✅ Created PRODUCTS_DETECTED checkpoint for job {job_id}")
-
-        # Stage 1: Focused Extraction (15-30%)
-        logger.info("🎯 [STAGE 1] Focused Extraction - Starting...")
-        await tracker.update_stage(ProcessingStage.EXTRACTING_TEXT, stage_name="focused_extraction")
-
-        product_pages = set()
-        if focused_extraction:
-            logger.info(f"   ENABLED - Processing ONLY pages with {len(catalog.products)} products")
-            invalid_pages_found = []
-            for product in catalog.products:
-                # ✅ CRITICAL FIX: Validate page numbers against PDF page count before adding
-                # Claude can hallucinate pages that don't exist (e.g., page 73 in a 71-page PDF)
-                valid_pages = [p for p in product.page_range if 1 <= p <= page_count]
-                invalid_pages = [p for p in product.page_range if p < 1 or p > page_count]
-
-                if invalid_pages:
-                    invalid_pages_found.extend(invalid_pages)
-                    logger.warning(f"   ⚠️ Product '{product.name}' has invalid pages {invalid_pages} (PDF has {page_count} pages) - skipping these pages")
-
-                product_pages.update(valid_pages)
-
-            if invalid_pages_found:
-                logger.warning(f"   ⚠️ Total invalid pages skipped: {sorted(set(invalid_pages_found))}")
-
-            pages_to_skip = set(range(1, page_count + 1)) - product_pages
-            for page_num in pages_to_skip:
-                tracker.skip_page_processing(page_num, "Not a product page (focused extraction)")
-
-            logger.info(f"   Product pages: {sorted(product_pages)}")
-            logger.info(f"   Processing: {len(product_pages)} / {page_count} pages")
-        else:
-            logger.info(f"   DISABLED - Processing ALL {page_count} pages")
-            product_pages = set(range(1, page_count + 1))
-
-        await tracker._sync_to_database(stage="focused_extraction")
-
-        # ✅ ARCHITECTURE FIX: NOW extract PDF text for ONLY the product pages
-        # This prevents OCR from being triggered on all pages
-        logger.info(f"📄 [STAGE 1B] Extracting text from {len(product_pages)} product pages...")
-
-        # Calculate progressive timeout for PDF extraction
-        pdf_extraction_timeout = ProgressiveTimeoutStrategy.calculate_pdf_extraction_timeout(
-            page_count=len(product_pages),  # Only product pages
-            file_size_mb=file_size_mb
-        )
-        logger.info(f"📊 Focused extraction: {len(product_pages)} pages, {file_size_mb:.1f} MB → timeout: {pdf_extraction_timeout:.0f}s")
-
-        pdf_processor = PDFProcessor()
-        pdf_result = await with_timeout(
-            pdf_processor.process_pdf_from_bytes(
-                pdf_bytes=file_content,
-                document_id=document_id,
-                processing_options={
-                    'extract_images': False,
-                    'extract_tables': False,
-                    'page_list': list(product_pages)  # ✅ KEY FIX: Extract ONLY product pages
-                }
-            ),
-            timeout_seconds=pdf_extraction_timeout,
-            operation_name="Focused PDF text extraction"
+        stage_1_result = await process_stage_1_focused_extraction(
+            file_content=file_content,
+            document_id=document_id,
+            catalog=catalog,
+            page_count=page_count,
+            file_size_mb=file_size_mb,
+            focused_extraction=focused_extraction,
+            tracker=tracker,
+            logger=logger
         )
 
-        logger.info(f"✅ Extracted text from {len(product_pages)} product pages")
-
-        # Update processed_documents with extracted content
-        try:
-            supabase.client.table('processed_documents').update({
-                "content": pdf_result.markdown_content or "",
-                "metadata": {
-                    "filename": filename,
-                    "file_size": len(file_content),
-                    "page_count": page_count,
-                    "extracted_pages": len(product_pages)
-                }
-            }).eq('id', document_id).execute()
-            logger.info(f"✅ Updated processed_documents with extracted content")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to update processed_documents content: {e}")
+        product_pages = stage_1_result["product_pages"]
+        pdf_result = stage_1_result["pdf_result"]
 
         # Stage 2: Chunking (30-50%)
         logger.info("📝 [STAGE 2] Chunking - Starting...")
@@ -2866,8 +2682,7 @@ async def process_document_with_discovery(
             'metadata': {
                 'title': title or filename,
                 'description': description,
-                'page_count': page_count,  # Total pages in PDF
-                'extracted_pages': len(product_pages),  # Pages actually extracted
+                'page_count': pdf_result.page_count,
                 'tags': document_tags,
                 'products_discovered': len(catalog.products),
                 'product_names': [p.name for p in catalog.products],
@@ -2884,10 +2699,10 @@ async def process_document_with_discovery(
 
         # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on page count
         chunking_timeout = ProgressiveTimeoutStrategy.calculate_chunking_timeout(
-            page_count=len(product_pages),  # Only product pages
+            page_count=pdf_result.page_count,
             chunk_size=chunk_size
         )
-        logger.info(f"📊 Chunking: {len(product_pages)} pages, chunk_size={chunk_size} → timeout: {chunking_timeout:.0f}s")
+        logger.info(f"📊 Chunking: {pdf_result.page_count} pages, chunk_size={chunk_size} → timeout: {chunking_timeout:.0f}s")
 
         chunk_result = await with_timeout(
             llamaindex_service.index_pdf_content(
@@ -2896,8 +2711,7 @@ async def process_document_with_discovery(
                 metadata={
                     'filename': filename,
                     'title': title,
-                    'page_count': page_count,  # Total pages
-                    'extracted_pages': len(product_pages),  # Pages actually extracted
+                    'page_count': pdf_result.page_count,
                     'product_pages': sorted(product_pages),
                     'chunk_size': chunk_size,
                     'chunk_overlap': chunk_overlap,
