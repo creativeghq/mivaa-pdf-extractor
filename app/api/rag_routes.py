@@ -30,9 +30,6 @@ from app.services.job_recovery_service import JobRecoveryService
 from app.services.checkpoint_recovery_service import checkpoint_recovery_service, ProcessingStage
 from app.services.supabase_client import get_supabase_client
 from app.utils.logging import PDFProcessingLogger
-from app.utils.progress_tracker import ProgressTracker
-from app.services.lazy_loader import get_component_manager
-from app.services.resource_manager import get_resource_manager
 
 # Import modular PDF processing stages
 from app.api.pdf_processing import (
