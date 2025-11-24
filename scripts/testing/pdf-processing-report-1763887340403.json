@@ -1,0 +1,40 @@
+{
+  "timestamp": "2025-11-23T08:42:20.402Z",
+  "job": {
+    "id": "2d25f932-558c-4343-b724-93ef77d5a1cf",
+    "document_id": "7da3dc0f-56b1-4211-83a2-2a570b010d5e"
+  },
+  "data": {
+    "chunks": [],
+    "images": [],
+    "products": [],
+    "embeddings": {
+      "text": [],
+      "image": [],
+      "visual": [],
+      "multimodal": []
+    },
+    "relationships": {
+      "chunkImage": [],
+      "productImage": [],
+      "chunkProduct": []
+    }
+  },
+  "summary": {
+    "total_chunks": 0,
+    "total_images": 0,
+    "total_products": 0,
+    "total_embeddings": 0,
+    "embeddings_by_type": {
+      "text": 0,
+      "image": 0,
+      "visual": 0,
+      "multimodal": 0
+    },
+    "relationships": {
+      "chunk_image": 0,
+      "product_image": 0,
+      "chunk_product": 0
+    }
+  }
+}
