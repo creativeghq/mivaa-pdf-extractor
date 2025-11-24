@@ -37,13 +37,10 @@ from app.services.search_prompt_service import SearchPromptService
 from app.services.stuck_job_analyzer import stuck_job_analyzer
 from app.services.vecs_service import get_vecs_service
 from app.services.ai_client_service import get_ai_client_service
-from app.services.progress_tracker import ProgressTracker
-from app.services.lazy_loader import get_component_manager
 from app.utils.logging import PDFProcessingLogger
 from app.utils.timeout_guard import with_timeout, TimeoutConstants, TimeoutError, ProgressiveTimeoutStrategy
 from app.utils.circuit_breaker import claude_breaker, llama_breaker, clip_breaker, CircuitBreakerError
 from app.utils.memory_monitor import memory_monitor
-from app.utils.resource_manager import get_resource_manager
 
 logger = logging.getLogger(__name__)
 
@@ -2783,29 +2780,72 @@ async def process_document_with_discovery(
             for product in catalog.products:
                 # ✅ CRITICAL FIX: Validate page numbers against PDF page count before adding
                 # Claude can hallucinate pages that don't exist (e.g., page 73 in a 71-page PDF)
-                valid_pages = [p for p in product.page_range if 1 <= p <= pdf_result.page_count]
-                invalid_pages = [p for p in product.page_range if p < 1 or p > pdf_result.page_count]
+                valid_pages = [p for p in product.page_range if 1 <= p <= page_count]
+                invalid_pages = [p for p in product.page_range if p < 1 or p > page_count]
 
                 if invalid_pages:
                     invalid_pages_found.extend(invalid_pages)
-                    logger.warning(f"   ⚠️ Product '{product.name}' has invalid pages {invalid_pages} (PDF has {pdf_result.page_count} pages) - skipping these pages")
+                    logger.warning(f"   ⚠️ Product '{product.name}' has invalid pages {invalid_pages} (PDF has {page_count} pages) - skipping these pages")
 
                 product_pages.update(valid_pages)
 
             if invalid_pages_found:
                 logger.warning(f"   ⚠️ Total invalid pages skipped: {sorted(set(invalid_pages_found))}")
 
-            pages_to_skip = set(range(1, pdf_result.page_count + 1)) - product_pages
+            pages_to_skip = set(range(1, page_count + 1)) - product_pages
             for page_num in pages_to_skip:
                 tracker.skip_page_processing(page_num, "Not a product page (focused extraction)")
 
             logger.info(f"   Product pages: {sorted(product_pages)}")
-            logger.info(f"   Processing: {len(product_pages)} / {pdf_result.page_count} pages")
+            logger.info(f"   Processing: {len(product_pages)} / {page_count} pages")
         else:
-            logger.info(f"   DISABLED - Processing ALL {pdf_result.page_count} pages")
-            product_pages = set(range(1, pdf_result.page_count + 1))
+            logger.info(f"   DISABLED - Processing ALL {page_count} pages")
+            product_pages = set(range(1, page_count + 1))
 
         await tracker._sync_to_database(stage="focused_extraction")
+
+        # ✅ ARCHITECTURE FIX: NOW extract PDF text for ONLY the product pages
+        # This prevents OCR from being triggered on all pages
+        logger.info(f"📄 [STAGE 1B] Extracting text from {len(product_pages)} product pages...")
+
+        # Calculate progressive timeout for PDF extraction
+        pdf_extraction_timeout = ProgressiveTimeoutStrategy.calculate_pdf_extraction_timeout(
+            page_count=len(product_pages),  # Only product pages
+            file_size_mb=file_size_mb
+        )
+        logger.info(f"📊 Focused extraction: {len(product_pages)} pages, {file_size_mb:.1f} MB → timeout: {pdf_extraction_timeout:.0f}s")
+
+        pdf_processor = PDFProcessor()
+        pdf_result = await with_timeout(
+            pdf_processor.process_pdf_from_bytes(
+                pdf_bytes=file_content,
+                document_id=document_id,
+                processing_options={
+                    'extract_images': False,
+                    'extract_tables': False,
+                    'page_list': list(product_pages)  # ✅ KEY FIX: Extract ONLY product pages
+                }
+            ),
+            timeout_seconds=pdf_extraction_timeout,
+            operation_name="Focused PDF text extraction"
+        )
+
+        logger.info(f"✅ Extracted text from {len(product_pages)} product pages")
+
+        # Update processed_documents with extracted content
+        try:
+            supabase.client.table('processed_documents').update({
+                "content": pdf_result.markdown_content or "",
+                "metadata": {
+                    "filename": filename,
+                    "file_size": len(file_content),
+                    "page_count": page_count,
+                    "extracted_pages": len(product_pages)
+                }
+            }).eq('id', document_id).execute()
+            logger.info(f"✅ Updated processed_documents with extracted content")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to update processed_documents content: {e}")
 
         # Stage 2: Chunking (30-50%)
         logger.info("📝 [STAGE 2] Chunking - Starting...")
@@ -2826,7 +2866,8 @@ async def process_document_with_discovery(
             'metadata': {
                 'title': title or filename,
                 'description': description,
-                'page_count': pdf_result.page_count,
+                'page_count': page_count,  # Total pages in PDF
+                'extracted_pages': len(product_pages),  # Pages actually extracted
                 'tags': document_tags,
                 'products_discovered': len(catalog.products),
                 'product_names': [p.name for p in catalog.products],
@@ -2843,10 +2884,10 @@ async def process_document_with_discovery(
 
         # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on page count
         chunking_timeout = ProgressiveTimeoutStrategy.calculate_chunking_timeout(
-            page_count=pdf_result.page_count,
+            page_count=len(product_pages),  # Only product pages
             chunk_size=chunk_size
         )
-        logger.info(f"📊 Chunking: {pdf_result.page_count} pages, chunk_size={chunk_size} → timeout: {chunking_timeout:.0f}s")
+        logger.info(f"📊 Chunking: {len(product_pages)} pages, chunk_size={chunk_size} → timeout: {chunking_timeout:.0f}s")
 
         chunk_result = await with_timeout(
             llamaindex_service.index_pdf_content(
@@ -2855,7 +2896,8 @@ async def process_document_with_discovery(
                 metadata={
                     'filename': filename,
                     'title': title,
-                    'page_count': pdf_result.page_count,
+                    'page_count': page_count,  # Total pages
+                    'extracted_pages': len(product_pages),  # Pages actually extracted
                     'product_pages': sorted(product_pages),
                     'chunk_size': chunk_size,
                     'chunk_overlap': chunk_overlap,
