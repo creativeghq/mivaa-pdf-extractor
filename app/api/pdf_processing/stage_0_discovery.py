@@ -118,13 +118,14 @@ async def process_stage_0_discovery(
         # This ensures product discovery has complete text to work with
         # The 200K char limit in discovery service will handle large PDFs
         logger.info(f"📄 Extracting FULL PDF text for product discovery...")
+        logger.info(f"⏱️  Using calculated timeout: {pdf_extraction_timeout:.0f}s ({pdf_extraction_timeout/60:.1f} minutes)")
 
         pdf_processor = PDFProcessor()
         pdf_result = await with_timeout(
             pdf_processor.process_pdf_from_bytes(
                 pdf_bytes=file_content,
                 document_id=document_id,
-                processing_options={'extract_images': False, 'extract_tables': False}
+                processing_options={'extract_images': False, 'extract_tables': False, 'markdown_timeout': pdf_extraction_timeout}
             ),
             timeout_seconds=pdf_extraction_timeout,
             operation_name="PDF text extraction"

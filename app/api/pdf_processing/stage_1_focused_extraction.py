@@ -99,7 +99,8 @@ async def process_stage_1_focused_extraction(
             processing_options={
                 'extract_images': False,
                 'extract_tables': False,
-                'page_list': list(product_pages)  # ✅ KEY FIX: Extract ONLY product pages
+                'page_list': list(product_pages),  # ✅ KEY FIX: Extract ONLY product pages
+                'markdown_timeout': pdf_extraction_timeout  # Pass calculated timeout to PDFProcessor
             }
         ),
         timeout_seconds=pdf_extraction_timeout,
