@@ -15,6 +15,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, status, BackgroundTasks
 from fastapi.responses import JSONResponse
 import asyncio
+import sentry_sdk
 try:
     # Try Pydantic v2 first
     from pydantic import BaseModel, Field, field_validator as validator
@@ -810,9 +811,9 @@ async def upload_document(
             processing_mode = "standard"
 
         # Use the existing process_document_with_discovery function
-        # Wrap async function for background execution
-        background_tasks.add_task(
-            run_async_in_background(process_document_with_discovery),
+        # Start task immediately using asyncio.create_task() instead of background_tasks
+        # This ensures the task starts executing right away, not after response is sent
+        asyncio.create_task(process_document_with_discovery(
             job_id=job_id,
             document_id=document_id,
             file_content=file_content,
@@ -828,7 +829,8 @@ async def upload_document(
             workspace_id=workspace_id,
             agent_prompt=agent_prompt,
             enable_prompt_enhancement=enable_prompt_enhancement
-        )
+        ))
+        logger.info(f"✅ Background processing task started for job {job_id}")
 
         return {
             "job_id": job_id,
@@ -2539,6 +2541,27 @@ async def process_document_with_discovery(
     logger.info(f"🤖 Discovery Model: {discovery_model.upper()}")
     logger.info(f"🎯 Focused Extraction: {'ENABLED' if focused_extraction else 'DISABLED (Full PDF)'}")
     logger.info(f"📦 Extract Categories: {', '.join(extract_categories).upper()}")
+
+    # Send job start event to Sentry
+    with sentry_sdk.push_scope() as scope:
+        scope.set_tag("job_id", job_id)
+        scope.set_tag("document_id", document_id)
+        scope.set_tag("discovery_model", discovery_model)
+        scope.set_tag("focused_extraction", focused_extraction)
+        scope.set_context("job_config", {
+            "filename": filename,
+            "discovery_model": discovery_model,
+            "focused_extraction": focused_extraction,
+            "extract_categories": extract_categories,
+            "chunk_size": chunk_size,
+            "chunk_overlap": chunk_overlap,
+            "workspace_id": workspace_id,
+            "started_at": start_time.isoformat()
+        })
+        sentry_sdk.capture_message(
+            f"🚀 PDF Processing Started: {filename} (Job: {job_id})",
+            level="info"
+        )
     logger.info("=" * 80)
 
     # Get AI model configuration
@@ -2556,6 +2579,7 @@ async def process_document_with_discovery(
         from app.services.progress_tracker import ProgressTracker
         from app.schemas.jobs import ProcessingStage
         from app.services.checkpoint_recovery_service import checkpoint_recovery_service, ProcessingStage as CheckpointStage
+        from app.services.job_progress_monitor import JobProgressMonitor
 
         tracker = ProgressTracker(
             job_id=job_id,
@@ -2567,6 +2591,11 @@ async def process_document_with_discovery(
 
         # 🫀 Start heartbeat monitoring (30s interval, 2min crash detection)
         await tracker.start_heartbeat(interval_seconds=30)
+
+        # 📊 Start detailed progress monitoring (reports every 60s to logs + Sentry)
+        progress_monitor = JobProgressMonitor(job_id=job_id, document_id=document_id, total_stages=9)
+        await progress_monitor.start()
+        logger.info(f"✅ Started detailed progress monitoring for job {job_id}")
 
         # Create INITIALIZED checkpoint
         await checkpoint_recovery_service.create_checkpoint(
@@ -2590,6 +2619,7 @@ async def process_document_with_discovery(
         # ============================================================================
         # STAGE 0: PRODUCT DISCOVERY (MODULAR)
         # ============================================================================
+        progress_monitor.update_stage("product_discovery", {"discovery_model": discovery_model})
         from app.api.pdf_processing.stage_0_discovery import process_stage_0_discovery
 
         stage_0_result = await process_stage_0_discovery(
@@ -2617,6 +2647,7 @@ async def process_document_with_discovery(
         # ============================================================================
         # STAGE 1: FOCUSED EXTRACTION (MODULAR)
         # ============================================================================
+        progress_monitor.update_stage("focused_extraction", {"products_found": len(catalog.products) if hasattr(catalog, 'products') else 0})
         from app.api.pdf_processing.stage_1_focused_extraction import process_stage_1_focused_extraction
 
         stage_1_result = await process_stage_1_focused_extraction(
@@ -2638,6 +2669,7 @@ async def process_document_with_discovery(
         # ============================================================================
         # STAGE 2: CHUNKING (MODULAR)
         # ============================================================================
+        progress_monitor.update_stage("chunking", {"product_pages": len(product_pages)})
         from app.api.pdf_processing.stage_2_chunking import process_stage_2_chunking
 
         supabase = get_supabase_client()
@@ -2670,6 +2702,7 @@ async def process_document_with_discovery(
         # ============================================================================
         # STAGE 3: IMAGE PROCESSING (MODULAR)
         # ============================================================================
+        progress_monitor.update_stage("image_processing", {"chunks_created": chunks_created})
         from app.api.pdf_processing.stage_3_images import process_stage_3_images
 
         stage_3_result = await process_stage_3_images(
@@ -2697,6 +2730,7 @@ async def process_document_with_discovery(
         # ============================================================================
         # STAGE 4: PRODUCT CREATION (MODULAR)
         # ============================================================================
+        progress_monitor.update_stage("product_creation", {"images_extracted": images_extracted})
         from app.api.pdf_processing.stage_4_products import process_stage_4_products
 
         stage_4_result = await process_stage_4_products(
@@ -2718,6 +2752,7 @@ async def process_document_with_discovery(
         # ============================================================================
         # STAGE 5: QUALITY ENHANCEMENT (MODULAR)
         # ============================================================================
+        progress_monitor.update_stage("quality_enhancement", {"products_created": products_created})
         from app.api.pdf_processing.stage_5_quality import process_stage_5_quality
         from app.utils.circuit_breaker import claude_breaker
 
@@ -2742,9 +2777,90 @@ async def process_document_with_discovery(
 
         # Stage 5 handles all SUCCESS cleanup (component unloading, resource cleanup, job completion)
         logger.info("✅ [MODULAR PIPELINE] All stages completed successfully")
-        
+
+        # Calculate total processing time
+        end_time = datetime.utcnow()
+        total_duration = (end_time - start_time).total_seconds()
+
+        # Send success event to Sentry with comprehensive metrics
+        with sentry_sdk.push_scope() as scope:
+            scope.set_tag("job_id", job_id)
+            scope.set_tag("document_id", document_id)
+            scope.set_tag("filename", filename)
+            scope.set_tag("discovery_model", discovery_model)
+            scope.set_tag("status", "completed")
+            scope.set_tag("duration_minutes", round(total_duration / 60, 2))
+
+            # Get final metrics from tracker if available
+            final_metrics = {}
+            if 'tracker' in locals():
+                try:
+                    final_metrics = {
+                        "total_duration_seconds": total_duration,
+                        "total_duration_minutes": round(total_duration / 60, 2),
+                        "stages_completed": len(progress_monitor.stage_history) if 'progress_monitor' in locals() else 0,
+                        "completed_at": end_time.isoformat()
+                    }
+                except Exception:
+                    pass
+
+            scope.set_context("completion_metrics", final_metrics)
+
+            sentry_sdk.capture_message(
+                f"✅ PDF Processing Completed: {filename} (Job: {job_id}) in {total_duration/60:.1f} minutes",
+                level="info"
+            )
+
+        # Stop progress monitoring
+        progress_monitor.update_stage("completed", {"success": True})
+        await progress_monitor.stop()
+        logger.info("✅ Stopped progress monitoring")
+
     except Exception as e:
         logger.error(f"❌ [PRODUCT DISCOVERY PIPELINE] FAILED: {e}", exc_info=True)
+
+        # Send detailed error to Sentry
+        with sentry_sdk.push_scope() as scope:
+            scope.set_tag("job_id", job_id)
+            scope.set_tag("document_id", document_id)
+            scope.set_tag("filename", filename)
+            scope.set_tag("discovery_model", discovery_model)
+            scope.set_tag("error_type", type(e).__name__)
+
+            # Add context about where the error occurred
+            current_stage = "unknown"
+            if 'progress_monitor' in locals():
+                current_stage = progress_monitor.current_stage
+                scope.set_tag("failed_stage", current_stage)
+                scope.set_context("stage_history", {
+                    "stages_completed": len(progress_monitor.stage_history),
+                    "current_stage": current_stage,
+                    "stage_history": progress_monitor.stage_history[-5:]
+                })
+
+            scope.set_context("error_details", {
+                "error_message": str(e),
+                "error_type": type(e).__name__,
+                "job_id": job_id,
+                "document_id": document_id,
+                "filename": filename,
+                "failed_at": datetime.utcnow().isoformat()
+            })
+
+            # Capture the exception with full context
+            sentry_sdk.capture_exception(e)
+
+            # Also send a message for easier filtering
+            sentry_sdk.capture_message(
+                f"❌ PDF Processing Failed: {filename} at stage {current_stage} - {type(e).__name__}: {str(e)}",
+                level="error"
+            )
+
+        # Stop progress monitoring on error
+        if 'progress_monitor' in locals():
+            progress_monitor.update_stage("failed", {"error": str(e)})
+            await progress_monitor.stop()
+            logger.info("✅ Stopped progress monitoring (error)")
 
         # LAZY LOADING: Unload all loaded components on error
         logger.info("🧹 Unloading loaded components due to error...")
