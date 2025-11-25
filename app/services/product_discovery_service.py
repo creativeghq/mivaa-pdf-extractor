@@ -1744,14 +1744,16 @@ IMPORTANT:
             result = response.content[0].text
 
             # Log AI call
-            await self.ai_logger.log_ai_call(
-                job_id=job_id,
+            latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+            await self.ai_logger.log_claude_call(
+                task="vision_product_discovery",
                 model=model_version,
-                operation="vision_product_discovery",
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
-                latency_ms=0,
-                success=True
+                response=response,
+                latency_ms=latency_ms,
+                confidence_score=0.9,
+                confidence_breakdown={},
+                action="use_ai_result",
+                job_id=job_id
             )
 
             self.logger.info(f"   ✅ Claude Vision response: {len(result)} characters")
@@ -1768,6 +1770,7 @@ IMPORTANT:
         job_id: Optional[str] = None
     ) -> str:
         """Call GPT Vision API with page images."""
+        start_time = datetime.now()
 
         try:
             client = openai.OpenAI(api_key=OPENAI_API_KEY)
@@ -1798,14 +1801,16 @@ IMPORTANT:
             result = response.choices[0].message.content
 
             # Log AI call
-            await self.ai_logger.log_ai_call(
-                job_id=job_id,
+            latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+            await self.ai_logger.log_gpt_call(
+                task="vision_product_discovery",
                 model="gpt-4o",
-                operation="vision_product_discovery",
-                input_tokens=response.usage.prompt_tokens,
-                output_tokens=response.usage.completion_tokens,
-                latency_ms=0,
-                success=True
+                response=response,
+                latency_ms=latency_ms,
+                confidence_score=0.9,
+                confidence_breakdown={},
+                action="use_ai_result",
+                job_id=job_id
             )
 
             self.logger.info(f"   ✅ GPT Vision response: {len(result)} characters")
