@@ -310,45 +310,75 @@ class RealEmbeddingsService:
             from PIL import Image
             import io
             import numpy as np
+            import asyncio
 
-            # Initialize SigLIP model (cached after first use)
+            # Initialize SigLIP model (cached after first use) WITH TIMEOUT
             if not hasattr(self, '_siglip_model'):
                 self.logger.info("🔄 Loading SigLIP model: google/siglip-so400m-patch14-384")
-                self._siglip_model = AutoModel.from_pretrained('google/siglip-so400m-patch14-384')
-                self._siglip_processor = AutoProcessor.from_pretrained('google/siglip-so400m-patch14-384')
-                self._siglip_model.eval()  # Set to evaluation mode
-                self.logger.info("✅ Initialized SigLIP model: google/siglip-so400m-patch14-384")
 
-            # Convert base64 image data to PIL Image
+                # Load model with timeout protection (60s max)
+                try:
+                    self._siglip_model = await asyncio.wait_for(
+                        asyncio.to_thread(AutoModel.from_pretrained, 'google/siglip-so400m-patch14-384'),
+                        timeout=60.0
+                    )
+                    self._siglip_processor = await asyncio.wait_for(
+                        asyncio.to_thread(AutoProcessor.from_pretrained, 'google/siglip-so400m-patch14-384'),
+                        timeout=60.0
+                    )
+                    self._siglip_model.eval()  # Set to evaluation mode
+                    self.logger.info("✅ Initialized SigLIP model: google/siglip-so400m-patch14-384")
+                except asyncio.TimeoutError:
+                    self.logger.error("❌ SigLIP model loading timed out after 60s")
+                    return None
+
+            # Convert base64 image data to PIL Image WITH TIMEOUT
             if image_data:
                 # Remove data URL prefix if present
                 if image_data.startswith('data:image'):
                     image_data = image_data.split(',')[1]
 
-                image_bytes = base64.b64decode(image_data)
-                pil_image = Image.open(io.BytesIO(image_bytes))
+                try:
+                    image_bytes = base64.b64decode(image_data)
+                    pil_image = await asyncio.wait_for(
+                        asyncio.to_thread(Image.open, io.BytesIO(image_bytes)),
+                        timeout=10.0
+                    )
 
-                # Convert RGBA to RGB if necessary
-                if pil_image.mode == 'RGBA':
-                    # Create white background
-                    rgb_image = Image.new('RGB', pil_image.size, (255, 255, 255))
-                    rgb_image.paste(pil_image, mask=pil_image.split()[3])  # Use alpha channel as mask
-                    pil_image = rgb_image
-                elif pil_image.mode != 'RGB':
-                    pil_image = pil_image.convert('RGB')
+                    # Convert RGBA to RGB if necessary
+                    if pil_image.mode == 'RGBA':
+                        # Create white background
+                        rgb_image = Image.new('RGB', pil_image.size, (255, 255, 255))
+                        rgb_image.paste(pil_image, mask=pil_image.split()[3])  # Use alpha channel as mask
+                        pil_image = rgb_image
+                    elif pil_image.mode != 'RGB':
+                        pil_image = pil_image.convert('RGB')
+                except asyncio.TimeoutError:
+                    self.logger.error("❌ Image decoding timed out after 10s")
+                    return None
 
-                # Generate embedding using SigLIP model
-                with torch.no_grad():
-                    inputs = self._siglip_processor(images=pil_image, return_tensors="pt")
-                    # Get image features from vision model
-                    image_features = self._siglip_model.get_image_features(**inputs)
+                # Generate embedding using SigLIP model WITH TIMEOUT
+                try:
+                    def _generate_embedding():
+                        with torch.no_grad():
+                            inputs = self._siglip_processor(images=pil_image, return_tensors="pt")
+                            # Get image features from vision model
+                            image_features = self._siglip_model.get_image_features(**inputs)
 
-                    # L2 normalize to unit vector
-                    embedding = image_features / image_features.norm(dim=-1, keepdim=True)
-                    embedding = embedding.squeeze().cpu().numpy()
+                            # L2 normalize to unit vector
+                            embedding = image_features / image_features.norm(dim=-1, keepdim=True)
+                            return embedding.squeeze().cpu().numpy()
 
-                self.logger.info(f"✅ Generated SigLIP visual embedding: {len(embedding)}D")
-                return embedding.tolist()
+                    embedding = await asyncio.wait_for(
+                        asyncio.to_thread(_generate_embedding),
+                        timeout=30.0  # 30s max for embedding generation
+                    )
+
+                    self.logger.info(f"✅ Generated SigLIP visual embedding: {len(embedding)}D")
+                    return embedding.tolist()
+                except asyncio.TimeoutError:
+                    self.logger.error("❌ SigLIP embedding generation timed out after 30s")
+                    return None
 
             elif image_url:
                 # Download image from URL
@@ -499,13 +529,25 @@ class RealEmbeddingsService:
             from PIL import Image
             import io
             import numpy as np
+            import asyncio
 
-            # Initialize CLIP model (cached after first use)
+            # Initialize CLIP model (cached after first use) WITH TIMEOUT
             if not hasattr(self, '_clip_model'):
-                self._clip_model = CLIPModel.from_pretrained('openai/clip-vit-base-patch32')
-                self._clip_processor = CLIPProcessor.from_pretrained('openai/clip-vit-base-patch32')
-                self._clip_model.eval()  # Set to evaluation mode
-                self.logger.info("✅ Initialized CLIP model for specialized embeddings")
+                self.logger.info("🔄 Loading CLIP model: openai/clip-vit-base-patch32")
+                try:
+                    self._clip_model = await asyncio.wait_for(
+                        asyncio.to_thread(CLIPModel.from_pretrained, 'openai/clip-vit-base-patch32'),
+                        timeout=60.0
+                    )
+                    self._clip_processor = await asyncio.wait_for(
+                        asyncio.to_thread(CLIPProcessor.from_pretrained, 'openai/clip-vit-base-patch32'),
+                        timeout=60.0
+                    )
+                    self._clip_model.eval()  # Set to evaluation mode
+                    self.logger.info("✅ Initialized CLIP model for specialized embeddings")
+                except asyncio.TimeoutError:
+                    self.logger.error("❌ CLIP model loading timed out after 60s")
+                    return None
 
             # Get PIL image
             pil_image = None
@@ -536,16 +578,26 @@ class RealEmbeddingsService:
             elif pil_image.mode != 'RGB':
                 pil_image = pil_image.convert('RGB')
 
-            # Generate base embedding using CLIP model
-            with torch.no_grad():
-                inputs = self._clip_processor(images=pil_image, return_tensors="pt")
-                image_features = self._clip_model.get_image_features(**inputs)
+            # Generate base embedding using CLIP model WITH TIMEOUT
+            try:
+                def _generate_clip_embedding():
+                    with torch.no_grad():
+                        inputs = self._clip_processor(images=pil_image, return_tensors="pt")
+                        image_features = self._clip_model.get_image_features(**inputs)
 
-                # Normalize to unit vector
-                embedding = image_features / image_features.norm(dim=-1, keepdim=True)
-                base_embedding = embedding.squeeze().cpu().numpy()
+                        # Normalize to unit vector
+                        embedding = image_features / image_features.norm(dim=-1, keepdim=True)
+                        return embedding.squeeze().cpu().numpy()
 
-            base_list = base_embedding.tolist()
+                base_embedding = await asyncio.wait_for(
+                    asyncio.to_thread(_generate_clip_embedding),
+                    timeout=30.0  # 30s max for embedding generation
+                )
+
+                base_list = base_embedding.tolist()
+            except asyncio.TimeoutError:
+                self.logger.error("❌ CLIP embedding generation timed out after 30s")
+                return None
 
             # For specialized embeddings, we use the base embedding
             # In a more advanced implementation, you could:
