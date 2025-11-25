@@ -273,8 +273,9 @@ class ProductDiscoveryService:
                     raise ValueError("pdf_path is required for vision-based discovery")
 
                 # Convert ALL pages to images (fast: ~1 minute for 71 pages)
+                # Note: Claude Vision limit is 2000px for multi-image requests
                 from app.utils.pdf_to_images import PDFToImagesConverter
-                converter = PDFToImagesConverter(dpi=150, max_dimension=2048)
+                converter = PDFToImagesConverter(dpi=150, max_dimension=1800)
                 page_images = converter.convert_pdf_to_images(pdf_path, max_pages=None)
 
                 self.logger.info(f"   ✅ Converted {len(page_images)} pages to images")
