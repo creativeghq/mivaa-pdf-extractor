@@ -830,6 +830,25 @@ jobs:
           ls -la /etc/systemd/system/mivaa-pdf-extractor.service
           "
 
+      # 4.5. Kill running jobs and clear state before restart
+      - name: 🧹 Clear running jobs before deployment
+        run: |
+          echo "🧹 Clearing all running jobs before deployment..."
+          echo "================================================"
+          ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          cd /var/www/mivaa-pdf-extractor
+          source .venv/bin/activate
+
+          # Set environment variables
+          export SUPABASE_URL='${{ secrets.SUPABASE_URL }}'
+          export SUPABASE_SERVICE_ROLE_KEY='${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}'
+
+          # Run the job cleanup script
+          python scripts/clear_jobs_before_deployment.py
+
+          echo '✅ Job cleanup complete - proceeding with deployment'
+          "
+
       # 4.6. Restart service
       - name: 🔄 Restart service
         run: |
@@ -845,6 +864,9 @@ jobs:
           # Check service status
           sudo systemctl status mivaa-pdf-extractor --no-pager
           "
+
+          echo ""
+          echo "✅ Service restarted with clean state - all old jobs cleared"
 
       # 6. Health Check & Diagnostics
       - name: 🏥 Health Check & Diagnostics
