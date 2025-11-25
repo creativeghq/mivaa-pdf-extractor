@@ -1640,11 +1640,20 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
 
         # Call vision model
         if "claude" in self.model:
-            result = await self._discover_with_claude_vision(vision_prompt, page_images, job_id)
+            result_str = await self._discover_with_claude_vision(vision_prompt, page_images, job_id)
         elif "gpt" in self.model:
-            result = await self._discover_with_gpt_vision(vision_prompt, page_images, job_id)
+            result_str = await self._discover_with_gpt_vision(vision_prompt, page_images, job_id)
         else:
             raise ValueError(f"Unknown vision model: {self.model}")
+
+        # Parse JSON string to dict
+        import json
+        try:
+            result = json.loads(result_str)
+        except json.JSONDecodeError as e:
+            self.logger.error(f"❌ Failed to parse vision model response as JSON: {e}")
+            self.logger.error(f"   Response: {result_str[:500]}...")
+            raise ValueError(f"Vision model returned invalid JSON: {e}")
 
         # Parse results
         catalog = self._parse_discovery_results(result, total_pages, categories)
@@ -1701,6 +1710,7 @@ IMPORTANT:
         job_id: Optional[str] = None
     ) -> str:
         """Call Claude Vision API with page images."""
+        start_time = datetime.now()
 
         try:
             client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
