@@ -2969,164 +2969,198 @@ Summary:"""
             except Exception as enrichment_error:
                 self.logger.warning(f"⚠️ Context enrichment failed (continuing without enrichment): {enrichment_error}")
 
-            for i, node in enumerate(nodes):
+            # ✅ MEMORY OPTIMIZATION: Process chunks in batches to avoid OOM
+            import gc
+            import psutil
+
+            CHUNK_BATCH_SIZE = 15  # Process 15 chunks at a time (reduced from 105 all at once)
+            total_chunks = len(nodes)
+
+            self.logger.info(f"🔄 Processing {total_chunks} chunks in batches of {CHUNK_BATCH_SIZE}")
+
+            for batch_start in range(0, total_chunks, CHUNK_BATCH_SIZE):
+                batch_end = min(batch_start + CHUNK_BATCH_SIZE, total_chunks)
+                batch_nodes = nodes[batch_start:batch_end]
+
+                # Log memory usage before batch
                 try:
-                    # ✅ NEW: Calculate quality score
-                    quality_score = self._calculate_chunk_quality(node.text)
+                    process = psutil.Process()
+                    mem_before = process.memory_info().rss / 1024 / 1024  # MB
+                    self.logger.info(f"🧠 Memory before batch {batch_start//CHUNK_BATCH_SIZE + 1}/{(total_chunks + CHUNK_BATCH_SIZE - 1)//CHUNK_BATCH_SIZE}: {mem_before:.1f} MB")
+                except:
+                    pass
 
-                    # ✅ NEW: Quality validation gates
-                    if not self._validate_chunk_quality(node.text, quality_score):
-                        rejection_stats['quality_rejected'] += 1
-                        rejection_stats['total_rejected'] += 1
-                        rejection_details.append({
-                            'chunk_index': i,
-                            'reason': 'quality_score',
-                            'quality_score': quality_score,
-                            'length': len(node.text),
-                            'content_preview': node.text[:100]
-                        })
-                        self.logger.warning(f"⚠️ Chunk {i} rejected: Low quality (score: {quality_score:.2f})")
-                        continue
+                # Process batch
+                batch_chunk_ids = []  # Store chunk IDs for batch embedding generation
+                batch_texts = []  # Store texts for batch embedding generation
+                batch_chunk_data = []  # Store chunk data for later use
 
-                    # ✅ NEW: Generate content hash for deduplication
-                    content_hash = self._generate_content_hash(node.text)
-
-                    # ✅ NEW: Check for exact duplicate chunks (hash-based)
-                    duplicate_check = supabase_client.client.table('document_chunks')\
-                        .select('id')\
-                        .eq('content_hash', content_hash)\
-                        .eq('document_id', document_id)\
-                        .execute()
-
-                    if duplicate_check.data and len(duplicate_check.data) > 0:
-                        rejection_stats['exact_duplicates'] += 1
-                        rejection_stats['total_rejected'] += 1
-                        rejection_details.append({
-                            'chunk_index': i,
-                            'reason': 'exact_duplicate',
-                            'content_hash': content_hash,
-                            'duplicate_of': duplicate_check.data[0]['id']
-                        })
-                        self.logger.warning(f"⚠️ Chunk {i} skipped: Exact duplicate (hash: {content_hash[:8]}...)")
-                        continue
-
-                    # ✅ ENHANCED: Check for semantic near-duplicates (embedding-based)
-                    if self._check_semantic_duplicates(supabase_client, node.text, document_id, similarity_threshold=0.85):
-                        rejection_stats['semantic_duplicates'] += 1
-                        rejection_stats['total_rejected'] += 1
-                        rejection_details.append({
-                            'chunk_index': i,
-                            'reason': 'semantic_duplicate',
-                            'similarity_threshold': 0.85
-                        })
-                        self.logger.warning(f"⚠️ Chunk {i} skipped: Semantic near-duplicate detected")
-                        continue
-
-                    # ✅ NEW: Classify chunk type BEFORE storing to exclude non-content chunks
+                for i, node in enumerate(batch_nodes, start=batch_start):
                     try:
-                        from .chunk_type_classification_service import ChunkType
-                        classification_result = await self.chunk_classifier.classify_chunk(node.text)
+                        # ✅ NEW: Calculate quality score
+                        quality_score = self._calculate_chunk_quality(node.text)
 
-                        # ✅ EXCLUDE non-content chunks (index pages, specs, etc.)
-                        EXCLUDED_TYPES = [
-                            ChunkType.INDEX_CONTENT,           # Index pages with product listings
-                            ChunkType.TECHNICAL_SPECS,         # Specs (goes in metadata instead)
-                            ChunkType.CERTIFICATION_INFO,      # Certs (separate entity)
-                            ChunkType.UNCLASSIFIED             # Too short/unclear
-                        ]
-
-                        if classification_result.chunk_type in EXCLUDED_TYPES:
-                            rejection_stats['excluded_type'] = rejection_stats.get('excluded_type', 0) + 1
+                        # ✅ NEW: Quality validation gates
+                        if not self._validate_chunk_quality(node.text, quality_score):
+                            rejection_stats['quality_rejected'] += 1
                             rejection_stats['total_rejected'] += 1
                             rejection_details.append({
                                 'chunk_index': i,
-                                'reason': 'excluded_chunk_type',
-                                'chunk_type': classification_result.chunk_type.value,
-                                'confidence': classification_result.confidence,
-                                'reasoning': classification_result.reasoning
+                                'reason': 'quality_score',
+                                'quality_score': quality_score,
+                                'length': len(node.text),
+                                'content_preview': node.text[:100]
                             })
-                            self.logger.info(f"⚠️ Chunk {i} excluded: {classification_result.chunk_type.value} (confidence: {classification_result.confidence:.2f})")
-                            continue  # Skip storing this chunk
+                            self.logger.warning(f"⚠️ Chunk {i} rejected: Low quality (score: {quality_score:.2f})")
+                            continue
 
-                    except Exception as classification_error:
-                        self.logger.warning(f"⚠️ Failed to classify chunk {i} for exclusion check: {classification_error}")
-                        # Continue with storage if classification fails (fail-safe)
-                        classification_result = None
+                        # ✅ NEW: Generate content hash for deduplication
+                        content_hash = self._generate_content_hash(node.text)
 
-                    # Store chunk in document_chunks table
-                    chunk_data = {
-                        'document_id': document_id,
-                        'workspace_id': metadata.get('workspace_id'),
-                        'content': node.text,
-                        'chunk_index': i,
-                        'content_hash': content_hash,  # ✅ NEW: Store hash
-                        'metadata': {
-                            'chunk_id': node.metadata.get('chunk_id', f"{document_id}_chunk_{i}"),
-                            'chunk_strategy': 'hierarchical',
-                            'chunk_size_actual': len(node.text),
-                            'total_chunks': len(nodes),
-                            'quality_score': quality_score,  # ✅ NEW: Store quality score
-                            'has_parent': node.parent_node is not None,
-                            'has_children': len(node.child_nodes) > 0 if hasattr(node, 'child_nodes') and node.child_nodes is not None else False,
-                            **node.metadata
-                        }
-                    }
+                        # ✅ NEW: Check for exact duplicate chunks (hash-based)
+                        duplicate_check = supabase_client.client.table('document_chunks')\
+                            .select('id')\
+                            .eq('content_hash', content_hash)\
+                            .eq('document_id', document_id)\
+                            .execute()
 
-                    # Insert chunk into database
-                    chunk_result = supabase_client.client.table('document_chunks').insert(chunk_data).execute()
+                        if duplicate_check.data and len(duplicate_check.data) > 0:
+                            rejection_stats['exact_duplicates'] += 1
+                            rejection_stats['total_rejected'] += 1
+                            rejection_details.append({
+                                'chunk_index': i,
+                                'reason': 'exact_duplicate',
+                                'content_hash': content_hash,
+                                'duplicate_of': duplicate_check.data[0]['id']
+                            })
+                            self.logger.warning(f"⚠️ Chunk {i} skipped: Exact duplicate (hash: {content_hash[:8]}...)")
+                            continue
 
-                    if chunk_result.data:
-                        chunk_id = chunk_result.data[0]['id']
-                        chunks_stored += 1
-                        # Store database UUID in node metadata for later use (for image-chunk relationships)
-                        node.metadata["db_chunk_id"] = chunk_id
+                        # ✅ ENHANCED: Check for semantic near-duplicates (embedding-based)
+                        if self._check_semantic_duplicates(supabase_client, node.text, document_id, similarity_threshold=0.85):
+                            rejection_stats['semantic_duplicates'] += 1
+                            rejection_stats['total_rejected'] += 1
+                            rejection_details.append({
+                                'chunk_index': i,
+                                'reason': 'semantic_duplicate',
+                                'similarity_threshold': 0.85
+                            })
+                            self.logger.warning(f"⚠️ Chunk {i} skipped: Semantic near-duplicate detected")
+                            continue
 
-                        # ✅ ENHANCED: Flag borderline quality chunks for review (score 0.6-0.7)
-                        if 0.6 <= quality_score < 0.7:
-                            self._flag_low_quality_chunk(
-                                supabase_client=supabase_client,
-                                chunk_id=chunk_id,
-                                document_id=document_id,
-                                workspace_id=metadata.get('workspace_id'),
-                                flag_type='borderline_quality',
-                                flag_reason=f'Quality score {quality_score:.2f} is below optimal threshold (0.7)',
-                                quality_score=quality_score,
-                                content_preview=node.text
-                            )
-
-                        # Update chunk with classification results (already computed above)
-                        if classification_result:
-                            try:
-                                classification_update = {
-                                    'chunk_type': classification_result.chunk_type.value,
-                                    'chunk_type_confidence': classification_result.confidence,
-                                    'chunk_type_metadata': classification_result.metadata
-                                }
-
-                                update_result = supabase_client.client.table('document_chunks').update(classification_update).eq('id', chunk_id).execute()
-
-                                if update_result.data:
-                                    self.logger.debug(f"✅ Classified chunk {i} as {classification_result.chunk_type.value} (confidence: {classification_result.confidence:.2f})")
-                                else:
-                                    self.logger.warning(f"⚠️ Failed to update chunk {i} with classification")
-
-                            except Exception as classification_error:
-                                self.logger.error(f"❌ Failed to update chunk {i} with classification: {classification_error}")
-                                # Continue processing even if classification update fails
-
-                        # Generate and store embedding
+                        # ✅ NEW: Classify chunk type BEFORE storing to exclude non-content chunks
                         try:
-                            # Check if embeddings are available
-                            if self.embeddings is None:
-                                self.logger.error(f"❌ Embeddings not initialized for chunk {i} - OPENAI_API_KEY not set in environment")
-                                if i == 0:
-                                    self.logger.error("   This will affect ALL chunks - no embeddings will be generated!")
-                                continue
+                            from .chunk_type_classification_service import ChunkType
+                            classification_result = await self.chunk_classifier.classify_chunk(node.text)
 
-                            # Generate embedding for the chunk using OpenAI directly
-                            embedding_vector = self.embeddings.get_text_embedding(node.text)
+                            # ✅ EXCLUDE non-content chunks (index pages, specs, etc.)
+                            EXCLUDED_TYPES = [
+                                ChunkType.INDEX_CONTENT,           # Index pages with product listings
+                                ChunkType.TECHNICAL_SPECS,         # Specs (goes in metadata instead)
+                                ChunkType.CERTIFICATION_INFO,      # Certs (separate entity)
+                                ChunkType.UNCLASSIFIED             # Too short/unclear
+                            ]
 
-                            if embedding_vector:
+                            if classification_result.chunk_type in EXCLUDED_TYPES:
+                                rejection_stats['excluded_type'] = rejection_stats.get('excluded_type', 0) + 1
+                                rejection_stats['total_rejected'] += 1
+                                rejection_details.append({
+                                    'chunk_index': i,
+                                    'reason': 'excluded_chunk_type',
+                                    'chunk_type': classification_result.chunk_type.value,
+                                    'confidence': classification_result.confidence,
+                                    'reasoning': classification_result.reasoning
+                                })
+                                self.logger.info(f"⚠️ Chunk {i} excluded: {classification_result.chunk_type.value} (confidence: {classification_result.confidence:.2f})")
+                                continue  # Skip storing this chunk
+
+                        except Exception as classification_error:
+                            self.logger.warning(f"⚠️ Failed to classify chunk {i} for exclusion check: {classification_error}")
+                            # Continue with storage if classification fails (fail-safe)
+                            classification_result = None
+
+                        # Store chunk in document_chunks table
+                        chunk_data = {
+                            'document_id': document_id,
+                            'workspace_id': metadata.get('workspace_id'),
+                            'content': node.text,
+                            'chunk_index': i,
+                            'content_hash': content_hash,  # ✅ NEW: Store hash
+                            'metadata': {
+                                'chunk_id': node.metadata.get('chunk_id', f"{document_id}_chunk_{i}"),
+                                'chunk_strategy': 'hierarchical',
+                                'chunk_size_actual': len(node.text),
+                                'total_chunks': len(nodes),
+                                'quality_score': quality_score,  # ✅ NEW: Store quality score
+                                'has_parent': node.parent_node is not None,
+                                'has_children': len(node.child_nodes) > 0 if hasattr(node, 'child_nodes') and node.child_nodes is not None else False,
+                                **node.metadata
+                            }
+                        }
+
+                        # Insert chunk into database
+                        chunk_result = supabase_client.client.table('document_chunks').insert(chunk_data).execute()
+
+                        if chunk_result.data:
+                            chunk_id = chunk_result.data[0]['id']
+                            chunks_stored += 1
+                            # Store database UUID in node metadata for later use (for image-chunk relationships)
+                            node.metadata["db_chunk_id"] = chunk_id
+
+                            # ✅ ENHANCED: Flag borderline quality chunks for review (score 0.6-0.7)
+                            if 0.6 <= quality_score < 0.7:
+                                self._flag_low_quality_chunk(
+                                    supabase_client=supabase_client,
+                                    chunk_id=chunk_id,
+                                    document_id=document_id,
+                                    workspace_id=metadata.get('workspace_id'),
+                                    flag_type='borderline_quality',
+                                    flag_reason=f'Quality score {quality_score:.2f} is below optimal threshold (0.7)',
+                                    quality_score=quality_score,
+                                    content_preview=node.text
+                                )
+
+                            # Update chunk with classification results (already computed above)
+                            if classification_result:
+                                try:
+                                    classification_update = {
+                                        'chunk_type': classification_result.chunk_type.value,
+                                        'chunk_type_confidence': classification_result.confidence,
+                                        'chunk_type_metadata': classification_result.metadata
+                                    }
+
+                                    update_result = supabase_client.client.table('document_chunks').update(classification_update).eq('id', chunk_id).execute()
+
+                                    if update_result.data:
+                                        self.logger.debug(f"✅ Classified chunk {i} as {classification_result.chunk_type.value} (confidence: {classification_result.confidence:.2f})")
+                                    else:
+                                        self.logger.warning(f"⚠️ Failed to update chunk {i} with classification")
+
+                                except Exception as classification_error:
+                                    self.logger.error(f"❌ Failed to update chunk {i} with classification: {classification_error}")
+                                    # Continue processing even if classification update fails
+
+                            # Collect for batch embedding generation
+                            batch_chunk_ids.append(chunk_id)
+                            batch_texts.append(node.text)
+                            batch_chunk_data.append(chunk_data)
+
+                    except Exception as chunk_error:
+                        self.logger.error(f"Failed to store chunk {i}: {chunk_error}")
+                        failed_chunks += 1
+
+                # ✅ BATCH EMBEDDING GENERATION: Generate embeddings for all chunks in batch
+                if batch_chunk_ids and self.embeddings is not None:
+                    try:
+                        self.logger.info(f"🔄 Generating embeddings for batch of {len(batch_texts)} chunks...")
+
+                        # Use batch embedding generation (calls OpenAI once for all chunks)
+                        embedding_vectors = self.embeddings._get_text_embeddings(batch_texts)
+
+                        # Store embeddings in database
+                        for idx, (chunk_id, embedding_vector, chunk_data) in enumerate(zip(batch_chunk_ids, embedding_vectors, batch_chunk_data)):
+                            try:
+                                if embedding_vector:
                                     # Store embedding in embeddings table
                                     embedding_data = {
                                         'chunk_id': chunk_id,
@@ -3146,7 +3180,7 @@ Summary:"""
                                             'document_id': document_id,
                                             'chunk_id': chunk_id,
                                             'workspace_id': metadata.get('workspace_id'),
-                                            'content': node.text,
+                                            'content': batch_texts[idx],
                                             'embedding': embedding_vector,
                                             'metadata': chunk_data['metadata'],
                                             'model_name': 'text-embedding-3-small'
@@ -3154,12 +3188,59 @@ Summary:"""
 
                                         supabase_client.client.table('document_vectors').insert(vector_data).execute()
 
-                        except Exception as embedding_error:
-                            self.logger.warning(f"Failed to generate/store embedding for chunk {i}: {embedding_error}")
+                            except Exception as embedding_error:
+                                self.logger.warning(f"Failed to store embedding for chunk {chunk_id}: {embedding_error}")
 
-                except Exception as chunk_error:
-                    self.logger.error(f"Failed to store chunk {i}: {chunk_error}")
-                    failed_chunks += 1
+                        self.logger.info(f"✅ Generated and stored {len(embedding_vectors)} embeddings for batch")
+
+                    except Exception as batch_embedding_error:
+                        self.logger.error(f"❌ Batch embedding generation failed: {batch_embedding_error}")
+                        # Fallback to individual embedding generation
+                        self.logger.info("⚠️ Falling back to individual embedding generation...")
+                        for chunk_id, text, chunk_data in zip(batch_chunk_ids, batch_texts, batch_chunk_data):
+                            try:
+                                embedding_vector = self.embeddings.get_text_embedding(text)
+                                if embedding_vector:
+                                    embedding_data = {
+                                        'chunk_id': chunk_id,
+                                        'workspace_id': metadata.get('workspace_id'),
+                                        'embedding': embedding_vector,
+                                        'model_name': 'text-embedding-3-small',
+                                        'dimensions': 1536
+                                    }
+                                    embedding_result = supabase_client.client.table('embeddings').insert(embedding_data).execute()
+                                    if embedding_result.data:
+                                        embeddings_stored += 1
+                                        vector_data = {
+                                            'document_id': document_id,
+                                            'chunk_id': chunk_id,
+                                            'workspace_id': metadata.get('workspace_id'),
+                                            'content': text,
+                                            'embedding': embedding_vector,
+                                            'metadata': chunk_data['metadata'],
+                                            'model_name': 'text-embedding-3-small'
+                                        }
+                                        supabase_client.client.table('document_vectors').insert(vector_data).execute()
+                            except Exception as fallback_error:
+                                self.logger.warning(f"Failed to generate embedding for chunk {chunk_id}: {fallback_error}")
+
+                elif batch_chunk_ids and self.embeddings is None:
+                    self.logger.error(f"❌ Embeddings not initialized - skipping {len(batch_chunk_ids)} chunks in batch")
+
+                # ✅ MEMORY OPTIMIZATION: Clear memory after each batch
+                gc.collect()
+
+                # Log memory usage after batch
+                try:
+                    mem_after = process.memory_info().rss / 1024 / 1024  # MB
+                    mem_freed = mem_before - mem_after
+                    self.logger.info(f"🧠 Memory after batch {batch_start//CHUNK_BATCH_SIZE + 1}: {mem_after:.1f} MB (freed: {mem_freed:.1f} MB)")
+                except:
+                    pass
+
+                self.logger.info(f"✅ Completed batch {batch_start//CHUNK_BATCH_SIZE + 1}/{(total_chunks + CHUNK_BATCH_SIZE - 1)//CHUNK_BATCH_SIZE}")
+
+            self.logger.info(f"✅ All batches completed: {chunks_stored} chunks stored, {embeddings_stored} embeddings generated")
 
             # ✅ NEW: Calculate acceptance rate
             rejection_stats['acceptance_rate'] = f"{(chunks_stored / len(nodes) * 100):.1f}%" if nodes else "0%"
