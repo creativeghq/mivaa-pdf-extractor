@@ -1727,9 +1727,9 @@ IMPORTANT:
             self.logger.info(f"   🤖 Calling Claude Vision with {len(page_images)} images...")
 
             # Determine model version
-            model_version = "claude-3-5-sonnet-20241022"  # Claude Sonnet 4.5
+            model_version = "claude-sonnet-4-5-20250929"  # Claude Sonnet 4.5
             if "haiku" in self.model:
-                model_version = "claude-3-5-haiku-20241022"  # Claude Haiku 4.5
+                model_version = "claude-haiku-4-5-20251001"  # Claude Haiku 4.5
 
             response = client.messages.create(
                 model=model_version,

@@ -202,16 +202,28 @@ async def process_stage_0_discovery(
         logger.info(f"📊 Product discovery: {pdf_result.page_count} pages, {len(extract_categories)} categories → timeout: {discovery_timeout:.0f}s")
 
         #NORMALIZE: Map discovery_model to expected values
-        # ProductDiscoveryService expects: "claude", "gpt", or "haiku"
+        # ProductDiscoveryService expects: "claude-vision", "claude", "gpt-vision", "gpt", "haiku-vision", "haiku"
         normalized_model = discovery_model.lower()
-        if "claude" in normalized_model or "sonnet" in normalized_model:
-            normalized_model = "claude"
-        elif "gpt" in normalized_model:
-            normalized_model = "gpt"
-        elif "haiku" in normalized_model:
-            normalized_model = "haiku"
+
+        # Keep vision suffix if present
+        if normalized_model.endswith('-vision'):
+            # Vision models: claude-vision, claude-haiku-vision, gpt-vision
+            if "haiku" in normalized_model:
+                normalized_model = "claude-haiku-vision"
+            elif "claude" in normalized_model or "sonnet" in normalized_model:
+                normalized_model = "claude-vision"
+            elif "gpt" in normalized_model:
+                normalized_model = "gpt-vision"
         else:
-            normalized_model = "claude"  # Default to Claude
+            # Text-only models (legacy)
+            if "claude" in normalized_model or "sonnet" in normalized_model:
+                normalized_model = "claude"
+            elif "gpt" in normalized_model:
+                normalized_model = "gpt"
+            elif "haiku" in normalized_model:
+                normalized_model = "haiku"
+            else:
+                normalized_model = "claude-vision"  # Default to Claude Vision (fastest)
 
         logger.info(f"🤖 Discovery model normalized: '{discovery_model}' → '{normalized_model}'")
 
