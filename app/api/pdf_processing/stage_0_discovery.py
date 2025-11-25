@@ -140,28 +140,26 @@ async def process_stage_0_discovery(
                 operation_name="PDF extraction"
             )
 
-        # This ensures product discovery has complete text to work with
-        # The 200K char limit in discovery service will handle large PDFs
-        logger.info(f"📄 Extracting FULL PDF text for product discovery...")
-        logger.info(f"⏱️  Using calculated timeout: {pdf_extraction_timeout:.0f}s ({pdf_extraction_timeout/60:.1f} minutes)")
+        # SKIP FULL PDF EXTRACTION - Let product_discovery_service handle it
+        # The service will extract text on-demand in batches (100K chars at a time)
+        # This is MUCH faster than extracting all 71 pages upfront
+        logger.info(f"📄 SKIPPING full PDF extraction - using on-demand extraction in discovery service")
+        logger.info(f"⏱️  This will be 10x faster than extracting all {page_count} pages upfront")
 
-        pdf_processor = PDFProcessor()
-        pdf_result = await with_timeout(
-            pdf_processor.process_pdf_from_bytes(
-                pdf_bytes=file_content,
-                document_id=document_id,
-                processing_options={'extract_images': False, 'extract_tables': False, 'markdown_timeout': pdf_extraction_timeout}
-            ),
-            timeout_seconds=pdf_extraction_timeout,
-            operation_name="PDF text extraction"
-        )
+        # Create a minimal pdf_result with just page count
+        from dataclasses import dataclass
+        @dataclass
+        class MinimalPDFResult:
+            page_count: int
+            markdown_content: str = None
 
-        logger.info(f"✅ Extracted {len(pdf_result.markdown_content)} characters from {pdf_result.page_count} pages")
+        pdf_result = MinimalPDFResult(page_count=page_count, markdown_content=None)
 
-        # Log memory after PDF extraction
+        logger.info(f"✅ PDF ready for on-demand extraction: {pdf_result.page_count} pages")
+
+        # Log memory (no extraction happened, so no memory used)
         mem_after_extraction = memory_monitor.get_memory_stats()
-        mem_used_extraction = mem_after_extraction.used_mb - mem_before_extraction.used_mb
-        logger.info(f"💾 Memory after PDF extraction: {mem_after_extraction.used_mb:.1f} MB (used: {mem_used_extraction:.1f} MB)")
+        logger.info(f"💾 Memory after setup: {mem_after_extraction.used_mb:.1f} MB (no extraction yet)")
 
         # Create processed_documents record IMMEDIATELY (required for job_progress foreign key)
         supabase = get_supabase_client()

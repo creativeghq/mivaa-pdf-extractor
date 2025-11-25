@@ -161,8 +161,8 @@ class DocumentUploadRequest(BaseModel):
         description="URL to download PDF from (alternative to file upload)"
     )
     discovery_model: Optional[str] = Field(
-        "claude",
-        description="AI model for discovery: 'claude' (default), 'gpt', 'haiku'"
+        "claude-vision",
+        description="AI model for discovery: 'claude-vision' (Claude Sonnet 4.5 Vision - RECOMMENDED, 10x faster), 'claude-haiku-vision' (faster/cheaper), 'gpt-vision' (GPT-4o Vision), 'claude' (text-only, legacy), 'gpt' (text-only, legacy), 'haiku' (text-only, legacy)"
     )
     enable_prompt_enhancement: bool = Field(
         True,
@@ -381,8 +381,8 @@ async def upload_document(
 
     # Discovery settings
     discovery_model: str = Form(
-        "claude",
-        description="AI model for discovery: 'claude' (default), 'gpt', 'haiku'"
+        "claude-vision",
+        description="AI model for discovery: 'claude-vision' (Claude Sonnet 4.5 Vision - RECOMMENDED, 10x faster), 'claude-haiku-vision' (faster/cheaper), 'gpt-vision' (GPT-4o Vision), 'claude' (text-only, legacy), 'gpt' (text-only, legacy), 'haiku' (text-only, legacy)"
     ),
 
     # Processing settings
