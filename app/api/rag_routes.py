@@ -2647,7 +2647,7 @@ async def process_document_with_discovery(
         # ============================================================================
         # STAGE 1: FOCUSED EXTRACTION (MODULAR)
         # ============================================================================
-        progress_monitor.update_stage("focused_extraction", {"products_found": len(catalog.get("products", []))})
+        progress_monitor.update_stage("focused_extraction", {"products_found": len(catalog.products) if hasattr(catalog, 'products') else 0})
         from app.api.pdf_processing.stage_1_focused_extraction import process_stage_1_focused_extraction
 
         stage_1_result = await process_stage_1_focused_extraction(
