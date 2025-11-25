@@ -14,6 +14,8 @@ from typing import Dict, Any, List, Set
 from datetime import datetime
 
 from app.utils.timeout_guard import with_timeout, ProgressiveTimeoutStrategy
+from app.utils.circuit_breaker import CircuitBreaker, CircuitBreakerError
+from app.utils.memory_monitor import memory_monitor
 from app.schemas.jobs import ProcessingStage, PageProcessingStatus
 from app.services.checkpoint_recovery_service import ProcessingStage as CheckpointStage
 
@@ -68,7 +70,18 @@ async def process_stage_0_discovery(
     
     logger.info("🔍 [STAGE 0] Product Discovery - Starting...")
     await tracker.update_stage(ProcessingStage.INITIALIZING, stage_name="product_discovery")
-    
+
+    # Initialize circuit breaker for AI API calls
+    discovery_breaker = CircuitBreaker(
+        name="ProductDiscovery",
+        failure_threshold=3,
+        timeout_seconds=120
+    )
+
+    # Log initial memory state
+    mem_stats = memory_monitor.get_memory_stats()
+    logger.info(f"💾 Initial memory: {mem_stats.used_mb:.1f} MB ({mem_stats.percent_used:.1f}%)")
+
     # Save PDF to temporary file for two-stage discovery
     temp_pdf_path = None
     try:
@@ -114,7 +127,19 @@ async def process_stage_0_discovery(
         )
         logger.info(f"📊 Document: {page_count} pages, {file_size_mb:.1f} MB → timeout: {pdf_extraction_timeout:.0f}s")
 
-        
+        # Check memory pressure before PDF extraction
+        mem_before_extraction = memory_monitor.get_memory_stats()
+        logger.info(f"💾 Memory before PDF extraction: {mem_before_extraction.used_mb:.1f} MB ({mem_before_extraction.percent_used:.1f}%)")
+
+        # Wait for memory if pressure is high
+        if mem_before_extraction.is_high_pressure:
+            logger.warning(f"⚠️ High memory pressure detected, waiting for memory to free up...")
+            await memory_monitor.wait_for_memory_available(
+                required_mb=200,  # Need 200MB for PDF extraction
+                max_wait_seconds=60,
+                operation_name="PDF extraction"
+            )
+
         # This ensures product discovery has complete text to work with
         # The 200K char limit in discovery service will handle large PDFs
         logger.info(f"📄 Extracting FULL PDF text for product discovery...")
@@ -132,6 +157,11 @@ async def process_stage_0_discovery(
         )
 
         logger.info(f"✅ Extracted {len(pdf_result.markdown_content)} characters from {pdf_result.page_count} pages")
+
+        # Log memory after PDF extraction
+        mem_after_extraction = memory_monitor.get_memory_stats()
+        mem_used_extraction = mem_after_extraction.used_mb - mem_before_extraction.used_mb
+        logger.info(f"💾 Memory after PDF extraction: {mem_after_extraction.used_mb:.1f} MB (used: {mem_used_extraction:.1f} MB)")
 
         # Create processed_documents record IMMEDIATELY (required for job_progress foreign key)
         supabase = get_supabase_client()
@@ -187,23 +217,38 @@ async def process_stage_0_discovery(
 
         logger.info(f"🤖 Discovery model normalized: '{discovery_model}' → '{normalized_model}'")
 
+        # Check memory before discovery
+        await memory_monitor.check_memory_pressure()
+
         discovery_service = ProductDiscoveryService(model=normalized_model)
-        catalog = await with_timeout(
-            discovery_service.discover_products(
-                pdf_content=file_content,
-                pdf_text=pdf_result.markdown_content,  # ✅ PASS FULL PDF TEXT
-                total_pages=pdf_result.page_count,
-                categories=extract_categories,
-                agent_prompt=agent_prompt,
-                workspace_id=workspace_id,
-                enable_prompt_enhancement=enable_prompt_enhancement,
-                job_id=job_id,
-                pdf_path=temp_pdf_path,
-                tracker=tracker
-            ),
-            timeout_seconds=discovery_timeout,
-            operation_name="Product discovery (Stage 0A + 0B)"
-        )
+
+        # Wrap discovery in circuit breaker for fail-fast protection
+        try:
+            catalog = await discovery_breaker.call(
+                lambda: with_timeout(
+                    discovery_service.discover_products(
+                        pdf_content=file_content,
+                        pdf_text=pdf_result.markdown_content,  # ✅ PASS FULL PDF TEXT
+                        total_pages=pdf_result.page_count,
+                        categories=extract_categories,
+                        agent_prompt=agent_prompt,
+                        workspace_id=workspace_id,
+                        enable_prompt_enhancement=enable_prompt_enhancement,
+                        job_id=job_id,
+                        pdf_path=temp_pdf_path,
+                        tracker=tracker
+                    ),
+                    timeout_seconds=discovery_timeout,
+                    operation_name="Product discovery (Stage 0A + 0B)"
+                )
+            )
+        except CircuitBreakerError as cb_error:
+            logger.error(f"❌ Product discovery failed (circuit breaker OPEN): {cb_error}")
+            raise Exception(f"Product discovery service unavailable: {cb_error}")
+
+        # Log memory after discovery
+        mem_after = memory_monitor.get_memory_stats()
+        logger.info(f"💾 Memory after discovery: {mem_after.used_mb:.1f} MB ({mem_after.percent_used:.1f}%)")
 
     except Exception as discovery_error:
         # Re-raise discovery errors to be handled by outer exception handler

@@ -17,6 +17,10 @@ from datetime import datetime
 import gc  # For garbage collection
 import psutil  # For memory monitoring
 
+# Import utilities
+from ..utils.circuit_breaker import CircuitBreaker, CircuitBreakerError
+from ..utils.memory_monitor import memory_monitor
+
 # Import the real embeddings service (replaces old embedding_service.py)
 from .real_embeddings_service import RealEmbeddingsService
 from ..schemas.embedding import EmbeddingConfig
@@ -2973,22 +2977,44 @@ Summary:"""
             import gc
             import psutil
 
-            CHUNK_BATCH_SIZE = 15  # Process 15 chunks at a time (reduced from 105 all at once)
+            # Initialize circuit breaker for OpenAI embedding API
+            embedding_breaker = CircuitBreaker(
+                name="OpenAIEmbeddings",
+                failure_threshold=3,
+                timeout_seconds=60
+            )
+
+            # ✅ DYNAMIC BATCH SIZE: Calculate optimal batch size based on available memory
+            CHUNK_BATCH_SIZE = memory_monitor.calculate_optimal_batch_size(
+                default_batch_size=15,
+                min_batch_size=5,
+                max_batch_size=30,
+                memory_per_item_mb=10.0  # Estimate 10MB per chunk with embedding
+            )
             total_chunks = len(nodes)
 
             self.logger.info(f"🔄 Processing {total_chunks} chunks in batches of {CHUNK_BATCH_SIZE}")
+            mem_stats = memory_monitor.get_memory_stats()
+            self.logger.info(f"💾 Initial memory: {mem_stats.used_mb:.1f} MB ({mem_stats.percent_used:.1f}%)")
 
             for batch_start in range(0, total_chunks, CHUNK_BATCH_SIZE):
                 batch_end = min(batch_start + CHUNK_BATCH_SIZE, total_chunks)
                 batch_nodes = nodes[batch_start:batch_end]
+                batch_num = batch_start // CHUNK_BATCH_SIZE + 1
+                total_batches = (total_chunks + CHUNK_BATCH_SIZE - 1) // CHUNK_BATCH_SIZE
 
-                # Log memory usage before batch
-                try:
-                    process = psutil.Process()
-                    mem_before = process.memory_info().rss / 1024 / 1024  # MB
-                    self.logger.info(f"🧠 Memory before batch {batch_start//CHUNK_BATCH_SIZE + 1}/{(total_chunks + CHUNK_BATCH_SIZE - 1)//CHUNK_BATCH_SIZE}: {mem_before:.1f} MB")
-                except:
-                    pass
+                # Check memory pressure before batch
+                mem_before = memory_monitor.get_memory_stats()
+                self.logger.info(f"💾 Memory before batch {batch_num}/{total_batches}: {mem_before.used_mb:.1f} MB ({mem_before.percent_used:.1f}%)")
+
+                # Wait for memory if pressure is high
+                if mem_before.is_high_pressure:
+                    self.logger.warning(f"⚠️ High memory pressure detected, waiting for memory to free up...")
+                    await memory_monitor.wait_for_memory_available(
+                        required_mb=CHUNK_BATCH_SIZE * 10,  # Need ~10MB per chunk
+                        max_wait_seconds=60,
+                        operation_name=f"Chunk batch {batch_num}"
+                    )
 
                 # Process batch
                 batch_chunk_ids = []  # Store chunk IDs for batch embedding generation
@@ -3154,8 +3180,14 @@ Summary:"""
                     try:
                         self.logger.info(f"🔄 Generating embeddings for batch of {len(batch_texts)} chunks...")
 
-                        # Use batch embedding generation (calls OpenAI once for all chunks)
-                        embedding_vectors = self.embeddings._get_text_embeddings(batch_texts)
+                        # Wrap batch embedding generation in circuit breaker
+                        try:
+                            embedding_vectors = await embedding_breaker.call(
+                                lambda: self.embeddings._get_text_embeddings(batch_texts)
+                            )
+                        except CircuitBreakerError as cb_error:
+                            self.logger.error(f"❌ Embedding generation failed (circuit breaker OPEN): {cb_error}")
+                            raise Exception(f"OpenAI embedding service unavailable: {cb_error}")
 
                         # Store embeddings in database
                         for idx, (chunk_id, embedding_vector, chunk_data) in enumerate(zip(batch_chunk_ids, embedding_vectors, batch_chunk_data)):
@@ -3231,14 +3263,11 @@ Summary:"""
                 gc.collect()
 
                 # Log memory usage after batch
-                try:
-                    mem_after = process.memory_info().rss / 1024 / 1024  # MB
-                    mem_freed = mem_before - mem_after
-                    self.logger.info(f"🧠 Memory after batch {batch_start//CHUNK_BATCH_SIZE + 1}: {mem_after:.1f} MB (freed: {mem_freed:.1f} MB)")
-                except:
-                    pass
+                mem_after = memory_monitor.get_memory_stats()
+                mem_freed = mem_before.used_mb - mem_after.used_mb
+                self.logger.info(f"💾 Memory after batch {batch_num}: {mem_after.used_mb:.1f} MB (freed: {mem_freed:.1f} MB, {mem_after.percent_used:.1f}%)")
 
-                self.logger.info(f"✅ Completed batch {batch_start//CHUNK_BATCH_SIZE + 1}/{(total_chunks + CHUNK_BATCH_SIZE - 1)//CHUNK_BATCH_SIZE}")
+                self.logger.info(f"✅ Completed batch {batch_num}/{total_batches}")
 
             self.logger.info(f"✅ All batches completed: {chunks_stored} chunks stored, {embeddings_stored} embeddings generated")
 
