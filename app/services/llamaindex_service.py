@@ -15,7 +15,6 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import gc  # For garbage collection
-import psutil  # For memory monitoring
 
 # Import utilities
 from ..utils.circuit_breaker import CircuitBreaker, CircuitBreakerError
@@ -2975,7 +2974,6 @@ Summary:"""
 
             # ✅ MEMORY OPTIMIZATION: Process chunks in batches to avoid OOM
             import gc
-            import psutil
 
             # Initialize circuit breaker for OpenAI embedding API
             embedding_breaker = CircuitBreaker(
@@ -3718,11 +3716,12 @@ Summary:"""
             for batch_start in range(0, total_images, BATCH_SIZE):
                 batch_end = min(batch_start + BATCH_SIZE, total_images)
                 batch_images = extracted_images[batch_start:batch_end]
+                batch_num = batch_start // BATCH_SIZE + 1
+                total_batches = (total_images + BATCH_SIZE - 1) // BATCH_SIZE
 
                 # Log memory usage before batch
-                process = psutil.Process()
-                mem_before = process.memory_info().rss / 1024 / 1024  # MB
-                self.logger.info(f"🧠 Memory before batch {batch_start//BATCH_SIZE + 1}: {mem_before:.1f} MB")
+                mem_before = memory_monitor.get_memory_stats()
+                self.logger.info(f"💾 Memory before image batch {batch_num}/{total_batches}: {mem_before.used_mb:.1f} MB ({mem_before.percent_used:.1f}%)")
 
                 for i, image_info in enumerate(batch_images, start=batch_start):
                     try:
@@ -3851,10 +3850,10 @@ Summary:"""
                 gc.collect()
 
                 # Log memory usage after batch
-                mem_after = process.memory_info().rss / 1024 / 1024  # MB
-                mem_freed = mem_before - mem_after
-                self.logger.info(f"🧠 Memory after batch {batch_start//BATCH_SIZE + 1}: {mem_after:.1f} MB (freed: {mem_freed:.1f} MB)")
-                self.logger.info(f"✅ Completed batch {batch_start//BATCH_SIZE + 1}/{(total_images + BATCH_SIZE - 1)//BATCH_SIZE}")
+                mem_after = memory_monitor.get_memory_stats()
+                mem_freed = mem_before.used_mb - mem_after.used_mb
+                self.logger.info(f"💾 Memory after image batch {batch_num}: {mem_after.used_mb:.1f} MB (freed: {mem_freed:.1f} MB, {mem_after.percent_used:.1f}%)")
+                self.logger.info(f"✅ Completed image batch {batch_num}/{total_batches}")
 
             # Clean up local image files and temp directory after processing
             self.logger.info("🧹 Cleaning up local image files and temp directory...")
