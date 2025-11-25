@@ -1648,11 +1648,20 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
 
         # Parse JSON string to dict
         import json
+        import re
+
+        # Strip markdown code blocks if present (Claude often wraps JSON in ```json ... ```)
+        result_str_clean = result_str.strip()
+        if result_str_clean.startswith("```"):
+            # Remove opening ```json or ``` and closing ```
+            result_str_clean = re.sub(r'^```(?:json)?\s*\n', '', result_str_clean)
+            result_str_clean = re.sub(r'\n```\s*$', '', result_str_clean)
+
         try:
-            result = json.loads(result_str)
+            result = json.loads(result_str_clean)
         except json.JSONDecodeError as e:
             self.logger.error(f"❌ Failed to parse vision model response as JSON: {e}")
-            self.logger.error(f"   Response: {result_str[:500]}...")
+            self.logger.error(f"   Response: {result_str_clean[:500]}...")
             raise ValueError(f"Vision model returned invalid JSON: {e}")
 
         # Parse results
