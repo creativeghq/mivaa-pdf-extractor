@@ -23,6 +23,7 @@ from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
 import httpx
 import numpy as np
+import sentry_sdk
 
 from app.services.ai_call_logger import AICallLogger
 from app.services.supabase_client import SupabaseClient
@@ -547,6 +548,10 @@ class RealEmbeddingsService:
                     self.logger.info("✅ Initialized CLIP model for specialized embeddings")
                 except asyncio.TimeoutError:
                     self.logger.error("❌ CLIP model loading timed out after 60s")
+                    sentry_sdk.capture_message(
+                        "❌ CLIP model loading timeout (60s)",
+                        level="error"
+                    )
                     return None
 
             # Get PIL image
@@ -597,6 +602,10 @@ class RealEmbeddingsService:
                 base_list = base_embedding.tolist()
             except asyncio.TimeoutError:
                 self.logger.error("❌ CLIP embedding generation timed out after 30s")
+                sentry_sdk.capture_message(
+                    "❌ CLIP embedding generation timeout (30s)",
+                    level="error"
+                )
                 return None
 
             # For specialized embeddings, we use the base embedding

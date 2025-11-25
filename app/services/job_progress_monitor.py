@@ -1,62 +1,56 @@
 """
 Job Progress Monitor Service
 
-Monitors job progress and sends detailed status updates every minute to:
-- Server logs (console)
-- Sentry (for remote monitoring)
-
-This service provides real-time visibility into long-running PDF processing jobs,
-helping identify stuck jobs and troubleshoot issues.
+Monitors job progress and sends detailed status updates to logs and Sentry every minute.
+This helps identify exactly where jobs get stuck and what's happening at each stage.
 """
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, List
-from app.database.supabase_client import get_supabase_client
+from datetime import datetime
+from typing import Dict, Optional, Any
+import sentry_sdk
 
 logger = logging.getLogger(__name__)
 
 
 class JobProgressMonitor:
     """
-    Monitors job progress and reports detailed status every 60 seconds.
+    Monitors job progress and reports detailed status every minute.
     
     Features:
-    - Logs detailed progress to console every 60s
+    - Logs detailed progress every 60 seconds
     - Sends status to Sentry for remote monitoring
     - Tracks stage transitions and time spent in each stage
-    - Identifies stuck jobs (>10min in one stage)
-    - Provides comprehensive status reports
+    - Identifies stuck jobs and reports exact location
     """
     
     def __init__(self, job_id: str, document_id: str, total_stages: int = 9):
-        """
-        Initialize the progress monitor.
-        
-        Args:
-            job_id: The job ID to monitor
-            document_id: The document ID being processed
-            total_stages: Total number of processing stages (default: 9)
-        """
         self.job_id = job_id
         self.document_id = document_id
         self.total_stages = total_stages
         self.current_stage = "initializing"
         self.current_stage_start = datetime.utcnow()
-        self.stage_history: List[Dict[str, Any]] = []
+        self.stage_history = []
+        self.last_report_time = datetime.utcnow()
+        self.monitoring_task = None
         self.is_running = False
-        self.monitoring_task: Optional[asyncio.Task] = None
-        self.start_time = datetime.utcnow()
         
-        logger.info(f"📊 [MONITOR] Initialized for job {job_id}")
-    
     async def start(self):
         """Start the monitoring task"""
+        if self.is_running:
+            return
+
         self.is_running = True
         self.monitoring_task = asyncio.create_task(self._monitor_loop())
-        logger.info(f"📊 [MONITOR] Started monitoring for job {self.job_id}")
-    
+
+        # Log to both console and Sentry
+        logger.info(f"📊 Started progress monitoring for job {self.job_id}")
+        sentry_sdk.capture_message(
+            f"📊 Started progress monitoring for job {self.job_id}",
+            level="info"
+        )
+        
     async def stop(self):
         """Stop the monitoring task"""
         self.is_running = False
@@ -66,54 +60,50 @@ class JobProgressMonitor:
                 await self.monitoring_task
             except asyncio.CancelledError:
                 pass
-        
-        # Send final report
-        await self._report_status(final=True)
-        logger.info(f"📊 [MONITOR] Stopped monitoring for job {self.job_id}")
-    
-    def update_stage(self, stage: str, details: Optional[Dict[str, Any]] = None):
-        """
-        Update current stage and log transition.
-        
-        Args:
-            stage: The new stage name
-            details: Optional details about the stage
-        """
-        # Record stage transition
-        stage_duration = (datetime.utcnow() - self.current_stage_start).total_seconds()
-        
-        self.stage_history.append({
-            "stage": self.current_stage,
-            "duration_seconds": stage_duration,
-            "completed_at": datetime.utcnow().isoformat()
-        })
-        
-        logger.info(
-            f"📊 [MONITOR] Stage transition: {self.current_stage} → {stage} "
-            f"(spent {stage_duration:.1f}s in {self.current_stage})"
+
+        # Log to both console and Sentry
+        logger.info(f"📊 Stopped progress monitoring for job {self.job_id}")
+        sentry_sdk.capture_message(
+            f"📊 Stopped progress monitoring for job {self.job_id}",
+            level="info"
         )
         
-        # Update to new stage
+    def update_stage(self, stage: str, details: Optional[Dict[str, Any]] = None):
+        """Update current stage and log transition"""
+        time_in_previous_stage = (datetime.utcnow() - self.current_stage_start).total_seconds()
+
+        self.stage_history.append({
+            "stage": self.current_stage,
+            "duration_seconds": time_in_previous_stage,
+            "completed_at": datetime.utcnow().isoformat()
+        })
+
+        # Log to console
+        logger.info(f"🔄 Job {self.job_id}: {self.current_stage} → {stage} (took {time_in_previous_stage:.1f}s)")
+
         self.current_stage = stage
         self.current_stage_start = datetime.utcnow()
-        
-        # Send to Sentry
-        try:
-            import sentry_sdk
+
+        # Send detailed stage transition to Sentry with full context
+        with sentry_sdk.push_scope() as scope:
+            scope.set_tag("job_id", self.job_id)
+            scope.set_tag("document_id", self.document_id)
+            scope.set_tag("stage", stage)
+            scope.set_tag("previous_stage", self.stage_history[-1]["stage"] if self.stage_history else "start")
+            scope.set_context("stage_transition", {
+                "from": self.stage_history[-1]["stage"] if self.stage_history else "start",
+                "to": stage,
+                "duration_seconds": time_in_previous_stage,
+                "duration_minutes": round(time_in_previous_stage / 60, 2),
+                "details": details or {},
+                "timestamp": datetime.utcnow().isoformat()
+            })
+
+            # Use Sentry's logger API for better integration
             sentry_sdk.capture_message(
-                f"Job {self.job_id}: Stage transition to {stage}",
-                level="info",
-                extras={
-                    "job_id": self.job_id,
-                    "document_id": self.document_id,
-                    "stage": stage,
-                    "previous_stage": self.stage_history[-1]["stage"] if self.stage_history else "none",
-                    "stage_duration": stage_duration,
-                    "details": details or {}
-                }
+                f"🔄 Stage Transition: {self.current_stage if self.stage_history else 'start'} → {stage} ({time_in_previous_stage:.1f}s)",
+                level="info"
             )
-        except Exception as e:
-            logger.warning(f"Failed to send stage transition to Sentry: {e}")
     
     async def _monitor_loop(self):
         """Monitor loop that reports status every minute"""
@@ -124,97 +114,68 @@ class JobProgressMonitor:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"❌ [MONITOR] Error in monitoring loop: {e}", exc_info=True)
-    
-    async def _report_status(self, final: bool = False):
-        """
-        Report detailed status to logs and Sentry.
-        
-        Args:
-            final: Whether this is the final report (job completed/failed)
-        """
-        try:
-            # Get job status from database
-            supabase = get_supabase_client()
-            job_response = supabase.client.table('background_jobs').select('*').eq('id', self.job_id).execute()
-            
-            if not job_response.data:
-                logger.warning(f"⚠️ [MONITOR] Job {self.job_id} not found in database")
-                return
-            
-            job = job_response.data[0]
-            
-            # Calculate metrics
-            total_duration = (datetime.utcnow() - self.start_time).total_seconds()
-            stage_duration = (datetime.utcnow() - self.current_stage_start).total_seconds()
-            
-            # Check if stuck (>10min in one stage)
-            is_stuck = stage_duration > 600  # 10 minutes
-            
-            # Build status report
-            status_report = {
-                "job_id": self.job_id,
-                "document_id": self.document_id,
+                # Log error to both console and Sentry
+                logger.error(f"❌ Error in monitoring loop: {e}", exc_info=True)
+                sentry_sdk.capture_exception(e)
+                
+    async def _report_status(self):
+        """Report detailed status to logs and Sentry"""
+        time_in_current_stage = (datetime.utcnow() - self.current_stage_start).total_seconds()
+        total_time = sum(s["duration_seconds"] for s in self.stage_history) + time_in_current_stage
+
+        status_msg = (
+            f"\n{'='*80}\n"
+            f"📊 JOB PROGRESS REPORT - {datetime.utcnow().strftime('%H:%M:%S')}\n"
+            f"{'='*80}\n"
+            f"Job ID: {self.job_id}\n"
+            f"Document ID: {self.document_id}\n"
+            f"Current Stage: {self.current_stage}\n"
+            f"Time in Current Stage: {time_in_current_stage:.1f}s ({time_in_current_stage/60:.1f}min)\n"
+            f"Total Processing Time: {total_time:.1f}s ({total_time/60:.1f}min)\n"
+            f"Stages Completed: {len(self.stage_history)}/{self.total_stages}\n"
+            f"\nStage History:\n"
+        )
+
+        for i, stage in enumerate(self.stage_history[-5:], 1):  # Last 5 stages
+            status_msg += f"  {i}. {stage['stage']}: {stage['duration_seconds']:.1f}s\n"
+
+        status_msg += f"{'='*80}\n"
+
+        # Log to console
+        logger.info(status_msg)
+
+        # Send comprehensive status to Sentry with full context
+        with sentry_sdk.push_scope() as scope:
+            scope.set_tag("job_id", self.job_id)
+            scope.set_tag("document_id", self.document_id)
+            scope.set_tag("current_stage", self.current_stage)
+            scope.set_tag("stages_completed", f"{len(self.stage_history)}/{self.total_stages}")
+            scope.set_tag("total_time_minutes", round(total_time / 60, 2))
+
+            scope.set_context("job_progress", {
                 "current_stage": self.current_stage,
-                "stage_duration_seconds": stage_duration,
-                "total_duration_seconds": total_duration,
-                "progress_percent": job.get('progress', 0),
-                "status": job.get('status', 'unknown'),
-                "is_stuck": is_stuck,
+                "time_in_stage_seconds": time_in_current_stage,
+                "time_in_stage_minutes": round(time_in_current_stage / 60, 2),
+                "total_time_seconds": total_time,
+                "total_time_minutes": round(total_time / 60, 2),
                 "stages_completed": len(self.stage_history),
                 "total_stages": self.total_stages,
-                "last_heartbeat": job.get('last_heartbeat'),
-                "metadata": job.get('metadata', {})
-            }
-            
-            # Log to console
-            report_type = "FINAL REPORT" if final else "STATUS REPORT"
-            logger.info("=" * 80)
-            logger.info(f"📊 [MONITOR] {report_type} - Job {self.job_id}")
-            logger.info("=" * 80)
-            logger.info(f"📄 Document ID: {self.document_id}")
-            logger.info(f"🎯 Current Stage: {self.current_stage}")
-            logger.info(f"⏱️  Stage Duration: {stage_duration:.1f}s ({stage_duration/60:.1f}min)")
-            logger.info(f"⏱️  Total Duration: {total_duration:.1f}s ({total_duration/60:.1f}min)")
-            logger.info(f"📊 Progress: {job.get('progress', 0)}%")
-            logger.info(f"✅ Status: {job.get('status', 'unknown').upper()}")
-            logger.info(f"🔄 Stages: {len(self.stage_history)}/{self.total_stages} completed")
-            
-            if is_stuck:
-                logger.warning(f"⚠️  STUCK: Job has been in '{self.current_stage}' stage for {stage_duration/60:.1f} minutes!")
-            
-            # Show stage history
-            if self.stage_history:
-                logger.info("📜 Stage History:")
-                for i, stage_info in enumerate(self.stage_history[-5:], 1):  # Last 5 stages
-                    logger.info(f"   {i}. {stage_info['stage']}: {stage_info['duration_seconds']:.1f}s")
-            
-            # Show metadata if available
-            metadata = job.get('metadata', {})
-            if metadata:
-                logger.info("📋 Metadata:")
-                for key, value in list(metadata.items())[:10]:  # First 10 items
-                    logger.info(f"   - {key}: {value}")
-            
-            logger.info("=" * 80)
-            
-            # Send to Sentry
-            try:
-                import sentry_sdk
-                
-                level = "warning" if is_stuck else "info"
-                message = f"Job {self.job_id}: {report_type} - {self.current_stage}"
-                
-                if is_stuck:
-                    message += f" (STUCK for {stage_duration/60:.1f}min)"
-                
+                "progress_percentage": round((len(self.stage_history) / self.total_stages) * 100, 1),
+                "stage_history": self.stage_history[-5:],
+                "timestamp": datetime.utcnow().isoformat()
+            })
+
+            # Alert if stuck in one stage for too long (10 minutes)
+            if time_in_current_stage > 600:
+                logger.warning(f"⚠️ Job {self.job_id} stuck in {self.current_stage} for {time_in_current_stage/60:.1f} minutes")
                 sentry_sdk.capture_message(
-                    message,
-                    level=level,
-                    extras=status_report
+                    f"⚠️ STUCK JOB: {self.job_id} in {self.current_stage} for {time_in_current_stage/60:.1f} minutes",
+                    level="warning"
                 )
-            except Exception as e:
-                logger.warning(f"Failed to send status to Sentry: {e}")
-        
-        except Exception as e:
-            logger.error(f"❌ [MONITOR] Failed to report status: {e}", exc_info=True)
+            else:
+                # Regular progress update
+                sentry_sdk.capture_message(
+                    f"📊 Progress Update: Job {self.job_id} - {self.current_stage} ({len(self.stage_history)}/{self.total_stages} stages, {total_time/60:.1f}min total)",
+                    level="info"
+                )
+

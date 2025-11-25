@@ -75,7 +75,7 @@ aiofiles==23.2.1
 # Logging and monitoring
 structlog==23.2.0
 python-json-logger==2.0.7
-sentry-sdk[fastapi]==1.40.6
+sentry-sdk[fastapi]>=2.35.0
 
 # Security and validation
 python-multipart>=0.0.6

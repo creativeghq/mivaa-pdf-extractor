@@ -40,6 +40,12 @@ sentry_sdk.init(
     profiles_sample_rate=1.0,
     # Environment tracking
     environment="production",
+    # Enable logs to be sent to Sentry (CRITICAL for monitoring)
+    enable_logs=True,
+    # Capture all log levels (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    _experiments={
+        "record_sql_params": True,
+    },
 )
 
 # Configure logging using the enhanced system
