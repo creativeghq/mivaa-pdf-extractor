@@ -368,18 +368,36 @@ class RealEmbeddingsService:
 
                             # L2 normalize to unit vector
                             embedding = image_features / image_features.norm(dim=-1, keepdim=True)
-                            return embedding.squeeze().cpu().numpy()
+                            result = embedding.squeeze().cpu().numpy()
+
+                            # Explicit memory cleanup
+                            del inputs, image_features, embedding
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+
+                            return result
 
                     embedding = await asyncio.wait_for(
                         asyncio.to_thread(_generate_embedding),
                         timeout=30.0  # 30s max for embedding generation
                     )
 
+                    # Close PIL image to free memory
+                    if hasattr(pil_image, 'close'):
+                        pil_image.close()
+
                     self.logger.info(f"✅ Generated SigLIP visual embedding: {len(embedding)}D")
                     return embedding.tolist()
                 except asyncio.TimeoutError:
                     self.logger.error("❌ SigLIP embedding generation timed out after 30s")
                     return None
+                finally:
+                    # Ensure PIL image is closed even on error
+                    if 'pil_image' in locals() and hasattr(pil_image, 'close'):
+                        try:
+                            pil_image.close()
+                        except:
+                            pass
 
             elif image_url:
                 # Download image from URL
@@ -592,7 +610,14 @@ class RealEmbeddingsService:
 
                         # Normalize to unit vector
                         embedding = image_features / image_features.norm(dim=-1, keepdim=True)
-                        return embedding.squeeze().cpu().numpy()
+                        result = embedding.squeeze().cpu().numpy()
+
+                        # Explicit memory cleanup
+                        del inputs, image_features, embedding
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+
+                        return result
 
                 base_embedding = await asyncio.wait_for(
                     asyncio.to_thread(_generate_clip_embedding),
@@ -600,6 +625,11 @@ class RealEmbeddingsService:
                 )
 
                 base_list = base_embedding.tolist()
+
+                # Close PIL image to free memory
+                if hasattr(pil_image, 'close'):
+                    pil_image.close()
+
             except asyncio.TimeoutError:
                 self.logger.error("❌ CLIP embedding generation timed out after 30s")
                 sentry_sdk.capture_message(
@@ -607,6 +637,13 @@ class RealEmbeddingsService:
                     level="error"
                 )
                 return None
+            finally:
+                # Ensure PIL image is closed even on error
+                if 'pil_image' in locals() and hasattr(pil_image, 'close'):
+                    try:
+                        pil_image.close()
+                    except:
+                        pass
 
             # For specialized embeddings, we use the base embedding
             # In a more advanced implementation, you could:
@@ -649,28 +686,43 @@ class RealEmbeddingsService:
 
     def unload_clip_model(self):
         """
-        Unload CLIP model from memory to free up resources.
-        
+        Unload CLIP and SigLIP models from memory to free up resources.
+
         Call this after batch processing to reduce memory footprint.
-        Model will be automatically reloaded on next use.
+        Models will be automatically reloaded on next use.
         """
         try:
+            import torch
+            import gc
+
+            models_unloaded = []
+
+            # Unload SigLIP model
+            if hasattr(self, '_siglip_model'):
+                del self._siglip_model
+                del self._siglip_processor
+                models_unloaded.append("SigLIP")
+
+            # Unload CLIP model
             if hasattr(self, '_clip_model'):
-                import torch
-                import gc
-                
                 del self._clip_model
                 del self._clip_processor
-                
+                models_unloaded.append("CLIP")
+
+            if models_unloaded:
                 # Clear CUDA cache if available
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-                
+
                 # Force garbage collection
                 gc.collect()
-                
-                self.logger.info("🧹 Unloaded CLIP model from memory")
+
+                self.logger.info(f"🧹 Unloaded {', '.join(models_unloaded)} model(s) from memory")
                 return True
+            else:
+                self.logger.debug("No models to unload")
+                return False
+
         except Exception as e:
-            self.logger.warning(f"Failed to unload CLIP model: {e}")
+            self.logger.warning(f"Failed to unload models: {e}")
             return False

@@ -108,23 +108,36 @@ async def process_stage_3_images(
     clip_breaker = CircuitBreaker(failure_threshold=5, timeout_seconds=60, name="CLIP")
     llama_breaker = CircuitBreaker(failure_threshold=5, timeout_seconds=60, name="Llama")
     
-    # Dynamic batch size calculation
-    DEFAULT_BATCH_SIZE = 15
+    # Dynamic batch size calculation - MORE CONSERVATIVE for CLIP/SigLIP models
+    # CLIP/SigLIP models use ~2-3GB RAM when loaded, so we need smaller batches
+    mem_stats = memory_monitor.get_memory_stats()
+    total_memory_gb = mem_stats.total_mb / 1024
+
+    # Adjust batch size based on total system memory
+    if total_memory_gb < 10:  # Low memory systems (< 10GB)
+        DEFAULT_BATCH_SIZE = 5
+        MAX_BATCH_SIZE = 8
+    elif total_memory_gb < 16:  # Medium memory systems (10-16GB)
+        DEFAULT_BATCH_SIZE = 10
+        MAX_BATCH_SIZE = 15
+    else:  # High memory systems (> 16GB)
+        DEFAULT_BATCH_SIZE = 15
+        MAX_BATCH_SIZE = 20
+
     BATCH_SIZE = memory_monitor.calculate_optimal_batch_size(
         default_batch_size=DEFAULT_BATCH_SIZE,
-        min_batch_size=5,
-        max_batch_size=20,
-        memory_per_item_mb=20.0  # Estimate 20MB per image
+        min_batch_size=3,  # Minimum 3 images per batch
+        max_batch_size=MAX_BATCH_SIZE,
+        memory_per_item_mb=50.0  # Increased estimate: 50MB per image (CLIP model overhead)
     )
-    
-    # Dynamic concurrency control
-    mem_stats = memory_monitor.get_memory_stats()
-    if mem_stats.percent_used < 50:
-        CONCURRENT_IMAGES = 8
-    elif mem_stats.percent_used < 70:
-        CONCURRENT_IMAGES = 5
+
+    # Dynamic concurrency control - MORE CONSERVATIVE
+    if mem_stats.percent_used < 40:
+        CONCURRENT_IMAGES = 3  # Reduced from 8
+    elif mem_stats.percent_used < 60:
+        CONCURRENT_IMAGES = 2  # Reduced from 5
     else:
-        CONCURRENT_IMAGES = 3
+        CONCURRENT_IMAGES = 1  # Process one at a time under memory pressure
     
     logger.info(f"   🔧 DYNAMIC BATCH PROCESSING: {BATCH_SIZE} images per batch")
     logger.info(f"   🚀 Concurrency level: {CONCURRENT_IMAGES} images (memory: {mem_stats.percent_used:.1f}%)")
@@ -507,18 +520,26 @@ async def process_stage_3_images(
 
         batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
 
-        # Garbage collection after batch
-        gc.collect()
-        
-        # Unload CLIP model to free memory (will reload on next use)
+        # AGGRESSIVE MEMORY CLEANUP after batch
+        logger.info(f"   🧹 Starting aggressive memory cleanup after batch {batch_num + 1}/{total_batches}...")
+
+        # 1. Unload CLIP/SigLIP models to free memory (will reload on next use)
         try:
-            embedding_service.unload_clip_model()
+            unloaded = embedding_service.unload_clip_model()
+            if unloaded:
+                logger.info("   ✅ Successfully unloaded CLIP/SigLIP models")
         except Exception as e:
-            logger.warning(f"Failed to unload CLIP model: {e}")
-        
+            logger.warning(f"   ⚠️ Failed to unload models: {e}")
+
+        # 2. Force garbage collection
+        gc.collect()
+
+        # 3. Small delay to allow OS to reclaim memory
+        await asyncio.sleep(0.5)
+
         mem_after = memory_monitor.get_memory_stats()
         mem_freed = mem_stats.used_mb - mem_after.used_mb
-        logger.info(f"   💾 Memory after batch: {mem_after.used_mb:.1f} MB (freed: {mem_freed:.1f} MB)")
+        logger.info(f"   💾 Memory after cleanup: {mem_after.used_mb:.1f} MB (freed: {mem_freed:.1f} MB, {mem_freed/mem_stats.used_mb*100:.1f}%)")
 
         # Check memory pressure
         if mem_after.is_high_pressure:
