@@ -193,17 +193,18 @@ class ProductDiscoveryService:
     def __init__(self, model: str = "claude"):
         """
         Initialize service.
-        
+
         Args:
-            model: "claude" for Claude Sonnet 4.5 or "gpt" for GPT-5
+            model: AI model to use - supports "claude", "claude-vision", "claude-haiku-vision", "gpt", "gpt-vision"
         """
         self.logger = logger
         self.model = model
         self.ai_logger = AICallLogger()
-        
-        if model == "claude" and not ANTHROPIC_API_KEY:
+
+        # Check API keys based on model family (claude/gpt)
+        if "claude" in model.lower() and not ANTHROPIC_API_KEY:
             raise ValueError("ANTHROPIC_API_KEY not set - cannot use Claude")
-        if model == "gpt" and not OPENAI_API_KEY:
+        if "gpt" in model.lower() and not OPENAI_API_KEY:
             raise ValueError("OPENAI_API_KEY not set - cannot use GPT")
     
     async def discover_products(
@@ -1624,8 +1625,8 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                 enable_prompt_enhancement
             )
 
-            # Call AI model
-            if self.model == "claude":
+            # Call AI model based on model family
+            if "claude" in self.model.lower():
                 batch_result = await self._discover_with_claude(index_prompt, job_id)
             else:
                 batch_result = await self._discover_with_gpt(index_prompt, job_id)
@@ -1729,10 +1730,10 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
         # Prepare images for vision model (send all pages at once)
         self.logger.info(f"   📤 Sending {len(page_images)} images to {self.model}...")
 
-        # Call vision model
-        if "claude" in self.model:
+        # Call vision model based on model family
+        if "claude" in self.model.lower():
             result_str = await self._discover_with_claude_vision(vision_prompt, page_images, job_id)
-        elif "gpt" in self.model:
+        elif "gpt" in self.model.lower():
             result_str = await self._discover_with_gpt_vision(vision_prompt, page_images, job_id)
         else:
             raise ValueError(f"Unknown vision model: {self.model}")

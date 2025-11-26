@@ -213,7 +213,7 @@ class DynamicMetadataExtractor:
         Initialize extractor.
 
         Args:
-            model: "claude" for Claude Sonnet 4.5 or "gpt" for GPT-4o
+            model: AI model to use - supports "claude", "claude-vision", "claude-haiku-vision", "gpt", "gpt-vision"
             job_id: Optional job ID for AI call logging
         """
         self.model = model
@@ -221,9 +221,10 @@ class DynamicMetadataExtractor:
         self.logger = logging.getLogger(__name__)
         self.ai_logger = AICallLogger()
 
-        if model == "claude" and not ANTHROPIC_API_KEY:
+        # Check API keys based on model family (claude/gpt)
+        if "claude" in model.lower() and not ANTHROPIC_API_KEY:
             raise ValueError("ANTHROPIC_API_KEY not set - cannot use Claude")
-        if model == "gpt" and not OPENAI_API_KEY:
+        if "gpt" in model.lower() and not OPENAI_API_KEY:
             raise ValueError("OPENAI_API_KEY not set - cannot use GPT")
     
     async def extract_metadata(
@@ -256,8 +257,8 @@ class DynamicMetadataExtractor:
             # Step 1: AI extraction
             prompt = get_dynamic_extraction_prompt(pdf_text, category_hint)
 
-            # Call AI model
-            if self.model == "claude":
+            # Call AI model based on model family
+            if "claude" in self.model.lower():
                 ai_response = await self._call_claude(prompt)
             else:
                 ai_response = await self._call_gpt(prompt)
