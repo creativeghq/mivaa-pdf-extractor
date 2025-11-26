@@ -6176,9 +6176,12 @@ Respond in JSON format:
     "reasoning": "brief explanation"
 }"""
 
-            # Call Llama Vision
-            response = await self.llama_client.chat.completions.create(
-                model=self.llama_vision_model,
+            # Call Llama Vision using TogetherAI service
+            from .together_ai_service import get_together_ai_service
+
+            together_service = await get_together_ai_service()
+            response = await together_service.client.chat.completions.create(
+                model="meta-llama/Llama-4-Scout-17B-16E-Instruct",
                 messages=[
                     {
                         "role": "user",

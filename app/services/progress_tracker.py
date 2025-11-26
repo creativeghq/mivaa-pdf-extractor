@@ -90,7 +90,7 @@ class ProgressTracker:
     _heartbeat_running: bool = field(default=False, init=False)
     last_heartbeat: Optional[datetime] = None
     last_db_sync: Optional[datetime] = None
-    MIN_SYNC_INTERVAL: float = 5.0  # Minimum seconds between database syncs (debouncing)
+    MIN_SYNC_INTERVAL: float = 2.0  # Minimum seconds between database syncs (reduced from 5.0 for more responsive updates)
 
     def __post_init__(self):
         """Initialize page statuses and database client."""

@@ -33,6 +33,13 @@ function logSection(title) {
 }
 
 async function cleanupOldTestData() {
+  // DISABLED: Do not delete jobs - we need them to see test results!
+  // Only cleanup should be done manually before running tests
+  log('CLEANUP', 'Cleanup disabled - preserving job records for analysis', 'info');
+  log('CLEANUP', 'Please manually cleanup old test data if needed before running tests', 'info');
+  return;
+
+  /* ORIGINAL CLEANUP CODE - DISABLED
   log('CLEANUP', 'Deleting all old test data from database...', 'step');
 
   try {
@@ -84,6 +91,7 @@ async function cleanupOldTestData() {
   } catch (error) {
     log('CLEANUP', `Error during cleanup: ${error.message}`, 'error');
   }
+  */
 }
 
 async function uploadPDFForNovaExtraction() {

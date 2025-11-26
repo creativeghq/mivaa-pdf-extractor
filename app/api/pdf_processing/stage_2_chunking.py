@@ -121,7 +121,7 @@ async def process_stage_2_chunking(
     )
     
     logger.info(f"📝 index_pdf_content returned: {chunk_result}")
-    
+
     tracker.chunks_created = chunk_result.get('chunks_created', 0)
     # NOTE: Don't pass chunks_created to update_database_stats because it increments!
     # We already set tracker.chunks_created directly above.
@@ -129,7 +129,10 @@ async def process_stage_2_chunking(
         kb_entries=tracker.chunks_created,
         sync_to_db=True
     )
-    
+
+    # Sync progress to database with stage name
+    await tracker._sync_to_database(stage="chunking")
+
     logger.info(f"✅ [STAGE 2] Chunking Complete: {tracker.chunks_created} chunks created")
     
     # Create CHUNKS_CREATED checkpoint
