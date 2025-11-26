@@ -24,7 +24,7 @@ from app.services.real_embeddings_service import RealEmbeddingsService
 from app.services.pdf_processor import PDFProcessor
 from app.utils.timeout_guard import with_timeout, TimeoutConstants, ProgressiveTimeoutStrategy
 from app.utils.circuit_breaker import CircuitBreaker, CircuitBreakerError
-from app.utils.memory_monitor import memory_monitor, global_memory_monitor
+from app.utils.memory_monitor import global_memory_monitor as memory_monitor
 from app.services.checkpoint_recovery_service import ProcessingStage as CheckpointStage
 
 logger = logging.getLogger(__name__)
@@ -480,16 +480,16 @@ async def process_stage_3_images(
         logger.info(f"🔄 Processing batch {batch_num + 1}/{total_batches} ({len(batch_images)} images)...")
 
         # Check memory pressure before processing batch
-        mem_stats = global_memory_monitor.get_memory_stats()
+        mem_stats = memory_monitor.get_memory_stats()
         if mem_stats.is_critical_pressure:
             logger.error(f"🔴 CRITICAL memory pressure: {mem_stats.percent_used:.1f}%")
-            global_memory_monitor.send_memory_alert(mem_stats, "critical")
-            global_memory_monitor.trigger_emergency_cleanup()
+            memory_monitor.send_memory_alert(mem_stats, "critical")
+            memory_monitor.trigger_emergency_cleanup()
             # Re-check after cleanup
-            mem_stats = global_memory_monitor.get_memory_stats()
+            mem_stats = memory_monitor.get_memory_stats()
         elif mem_stats.is_high_pressure:
             logger.warning(f"⚠️ High memory pressure: {mem_stats.percent_used:.1f}%")
-            global_memory_monitor.send_memory_alert(mem_stats, "warning")
+            memory_monitor.send_memory_alert(mem_stats, "warning")
         
         # Check memory before batch
         mem_stats = memory_monitor.get_memory_stats()

@@ -105,6 +105,7 @@ class ProductInfo:
     """
 
     image_indices: List[int] = None  # Which images belong to this product
+    page_types: Dict[int, str] = None  # Page type classification: {page_num: "TEXT"|"IMAGE"|"MIXED"|"EMPTY"}
     confidence: float = 0.0
 
 
@@ -1045,12 +1046,20 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                 # Remove None values
                 metadata = {k: v for k, v in metadata.items() if v is not None}
 
+            # Parse page_types (convert string keys to int)
+            page_types_raw = p.get("page_types", {})
+            page_types = {}
+            if page_types_raw:
+                for page_str, page_type in page_types_raw.items():
+                    page_types[int(page_str)] = page_type
+
             product = ProductInfo(
                 name=p.get("name", "Unknown"),
                 page_range=p.get("page_range", []),
                 description=p.get("description", ""),
                 metadata=metadata,
                 image_indices=p.get("image_pages", []),
+                page_types=page_types if page_types else None,
                 confidence=p.get("confidence", 0.8)
             )
             products.append(product)
@@ -1232,21 +1241,103 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                     all_product_pages.update(page_indices)
                     product_page_mapping[i] = page_indices
 
-            # Extract ALL product pages in a single PyMuPDF4LLM call
+            # ============================================================
+            # INTELLIGENT PAGE EXTRACTION BASED ON PAGE TYPES
+            # ============================================================
+            page_texts = {}
+
             if all_product_pages:
-                self.logger.info(f"   ⚡ OPTIMIZED: Extracting {len(all_product_pages)} unique pages in ONE pass for {len(catalog.products)} products")
                 sorted_pages = sorted(all_product_pages)
 
-                # Single extraction for all products (MUCH faster than sequential)
-                all_pages_text = pymupdf4llm.to_markdown(pdf_path, pages=sorted_pages)
+                # Separate pages by type for optimal processing
+                text_pages = []
+                image_pages = []
+                mixed_pages = []
 
-                # Parse the markdown to extract page-specific content
-                # PyMuPDF4LLM returns markdown with page markers
-                page_texts = self._split_markdown_by_pages(all_pages_text, sorted_pages)
+                # Collect page types from all products
+                for product in catalog.products:
+                    if product.page_types:
+                        for page_num, page_type in product.page_types.items():
+                            page_idx = page_num - 1  # Convert to 0-based
+                            if page_idx in sorted_pages:
+                                if page_type == "TEXT":
+                                    text_pages.append(page_idx)
+                                elif page_type == "IMAGE":
+                                    image_pages.append(page_idx)
+                                elif page_type == "MIXED":
+                                    mixed_pages.append(page_idx)
 
-                self.logger.info(f"      ✅ Extracted {len(all_pages_text)} characters from {len(sorted_pages)} pages")
+                # Remove duplicates
+                text_pages = sorted(set(text_pages))
+                image_pages = sorted(set(image_pages))
+                mixed_pages = sorted(set(mixed_pages))
+
+                self.logger.info(f"   📊 Page type distribution: {len(text_pages)} TEXT, {len(image_pages)} IMAGE, {len(mixed_pages)} MIXED")
+
+                # Extract TEXT pages using PyMuPDF4LLM (fast)
+                if text_pages:
+                    try:
+                        self.logger.info(f"   📄 Extracting {len(text_pages)} TEXT pages with PyMuPDF4LLM...")
+                        text_pages_markdown = pymupdf4llm.to_markdown(pdf_path, pages=text_pages)
+                        text_page_texts = self._split_markdown_by_pages(text_pages_markdown, text_pages)
+                        page_texts.update(text_page_texts)
+                        self.logger.info(f"      ✅ Extracted {len(text_pages_markdown)} characters from TEXT pages")
+                    except Exception as e:
+                        self.logger.warning(f"      ⚠️ PyMuPDF4LLM failed for TEXT pages: {e}")
+                        # Fall back to page-by-page
+                        for page_idx in text_pages:
+                            try:
+                                page_text = pymupdf4llm.to_markdown(pdf_path, pages=[page_idx])
+                                page_texts[page_idx] = page_text
+                            except Exception as page_error:
+                                self.logger.warning(f"         ⚠️ Skipping page {page_idx + 1}: {page_error}")
+                                page_texts[page_idx] = ""
+
+                # Extract IMAGE pages using Claude Vision data (already have it!)
+                if image_pages:
+                    self.logger.info(f"   🖼️  Using Claude Vision data for {len(image_pages)} IMAGE pages (already extracted in Stage 0A)")
+                    # Claude Vision data is already in the product metadata from Stage 0A
+                    # We'll use the description and metadata fields which contain the visual analysis
+                    for page_idx in image_pages:
+                        # For image pages, we use empty text since we rely on vision data
+                        # The vision data is already in product.description and product.metadata
+                        page_texts[page_idx] = ""  # Vision data already in product metadata
+
+                # Extract MIXED pages using BOTH methods
+                if mixed_pages:
+                    self.logger.info(f"   🔀 Extracting {len(mixed_pages)} MIXED pages with PyMuPDF4LLM...")
+                    try:
+                        mixed_pages_markdown = pymupdf4llm.to_markdown(pdf_path, pages=mixed_pages)
+                        mixed_page_texts = self._split_markdown_by_pages(mixed_pages_markdown, mixed_pages)
+                        page_texts.update(mixed_page_texts)
+                        self.logger.info(f"      ✅ Extracted {len(mixed_pages_markdown)} characters from MIXED pages")
+                    except Exception as e:
+                        self.logger.warning(f"      ⚠️ PyMuPDF4LLM failed for MIXED pages: {e}")
+                        # Fall back to page-by-page
+                        for page_idx in mixed_pages:
+                            try:
+                                page_text = pymupdf4llm.to_markdown(pdf_path, pages=[page_idx])
+                                page_texts[page_idx] = page_text
+                            except Exception as page_error:
+                                self.logger.warning(f"         ⚠️ Skipping page {page_idx + 1}: {page_error}")
+                                page_texts[page_idx] = ""
+
+                # Handle pages without type classification (fallback to old method)
+                unclassified_pages = [p for p in sorted_pages if p not in text_pages and p not in image_pages and p not in mixed_pages]
+                if unclassified_pages:
+                    self.logger.warning(f"   ⚠️ {len(unclassified_pages)} pages have no type classification, using PyMuPDF4LLM fallback")
+                    try:
+                        fallback_markdown = pymupdf4llm.to_markdown(pdf_path, pages=unclassified_pages)
+                        fallback_texts = self._split_markdown_by_pages(fallback_markdown, unclassified_pages)
+                        page_texts.update(fallback_texts)
+                    except Exception as e:
+                        self.logger.warning(f"      ⚠️ Fallback extraction failed: {e}")
+                        for page_idx in unclassified_pages:
+                            page_texts[page_idx] = ""
+
+                total_chars = sum(len(text) for text in page_texts.values())
+                self.logger.info(f"   ✅ Total extracted: {total_chars} characters from {len(page_texts)} pages")
             else:
-                page_texts = {}
                 self.logger.warning("   ⚠️ No valid pages found for any products")
 
             # Now process each product with its pre-extracted text
@@ -1688,6 +1779,21 @@ For each product found, provide:
 1. Product name
 2. Page numbers where it appears (as a range, e.g., [5, 6, 7])
 3. Brief description
+4. **PAGE TYPE CLASSIFICATION** for each page in the product's page_range
+
+**PAGE TYPE CLASSIFICATION:**
+For EACH page in the product's page_range, classify it as:
+- **"TEXT"**: Page has embedded text layer (readable text, not image-based)
+- **"IMAGE"**: Page is image-based with text as part of the image (no text layer)
+- **"MIXED"**: Page has both embedded text AND significant image content
+- **"EMPTY"**: Page is blank or has no meaningful content
+
+**HOW TO DETERMINE PAGE TYPE:**
+- Look at the page visually
+- If text appears crisp and selectable → "TEXT"
+- If text is part of a photograph/scan → "IMAGE"
+- If page has both readable text and images → "MIXED"
+- If page is blank → "EMPTY"
 
 Return results in JSON format:
 {{
@@ -1695,7 +1801,12 @@ Return results in JSON format:
     {{
       "name": "Product Name",
       "page_range": [5, 6, 7],
-      "description": "Brief description"
+      "description": "Brief description",
+      "page_types": {{
+        "5": "IMAGE",
+        "6": "MIXED",
+        "7": "TEXT"
+      }}
     }}
   ]
 }}
@@ -1705,6 +1816,7 @@ IMPORTANT:
 - Exclude index pages, table of contents, and cross-references
 - Only include actual product pages with detailed information
 - Be precise with page numbers
+- **MUST include page_types for ALL pages in page_range**
 """
 
         if agent_prompt:
