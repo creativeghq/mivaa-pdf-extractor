@@ -48,12 +48,8 @@ sentry_sdk.init(
     _experiments={
         "record_sql_params": True,
     },
-    # Connection pooling to prevent SSL exhaustion
-    transport=sentry_sdk.HttpTransport(
-        pool_maxsize=10,  # Limit connection pool size
-        pool_connections=5,  # Reusable connections
-        pool_block=False  # Don't block when pool is full
-    ),
+    # Use default HTTP transport (connection pooling handled internally)
+    # transport=sentry_sdk.HttpTransport(),  # Not needed - uses default
 )
 
 # Configure logging using the enhanced system
