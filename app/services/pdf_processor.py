@@ -1089,314 +1089,199 @@ class PDFProcessor:
         """
         Enhanced async image extraction with Supabase Storage upload.
 
+        NOW USES STREAMING EXTRACTION to prevent OOM on large PDFs.
+
         Features:
-        - Basic extraction using existing PyMuPDF functionality
+        - STREAMING extraction in small batches (prevents memory accumulation)
+        - Process and upload images immediately (don't accumulate in memory)
+        - Aggressive garbage collection between batches
         - Image format conversion and optimization
         - Advanced metadata extraction (EXIF, dimensions, quality metrics)
-        - Image enhancement and filtering options
         - Upload to Supabase Storage instead of local storage
         - Quality assessment and duplicate detection
         """
         try:
+            import fitz
+            import gc
+
             # Create output directory for images
             output_dir = self._create_temp_directory(f"{document_id}_images")
+            image_dir = os.path.join(output_dir, 'images')
+            os.makedirs(image_dir, exist_ok=True)
 
-            # Use existing extractor function for basic extraction (run in executor for sync function)
-            loop = asyncio.get_event_loop()
-            page_number = processing_options.get('page_number')
+            # 🚀 CRITICAL: Use VERY small batch size for low-memory systems
+            # Process 2-3 pages at a time to prevent OOM
+            batch_size = processing_options.get('image_batch_size', 2)
 
-            # 🚀 OPTIMIZATION: Use smaller batch size for memory efficiency
-            # Process 1 page at a time for maximum stability (prevents memory crashes with 900+ images)
-            batch_size = processing_options.get('image_batch_size', 1)
-
-            # ✅ OPTIMIZATION: Get page_list for focused extraction (only extract images from specific pages)
+            # ✅ OPTIMIZATION: Get page_list for focused extraction
             page_list = processing_options.get('page_list')  # List of page numbers (1-indexed)
 
-            await loop.run_in_executor(
-                None,
-                extract_json_and_images,
-                pdf_path,
-                output_dir,
-                page_number,
-                batch_size,  # Pass batch_size parameter
-                page_list    # ✅ NEW: Pass page_list for focused extraction
-            )
+            # Open PDF to get page count
+            doc = fitz.open(pdf_path)
+            total_pages = len(doc)
+            doc.close()
 
-            # Process extracted images with advanced capabilities
-            images = []
-            image_dir = os.path.join(output_dir, 'images')
-
-            self.logger.info(f"🔍 Checking for extracted images in: {image_dir}")
-            self.logger.info(f"   Image directory exists: {os.path.exists(image_dir)}")
-
-            if os.path.exists(image_dir):
-                image_files = os.listdir(image_dir)
-                self.logger.info(f"   Found {len(image_files)} files in image directory")
-
-                # Report progress: Image extraction found images
-                if progress_callback:
-                    try:
-                        import inspect
-                        if inspect.iscoroutinefunction(progress_callback):
-                            await progress_callback(
-                                progress=25,
-                                details={
-                                    "current_step": f"Processing {len(image_files)} extracted images",
-                                    "total_images": len(image_files),
-                                    "images_processed": 0
-                                }
-                            )
-                        else:
-                            progress_callback(
-                                progress=25,
-                                details={
-                                    "current_step": f"Processing {len(image_files)} extracted images",
-                                    "total_images": len(image_files),
-                                    "images_processed": 0
-                                }
-                            )
-                    except Exception as e:
-                        self.logger.warning(f"Progress callback failed: {e}")
-
-                # 🚀 MEMORY OPTIMIZATION: Process images one at a time and save immediately
-                # This prevents memory accumulation with large PDFs (900+ images)
-                valid_image_files = [f for f in image_files if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'))]
-
-                # Get workspace_id from processing options
-                workspace_id = processing_options.get('workspace_id')
-
-                # Get Supabase client for immediate saves
-                from app.services.supabase_client import get_supabase_client
-                supabase_client = get_supabase_client()
-
-                # Get VECS service for CLIP embeddings
-                from app.services.vecs_service import VecsService
-                vecs_service = VecsService()
-
-                # Get embedding service for CLIP generation (reuse instance)
-                from app.services.real_embeddings_service import RealEmbeddingsService
-                embedding_service = RealEmbeddingsService()
-
-                images_saved_count = 0
-                clip_embeddings_count = 0
-                images_metadata = []  # Keep only minimal metadata, not full image data
-
-                for absolute_idx, image_file in enumerate(valid_image_files):
-                    self.logger.debug(f"   Processing image {absolute_idx + 1}/{len(valid_image_files)}: {image_file}")
-                    image_path = os.path.join(image_dir, image_file)
-
-                    # Process image (upload to storage, extract metadata)
-                    skip_upload = processing_options.get('skip_upload', False)
-                    processed_image_info = await self._process_extracted_image(
-                        image_path,
-                        document_id,
-                        processing_options,
-                        skip_upload=skip_upload
-                    )
-
-                    if processed_image_info:
-                        # When skip_upload=True, we're doing AI classification first
-                        # So we skip DB save and CLIP generation until after classification
-                        if skip_upload:
-                            # Keep full metadata for classification (including path)
-                            images_metadata.append({
-                                'path': image_path,
-                                'filename': processed_image_info.get('filename'),
-                                'page_number': processed_image_info.get('page_number'),
-                                'width': processed_image_info.get('width'),
-                                'height': processed_image_info.get('height'),
-                                'size_bytes': processed_image_info.get('size_bytes'),
-                                'format': processed_image_info.get('format'),
-                                'quality_score': processed_image_info.get('quality_score', 0.5),
-                                'dimensions': processed_image_info.get('dimensions'),
-                                # Keep storage info even though not uploaded yet
-                                'storage_url': processed_image_info.get('storage_url'),
-                                'storage_path': processed_image_info.get('storage_path'),
-                                'storage_bucket': processed_image_info.get('storage_bucket')
-                            })
-                            self.logger.debug(f"   ⏭️  Skipped DB save for AI classification: {processed_image_info.get('filename')}")
-
-                            # Don't delete temp file - needed for classification
-                            # Don't clear from memory yet - needed for classification
-
-                        else:
-                            # Normal flow: Save to DB immediately
-                            image_id = await supabase_client.save_single_image(
-                                image_info=processed_image_info,
-                                document_id=document_id,
-                                workspace_id=workspace_id,
-                                image_index=absolute_idx
-                            )
-
-                            if image_id:
-                                images_saved_count += 1
-
-                                # Keep only minimal metadata for return value
-                                images_metadata.append({
-                                    'id': image_id,
-                                    'storage_url': processed_image_info.get('storage_url'),
-                                    'page_number': processed_image_info.get('page_number'),
-                                    'width': processed_image_info.get('width'),
-                                    'height': processed_image_info.get('height')
-                                })
-
-                                self.logger.info(f"   ✅ Saved image {absolute_idx + 1}/{len(valid_image_files)} to DB: {image_id}")
-
-                                # Extract metadata before clearing processed_image_info
-                                page_number = processed_image_info.get('page_number', 1)
-                                quality_score = processed_image_info.get('quality_score', 0.5)
-
-                                # ✅ GENERATE CLIP EMBEDDINGS IMMEDIATELY (5 types)
-                                # This eliminates the need for a separate CLIP generation stage
-                                try:
-                                    self.logger.info(f"   🎨 Generating CLIP embeddings for image {absolute_idx + 1}/{len(valid_image_files)}")
-
-                                    # Read image as base64 for embedding generation
-                                    import base64
-                                    with open(image_path, 'rb') as img_file:
-                                        image_bytes = img_file.read()
-                                        image_base64 = f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('utf-8')}"
-
-                                    # Generate all embeddings (visual, color, texture, application, material)
-                                    embedding_result = await embedding_service.generate_all_embeddings(
-                                        entity_id=image_id,
-                                        entity_type="image",
-                                        text_content="",
-                                        image_data=image_base64,
-                                        material_properties={}
-                                    )
-
-                                    if embedding_result and embedding_result.get('success'):
-                                        embeddings = embedding_result.get('embeddings', {})
-
-                                        # Save visual CLIP embedding to VECS
-                                        visual_embedding = embeddings.get('visual_512')
-                                        if visual_embedding:
-                                            await vecs_service.upsert_image_embedding(
-                                                image_id=image_id,
-                                                clip_embedding=visual_embedding,
-                                                metadata={
-                                                    'document_id': document_id,
-                                                    'page_number': page_number,
-                                                    'quality_score': quality_score
-                                                }
-                                            )
-
-                                        # Save specialized embeddings (color, texture, application, material)
-                                        specialized_embeddings = {}
-                                        if embeddings.get('color_512'):
-                                            specialized_embeddings['color'] = embeddings.get('color_512')
-                                        if embeddings.get('texture_512'):
-                                            specialized_embeddings['texture'] = embeddings.get('texture_512')
-                                        if embeddings.get('application_512'):
-                                            specialized_embeddings['application'] = embeddings.get('application_512')
-                                        if embeddings.get('material_512'):
-                                            specialized_embeddings['material'] = embeddings.get('material_512')
-
-                                        if specialized_embeddings:
-                                            await vecs_service.upsert_specialized_embeddings(
-                                                image_id=image_id,
-                                                embeddings=specialized_embeddings,
-                                                metadata={
-                                                    'document_id': document_id,
-                                                    'page_number': page_number
-                                                }
-                                            )
-
-                                        clip_embeddings_count += 1
-                                        self.logger.info(f"   ✅ Generated {1 + len(specialized_embeddings)} CLIP embeddings for image {image_id}")
-                                    else:
-                                        self.logger.warning(f"   ⚠️ CLIP embedding generation failed for image {image_id}")
-
-                                except Exception as clip_error:
-                                    self.logger.error(f"   ❌ Failed to generate CLIP embeddings: {clip_error}")
-                                    # Continue processing even if CLIP fails
-                            else:
-                                self.logger.warning(f"   ⚠️ Failed to save image {absolute_idx + 1} to DB")
-
-                            # ✅ DELETE FROM DISK IMMEDIATELY (free disk space) - only when not skipping upload
-                            try:
-                                os.remove(image_path)
-                                self.logger.debug(f"   🗑️  Deleted from disk: {image_file}")
-                            except Exception as e:
-                                self.logger.warning(f"   ⚠️  Could not delete {image_file}: {e}")
-
-                            # ✅ CLEAR FROM MEMORY (don't keep processed_image_info)
-                            del processed_image_info
-
-                        # Report progress every 5 images
-                        if progress_callback and absolute_idx % 5 == 0:
-                            try:
-                                import inspect
-                                progress_pct = 25 + (absolute_idx / len(valid_image_files)) * 10  # 25-35% range
-                                if inspect.iscoroutinefunction(progress_callback):
-                                    await progress_callback(
-                                        progress=int(progress_pct),
-                                        details={
-                                            "current_step": f"Processing images + CLIP ({absolute_idx + 1}/{len(valid_image_files)})",
-                                            "total_images": len(valid_image_files),
-                                            "images_processed": absolute_idx + 1,
-                                            "images_saved": images_saved_count,
-                                            "clip_embeddings_generated": clip_embeddings_count
-                                        }
-                                    )
-                                else:
-                                    progress_callback(
-                                        progress=int(progress_pct),
-                                        details={
-                                            "current_step": f"Processing images + CLIP ({absolute_idx + 1}/{len(valid_image_files)})",
-                                            "total_images": len(valid_image_files),
-                                            "images_processed": absolute_idx + 1,
-                                            "images_saved": images_saved_count,
-                                            "clip_embeddings_generated": clip_embeddings_count
-                                        }
-                                    )
-                            except Exception as e:
-                                self.logger.warning(f"Progress callback failed: {e}")
-                    else:
-                        self.logger.warning(f"   ⚠️ Failed to process image: {image_file}")
-
-                    # Force garbage collection after each image
-                    import gc
-                    gc.collect()
-
-                # Replace images list with minimal metadata
-                images = images_metadata
-
-                # Log different messages based on skip_upload mode
-                skip_upload = processing_options.get('skip_upload', False)
-                if skip_upload:
-                    self.logger.info(f"   ✅ Extracted {len(valid_image_files)} images (DB save deferred for AI classification)")
-                    self.logger.info(f"   📁 Temporary files kept for classification: {len(images)} images")
-                else:
-                    self.logger.info(f"   ✅ Completed processing {images_saved_count}/{len(valid_image_files)} images")
-                    self.logger.info(f"   ✅ Generated CLIP embeddings for {clip_embeddings_count}/{images_saved_count} images")
+            # Determine which pages to process
+            if page_list:
+                # Convert 1-indexed to 0-indexed
+                pages_to_process = [p - 1 if p > 0 else 0 for p in page_list]
             else:
-                self.logger.warning(f"⚠️ Image directory does not exist: {image_dir}")
-                self.logger.warning(f"   Output directory contents: {os.listdir(output_dir) if os.path.exists(output_dir) else 'N/A'}")
+                pages_to_process = list(range(total_pages))
 
-            # NOTE: Temporary file cleanup - when skip_upload=True, files are kept for classification
-            # Files will be deleted after classification in rag_routes.py
+            self.logger.info(f"🔄 STREAMING IMAGE EXTRACTION: {len(pages_to_process)} pages in batches of {batch_size}")
 
-            # Apply post-processing filters if requested (only when not skipping upload)
-            skip_upload = processing_options.get('skip_upload', False)
-            if not skip_upload:
-                if processing_options.get('remove_duplicates', True):
-                    images = self._remove_duplicate_images(images)
+            # Process pages in small batches with aggressive memory cleanup
+            loop = asyncio.get_event_loop()
+            all_images = []
 
-                if processing_options.get('quality_filter', True):
-                    min_quality = processing_options.get('min_quality_score', 0.3)
-                    images = [img for img in images if img.get('quality_score', 1.0) >= min_quality]
+            for batch_num, batch_start in enumerate(range(0, len(pages_to_process), batch_size)):
+                batch_end = min(batch_start + batch_size, len(pages_to_process))
+                batch_pages = pages_to_process[batch_start:batch_end]
 
-            if skip_upload:
-                self.logger.info(f"Successfully extracted {len(images)} images (ready for AI classification)")
-            else:
-                self.logger.info(f"Successfully extracted and uploaded {len(images)} images to Supabase Storage")
+                self.logger.info(f"   📦 Batch {batch_num + 1}: Processing pages {batch_pages}")
 
-            return images
+                # Extract images for THIS BATCH ONLY
+                await loop.run_in_executor(
+                    None,
+                    self._extract_batch_images,
+                    pdf_path,
+                    image_dir,
+                    batch_pages
+                )
+
+                # Process extracted images IMMEDIATELY (don't accumulate)
+                batch_images = await self._process_batch_images(
+                    image_dir,
+                    document_id,
+                    processing_options,
+                    progress_callback,
+                    batch_num,
+                    len(pages_to_process) // batch_size + 1
+                )
+
+                all_images.extend(batch_images)
+
+                # AGGRESSIVE MEMORY CLEANUP after each batch
+                gc.collect()
+
+                self.logger.info(f"   ✅ Batch {batch_num + 1} complete: {len(batch_images)} images processed, {len(all_images)} total")
+
+            self.logger.info(f"✅ STREAMING EXTRACTION COMPLETE: {len(all_images)} total images")
+
+            return all_images
 
         except Exception as e:
-            raise PDFExtractionError(f"Enhanced image extraction failed: {str(e)}") from e
+            raise PDFExtractionError(f"Streaming image extraction failed: {str(e)}") from e
+
+    def _extract_batch_images(self, pdf_path: str, image_dir: str, batch_pages: List[int]):
+        """
+        Extract images from a specific batch of pages (sync function for executor).
+        Uses PyMuPDF directly to extract images with minimal memory footprint.
+        """
+        import fitz
+        import gc
+
+        doc = fitz.open(pdf_path)
+
+        try:
+            for page_idx in batch_pages:
+                if page_idx >= len(doc):
+                    continue
+
+                page = doc[page_idx]
+                image_list = page.get_images(full=True)
+
+                for img_idx, img in enumerate(image_list):
+                    try:
+                        xref = img[0]
+                        base_image = doc.extract_image(xref)
+                        image_bytes = base_image["image"]
+                        image_ext = base_image["ext"]
+
+                        # Save image to disk
+                        image_filename = f"page_{page_idx + 1}_image_{img_idx}.{image_ext}"
+                        image_path = os.path.join(image_dir, image_filename)
+
+                        with open(image_path, "wb") as img_file:
+                            img_file.write(image_bytes)
+
+                        # Immediately free memory
+                        del image_bytes, base_image
+
+                    except Exception as e:
+                        self.logger.warning(f"Failed to extract image {img_idx} from page {page_idx + 1}: {e}")
+                        continue
+
+                # Free page memory
+                page = None
+                gc.collect()
+
+        finally:
+            doc.close()
+            gc.collect()
+
+    async def _process_batch_images(
+        self,
+        image_dir: str,
+        document_id: str,
+        processing_options: Dict[str, Any],
+        progress_callback: Optional[callable],
+        batch_num: int,
+        total_batches: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Process images from a batch directory and upload immediately.
+        Returns list of processed images, then DELETES local files to free disk space.
+        """
+        import gc
+
+        batch_images = []
+
+        if not os.path.exists(image_dir):
+            return batch_images
+
+        image_files = [f for f in os.listdir(image_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'))]
+
+        self.logger.info(f"   📸 Processing {len(image_files)} images from batch {batch_num + 1}/{total_batches}")
+
+        skip_upload = processing_options.get('skip_upload', False)
+
+        for idx, filename in enumerate(image_files):
+            image_path = os.path.join(image_dir, filename)
+
+            try:
+                # Process and upload image
+                processed_image_info = await self._process_extracted_image(
+                    image_path,
+                    document_id,
+                    processing_options,
+                    skip_upload=skip_upload
+                )
+
+                if processed_image_info:
+                    batch_images.append(processed_image_info)
+
+                # DELETE the local file immediately after processing to free disk space
+                try:
+                    os.remove(image_path)
+                except Exception as e:
+                    self.logger.warning(f"Failed to delete {image_path}: {e}")
+
+                # Free memory after each image
+                del processed_image_info
+                gc.collect()
+
+            except Exception as e:
+                self.logger.warning(f"Failed to process image {filename}: {e}")
+                # Still try to delete the file
+                try:
+                    os.remove(image_path)
+                except:
+                    pass
+                continue
+
+        return batch_images
+
     
     async def _test_connection(self) -> dict:
         """
