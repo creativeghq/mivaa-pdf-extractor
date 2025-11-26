@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 
 from app.schemas.jobs import ProcessingStage, PageProcessingStatus, JobProgressDetail
 from app.services.supabase_client import get_supabase_client
+from app.utils.retry_helper import async_retry_with_backoff
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,8 @@ class ProgressTracker:
     _heartbeat_task: Optional[Any] = field(default=None, init=False, repr=False)
     _heartbeat_running: bool = field(default=False, init=False)
     last_heartbeat: Optional[datetime] = None
+    last_db_sync: Optional[datetime] = None
+    MIN_SYNC_INTERVAL: float = 5.0  # Minimum seconds between database syncs (debouncing)
 
     def __post_init__(self):
         """Initialize page statuses and database client."""
@@ -111,15 +114,24 @@ class ProgressTracker:
                 status="pending"
             )
 
-    async def _sync_to_database(self, stage: Optional[str] = None):
+    @async_retry_with_backoff(max_retries=3, initial_delay=1.0, backoff_multiplier=2.0, max_delay=10.0)
+    async def _sync_to_database(self, stage: Optional[str] = None, force: bool = False):
         """
         Sync progress to database (background_jobs + job_progress tables).
 
         Args:
+            force: Force sync even if within debounce interval (default: False)
             stage: Optional stage name for job_progress table
         """
         if not self._db_sync_enabled or not self._supabase:
             return
+        # Debouncing: Skip sync if called too frequently (unless forced)
+        if not force and self.last_db_sync:
+            time_since_last_sync = (datetime.utcnow() - self.last_db_sync).total_seconds()
+            if time_since_last_sync < self.MIN_SYNC_INTERVAL:
+                logger.debug(f"⏭️  Skipping DB sync (debounced): {time_since_last_sync:.1f}s < {self.MIN_SYNC_INTERVAL}s")
+                return
+
 
         try:
             # 1. Update background_jobs table
@@ -193,6 +205,8 @@ class ProgressTracker:
 
             logger.debug(f"📊 Synced progress to DB: {progress_pct:.0f}% - {self.current_stage.value}")
 
+            # Update last sync timestamp
+            self.last_db_sync = datetime.utcnow()
         except Exception as e:
             logger.error(f"❌ Failed to sync progress to database: {e}")
             # Don't raise - progress sync failures shouldn't block processing

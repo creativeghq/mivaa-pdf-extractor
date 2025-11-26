@@ -6,6 +6,7 @@ for database operations and storage management.
 """
 
 import logging
+import httpx
 from datetime import datetime
 from typing import Any, Dict, Optional
 from supabase import create_client, Client
@@ -18,6 +19,7 @@ class SupabaseClient:
     """Singleton class for managing Supabase client instance."""
     
     _instance: Optional['SupabaseClient'] = None
+    _httpx_client: Optional[httpx.Client] = None
     _client: Optional[Client] = None
     
     def __new__(cls) -> 'SupabaseClient':
@@ -32,6 +34,29 @@ class SupabaseClient:
             self._initialized = True
             self._settings: Optional[Settings] = None
     
+    
+    def _create_httpx_client(self) -> httpx.Client:
+        """
+        Create httpx client with connection pooling and timeout configuration.
+        
+        Returns:
+            Configured httpx.Client instance
+        """
+        return httpx.Client(
+            limits=httpx.Limits(
+                max_connections=50,  # Total connection pool size
+                max_keepalive_connections=20,  # Reusable connections
+                keepalive_expiry=30.0  # Keep connections alive for 30 seconds
+            ),
+            timeout=httpx.Timeout(
+                connect=10.0,  # Connection timeout
+                read=30.0,  # Read timeout
+                write=30.0,  # Write timeout
+                pool=5.0  # Pool timeout
+            ),
+            http2=True,
+            follow_redirects=True
+        )
     def initialize(self, settings: Settings) -> None:
         """
         Initialize the Supabase client with configuration settings.
@@ -53,6 +78,10 @@ class SupabaseClient:
             if not settings.supabase_anon_key:
                 raise ValueError("SUPABASE_ANON_KEY is required but not provided")
             
+            # Create httpx client with connection pooling
+            self._httpx_client = self._create_httpx_client()
+            logger.info("✅ Created httpx client with connection pooling (max_connections=50, max_keepalive=20)")
+
             # Create Supabase client
             # Use service role key if available, otherwise use anon key
             supabase_key = settings.supabase_service_role_key or settings.supabase_anon_key

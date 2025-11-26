@@ -21,6 +21,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import sentry_sdk
+from sentry_sdk.integrations.logging import LoggingIntegration
+import urllib3
 
 # Import configuration and logging setup
 from app.config import get_settings, configure_logging
@@ -46,6 +48,12 @@ sentry_sdk.init(
     _experiments={
         "record_sql_params": True,
     },
+    # Connection pooling to prevent SSL exhaustion
+    transport=sentry_sdk.HttpTransport(
+        pool_maxsize=10,  # Limit connection pool size
+        pool_connections=5,  # Reusable connections
+        pool_block=False  # Don't block when pool is full
+    ),
 )
 
 # Configure logging using the enhanced system

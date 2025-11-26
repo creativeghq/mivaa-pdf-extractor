@@ -7,10 +7,65 @@ All critical async operations should be wrapped with these guards.
 
 import asyncio
 import logging
+import psutil
 from typing import TypeVar, Callable, Any, Optional
 from functools import wraps
 
 logger = logging.getLogger(__name__)
+
+def get_memory_multiplier() -> float:
+    """
+    Calculate timeout multiplier based on current memory usage.
+    
+    Returns:
+        float: Multiplier for timeout values (1.0 to 3.0)
+        - < 60% memory: 1.0x (normal)
+        - 60-80% memory: 1.5x (moderate pressure)
+        - 80-90% memory: 2.0x (high pressure)
+        - > 90% memory: 3.0x (critical pressure)
+    """
+    try:
+        mem = psutil.virtual_memory()
+        mem_percent = mem.percent
+        
+        if mem_percent < 60:
+            return 1.0
+        elif mem_percent < 80:
+            multiplier = 1.5
+            logger.debug(f"⚠️ Moderate memory pressure ({mem_percent:.1f}%) - increasing timeouts by {multiplier}x")
+            return multiplier
+        elif mem_percent < 90:
+            multiplier = 2.0
+            logger.warning(f"🔴 High memory pressure ({mem_percent:.1f}%) - increasing timeouts by {multiplier}x")
+            return multiplier
+        else:
+            multiplier = 3.0
+            logger.error(f"🔴🔴 CRITICAL memory pressure ({mem_percent:.1f}%) - increasing timeouts by {multiplier}x")
+            return multiplier
+    except Exception as e:
+        logger.warning(f"Failed to get memory stats: {e}, using default multiplier 1.0")
+        return 1.0
+
+
+def get_memory_aware_timeout(base_timeout: float, operation_name: str = "") -> float:
+    """
+    Get memory-aware timeout value.
+    
+    Args:
+        base_timeout: Base timeout in seconds
+        operation_name: Optional operation name for logging
+    
+    Returns:
+        Adjusted timeout based on current memory pressure
+    """
+    multiplier = get_memory_multiplier()
+    adjusted_timeout = base_timeout * multiplier
+    
+    if multiplier > 1.0:
+        logger.info(f"⏱️ {operation_name} timeout adjusted: {base_timeout}s → {adjusted_timeout:.0f}s (memory pressure)")
+    
+    return adjusted_timeout
+
 
 T = TypeVar('T')
 
@@ -50,6 +105,9 @@ async def with_timeout(
             operation_name="PDF extraction"
         )
     """
+    # Apply memory-aware timeout adjustment
+    timeout_seconds = get_memory_aware_timeout(timeout_seconds, operation_name)
+    
     try:
         result = await asyncio.wait_for(coro, timeout=timeout_seconds)
         return result

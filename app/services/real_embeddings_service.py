@@ -646,3 +646,31 @@ class RealEmbeddingsService:
     #
     # These were redundant - text_embedding_1536 already contains all this information!
 
+
+    def unload_clip_model(self):
+        """
+        Unload CLIP model from memory to free up resources.
+        
+        Call this after batch processing to reduce memory footprint.
+        Model will be automatically reloaded on next use.
+        """
+        try:
+            if hasattr(self, '_clip_model'):
+                import torch
+                import gc
+                
+                del self._clip_model
+                del self._clip_processor
+                
+                # Clear CUDA cache if available
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                
+                # Force garbage collection
+                gc.collect()
+                
+                self.logger.info("🧹 Unloaded CLIP model from memory")
+                return True
+        except Exception as e:
+            self.logger.warning(f"Failed to unload CLIP model: {e}")
+            return False

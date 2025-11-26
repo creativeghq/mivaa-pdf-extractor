@@ -24,7 +24,7 @@ from app.services.real_embeddings_service import RealEmbeddingsService
 from app.services.pdf_processor import PDFProcessor
 from app.utils.timeout_guard import with_timeout, TimeoutConstants, ProgressiveTimeoutStrategy
 from app.utils.circuit_breaker import CircuitBreaker, CircuitBreakerError
-from app.utils.memory_monitor import memory_monitor
+from app.utils.memory_monitor import memory_monitor, global_memory_monitor
 from app.services.checkpoint_recovery_service import ProcessingStage as CheckpointStage
 
 logger = logging.getLogger(__name__)
@@ -479,6 +479,18 @@ async def process_stage_3_images(
 
         logger.info(f"🔄 Processing batch {batch_num + 1}/{total_batches} ({len(batch_images)} images)...")
 
+        # Check memory pressure before processing batch
+        mem_stats = global_memory_monitor.get_memory_stats()
+        if mem_stats.is_critical_pressure:
+            logger.error(f"🔴 CRITICAL memory pressure: {mem_stats.percent_used:.1f}%")
+            global_memory_monitor.send_memory_alert(mem_stats, "critical")
+            global_memory_monitor.trigger_emergency_cleanup()
+            # Re-check after cleanup
+            mem_stats = global_memory_monitor.get_memory_stats()
+        elif mem_stats.is_high_pressure:
+            logger.warning(f"⚠️ High memory pressure: {mem_stats.percent_used:.1f}%")
+            global_memory_monitor.send_memory_alert(mem_stats, "warning")
+        
         # Check memory before batch
         mem_stats = memory_monitor.get_memory_stats()
         logger.info(f"   💾 Memory before batch: {mem_stats.used_mb:.1f} MB ({mem_stats.percent_used:.1f}%)")
@@ -497,6 +509,13 @@ async def process_stage_3_images(
 
         # Garbage collection after batch
         gc.collect()
+        
+        # Unload CLIP model to free memory (will reload on next use)
+        try:
+            embedding_service.unload_clip_model()
+        except Exception as e:
+            logger.warning(f"Failed to unload CLIP model: {e}")
+        
         mem_after = memory_monitor.get_memory_stats()
         mem_freed = mem_stats.used_mb - mem_after.used_mb
         logger.info(f"   💾 Memory after batch: {mem_after.used_mb:.1f} MB (freed: {mem_freed:.1f} MB)")
