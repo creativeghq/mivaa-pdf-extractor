@@ -16,6 +16,7 @@ import json
 
 from app.services.supabase_client import get_supabase_client
 from app.config.ai_pricing import ai_pricing
+from app.utils.retry_helper import async_retry_with_backoff
 from app.utils.json_encoder import json_dumps
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ class AICallLogger:
         """Initialize AI Call Logger"""
         self.supabase = get_supabase_client()
         self.logger = logging.getLogger(__name__)
+    @async_retry_with_backoff(max_retries=3, initial_delay=1.0, backoff_multiplier=2.0, max_delay=10.0)
     
     async def log_ai_call(
         self,
