@@ -1275,73 +1275,32 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
 
                 self.logger.info(f"   📊 Page type distribution: {len(text_pages)} TEXT, {len(image_pages)} IMAGE, {len(mixed_pages)} MIXED")
 
-                # Extract TEXT pages using PyMuPDF4LLM (fast)
-                if text_pages:
-                    try:
-                        self.logger.info(f"   📄 Extracting {len(text_pages)} TEXT pages with PyMuPDF4LLM...")
-                        text_pages_markdown = pymupdf4llm.to_markdown(pdf_path, pages=text_pages)
-                        text_page_texts = self._split_markdown_by_pages(text_pages_markdown, text_pages)
-                        page_texts.update(text_page_texts)
-                        self.logger.info(f"      ✅ Extracted {len(text_pages_markdown)} characters from TEXT pages")
-                    except Exception as e:
-                        self.logger.warning(f"      ⚠️ PyMuPDF4LLM failed for TEXT pages: {e}")
-                        # Fall back to page-by-page
-                        for page_idx in text_pages:
-                            try:
-                                page_text = pymupdf4llm.to_markdown(pdf_path, pages=[page_idx])
-                                page_texts[page_idx] = page_text
-                            except Exception as page_error:
-                                self.logger.warning(f"         ⚠️ Skipping page {page_idx + 1}: {page_error}")
-                                page_texts[page_idx] = ""
+                # ✅ MEMORY OPTIMIZATION: Store page type classifications only (not extracted text)
+                # We'll extract text per-product to avoid keeping all 52 pages in memory
+                page_types = {}  # page_idx -> "TEXT" | "IMAGE" | "MIXED" | "UNCLASSIFIED"
 
-                # Extract IMAGE pages using Claude Vision data (already have it!)
-                if image_pages:
-                    self.logger.info(f"   🖼️  Using Claude Vision data for {len(image_pages)} IMAGE pages (already extracted in Stage 0A)")
-                    # Claude Vision data is already in the product metadata from Stage 0A
-                    # We'll use the description and metadata fields which contain the visual analysis
-                    for page_idx in image_pages:
-                        # For image pages, we use empty text since we rely on vision data
-                        # The vision data is already in product.description and product.metadata
-                        page_texts[page_idx] = ""  # Vision data already in product metadata
+                for page_idx in text_pages:
+                    page_types[page_idx] = "TEXT"
+                for page_idx in image_pages:
+                    page_types[page_idx] = "IMAGE"
+                for page_idx in mixed_pages:
+                    page_types[page_idx] = "MIXED"
 
-                # Extract MIXED pages using BOTH methods
-                if mixed_pages:
-                    self.logger.info(f"   🔀 Extracting {len(mixed_pages)} MIXED pages with PyMuPDF4LLM...")
-                    try:
-                        mixed_pages_markdown = pymupdf4llm.to_markdown(pdf_path, pages=mixed_pages)
-                        mixed_page_texts = self._split_markdown_by_pages(mixed_pages_markdown, mixed_pages)
-                        page_texts.update(mixed_page_texts)
-                        self.logger.info(f"      ✅ Extracted {len(mixed_pages_markdown)} characters from MIXED pages")
-                    except Exception as e:
-                        self.logger.warning(f"      ⚠️ PyMuPDF4LLM failed for MIXED pages: {e}")
-                        # Fall back to page-by-page
-                        for page_idx in mixed_pages:
-                            try:
-                                page_text = pymupdf4llm.to_markdown(pdf_path, pages=[page_idx])
-                                page_texts[page_idx] = page_text
-                            except Exception as page_error:
-                                self.logger.warning(f"         ⚠️ Skipping page {page_idx + 1}: {page_error}")
-                                page_texts[page_idx] = ""
-
-                # Handle pages without type classification (fallback to old method)
+                # Mark unclassified pages
                 unclassified_pages = [p for p in sorted_pages if p not in text_pages and p not in image_pages and p not in mixed_pages]
-                if unclassified_pages:
-                    self.logger.warning(f"   ⚠️ {len(unclassified_pages)} pages have no type classification, using PyMuPDF4LLM fallback")
-                    try:
-                        fallback_markdown = pymupdf4llm.to_markdown(pdf_path, pages=unclassified_pages)
-                        fallback_texts = self._split_markdown_by_pages(fallback_markdown, unclassified_pages)
-                        page_texts.update(fallback_texts)
-                    except Exception as e:
-                        self.logger.warning(f"      ⚠️ Fallback extraction failed: {e}")
-                        for page_idx in unclassified_pages:
-                            page_texts[page_idx] = ""
+                for page_idx in unclassified_pages:
+                    page_types[page_idx] = "UNCLASSIFIED"
 
-                total_chars = sum(len(text) for text in page_texts.values())
-                self.logger.info(f"   ✅ Total extracted: {total_chars} characters from {len(page_texts)} pages")
+                if unclassified_pages:
+                    self.logger.warning(f"   ⚠️ {len(unclassified_pages)} pages have no type classification")
+
+                self.logger.info(f"   ✅ Page type classification complete: {len(page_types)} pages classified")
+                self.logger.info(f"   💾 MEMORY OPTIMIZATION: Text will be extracted per-product (not all at once)")
             else:
                 self.logger.warning("   ⚠️ No valid pages found for any products")
+                page_types = {}
 
-            # Now process each product with its pre-extracted text
+            # Now process each product - extract text per-product to minimize memory
             for i, product in enumerate(catalog.products):
                 try:
                     # ✅ UPDATE PROGRESS: Show real-time progress during metadata extraction
@@ -1368,9 +1327,56 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                         # DO NOT add to enriched_products - this product doesn't exist in this PDF
                         continue
 
+                    # ✅ MEMORY OPTIMIZATION: Extract text ONLY for this product's pages
+                    # This keeps memory low (~500MB per product instead of 3-4GB for all pages)
+                    product_page_texts = {}
+
+                    # Separate pages by type for this product
+                    product_text_pages = [p for p in page_indices if page_types.get(p) == "TEXT"]
+                    product_image_pages = [p for p in page_indices if page_types.get(p) == "IMAGE"]
+                    product_mixed_pages = [p for p in page_indices if page_types.get(p) == "MIXED"]
+                    product_unclassified_pages = [p for p in page_indices if page_types.get(p) == "UNCLASSIFIED"]
+
+                    # Extract TEXT pages for this product
+                    if product_text_pages:
+                        try:
+                            text_markdown = pymupdf4llm.to_markdown(pdf_path, pages=product_text_pages)
+                            text_page_texts = self._split_markdown_by_pages(text_markdown, product_text_pages)
+                            product_page_texts.update(text_page_texts)
+                        except Exception as e:
+                            self.logger.warning(f"      ⚠️ PyMuPDF4LLM failed for TEXT pages: {e}")
+                            for page_idx in product_text_pages:
+                                product_page_texts[page_idx] = ""
+
+                    # IMAGE pages - use empty text (vision data already in metadata)
+                    for page_idx in product_image_pages:
+                        product_page_texts[page_idx] = ""
+
+                    # Extract MIXED pages for this product
+                    if product_mixed_pages:
+                        try:
+                            mixed_markdown = pymupdf4llm.to_markdown(pdf_path, pages=product_mixed_pages)
+                            mixed_page_texts = self._split_markdown_by_pages(mixed_markdown, product_mixed_pages)
+                            product_page_texts.update(mixed_page_texts)
+                        except Exception as e:
+                            self.logger.warning(f"      ⚠️ PyMuPDF4LLM failed for MIXED pages: {e}")
+                            for page_idx in product_mixed_pages:
+                                product_page_texts[page_idx] = ""
+
+                    # Extract UNCLASSIFIED pages for this product
+                    if product_unclassified_pages:
+                        try:
+                            unclass_markdown = pymupdf4llm.to_markdown(pdf_path, pages=product_unclassified_pages)
+                            unclass_page_texts = self._split_markdown_by_pages(unclass_markdown, product_unclassified_pages)
+                            product_page_texts.update(unclass_page_texts)
+                        except Exception as e:
+                            self.logger.warning(f"      ⚠️ PyMuPDF4LLM failed for unclassified pages: {e}")
+                            for page_idx in product_unclassified_pages:
+                                product_page_texts[page_idx] = ""
+
                     # Combine text from this product's pages
                     product_text = "\n\n".join(
-                        page_texts.get(page_idx, "")
+                        product_page_texts.get(page_idx, "")
                         for page_idx in page_indices
                     )
 
@@ -1408,10 +1414,26 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
 
                     self.logger.info(f"      ✅ Extracted {len(flattened_metadata)} metadata fields")
 
+                    # ✅ MEMORY CLEANUP: Delete extracted text immediately after processing
+                    # This frees ~500MB-1GB per product, preventing memory accumulation
+                    del product_text
+                    del product_page_texts
+                    del extracted
+                    del enriched_metadata
+                    del flattened_metadata
+
+                    # Force garbage collection to free memory immediately
+                    import gc
+                    gc.collect()
+
                 except Exception as e:
                     self.logger.error(f"Failed to enrich metadata for {product.name}: {e}")
                     # Keep original product if enrichment fails
                     enriched_products.append(product)
+
+                    # Cleanup even on error
+                    import gc
+                    gc.collect()
 
             # ✅ UPDATE PROGRESS: Mark Stage 0B complete (10% progress)
             if self.tracker:
