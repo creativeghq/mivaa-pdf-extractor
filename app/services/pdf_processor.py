@@ -1261,11 +1261,13 @@ class PDFProcessor:
                 if processed_image_info:
                     batch_images.append(processed_image_info)
 
-                # DELETE the local file immediately after processing to free disk space
-                try:
-                    os.remove(image_path)
-                except Exception as e:
-                    self.logger.warning(f"Failed to delete {image_path}: {e}")
+                # DELETE the local file immediately ONLY if not skipping upload
+                # If skip_upload=True, images need to stay on disk for AI classification
+                if not skip_upload:
+                    try:
+                        os.remove(image_path)
+                    except Exception as e:
+                        self.logger.warning(f"Failed to delete {image_path}: {e}")
 
                 # Free memory after each image
                 del processed_image_info
@@ -1273,11 +1275,12 @@ class PDFProcessor:
 
             except Exception as e:
                 self.logger.warning(f"Failed to process image {filename}: {e}")
-                # Still try to delete the file
-                try:
-                    os.remove(image_path)
-                except:
-                    pass
+                # Still try to delete the file ONLY if not skipping upload
+                if not skip_upload:
+                    try:
+                        os.remove(image_path)
+                    except:
+                        pass
                 continue
 
         return batch_images

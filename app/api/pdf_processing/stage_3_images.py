@@ -292,6 +292,18 @@ async def process_stage_3_images(
     logger.info(f"   Non-material images: {non_material_count}")
     logger.info(f"   Classification errors: {classification_errors}")
 
+    # Cleanup: Delete all non-material images from disk to free space
+    logger.info(f"🧹 Cleaning up {non_material_count} non-material images from disk...")
+    for img_data in all_images:
+        if img_data not in material_images:
+            image_path = img_data.get('path')
+            if image_path and os.path.exists(image_path):
+                try:
+                    os.remove(image_path)
+                except Exception as e:
+                    logger.warning(f"   Failed to delete {image_path}: {e}")
+    logger.info(f"✅ Cleanup complete: Non-material images deleted")
+
     if not material_images:
         logger.warning("⚠️ No material images identified")
         return {
@@ -598,6 +610,17 @@ async def process_stage_3_images(
             "classification_errors": classification_errors
         }
     )
+
+    # Cleanup: Delete all material images from disk after processing
+    logger.info(f"🧹 Cleaning up {len(material_images)} material images from disk...")
+    for img_data in material_images:
+        image_path = img_data.get('path')
+        if image_path and os.path.exists(image_path):
+            try:
+                os.remove(image_path)
+            except Exception as e:
+                logger.warning(f"   Failed to delete {image_path}: {e}")
+    logger.info(f"✅ Cleanup complete: All processed images deleted from disk")
 
     # Force garbage collection
     gc.collect()
