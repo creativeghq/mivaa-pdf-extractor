@@ -2730,7 +2730,7 @@ async def process_document_with_discovery(
         # ============================================================================
         # STAGE 4: PRODUCT CREATION (MODULAR)
         # ============================================================================
-        progress_monitor.update_stage("product_creation", {"images_extracted": images_extracted})
+        progress_monitor.update_stage("product_creation", {"images_extracted": images_saved_count})
         from app.api.pdf_processing.stage_4_products import process_stage_4_products
 
         stage_4_result = await process_stage_4_products(
