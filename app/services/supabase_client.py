@@ -761,6 +761,39 @@ class SupabaseClient:
                 "error": str(e)
             }
 
+    async def delete_image_file(self, storage_path: str) -> bool:
+        """
+        Delete image file from Supabase Storage.
+
+        Used to delete non-material images after AI classification.
+
+        Args:
+            storage_path: Storage path (e.g., 'material-images/doc_id/image.jpg')
+
+        Returns:
+            True if deleted successfully, False otherwise
+        """
+        try:
+            # Extract bucket name from storage path
+            # Format: 'material-images/doc_id/image.jpg'
+            bucket_name = 'material-images'
+
+            # Remove bucket name from path if present
+            if storage_path.startswith(f'{bucket_name}/'):
+                file_path = storage_path[len(f'{bucket_name}/'):]
+            else:
+                file_path = storage_path
+
+            # Delete from Supabase Storage
+            result = self.client.storage.from_(bucket_name).remove([file_path])
+
+            logger.info(f"✅ Deleted image from Supabase: {storage_path}")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Failed to delete {storage_path} from Supabase: {e}")
+            return False
+
     def close(self) -> None:
         """Close the Supabase client connection."""
         if self._client:

@@ -169,8 +169,9 @@ async def process_stage_3_images(
         # Build processing options
         processing_options = {
             'extract_images': True,
-            'extract_tables': False,
-            'skip_upload': True  # Skip upload - will classify first, then upload only material images
+            'extract_tables': False
+            # NOTE: Images are now ALWAYS uploaded to Supabase immediately
+            # Non-material images are deleted from Supabase after AI classification
         }
 
         # Add page_list for focused extraction
@@ -237,20 +238,28 @@ async def process_stage_3_images(
     classification_errors = 0
 
     async def classify_single_image(img_data, index):
-        """Classify a single image as material or non-material"""
+        """
+        Classify a single image as material or non-material.
+
+        NEW ARCHITECTURE:
+        - Download image from Supabase URL (not local disk)
+        - Convert to base64 on-the-fly
+        - Classify with Llama Vision
+        - No disk I/O - everything in memory
+        """
         nonlocal non_material_count, classification_errors
 
         try:
-            image_path = img_data.get('path')
-            if not image_path or not os.path.exists(image_path):
-                logger.warning(f"   ⚠️ [{index}/{len(all_images)}] Image file not found: {image_path}")
+            # Get Supabase storage URL
+            storage_url = img_data.get('storage_url')
+            if not storage_url:
+                logger.warning(f"   ⚠️ [{index}/{len(all_images)}] No storage URL for image")
                 classification_errors += 1
                 return None
 
-            # Read image file
-            with open(image_path, 'rb') as f:
-                image_bytes = f.read()
-            image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+            # Download from Supabase URL and convert to base64
+            from app.services.pdf_processor import download_image_to_base64
+            image_base64 = await download_image_to_base64(storage_url)
 
             # Call Llama Vision for classification
             async with llama_semaphore:
@@ -292,17 +301,20 @@ async def process_stage_3_images(
     logger.info(f"   Non-material images: {non_material_count}")
     logger.info(f"   Classification errors: {classification_errors}")
 
-    # Cleanup: Delete all non-material images from disk to free space
-    logger.info(f"🧹 Cleaning up {non_material_count} non-material images from disk...")
+    # Cleanup: Delete all non-material images from Supabase Storage
+    # NOTE: Local files were already deleted immediately after upload in batch processing
+    logger.info(f"🧹 Cleaning up {non_material_count} non-material images from Supabase...")
+    deleted_count = 0
     for img_data in all_images:
         if img_data not in material_images:
-            image_path = img_data.get('path')
-            if image_path and os.path.exists(image_path):
+            storage_path = img_data.get('storage_path')
+            if storage_path:
                 try:
-                    os.remove(image_path)
+                    await supabase_client.delete_image_file(storage_path)
+                    deleted_count += 1
                 except Exception as e:
-                    logger.warning(f"   Failed to delete {image_path}: {e}")
-    logger.info(f"✅ Cleanup complete: Non-material images deleted")
+                    logger.warning(f"   Failed to delete from Supabase: {e}")
+    logger.info(f"✅ Cleanup complete: {deleted_count} non-material images deleted from Supabase")
 
     if not material_images:
         logger.warning("⚠️ No material images identified")
@@ -331,42 +343,27 @@ async def process_stage_3_images(
     logger.info(f"   Operations: Upload → Save to DB → CLIP Embeddings → Llama Vision Analysis")
 
     async def process_single_image_complete(img_data, image_index, total_images):
-        """Complete processing for a single image: Upload → Save → CLIP → Llama Vision"""
+        """
+        Complete processing for a single image: Save → CLIP → Llama Vision
+
+        NEW ARCHITECTURE:
+        - Images already uploaded to Supabase in batch processing
+        - Use storage_url for all operations (no local disk access)
+        - CLIP uses URL directly (no download)
+        - Llama downloads on-demand from URL
+        """
         nonlocal images_saved_count, clip_embeddings_generated, specialized_embeddings_generated, images_processed, vecs_batch_records
 
         try:
-            image_path = img_data.get('path')
-            if not image_path or not os.path.exists(image_path):
-                logger.error(f"   ❌ [{image_index}/{total_images}] Image file not found: {image_path}")
+            # Verify we have Supabase storage URL (uploaded in batch processing)
+            storage_url = img_data.get('storage_url')
+            if not storage_url:
+                logger.error(f"   ❌ [{image_index}/{total_images}] No storage URL - image not uploaded")
                 return None
 
-            # STEP 1: Upload to Supabase Storage
-            logger.info(f"   📤 [{image_index}/{total_images}] Uploading: {img_data.get('filename')}")
+            logger.info(f"   🔄 [{image_index}/{total_images}] Processing: {img_data.get('filename')}")
 
-            upload_result = await pdf_processor._upload_image_to_storage(
-                image_path,
-                document_id,
-                {
-                    'filename': img_data.get('filename'),
-                    'size_bytes': img_data.get('size_bytes'),
-                    'format': img_data.get('format'),
-                    'dimensions': img_data.get('dimensions'),
-                    'width': img_data.get('width'),
-                    'height': img_data.get('height')
-                },
-                None
-            )
-
-            if not upload_result.get('success'):
-                logger.error(f"   ❌ [{image_index}/{total_images}] Upload failed: {upload_result.get('error')}")
-                return None
-
-            # Update img_data with storage info
-            img_data['storage_url'] = upload_result.get('public_url')
-            img_data['storage_path'] = upload_result.get('storage_path')
-            img_data['storage_bucket'] = upload_result.get('storage_bucket')
-
-            # STEP 2: Save to database
+            # STEP 1: Save to database
             image_id = await supabase_client.save_single_image(
                 image_info=img_data,
                 document_id=document_id,
@@ -382,14 +379,8 @@ async def process_stage_3_images(
             images_saved_count += 1
             logger.info(f"   ✅ [{image_index}/{total_images}] Saved to DB: {image_id}")
 
-            # STEP 3: Read image file for AI processing
-            with open(image_path, 'rb') as f:
-                image_bytes = f.read()
-            image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-            image_base64_with_prefix = f"data:image/jpeg;base64,{image_base64}"
-
-            # STEP 4: Generate CLIP embeddings (SigLIP primary, CLIP fallback)
-            logger.info(f"   🎨 [{image_index}/{total_images}] Generating CLIP embeddings...")
+            # STEP 2: Generate CLIP embeddings using Supabase URL (no download needed!)
+            logger.info(f"   🎨 [{image_index}/{total_images}] Generating CLIP embeddings from URL...")
             try:
                 clip_result = await clip_breaker.call(
                     with_timeout,
@@ -397,7 +388,8 @@ async def process_stage_3_images(
                         entity_id=image_id,
                         entity_type="image",
                         text_content="",
-                        image_data=image_base64_with_prefix,
+                        image_url=storage_url,  # ✅ Use URL directly - no download!
+                        image_data=None,
                         material_properties={}
                     ),
                     timeout_seconds=TimeoutConstants.CLIP_EMBEDDING,
@@ -451,14 +443,18 @@ async def process_stage_3_images(
             except Exception as clip_error:
                 logger.error(f"   ❌ [{image_index}/{total_images}] CLIP failed: {clip_error}")
 
-            # STEP 5: Llama Vision analysis for quality scoring
+            # STEP 3: Llama Vision analysis - download from URL on-demand
             logger.info(f"   🔍 [{image_index}/{total_images}] Analyzing with Llama Vision...")
             try:
+                # Download from Supabase URL and convert to base64
+                from app.services.pdf_processor import download_image_to_base64
+                image_base64 = await download_image_to_base64(storage_url)
+
                 analysis_result = await llama_breaker.call(
                     with_timeout,
                     llamaindex_service._analyze_image_material(
                         image_base64=image_base64,
-                        image_path=image_path,
+                        image_path=storage_url,  # Just for logging
                         image_id=image_id,
                         document_id=document_id
                     ),
@@ -473,15 +469,14 @@ async def process_stage_3_images(
                     images_processed += 1
                     logger.info(f"   ✅ [{image_index}/{total_images}] Llama Vision complete (quality: {img_data['quality_score']:.2f})")
 
+                # Memory cleanup: Delete downloaded base64 data
+                del image_base64
+                gc.collect()
+
             except CircuitBreakerError as cb_error:
                 logger.warning(f"   ⚠️ [{image_index}/{total_images}] Llama Vision skipped (circuit breaker): {cb_error}")
             except Exception as llama_error:
                 logger.error(f"   ❌ [{image_index}/{total_images}] Llama Vision failed: {llama_error}")
-
-            # Memory optimization: Clear image data immediately
-            del image_bytes
-            del image_base64
-            del image_base64_with_prefix
 
             return img_data
 
@@ -535,7 +530,13 @@ async def process_stage_3_images(
         # AGGRESSIVE MEMORY CLEANUP after batch
         logger.info(f"   🧹 Starting aggressive memory cleanup after batch {batch_num + 1}/{total_batches}...")
 
-        # 1. Unload CLIP/SigLIP models to free memory (will reload on next use)
+        # 1. Delete batch data explicitly (downloaded base64 images from Llama Vision)
+        del batch_results
+        del batch_tasks
+        del batch_images
+        logger.info("   ✅ Deleted batch data from memory")
+
+        # 2. Unload CLIP/SigLIP models to free memory (will reload on next use)
         try:
             unloaded = embedding_service.unload_clip_model()
             if unloaded:
@@ -543,10 +544,10 @@ async def process_stage_3_images(
         except Exception as e:
             logger.warning(f"   ⚠️ Failed to unload models: {e}")
 
-        # 2. Force garbage collection
+        # 3. Force garbage collection
         gc.collect()
 
-        # 3. Small delay to allow OS to reclaim memory
+        # 4. Small delay to allow OS to reclaim memory
         await asyncio.sleep(0.5)
 
         mem_after = memory_monitor.get_memory_stats()
@@ -572,16 +573,8 @@ async def process_stage_3_images(
         logger.info(f"💾 Final batch upserted {batch_count} CLIP embeddings to VECS")
         vecs_batch_records.clear()
 
-    # Register files for cleanup (but don't release yet - will be cleaned up at end of pipeline)
-    for img_data in material_images:
-        image_path = img_data.get('path')
-        if image_path:
-            await resource_manager.register_resource(
-                resource_id=f"image_{os.path.basename(image_path)}",
-                resource_path=image_path,
-                resource_type="temp_file",
-                job_id=job_id
-            )
+    # NOTE: No disk cleanup needed - local files were deleted immediately after upload in batch processing
+    # All images are now stored in Supabase Storage only
 
     logger.info(f"✅ [STAGE 3] Image Processing Complete:")
     logger.info(f"   Images saved to DB: {images_saved_count}")
@@ -610,17 +603,6 @@ async def process_stage_3_images(
             "classification_errors": classification_errors
         }
     )
-
-    # Cleanup: Delete all material images from disk after processing
-    logger.info(f"🧹 Cleaning up {len(material_images)} material images from disk...")
-    for img_data in material_images:
-        image_path = img_data.get('path')
-        if image_path and os.path.exists(image_path):
-            try:
-                os.remove(image_path)
-            except Exception as e:
-                logger.warning(f"   Failed to delete {image_path}: {e}")
-    logger.info(f"✅ Cleanup complete: All processed images deleted from disk")
 
     # Force garbage collection
     gc.collect()

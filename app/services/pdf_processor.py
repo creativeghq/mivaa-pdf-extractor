@@ -46,6 +46,41 @@ except ImportError as e:
     SKIMAGE_AVAILABLE = False
 from scipy import ndimage
 
+
+# ============================================================================
+# HELPER FUNCTION: Download Image from Supabase URL to Base64
+# ============================================================================
+
+async def download_image_to_base64(image_url: str) -> str:
+    """
+    Download image from Supabase URL and convert to base64.
+
+    Used for AI classification and Llama Vision analysis.
+    CLIP embeddings can use URLs directly.
+
+    Args:
+        image_url: Public Supabase Storage URL
+
+    Returns:
+        Base64-encoded image string (without data URI prefix)
+
+    Raises:
+        Exception: If download fails or URL is invalid
+    """
+    import httpx
+    import base64
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(image_url)
+            if response.status_code == 200:
+                return base64.b64encode(response.content).decode('utf-8')
+            else:
+                raise Exception(f"Failed to download image from {image_url}: HTTP {response.status_code}")
+    except Exception as e:
+        raise Exception(f"Error downloading image to base64: {str(e)}")
+
+
 # Import existing extraction functions
 try:
     # Try to import from the proper location first
@@ -1230,8 +1265,13 @@ class PDFProcessor:
         total_batches: int
     ) -> List[Dict[str, Any]]:
         """
-        Process images from a batch directory and upload immediately.
-        Returns list of processed images, then DELETES local files to free disk space.
+        Process images from a batch directory, upload to Supabase, and delete local files.
+
+        NEW ARCHITECTURE:
+        - ALWAYS upload to Supabase immediately (no skip_upload)
+        - Delete local files immediately after upload
+        - Return image data with storage_url for subsequent processing
+        - Prevents cumulative reprocessing bug
         """
         import gc
 
@@ -1244,30 +1284,27 @@ class PDFProcessor:
 
         self.logger.info(f"   📸 Processing {len(image_files)} images from batch {batch_num + 1}/{total_batches}")
 
-        skip_upload = processing_options.get('skip_upload', False)
-
         for idx, filename in enumerate(image_files):
             image_path = os.path.join(image_dir, filename)
 
             try:
-                # Process and upload image
+                # Process and upload image (ALWAYS uploads to Supabase)
                 processed_image_info = await self._process_extracted_image(
                     image_path,
                     document_id,
-                    processing_options,
-                    skip_upload=skip_upload
+                    processing_options
                 )
 
                 if processed_image_info:
                     batch_images.append(processed_image_info)
 
-                # DELETE the local file immediately ONLY if not skipping upload
-                # If skip_upload=True, images need to stay on disk for AI classification
-                if not skip_upload:
-                    try:
-                        os.remove(image_path)
-                    except Exception as e:
-                        self.logger.warning(f"Failed to delete {image_path}: {e}")
+                # ALWAYS delete local file immediately after upload
+                # This prevents cumulative reprocessing in subsequent batches
+                try:
+                    os.remove(image_path)
+                    self.logger.debug(f"   🗑️ Deleted local file: {filename}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to delete {image_path}: {e}")
 
                 # Free memory after each image
                 del processed_image_info
@@ -1275,12 +1312,11 @@ class PDFProcessor:
 
             except Exception as e:
                 self.logger.warning(f"Failed to process image {filename}: {e}")
-                # Still try to delete the file ONLY if not skipping upload
-                if not skip_upload:
-                    try:
-                        os.remove(image_path)
-                    except:
-                        pass
+                # Still try to delete the file to prevent accumulation
+                try:
+                    os.remove(image_path)
+                except:
+                    pass
                 continue
 
         return batch_images
@@ -1352,11 +1388,15 @@ class PDFProcessor:
         self,
         image_path: str,
         document_id: str,
-        processing_options: Dict[str, Any],
-        skip_upload: bool = False
+        processing_options: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
         """
         Process a single extracted image with advanced capabilities and upload to Supabase Storage.
+
+        NEW ARCHITECTURE:
+        - ALWAYS uploads to Supabase immediately
+        - Returns image data with storage_url for subsequent processing
+        - No skip_upload parameter (deprecated)
 
         Features:
         - Format conversion and optimization
@@ -1426,24 +1466,14 @@ class PDFProcessor:
                         target_format
                     )
 
-                # Upload image to Supabase Storage (skip if requested for AI classification first)
-                if skip_upload:
-                    # Skip upload - will be done later after AI classification
-                    upload_result = {
-                        'success': True,
-                        'public_url': None,  # Will be set after classification
-                        'storage_path': None,
-                        'storage_bucket': None,
-                        'skipped': True
-                    }
-                    self.logger.info(f"   ⏭️  Skipped upload for AI classification: {basic_info['filename']}")
-                else:
-                    upload_result = await self._upload_image_to_storage(
-                        image_path,
-                        document_id,
-                        basic_info,
-                        converted_path or enhanced_path
-                    )
+                # Upload image to Supabase Storage
+                # NOTE: skip_upload parameter is deprecated - we ALWAYS upload now
+                upload_result = await self._upload_image_to_storage(
+                    image_path,
+                    document_id,
+                    basic_info,
+                    converted_path or enhanced_path
+                )
 
                 # DETAILED LOGGING: Log upload result for debugging
                 self.logger.info(f"📤 Upload result for {basic_info['filename']}:")
@@ -1470,7 +1500,7 @@ class PDFProcessor:
                     'document_id': document_id
                 }
 
-                self.logger.info(f"✅ Image uploaded to storage, AI analysis deferred: {basic_info['filename']}")
+                self.logger.info(f"✅ Image uploaded to Supabase Storage: {basic_info['filename']}")
 
                 # Combine all metadata with storage information
                 # AI analysis results will be added later via async update
