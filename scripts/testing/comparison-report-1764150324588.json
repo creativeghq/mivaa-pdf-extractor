@@ -1,0 +1,108 @@
+[
+  {
+    "model": "claude-vision",
+    "stages": {},
+    "products": {
+      "count": 0,
+      "time_ms": 0
+    },
+    "pages": {
+      "count": 0,
+      "time_ms": 0
+    },
+    "chunks": {
+      "count": 0,
+      "time_ms": 0
+    },
+    "images": {
+      "count": 0,
+      "time_ms": 0
+    },
+    "embeddings": {
+      "text": 0,
+      "clip": 0,
+      "total": 0,
+      "time_ms": 0
+    },
+    "errors": {
+      "count": 1,
+      "time_ms": 0
+    },
+    "relationships": {
+      "chunk_image": 0,
+      "product_image": 0,
+      "chunk_product": 0,
+      "total": 0,
+      "time_ms": 0
+    },
+    "metadata": {
+      "chunks": 0,
+      "products": 0,
+      "total": 0,
+      "time_ms": 0
+    },
+    "system": {
+      "peak_memory_mb": 0,
+      "avg_cpu_percent": 0,
+      "samples": []
+    },
+    "cost": {
+      "total_usd": 0,
+      "ai_calls": []
+    },
+    "total_time_ms": 23
+  },
+  {
+    "model": "gpt-vision",
+    "stages": {},
+    "products": {
+      "count": 0,
+      "time_ms": 0
+    },
+    "pages": {
+      "count": 0,
+      "time_ms": 0
+    },
+    "chunks": {
+      "count": 0,
+      "time_ms": 0
+    },
+    "images": {
+      "count": 0,
+      "time_ms": 0
+    },
+    "embeddings": {
+      "text": 0,
+      "clip": 0,
+      "total": 0,
+      "time_ms": 0
+    },
+    "errors": {
+      "count": 1,
+      "time_ms": 0
+    },
+    "relationships": {
+      "chunk_image": 0,
+      "product_image": 0,
+      "chunk_product": 0,
+      "total": 0,
+      "time_ms": 0
+    },
+    "metadata": {
+      "chunks": 0,
+      "products": 0,
+      "total": 0,
+      "time_ms": 0
+    },
+    "system": {
+      "peak_memory_mb": 0,
+      "avg_cpu_percent": 0,
+      "samples": []
+    },
+    "cost": {
+      "total_usd": 0,
+      "ai_calls": []
+    },
+    "total_time_ms": 7
+  }
+]

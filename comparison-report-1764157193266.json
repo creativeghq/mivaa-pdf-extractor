@@ -1,0 +1,1534 @@
+[
+  {
+    "model": "claude-vision",
+    "stages": {
+      "Processing": {
+        "start": 1764155458370,
+        "end": null,
+        "duration_ms": 0
+      }
+    },
+    "products": {
+      "count": 11,
+      "time_ms": 0
+    },
+    "pages": {
+      "count": 0,
+      "time_ms": 0
+    },
+    "chunks": {
+      "count": 0,
+      "time_ms": 0
+    },
+    "images": {
+      "count": 0,
+      "time_ms": 0
+    },
+    "embeddings": {
+      "text": 0,
+      "clip": 0,
+      "total": 0,
+      "time_ms": 0
+    },
+    "errors": {
+      "count": 1,
+      "time_ms": 0
+    },
+    "relationships": {
+      "chunk_image": 0,
+      "product_image": 0,
+      "chunk_product": 0,
+      "total": 0,
+      "time_ms": 0
+    },
+    "metadata": {
+      "chunks": 0,
+      "products": 0,
+      "total": 0,
+      "time_ms": 0
+    },
+    "system": {
+      "peak_memory_mb": 0,
+      "avg_cpu_percent": 0,
+      "samples": [
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        }
+      ]
+    },
+    "cost": {
+      "total_usd": 0,
+      "ai_calls": []
+    },
+    "total_time_ms": 1174305
+  },
+  {
+    "model": "gpt-vision",
+    "stages": {
+      "Processing": {
+        "start": 1764156655911,
+        "end": null,
+        "duration_ms": 0
+      }
+    },
+    "products": {
+      "count": 11,
+      "time_ms": 0
+    },
+    "pages": {
+      "count": 0,
+      "time_ms": 0
+    },
+    "chunks": {
+      "count": 102,
+      "time_ms": 0
+    },
+    "images": {
+      "count": 0,
+      "time_ms": 0
+    },
+    "embeddings": {
+      "text": 0,
+      "clip": 0,
+      "total": 0,
+      "time_ms": 0
+    },
+    "errors": {
+      "count": 1,
+      "time_ms": 0
+    },
+    "relationships": {
+      "chunk_image": 0,
+      "product_image": 0,
+      "chunk_product": 0,
+      "total": 0,
+      "time_ms": 0
+    },
+    "metadata": {
+      "chunks": 0,
+      "products": 0,
+      "total": 0,
+      "time_ms": 0
+    },
+    "system": {
+      "peak_memory_mb": 0,
+      "avg_cpu_percent": 0,
+      "samples": [
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        },
+        {
+          "memory_mb": 0,
+          "cpu_percent": 0
+        }
+      ]
+    },
+    "cost": {
+      "total_usd": 0,
+      "ai_calls": []
+    },
+    "total_time_ms": 791143
+  }
+]
