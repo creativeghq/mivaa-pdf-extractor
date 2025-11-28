@@ -32,7 +32,7 @@ data:
   CACHE_TTL: "3600"
   
   # CORS Settings
-  CORS_ORIGINS: "https://materialshub.gr,https://www.materialshub.gr,https://material-kai-vision-platform.vercel.app"
+  CORS_ORIGINS: '["https://materialshub.gr","https://www.materialshub.gr","https://material-kai-vision-platform.vercel.app"]'
   
   # Rate Limiting
   RATE_LIMIT_REQUESTS: "100"
