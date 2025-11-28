@@ -41,7 +41,7 @@ spec:
       
       containers:
       - name: mivaa-pdf-extractor
-        image: registry.digitalocean.com/mivaa-registry/mivaa-pdf-extractor:latest
+        image: ghcr.io/creativeghq/mivaa-pdf-extractor:latest
         imagePullPolicy: Always
         
         ports:
@@ -112,9 +112,9 @@ spec:
         emptyDir:
           sizeLimit: 10Gi  # Temporary storage for PDF processing
       
-      # Image pull secrets for DigitalOcean Container Registry
+      # Image pull secrets for GitHub Container Registry
       imagePullSecrets:
-      - name: docr-secret
+      - name: ghcr-secret
       
       # Pod disruption budget for high availability
       # (defined separately in k8s-pdb.yaml)
