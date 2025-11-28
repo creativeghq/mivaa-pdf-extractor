@@ -572,7 +572,6 @@ async def process_stage_3_images(
         # Update progress after each batch
         await tracker.update_database_stats(
             images_stored=images_saved_count,
-            clip_embeddings_generated=clip_embeddings_generated
         )
         await tracker._sync_to_database(stage="image_processing")
 
