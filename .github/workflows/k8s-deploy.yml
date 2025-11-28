@@ -53,7 +53,7 @@ jobs:
       uses: docker/build-push-action@v5
       with:
         context: .
-        file: ./k8s-Dockerfile
+        file: ./k8s/Dockerfile
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
@@ -102,7 +102,7 @@ jobs:
           --dry-run=client -o yaml | kubectl apply -f -
     
     - name: Create ConfigMap
-      run: kubectl apply -f k8s-configmap.yaml
+      run: kubectl apply -f k8s/configmap.yaml
 
     - name: Create Secrets
       run: |
@@ -130,19 +130,19 @@ jobs:
           --dry-run=client -o yaml | kubectl apply -f -
 
     - name: Deploy Service
-      run: kubectl apply -f k8s-service.yaml
+      run: kubectl apply -f k8s/service.yaml
 
     - name: Deploy Deployment
-      run: kubectl apply -f k8s-deployment.yaml
+      run: kubectl apply -f k8s/deployment.yaml
 
     - name: Deploy HPA
-      run: kubectl apply -f k8s-hpa.yaml
+      run: kubectl apply -f k8s/hpa.yaml
 
     - name: Deploy PodDisruptionBudget
-      run: kubectl apply -f k8s-pdb.yaml
+      run: kubectl apply -f k8s/pdb.yaml
 
     - name: Deploy Ingress
-      run: kubectl apply -f k8s-ingress.yaml
+      run: kubectl apply -f k8s/ingress.yaml
 
     - name: Wait for rollout
       run: kubectl rollout status deployment/mivaa-pdf-extractor -n default --timeout=5m
