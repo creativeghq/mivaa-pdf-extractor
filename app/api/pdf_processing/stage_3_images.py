@@ -510,10 +510,19 @@ async def process_stage_3_images(
         elif mem_stats.is_high_pressure:
             logger.warning(f"⚠️ High memory pressure: {mem_stats.percent_used:.1f}%")
             memory_monitor.send_memory_alert(mem_stats, "warning")
-        
+
         # Check memory before batch
         mem_stats = memory_monitor.get_memory_stats()
         logger.info(f"   💾 Memory before batch: {mem_stats.used_mb:.1f} MB ({mem_stats.percent_used:.1f}%)")
+
+        # CRITICAL FIX: Load CLIP/SigLIP models ONCE before batch processing
+        # This prevents models from being loaded multiple times per batch (which causes OOM)
+        logger.info(f"   🔧 Pre-loading CLIP/SigLIP models for batch {batch_num + 1}/{total_batches}...")
+        models_loaded = await embedding_service.ensure_models_loaded()
+        if not models_loaded:
+            logger.error(f"   ❌ Failed to load models for batch {batch_num + 1}, skipping batch")
+            continue
+        logger.info(f"   ✅ Models loaded and ready for batch processing")
 
         # Process batch in parallel with semaphore control
         async def process_with_semaphore(img_data, idx):

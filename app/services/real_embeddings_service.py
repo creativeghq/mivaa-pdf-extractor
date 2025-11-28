@@ -62,6 +62,13 @@ class RealEmbeddingsService:
 
         # Initialize AI logger
         self.ai_logger = AICallLogger()
+
+        # Model loading state
+        self._models_loaded = False
+        self._siglip_model = None
+        self._siglip_processor = None
+        self._clip_model = None
+        self._clip_processor = None
     
     async def generate_all_embeddings(
         self,
@@ -303,9 +310,10 @@ class RealEmbeddingsService:
 
         Uses transformers library directly instead of sentence-transformers
         to avoid 'hidden_size' attribute error with SiglipConfig.
+
+        NOTE: Models should be pre-loaded using ensure_models_loaded() before calling this.
         """
         try:
-            from transformers import AutoModel, AutoProcessor
             import torch
             import base64
             from PIL import Image
@@ -313,25 +321,10 @@ class RealEmbeddingsService:
             import numpy as np
             import asyncio
 
-            # Initialize SigLIP model (cached after first use) WITH TIMEOUT
-            if not hasattr(self, '_siglip_model'):
-                self.logger.info("🔄 Loading SigLIP model: google/siglip-so400m-patch14-384")
-
-                # Load model with timeout protection (60s max)
-                try:
-                    self._siglip_model = await asyncio.wait_for(
-                        asyncio.to_thread(AutoModel.from_pretrained, 'google/siglip-so400m-patch14-384'),
-                        timeout=60.0
-                    )
-                    self._siglip_processor = await asyncio.wait_for(
-                        asyncio.to_thread(AutoProcessor.from_pretrained, 'google/siglip-so400m-patch14-384'),
-                        timeout=60.0
-                    )
-                    self._siglip_model.eval()  # Set to evaluation mode
-                    self.logger.info("✅ Initialized SigLIP model: google/siglip-so400m-patch14-384")
-                except asyncio.TimeoutError:
-                    self.logger.error("❌ SigLIP model loading timed out after 60s")
-                    return None
+            # Check if SigLIP model is loaded
+            if self._siglip_model is None or self._siglip_processor is None:
+                self.logger.warning("⚠️ SigLIP model not loaded, skipping")
+                return None
 
             # Convert base64 image data to PIL Image WITH TIMEOUT
             if image_data:
@@ -441,21 +434,22 @@ class RealEmbeddingsService:
         image_url: Optional[str],
         image_data: Optional[str]
     ) -> Optional[List[float]]:
-        """Generate visual embedding using OpenAI CLIP ViT-B/32 (fallback)."""
+        """
+        Generate visual embedding using OpenAI CLIP ViT-B/32 (fallback).
+
+        NOTE: Models should be pre-loaded using ensure_models_loaded() before calling this.
+        """
         try:
-            from transformers import CLIPProcessor, CLIPModel
             import torch
             import base64
             from PIL import Image
             import io
             import numpy as np
 
-            # Initialize CLIP model (cached after first use)
-            if not hasattr(self, '_clip_model'):
-                self._clip_model = CLIPModel.from_pretrained('openai/clip-vit-base-patch32')
-                self._clip_processor = CLIPProcessor.from_pretrained('openai/clip-vit-base-patch32')
-                self._clip_model.eval()  # Set to evaluation mode
-                self.logger.info("✅ Initialized CLIP model: openai/clip-vit-base-patch32")
+            # Check if CLIP model is loaded
+            if self._clip_model is None or self._clip_processor is None:
+                self.logger.warning("⚠️ CLIP model not loaded, skipping")
+                return None
 
             # Convert base64 image data to PIL Image
             if image_data:
@@ -540,9 +534,10 @@ class RealEmbeddingsService:
         Uses the base visual embedding (SigLIP with CLIP fallback) for all specialized types.
         In the current implementation, all 4 embeddings are the same base embedding.
         Future: Could use text-guided CLIP or fine-tuned models for each aspect.
+
+        NOTE: Models should be pre-loaded using ensure_models_loaded() before calling this.
         """
         try:
-            from transformers import CLIPProcessor, CLIPModel
             import torch
             import base64
             from PIL import Image
@@ -550,27 +545,10 @@ class RealEmbeddingsService:
             import numpy as np
             import asyncio
 
-            # Initialize CLIP model (cached after first use) WITH TIMEOUT
-            if not hasattr(self, '_clip_model'):
-                self.logger.info("🔄 Loading CLIP model: openai/clip-vit-base-patch32")
-                try:
-                    self._clip_model = await asyncio.wait_for(
-                        asyncio.to_thread(CLIPModel.from_pretrained, 'openai/clip-vit-base-patch32'),
-                        timeout=60.0
-                    )
-                    self._clip_processor = await asyncio.wait_for(
-                        asyncio.to_thread(CLIPProcessor.from_pretrained, 'openai/clip-vit-base-patch32'),
-                        timeout=60.0
-                    )
-                    self._clip_model.eval()  # Set to evaluation mode
-                    self.logger.info("✅ Initialized CLIP model for specialized embeddings")
-                except asyncio.TimeoutError:
-                    self.logger.error("❌ CLIP model loading timed out after 60s")
-                    sentry_sdk.capture_message(
-                        "❌ CLIP model loading timeout (60s)",
-                        level="error"
-                    )
-                    return None
+            # Check if CLIP model is loaded
+            if self._clip_model is None or self._clip_processor is None:
+                self.logger.warning("⚠️ CLIP model not loaded for specialized embeddings, skipping")
+                return None
 
             # Get PIL image
             pil_image = None
@@ -684,6 +662,76 @@ class RealEmbeddingsService:
     # These were redundant - text_embedding_1536 already contains all this information!
 
 
+    async def ensure_models_loaded(self):
+        """
+        Ensure CLIP/SigLIP models are loaded into memory.
+
+        This should be called ONCE before batch processing to avoid
+        loading models multiple times per batch (which causes OOM).
+
+        Returns:
+            bool: True if models loaded successfully, False otherwise
+        """
+        if self._models_loaded:
+            self.logger.debug("Models already loaded, skipping initialization")
+            return True
+
+        try:
+            from transformers import AutoModel, AutoProcessor, CLIPProcessor, CLIPModel
+            import asyncio
+
+            self.logger.info("🔄 Loading CLIP/SigLIP models for batch processing...")
+
+            # Load SigLIP model (primary)
+            try:
+                self.logger.info("   Loading SigLIP model: google/siglip-so400m-patch14-384")
+                self._siglip_model = await asyncio.wait_for(
+                    asyncio.to_thread(AutoModel.from_pretrained, 'google/siglip-so400m-patch14-384'),
+                    timeout=60.0
+                )
+                self._siglip_processor = await asyncio.wait_for(
+                    asyncio.to_thread(AutoProcessor.from_pretrained, 'google/siglip-so400m-patch14-384'),
+                    timeout=60.0
+                )
+                self._siglip_model.eval()  # Set to evaluation mode
+                self.logger.info("   ✅ SigLIP model loaded")
+            except asyncio.TimeoutError:
+                self.logger.error("   ❌ SigLIP model loading timed out after 60s")
+                return False
+            except Exception as e:
+                self.logger.warning(f"   ⚠️ SigLIP model loading failed: {e}")
+                # Continue without SigLIP, will use CLIP fallback
+
+            # Load CLIP model (fallback)
+            try:
+                self.logger.info("   Loading CLIP model: openai/clip-vit-base-patch32")
+                self._clip_model = await asyncio.wait_for(
+                    asyncio.to_thread(CLIPModel.from_pretrained, 'openai/clip-vit-base-patch32'),
+                    timeout=60.0
+                )
+                self._clip_processor = await asyncio.wait_for(
+                    asyncio.to_thread(CLIPProcessor.from_pretrained, 'openai/clip-vit-base-patch32'),
+                    timeout=60.0
+                )
+                self._clip_model.eval()  # Set to evaluation mode
+                self.logger.info("   ✅ CLIP model loaded")
+            except asyncio.TimeoutError:
+                self.logger.error("   ❌ CLIP model loading timed out after 60s")
+                return False
+            except Exception as e:
+                self.logger.error(f"   ❌ CLIP model loading failed: {e}")
+                return False
+
+            self._models_loaded = True
+            self.logger.info("✅ All models loaded successfully for batch processing")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to load models: {e}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            return False
+
     def unload_clip_model(self):
         """
         Unload CLIP and SigLIP models from memory to free up resources.
@@ -698,16 +746,23 @@ class RealEmbeddingsService:
             models_unloaded = []
 
             # Unload SigLIP model
-            if hasattr(self, '_siglip_model'):
+            if self._siglip_model is not None:
                 del self._siglip_model
                 del self._siglip_processor
+                self._siglip_model = None
+                self._siglip_processor = None
                 models_unloaded.append("SigLIP")
 
             # Unload CLIP model
-            if hasattr(self, '_clip_model'):
+            if self._clip_model is not None:
                 del self._clip_model
                 del self._clip_processor
+                self._clip_model = None
+                self._clip_processor = None
                 models_unloaded.append("CLIP")
+
+            # Reset loaded state
+            self._models_loaded = False
 
             if models_unloaded:
                 # Clear CUDA cache if available
