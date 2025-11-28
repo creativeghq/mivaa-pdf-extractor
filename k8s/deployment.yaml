@@ -59,11 +59,11 @@ spec:
         # Resource limits and requests
         resources:
           requests:
-            memory: "512Mi"    # Reduced for initial deployment
-            cpu: "250m"        # 0.25 CPU cores
+            memory: "3Gi"      # Larger pod for ML models
+            cpu: "1000m"       # 1 CPU core
           limits:
-            memory: "2Gi"      # Maximum memory
-            cpu: "1000m"       # 1 CPU core max
+            memory: "6Gi"      # Maximum memory for processing
+            cpu: "2000m"       # 2 CPU cores max
         
         # Liveness probe - restart if unhealthy
         livenessProbe:
@@ -110,7 +110,7 @@ spec:
       volumes:
       - name: tmp
         emptyDir:
-          sizeLimit: 2Gi  # Temporary storage for PDF processing
+          sizeLimit: 5Gi  # Temporary storage for PDF processing
       
       # Image pull secrets for GitHub Container Registry
       imagePullSecrets:
