@@ -13,7 +13,7 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  K8S_CLUSTER_NAME: mivaa-k8s-cluster
+  K8S_CLUSTER_NAME: do-ams3-k8s-kai
 
 jobs:
   build-and-push:
