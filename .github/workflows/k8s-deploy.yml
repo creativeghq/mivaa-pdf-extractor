@@ -1,0 +1,180 @@
+name: K8s Deploy - MIVAA PDF Extractor
+
+on:
+  push:
+    branches:
+      - main
+      - k8s-deployment
+    paths:
+      - 'mivaa-pdf-extractor/**'
+      - '.github/workflows/k8s-deploy.yml'
+  workflow_dispatch:  # Allow manual triggers
+
+env:
+  REGISTRY: registry.digitalocean.com/mivaa-registry
+  IMAGE_NAME: mivaa-pdf-extractor
+  K8S_CLUSTER_NAME: mivaa-k8s-cluster
+
+jobs:
+  build-and-push:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Log in to DigitalOcean Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: registry.digitalocean.com
+        username: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+        password: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+    
+    - name: Extract metadata (tags, labels)
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+    
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./mivaa-pdf-extractor
+        file: ./mivaa-pdf-extractor/k8s-Dockerfile
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+        cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
+        build-args: |
+          BUILDKIT_INLINE_CACHE=1
+    
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+
+  deploy-to-k8s:
+    name: Deploy to Kubernetes
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Install doctl
+      uses: digitalocean/action-doctl@v2
+      with:
+        token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+    
+    - name: Save kubeconfig
+      run: doctl kubernetes cluster kubeconfig save ${{ env.K8S_CLUSTER_NAME }}
+    
+    - name: Verify cluster connection
+      run: kubectl cluster-info
+    
+    - name: Create namespace if not exists
+      run: kubectl create namespace default --dry-run=client -o yaml | kubectl apply -f -
+    
+    - name: Create Docker registry secret
+      run: |
+        kubectl create secret docker-registry docr-secret \
+          --docker-server=registry.digitalocean.com \
+          --docker-username=${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }} \
+          --docker-password=${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }} \
+          --namespace=default \
+          --dry-run=client -o yaml | kubectl apply -f -
+    
+    - name: Create ConfigMap
+      run: kubectl apply -f mivaa-pdf-extractor/k8s-configmap.yaml
+    
+    - name: Create Secrets
+      run: |
+        kubectl create secret generic mivaa-secrets \
+          --from-literal=SUPABASE_ANON_KEY="${{ secrets.SUPABASE_ANON_KEY }}" \
+          --from-literal=SUPABASE_SERVICE_ROLE_KEY="${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+          --from-literal=SUPABASE_DB_PASSWORD="${{ secrets.SUPABASE_DB_PASSWORD }}" \
+          --from-literal=SUPABASE_PROJECT_ID="${{ secrets.SUPABASE_PROJECT_ID }}" \
+          --from-literal=ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}" \
+          --from-literal=OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}" \
+          --from-literal=TOGETHER_API_KEY="${{ secrets.TOGETHER_API_KEY }}" \
+          --from-literal=HUGGINGFACE_API_KEY="${{ secrets.HUGGINGFACE_API_KEY }}" \
+          --from-literal=HUGGING_FACE_ACCESS_TOKEN="${{ secrets.HUGGING_FACE_ACCESS_TOKEN }}" \
+          --from-literal=REPLICATE_API_TOKEN="${{ secrets.REPLICATE_API_TOKEN }}" \
+          --from-literal=JINA_API_KEY="${{ secrets.JINA_API_KEY }}" \
+          --from-literal=FIRECRAWL_API_KEY="${{ secrets.FIRECRAWL_API_KEY }}" \
+          --from-literal=JWT_SECRET_KEY="${{ secrets.JWT_SECRET_KEY }}" \
+          --from-literal=ENCRYPTION_KEY="${{ secrets.ENCRYPTION_KEY }}" \
+          --from-literal=MATERIAL_KAI_API_KEY="${{ secrets.MATERIAL_KAI_API_KEY }}" \
+          --from-literal=MATERIAL_KAI_API_URL="${{ secrets.MATERIAL_KAI_API_URL }}" \
+          --from-literal=MATERIAL_KAI_WORKSPACE_ID="${{ secrets.MATERIAL_KAI_WORKSPACE_ID }}" \
+          --from-literal=MATERIAL_KAI_CLIENT_ID="${{ secrets.MATERIAL_KAI_CLIENT_ID }}" \
+          --from-literal=SENTRY_DSN="https://73f48f6581b882c707ded429e384fb8a@o4509716458045440.ingest.de.sentry.io/4510132019658832" \
+          --namespace=default \
+          --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Deploy Service
+      run: kubectl apply -f mivaa-pdf-extractor/k8s-service.yaml
+
+    - name: Deploy Deployment
+      run: kubectl apply -f mivaa-pdf-extractor/k8s-deployment.yaml
+
+    - name: Deploy HPA
+      run: kubectl apply -f mivaa-pdf-extractor/k8s-hpa.yaml
+
+    - name: Deploy PodDisruptionBudget
+      run: kubectl apply -f mivaa-pdf-extractor/k8s-pdb.yaml
+
+    - name: Deploy Ingress
+      run: kubectl apply -f mivaa-pdf-extractor/k8s-ingress.yaml
+
+    - name: Wait for rollout
+      run: kubectl rollout status deployment/mivaa-pdf-extractor -n default --timeout=5m
+
+    - name: Get deployment status
+      run: |
+        echo "=== Deployment Status ==="
+        kubectl get deployments -n default
+        echo ""
+        echo "=== Pods ==="
+        kubectl get pods -n default -l app=mivaa-pdf-extractor
+        echo ""
+        echo "=== Services ==="
+        kubectl get services -n default
+        echo ""
+        echo "=== Ingress ==="
+        kubectl get ingress -n default
+
+    - name: Run health check
+      run: |
+        echo "Waiting for service to be ready..."
+        sleep 30
+        EXTERNAL_IP=$(kubectl get svc mivaa-pdf-extractor -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        echo "External IP: $EXTERNAL_IP"
+        if [ -n "$EXTERNAL_IP" ]; then
+          curl -f http://$EXTERNAL_IP/health || echo "Health check failed"
+        else
+          echo "LoadBalancer IP not yet assigned"
+        fi
+
+    - name: Deployment summary
+      if: always()
+      run: |
+        echo "🎉 Deployment completed!"
+        echo "✅ Docker image built and pushed"
+        echo "✅ Kubernetes resources deployed"
+        echo "✅ Service exposed via LoadBalancer"
+        echo ""
+        echo "📊 Next steps:"
+        echo "1. Update DNS: v1api.materialshub.gr -> LoadBalancer IP"
+        echo "2. Monitor pods: kubectl get pods -n default -w"
+        echo "3. Check logs: kubectl logs -f deployment/mivaa-pdf-extractor -n default"
+        echo "4. Test API: curl https://v1api.materialshub.gr/health"
+

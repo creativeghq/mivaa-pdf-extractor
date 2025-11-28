@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mivaa-config
+  namespace: default
+  labels:
+    app: mivaa-pdf-extractor
+data:
+  # Application Settings
+  APP_NAME: "MIVAA - Material Intelligence Vision and Analysis Agent"
+  APP_VERSION: "2.2.0"
+  ENVIRONMENT: "production"
+  DEBUG: "false"
+  LOG_LEVEL: "INFO"
+  
+  # Server Settings
+  HOST: "0.0.0.0"
+  PORT: "8000"
+  RELOAD: "false"
+  
+  # Supabase Settings (non-sensitive)
+  SUPABASE_URL: "https://bgbavxtjlbvgplozizxu.supabase.co"
+  SUPABASE_STORAGE_BUCKET: "pdf-documents"
+  
+  # Database Settings
+  DATABASE_POOL_SIZE: "20"
+  DATABASE_MAX_OVERFLOW: "40"
+  DATABASE_TIMEOUT: "30"
+  
+  # Performance Settings
+  MAX_WORKERS: "4"
+  CACHE_TTL: "3600"
+  
+  # CORS Settings
+  CORS_ORIGINS: "https://materialshub.gr,https://www.materialshub.gr,https://material-kai-vision-platform.vercel.app"
+  
+  # Rate Limiting
+  RATE_LIMIT_REQUESTS: "100"
+  RATE_LIMIT_WINDOW: "60"
+  
+  # PDF Processing Settings
+  PDF_PROCESSING_TIMEOUT: "600000"  # 10 minutes
+  MAX_PDF_SIZE_MB: "100"
+  TEMP_DIR: "/tmp/mivaa"
+  
+  # Model Settings
+  MODEL_CACHE_DIR: "/tmp/mivaa/models"
+  CLIP_MODEL: "openai/clip-vit-base-patch32"
+  SIGLIP_MODEL: "google/siglip-so400m-patch14-384"
+  
+  # Feature Flags
+  ENABLE_SENTRY: "true"
+  ENABLE_METRICS: "true"
+  ENABLE_TRACING: "true"
+  
+  # Sentry Configuration
+  SENTRY_ENVIRONMENT: "production"
+  SENTRY_TRACES_SAMPLE_RATE: "1.0"
+  SENTRY_PROFILES_SAMPLE_RATE: "1.0"
+

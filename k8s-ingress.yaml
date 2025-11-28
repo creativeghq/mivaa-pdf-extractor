@@ -1,0 +1,54 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mivaa-pdf-extractor-ingress
+  namespace: default
+  labels:
+    app: mivaa-pdf-extractor
+  annotations:
+    # Use nginx ingress controller
+    kubernetes.io/ingress.class: "nginx"
+    
+    # SSL/TLS configuration
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    
+    # CORS configuration
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://materialshub.gr,https://www.materialshub.gr,https://material-kai-vision-platform.vercel.app"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,X-CustomHeader,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Authorization"
+    
+    # Request size limits (for PDF uploads)
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    
+    # Timeouts for long-running PDF processing
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    
+    # Rate limiting
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+    
+    # SSL redirect
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    
+    # WebSocket support (if needed)
+    nginx.ingress.kubernetes.io/websocket-services: "mivaa-pdf-extractor"
+spec:
+  tls:
+  - hosts:
+    - v1api.materialshub.gr
+    secretName: mivaa-tls-cert
+  
+  rules:
+  - host: v1api.materialshub.gr
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: mivaa-pdf-extractor
+            port:
+              number: 80
+
