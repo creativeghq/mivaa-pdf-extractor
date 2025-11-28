@@ -12,8 +12,8 @@ spec:
     name: mivaa-pdf-extractor
   
   # Scaling configuration
-  minReplicas: 1   # Keep 1 large pod
-  maxReplicas: 2   # Maximum 2 pods only if really needed
+  minReplicas: 1   # Keep 1 large pod normally
+  maxReplicas: 3   # Scale to 3 pods when under heavy load
   
   # Scaling behavior
   behavior:
@@ -47,13 +47,13 @@ spec:
       name: cpu
       target:
         type: Utilization
-        averageUtilization: 70  # Scale up when CPU > 70%
-  
+        averageUtilization: 60  # Scale up when CPU > 60% (more aggressive)
+
   # Memory-based scaling
   - type: Resource
     resource:
       name: memory
       target:
         type: Utilization
-        averageUtilization: 80  # Scale up when memory > 80%
+        averageUtilization: 70  # Scale up when memory > 70% (more aggressive)
 
