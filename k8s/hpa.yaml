@@ -12,8 +12,8 @@ spec:
     name: mivaa-pdf-extractor
   
   # Scaling configuration
-  minReplicas: 2   # Minimum 2 pods for high availability
-  maxReplicas: 10  # Maximum 10 pods for cost control
+  minReplicas: 1   # Minimum 1 pod to save resources
+  maxReplicas: 3   # Maximum 3 pods for cost control
   
   # Scaling behavior
   behavior:

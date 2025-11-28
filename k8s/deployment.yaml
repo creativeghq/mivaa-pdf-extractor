@@ -8,7 +8,7 @@ metadata:
     version: v1
     tier: backend
 spec:
-  replicas: 2  # Start with 2 replicas for high availability
+  replicas: 1  # Start with 1 replica to save resources
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -59,11 +59,11 @@ spec:
         # Resource limits and requests
         resources:
           requests:
-            memory: "2Gi"      # Minimum memory for model loading
-            cpu: "500m"        # 0.5 CPU cores
+            memory: "512Mi"    # Reduced for initial deployment
+            cpu: "250m"        # 0.25 CPU cores
           limits:
-            memory: "4Gi"      # Maximum memory (models + processing)
-            cpu: "2000m"       # 2 CPU cores max
+            memory: "2Gi"      # Maximum memory
+            cpu: "1000m"       # 1 CPU core max
         
         # Liveness probe - restart if unhealthy
         livenessProbe:
@@ -110,7 +110,7 @@ spec:
       volumes:
       - name: tmp
         emptyDir:
-          sizeLimit: 10Gi  # Temporary storage for PDF processing
+          sizeLimit: 2Gi  # Temporary storage for PDF processing
       
       # Image pull secrets for GitHub Container Registry
       imagePullSecrets:
