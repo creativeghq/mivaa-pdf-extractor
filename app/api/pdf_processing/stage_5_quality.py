@@ -9,7 +9,6 @@ from typing import Dict, Any
 from datetime import datetime
 from app.schemas.jobs import ProcessingStage
 from app.services.checkpoint_recovery_service import ProcessingStage as CheckpointStage
-from app.services.droplet_scaler import droplet_scaler
 
 logger = logging.getLogger(__name__)
 from app.utils.circuit_breaker import CircuitBreakerError
@@ -138,18 +137,6 @@ async def process_stage_5_quality(
     import gc
     gc.collect()
     logger.info("✅ All components unloaded, memory freed")
-
-    # AUTO-SCALE: Scale down droplet after PDF processing completes
-    logger.info("🔄 Scaling down droplet to save costs...")
-    try:
-        scale_down_success = await droplet_scaler.scale_down_after_processing(force=False)
-        if scale_down_success:
-            logger.info("✅ Droplet scaled down successfully - saving money! 💰")
-        else:
-            logger.info("ℹ️ Droplet not scaled down (may have active jobs or already at small size)")
-    except Exception as e:
-        logger.warning(f"⚠️ Failed to scale down droplet: {e}")
-        # Don't fail the job if scaling fails
 
     # EVENT-BASED CLEANUP: Release temp PDF file and cleanup
     from app.utils.resource_manager import get_resource_manager

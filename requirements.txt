@@ -16,8 +16,10 @@ numpy==1.26.4
 scipy>=1.11.0
 
 # ML and Computer Vision libraries with PyTorch for CLIP embeddings
-torch>=2.1.2,<3.0.0
-torchvision>=0.16.0,<0.18.0
+# Use CPU-only PyTorch for App Platform (smaller, faster builds)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.2+cpu
+torchvision==0.17.2+cpu
 transformers>=4.30.0
 scikit-learn==1.3.2
 # OpenCV headless version for server deployment (no GUI dependencies)

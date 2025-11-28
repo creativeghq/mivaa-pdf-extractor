@@ -1,0 +1,8 @@
+build-essential
+libmupdf-dev
+libfreetype6-dev
+libjpeg-dev
+libpng-dev
+tesseract-ocr
+tesseract-ocr-eng
+
