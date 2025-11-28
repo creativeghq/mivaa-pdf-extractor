@@ -1,4 +1,5 @@
 """
+import logging
 Stage 1: Focused Extraction
 
 This module handles focused extraction logic - determining which pages to process
@@ -20,7 +21,7 @@ async def process_stage_1_focused_extraction(
     tracker: Any,
     checkpoint_recovery_service: Any,
     job_id: str,
-    logger: Any
+
 ) -> Dict[str, Any]:
     """
     Stage 1: Focused Extraction
