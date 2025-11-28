@@ -177,7 +177,7 @@ main() {
 if [ $# -eq 0 ]; then
     echo "Usage: $0 [BASE_URL]"
     echo "Example: $0 http://localhost:8000"
-    echo "Example: $0 http://104.248.68.3:8000"
+    echo "Example: $0 http://165.227.31.109:8000"
     echo ""
     echo "Tests the MIVAA comprehensive API deployment"
     exit 1

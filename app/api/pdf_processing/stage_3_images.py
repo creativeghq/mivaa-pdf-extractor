@@ -26,6 +26,7 @@ from app.utils.timeout_guard import with_timeout, TimeoutConstants, ProgressiveT
 from app.utils.circuit_breaker import CircuitBreaker, CircuitBreakerError
 from app.utils.memory_monitor import global_memory_monitor as memory_monitor
 from app.services.checkpoint_recovery_service import ProcessingStage as CheckpointStage
+from app.services.droplet_scaler import droplet_scaler
 
 logger = logging.getLogger(__name__)
 
@@ -513,6 +514,15 @@ async def process_stage_3_images(
         mem_stats = memory_monitor.get_memory_stats()
         logger.info(f"   💾 Memory before batch: {mem_stats.used_mb:.1f} MB ({mem_stats.percent_used:.1f}%)")
 
+        # AUTO-SCALE: Scale up droplet before loading CLIP models (first batch only)
+        if batch_num == 0:
+            logger.info("   🔄 Scaling up droplet for CLIP model loading...")
+            scale_success = await droplet_scaler.scale_up_for_processing()
+            if scale_success:
+                logger.info("   ✅ Droplet scaled up successfully (or already at large size)")
+            else:
+                logger.warning("   ⚠️ Droplet scaling failed or disabled - continuing with current size")
+
         # CRITICAL FIX: Load CLIP/SigLIP models ONCE before batch processing
         # This prevents models from being loaded multiple times per batch (which causes OOM)
         logger.info(f"   🔧 Pre-loading CLIP/SigLIP models for batch {batch_num + 1}/{total_batches}...")
@@ -614,21 +624,42 @@ async def process_stage_3_images(
     gc.collect()
     logger.info("💾 Memory freed after Stage 3 (Image Processing)")
 
+    # AUTO-SCALE: Unload CLIP models and scale down droplet after processing
+    logger.info("   🔄 Unloading CLIP models to free memory...")
+    try:
+        # Unload models from embedding service
+        embedding_service._models_loaded = False
+        embedding_service._siglip_model = None
+        embedding_service._siglip_processor = None
+        embedding_service._clip_model = None
+        embedding_service._clip_processor = None
+
+        # Force garbage collection to free model memory
+        gc.collect()
+        logger.info("   ✅ CLIP models unloaded successfully")
+
+        # Note: We don't scale down immediately here because there might be more stages
+        # The scale-down will happen after the entire PDF processing completes
+        # or can be triggered manually via the API
+
+    except Exception as e:
+        logger.warning(f"   ⚠️ Failed to unload CLIP models: {e}")
+
     # Calculate quality metrics
     expected_clip_embeddings = images_saved_count * 5  # 5 types per image
     clip_completion_rate = (clip_embeddings_generated / expected_clip_embeddings) if expected_clip_embeddings > 0 else 0
-    
+
     quality_flags = {
         "clip_embeddings_complete": clip_completion_rate >= 0.9,  # 90% threshold
         "all_images_analyzed": images_processed == images_saved_count,
         "specialized_embeddings_complete": specialized_embeddings_generated >= (images_saved_count * 4)  # 4 specialized types
     }
-    
+
     logger.info(f"📊 Quality Metrics:")
     logger.info(f"   CLIP Completion Rate: {clip_completion_rate:.1%} ({clip_embeddings_generated}/{expected_clip_embeddings})")
     logger.info(f"   Images Analyzed: {images_processed}/{images_saved_count}")
     logger.info(f"   Quality Flags: {quality_flags}")
-    
+
     return {
         "status": "completed",
         "pdf_result_with_images": pdf_result_with_images,

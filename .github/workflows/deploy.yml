@@ -62,7 +62,7 @@ jobs:
           echo ""
           echo "📊 Deployment Details:"
           echo "  • Target Environment: Production"
-          echo "  • Target Server: 104.248.68.3"
+          echo "  • Target Server: 165.227.31.109"
           echo "  • Branch: ${{ github.ref_name }}"
           echo "  • Commit: ${{ github.sha }}"
           echo "  • Triggered by: ${{ github.actor }}"
@@ -82,7 +82,7 @@ jobs:
           echo "| **👤 Triggered by** | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **🆔 Deployment ID** | \`${{ github.run_id }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **🎯 Target Environment** | Production |" >> $GITHUB_STEP_SUMMARY
-          echo "| **🖥️ Target Server** | 104.248.68.3 |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🖥️ Target Server** | 165.227.31.109 |" >> $GITHUB_STEP_SUMMARY
           echo "| **⏰ Started** | $(date -u '+%Y-%m-%d %H:%M:%S UTC') |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
@@ -189,7 +189,7 @@ jobs:
       # 4.1. Setup deployment environment
       - name: 🔧 Setup deployment environment
         run: |
-          ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          ssh -o StrictHostKeyChecking=no root@165.227.31.109 "
           set -e
 
           # Function to handle errors
@@ -312,7 +312,7 @@ jobs:
       # 4.2. Install Python packages
       - name: 📦 Install Python packages
         run: |
-          ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          ssh -o StrictHostKeyChecking=no root@165.227.31.109 "
           cd /var/www/mivaa-pdf-extractor
           source .venv/bin/activate
           export LD_LIBRARY_PATH=\"/usr/lib/x86_64-linux-gnu:\$LD_LIBRARY_PATH\"
@@ -441,7 +441,7 @@ jobs:
       # 4.3. Verify package installations
       - name: ✅ Verify package installations
         run: |
-          ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          ssh -o StrictHostKeyChecking=no root@165.227.31.109 "
           cd /var/www/mivaa-pdf-extractor
           source .venv/bin/activate
           export LD_LIBRARY_PATH=\"/usr/lib/x86_64-linux-gnu:\$LD_LIBRARY_PATH\"
@@ -604,7 +604,7 @@ jobs:
           echo "📦 Generating final package installation status..."
 
           # Get the actual package status from the server
-          PACKAGE_STATUS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          PACKAGE_STATUS=$(ssh -o StrictHostKeyChecking=no root@165.227.31.109 "
           cd /var/www/mivaa-pdf-extractor
           if [ -f .venv/bin/activate ]; then
             source .venv/bin/activate
@@ -640,7 +640,7 @@ jobs:
           echo "✅ Final package status added to deployment summary"
 
           # Add collapsible installation logs section
-          ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          ssh -o StrictHostKeyChecking=no root@165.227.31.109 "
           cd /var/www/mivaa-pdf-extractor
           echo '=== Package Installation Logs ===' > /tmp/installation_logs.txt
           echo 'Timestamp: \$(date)' >> /tmp/installation_logs.txt
@@ -666,7 +666,7 @@ jobs:
           fi
           " 2>/dev/null || echo "Could not create installation logs file"
 
-          INSTALLATION_LOGS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "cat /tmp/installation_logs.txt 2>/dev/null" || echo "Could not retrieve installation logs")
+          INSTALLATION_LOGS=$(ssh -o StrictHostKeyChecking=no root@165.227.31.109 "cat /tmp/installation_logs.txt 2>/dev/null" || echo "Could not retrieve installation logs")
 
           # Check if installation logs are empty or just contain basic info
           if [ ${#INSTALLATION_LOGS} -lt 100 ] || [[ "$INSTALLATION_LOGS" == *"Could not retrieve"* ]]; then
@@ -682,7 +682,7 @@ jobs:
           echo "📦 Running fallback package status check..."
 
           # Try to get basic status information
-          BASIC_STATUS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          BASIC_STATUS=$(ssh -o StrictHostKeyChecking=no root@165.227.31.109 "
           echo '=== Basic System Status ==='
           echo 'Server: Online ✅'
           echo 'SSH Connection: Working ✅'
@@ -719,7 +719,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # Add comprehensive deployment logs section
-          ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          ssh -o StrictHostKeyChecking=no root@165.227.31.109 "
           echo '=== Comprehensive Deployment Logs ===' > /tmp/deployment_logs.txt
           echo 'Timestamp: \$(date)' >> /tmp/deployment_logs.txt
           echo '' >> /tmp/deployment_logs.txt
@@ -764,7 +764,7 @@ jobs:
           fi
           " 2>/dev/null || echo "Could not create deployment logs file"
 
-          DEPLOYMENT_LOGS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "cat /tmp/deployment_logs.txt 2>/dev/null" || echo "Could not retrieve deployment logs")
+          DEPLOYMENT_LOGS=$(ssh -o StrictHostKeyChecking=no root@165.227.31.109 "cat /tmp/deployment_logs.txt 2>/dev/null" || echo "Could not retrieve deployment logs")
 
           # Check if deployment logs are empty or just contain basic info
           if [ ${#DEPLOYMENT_LOGS} -lt 100 ] || [[ "$DEPLOYMENT_LOGS" == *"Could not retrieve"* ]]; then
@@ -777,7 +777,7 @@ jobs:
       - name: 🔧 Create/Update systemd service file
         run: |
           echo "🔧 Creating/updating systemd service file..."
-          ssh -o StrictHostKeyChecking=no root@104.248.68.3 'sudo tee /etc/systemd/system/mivaa-pdf-extractor.service > /dev/null' << 'SERVICE_EOF'
+          ssh -o StrictHostKeyChecking=no root@165.227.31.109 'sudo tee /etc/systemd/system/mivaa-pdf-extractor.service > /dev/null' << 'SERVICE_EOF'
           [Unit]
           Description=Mivaa PDF Extractor FastAPI service
           After=network.target
@@ -821,7 +821,7 @@ jobs:
           SERVICE_EOF
 
           echo "🔒 Securing systemd service file permissions..."
-          ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          ssh -o StrictHostKeyChecking=no root@165.227.31.109 "
           # Restrict permissions to root-only (600)
           sudo chmod 600 /etc/systemd/system/mivaa-pdf-extractor.service
 
@@ -835,7 +835,7 @@ jobs:
         run: |
           echo "🧹 Clearing all running jobs before deployment..."
           echo "================================================"
-          ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          ssh -o StrictHostKeyChecking=no root@165.227.31.109 "
           cd /var/www/mivaa-pdf-extractor
           source .venv/bin/activate
 
@@ -853,7 +853,7 @@ jobs:
       - name: 🔄 Restart service
         run: |
           echo "🔄 Reloading systemd and restarting service..."
-          ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          ssh -o StrictHostKeyChecking=no root@165.227.31.109 "
           # Reload systemd and enable service
           sudo systemctl daemon-reload
           sudo systemctl enable mivaa-pdf-extractor
@@ -892,7 +892,7 @@ jobs:
           echo "📋 Capturing service logs and system information..."
 
           # Create a temporary file to store logs
-          ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          ssh -o StrictHostKeyChecking=no root@165.227.31.109 "
           echo '=== MIVAA PDF Extractor Service Logs ===' > /tmp/service_logs.txt
           echo 'Timestamp: \$(date)' >> /tmp/service_logs.txt
           echo '' >> /tmp/service_logs.txt
@@ -919,7 +919,7 @@ jobs:
           " 2>/dev/null || echo "Could not create service logs file"
 
           # Retrieve the logs
-          SERVICE_LOGS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "cat /tmp/service_logs.txt 2>/dev/null" || echo "Could not retrieve service logs")
+          SERVICE_LOGS=$(ssh -o StrictHostKeyChecking=no root@165.227.31.109 "cat /tmp/service_logs.txt 2>/dev/null" || echo "Could not retrieve service logs")
 
           # Debug: Show log length
           echo "📊 Service logs captured: ${#SERVICE_LOGS} characters"
@@ -1058,7 +1058,7 @@ jobs:
             echo "====================================="
 
             # SSH into server and gather diagnostics
-            DIAGNOSTIC_LOGS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 '
+            DIAGNOSTIC_LOGS=$(ssh -o StrictHostKeyChecking=no root@165.227.31.109 '
             echo "🔍 AUTOMATIC DIAGNOSTICS - Service Health Check Failed"
             echo "======================================================"
             echo ""
@@ -1249,7 +1249,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo ""
           echo "🌐 Service Information:"
-          echo "  • Server: 104.248.68.3"
+          echo "  • Server: 165.227.31.109"
           echo "  • Service: mivaa-pdf-extractor.service"
           echo "  • Status: Active and running"
           echo "  • Process Manager: systemd"
@@ -1278,7 +1278,7 @@ jobs:
           echo "  • ✅ systemd reports service as active"
           echo ""
           echo "🔧 Troubleshooting (if needed):"
-          echo "  • SSH: ssh root@104.248.68.3"
+          echo "  • SSH: ssh root@165.227.31.109"
           echo "  • Logs: sudo journalctl -u mivaa-pdf-extractor -f"
           echo "  • Status: sudo systemctl status mivaa-pdf-extractor"
           echo "  • Restart: sudo systemctl restart mivaa-pdf-extractor"
@@ -1315,7 +1315,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### SSH Access" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "ssh root@104.248.68.3" >> $GITHUB_STEP_SUMMARY
+          echo "ssh root@165.227.31.109" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Service Management" >> $GITHUB_STEP_SUMMARY
