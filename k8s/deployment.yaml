@@ -59,11 +59,11 @@ spec:
         # Resource limits and requests
         resources:
           requests:
-            memory: "3Gi"      # Larger pod for ML models
-            cpu: "1000m"       # 1 CPU core
+            memory: "2Gi"      # Fit within node capacity (~3Gi allocatable)
+            cpu: "800m"        # 0.8 CPU cores
           limits:
-            memory: "6Gi"      # Maximum memory for processing
-            cpu: "2000m"       # 2 CPU cores max
+            memory: "3500Mi"   # Maximum memory (leave room for system)
+            cpu: "1800m"       # 1.8 CPU cores max
         
         # Liveness probe - restart if unhealthy
         livenessProbe:
