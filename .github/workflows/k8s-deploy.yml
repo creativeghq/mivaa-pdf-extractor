@@ -5,9 +5,6 @@ on:
     branches:
       - main
       - k8s-deployment
-    paths:
-      - 'mivaa-pdf-extractor/**'
-      - '.github/workflows/k8s-deploy.yml'
   workflow_dispatch:  # Allow manual triggers
 
 env:
@@ -47,8 +44,8 @@ jobs:
     - name: Build and push Docker image
       uses: docker/build-push-action@v5
       with:
-        context: ./mivaa-pdf-extractor
-        file: ./mivaa-pdf-extractor/k8s-Dockerfile
+        context: .
+        file: ./k8s-Dockerfile
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
@@ -93,8 +90,8 @@ jobs:
           --dry-run=client -o yaml | kubectl apply -f -
     
     - name: Create ConfigMap
-      run: kubectl apply -f mivaa-pdf-extractor/k8s-configmap.yaml
-    
+      run: kubectl apply -f k8s-configmap.yaml
+
     - name: Create Secrets
       run: |
         kubectl create secret generic mivaa-secrets \
@@ -121,19 +118,19 @@ jobs:
           --dry-run=client -o yaml | kubectl apply -f -
 
     - name: Deploy Service
-      run: kubectl apply -f mivaa-pdf-extractor/k8s-service.yaml
+      run: kubectl apply -f k8s-service.yaml
 
     - name: Deploy Deployment
-      run: kubectl apply -f mivaa-pdf-extractor/k8s-deployment.yaml
+      run: kubectl apply -f k8s-deployment.yaml
 
     - name: Deploy HPA
-      run: kubectl apply -f mivaa-pdf-extractor/k8s-hpa.yaml
+      run: kubectl apply -f k8s-hpa.yaml
 
     - name: Deploy PodDisruptionBudget
-      run: kubectl apply -f mivaa-pdf-extractor/k8s-pdb.yaml
+      run: kubectl apply -f k8s-pdb.yaml
 
     - name: Deploy Ingress
-      run: kubectl apply -f mivaa-pdf-extractor/k8s-ingress.yaml
+      run: kubectl apply -f k8s-ingress.yaml
 
     - name: Wait for rollout
       run: kubectl rollout status deployment/mivaa-pdf-extractor -n default --timeout=5m
