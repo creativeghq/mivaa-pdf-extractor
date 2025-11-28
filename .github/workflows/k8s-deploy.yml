@@ -15,7 +15,7 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  K8S_CLUSTER_NAME: do-ams3-k8s-kai
+  K8S_CLUSTER_ID: e56b1987-f9d0-4e4d-8e50-b27e12592f19
 
 jobs:
   build-and-push:
@@ -97,7 +97,7 @@ jobs:
         token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
     
     - name: Save kubeconfig
-      run: doctl kubernetes cluster kubeconfig save ${{ env.K8S_CLUSTER_NAME }}
+      run: doctl kubernetes cluster kubeconfig save ${{ env.K8S_CLUSTER_ID }}
     
     - name: Verify cluster connection
       run: kubectl cluster-info
