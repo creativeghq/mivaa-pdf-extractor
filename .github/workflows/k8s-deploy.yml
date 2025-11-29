@@ -217,6 +217,7 @@ jobs:
           --from-literal=SUPABASE_ANON_KEY="${{ secrets.SUPABASE_ANON_KEY }}" \
           --from-literal=SUPABASE_SERVICE_ROLE_KEY="${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
           --from-literal=SUPABASE_DB_PASSWORD="${{ secrets.SUPABASE_DB_PASSWORD }}" \
+          --from-literal=SUPABASE_DB_CONNECTION_STRING="${{ secrets.SUPABASE_DB_CONNECTION_STRING }}" \
           --from-literal=SUPABASE_PROJECT_ID="${{ secrets.SUPABASE_PROJECT_ID }}" \
           --from-literal=ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}" \
           --from-literal=OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}" \
@@ -238,11 +239,9 @@ jobs:
 
     - name: Create KEDA Supabase Secret
       run: |
-        # Build Supabase DB connection string for KEDA
-        SUPABASE_DB_CONNECTION_STRING="postgresql://postgres.bgbavxtjlbvgplozizxu:${{ secrets.SUPABASE_DB_PASSWORD }}@aws-0-eu-west-3.pooler.supabase.com:6543/postgres"
-
+        # Use SUPABASE_DB_CONNECTION_STRING from GitHub Secrets for KEDA
         kubectl create secret generic keda-supabase-secret \
-          --from-literal=SUPABASE_DB_CONNECTION_STRING="$SUPABASE_DB_CONNECTION_STRING" \
+          --from-literal=SUPABASE_DB_CONNECTION_STRING="${{ secrets.SUPABASE_DB_CONNECTION_STRING }}" \
           --namespace=default \
           --dry-run=client -o yaml | kubectl apply -f -
 
