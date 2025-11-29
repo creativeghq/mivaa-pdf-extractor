@@ -445,130 +445,130 @@ jobs:
         echo ""
 
         # Create package verification script
-        kubectl exec -n default $POD_NAME -- python3 -c "
+        kubectl exec -n default $POD_NAME -- python3 -c '
 import sys
-print('| Package | Category | Description | Status | Version |')
-print('|---------|----------|-------------|--------|---------|')
+print("| Package | Category | Description | Status | Version |")
+print("|---------|----------|-------------|--------|---------|")
 
 # Core Web Framework
 try:
     import fastapi
-    print(f'| **fastapi** | Web Framework | FastAPI web framework | 🟢 Installed | {fastapi.__version__} |')
+    print("| **fastapi** | Web Framework | FastAPI web framework | 🟢 Installed | " + fastapi.__version__ + " |")
 except Exception as e:
-    print(f'| **fastapi** | Web Framework | FastAPI web framework | 🔴 Missing | N/A |')
+    print("| **fastapi** | Web Framework | FastAPI web framework | 🔴 Missing | N/A |")
 
 try:
     import uvicorn
-    print(f'| **uvicorn** | Server | ASGI server | 🟢 Installed | {uvicorn.__version__} |')
+    print("| **uvicorn** | Server | ASGI server | 🟢 Installed | " + uvicorn.__version__ + " |")
 except:
-    print(f'| **uvicorn** | Server | ASGI server | 🔴 Missing | N/A |')
+    print("| **uvicorn** | Server | ASGI server | 🔴 Missing | N/A |")
 
 # Computer Vision
 try:
     import cv2
-    print(f'| **opencv-python-headless** | Computer Vision | Image processing | 🟢 Installed | {cv2.__version__} |')
+    print("| **opencv-python-headless** | Computer Vision | Image processing | 🟢 Installed | " + cv2.__version__ + " |")
 except:
-    print(f'| **opencv-python-headless** | Computer Vision | Image processing | 🔴 Missing | N/A |')
+    print("| **opencv-python-headless** | Computer Vision | Image processing | 🔴 Missing | N/A |")
 
 # PDF Processing
 try:
     import pymupdf4llm
-    ver = pymupdf4llm.__version__ if hasattr(pymupdf4llm, '__version__') else 'installed'
-    print(f'| **pymupdf4llm** | PDF Processing | PDF processing for LLM | 🟢 Installed | {ver} |')
+    ver = pymupdf4llm.__version__ if hasattr(pymupdf4llm, "__version__") else "installed"
+    print("| **pymupdf4llm** | PDF Processing | PDF processing for LLM | 🟢 Installed | " + ver + " |")
 except Exception as e:
-    print(f'| **pymupdf4llm** | PDF Processing | PDF processing for LLM | 🔴 Missing | N/A |')
+    print("| **pymupdf4llm** | PDF Processing | PDF processing for LLM | 🔴 Missing | N/A |")
 
 try:
     import fitz
-    print(f'| **PyMuPDF (fitz)** | PDF Processing | PDF library | 🟢 Installed | {fitz.version[0]} |')
+    print("| **PyMuPDF (fitz)** | PDF Processing | PDF library | 🟢 Installed | " + fitz.version[0] + " |")
 except:
-    print(f'| **PyMuPDF (fitz)** | PDF Processing | PDF library | 🔴 Missing | N/A |')
+    print("| **PyMuPDF (fitz)** | PDF Processing | PDF library | 🔴 Missing | N/A |")
 
 # Database
 try:
     import supabase
-    print(f'| **supabase** | Database | Database client | 🟢 Installed | {supabase.__version__} |')
+    print("| **supabase** | Database | Database client | 🟢 Installed | " + supabase.__version__ + " |")
 except:
-    print(f'| **supabase** | Database | Database client | 🔴 Missing | N/A |')
+    print("| **supabase** | Database | Database client | 🔴 Missing | N/A |")
 
 # Data Science
 try:
     import numpy
-    print(f'| **numpy** | Computing | Numerical computing | 🟢 Installed | {numpy.__version__} |')
+    print("| **numpy** | Computing | Numerical computing | 🟢 Installed | " + numpy.__version__ + " |")
 except:
-    print(f'| **numpy** | Computing | Numerical computing | 🔴 Missing | N/A |')
+    print("| **numpy** | Computing | Numerical computing | 🔴 Missing | N/A |")
 
 try:
     import pandas
-    print(f'| **pandas** | Data | Data manipulation | 🟢 Installed | {pandas.__version__} |')
+    print("| **pandas** | Data | Data manipulation | 🟢 Installed | " + pandas.__version__ + " |")
 except:
-    print(f'| **pandas** | Data | Data manipulation | 🔴 Missing | N/A |')
+    print("| **pandas** | Data | Data manipulation | 🔴 Missing | N/A |")
 
 # AI/ML
 try:
     import torch
-    print(f'| **torch** | AI/ML | PyTorch deep learning | 🟢 Installed | {torch.__version__} |')
+    print("| **torch** | AI/ML | PyTorch deep learning | 🟢 Installed | " + torch.__version__ + " |")
 except:
-    print(f'| **torch** | AI/ML | PyTorch deep learning | 🔴 Missing | N/A |')
+    print("| **torch** | AI/ML | PyTorch deep learning | 🔴 Missing | N/A |")
 
 try:
     import openai
-    print(f'| **openai** | AI/ML | OpenAI API client | 🟢 Installed | {openai.__version__} |')
+    print("| **openai** | AI/ML | OpenAI API client | 🟢 Installed | " + openai.__version__ + " |")
 except:
-    print(f'| **openai** | AI/ML | OpenAI API client | 🔴 Missing | N/A |')
+    print("| **openai** | AI/ML | OpenAI API client | 🔴 Missing | N/A |")
 
 try:
     import anthropic
-    print(f'| **anthropic** | AI/ML | Anthropic API client | 🟢 Installed | {anthropic.__version__} |')
+    print("| **anthropic** | AI/ML | Anthropic API client | 🟢 Installed | " + anthropic.__version__ + " |")
 except:
-    print(f'| **anthropic** | AI/ML | Anthropic API client | 🔴 Missing | N/A |')
+    print("| **anthropic** | AI/ML | Anthropic API client | 🔴 Missing | N/A |")
 
 try:
     import llama_index
-    print(f'| **llama-index** | AI/ML | LLM framework | 🟢 Installed | {llama_index.__version__} |')
+    print("| **llama-index** | AI/ML | LLM framework | 🟢 Installed | " + llama_index.__version__ + " |")
 except:
-    print(f'| **llama-index** | AI/ML | LLM framework | 🔴 Missing | N/A |')
+    print("| **llama-index** | AI/ML | LLM framework | 🔴 Missing | N/A |")
 
-print('')
-print('| **--- Modular PDF Processing Stages ---** | --- | --- | --- | --- |')
+print("")
+print("| **--- Modular PDF Processing Stages ---** | --- | --- | --- | --- |")
 
 # Modular stages
 try:
     from app.api.pdf_processing import process_stage_0_discovery
-    print(f'| **Stage 0: Discovery** | PDF Processing | Product discovery stage | 🟢 Ready | N/A |')
+    print("| **Stage 0: Discovery** | PDF Processing | Product discovery stage | 🟢 Ready | N/A |")
 except:
-    print(f'| **Stage 0: Discovery** | PDF Processing | Product discovery stage | 🔴 Failed | N/A |')
+    print("| **Stage 0: Discovery** | PDF Processing | Product discovery stage | 🔴 Failed | N/A |")
 
 try:
     from app.api.pdf_processing import process_stage_1_focused_extraction
-    print(f'| **Stage 1: Extraction** | PDF Processing | Focused extraction stage | 🟢 Ready | N/A |')
+    print("| **Stage 1: Extraction** | PDF Processing | Focused extraction stage | 🟢 Ready | N/A |")
 except:
-    print(f'| **Stage 1: Extraction** | PDF Processing | Focused extraction stage | 🔴 Failed | N/A |')
+    print("| **Stage 1: Extraction** | PDF Processing | Focused extraction stage | 🔴 Failed | N/A |")
 
 try:
     from app.api.pdf_processing import process_stage_2_chunking
-    print(f'| **Stage 2: Chunking** | PDF Processing | Text chunking stage | 🟢 Ready | N/A |')
+    print("| **Stage 2: Chunking** | PDF Processing | Text chunking stage | 🟢 Ready | N/A |")
 except:
-    print(f'| **Stage 2: Chunking** | PDF Processing | Text chunking stage | 🔴 Failed | N/A |')
+    print("| **Stage 2: Chunking** | PDF Processing | Text chunking stage | 🔴 Failed | N/A |")
 
 try:
     from app.api.pdf_processing import process_stage_3_images
-    print(f'| **Stage 3: Images** | PDF Processing | Image processing stage | 🟢 Ready | N/A |')
+    print("| **Stage 3: Images** | PDF Processing | Image processing stage | 🟢 Ready | N/A |")
 except:
-    print(f'| **Stage 3: Images** | PDF Processing | Image processing stage | 🔴 Failed | N/A |')
+    print("| **Stage 3: Images** | PDF Processing | Image processing stage | 🔴 Failed | N/A |")
 
 try:
     from app.api.pdf_processing import process_stage_4_products
-    print(f'| **Stage 4: Products** | PDF Processing | Product creation stage | 🟢 Ready | N/A |')
+    print("| **Stage 4: Products** | PDF Processing | Product creation stage | 🟢 Ready | N/A |")
 except:
-    print(f'| **Stage 4: Products** | PDF Processing | Product creation stage | 🔴 Failed | N/A |')
+    print("| **Stage 4: Products** | PDF Processing | Product creation stage | 🔴 Failed | N/A |")
 
 try:
     from app.api.pdf_processing import process_stage_5_quality
-    print(f'| **Stage 5: Quality** | PDF Processing | Quality enhancement stage | 🟢 Ready | N/A |')
+    print("| **Stage 5: Quality** | PDF Processing | Quality enhancement stage | 🟢 Ready | N/A |")
 except:
-    print(f'| **Stage 5: Quality** | PDF Processing | Quality enhancement stage | 🔴 Failed | N/A |')
-" > /tmp/package_status.txt 2>&1 || echo "❌ Package verification failed"
+    print("| **Stage 5: Quality** | PDF Processing | Quality enhancement stage | 🔴 Failed | N/A |")
+' > /tmp/package_status.txt 2>&1 || echo "❌ Package verification failed"
 
         # Display package status
         cat /tmp/package_status.txt
