@@ -54,7 +54,7 @@ class SupabaseClient:
                 write=30.0,  # Write timeout
                 pool=5.0  # Pool timeout
             ),
-            http2=True,
+            http2=False,  # Disabled http2 to avoid proxy argument incompatibility
             follow_redirects=True
         )
     def initialize(self, settings: Settings) -> None:

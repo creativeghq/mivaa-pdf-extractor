@@ -32,6 +32,7 @@ import json
 import time
 import subprocess
 import sys
+import os
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from pathlib import Path
@@ -39,9 +40,13 @@ from pathlib import Path
 import httpx
 
 # Configuration
-MIVAA_API = 'https://v1api.materialshub.gr'
+# Use localhost for testing on the server, production URL for remote testing
+MIVAA_API = 'http://localhost:8000'  # Changed from https://v1api.materialshub.gr for local testing
 HARMONY_PDF_URL = 'https://bgbavxtjlbvgplozizxu.supabase.co/storage/v1/object/public/pdf-documents/harmony-signature-book-24-25.pdf'
 WORKSPACE_ID = 'ffafc28b-1b8b-4b0d-b226-9f9a6154004e'
+
+# Supabase authentication - get from environment or use service role key
+SUPABASE_SERVICE_ROLE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJnYmF2eHRqbGJ2Z3Bsb3ppenh1Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MTkwNjAzMSwiZXhwIjoyMDY3NDgyMDMxfQ.KCfP909Qttvs3jr4t1pTYMjACVz2-C-Ga4Xm_ZyecwM')
 
 # Test both vision models
 TEST_MODELS = ['claude-vision', 'gpt-vision']
@@ -686,7 +691,13 @@ async def run_single_model_test(discovery_model: str) -> Dict:
         'total_time_ms': 0
     }
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    # Create HTTP client with authentication headers
+    headers = {
+        'Authorization': f'Bearer {SUPABASE_SERVICE_ROLE_KEY}',
+        'apikey': SUPABASE_SERVICE_ROLE_KEY
+    }
+
+    async with httpx.AsyncClient(timeout=120.0, headers=headers) as client:
         try:
             # Step 0: Clean up old test data
             await cleanup_old_test_data(client)

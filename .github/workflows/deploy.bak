@@ -1,8 +1,8 @@
-##name: 🚀 MIVAA Deployment (Default)
+name: 🚀 MIVAA Deployment (Default)
 
 on:
   push:
-    ##branches: [ "main", "production"]
+    branches: [ "main", "production"]
   workflow_dispatch:
     inputs:
       deployment_reason:

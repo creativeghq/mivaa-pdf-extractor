@@ -33,6 +33,12 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 # Change to the mivaa-pdf-extractor root directory
 cd "$SCRIPT_DIR/../.."
 
+# Activate virtual environment if it exists
+if [ -d ".venv" ]; then
+    echo "📦 Activating virtual environment..."
+    source .venv/bin/activate
+fi
+
 # Check if Python 3 is available
 if ! command -v python3 &> /dev/null; then
     echo "❌ Error: python3 is not installed or not in PATH"
@@ -41,8 +47,9 @@ fi
 
 # Check if httpx is installed
 if ! python3 -c "import httpx" 2>/dev/null; then
-    echo "⚠️  Warning: httpx module not found. Installing..."
-    pip3 install httpx
+    echo "❌ Error: httpx module not found. Please install it first."
+    echo "   Run: pip install 'httpx<0.25.0'"
+    exit 1
 fi
 
 # Run the Python test script

@@ -55,7 +55,7 @@ llama-index-readers-file==0.1.12
 # Supabase integration
 supabase==2.3.0
 postgrest==0.13.0
-gotrue==2.9.1
+gotrue==2.0.0  # Downgraded from 2.9.1 - version 2.9.1 has proxy parameter incompatibility with supabase 2.3.0
 storage3==0.7.7
 supafunc==0.3.3
 realtime==1.0.6
