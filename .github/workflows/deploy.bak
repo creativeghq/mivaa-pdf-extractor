@@ -317,126 +317,30 @@ jobs:
           source .venv/bin/activate
           export LD_LIBRARY_PATH=\"/usr/lib/x86_64-linux-gnu:\$LD_LIBRARY_PATH\"
 
-          # --- Ensure pip and uv are installed ---
+          # --- Ensure pip is installed ---
           python -m ensurepip --upgrade
           pip install --upgrade pip
-          pip install uv
 
-          # --- Exact version installation to prevent conflicts ---
-          echo 'Installing exact versions to prevent dependency conflicts...'
+          # --- Install from requirements.txt ---
+          echo 'Installing all dependencies from requirements.txt...'
 
           # Create pip install log file
           touch /tmp/pip-install.log
 
-          # CRITICAL: Use --no-deps and exact versions to prevent pip from upgrading
+          # Install all packages from requirements.txt
+          # This ensures we always install exactly what's in requirements.txt
+          # No need to maintain a separate hardcoded list
+          pip install -r requirements.txt 2>&1 | tee /tmp/pip-install.log
 
-          # Step 1: Core scientific computing with exact versions
-          echo 'Step 1: Installing core scientific computing...'
-          pip install --no-deps numpy==1.26.4
-          pip install --no-deps pandas==2.1.4
-          pip install --no-deps scipy==1.11.4
+          # Verify critical packages
+          echo 'Verifying critical package installations...'
+          python -c 'import pymupdf4llm; print("✅ pymupdf4llm:", pymupdf4llm.__version__ if hasattr(pymupdf4llm, "__version__") else "installed")' || echo '❌ pymupdf4llm failed'
+          python -c 'import llama_index; print("✅ llama-index:", llama_index.__version__)' || echo '❌ llama-index failed'
+          python -c 'from llama_index.embeddings.huggingface import HuggingFaceEmbedding; print("✅ llama-index-embeddings-huggingface: installed")' || echo '❌ llama-index-embeddings-huggingface failed'
+          python -c 'import supabase; print("✅ supabase:", supabase.__version__)' || echo '❌ supabase failed'
+          python -c 'import fastapi; print("✅ fastapi:", fastapi.__version__)' || echo '❌ fastapi failed'
 
-          # Step 2: PyTorch ecosystem with exact versions
-          echo 'Step 2: Installing PyTorch ecosystem...'
-          pip install --no-deps torch==2.2.2
-          pip install --no-deps torchvision==0.17.2
-
-          # Step 3: HTTP and API clients with exact versions
-          echo 'Step 3: Installing HTTP and API clients...'
-          pip install --no-deps httpx==0.27.0
-          pip install --no-deps requests==2.31.0
-          pip install --no-deps openai==1.51.0
-          pip install --no-deps anthropic==0.23.1
-
-          # Step 4: Computer vision with exact versions
-          echo 'Step 4: Installing computer vision...'
-          pip install --no-deps opencv-python-headless==4.8.0.76
-          pip install --no-deps Pillow==10.2.0
-          pip install --no-deps scikit-image==0.21.0
-          pip install --no-deps imageio==2.31.6
-
-          # Step 5: LlamaIndex with PROPERLY compatible versions (FINAL FIX)
-          echo 'Step 5: Installing LlamaIndex ecosystem with VERIFIED compatible versions...'
-          pip install --no-deps llama-index-core==0.10.57 || echo 'llama-index-core installation failed'
-          echo \"Installing llama-index...\" >> /tmp/pip-install.log
-          echo 'Attempting llama-index installation...'
-          if pip install --no-deps llama-index==0.10.57 2>&1 | tee -a /tmp/pip-install.log; then
-            echo '✅ llama-index installed successfully with --no-deps'
-          elif pip install llama-index==0.10.57 2>&1 | tee -a /tmp/pip-install.log; then
-            echo '✅ llama-index installed successfully with dependencies'
-          elif pip install --force-reinstall llama-index==0.10.57 2>&1 | tee -a /tmp/pip-install.log; then
-            echo '✅ llama-index installed successfully with force-reinstall'
-          else
-            echo '❌ llama-index installation failed completely' | tee -a /tmp/pip-install.log
-            echo 'Checking if llama-index-core is available...'
-            python -c 'import llama_index_core; print(\"llama-index-core available:\", llama_index_core.__version__)' || echo 'llama-index-core not available'
-          fi
-          pip install --no-deps llama-index-llms-openai==0.1.29
-          pip install --no-deps llama-index-embeddings-openai==0.1.11
-          pip install --no-deps llama-index-embeddings-huggingface==0.1.4
-          pip install --no-deps llama-index-embeddings-clip==0.1.5
-          pip install --no-deps llama-index-multi-modal-llms-openai==0.1.9
-          pip install --no-deps llama-index-multi-modal-llms-anthropic==0.1.4
-          pip install --no-deps llama-index-agent-openai==0.2.9
-          pip install --no-deps llama-index-program-openai==0.1.6
-          pip install --no-deps llama-index-question-gen-openai==0.1.3
-          pip install --no-deps llama-index-vector-stores-supabase==0.1.4
-          pip install --no-deps llama-index-readers-file==0.1.12
-          pip install --no-deps llama-index-cli==0.1.13
-
-          # Fix pypdf version conflict
-          pip install --no-deps pypdf==4.3.1
-
-          # Step 6: Web framework and remaining packages
-          echo 'Step 6: Installing web framework and remaining packages...'
-          pip install --no-deps fastapi==0.115.0
-          pip install --no-deps starlette==0.40.0
-          pip install --no-deps anyio==3.7.1
-          pip install --no-deps uvicorn==0.24.0
-          # Install pymupdf4llm directly - let it handle PyMuPDF dependencies
-          echo \"Installing pymupdf4llm...\" >> /tmp/pip-install.log
-          echo 'Installing pymupdf4llm - letting it handle PyMuPDF dependencies automatically...'
-
-          # Install pymupdf4llm and let pip resolve PyMuPDF dependencies
-          pip install pymupdf4llm==0.0.12 2>&1 | tee -a /tmp/pip-install.log
-
-          # Test final installation
-          echo 'Testing final pymupdf4llm installation...'
-          python -c 'import pymupdf4llm; print(\"✅ pymupdf4llm working:\", pymupdf4llm.__version__ if hasattr(pymupdf4llm, \"__version__\") else \"version unknown\")'
-          pip install --no-deps supabase==2.3.0
-          pip install --no-deps postgrest==0.13.0
-          pip install --no-deps gotrue==2.9.1
-          pip install --no-deps storage3==0.7.7
-          pip install --no-deps supafunc==0.3.3
-          pip install --no-deps realtime==1.0.6
-
-          # Step 7: Install missing dependencies that --no-deps skipped (FIXED VERSIONS)
-          echo 'Step 7: Installing essential dependencies with compatible versions...'
-          pip install pydantic==2.8.0
-          pip install pydantic-settings==2.1.0
-          pip install python-dotenv==1.0.1
-          pip install python-multipart==0.0.6
-          pip install python-dateutil==2.8.2
-          pip install typing-extensions==4.11.0
-          pip install PyJWT==2.10.1
-          pip install cryptography==41.0.7
-          pip install email-validator==2.1.0
-          pip install aiofiles==23.2.1
-          pip install bcrypt==4.1.2
-          pip install psutil==5.9.6
-          pip install tenacity==8.5.0
-          pip install matplotlib==3.7.5
-          pip install nltk==3.9.1
-          pip install easyocr==1.7.0
-          pip install pytesseract==0.3.10
-          pip install scikit-learn==1.3.2
-          pip install transformers==4.41.0
-          pip install sentence-transformers==3.0.0
-          pip install sentencepiece==0.2.1  # Required by SigLIP tokenizer for visual embeddings
-          pip install asyncio-mqtt==0.13.0
-          pip install aiohttp==3.9.3
-
-          echo 'All dependencies installed with exact versions - no conflicts!'
+          echo 'All dependencies installed from requirements.txt!'
           "
 
       # 4.3. Verify package installations
