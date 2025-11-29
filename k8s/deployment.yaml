@@ -60,11 +60,11 @@ spec:
         # Resource limits and requests
         resources:
           requests:
-            memory: "3Gi"      # Increased for PDF processing with vision models
-            cpu: "1000m"       # 1.0 CPU cores
+            memory: "1500Mi"   # Fit within single node (~3GB allocatable)
+            cpu: "500m"        # 0.5 CPU cores
           limits:
-            memory: "6Gi"      # Increased to prevent OOM during PDF processing
-            cpu: "2000m"       # 2.0 CPU cores max
+            memory: "2500Mi"   # Allow burst up to 2.5GB
+            cpu: "1500m"       # 1.5 CPU cores max
         
         # Liveness probe - restart if unhealthy
         livenessProbe:
