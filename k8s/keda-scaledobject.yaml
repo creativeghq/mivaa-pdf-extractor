@@ -26,19 +26,16 @@ spec:
     metadata:
       # Connection string from secret
       connectionFromEnv: SUPABASE_DB_CONNECTION_STRING
-      
+
       # Query to count pending/running jobs
       query: |
-        SELECT COUNT(*) 
-        FROM background_jobs 
+        SELECT COUNT(*)
+        FROM background_jobs
         WHERE status IN ('pending', 'running', 'processing')
-      
+
       # Scale up when there are jobs waiting
       targetQueryValue: "1"  # Scale up if >= 1 job is pending/running
-      
-      # Advanced scaling
-      activationQueryValue: "0"  # Scale to 0 if no jobs
-      
+
     # Metadata for this trigger
     name: supabase-job-queue
   
