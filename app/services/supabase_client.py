@@ -17,22 +17,22 @@ logger = logging.getLogger(__name__)
 
 class SupabaseClient:
     """Singleton class for managing Supabase client instance."""
-    
+
     _instance: Optional['SupabaseClient'] = None
-    _httpx_client: Optional[httpx.Client] = None
-    _client: Optional[Client] = None
-    
+
     def __new__(cls) -> 'SupabaseClient':
         """Ensure only one instance of SupabaseClient exists."""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
-    
+
     def __init__(self):
         """Initialize the SupabaseClient (called only once due to singleton pattern)."""
         if not hasattr(self, '_initialized'):
             self._initialized = True
             self._settings: Optional[Settings] = None
+            self._httpx_client: Optional[httpx.Client] = None
+            self._client: Optional[Client] = None
     
     
     def _create_httpx_client(self) -> httpx.Client:

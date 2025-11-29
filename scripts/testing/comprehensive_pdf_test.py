@@ -40,8 +40,8 @@ from pathlib import Path
 import httpx
 
 # Configuration
-# Use localhost for testing on the server, production URL for remote testing
-MIVAA_API = 'http://localhost:8000'  # Changed from https://v1api.materialshub.gr for local testing
+# Use production URL for K8s testing
+MIVAA_API = os.getenv('MIVAA_API', 'https://v1api.materialshub.gr')
 HARMONY_PDF_URL = 'https://bgbavxtjlbvgplozizxu.supabase.co/storage/v1/object/public/pdf-documents/harmony-signature-book-24-25.pdf'
 WORKSPACE_ID = 'ffafc28b-1b8b-4b0d-b226-9f9a6154004e'
 
@@ -765,10 +765,62 @@ async def run_nova_product_test():
     generate_comparison_report(all_results)
 
 
+# Health check before running tests
+async def check_api_health():
+    """Check if the API is healthy before running tests."""
+    log_section('API HEALTH CHECK')
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(f'{MIVAA_API}/health')
+            health_data = response.json()
+
+            log('INFO', f'API Status: {health_data.get("status", "unknown")}', 'info')
+            log('INFO', f'API Version: {health_data.get("version", "unknown")}', 'info')
+
+            # Check each service
+            services = health_data.get('services', {})
+            all_healthy = True
+
+            for service_name, service_status in services.items():
+                status = service_status.get('status', 'unknown')
+                message = service_status.get('message', '')
+
+                if status == 'healthy':
+                    log('SERVICE', f'{service_name}: ✅ {message}', 'success')
+                else:
+                    log('SERVICE', f'{service_name}: ❌ {message}', 'error')
+                    all_healthy = False
+
+                    # Show config status if available (for database)
+                    if 'config_status' in service_status:
+                        config = service_status['config_status']
+                        log('CONFIG', f'  SUPABASE_URL: {config.get("supabase_url", "UNKNOWN")}', 'warning')
+                        log('CONFIG', f'  SUPABASE_ANON_KEY: {config.get("supabase_anon_key", "UNKNOWN")}', 'warning')
+                        log('CONFIG', f'  SUPABASE_SERVICE_ROLE_KEY: {config.get("supabase_service_role_key", "UNKNOWN")}', 'warning')
+
+            if not all_healthy:
+                log('ERROR', 'API is not fully healthy. Cannot proceed with tests.', 'error')
+                log('ERROR', 'Please fix the unhealthy services before running E2E tests.', 'error')
+                sys.exit(1)
+
+            log('SUCCESS', 'All services are healthy! Proceeding with tests...', 'success')
+            return True
+
+    except Exception as e:
+        log('ERROR', f'Failed to check API health: {e}', 'error')
+        log('ERROR', f'Make sure the API is running at {MIVAA_API}', 'error')
+        sys.exit(1)
+
+
 # Entry point
 async def main():
     """Main entry point for the test script."""
     try:
+        # Check API health first
+        await check_api_health()
+
+        # Run the tests
         await run_nova_product_test()
     except Exception as e:
         log('FATAL', f'Fatal error: {e}', 'error')
