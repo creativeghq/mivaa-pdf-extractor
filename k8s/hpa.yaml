@@ -12,9 +12,9 @@ spec:
     name: mivaa-pdf-extractor
   
   # Scaling configuration
-  minReplicas: 1   # Keep 1 large pod normally
-  maxReplicas: 3   # Scale to 3 pods when under heavy load
-  
+  minReplicas: 2   # Keep 2 pods for redundancy and load distribution
+  maxReplicas: 5   # Scale to 5 pods when under heavy load (increased from 3)
+
   # Scaling behavior
   behavior:
     scaleDown:
@@ -27,33 +27,33 @@ spec:
         value: 1   # Or max 1 pod at a time
         periodSeconds: 60
       selectPolicy: Min  # Use the most conservative policy
-    
+
     scaleUp:
-      stabilizationWindowSeconds: 0  # Scale up immediately
+      stabilizationWindowSeconds: 0  # Scale up immediately when memory pressure detected
       policies:
       - type: Percent
         value: 100  # Scale up max 100% (double) at a time
-        periodSeconds: 30
+        periodSeconds: 15  # Check every 15 seconds (faster response)
       - type: Pods
-        value: 2    # Or max 2 pods at a time
-        periodSeconds: 30
+        value: 3    # Or max 3 pods at a time (increased from 2)
+        periodSeconds: 15
       selectPolicy: Max  # Use the most aggressive policy
   
   # Metrics for autoscaling
   metrics:
-  # CPU-based scaling
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 60  # Scale up when CPU > 60% (more aggressive)
-
-  # Memory-based scaling
+  # Memory-based scaling (PRIMARY - most critical for PDF processing)
   - type: Resource
     resource:
       name: memory
       target:
         type: Utilization
-        averageUtilization: 70  # Scale up when memory > 70% (more aggressive)
+        averageUtilization: 60  # Scale up when memory > 60% (VERY aggressive to prevent OOM)
+
+  # CPU-based scaling (SECONDARY)
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70  # Scale up when CPU > 70%
 
