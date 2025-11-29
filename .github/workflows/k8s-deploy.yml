@@ -207,8 +207,9 @@ jobs:
           --from-literal=SUPABASE_DB_CONNECTION_STRING="${{ secrets.SUPABASE_DB_CONNECTION_STRING }}" \
           --dry-run=client -o yaml | kubectl apply -f -
 
-    - name: Deploy HPA (fallback for KEDA)
-      run: kubectl apply -f k8s/hpa.yaml
+    # NOTE: KEDA and HPA cannot both manage the same deployment
+    # We use KEDA for scale-to-zero capability (minReplicaCount: 0)
+    # HPA cannot scale to zero (minimum is 1 replica)
 
     - name: Deploy KEDA ScaledObject (scale-to-zero based on job queue)
       run: kubectl apply -f k8s/keda-scaledobject.yaml
