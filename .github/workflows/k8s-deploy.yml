@@ -271,35 +271,7 @@ jobs:
           kubectl get pods -n keda
         fi
 
-    - name: Cleanup old LoadBalancer (if exists)
-      run: |
-        # Check if service exists and is LoadBalancer type
-        if kubectl get svc mivaa-pdf-extractor -n default &> /dev/null; then
-          SERVICE_TYPE=$(kubectl get svc mivaa-pdf-extractor -n default -o jsonpath='{.spec.type}')
-          if [ "$SERVICE_TYPE" = "LoadBalancer" ]; then
-            echo "⚠️  Found old LoadBalancer service - deleting to prevent duplicate LBs..."
-            LB_IP=$(kubectl get svc mivaa-pdf-extractor -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || echo "N/A")
-            echo "   Old LoadBalancer IP: $LB_IP"
-            kubectl delete svc mivaa-pdf-extractor -n default
-            echo "✅ Old LoadBalancer deleted - DigitalOcean LB will be removed automatically"
-            sleep 10  # Wait for deletion to propagate
-          else
-            echo "✅ Service is already ClusterIP - no cleanup needed"
-          fi
-        else
-          echo "✅ No existing service - fresh deployment"
-        fi
 
-    - name: Delete old LoadBalancer service (if exists)
-      run: |
-        echo "Checking for old LoadBalancer service..."
-        if kubectl get svc mivaa-pdf-extractor -n default 2>/dev/null | grep -q LoadBalancer; then
-          echo "⚠️  Found old LoadBalancer service - deleting..."
-          kubectl delete svc mivaa-pdf-extractor -n default
-          echo "✅ Old LoadBalancer deleted"
-        else
-          echo "✅ No old LoadBalancer found (or already ClusterIP)"
-        fi
 
     - name: Deploy Service (ClusterIP)
       run: kubectl apply -f k8s/service.yaml
@@ -456,6 +428,160 @@ jobs:
         echo "📋 Retrieving pod logs for debugging..."
         kubectl logs -n default -l app=mivaa-pdf-extractor --tail=100 || echo "Could not retrieve pod logs"
 
+    - name: 📦 Verify Package Installations
+      if: always()
+      run: |
+        echo "📦 Verifying all critical packages in deployed pod..."
+        echo "=================================================="
+
+        POD_NAME=$(kubectl get pods -n default -l app=mivaa-pdf-extractor -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+
+        if [ -z "$POD_NAME" ]; then
+          echo "❌ No running pod found - skipping package verification"
+          exit 0
+        fi
+
+        echo "✅ Found pod: $POD_NAME"
+        echo ""
+
+        # Create package verification script
+        kubectl exec -n default $POD_NAME -- python3 -c "
+import sys
+print('| Package | Category | Description | Status | Version |')
+print('|---------|----------|-------------|--------|---------|')
+
+# Core Web Framework
+try:
+    import fastapi
+    print(f'| **fastapi** | Web Framework | FastAPI web framework | 🟢 Installed | {fastapi.__version__} |')
+except Exception as e:
+    print(f'| **fastapi** | Web Framework | FastAPI web framework | 🔴 Missing | N/A |')
+
+try:
+    import uvicorn
+    print(f'| **uvicorn** | Server | ASGI server | 🟢 Installed | {uvicorn.__version__} |')
+except:
+    print(f'| **uvicorn** | Server | ASGI server | 🔴 Missing | N/A |')
+
+# Computer Vision
+try:
+    import cv2
+    print(f'| **opencv-python-headless** | Computer Vision | Image processing | 🟢 Installed | {cv2.__version__} |')
+except:
+    print(f'| **opencv-python-headless** | Computer Vision | Image processing | 🔴 Missing | N/A |')
+
+# PDF Processing
+try:
+    import pymupdf4llm
+    ver = pymupdf4llm.__version__ if hasattr(pymupdf4llm, '__version__') else 'installed'
+    print(f'| **pymupdf4llm** | PDF Processing | PDF processing for LLM | 🟢 Installed | {ver} |')
+except Exception as e:
+    print(f'| **pymupdf4llm** | PDF Processing | PDF processing for LLM | 🔴 Missing | N/A |')
+
+try:
+    import fitz
+    print(f'| **PyMuPDF (fitz)** | PDF Processing | PDF library | 🟢 Installed | {fitz.version[0]} |')
+except:
+    print(f'| **PyMuPDF (fitz)** | PDF Processing | PDF library | 🔴 Missing | N/A |')
+
+# Database
+try:
+    import supabase
+    print(f'| **supabase** | Database | Database client | 🟢 Installed | {supabase.__version__} |')
+except:
+    print(f'| **supabase** | Database | Database client | 🔴 Missing | N/A |')
+
+# Data Science
+try:
+    import numpy
+    print(f'| **numpy** | Computing | Numerical computing | 🟢 Installed | {numpy.__version__} |')
+except:
+    print(f'| **numpy** | Computing | Numerical computing | 🔴 Missing | N/A |')
+
+try:
+    import pandas
+    print(f'| **pandas** | Data | Data manipulation | 🟢 Installed | {pandas.__version__} |')
+except:
+    print(f'| **pandas** | Data | Data manipulation | 🔴 Missing | N/A |')
+
+# AI/ML
+try:
+    import torch
+    print(f'| **torch** | AI/ML | PyTorch deep learning | 🟢 Installed | {torch.__version__} |')
+except:
+    print(f'| **torch** | AI/ML | PyTorch deep learning | 🔴 Missing | N/A |')
+
+try:
+    import openai
+    print(f'| **openai** | AI/ML | OpenAI API client | 🟢 Installed | {openai.__version__} |')
+except:
+    print(f'| **openai** | AI/ML | OpenAI API client | 🔴 Missing | N/A |')
+
+try:
+    import anthropic
+    print(f'| **anthropic** | AI/ML | Anthropic API client | 🟢 Installed | {anthropic.__version__} |')
+except:
+    print(f'| **anthropic** | AI/ML | Anthropic API client | 🔴 Missing | N/A |')
+
+try:
+    import llama_index
+    print(f'| **llama-index** | AI/ML | LLM framework | 🟢 Installed | {llama_index.__version__} |')
+except:
+    print(f'| **llama-index** | AI/ML | LLM framework | 🔴 Missing | N/A |')
+
+print('')
+print('| **--- Modular PDF Processing Stages ---** | --- | --- | --- | --- |')
+
+# Modular stages
+try:
+    from app.api.pdf_processing import process_stage_0_discovery
+    print(f'| **Stage 0: Discovery** | PDF Processing | Product discovery stage | 🟢 Ready | N/A |')
+except:
+    print(f'| **Stage 0: Discovery** | PDF Processing | Product discovery stage | 🔴 Failed | N/A |')
+
+try:
+    from app.api.pdf_processing import process_stage_1_focused_extraction
+    print(f'| **Stage 1: Extraction** | PDF Processing | Focused extraction stage | 🟢 Ready | N/A |')
+except:
+    print(f'| **Stage 1: Extraction** | PDF Processing | Focused extraction stage | 🔴 Failed | N/A |')
+
+try:
+    from app.api.pdf_processing import process_stage_2_chunking
+    print(f'| **Stage 2: Chunking** | PDF Processing | Text chunking stage | 🟢 Ready | N/A |')
+except:
+    print(f'| **Stage 2: Chunking** | PDF Processing | Text chunking stage | 🔴 Failed | N/A |')
+
+try:
+    from app.api.pdf_processing import process_stage_3_images
+    print(f'| **Stage 3: Images** | PDF Processing | Image processing stage | 🟢 Ready | N/A |')
+except:
+    print(f'| **Stage 3: Images** | PDF Processing | Image processing stage | 🔴 Failed | N/A |')
+
+try:
+    from app.api.pdf_processing import process_stage_4_products
+    print(f'| **Stage 4: Products** | PDF Processing | Product creation stage | 🟢 Ready | N/A |')
+except:
+    print(f'| **Stage 4: Products** | PDF Processing | Product creation stage | 🔴 Failed | N/A |')
+
+try:
+    from app.api.pdf_processing import process_stage_5_quality
+    print(f'| **Stage 5: Quality** | PDF Processing | Quality enhancement stage | 🟢 Ready | N/A |')
+except:
+    print(f'| **Stage 5: Quality** | PDF Processing | Quality enhancement stage | 🔴 Failed | N/A |')
+" > /tmp/package_status.txt 2>&1 || echo "❌ Package verification failed"
+
+        # Display package status
+        cat /tmp/package_status.txt
+
+        # Add to GitHub summary
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "---" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 📦 Package Installation Status" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        cat /tmp/package_status.txt >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
     - name: 📊 Final Deployment Summary
       if: always()
       run: |
@@ -472,7 +598,7 @@ jobs:
         echo "  7. ✅ Health check performed"
         echo ""
         echo "📊 Pod Autoscaling (KEDA):"
-        echo "  • Min replicas: 0 (scales to zero when idle)"
+        echo "  • Min replicas: 1 (always keep API available)"
         echo "  • Max replicas: 8 (scales up based on job queue)"
         echo "  • Trigger: background_jobs table (pending/running jobs)"
         echo "  • Cooldown: 5 minutes before scaling down"
@@ -483,7 +609,7 @@ jobs:
         echo "  • Current nodes: 1"
         echo ""
         echo "💰 Cost Optimization:"
-        echo "  • Idle: ~\$24/month (1 node, 0 pods)"
+        echo "  • Idle: ~\$24/month (1 node, 1 pod)"
         echo "  • Peak: ~\$96/month (4 nodes, 8 pods)"
         echo "  • Only 1 LoadBalancer (Ingress): ~\$10/month"
         echo ""
@@ -525,14 +651,14 @@ jobs:
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "| Component | Min | Max | Trigger |" >> $GITHUB_STEP_SUMMARY
         echo "|-----------|-----|-----|---------|" >> $GITHUB_STEP_SUMMARY
-        echo "| **Pods (KEDA)** | 0 | 8 | background_jobs table |" >> $GITHUB_STEP_SUMMARY
+        echo "| **Pods (KEDA)** | 1 | 8 | background_jobs table |" >> $GITHUB_STEP_SUMMARY
         echo "| **Nodes (CA)** | 1 | 4 | Pod scheduling needs |" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### 💰 Cost Optimization" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "| State | Monthly Cost | Configuration |" >> $GITHUB_STEP_SUMMARY
         echo "|-------|--------------|---------------|" >> $GITHUB_STEP_SUMMARY
-        echo "| **Idle** | ~\$24 | 1 node, 0 pods |" >> $GITHUB_STEP_SUMMARY
+        echo "| **Idle** | ~\$24 | 1 node, 1 pod |" >> $GITHUB_STEP_SUMMARY
         echo "| **Peak** | ~\$96 | 4 nodes, 8 pods |" >> $GITHUB_STEP_SUMMARY
         echo "| **LoadBalancer** | ~\$10 | Ingress only |" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
