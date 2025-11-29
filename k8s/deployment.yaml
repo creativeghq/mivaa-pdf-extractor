@@ -58,13 +58,15 @@ spec:
             name: mivaa-secrets
         
         # Resource limits and requests
+        # REQUEST = what K8s reserves (idle API server usage)
+        # LIMIT = maximum allowed (during PDF processing)
         resources:
           requests:
-            memory: "1500Mi"   # Fit within single node (~3GB allocatable)
-            cpu: "500m"        # 0.5 CPU cores
+            memory: "256Mi"    # Idle FastAPI server uses ~200MB
+            cpu: "100m"        # 0.1 CPU cores when idle
           limits:
-            memory: "2500Mi"   # Allow burst up to 2.5GB
-            cpu: "1500m"       # 1.5 CPU cores max
+            memory: "2Gi"      # Allow burst to 2GB during PDF processing
+            cpu: "1000m"       # 1.0 CPU core max
         
         # Liveness probe - restart if unhealthy
         livenessProbe:
