@@ -444,134 +444,38 @@ jobs:
         echo "✅ Found pod: $POD_NAME"
         echo ""
 
-        # Create package verification script
-        kubectl exec -n default $POD_NAME -- python3 -c '
-import sys
-print("| Package | Category | Description | Status | Version |")
-print("|---------|----------|-------------|--------|---------|")
+        # Create package status report
+        echo '| Package | Category | Description | Status | Version |' > /tmp/package_status_report.txt
+        echo '|---------|----------|-------------|--------|---------|' >> /tmp/package_status_report.txt
 
-# Core Web Framework
-try:
-    import fastapi
-    print("| **fastapi** | Web Framework | FastAPI web framework | 🟢 Installed | " + fastapi.__version__ + " |")
-except Exception as e:
-    print("| **fastapi** | Web Framework | FastAPI web framework | 🔴 Missing | N/A |")
+        # Check each critical package individually
+        kubectl exec -n default $POD_NAME -- python -c 'import fastapi; print(f"| **fastapi** | Web Framework | FastAPI web framework | 🟢 Installed | {fastapi.__version__} |")' >> /tmp/package_status_report.txt 2>/dev/null || echo '| **fastapi** | Web Framework | FastAPI web framework | 🔴 Missing | N/A |' >> /tmp/package_status_report.txt
+        kubectl exec -n default $POD_NAME -- python -c 'import uvicorn; print(f"| **uvicorn** | Server | ASGI server | 🟢 Installed | {uvicorn.__version__} |")' >> /tmp/package_status_report.txt 2>/dev/null || echo '| **uvicorn** | Server | ASGI server | 🔴 Missing | N/A |' >> /tmp/package_status_report.txt
+        kubectl exec -n default $POD_NAME -- python -c 'import cv2; print(f"| **opencv-python-headless** | Computer Vision | Image processing | 🟢 Installed | {cv2.__version__} |")' >> /tmp/package_status_report.txt 2>/dev/null || echo '| **opencv-python-headless** | Computer Vision | Image processing | 🔴 Missing | N/A |' >> /tmp/package_status_report.txt
+        kubectl exec -n default $POD_NAME -- python -c 'import pymupdf4llm; print(f"| **pymupdf4llm** | PDF Processing | PDF processing for LLM | 🟢 Installed | {pymupdf4llm.__version__} |")' >> /tmp/package_status_report.txt 2>/dev/null || echo '| **pymupdf4llm** | PDF Processing | PDF processing for LLM | 🔴 Missing | N/A |' >> /tmp/package_status_report.txt
+        kubectl exec -n default $POD_NAME -- python -c 'import supabase; print(f"| **supabase** | Database | Database client | 🟢 Installed | {supabase.__version__} |")' >> /tmp/package_status_report.txt 2>/dev/null || echo '| **supabase** | Database | Database client | 🔴 Missing | N/A |' >> /tmp/package_status_report.txt
+        kubectl exec -n default $POD_NAME -- python -c 'import numpy; print(f"| **numpy** | Computing | Numerical computing | 🟢 Installed | {numpy.__version__} |")' >> /tmp/package_status_report.txt 2>/dev/null || echo '| **numpy** | Computing | Numerical computing | 🔴 Missing | N/A |' >> /tmp/package_status_report.txt
+        kubectl exec -n default $POD_NAME -- python -c 'import pandas; print(f"| **pandas** | Data | Data manipulation | 🟢 Installed | {pandas.__version__} |")' >> /tmp/package_status_report.txt 2>/dev/null || echo '| **pandas** | Data | Data manipulation | 🔴 Missing | N/A |' >> /tmp/package_status_report.txt
+        kubectl exec -n default $POD_NAME -- python -c 'import torch; print(f"| **torch** | AI/ML | PyTorch deep learning | 🟢 Installed | {torch.__version__} |")' >> /tmp/package_status_report.txt 2>/dev/null || echo '| **torch** | AI/ML | PyTorch deep learning | 🔴 Missing | N/A |' >> /tmp/package_status_report.txt
+        kubectl exec -n default $POD_NAME -- python -c 'import openai; print(f"| **openai** | AI/ML | OpenAI API client | 🟢 Installed | {openai.__version__} |")' >> /tmp/package_status_report.txt 2>/dev/null || echo '| **openai** | AI/ML | OpenAI API client | 🔴 Missing | N/A |' >> /tmp/package_status_report.txt
+        kubectl exec -n default $POD_NAME -- python -c 'import anthropic; print(f"| **anthropic** | AI/ML | Anthropic API client | 🟢 Installed | {anthropic.__version__} |")' >> /tmp/package_status_report.txt 2>/dev/null || echo '| **anthropic** | AI/ML | Anthropic API client | 🔴 Missing | N/A |' >> /tmp/package_status_report.txt
+        kubectl exec -n default $POD_NAME -- python -c 'import llama_index; print(f"| **llama-index** | AI/ML | LLM framework | 🟢 Installed | {llama_index.__version__} |")' >> /tmp/package_status_report.txt 2>/dev/null || echo '| **llama-index** | AI/ML | LLM framework | 🔴 Missing | N/A |' >> /tmp/package_status_report.txt
 
-try:
-    import uvicorn
-    print("| **uvicorn** | Server | ASGI server | 🟢 Installed | " + uvicorn.__version__ + " |")
-except:
-    print("| **uvicorn** | Server | ASGI server | 🔴 Missing | N/A |")
+        # Check modular PDF processing stages
+        echo '' >> /tmp/package_status_report.txt
+        echo '| **--- Modular Architecture ---** | --- | --- | --- | --- |' >> /tmp/package_status_report.txt
+        kubectl exec -n default $POD_NAME -- python -c 'from app.api.pdf_processing import process_stage_0_discovery; print(f"| **Stage 0: Discovery** | PDF Processing | Product discovery stage | 🟢 Ready | N/A |")' >> /tmp/package_status_report.txt 2>/dev/null || echo '| **Stage 0: Discovery** | PDF Processing | Product discovery stage | 🔴 Failed | N/A |' >> /tmp/package_status_report.txt
+        kubectl exec -n default $POD_NAME -- python -c 'from app.api.pdf_processing import process_stage_1_focused_extraction; print(f"| **Stage 1: Extraction** | PDF Processing | Focused extraction stage | 🟢 Ready | N/A |")' >> /tmp/package_status_report.txt 2>/dev/null || echo '| **Stage 1: Extraction** | PDF Processing | Focused extraction stage | 🔴 Failed | N/A |' >> /tmp/package_status_report.txt
+        kubectl exec -n default $POD_NAME -- python -c 'from app.api.pdf_processing import process_stage_2_chunking; print(f"| **Stage 2: Chunking** | PDF Processing | Text chunking stage | 🟢 Ready | N/A |")' >> /tmp/package_status_report.txt 2>/dev/null || echo '| **Stage 2: Chunking** | PDF Processing | Text chunking stage | 🔴 Failed | N/A |' >> /tmp/package_status_report.txt
+        kubectl exec -n default $POD_NAME -- python -c 'from app.api.pdf_processing import process_stage_3_images; print(f"| **Stage 3: Images** | PDF Processing | Image processing stage | 🟢 Ready | N/A |")' >> /tmp/package_status_report.txt 2>/dev/null || echo '| **Stage 3: Images** | PDF Processing | Image processing stage | 🔴 Failed | N/A |' >> /tmp/package_status_report.txt
+        kubectl exec -n default $POD_NAME -- python -c 'from app.api.pdf_processing import process_stage_4_products; print(f"| **Stage 4: Products** | PDF Processing | Product creation stage | 🟢 Ready | N/A |")' >> /tmp/package_status_report.txt 2>/dev/null || echo '| **Stage 4: Products** | PDF Processing | Product creation stage | 🔴 Failed | N/A |' >> /tmp/package_status_report.txt
+        kubectl exec -n default $POD_NAME -- python -c 'from app.api.pdf_processing import process_stage_5_quality; print(f"| **Stage 5: Quality** | PDF Processing | Quality enhancement stage | 🟢 Ready | N/A |")' >> /tmp/package_status_report.txt 2>/dev/null || echo '| **Stage 5: Quality** | PDF Processing | Quality enhancement stage | 🔴 Failed | N/A |' >> /tmp/package_status_report.txt
 
-# Computer Vision
-try:
-    import cv2
-    print("| **opencv-python-headless** | Computer Vision | Image processing | 🟢 Installed | " + cv2.__version__ + " |")
-except:
-    print("| **opencv-python-headless** | Computer Vision | Image processing | 🔴 Missing | N/A |")
-
-# PDF Processing
-try:
-    import pymupdf4llm
-    ver = pymupdf4llm.__version__ if hasattr(pymupdf4llm, "__version__") else "installed"
-    print("| **pymupdf4llm** | PDF Processing | PDF processing for LLM | 🟢 Installed | " + ver + " |")
-except Exception as e:
-    print("| **pymupdf4llm** | PDF Processing | PDF processing for LLM | 🔴 Missing | N/A |")
-
-try:
-    import fitz
-    print("| **PyMuPDF (fitz)** | PDF Processing | PDF library | 🟢 Installed | " + fitz.version[0] + " |")
-except:
-    print("| **PyMuPDF (fitz)** | PDF Processing | PDF library | 🔴 Missing | N/A |")
-
-# Database
-try:
-    import supabase
-    print("| **supabase** | Database | Database client | 🟢 Installed | " + supabase.__version__ + " |")
-except:
-    print("| **supabase** | Database | Database client | 🔴 Missing | N/A |")
-
-# Data Science
-try:
-    import numpy
-    print("| **numpy** | Computing | Numerical computing | 🟢 Installed | " + numpy.__version__ + " |")
-except:
-    print("| **numpy** | Computing | Numerical computing | 🔴 Missing | N/A |")
-
-try:
-    import pandas
-    print("| **pandas** | Data | Data manipulation | 🟢 Installed | " + pandas.__version__ + " |")
-except:
-    print("| **pandas** | Data | Data manipulation | 🔴 Missing | N/A |")
-
-# AI/ML
-try:
-    import torch
-    print("| **torch** | AI/ML | PyTorch deep learning | 🟢 Installed | " + torch.__version__ + " |")
-except:
-    print("| **torch** | AI/ML | PyTorch deep learning | 🔴 Missing | N/A |")
-
-try:
-    import openai
-    print("| **openai** | AI/ML | OpenAI API client | 🟢 Installed | " + openai.__version__ + " |")
-except:
-    print("| **openai** | AI/ML | OpenAI API client | 🔴 Missing | N/A |")
-
-try:
-    import anthropic
-    print("| **anthropic** | AI/ML | Anthropic API client | 🟢 Installed | " + anthropic.__version__ + " |")
-except:
-    print("| **anthropic** | AI/ML | Anthropic API client | 🔴 Missing | N/A |")
-
-try:
-    import llama_index
-    print("| **llama-index** | AI/ML | LLM framework | 🟢 Installed | " + llama_index.__version__ + " |")
-except:
-    print("| **llama-index** | AI/ML | LLM framework | 🔴 Missing | N/A |")
-
-print("")
-print("| **--- Modular PDF Processing Stages ---** | --- | --- | --- | --- |")
-
-# Modular stages
-try:
-    from app.api.pdf_processing import process_stage_0_discovery
-    print("| **Stage 0: Discovery** | PDF Processing | Product discovery stage | 🟢 Ready | N/A |")
-except:
-    print("| **Stage 0: Discovery** | PDF Processing | Product discovery stage | 🔴 Failed | N/A |")
-
-try:
-    from app.api.pdf_processing import process_stage_1_focused_extraction
-    print("| **Stage 1: Extraction** | PDF Processing | Focused extraction stage | 🟢 Ready | N/A |")
-except:
-    print("| **Stage 1: Extraction** | PDF Processing | Focused extraction stage | 🔴 Failed | N/A |")
-
-try:
-    from app.api.pdf_processing import process_stage_2_chunking
-    print("| **Stage 2: Chunking** | PDF Processing | Text chunking stage | 🟢 Ready | N/A |")
-except:
-    print("| **Stage 2: Chunking** | PDF Processing | Text chunking stage | 🔴 Failed | N/A |")
-
-try:
-    from app.api.pdf_processing import process_stage_3_images
-    print("| **Stage 3: Images** | PDF Processing | Image processing stage | 🟢 Ready | N/A |")
-except:
-    print("| **Stage 3: Images** | PDF Processing | Image processing stage | 🔴 Failed | N/A |")
-
-try:
-    from app.api.pdf_processing import process_stage_4_products
-    print("| **Stage 4: Products** | PDF Processing | Product creation stage | 🟢 Ready | N/A |")
-except:
-    print("| **Stage 4: Products** | PDF Processing | Product creation stage | 🔴 Failed | N/A |")
-
-try:
-    from app.api.pdf_processing import process_stage_5_quality
-    print("| **Stage 5: Quality** | PDF Processing | Quality enhancement stage | 🟢 Ready | N/A |")
-except:
-    print("| **Stage 5: Quality** | PDF Processing | Quality enhancement stage | 🔴 Failed | N/A |")
-' > /tmp/package_status.txt 2>&1 || echo "❌ Package verification failed"
+        echo '' >> /tmp/package_status_report.txt
+        echo 'Package status report generated successfully'
 
         # Display package status
-        cat /tmp/package_status.txt
+        cat /tmp/package_status_report.txt
 
         # Add to GitHub summary
         echo "" >> $GITHUB_STEP_SUMMARY
@@ -579,7 +483,7 @@ except:
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "## 📦 Package Installation Status" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        cat /tmp/package_status.txt >> $GITHUB_STEP_SUMMARY
+        cat /tmp/package_status_report.txt >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
 
     - name: 📊 Final Deployment Summary
