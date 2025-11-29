@@ -145,8 +145,9 @@ jobs:
         if ! kubectl get namespace keda-system &> /dev/null; then
           echo "Installing KEDA..."
           kubectl apply --server-side -f https://github.com/kedacore/keda/releases/download/v2.15.1/keda-2.15.1.yaml
-          echo "Waiting for KEDA to be ready..."
-          # Wait for KEDA deployments to be available (not pods, as they might not exist yet)
+          echo "Waiting for KEDA namespace to be ready..."
+          sleep 5  # Give namespace time to be created
+          echo "Waiting for KEDA deployments to be available..."
           kubectl wait --for=condition=available deployment/keda-operator -n keda-system --timeout=300s
           kubectl wait --for=condition=available deployment/keda-metrics-apiserver -n keda-system --timeout=300s
           echo "✅ KEDA installed and ready"
