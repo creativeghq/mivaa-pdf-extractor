@@ -230,6 +230,12 @@ jobs:
     - name: Deploy Ingress
       run: kubectl apply -f k8s/ingress.yaml
 
+    - name: Force pod restart to pull new image
+      run: |
+        echo "🔄 Forcing pod restart to pull latest image..."
+        kubectl rollout restart deployment/mivaa-pdf-extractor -n default
+        echo "✅ Rollout restart initiated"
+
     - name: Wait for rollout
       run: kubectl rollout status deployment/mivaa-pdf-extractor -n default --timeout=5m
 
@@ -240,6 +246,10 @@ jobs:
         echo ""
         echo "=== Pods ==="
         kubectl get pods -n default -l app=mivaa-pdf-extractor
+        echo ""
+        echo "=== Pod Image ==="
+        kubectl get pods -n default -l app=mivaa-pdf-extractor -o jsonpath='{.items[0].spec.containers[0].image}'
+        echo ""
         echo ""
         echo "=== Services ==="
         kubectl get services -n default
