@@ -11,8 +11,8 @@ spec:
     kind: Deployment
     name: mivaa-pdf-extractor
   
-  # Scale to ZERO when no jobs are pending/running
-  minReplicaCount: 0   # Scale down to 0 pods when idle (saves costs!)
+  # Keep at least 1 pod running for API availability
+  minReplicaCount: 1   # Always keep 1 pod running (API must be available!)
   maxReplicaCount: 8   # Scale up to 8 pods under heavy load (2 per node × 4 nodes)
   
   # Cooldown periods
