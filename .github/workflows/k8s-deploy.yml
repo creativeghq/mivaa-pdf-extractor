@@ -139,39 +139,14 @@ jobs:
           --namespace=default \
           --dry-run=client -o yaml | kubectl apply -f -
 
-    - name: Install KEDA (if not already installed)
+    # KEDA installation temporarily disabled - causing deployment failures
+    # Will re-enable once basic deployment is stable
+    # For now, using HPA only (no scale-to-zero capability)
+    - name: Skip KEDA installation (temporarily disabled)
       run: |
-        echo "Checking if KEDA is already installed..."
-
-        # Check if keda-system namespace exists
-        if kubectl get namespace keda-system 2>/dev/null; then
-          echo "✅ KEDA namespace exists - checking deployments..."
-
-          # Check if KEDA deployments are running
-          if kubectl get deployment keda-operator -n keda-system 2>/dev/null && \
-             kubectl get deployment keda-metrics-apiserver -n keda-system 2>/dev/null; then
-            echo "✅ KEDA is already installed and running - skipping installation"
-            kubectl get deployments -n keda-system
-          else
-            echo "⚠️  KEDA namespace exists but deployments missing - reinstalling..."
-            kubectl delete namespace keda-system --ignore-not-found=true
-            sleep 5
-            kubectl apply --server-side -f https://github.com/kedacore/keda/releases/download/v2.15.1/keda-2.15.1.yaml
-            echo "Waiting for KEDA to be ready..."
-            sleep 15
-            kubectl wait --for=condition=available deployment/keda-operator -n keda-system --timeout=300s || echo "Warning: keda-operator not ready yet"
-            kubectl wait --for=condition=available deployment/keda-metrics-apiserver -n keda-system --timeout=300s || echo "Warning: keda-metrics-apiserver not ready yet"
-            echo "✅ KEDA installation complete"
-          fi
-        else
-          echo "📦 KEDA not found - installing..."
-          kubectl apply --server-side -f https://github.com/kedacore/keda/releases/download/v2.15.1/keda-2.15.1.yaml
-          echo "Waiting for KEDA to be ready..."
-          sleep 15
-          kubectl wait --for=condition=available deployment/keda-operator -n keda-system --timeout=300s || echo "Warning: keda-operator not ready yet"
-          kubectl wait --for=condition=available deployment/keda-metrics-apiserver -n keda-system --timeout=300s || echo "Warning: keda-metrics-apiserver not ready yet"
-          echo "✅ KEDA installation complete"
-        fi
+        echo "⚠️  KEDA installation temporarily disabled"
+        echo "Using HPA only for autoscaling (minReplicas: 1, maxReplicas: 8)"
+        echo "KEDA will be re-enabled once deployment is stable"
 
     - name: Cleanup old LoadBalancer (if exists)
       run: |
@@ -192,17 +167,29 @@ jobs:
           echo "✅ No existing service - fresh deployment"
         fi
 
+    - name: Delete old LoadBalancer service (if exists)
+      run: |
+        echo "Checking for old LoadBalancer service..."
+        if kubectl get svc mivaa-pdf-extractor -n default 2>/dev/null | grep -q LoadBalancer; then
+          echo "⚠️  Found old LoadBalancer service - deleting..."
+          kubectl delete svc mivaa-pdf-extractor -n default
+          echo "✅ Old LoadBalancer deleted"
+        else
+          echo "✅ No old LoadBalancer found (or already ClusterIP)"
+        fi
+
     - name: Deploy Service (ClusterIP)
       run: kubectl apply -f k8s/service.yaml
 
     - name: Deploy Deployment
       run: kubectl apply -f k8s/deployment.yaml
 
-    - name: Deploy HPA (fallback for KEDA)
+    - name: Deploy HPA (autoscaling)
       run: kubectl apply -f k8s/hpa.yaml
 
-    - name: Deploy KEDA ScaledObject (scale-to-zero based on job queue)
-      run: kubectl apply -f k8s/keda-scaledobject.yaml
+    # KEDA ScaledObject temporarily disabled - KEDA not installed
+    # - name: Deploy KEDA ScaledObject (scale-to-zero based on job queue)
+    #   run: kubectl apply -f k8s/keda-scaledobject.yaml
 
     - name: Deploy PodDisruptionBudget
       run: kubectl apply -f k8s/pdb.yaml
