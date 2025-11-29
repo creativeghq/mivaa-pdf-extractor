@@ -1184,6 +1184,22 @@ async def health_check() -> HealthResponse:
             "message": "Connected",
             "latency_ms": latency_ms
         }
+    except RuntimeError as e:
+        # Supabase client not initialized - log configuration status
+        logger.error(f"Supabase client not initialized: {str(e)}")
+        logger.error(f"SUPABASE_URL: {settings.supabase_url[:30]}..." if settings.supabase_url else "SUPABASE_URL: NOT SET")
+        logger.error(f"SUPABASE_ANON_KEY: {'SET (' + str(len(settings.supabase_anon_key)) + ' chars)' if settings.supabase_anon_key else 'NOT SET'}")
+
+        services_status["database"] = {
+            "status": "unhealthy",
+            "message": f"Connection failed: {str(e)}",
+            "config_status": {
+                "supabase_url": "SET" if settings.supabase_url else "NOT SET",
+                "supabase_anon_key": "SET" if settings.supabase_anon_key else "NOT SET",
+                "supabase_service_role_key": "SET" if settings.supabase_service_role_key else "NOT SET"
+            }
+        }
+        overall_status = "unhealthy"
     except Exception as e:
         services_status["database"] = {
             "status": "unhealthy",
