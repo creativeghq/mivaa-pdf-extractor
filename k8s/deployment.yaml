@@ -8,7 +8,8 @@ metadata:
     version: v1
     tier: backend
 spec:
-  replicas: 1  # Start with 1 replica to save resources
+  # DO NOT set replicas when using HPA - let HPA control replica count
+  # replicas: 1  # Managed by HPA (mivaa-pdf-extractor-hpa)
   strategy:
     type: RollingUpdate
     rollingUpdate:

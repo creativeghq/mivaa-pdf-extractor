@@ -1,0 +1,76 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: mivaa-pdf-extractor-scaler
+  namespace: default
+  labels:
+    app: mivaa-pdf-extractor
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mivaa-pdf-extractor
+  
+  # Scale to ZERO when no jobs are pending/running
+  minReplicaCount: 0   # Scale down to 0 pods when idle (saves costs!)
+  maxReplicaCount: 5   # Scale up to 5 pods under heavy load
+  
+  # Cooldown periods
+  cooldownPeriod: 300   # Wait 5 minutes after last trigger before scaling down
+  pollingInterval: 30   # Check metrics every 30 seconds
+  
+  # Triggers - scale based on background_jobs table
+  triggers:
+  # Trigger 1: Scale based on pending/running jobs in Supabase
+  - type: postgresql
+    metadata:
+      # Connection string from secret
+      connectionFromEnv: SUPABASE_DB_CONNECTION_STRING
+      
+      # Query to count pending/running jobs
+      query: |
+        SELECT COUNT(*) 
+        FROM background_jobs 
+        WHERE status IN ('pending', 'running', 'processing')
+      
+      # Scale up when there are jobs waiting
+      targetQueryValue: "1"  # Scale up if >= 1 job is pending/running
+      
+      # Advanced scaling
+      activationQueryValue: "0"  # Scale to 0 if no jobs
+      
+    # Metadata for this trigger
+    name: supabase-job-queue
+  
+  # Trigger 2: Scale based on memory usage (backup trigger)
+  - type: memory
+    metricType: Utilization
+    metadata:
+      value: "70"  # Scale up when memory > 70%
+    name: memory-pressure
+  
+  # Trigger 3: Scale based on CPU usage (backup trigger)
+  - type: cpu
+    metricType: Utilization
+    metadata:
+      value: "80"  # Scale up when CPU > 80%
+    name: cpu-pressure
+  
+  # Fallback to HPA if KEDA is unavailable
+  fallback:
+    failureThreshold: 3
+    replicas: 1
+
+---
+# Secret for Supabase DB connection (used by KEDA)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keda-supabase-secret
+  namespace: default
+type: Opaque
+stringData:
+  # Format: postgresql://user:password@host:port/database
+  # This will be populated from GitHub Secrets during deployment
+  SUPABASE_DB_CONNECTION_STRING: ""  # Populated by CI/CD
+

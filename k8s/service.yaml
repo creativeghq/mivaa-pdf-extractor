@@ -5,16 +5,9 @@ metadata:
   namespace: default
   labels:
     app: mivaa-pdf-extractor
-  annotations:
-    service.beta.kubernetes.io/do-loadbalancer-name: "mivaa-lb"
-    service.beta.kubernetes.io/do-loadbalancer-protocol: "http"
-    service.beta.kubernetes.io/do-loadbalancer-healthcheck-path: "/health"
-    service.beta.kubernetes.io/do-loadbalancer-healthcheck-interval-seconds: "10"
-    service.beta.kubernetes.io/do-loadbalancer-healthcheck-timeout-seconds: "5"
-    service.beta.kubernetes.io/do-loadbalancer-healthcheck-unhealthy-threshold: "3"
-    service.beta.kubernetes.io/do-loadbalancer-healthcheck-healthy-threshold: "2"
 spec:
-  type: LoadBalancer
+  # Use ClusterIP instead of LoadBalancer - Ingress will handle external access
+  type: ClusterIP
   selector:
     app: mivaa-pdf-extractor
   ports:

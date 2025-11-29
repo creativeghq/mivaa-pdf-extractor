@@ -12,8 +12,8 @@ spec:
     name: mivaa-pdf-extractor
   
   # Scaling configuration
-  minReplicas: 2   # Keep 2 pods for redundancy and load distribution
-  maxReplicas: 5   # Scale to 5 pods when under heavy load (increased from 3)
+  minReplicas: 1   # Scale down to 1 pod when idle (was 2 - wasting resources)
+  maxReplicas: 5   # Scale to 5 pods when under heavy load
 
   # Scaling behavior
   behavior:

@@ -129,14 +129,39 @@ jobs:
           --namespace=default \
           --dry-run=client -o yaml | kubectl apply -f -
 
+    - name: Create KEDA Supabase Secret
+      run: |
+        # Build Supabase DB connection string for KEDA
+        SUPABASE_DB_CONNECTION_STRING="postgresql://postgres.bgbavxtjlbvgplozizxu:${{ secrets.SUPABASE_DB_PASSWORD }}@aws-0-eu-west-3.pooler.supabase.com:6543/postgres"
+
+        kubectl create secret generic keda-supabase-secret \
+          --from-literal=SUPABASE_DB_CONNECTION_STRING="$SUPABASE_DB_CONNECTION_STRING" \
+          --namespace=default \
+          --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Install KEDA (if not already installed)
+      run: |
+        # Check if KEDA is already installed
+        if ! kubectl get namespace keda-system &> /dev/null; then
+          echo "Installing KEDA..."
+          kubectl apply --server-side -f https://github.com/kedacore/keda/releases/download/v2.15.1/keda-2.15.1.yaml
+          echo "Waiting for KEDA to be ready..."
+          kubectl wait --for=condition=ready pod -l app=keda-operator -n keda-system --timeout=300s
+        else
+          echo "KEDA already installed"
+        fi
+
     - name: Deploy Service
       run: kubectl apply -f k8s/service.yaml
 
     - name: Deploy Deployment
       run: kubectl apply -f k8s/deployment.yaml
 
-    - name: Deploy HPA
+    - name: Deploy HPA (fallback for KEDA)
       run: kubectl apply -f k8s/hpa.yaml
+
+    - name: Deploy KEDA ScaledObject (scale-to-zero based on job queue)
+      run: kubectl apply -f k8s/keda-scaledobject.yaml
 
     - name: Deploy PodDisruptionBudget
       run: kubectl apply -f k8s/pdb.yaml
@@ -165,13 +190,9 @@ jobs:
       run: |
         echo "Waiting for service to be ready..."
         sleep 30
-        EXTERNAL_IP=$(kubectl get svc mivaa-pdf-extractor -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-        echo "External IP: $EXTERNAL_IP"
-        if [ -n "$EXTERNAL_IP" ]; then
-          curl -f http://$EXTERNAL_IP/health || echo "Health check failed"
-        else
-          echo "LoadBalancer IP not yet assigned"
-        fi
+        # Service is now ClusterIP (not LoadBalancer), accessed via Ingress
+        echo "Service is accessible via Ingress at: https://v1api.materialshub.gr"
+        echo "Health check: curl https://v1api.materialshub.gr/health"
 
     - name: Deployment summary
       if: always()
@@ -179,11 +200,18 @@ jobs:
         echo "🎉 Deployment completed!"
         echo "✅ Docker image built and pushed"
         echo "✅ Kubernetes resources deployed"
-        echo "✅ Service exposed via LoadBalancer"
+        echo "✅ KEDA installed for scale-to-zero"
+        echo "✅ Service exposed via Ingress (not LoadBalancer)"
+        echo ""
+        echo "📊 Scaling Configuration:"
+        echo "- Min replicas: 0 (scales to zero when idle)"
+        echo "- Max replicas: 5 (scales up based on job queue)"
+        echo "- Trigger: background_jobs table (pending/running jobs)"
         echo ""
         echo "📊 Next steps:"
-        echo "1. Update DNS: v1api.materialshub.gr -> LoadBalancer IP"
-        echo "2. Monitor pods: kubectl get pods -n default -w"
-        echo "3. Check logs: kubectl logs -f deployment/mivaa-pdf-extractor -n default"
-        echo "4. Test API: curl https://v1api.materialshub.gr/health"
+        echo "1. Monitor pods: kubectl get pods -n default -w"
+        echo "2. Check KEDA scaling: kubectl get scaledobject -n default"
+        echo "3. Check HPA: kubectl get hpa -n default"
+        echo "4. Check logs: kubectl logs -f deployment/mivaa-pdf-extractor -n default"
+        echo "5. Test API: curl https://v1api.materialshub.gr/health"
 
