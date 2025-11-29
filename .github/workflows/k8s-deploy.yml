@@ -209,6 +209,12 @@ jobs:
         echo "=== Ingress ==="
         kubectl get ingress -n default
 
+    - name: Cleanup infrastructure (remove extra nodes and old LoadBalancers)
+      run: |
+        echo "🧹 Running infrastructure cleanup..."
+        chmod +x k8s/cleanup-infrastructure.sh
+        ./k8s/cleanup-infrastructure.sh
+
     - name: Run health check
       run: |
         echo "Waiting for service to be ready..."
