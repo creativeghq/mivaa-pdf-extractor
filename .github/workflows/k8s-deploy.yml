@@ -247,11 +247,38 @@ jobs:
         echo "=== Ingress ==="
         kubectl get ingress -n default
 
-    # Infrastructure cleanup moved to manual script execution
-    # Run k8s/cleanup-infrastructure.sh manually when needed to:
-    # - Scale node pool down to 1 node
-    # - Delete old LoadBalancer service
-    # - Verify only Ingress LoadBalancer remains
+    - name: Scale node pool to 1 node and enable autoscaling (1-4)
+      run: |
+        echo "🔧 Configuring node pool autoscaling..."
+
+        # Get cluster ID
+        CLUSTER_ID=$(doctl kubernetes cluster list --format ID --no-header)
+        echo "Cluster ID: $CLUSTER_ID"
+
+        # Get node pool ID
+        NODE_POOL_ID=$(doctl kubernetes cluster node-pool list $CLUSTER_ID --format ID --no-header | head -n 1)
+        echo "Node Pool ID: $NODE_POOL_ID"
+
+        # Update node pool: scale to 1 node, enable autoscaling 1-4
+        echo "Updating node pool to 1 node with autoscaling 1-4..."
+        doctl kubernetes cluster node-pool update $CLUSTER_ID $NODE_POOL_ID \
+          --count 1 \
+          --auto-scale \
+          --min-nodes 1 \
+          --max-nodes 4
+
+        echo "✅ Node pool configured:"
+        echo "  - Current nodes: 1"
+        echo "  - Autoscaling: enabled"
+        echo "  - Min nodes: 1"
+        echo "  - Max nodes: 4"
+
+        # Wait for nodes to scale down
+        echo "⏳ Waiting for nodes to scale down..."
+        sleep 30
+
+        echo "📊 Current nodes:"
+        kubectl get nodes
 
     - name: Run health check
       run: |
@@ -267,18 +294,30 @@ jobs:
         echo "🎉 Deployment completed!"
         echo "✅ Docker image built and pushed"
         echo "✅ Kubernetes resources deployed"
-        echo "✅ KEDA installed for scale-to-zero"
-        echo "✅ Service exposed via Ingress (not LoadBalancer)"
+        echo "✅ KEDA v2.18.0 installed for scale-to-zero"
+        echo "✅ Service exposed via Ingress (ClusterIP, not LoadBalancer)"
+        echo "✅ Node pool scaled to 1 node with autoscaling enabled"
         echo ""
-        echo "📊 Scaling Configuration:"
-        echo "- Min replicas: 0 (scales to zero when idle)"
-        echo "- Max replicas: 5 (scales up based on job queue)"
-        echo "- Trigger: background_jobs table (pending/running jobs)"
+        echo "📊 Pod Autoscaling (KEDA):"
+        echo "  - Min replicas: 0 (scales to zero when idle)"
+        echo "  - Max replicas: 8 (scales up based on job queue)"
+        echo "  - Trigger: background_jobs table (pending/running jobs)"
+        echo "  - Cooldown: 5 minutes before scaling down"
+        echo ""
+        echo "📊 Node Autoscaling (Cluster Autoscaler):"
+        echo "  - Min nodes: 1 (cost-optimized idle state)"
+        echo "  - Max nodes: 4 (scales up when pods can't be scheduled)"
+        echo "  - Current nodes: 1"
+        echo ""
+        echo "💰 Cost Optimization:"
+        echo "  - Idle: ~\$24/month (1 node, 0 pods)"
+        echo "  - Peak: ~\$96/month (4 nodes, 8 pods)"
+        echo "  - Only 1 LoadBalancer (Ingress): ~\$10/month"
         echo ""
         echo "📊 Next steps:"
         echo "1. Monitor pods: kubectl get pods -n default -w"
         echo "2. Check KEDA scaling: kubectl get scaledobject -n default"
-        echo "3. Check HPA: kubectl get hpa -n default"
-        echo "4. Check logs: kubectl logs -f deployment/mivaa-pdf-extractor -n default"
-        echo "5. Test API: curl https://v1api.materialshub.gr/health"
+        echo "3. Check nodes: kubectl get nodes"
+        echo "4. View logs: kubectl logs -f deployment/mivaa-pdf-extractor -n default"
+        echo "5. Test endpoint: curl https://v1api.materialshub.gr/health"
 
