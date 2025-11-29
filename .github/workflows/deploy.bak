@@ -373,6 +373,7 @@ jobs:
           fi
           pip install --no-deps llama-index-llms-openai==0.1.29
           pip install --no-deps llama-index-embeddings-openai==0.1.11
+          pip install --no-deps llama-index-embeddings-huggingface==0.1.4
           pip install --no-deps llama-index-embeddings-clip==0.1.5
           pip install --no-deps llama-index-multi-modal-llms-openai==0.1.9
           pip install --no-deps llama-index-multi-modal-llms-anthropic==0.1.4
