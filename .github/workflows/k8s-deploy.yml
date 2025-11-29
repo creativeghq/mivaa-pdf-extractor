@@ -146,12 +146,34 @@ jobs:
           echo "Installing KEDA..."
           kubectl apply --server-side -f https://github.com/kedacore/keda/releases/download/v2.15.1/keda-2.15.1.yaml
           echo "Waiting for KEDA to be ready..."
-          kubectl wait --for=condition=ready pod -l app=keda-operator -n keda-system --timeout=300s
+          # Wait for KEDA deployments to be available (not pods, as they might not exist yet)
+          kubectl wait --for=condition=available deployment/keda-operator -n keda-system --timeout=300s
+          kubectl wait --for=condition=available deployment/keda-metrics-apiserver -n keda-system --timeout=300s
+          echo "✅ KEDA installed and ready"
         else
           echo "KEDA already installed"
         fi
 
-    - name: Deploy Service
+    - name: Cleanup old LoadBalancer (if exists)
+      run: |
+        # Check if service exists and is LoadBalancer type
+        if kubectl get svc mivaa-pdf-extractor -n default &> /dev/null; then
+          SERVICE_TYPE=$(kubectl get svc mivaa-pdf-extractor -n default -o jsonpath='{.spec.type}')
+          if [ "$SERVICE_TYPE" = "LoadBalancer" ]; then
+            echo "⚠️  Found old LoadBalancer service - deleting to prevent duplicate LBs..."
+            LB_IP=$(kubectl get svc mivaa-pdf-extractor -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || echo "N/A")
+            echo "   Old LoadBalancer IP: $LB_IP"
+            kubectl delete svc mivaa-pdf-extractor -n default
+            echo "✅ Old LoadBalancer deleted - DigitalOcean LB will be removed automatically"
+            sleep 10  # Wait for deletion to propagate
+          else
+            echo "✅ Service is already ClusterIP - no cleanup needed"
+          fi
+        else
+          echo "✅ No existing service - fresh deployment"
+        fi
+
+    - name: Deploy Service (ClusterIP)
       run: kubectl apply -f k8s/service.yaml
 
     - name: Deploy Deployment
