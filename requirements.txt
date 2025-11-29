@@ -22,6 +22,8 @@ torch==2.2.2+cpu
 torchvision==0.17.2+cpu
 transformers>=4.30.0
 scikit-learn==1.3.2
+# OpenAI CLIP for image embeddings (required by llama-index-embeddings-clip)
+git+https://github.com/openai/CLIP.git
 # OpenCV headless version for server deployment (no GUI dependencies)
 opencv-python-headless>=4.8.0
 Pillow>=10.2.0,<11.0.0
@@ -38,6 +40,7 @@ llama-index-core==0.10.57
 llama-index-llms-openai==0.1.29
 llama-index-embeddings-openai==0.1.11
 llama-index-embeddings-huggingface==0.1.4
+llama-index-embeddings-clip==0.1.5
 llama-index-vector-stores-supabase==0.1.4
 # SigLIP for superior visual embeddings (+19-29% accuracy improvement over CLIP)
 # Note: Using transformers directly instead of sentence-transformers to avoid 'hidden_size' error
