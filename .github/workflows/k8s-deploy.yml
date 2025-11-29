@@ -211,6 +211,16 @@ jobs:
     # We use KEDA for scale-to-zero capability (minReplicaCount: 0)
     # HPA cannot scale to zero (minimum is 1 replica)
 
+    - name: Delete old HPA (if exists) to avoid conflict with KEDA
+      run: |
+        if kubectl get hpa mivaa-pdf-extractor-hpa -n default 2>/dev/null; then
+          echo "⚠️  Found old HPA - deleting to avoid conflict with KEDA..."
+          kubectl delete hpa mivaa-pdf-extractor-hpa -n default
+          echo "✅ Old HPA deleted"
+        else
+          echo "✅ No old HPA found"
+        fi
+
     - name: Deploy KEDA ScaledObject (scale-to-zero based on job queue)
       run: kubectl apply -f k8s/keda-scaledobject.yaml
 
