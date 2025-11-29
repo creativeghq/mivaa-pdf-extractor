@@ -308,11 +308,7 @@ jobs:
     - name: Deploy Deployment
       run: kubectl apply -f k8s/deployment.yaml
 
-    - name: Create KEDA Supabase Secret
-      run: |
-        kubectl create secret generic keda-supabase-secret \
-          --from-literal=SUPABASE_DB_CONNECTION_STRING="${{ secrets.SUPABASE_DB_CONNECTION_STRING }}" \
-          --dry-run=client -o yaml | kubectl apply -f -
+
 
     # NOTE: KEDA and HPA cannot both manage the same deployment
     # We use KEDA for scale-to-zero capability (minReplicaCount: 0)
