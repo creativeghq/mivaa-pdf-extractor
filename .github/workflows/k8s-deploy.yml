@@ -139,14 +139,31 @@ jobs:
           --namespace=default \
           --dry-run=client -o yaml | kubectl apply -f -
 
-    # KEDA installation temporarily disabled - causing deployment failures
-    # Will re-enable once basic deployment is stable
-    # For now, using HPA only (no scale-to-zero capability)
-    - name: Skip KEDA installation (temporarily disabled)
+    - name: Install KEDA v2.18.0 (if not already installed)
       run: |
-        echo "⚠️  KEDA installation temporarily disabled"
-        echo "Using HPA only for autoscaling (minReplicas: 1, maxReplicas: 8)"
-        echo "KEDA will be re-enabled once deployment is stable"
+        echo "🔍 Checking if KEDA is already installed..."
+
+        # Check if KEDA namespace exists and has deployments
+        if kubectl get namespace keda 2>/dev/null && \
+           kubectl get deployment keda-operator -n keda 2>/dev/null && \
+           kubectl get deployment keda-operator-metrics-apiserver -n keda 2>/dev/null; then
+          echo "✅ KEDA is already installed - skipping installation"
+          kubectl get deployments -n keda
+        else
+          echo "📦 Installing KEDA v2.18.0..."
+          # Using --server-side flag for better CRD and webhook management
+          kubectl apply --server-side -f https://github.com/kedacore/keda/releases/download/v2.18.0/keda-2.18.0.yaml
+
+          echo "⏳ Waiting for KEDA to be ready..."
+          sleep 10
+
+          # Wait for KEDA operator to be available
+          kubectl wait --for=condition=available deployment/keda-operator -n keda --timeout=300s || echo "⚠️  keda-operator not ready yet"
+          kubectl wait --for=condition=available deployment/keda-operator-metrics-apiserver -n keda --timeout=300s || echo "⚠️  keda-operator-metrics-apiserver not ready yet"
+
+          echo "✅ KEDA v2.18.0 installation complete"
+          kubectl get pods -n keda
+        fi
 
     - name: Cleanup old LoadBalancer (if exists)
       run: |
@@ -184,12 +201,17 @@ jobs:
     - name: Deploy Deployment
       run: kubectl apply -f k8s/deployment.yaml
 
-    - name: Deploy HPA (autoscaling)
+    - name: Create KEDA Supabase Secret
+      run: |
+        kubectl create secret generic keda-supabase-secret \
+          --from-literal=SUPABASE_DB_CONNECTION_STRING="${{ secrets.SUPABASE_DB_CONNECTION_STRING }}" \
+          --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Deploy HPA (fallback for KEDA)
       run: kubectl apply -f k8s/hpa.yaml
 
-    # KEDA ScaledObject temporarily disabled - KEDA not installed
-    # - name: Deploy KEDA ScaledObject (scale-to-zero based on job queue)
-    #   run: kubectl apply -f k8s/keda-scaledobject.yaml
+    - name: Deploy KEDA ScaledObject (scale-to-zero based on job queue)
+      run: kubectl apply -f k8s/keda-scaledobject.yaml
 
     - name: Deploy PodDisruptionBudget
       run: kubectl apply -f k8s/pdb.yaml
