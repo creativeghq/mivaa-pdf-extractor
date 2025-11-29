@@ -1,5 +1,5 @@
-"""
 import logging
+"""
 Stage 4: Product Creation & Linking
 
 This module handles product creation in database and entity linking.

@@ -1,5 +1,5 @@
-"""
 import logging
+"""
 Stage 1: Focused Extraction
 
 This module handles focused extraction logic - determining which pages to process

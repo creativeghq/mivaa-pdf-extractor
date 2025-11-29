@@ -1,5 +1,5 @@
-"""
 import logging
+"""
 Stage 5: Quality Enhancement
 
 This module handles async quality enhancement using Claude validation.

@@ -2660,8 +2660,7 @@ async def process_document_with_discovery(
             tracker=tracker,
             checkpoint_recovery_service=checkpoint_recovery_service,
             job_id=job_id,
-            logger=logger
-        )
+            )
 
         product_pages = stage_1_result["product_pages"]
         pdf_result = stage_1_result["pdf_result"]
@@ -2693,8 +2692,7 @@ async def process_document_with_discovery(
             tracker=tracker,
             checkpoint_recovery_service=checkpoint_recovery_service,
             supabase=supabase,
-            logger=logger
-        )
+            )
 
         chunk_result = stage_2_result["chunk_result"]
         chunks_created = tracker.chunks_created
@@ -2743,8 +2741,7 @@ async def process_document_with_discovery(
             tracker=tracker,
             checkpoint_recovery_service=checkpoint_recovery_service,
             supabase=supabase,
-            logger=logger
-        )
+            )
 
         products_created = stage_4_result["products_created"]
         linking_results = stage_4_result["linking_results"]
@@ -2772,8 +2769,7 @@ async def process_document_with_discovery(
             component_manager=component_manager,
             loaded_components=loaded_components,
             claude_breaker=claude_breaker,
-            logger=logger
-        )
+            )
 
         # Stage 5 handles all SUCCESS cleanup (component unloading, resource cleanup, job completion)
         logger.info("✅ [MODULAR PIPELINE] All stages completed successfully")

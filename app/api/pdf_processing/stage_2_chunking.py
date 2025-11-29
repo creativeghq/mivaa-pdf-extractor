@@ -1,5 +1,5 @@
-"""
 import logging
+"""
 Stage 2: Text Chunking
 
 This module handles text chunking and embedding generation for PDF content.
