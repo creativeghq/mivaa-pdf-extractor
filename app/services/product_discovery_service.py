@@ -538,8 +538,14 @@ Your task is to identify and extract content across the following categories:
    - Example: If a product spans pages 22-27, return [22, 23, 24, 25, 26, 27], NOT just [22, 23]
    - Look for: product name continuity, related images, variant displays, technical specs across multiple pages
    - A product's page range ends when a new product begins or when content becomes unrelated
-3. Classify each page as: "product", "certificate", "logo", "specification", "marketing", "admin", or "transitional"
-4. Provide confidence scores (0.0-1.0) for each item
+3. **CRITICAL: For image_pages, you MUST identify which pages contain PRODUCT IMAGES (photos/renders):**
+   - image_pages is a REQUIRED field - you MUST include it for every product
+   - List ALL pages that show product images/photos/renders (not text-only pages)
+   - Example: If pages 22-27 show the product, but only pages 22, 23, 25 have images, return "image_pages": [22, 23, 25]
+   - If a page has ONLY text/specs with NO images, do NOT include it in image_pages
+   - If ALL pages in page_range have images, image_pages should equal page_range
+4. Classify each page as: "product", "certificate", "logo", "specification", "marketing", "admin", or "transitional"
+5. Provide confidence scores (0.0-1.0) for each item
 
 **OUTPUT FORMAT (JSON):**
 ```json

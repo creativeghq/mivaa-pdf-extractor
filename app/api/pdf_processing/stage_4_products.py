@@ -66,8 +66,9 @@ async def process_stage_4_products(
                 metadata['page_range'] = product.page_range
             if 'confidence' not in metadata:
                 metadata['confidence'] = product.confidence
-            if 'image_indices' not in metadata and product.image_indices:
-                metadata['image_indices'] = product.image_indices
+            # ALWAYS save image_indices (even if None or empty list)
+            if 'image_indices' not in metadata:
+                metadata['image_indices'] = product.image_indices if product.image_indices is not None else []
             
             product_data = {
                 'source_document_id': document_id,
