@@ -1,11 +1,11 @@
 """
-import logging
 Stage 1: Focused Extraction
 
 This module handles focused extraction logic - determining which pages to process
 based on product discovery results, then extracting ONLY those pages.
 """
 
+import logging
 from typing import Dict, Any, Set
 from app.schemas.jobs import ProcessingStage
 from app.utils.timeout_guard import with_timeout, ProgressiveTimeoutStrategy
