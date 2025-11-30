@@ -721,19 +721,27 @@ Respond ONLY with valid JSON, no additional text."""
                 self._embeddings_service = RealEmbeddingsService()
 
             # Generate visual embedding using SigLIP
-            visual_embedding = await self._embeddings_service._generate_visual_embedding(
+            # Returns tuple: (embedding_list, model_name)
+            result = await self._embeddings_service._generate_visual_embedding(
                 image_url=None,
                 image_data=image_base64
             )
 
-            # visual_embedding is a list of 1152 floats (SigLIP embedding)
-            if visual_embedding and isinstance(visual_embedding, list) and len(visual_embedding) == 1152:
-                self.logger.info(f"✅ Generated SigLIP embedding: {len(visual_embedding)}D")
-                return visual_embedding
+            # Unpack tuple: (embedding_list, model_name)
+            if result and isinstance(result, tuple) and len(result) == 2:
+                visual_embedding, model_name = result
+
+                # SigLIP returns 1152D embeddings
+                if visual_embedding and isinstance(visual_embedding, list) and len(visual_embedding) == 1152:
+                    self.logger.info(f"✅ Generated SigLIP embedding: {len(visual_embedding)}D using {model_name}")
+                    return visual_embedding
+                else:
+                    actual_len = len(visual_embedding) if visual_embedding else 0
+                    self.logger.error(f"SigLIP embedding has wrong dimensions: expected 1152D, got {actual_len}D from {model_name}")
+                    raise RuntimeError(f"Failed to generate valid SigLIP embedding: expected 1152D, got {actual_len}D")
             else:
-                actual_len = len(visual_embedding) if visual_embedding else 0
-                self.logger.error(f"SigLIP embedding generation returned invalid result: expected 1152D list, got {type(visual_embedding).__name__} with length {actual_len}")
-                raise RuntimeError(f"Failed to generate valid SigLIP embedding: expected 1152D, got {actual_len}D")
+                self.logger.error(f"SigLIP embedding generation returned invalid format: expected tuple(list, str), got {type(result).__name__}")
+                raise RuntimeError("Failed to generate valid SigLIP embedding: invalid return format")
 
         except Exception as e:
             self.logger.error(f"❌ SigLIP embedding generation failed: {e}")
