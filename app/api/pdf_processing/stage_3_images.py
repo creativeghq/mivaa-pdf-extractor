@@ -555,13 +555,13 @@ async def process_stage_3_images(
         del batch_images
         logger.info("   ✅ Deleted batch data from memory")
 
-        # 2. Unload CLIP/SigLIP models to free memory (will reload on next use)
+        # 2. Unload SigLIP model to free memory (will reload on next use)
         try:
-            unloaded = embedding_service.unload_clip_model()
+            unloaded = embedding_service.unload_siglip_model()
             if unloaded:
-                logger.info("   ✅ Successfully unloaded CLIP/SigLIP models")
+                logger.info("   ✅ Successfully unloaded SigLIP model")
         except Exception as e:
-            logger.warning(f"   ⚠️ Failed to unload models: {e}")
+            logger.warning(f"   ⚠️ Failed to unload SigLIP model: {e}")
 
         # 3. Force garbage collection
         gc.collect()
@@ -626,22 +626,20 @@ async def process_stage_3_images(
     gc.collect()
     logger.info("💾 Memory freed after Stage 3 (Image Processing)")
 
-    # Unload CLIP models to free memory
-    logger.info("   🔄 Unloading CLIP models to free memory...")
+    # Unload SigLIP model to free memory
+    logger.info("   🔄 Unloading SigLIP model to free memory...")
     try:
-        # Unload models from embedding service
+        # Unload model from embedding service
         embedding_service._models_loaded = False
         embedding_service._siglip_model = None
         embedding_service._siglip_processor = None
-        embedding_service._clip_model = None
-        embedding_service._clip_processor = None
 
         # Force garbage collection to free model memory
         gc.collect()
-        logger.info("   ✅ CLIP models unloaded successfully")
+        logger.info("   ✅ SigLIP model unloaded successfully")
 
     except Exception as e:
-        logger.warning(f"   ⚠️ Failed to unload CLIP models: {e}")
+        logger.warning(f"   ⚠️ Failed to unload SigLIP model: {e}")
 
     # Calculate quality metrics
     expected_clip_embeddings = images_saved_count * 5  # 5 types per image

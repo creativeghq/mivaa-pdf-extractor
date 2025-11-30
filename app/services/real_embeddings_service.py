@@ -3,15 +3,14 @@ Real Embeddings Service - Step 4 Implementation
 
 Generates 3 real embedding types using AI models:
 1. Text (1536D) - OpenAI text-embedding-3-small
-2. Visual Embeddings (512D) - Google SigLIP ViT-SO400M (primary), OpenAI CLIP ViT-B/32 (fallback)
-3. Multimodal Fusion (2048D) - Combined text+visual
+2. Visual Embeddings (1152D) - Google SigLIP ViT-SO400M
+3. Multimodal Fusion (2688D) - Combined text+visual (1536D + 1152D)
 
 Visual Embedding Strategy:
-- Primary: Google SigLIP ViT-SO400M (+19-29% accuracy improvement over CLIP)
-- Fallback: OpenAI CLIP ViT-B/32 (if SigLIP fails or confidence < threshold)
+- Uses Google SigLIP ViT-SO400M exclusively (1152D embeddings)
+- Text-guided specialized embeddings for color, texture, material, style
 
-Removed fake embeddings (color, texture, application) as they were just
-downsampled versions of text embeddings - redundant and wasteful.
+Removed fake embeddings and CLIP fallback - SigLIP only for consistency.
 """
 
 import logging
@@ -41,17 +40,17 @@ class RealEmbeddingsService:
 
     This service provides:
     - Text embeddings via OpenAI (1536D)
-    - Visual embeddings (512D) - Google SigLIP ViT-SO400M (primary), OpenAI CLIP ViT-B/32 (fallback)
-    - Multimodal fusion (2048D) - combined text+visual
+    - Visual embeddings (1152D) - Google SigLIP ViT-SO400M exclusively
+    - Multimodal fusion (2688D) - combined text+visual (1536D + 1152D)
 
     Visual Embedding Strategy:
-    - Tries SigLIP first (better accuracy: +19-29% improvement)
-    - Falls back to CLIP if SigLIP fails or confidence < 0.8
+    - Uses SigLIP exclusively for all visual embeddings (1152D)
+    - Text-guided specialized embeddings for color, texture, material, style
+    - No CLIP fallback - SigLIP only for dimensional consistency
 
-    Removed fake embeddings (color, texture, application) as they were
-    redundant with text embeddings.
+    Removed fake embeddings and CLIP fallback.
     """
-    
+
     def __init__(self, supabase_client=None):
         """Initialize embeddings service."""
         self.supabase = supabase_client
@@ -67,8 +66,6 @@ class RealEmbeddingsService:
         self._models_loaded = False
         self._siglip_model = None
         self._siglip_processor = None
-        self._clip_model = None
-        self._clip_processor = None
     
     async def generate_all_embeddings(
         self,
@@ -270,34 +267,26 @@ class RealEmbeddingsService:
         confidence_threshold: float = 0.8
     ) -> tuple[Optional[List[float]], str]:
         """
-        Generate visual embedding using SigLIP (primary) or CLIP (fallback).
+        Generate visual embedding using SigLIP exclusively.
 
-        Strategy:
-        1. Try SigLIP first (Google SigLIP ViT-SO400M) - better accuracy
-        2. If SigLIP fails or confidence < threshold, fall back to CLIP
+        Uses Google SigLIP ViT-SO400M for all visual embeddings (1152D).
+        No CLIP fallback - SigLIP only for dimensional consistency.
 
         Args:
             image_url: URL of image
             image_data: Base64 encoded image data
-            confidence_threshold: Minimum confidence for SigLIP (default: 0.8)
+            confidence_threshold: Unused (kept for API compatibility)
 
         Returns:
-            Tuple of (512D embedding vector or None, model_name used)
+            Tuple of (1152D embedding vector or None, model_name used)
         """
-        # Try SigLIP first
+        # Use SigLIP exclusively
         siglip_embedding = await self._generate_siglip_embedding(image_url, image_data)
         if siglip_embedding:
-            self.logger.info("✅ Using SigLIP embedding (primary)")
+            self.logger.info("✅ Using SigLIP embedding")
             return siglip_embedding, "siglip-so400m-patch14-384"
 
-        # Fall back to CLIP
-        self.logger.warning("⚠️ SigLIP failed, falling back to CLIP")
-        clip_embedding = await self._generate_clip_embedding(image_url, image_data)
-        if clip_embedding:
-            self.logger.info("✅ Using CLIP embedding (fallback)")
-            return clip_embedding, "clip-vit-base-patch32"
-
-        self.logger.error("❌ Both SigLIP and CLIP failed")
+        self.logger.error("❌ SigLIP embedding generation failed")
         return None, "none"
 
     async def _generate_siglip_embedding(
@@ -438,108 +427,6 @@ class RealEmbeddingsService:
 
         except Exception as e:
             self.logger.error(f"SigLIP embedding generation failed: {e}")
-            import traceback
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
-
-        return None
-
-    async def _generate_clip_embedding(
-        self,
-        image_url: Optional[str],
-        image_data: Optional[str]
-    ) -> Optional[List[float]]:
-        """
-        Generate visual embedding using OpenAI CLIP ViT-B/32 (fallback).
-
-        NOTE: Models should be pre-loaded using ensure_models_loaded() before calling this.
-        """
-        try:
-            import torch
-            import base64
-            from PIL import Image
-            import io
-            import numpy as np
-
-            # Check if CLIP model is loaded
-            if self._clip_model is None or self._clip_processor is None:
-                self.logger.warning("⚠️ CLIP model not loaded, skipping")
-                return None
-
-            # Convert base64 image data to PIL Image
-            if image_data:
-                # Remove data URL prefix if present
-                if image_data.startswith('data:image'):
-                    image_data = image_data.split(',')[1]
-
-                image_bytes = base64.b64decode(image_data)
-                pil_image = Image.open(io.BytesIO(image_bytes))
-
-                # Convert RGBA to RGB if necessary
-                if pil_image.mode == 'RGBA':
-                    # Create white background
-                    rgb_image = Image.new('RGB', pil_image.size, (255, 255, 255))
-                    rgb_image.paste(pil_image, mask=pil_image.split()[3])  # Use alpha channel as mask
-                    pil_image = rgb_image
-                elif pil_image.mode != 'RGB':
-                    pil_image = pil_image.convert('RGB')
-
-                # Generate embedding using CLIP model
-                with torch.no_grad():
-                    inputs = self._clip_processor(images=pil_image, return_tensors="pt")
-                    image_features = self._clip_model.get_image_features(**inputs)
-
-                    # Normalize to unit vector
-                    embedding = image_features / image_features.norm(dim=-1, keepdim=True)
-                    embedding = embedding.squeeze().cpu().numpy()
-
-                self.logger.info(f"✅ Generated CLIP visual embedding (fallback): {len(embedding)}D")
-                return embedding.tolist()
-
-            elif image_url:
-                # Download image from URL
-                import httpx
-                pil_image = None
-                try:
-                    async with httpx.AsyncClient(timeout=30.0) as client:
-                        response = await client.get(image_url)
-                        if response.status_code == 200:
-                            pil_image = Image.open(io.BytesIO(response.content))
-
-                            # Convert RGBA to RGB if necessary
-                            if pil_image.mode == 'RGBA':
-                                # Create white background
-                                rgb_image = Image.new('RGB', pil_image.size, (255, 255, 255))
-                                rgb_image.paste(pil_image, mask=pil_image.split()[3])  # Use alpha channel as mask
-                                pil_image = rgb_image
-                            elif pil_image.mode != 'RGB':
-                                pil_image = pil_image.convert('RGB')
-
-                            # Generate embedding using CLIP model
-                            with torch.no_grad():
-                                inputs = self._clip_processor(images=pil_image, return_tensors="pt")
-                                image_features = self._clip_model.get_image_features(**inputs)
-
-                                # Normalize to unit vector
-                                embedding = image_features / image_features.norm(dim=-1, keepdim=True)
-                                result = embedding.squeeze().cpu().numpy()
-
-                                # Explicit memory cleanup
-                                del inputs, image_features, embedding
-                                if torch.cuda.is_available():
-                                    torch.cuda.empty_cache()
-
-                            self.logger.info(f"✅ Generated CLIP visual embedding from URL (fallback): {len(result)}D")
-                            return result.tolist()
-                finally:
-                    # Ensure PIL image is closed even on error
-                    if pil_image is not None and hasattr(pil_image, 'close'):
-                        try:
-                            pil_image.close()
-                        except:
-                            pass
-
-        except Exception as e:
-            self.logger.error(f"CLIP embedding generation failed: {e}")
             import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
 
@@ -712,12 +599,12 @@ class RealEmbeddingsService:
             return True
 
         try:
-            from transformers import AutoModel, AutoProcessor, CLIPProcessor, CLIPModel
+            from transformers import AutoModel, AutoProcessor
             import asyncio
 
-            self.logger.info("🔄 Loading CLIP/SigLIP models for batch processing...")
+            self.logger.info("🔄 Loading SigLIP model for batch processing...")
 
-            # Load SigLIP model (primary)
+            # Load SigLIP model (exclusive visual embedding model)
             try:
                 self.logger.info("   Loading SigLIP model: google/siglip-so400m-patch14-384")
                 self._siglip_model = await asyncio.wait_for(
@@ -734,31 +621,11 @@ class RealEmbeddingsService:
                 self.logger.error("   ❌ SigLIP model loading timed out after 60s")
                 return False
             except Exception as e:
-                self.logger.warning(f"   ⚠️ SigLIP model loading failed: {e}")
-                # Continue without SigLIP, will use CLIP fallback
-
-            # Load CLIP model (fallback)
-            try:
-                self.logger.info("   Loading CLIP model: openai/clip-vit-base-patch32")
-                self._clip_model = await asyncio.wait_for(
-                    asyncio.to_thread(CLIPModel.from_pretrained, 'openai/clip-vit-base-patch32'),
-                    timeout=60.0
-                )
-                self._clip_processor = await asyncio.wait_for(
-                    asyncio.to_thread(CLIPProcessor.from_pretrained, 'openai/clip-vit-base-patch32'),
-                    timeout=60.0
-                )
-                self._clip_model.eval()  # Set to evaluation mode
-                self.logger.info("   ✅ CLIP model loaded")
-            except asyncio.TimeoutError:
-                self.logger.error("   ❌ CLIP model loading timed out after 60s")
-                return False
-            except Exception as e:
-                self.logger.error(f"   ❌ CLIP model loading failed: {e}")
+                self.logger.error(f"   ❌ SigLIP model loading failed: {e}")
                 return False
 
             self._models_loaded = True
-            self.logger.info("✅ All models loaded successfully for batch processing")
+            self.logger.info("✅ SigLIP model loaded successfully for batch processing")
             return True
 
         except Exception as e:
@@ -767,18 +634,16 @@ class RealEmbeddingsService:
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             return False
 
-    def unload_clip_model(self):
+    def unload_siglip_model(self):
         """
-        Unload CLIP and SigLIP models from memory to free up resources.
+        Unload SigLIP model from memory to free up resources.
 
         Call this after batch processing to reduce memory footprint.
-        Models will be automatically reloaded on next use.
+        Model will be automatically reloaded on next use.
         """
         try:
             import torch
             import gc
-
-            models_unloaded = []
 
             # Unload SigLIP model
             if self._siglip_model is not None:
@@ -786,33 +651,20 @@ class RealEmbeddingsService:
                 del self._siglip_processor
                 self._siglip_model = None
                 self._siglip_processor = None
-                models_unloaded.append("SigLIP")
-
-            # Unload CLIP model
-            if self._clip_model is not None:
-                del self._clip_model
-                del self._clip_processor
-                self._clip_model = None
-                self._clip_processor = None
-                models_unloaded.append("CLIP")
 
             # Reset loaded state
             self._models_loaded = False
 
-            if models_unloaded:
-                # Clear CUDA cache if available
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+            # Clear CUDA cache if available
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
-                # Force garbage collection
-                gc.collect()
+            # Force garbage collection
+            gc.collect()
 
-                self.logger.info(f"🧹 Unloaded {', '.join(models_unloaded)} model(s) from memory")
-                return True
-            else:
-                self.logger.debug("No models to unload")
-                return False
+            self.logger.info("🧹 Unloaded SigLIP model from memory")
+            return True
 
         except Exception as e:
-            self.logger.warning(f"Failed to unload models: {e}")
+            self.logger.warning(f"Failed to unload SigLIP model: {e}")
             return False
