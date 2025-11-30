@@ -219,32 +219,18 @@ async def lifespan(app: FastAPI):
     
     # Initialize services, database connections, etc.
     try:
-        # Log environment variables for debugging (without exposing sensitive data)
-        logger.info(f"SUPABASE_URL: {settings.supabase_url[:30]}..." if settings.supabase_url else "SUPABASE_URL: NOT SET")
-        logger.info(f"SUPABASE_ANON_KEY: {'SET' if settings.supabase_anon_key else 'NOT SET'}")
-        logger.info(f"SUPABASE_SERVICE_ROLE_KEY: {'SET' if settings.supabase_service_role_key else 'NOT SET'}")
-
         # Initialize Supabase client
         initialize_supabase(settings)
-        logger.info("✅ Supabase client initialized successfully")
-
+        logger.info("Supabase client initialized successfully")
+        
         # Perform health check
         supabase_client = get_supabase_client()
         if supabase_client.health_check():
-            logger.info("✅ Supabase connection health check passed")
+            logger.info("Supabase connection health check passed")
         else:
-            logger.warning("⚠️  Supabase connection health check failed")
-    except ValueError as e:
-        logger.error(f"❌ Supabase configuration error: {str(e)}")
-        logger.error("   Please check that SUPABASE_URL and SUPABASE_ANON_KEY are set in secrets")
-        # Send error to Sentry
-        sentry_sdk.capture_exception(e)
-        # Continue startup even if Supabase fails to allow for graceful degradation
+            logger.warning("Supabase connection health check failed")
     except Exception as e:
-        logger.error(f"❌ Failed to initialize Supabase: {str(e)}")
-        logger.error(f"   Error type: {type(e).__name__}")
-        # Send error to Sentry
-        sentry_sdk.capture_exception(e)
+        logger.error(f"Failed to initialize Supabase: {str(e)}")
         # Continue startup even if Supabase fails to allow for graceful degradation
     
     # Initialize Lazy Loading for AI Components
@@ -1184,22 +1170,6 @@ async def health_check() -> HealthResponse:
             "message": "Connected",
             "latency_ms": latency_ms
         }
-    except RuntimeError as e:
-        # Supabase client not initialized - log configuration status
-        logger.error(f"Supabase client not initialized: {str(e)}")
-        logger.error(f"SUPABASE_URL: {settings.supabase_url[:30]}..." if settings.supabase_url else "SUPABASE_URL: NOT SET")
-        logger.error(f"SUPABASE_ANON_KEY: {'SET (' + str(len(settings.supabase_anon_key)) + ' chars)' if settings.supabase_anon_key else 'NOT SET'}")
-
-        services_status["database"] = {
-            "status": "unhealthy",
-            "message": f"Connection failed: {str(e)}",
-            "config_status": {
-                "supabase_url": "SET" if settings.supabase_url else "NOT SET",
-                "supabase_anon_key": "SET" if settings.supabase_anon_key else "NOT SET",
-                "supabase_service_role_key": "SET" if settings.supabase_service_role_key else "NOT SET"
-            }
-        }
-        overall_status = "unhealthy"
     except Exception as e:
         services_status["database"] = {
             "status": "unhealthy",

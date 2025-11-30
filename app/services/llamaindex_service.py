@@ -6180,11 +6180,9 @@ Respond in JSON format:
             from .together_ai_service import get_together_ai_service
 
             together_service = await get_together_ai_service()
-
-            # Use the TogetherAI service's HTTP client to make the request
-            request_data = {
-                "model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
-                "messages": [
+            response = await together_service.client.chat.completions.create(
+                model="meta-llama/Llama-4-Scout-17B-16E-Instruct",
+                messages=[
                     {
                         "role": "user",
                         "content": [
@@ -6198,15 +6196,12 @@ Respond in JSON format:
                         ]
                     }
                 ],
-                "max_tokens": 200,
-                "temperature": 0.1  # Low temperature for consistent classification
-            }
+                max_tokens=200,
+                temperature=0.1  # Low temperature for consistent classification
+            )
 
-            response_data = await together_service._make_api_request(request_data)
-
-            # Parse response from TogetherAI API
-            # response_data is a dict with structure: {"choices": [{"message": {"content": "..."}}]}
-            response_text = response_data['choices'][0]['message']['content'].strip()
+            # Parse response
+            response_text = response.choices[0].message.content.strip()
             
             # Extract JSON from response (handle markdown code blocks)
             if "```json" in response_text:

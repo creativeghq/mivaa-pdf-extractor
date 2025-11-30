@@ -1749,49 +1749,16 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
             enable_prompt_enhancement
         )
 
-        # CRITICAL: Batch processing to prevent memory exhaustion
-        # Process images in batches of 20 to avoid OOM crashes
-        BATCH_SIZE = 20
-        all_results = []
+        # Prepare images for vision model (send all pages at once)
+        self.logger.info(f"   📤 Sending {len(page_images)} images to {self.model}...")
 
-        if len(page_images) > BATCH_SIZE:
-            self.logger.info(f"   📦 Processing {len(page_images)} images in batches of {BATCH_SIZE} to prevent memory exhaustion")
-
-            for i in range(0, len(page_images), BATCH_SIZE):
-                batch = page_images[i:i + BATCH_SIZE]
-                batch_num = (i // BATCH_SIZE) + 1
-                total_batches = (len(page_images) + BATCH_SIZE - 1) // BATCH_SIZE
-
-                self.logger.info(f"   📤 Processing batch {batch_num}/{total_batches}: {len(batch)} images...")
-
-                # Call vision model for this batch
-                if "claude" in self.model.lower():
-                    result_str = await self._discover_with_claude_vision(vision_prompt, batch, job_id)
-                elif "gpt" in self.model.lower():
-                    result_str = await self._discover_with_gpt_vision(vision_prompt, batch, job_id)
-                else:
-                    raise ValueError(f"Unknown vision model: {self.model}")
-
-                all_results.append(result_str)
-
-                # Free memory between batches
-                import gc
-                gc.collect()
-                self.logger.info(f"   ✅ Batch {batch_num}/{total_batches} complete, memory freed")
-
-            # Merge all batch results
-            self.logger.info(f"   🔗 Merging results from {len(all_results)} batches...")
-            result_str = self._merge_batch_results(all_results)
+        # Call vision model based on model family
+        if "claude" in self.model.lower():
+            result_str = await self._discover_with_claude_vision(vision_prompt, page_images, job_id)
+        elif "gpt" in self.model.lower():
+            result_str = await self._discover_with_gpt_vision(vision_prompt, page_images, job_id)
         else:
-            # Small number of images - process all at once
-            self.logger.info(f"   📤 Sending {len(page_images)} images to {self.model}...")
-
-            if "claude" in self.model.lower():
-                result_str = await self._discover_with_claude_vision(vision_prompt, page_images, job_id)
-            elif "gpt" in self.model.lower():
-                result_str = await self._discover_with_gpt_vision(vision_prompt, page_images, job_id)
-            else:
-                raise ValueError(f"Unknown vision model: {self.model}")
+            raise ValueError(f"Unknown vision model: {self.model}")
 
         # Parse JSON string to dict
         import json
@@ -1819,42 +1786,6 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
             self.logger.info(f"   📦 {product.name}: pages {product.page_range}")
 
         return catalog
-
-    def _merge_batch_results(self, batch_results: List[str]) -> str:
-        """
-        Merge results from multiple batches into a single JSON response.
-
-        Args:
-            batch_results: List of JSON strings from each batch
-
-        Returns:
-            Merged JSON string with all products
-        """
-        import json
-        import re
-
-        all_products = []
-
-        for batch_result in batch_results:
-            # Strip markdown code blocks if present
-            result_clean = batch_result.strip()
-            if result_clean.startswith("```"):
-                result_clean = re.sub(r'^```(?:json)?\s*\n', '', result_clean)
-                result_clean = re.sub(r'\n```\s*$', '', result_clean)
-
-            try:
-                batch_data = json.loads(result_clean)
-                if "products" in batch_data:
-                    all_products.extend(batch_data["products"])
-                elif isinstance(batch_data, list):
-                    all_products.extend(batch_data)
-            except json.JSONDecodeError as e:
-                self.logger.warning(f"⚠️  Failed to parse batch result: {e}")
-                continue
-
-        # Return merged JSON
-        merged = {"products": all_products}
-        return json.dumps(merged, indent=2)
 
     async def _build_vision_discovery_prompt(
         self,
