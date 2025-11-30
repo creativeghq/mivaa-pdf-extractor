@@ -506,7 +506,7 @@ class RealEmbeddingsService:
 
             try:
                 def _generate_text_guided_embedding(text_prompt: str):
-                    """Generate text-guided SigLIP embedding"""
+                    """Generate text-guided SigLIP embedding using full model forward pass"""
                     with torch.no_grad():
                         # Process image with text prompt for text-guided embedding
                         inputs = self._siglip_processor(
@@ -516,15 +516,17 @@ class RealEmbeddingsService:
                             padding=True
                         )
 
-                        # Get image features guided by text prompt
-                        image_features = self._siglip_model.get_image_features(**inputs)
+                        # Use full model forward pass (accepts both text and image)
+                        # This computes text-image similarity and returns image embeddings
+                        outputs = self._siglip_model(**inputs)
+                        image_features = outputs.image_embeds  # Get image embeddings guided by text
 
                         # Normalize to unit vector
                         embedding = image_features / image_features.norm(dim=-1, keepdim=True)
                         result = embedding.squeeze().cpu().numpy()
 
                         # Explicit memory cleanup
-                        del inputs, image_features, embedding
+                        del inputs, outputs, image_features, embedding
                         if torch.cuda.is_available():
                             torch.cuda.empty_cache()
 
