@@ -47,6 +47,7 @@ async def process_stage_1_focused_extraction(
     from app.services.pdf_processor import PDFProcessor
     from app.services.supabase_client import get_supabase_client
 
+    logger = logging.getLogger(__name__)
     logger.info("🎯 [STAGE 1] Focused Extraction - Starting...")
     await tracker.update_stage(ProcessingStage.EXTRACTING_TEXT, stage_name="focused_extraction")
 
