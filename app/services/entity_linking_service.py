@@ -497,12 +497,18 @@ class EntityLinkingService:
             image_to_product_mapping = {}
             if hasattr(catalog, 'image_to_product_mapping'):
                 image_to_product_mapping = catalog.image_to_product_mapping
+                self.logger.info(f"📋 Using catalog.image_to_product_mapping: {len(image_to_product_mapping)} mappings")
             else:
                 # Build from products
                 for product in catalog.products:
-                    if hasattr(product, 'image_indices'):
+                    if hasattr(product, 'image_indices') and product.image_indices:
                         for image_index in product.image_indices:
                             image_to_product_mapping[image_index] = product.name
+                        self.logger.debug(f"   Product '{product.name}' has {len(product.image_indices)} image_indices")
+                    else:
+                        self.logger.warning(f"   ⚠️ Product '{product.name}' has NO image_indices!")
+
+                self.logger.info(f"📋 Built image_to_product_mapping from products: {len(image_to_product_mapping)} mappings")
 
             stats['image_product_links'] = await self.link_images_to_products(
                 document_id=document_id,

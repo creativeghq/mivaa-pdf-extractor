@@ -60,12 +60,14 @@ async def process_stage_4_products(
         try:
             # Use product.metadata field (new architecture - products + metadata inseparable)
             metadata = product.metadata or {}
-            
-            # Ensure page_range and confidence are in metadata
+
+            # Ensure page_range, confidence, and image_indices are in metadata
             if 'page_range' not in metadata:
                 metadata['page_range'] = product.page_range
             if 'confidence' not in metadata:
                 metadata['confidence'] = product.confidence
+            if 'image_indices' not in metadata and product.image_indices:
+                metadata['image_indices'] = product.image_indices
             
             product_data = {
                 'source_document_id': document_id,
