@@ -1,10 +1,10 @@
 """
-import logging
 Stage 4: Product Creation & Linking
 
 This module handles product creation in database and entity linking.
 """
 
+import logging
 from typing import Dict, Any
 from app.schemas.jobs import ProcessingStage
 from app.services.checkpoint_recovery_service import ProcessingStage as CheckpointStage

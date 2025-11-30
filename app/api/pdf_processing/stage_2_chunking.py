@@ -1,16 +1,16 @@
 """
-import logging
 Stage 2: Text Chunking
 
 This module handles text chunking and embedding generation for PDF content.
 """
 
+import logging
 from typing import Dict, Any, Set
 from app.schemas.jobs import ProcessingStage
 from app.services.checkpoint_recovery_service import ProcessingStage as CheckpointStage
+from app.utils.timeout_guard import with_timeout, ProgressiveTimeoutStrategy
 
 logger = logging.getLogger(__name__)
-from app.utils.timeout_guard import with_timeout, ProgressiveTimeoutStrategy
 
 
 async def process_stage_2_chunking(

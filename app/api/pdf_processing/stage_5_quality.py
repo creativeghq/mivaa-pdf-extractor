@@ -1,17 +1,17 @@
 """
-import logging
 Stage 5: Quality Enhancement
 
 This module handles async quality enhancement using Claude validation.
 """
 
+import logging
 from typing import Dict, Any
 from datetime import datetime
 from app.schemas.jobs import ProcessingStage
 from app.services.checkpoint_recovery_service import ProcessingStage as CheckpointStage
+from app.utils.circuit_breaker import CircuitBreakerError
 
 logger = logging.getLogger(__name__)
-from app.utils.circuit_breaker import CircuitBreakerError
 
 
 async def process_stage_5_quality(
