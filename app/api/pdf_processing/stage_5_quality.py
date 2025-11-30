@@ -30,7 +30,7 @@ async def process_stage_5_quality(
     component_manager: Any,
     loaded_components: list,
     claude_breaker: Any,
-
+    logger: Any = None
 ) -> Dict[str, Any]:
     """
     Stage 5: Quality Enhancement

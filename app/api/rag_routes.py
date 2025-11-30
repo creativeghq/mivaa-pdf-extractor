@@ -2635,8 +2635,7 @@ async def process_document_with_discovery(
             agent_prompt=agent_prompt,
             enable_prompt_enhancement=enable_prompt_enhancement,
             tracker=tracker,
-            checkpoint_recovery_service=checkpoint_recovery_service,
-            logger=logger
+            checkpoint_recovery_service=checkpoint_recovery_service
         )
 
         catalog = stage_0_result["catalog"]
