@@ -2659,8 +2659,7 @@ async def process_document_with_discovery(
             focused_extraction=focused_extraction,
             tracker=tracker,
             checkpoint_recovery_service=checkpoint_recovery_service,
-            job_id=job_id,
-            logger=logger
+            job_id=job_id
         )
 
         product_pages = stage_1_result["product_pages"]
