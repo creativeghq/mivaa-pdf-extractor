@@ -456,7 +456,8 @@ async def process_stage_3_images(
                         image_base64=image_base64,
                         image_path=storage_url,  # Just for logging
                         image_id=image_id,
-                        document_id=document_id
+                        document_id=document_id,
+                        embedding_service=embedding_service  # Pass loaded models
                     ),
                     timeout_seconds=TimeoutConstants.LLAMA_VISION_CALL,
                     operation_name=f"Llama Vision (image {image_index}/{total_images})"

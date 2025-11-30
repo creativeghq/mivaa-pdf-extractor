@@ -4331,7 +4331,8 @@ Summary:"""
         image_base64: str,
         image_path: str,
         image_id: Optional[str] = None,
-        document_id: Optional[str] = None
+        document_id: Optional[str] = None,
+        embedding_service: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
         Analyze image for material properties using Llama-only analysis.
@@ -4353,7 +4354,7 @@ Summary:"""
             # Use RealImageAnalysisService for Llama-only analysis
             from .real_image_analysis_service import RealImageAnalysisService
 
-            analysis_service = RealImageAnalysisService()
+            analysis_service = RealImageAnalysisService(embedding_service=embedding_service)
 
             # Use actual image_id if provided, otherwise fallback to filename
             analysis_image_id = image_id if image_id else os.path.basename(image_path)

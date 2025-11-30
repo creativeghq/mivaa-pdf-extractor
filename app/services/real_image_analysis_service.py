@@ -62,7 +62,7 @@ class RealImageAnalysisService:
     - CLIP: Visual embeddings for similarity search
     """
     
-    def __init__(self, supabase_client=None):
+    def __init__(self, supabase_client=None, embedding_service=None):
         self.logger = logger
         self.together_ai_url = "https://api.together.xyz/v1"
         self.anthropic_url = "https://api.anthropic.com/v1"
@@ -70,6 +70,9 @@ class RealImageAnalysisService:
 
         # Initialize AI logger
         self.ai_logger = AICallLogger()
+
+        # Use provided embedding service (with loaded models) or create new instance
+        self._embeddings_service = embedding_service
         
     async def analyze_image(
         self,
@@ -713,7 +716,8 @@ Respond ONLY with valid JSON, no additional text."""
             # Use RealEmbeddingsService directly instead of HTTP call
             from .real_embeddings_service import RealEmbeddingsService
 
-            if not hasattr(self, '_embeddings_service'):
+            # Create new instance only if not provided in constructor
+            if self._embeddings_service is None:
                 self._embeddings_service = RealEmbeddingsService()
 
             # Generate visual embedding using SigLIP
@@ -722,9 +726,15 @@ Respond ONLY with valid JSON, no additional text."""
                 image_data=image_base64
             )
 
-            if visual_embedding and len(visual_embedding) == 512:
-                self.logger.info(f"✅ Generated SigLIP embedding: {len(visual_embedding)}D")
-                return visual_embedding
+            if visual_embedding and len(visual_embedding) == 2:
+                # visual_embedding is a tuple: (embedding_list, model_name)
+                embedding_list = visual_embedding[0]
+                if embedding_list and len(embedding_list) == 512:
+                    self.logger.info(f"✅ Generated SigLIP embedding: {len(embedding_list)}D")
+                    return embedding_list
+                else:
+                    self.logger.error("SigLIP embedding generation returned invalid result")
+                    raise RuntimeError("Failed to generate valid SigLIP embedding")
             else:
                 self.logger.error("SigLIP embedding generation returned invalid result")
                 raise RuntimeError("Failed to generate valid SigLIP embedding")
