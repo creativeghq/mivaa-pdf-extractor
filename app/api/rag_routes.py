@@ -2635,7 +2635,8 @@ async def process_document_with_discovery(
             agent_prompt=agent_prompt,
             enable_prompt_enhancement=enable_prompt_enhancement,
             tracker=tracker,
-            checkpoint_recovery_service=checkpoint_recovery_service
+            checkpoint_recovery_service=checkpoint_recovery_service,
+            logger=logger
         )
 
         catalog = stage_0_result["catalog"]
@@ -2690,7 +2691,8 @@ async def process_document_with_discovery(
             chunk_overlap=chunk_overlap,
             tracker=tracker,
             checkpoint_recovery_service=checkpoint_recovery_service,
-            supabase=supabase
+            supabase=supabase,
+            logger=logger
         )
 
         chunk_result = stage_2_result["chunk_result"]
@@ -2715,7 +2717,8 @@ async def process_document_with_discovery(
             component_manager=component_manager,
             loaded_components=loaded_components,
             tracker=tracker,
-            checkpoint_recovery_service=checkpoint_recovery_service
+            checkpoint_recovery_service=checkpoint_recovery_service,
+            logger=logger
         )
 
         pdf_result_with_images = stage_3_result["pdf_result_with_images"]
@@ -2738,7 +2741,8 @@ async def process_document_with_discovery(
             product_creation_model=product_creation_model,
             tracker=tracker,
             checkpoint_recovery_service=checkpoint_recovery_service,
-            supabase=supabase
+            supabase=supabase,
+            logger=logger
         )
 
         products_created = stage_4_result["products_created"]
@@ -2766,7 +2770,8 @@ async def process_document_with_discovery(
             checkpoint_recovery_service=checkpoint_recovery_service,
             component_manager=component_manager,
             loaded_components=loaded_components,
-            claude_breaker=claude_breaker
+            claude_breaker=claude_breaker,
+            logger=logger
         )
 
         # Stage 5 handles all SUCCESS cleanup (component unloading, resource cleanup, job completion)

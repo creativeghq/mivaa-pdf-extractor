@@ -36,7 +36,8 @@ async def process_stage_0_discovery(
     agent_prompt: str,
     enable_prompt_enhancement: bool,
     tracker: Any,
-    checkpoint_recovery_service: Any
+    checkpoint_recovery_service: Any,
+    logger: Any
 ) -> Dict[str, Any]:
     """
     Stage 0: Product Discovery
@@ -70,7 +71,7 @@ async def process_stage_0_discovery(
     from app.services.pdf_processor import PDFProcessor
     from app.services.supabase_client import get_supabase_client
 
-    module_logger.info("🔍 [STAGE 0] Product Discovery - Starting...")
+    logger.info("🔍 [STAGE 0] Product Discovery - Starting...")
     await tracker.update_stage(ProcessingStage.INITIALIZING, stage_name="product_discovery")
 
     # Initialize circuit breaker for AI API calls

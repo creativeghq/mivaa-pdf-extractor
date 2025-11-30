@@ -21,7 +21,8 @@ async def process_stage_4_products(
     product_creation_model: str,
     tracker: Any,
     checkpoint_recovery_service: Any,
-    supabase: Any
+    supabase: Any,
+    logger: Any
 ) -> Dict[str, Any]:
     """
     Stage 4: Product Creation & Linking
