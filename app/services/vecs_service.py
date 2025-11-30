@@ -2,7 +2,7 @@
 VECS Service for managing vector embeddings with Supabase.
 
 This service uses the vecs library (Supabase's recommended approach) for:
-- Storing CLIP image embeddings (512D)
+- Storing SigLIP image embeddings (1152D)
 - Fast similarity search with automatic indexing
 - Metadata filtering
 - Batch operations
@@ -74,8 +74,8 @@ class VecsService:
         Get or create a vector collection with optimized indexing.
 
         Args:
-            name: Collection name (e.g., 'image_clip_embeddings')
-            dimension: Vector dimension (e.g., 512 for CLIP)
+            name: Collection name (e.g., 'image_siglip_embeddings')
+            dimension: Vector dimension (e.g., 1152 for SigLIP)
             create_index: Whether to create index for fast search
             index_method: Index method - 'hnsw' (fast, approximate) or 'ivfflat' (balanced)
 
@@ -122,24 +122,24 @@ class VecsService:
     async def upsert_image_embedding(
         self,
         image_id: str,
-        clip_embedding: List[float],
+        siglip_embedding: List[float],
         metadata: Optional[Dict[str, Any]] = None
     ) -> bool:
         """
-        Upsert a single image CLIP embedding.
-        
+        Upsert a single image SigLIP embedding.
+
         Args:
             image_id: Image UUID
-            clip_embedding: 512D CLIP embedding
+            siglip_embedding: 1152D SigLIP embedding
             metadata: Optional metadata (document_id, page_number, quality_score, etc.)
-            
+
         Returns:
             True if successful, False otherwise
         """
         try:
             collection = self.get_or_create_collection(
-                name="image_clip_embeddings",
-                dimension=512
+                name="image_siglip_embeddings",
+                dimension=1152
             )
             
             # Prepare metadata
@@ -147,10 +147,10 @@ class VecsService:
             
             # Upsert single record
             collection.upsert(
-                records=[(image_id, clip_embedding, meta)]
+                records=[(image_id, siglip_embedding, meta)]
             )
-            
-            logger.debug(f"✅ Upserted CLIP embedding for image {image_id}")
+
+            logger.debug(f"✅ Upserted SigLIP embedding for image {image_id}")
             return True
             
         except Exception as e:
@@ -162,24 +162,24 @@ class VecsService:
         records: List[Tuple[str, List[float], Dict[str, Any]]]
     ) -> int:
         """
-        Batch upsert multiple image CLIP embeddings.
-        
+        Batch upsert multiple image SigLIP embeddings.
+
         Args:
-            records: List of (image_id, clip_embedding, metadata) tuples
-            
+            records: List of (image_id, siglip_embedding, metadata) tuples
+
         Returns:
             Number of successfully upserted records
         """
         try:
             collection = self.get_or_create_collection(
-                name="image_clip_embeddings",
-                dimension=512
+                name="image_siglip_embeddings",
+                dimension=1152
             )
-            
+
             # Batch upsert
             collection.upsert(records=records)
-            
-            logger.info(f"✅ Batch upserted {len(records)} CLIP embeddings")
+
+            logger.info(f"✅ Batch upserted {len(records)} SigLIP embeddings")
             return len(records)
             
         except Exception as e:
@@ -245,10 +245,10 @@ class VecsService:
         include_metadata: bool = True
     ) -> List[Dict[str, Any]]:
         """
-        Search for similar images using CLIP embeddings.
+        Search for similar images using SigLIP embeddings.
 
         Args:
-            query_embedding: 512D query embedding
+            query_embedding: 1152D query embedding
             limit: Maximum number of results
             filters: Optional metadata filters (e.g., {"document_id": {"$eq": "uuid"}})
             include_metadata: Whether to include metadata in results
@@ -258,8 +258,8 @@ class VecsService:
         """
         try:
             collection = self.get_or_create_collection(
-                name="image_clip_embeddings",
-                dimension=512
+                name="image_siglip_embeddings",
+                dimension=1152
             )
 
             # Query collection
@@ -307,8 +307,8 @@ class VecsService:
         """
         try:
             collection = self.get_or_create_collection(
-                name="image_clip_embeddings",
-                dimension=512
+                name="image_siglip_embeddings",
+                dimension=1152
             )
 
             # Build filters
@@ -323,7 +323,7 @@ class VecsService:
             # Query with large limit to count all
             # Note: vecs doesn't have a direct count method, so we query and count results
             results = collection.query(
-                data=[0.0] * 512,  # Dummy query vector
+                data=[0.0] * 1152,  # Dummy query vector
                 limit=100000,  # Large limit to get all embeddings
                 filters=filters,
                 include_value=False,
@@ -434,8 +434,8 @@ class VecsService:
         """
         try:
             collection = self.get_or_create_collection(
-                name="image_clip_embeddings",
-                dimension=512
+                name="image_siglip_embeddings",
+                dimension=1152
             )
 
             collection.delete(ids=[image_id])
@@ -459,14 +459,14 @@ class VecsService:
         """
         try:
             collection = self.get_or_create_collection(
-                name="image_clip_embeddings",
-                dimension=512
+                name="image_siglip_embeddings",
+                dimension=1152
             )
 
             # Query to get all image IDs for this document
             # Note: vecs doesn't support delete by filter, so we need to query first
             results = collection.query(
-                data=[0.0] * 512,  # Dummy query
+                data=[0.0] * 1152,  # Dummy query
                 limit=10000,  # Large limit to get all
                 filters={"document_id": {"$eq": document_id}},
                 include_value=False,
