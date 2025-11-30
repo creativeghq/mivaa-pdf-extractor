@@ -395,32 +395,46 @@ class RealEmbeddingsService:
             elif image_url:
                 # Download image from URL
                 import httpx
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.get(image_url)
-                    if response.status_code == 200:
-                        pil_image = Image.open(io.BytesIO(response.content))
+                pil_image = None
+                try:
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        response = await client.get(image_url)
+                        if response.status_code == 200:
+                            pil_image = Image.open(io.BytesIO(response.content))
 
-                        # Convert RGBA to RGB if necessary
-                        if pil_image.mode == 'RGBA':
-                            # Create white background
-                            rgb_image = Image.new('RGB', pil_image.size, (255, 255, 255))
-                            rgb_image.paste(pil_image, mask=pil_image.split()[3])  # Use alpha channel as mask
-                            pil_image = rgb_image
-                        elif pil_image.mode != 'RGB':
-                            pil_image = pil_image.convert('RGB')
+                            # Convert RGBA to RGB if necessary
+                            if pil_image.mode == 'RGBA':
+                                # Create white background
+                                rgb_image = Image.new('RGB', pil_image.size, (255, 255, 255))
+                                rgb_image.paste(pil_image, mask=pil_image.split()[3])  # Use alpha channel as mask
+                                pil_image = rgb_image
+                            elif pil_image.mode != 'RGB':
+                                pil_image = pil_image.convert('RGB')
 
-                        # Generate embedding using SigLIP model
-                        with torch.no_grad():
-                            inputs = self._siglip_processor(images=pil_image, return_tensors="pt")
-                            # Get image features from vision model
-                            image_features = self._siglip_model.get_image_features(**inputs)
+                            # Generate embedding using SigLIP model
+                            with torch.no_grad():
+                                inputs = self._siglip_processor(images=pil_image, return_tensors="pt")
+                                # Get image features from vision model
+                                image_features = self._siglip_model.get_image_features(**inputs)
 
-                            # L2 normalize to unit vector
-                            embedding = image_features / image_features.norm(dim=-1, keepdim=True)
-                            embedding = embedding.squeeze().cpu().numpy()
+                                # L2 normalize to unit vector
+                                embedding = image_features / image_features.norm(dim=-1, keepdim=True)
+                                result = embedding.squeeze().cpu().numpy()
 
-                        self.logger.info(f"✅ Generated SigLIP visual embedding from URL: {len(embedding)}D")
-                        return embedding.tolist()
+                                # Explicit memory cleanup
+                                del inputs, image_features, embedding
+                                if torch.cuda.is_available():
+                                    torch.cuda.empty_cache()
+
+                            self.logger.info(f"✅ Generated SigLIP visual embedding from URL: {len(result)}D")
+                            return result.tolist()
+                finally:
+                    # Ensure PIL image is closed even on error
+                    if pil_image is not None and hasattr(pil_image, 'close'):
+                        try:
+                            pil_image.close()
+                        except:
+                            pass
 
         except Exception as e:
             self.logger.error(f"SigLIP embedding generation failed: {e}")
@@ -484,31 +498,45 @@ class RealEmbeddingsService:
             elif image_url:
                 # Download image from URL
                 import httpx
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.get(image_url)
-                    if response.status_code == 200:
-                        pil_image = Image.open(io.BytesIO(response.content))
+                pil_image = None
+                try:
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        response = await client.get(image_url)
+                        if response.status_code == 200:
+                            pil_image = Image.open(io.BytesIO(response.content))
 
-                        # Convert RGBA to RGB if necessary
-                        if pil_image.mode == 'RGBA':
-                            # Create white background
-                            rgb_image = Image.new('RGB', pil_image.size, (255, 255, 255))
-                            rgb_image.paste(pil_image, mask=pil_image.split()[3])  # Use alpha channel as mask
-                            pil_image = rgb_image
-                        elif pil_image.mode != 'RGB':
-                            pil_image = pil_image.convert('RGB')
+                            # Convert RGBA to RGB if necessary
+                            if pil_image.mode == 'RGBA':
+                                # Create white background
+                                rgb_image = Image.new('RGB', pil_image.size, (255, 255, 255))
+                                rgb_image.paste(pil_image, mask=pil_image.split()[3])  # Use alpha channel as mask
+                                pil_image = rgb_image
+                            elif pil_image.mode != 'RGB':
+                                pil_image = pil_image.convert('RGB')
 
-                        # Generate embedding using CLIP model
-                        with torch.no_grad():
-                            inputs = self._clip_processor(images=pil_image, return_tensors="pt")
-                            image_features = self._clip_model.get_image_features(**inputs)
+                            # Generate embedding using CLIP model
+                            with torch.no_grad():
+                                inputs = self._clip_processor(images=pil_image, return_tensors="pt")
+                                image_features = self._clip_model.get_image_features(**inputs)
 
-                            # Normalize to unit vector
-                            embedding = image_features / image_features.norm(dim=-1, keepdim=True)
-                            embedding = embedding.squeeze().cpu().numpy()
+                                # Normalize to unit vector
+                                embedding = image_features / image_features.norm(dim=-1, keepdim=True)
+                                result = embedding.squeeze().cpu().numpy()
 
-                        self.logger.info(f"✅ Generated CLIP visual embedding from URL (fallback): {len(embedding)}D")
-                        return embedding.tolist()
+                                # Explicit memory cleanup
+                                del inputs, image_features, embedding
+                                if torch.cuda.is_available():
+                                    torch.cuda.empty_cache()
+
+                            self.logger.info(f"✅ Generated CLIP visual embedding from URL (fallback): {len(result)}D")
+                            return result.tolist()
+                finally:
+                    # Ensure PIL image is closed even on error
+                    if pil_image is not None and hasattr(pil_image, 'close'):
+                        try:
+                            pil_image.close()
+                        except:
+                            pass
 
         except Exception as e:
             self.logger.error(f"CLIP embedding generation failed: {e}")
