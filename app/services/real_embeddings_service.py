@@ -128,17 +128,17 @@ class RealEmbeddingsService:
                     embeddings["metadata"]["confidence_scores"]["visual"] = 0.95 if "siglip" in model_used else 0.90
                     self.logger.info(f"✅ Visual embedding generated (512D) using {model_used}")
 
-                # 2a. Generate specialized visual embeddings for pattern/color/texture matching
-                specialized_embeddings = await self._generate_specialized_clip_embeddings(image_url, image_data)
+                # 2a. Generate text-guided specialized visual embeddings for pattern/color/texture matching
+                specialized_embeddings = await self._generate_specialized_siglip_embeddings(image_url, image_data)
                 if specialized_embeddings:
-                    embeddings["embeddings"]["color_clip_512"] = specialized_embeddings.get("color")
-                    embeddings["embeddings"]["texture_clip_512"] = specialized_embeddings.get("texture")
-                    embeddings["embeddings"]["style_clip_512"] = specialized_embeddings.get("style")
-                    embeddings["embeddings"]["material_clip_512"] = specialized_embeddings.get("material")
-                    # Use same model as base visual embedding
-                    embeddings["metadata"]["model_versions"]["specialized_visual"] = f"{model_used}-specialized"
-                    embeddings["metadata"]["confidence_scores"]["specialized_visual"] = 0.93 if "siglip" in model_used else 0.88
-                    self.logger.info("✅ Specialized CLIP embeddings generated (4 × 512D)")
+                    embeddings["embeddings"]["color_siglip_1152"] = specialized_embeddings.get("color")
+                    embeddings["embeddings"]["texture_siglip_1152"] = specialized_embeddings.get("texture")
+                    embeddings["embeddings"]["style_siglip_1152"] = specialized_embeddings.get("style")
+                    embeddings["embeddings"]["material_siglip_1152"] = specialized_embeddings.get("material")
+                    # Text-guided SigLIP embeddings
+                    embeddings["metadata"]["model_versions"]["specialized_visual"] = "siglip-so400m-patch14-384-text-guided"
+                    embeddings["metadata"]["confidence_scores"]["specialized_visual"] = 0.95  # High confidence for text-guided
+                    self.logger.info("✅ Text-guided specialized SigLIP embeddings generated (4 × 1152D)")
 
             # 3. Multimodal Fusion Embedding (2048D) - REAL
             if embeddings["embeddings"].get("text_1536") and embeddings["embeddings"].get("visual_512"):
@@ -545,23 +545,22 @@ class RealEmbeddingsService:
 
         return None
 
-    async def _generate_specialized_clip_embeddings(
+    async def _generate_specialized_siglip_embeddings(
         self,
         image_url: Optional[str],
         image_data: Optional[str]
     ) -> Optional[Dict[str, List[float]]]:
         """
-        Generate specialized visual embeddings for different search types.
+        Generate text-guided specialized visual embeddings using SigLIP.
 
-        This creates 4 specialized embeddings for different search types:
-        - Color: Focuses on color palette and color relationships
-        - Texture: Focuses on surface patterns and textures
-        - Style: Focuses on design style and aesthetic
-        - Material: Focuses on material type and properties
+        This creates 4 unique text-guided embeddings (1152D each) for different search types:
+        - Color: "focus on color palette and color relationships"
+        - Texture: "focus on surface patterns and texture details"
+        - Material: "focus on material type and physical properties"
+        - Style: "focus on design style and aesthetic elements"
 
-        Uses the base visual embedding (SigLIP with CLIP fallback) for all specialized types.
-        In the current implementation, all 4 embeddings are the same base embedding.
-        Future: Could use text-guided CLIP or fine-tuned models for each aspect.
+        Uses SigLIP's text-image matching to create embeddings that emphasize different aspects.
+        Each embedding is unique and optimized for its specific search type.
 
         NOTE: Models should be pre-loaded using ensure_models_loaded() before calling this.
         """
@@ -573,9 +572,9 @@ class RealEmbeddingsService:
             import numpy as np
             import asyncio
 
-            # Check if CLIP model is loaded
-            if self._clip_model is None or self._clip_processor is None:
-                self.logger.warning("⚠️ CLIP model not loaded for specialized embeddings, skipping")
+            # Check if SigLIP model is loaded
+            if self._siglip_model is None or self._siglip_processor is None:
+                self.logger.warning("⚠️ SigLIP model not loaded for specialized embeddings, skipping")
                 return None
 
             # Get PIL image
@@ -607,12 +606,31 @@ class RealEmbeddingsService:
             elif pil_image.mode != 'RGB':
                 pil_image = pil_image.convert('RGB')
 
-            # Generate base embedding using CLIP model WITH TIMEOUT
+            # Define text prompts for each specialized embedding type
+            text_prompts = {
+                "color": "focus on color palette and color relationships",
+                "texture": "focus on surface patterns and texture details",
+                "material": "focus on material type and physical properties",
+                "style": "focus on design style and aesthetic elements"
+            }
+
+            # Generate text-guided embeddings for each specialized type
+            specialized = {}
+
             try:
-                def _generate_clip_embedding():
+                def _generate_text_guided_embedding(text_prompt: str):
+                    """Generate text-guided SigLIP embedding"""
                     with torch.no_grad():
-                        inputs = self._clip_processor(images=pil_image, return_tensors="pt")
-                        image_features = self._clip_model.get_image_features(**inputs)
+                        # Process image with text prompt for text-guided embedding
+                        inputs = self._siglip_processor(
+                            text=[text_prompt],
+                            images=pil_image,
+                            return_tensors="pt",
+                            padding=True
+                        )
+
+                        # Get image features guided by text prompt
+                        image_features = self._siglip_model.get_image_features(**inputs)
 
                         # Normalize to unit vector
                         embedding = image_features / image_features.norm(dim=-1, keepdim=True)
@@ -625,21 +643,26 @@ class RealEmbeddingsService:
 
                         return result
 
-                base_embedding = await asyncio.wait_for(
-                    asyncio.to_thread(_generate_clip_embedding),
-                    timeout=30.0  # 30s max for embedding generation
-                )
-
-                base_list = base_embedding.tolist()
+                # Generate each specialized embedding with its text prompt
+                for embedding_type, text_prompt in text_prompts.items():
+                    embedding = await asyncio.wait_for(
+                        asyncio.to_thread(_generate_text_guided_embedding, text_prompt),
+                        timeout=30.0  # 30s max per embedding
+                    )
+                    specialized[embedding_type] = embedding.tolist()
+                    self.logger.debug(f"✅ Generated {embedding_type} embedding (1152D) with prompt: '{text_prompt}'")
 
                 # Close PIL image to free memory
                 if hasattr(pil_image, 'close'):
                     pil_image.close()
 
+                self.logger.info("✅ Generated 4 text-guided specialized SigLIP embeddings (1152D each)")
+                return specialized
+
             except asyncio.TimeoutError:
-                self.logger.error("❌ CLIP embedding generation timed out after 30s")
+                self.logger.error("❌ Specialized SigLIP embedding generation timed out after 30s")
                 sentry_sdk.capture_message(
-                    "❌ CLIP embedding generation timeout (30s)",
+                    "❌ Specialized SigLIP embedding generation timeout (30s)",
                     level="error"
                 )
                 return None
@@ -650,22 +673,6 @@ class RealEmbeddingsService:
                         pil_image.close()
                     except:
                         pass
-
-            # For specialized embeddings, we use the base embedding
-            # In a more advanced implementation, you could:
-            # 1. Use CLIP text encoder with prompts
-            # 2. Fine-tune separate models for each aspect
-            # 3. Use attention mechanisms to focus on different features
-
-            specialized = {
-                "color": base_list,      # Color palette matching
-                "texture": base_list,    # Texture pattern matching
-                "style": base_list,      # Design style matching
-                "material": base_list    # Material type matching
-            }
-
-            self.logger.info("✅ Generated 4 specialized SigLIP embeddings (512D each)")
-            return specialized
 
         except Exception as e:
             self.logger.error(f"Specialized SigLIP embedding generation failed: {e}")

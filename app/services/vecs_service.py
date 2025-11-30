@@ -193,11 +193,11 @@ class VecsService:
         metadata: Dict[str, Any]
     ) -> Dict[str, bool]:
         """
-        Upsert specialized CLIP embeddings to their respective collections.
+        Upsert specialized text-guided SigLIP embeddings to their respective collections.
 
         Args:
             image_id: Image UUID
-            embeddings: Dict with keys: color, texture, style, material (each 512D)
+            embeddings: Dict with keys: color, texture, style, material (each 1152D)
             metadata: Metadata to store with each embedding
 
         Returns:
@@ -217,14 +217,14 @@ class VecsService:
                 try:
                     collection = self.get_or_create_collection(
                         name=collection_name,
-                        dimension=512
+                        dimension=1152  # Updated to 1152D for SigLIP
                     )
 
                     # Upsert single record
                     collection.upsert(records=[(image_id, embeddings[embedding_type], metadata)])
 
                     results[collection_name] = True
-                    logger.debug(f"✅ Upserted {embedding_type} embedding to '{collection_name}'")
+                    logger.debug(f"✅ Upserted {embedding_type} embedding (1152D) to '{collection_name}'")
 
                 except Exception as e:
                     logger.error(f"❌ Failed to upsert {embedding_type} embedding: {e}")
@@ -348,10 +348,10 @@ class VecsService:
         include_metadata: bool = True
     ) -> List[Dict[str, Any]]:
         """
-        Search for similar images using specialized embeddings.
+        Search for similar images using text-guided specialized SigLIP embeddings.
 
         Args:
-            query_embedding: Query embedding vector (512D)
+            query_embedding: Query embedding vector (1152D)
             embedding_type: Type of embedding ('color', 'texture', 'style', 'material')
             limit: Maximum number of results
             workspace_id: Optional workspace ID filter
@@ -376,7 +376,7 @@ class VecsService:
             collection_name = collection_mapping[embedding_type]
             collection = self.get_or_create_collection(
                 name=collection_name,
-                dimension=512
+                dimension=1152  # Updated to 1152D for SigLIP
             )
 
             # Build filters
