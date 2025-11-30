@@ -726,18 +726,14 @@ Respond ONLY with valid JSON, no additional text."""
                 image_data=image_base64
             )
 
-            if visual_embedding and len(visual_embedding) == 2:
-                # visual_embedding is a tuple: (embedding_list, model_name)
-                embedding_list = visual_embedding[0]
-                if embedding_list and len(embedding_list) == 512:
-                    self.logger.info(f"✅ Generated SigLIP embedding: {len(embedding_list)}D")
-                    return embedding_list
-                else:
-                    self.logger.error("SigLIP embedding generation returned invalid result")
-                    raise RuntimeError("Failed to generate valid SigLIP embedding")
+            # visual_embedding is a list of 1152 floats (SigLIP embedding)
+            if visual_embedding and isinstance(visual_embedding, list) and len(visual_embedding) == 1152:
+                self.logger.info(f"✅ Generated SigLIP embedding: {len(visual_embedding)}D")
+                return visual_embedding
             else:
-                self.logger.error("SigLIP embedding generation returned invalid result")
-                raise RuntimeError("Failed to generate valid SigLIP embedding")
+                actual_len = len(visual_embedding) if visual_embedding else 0
+                self.logger.error(f"SigLIP embedding generation returned invalid result: expected 1152D list, got {type(visual_embedding).__name__} with length {actual_len}")
+                raise RuntimeError(f"Failed to generate valid SigLIP embedding: expected 1152D, got {actual_len}D")
 
         except Exception as e:
             self.logger.error(f"❌ SigLIP embedding generation failed: {e}")
