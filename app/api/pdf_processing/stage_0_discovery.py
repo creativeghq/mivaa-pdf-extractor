@@ -34,7 +34,7 @@ async def process_stage_0_discovery(
     enable_prompt_enhancement: bool,
     tracker: Any,
     checkpoint_recovery_service: Any,
-    logger: Any
+    logger: Any = None
 ) -> Dict[str, Any]:
     """
     Stage 0: Product Discovery
