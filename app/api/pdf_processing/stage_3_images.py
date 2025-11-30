@@ -44,7 +44,6 @@ async def process_stage_3_images(
     loaded_components: List[str],
     tracker: Any,
     checkpoint_recovery_service: Any,
-    logger: Any = None,
     pdf_result_with_images: Any = None
 ) -> Dict[str, Any]:
     """

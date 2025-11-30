@@ -31,8 +31,7 @@ async def process_stage_2_chunking(
     chunk_overlap: int,
     tracker: Any,
     checkpoint_recovery_service: Any,
-    supabase: Any,
-    logger: Any = None
+    supabase: Any
 ) -> Dict[str, Any]:
     """
     Stage 2: Text Chunking

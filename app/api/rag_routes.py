@@ -2690,8 +2690,7 @@ async def process_document_with_discovery(
             chunk_overlap=chunk_overlap,
             tracker=tracker,
             checkpoint_recovery_service=checkpoint_recovery_service,
-            supabase=supabase,
-            logger=logger
+            supabase=supabase
         )
 
         chunk_result = stage_2_result["chunk_result"]
@@ -2716,8 +2715,7 @@ async def process_document_with_discovery(
             component_manager=component_manager,
             loaded_components=loaded_components,
             tracker=tracker,
-            checkpoint_recovery_service=checkpoint_recovery_service,
-            logger=logger
+            checkpoint_recovery_service=checkpoint_recovery_service
         )
 
         pdf_result_with_images = stage_3_result["pdf_result_with_images"]
@@ -2740,8 +2738,7 @@ async def process_document_with_discovery(
             product_creation_model=product_creation_model,
             tracker=tracker,
             checkpoint_recovery_service=checkpoint_recovery_service,
-            supabase=supabase,
-            logger=logger
+            supabase=supabase
         )
 
         products_created = stage_4_result["products_created"]
@@ -2769,8 +2766,7 @@ async def process_document_with_discovery(
             checkpoint_recovery_service=checkpoint_recovery_service,
             component_manager=component_manager,
             loaded_components=loaded_components,
-            claude_breaker=claude_breaker,
-            logger=logger
+            claude_breaker=claude_breaker
         )
 
         # Stage 5 handles all SUCCESS cleanup (component unloading, resource cleanup, job completion)

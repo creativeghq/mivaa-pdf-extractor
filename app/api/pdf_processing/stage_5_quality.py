@@ -29,8 +29,7 @@ async def process_stage_5_quality(
     checkpoint_recovery_service: Any,
     component_manager: Any,
     loaded_components: list,
-    claude_breaker: Any,
-    logger: Any = None
+    claude_breaker: Any
 ) -> Dict[str, Any]:
     """
     Stage 5: Quality Enhancement
