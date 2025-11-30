@@ -102,7 +102,7 @@ async def process_stage_3_images(
     specialized_embeddings_generated = 0
     images_processed = 0  # Images analyzed with Llama Vision
     vecs_batch_records = []
-    VECS_BATCH_SIZE = 10  # Reduced from 50 to save memory
+    VECS_BATCH_SIZE = 20 
     
     # Circuit breakers for API calls
     clip_breaker = CircuitBreaker(failure_threshold=5, timeout_seconds=60, name="CLIP")
@@ -118,26 +118,26 @@ async def process_stage_3_images(
         DEFAULT_BATCH_SIZE = 5
         MAX_BATCH_SIZE = 8
     elif total_memory_gb < 16:  # Medium memory systems (10-16GB)
-        DEFAULT_BATCH_SIZE = 10
-        MAX_BATCH_SIZE = 15
+        DEFAULT_BATCH_SIZE = 20  
+        MAX_BATCH_SIZE = 30      
     else:  # High memory systems (> 16GB)
-        DEFAULT_BATCH_SIZE = 15
-        MAX_BATCH_SIZE = 20
+        DEFAULT_BATCH_SIZE = 30  
+        MAX_BATCH_SIZE = 40      
 
     BATCH_SIZE = memory_monitor.calculate_optimal_batch_size(
         default_batch_size=DEFAULT_BATCH_SIZE,
-        min_batch_size=3,  # Minimum 3 images per batch
+        min_batch_size=3,  
         max_batch_size=MAX_BATCH_SIZE,
         memory_per_item_mb=50.0  # Increased estimate: 50MB per image (CLIP model overhead)
     )
 
-    # Dynamic concurrency control - MORE CONSERVATIVE
+
     if mem_stats.percent_used < 40:
-        CONCURRENT_IMAGES = 3  # Reduced from 8
+        CONCURRENT_IMAGES = 6  
     elif mem_stats.percent_used < 60:
-        CONCURRENT_IMAGES = 2  # Reduced from 5
+        CONCURRENT_IMAGES = 4  
     else:
-        CONCURRENT_IMAGES = 1  # Process one at a time under memory pressure
+        CONCURRENT_IMAGES = 2 
     
     logger.info(f"   🔧 DYNAMIC BATCH PROCESSING: {BATCH_SIZE} images per batch")
     logger.info(f"   🚀 Concurrency level: {CONCURRENT_IMAGES} images (memory: {mem_stats.percent_used:.1f}%)")
@@ -426,11 +426,11 @@ async def process_stage_3_images(
                         ))
                         clip_embeddings_generated += 1
 
-                    # Save specialized embeddings
+                    # Save specialized embeddings (SigLIP 1152D)
                     specialized_embeddings = {}
-                    for emb_type in ['color_512', 'texture_512', 'style_512', 'material_512']:
+                    for emb_type in ['color_siglip_1152', 'texture_siglip_1152', 'style_siglip_1152', 'material_siglip_1152']:
                         if embeddings.get(emb_type):
-                            key = emb_type.replace('_512', '')
+                            key = emb_type.replace('_siglip_1152', '')  # Extract: color, texture, style, material
                             specialized_embeddings[key] = embeddings.get(emb_type)
 
                     if specialized_embeddings:
@@ -443,11 +443,17 @@ async def process_stage_3_images(
 
                     logger.info(f"   ✅ [{image_index}/{total_images}] Generated {1 + len(specialized_embeddings)} CLIP embeddings")
 
+                    # CRITICAL: Delete embeddings dict to free memory immediately
+                    del embeddings
+                    del specialized_embeddings
+
                     # Batch upsert VECS records
                     if len(vecs_batch_records) >= VECS_BATCH_SIZE:
                         batch_count = await vecs_service.batch_upsert_image_embeddings(vecs_batch_records)
                         logger.info(f"   💾 Batch upserted {batch_count} CLIP embeddings to VECS")
                         vecs_batch_records.clear()
+                        # Force GC after VECS batch upsert to free embedding memory
+                        gc.collect()
 
             except CircuitBreakerError as cb_error:
                 logger.warning(f"   ⚠️ [{image_index}/{total_images}] CLIP skipped (circuit breaker): {cb_error}")
@@ -515,7 +521,7 @@ async def process_stage_3_images(
         mem_stats = memory_monitor.get_memory_stats()
         if mem_stats.is_critical_pressure:
             logger.error(f"🔴 CRITICAL memory pressure: {mem_stats.percent_used:.1f}%")
-            memory_monitor.trigger_emergency_cleanup()
+            await memory_monitor.check_memory_pressure()
             # Re-check after cleanup
             mem_stats = memory_monitor.get_memory_stats()
         elif mem_stats.is_high_pressure:

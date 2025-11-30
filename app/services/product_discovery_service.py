@@ -1065,11 +1065,17 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                 page_range=p.get("page_range", []),
                 description=p.get("description", ""),
                 metadata=metadata,
-                image_indices=p.get("image_pages", []),
+                # Use image_pages if provided, otherwise fallback to page_range
+                # (Claude Vision sometimes doesn't return image_pages despite prompt)
+                image_indices=p.get("image_pages") or p.get("page_range", []),
                 page_types=page_types if page_types else None,
                 confidence=p.get("confidence", 0.8)
             )
             products.append(product)
+
+            # Log if image_pages was missing (helps debug Claude Vision behavior)
+            if not p.get("image_pages"):
+                self.logger.warning(f"   ⚠️ Product '{product.name}' missing image_pages - using page_range as fallback")
 
         # Parse certificates
         certificates = []
