@@ -721,15 +721,22 @@ Respond ONLY with valid JSON, no additional text."""
                 self._embeddings_service = RealEmbeddingsService()
 
             # Generate visual embedding using SigLIP
-            # Returns tuple: (embedding_list, model_name)
+            # Returns tuple: (embedding_list, model_name, pil_image)
             result = await self._embeddings_service._generate_visual_embedding(
                 image_url=None,
                 image_data=image_base64
             )
 
-            # Unpack tuple: (embedding_list, model_name)
-            if result and isinstance(result, tuple) and len(result) == 2:
-                visual_embedding, model_name = result
+            # Unpack tuple: (embedding_list, model_name, pil_image)
+            if result and isinstance(result, tuple) and len(result) == 3:
+                visual_embedding, model_name, pil_image = result
+
+                # Close PIL image if returned (we don't need it here)
+                if pil_image and hasattr(pil_image, 'close'):
+                    try:
+                        pil_image.close()
+                    except:
+                        pass
 
                 # SigLIP returns 1152D embeddings
                 if visual_embedding and isinstance(visual_embedding, list) and len(visual_embedding) == 1152:
@@ -740,7 +747,7 @@ Respond ONLY with valid JSON, no additional text."""
                     self.logger.error(f"SigLIP embedding has wrong dimensions: expected 1152D, got {actual_len}D from {model_name}")
                     raise RuntimeError(f"Failed to generate valid SigLIP embedding: expected 1152D, got {actual_len}D")
             else:
-                self.logger.error(f"SigLIP embedding generation returned invalid format: expected tuple(list, str), got {type(result).__name__}")
+                self.logger.error(f"SigLIP embedding generation returned invalid format: expected tuple(list, str, PIL), got {type(result).__name__}")
                 raise RuntimeError("Failed to generate valid SigLIP embedding: invalid return format")
 
         except Exception as e:

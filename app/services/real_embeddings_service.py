@@ -114,8 +114,11 @@ class RealEmbeddingsService:
                 self.logger.info("✅ Text embedding generated (1536D)")
             
             # 2. Visual Embedding (512D) - REAL (SigLIP with CLIP fallback)
+            pil_image_for_reuse = None  # Track PIL image for reuse
             if image_url or image_data:
-                visual_embedding, model_used = await self._generate_visual_embedding(image_url, image_data)
+                visual_embedding, model_used, pil_image_for_reuse = await self._generate_visual_embedding(
+                    image_url, image_data
+                )
                 if visual_embedding:
                     # Store with both key names for compatibility
                     embeddings["embeddings"]["visual_512"] = visual_embedding  # Expected by llamaindex_service
@@ -126,7 +129,10 @@ class RealEmbeddingsService:
                     self.logger.info(f"✅ Visual embedding generated (512D) using {model_used}")
 
                 # 2a. Generate text-guided specialized visual embeddings for pattern/color/texture matching
-                specialized_embeddings = await self._generate_specialized_siglip_embeddings(image_url, image_data)
+                # ✅ REUSE PIL image from visual embedding to avoid redundant decoding!
+                specialized_embeddings, pil_image_for_reuse = await self._generate_specialized_siglip_embeddings(
+                    image_url, image_data, pil_image=pil_image_for_reuse
+                )
                 if specialized_embeddings:
                     embeddings["embeddings"]["color_siglip_1152"] = specialized_embeddings.get("color")
                     embeddings["embeddings"]["texture_siglip_1152"] = specialized_embeddings.get("texture")
@@ -136,6 +142,14 @@ class RealEmbeddingsService:
                     embeddings["metadata"]["model_versions"]["specialized_visual"] = "siglip-so400m-patch14-384-text-guided"
                     embeddings["metadata"]["confidence_scores"]["specialized_visual"] = 0.95  # High confidence for text-guided
                     self.logger.info("✅ Text-guided specialized SigLIP embeddings generated (4 × 1152D)")
+
+                # Close PIL image after all embeddings are generated
+                if pil_image_for_reuse and hasattr(pil_image_for_reuse, 'close'):
+                    try:
+                        pil_image_for_reuse.close()
+                        self.logger.debug("✅ Closed PIL image after all embeddings generated")
+                    except:
+                        pass
 
             # 3. Multimodal Fusion Embedding (2048D) - REAL
             if embeddings["embeddings"].get("text_1536") and embeddings["embeddings"].get("visual_512"):
@@ -264,8 +278,9 @@ class RealEmbeddingsService:
         self,
         image_url: Optional[str],
         image_data: Optional[str],
-        confidence_threshold: float = 0.8
-    ) -> tuple[Optional[List[float]], str]:
+        confidence_threshold: float = 0.8,
+        pil_image = None  # NEW: Accept pre-decoded PIL image
+    ) -> tuple[Optional[List[float]], str, Optional[any]]:
         """
         Generate visual embedding using SigLIP exclusively.
 
@@ -276,24 +291,28 @@ class RealEmbeddingsService:
             image_url: URL of image
             image_data: Base64 encoded image data
             confidence_threshold: Unused (kept for API compatibility)
+            pil_image: Optional pre-decoded PIL image (avoids redundant decoding)
 
         Returns:
-            Tuple of (1152D embedding vector or None, model_name used)
+            Tuple of (1152D embedding vector or None, model_name used, PIL image for reuse)
         """
         # Use SigLIP exclusively
-        siglip_embedding = await self._generate_siglip_embedding(image_url, image_data)
+        siglip_embedding, pil_image_out = await self._generate_siglip_embedding(
+            image_url, image_data, pil_image=pil_image
+        )
         if siglip_embedding:
             self.logger.info("✅ Using SigLIP embedding")
-            return siglip_embedding, "siglip-so400m-patch14-384"
+            return siglip_embedding, "siglip-so400m-patch14-384", pil_image_out
 
         self.logger.error("❌ SigLIP embedding generation failed")
-        return None, "none"
+        return None, "none", None
 
     async def _generate_siglip_embedding(
         self,
         image_url: Optional[str],
-        image_data: Optional[str]
-    ) -> Optional[List[float]]:
+        image_data: Optional[str],
+        pil_image = None  # NEW: Accept pre-decoded PIL image
+    ) -> tuple[Optional[List[float]], Optional[any]]:
         """
         Generate visual embedding using Google SigLIP ViT-SO400M.
 
@@ -301,6 +320,14 @@ class RealEmbeddingsService:
         to avoid 'hidden_size' attribute error with SiglipConfig.
 
         NOTE: Models should be pre-loaded using ensure_models_loaded() before calling this.
+
+        Args:
+            image_url: URL of image
+            image_data: Base64 encoded image data
+            pil_image: Optional pre-decoded PIL image (avoids redundant decoding)
+
+        Returns:
+            Tuple of (embedding list or None, PIL image for reuse or None)
         """
         try:
             import torch
@@ -313,10 +340,12 @@ class RealEmbeddingsService:
             # Check if SigLIP model is loaded
             if self._siglip_model is None or self._siglip_processor is None:
                 self.logger.warning("⚠️ SigLIP model not loaded, skipping")
-                return None
+                return None, None
 
-            # Convert base64 image data to PIL Image WITH TIMEOUT
-            if image_data:
+            # Use pre-decoded PIL image if provided, otherwise decode
+            image_was_provided = pil_image is not None
+
+            if pil_image is None and image_data:
                 # Remove data URL prefix if present
                 if image_data.startswith('data:image'):
                     image_data = image_data.split(',')[1]
@@ -325,7 +354,7 @@ class RealEmbeddingsService:
                     image_bytes = base64.b64decode(image_data)
                     pil_image = await asyncio.wait_for(
                         asyncio.to_thread(Image.open, io.BytesIO(image_bytes)),
-                        timeout=10.0
+                        timeout=30.0  # ✅ INCREASED from 10s to 30s
                     )
 
                     # Convert RGBA to RGB if necessary
@@ -337,106 +366,97 @@ class RealEmbeddingsService:
                     elif pil_image.mode != 'RGB':
                         pil_image = pil_image.convert('RGB')
                 except asyncio.TimeoutError:
-                    self.logger.error("❌ Image decoding timed out after 10s")
-                    return None
+                    self.logger.error("❌ Image decoding timed out after 30s")
+                    return None, None
 
-                # Generate embedding using SigLIP model WITH TIMEOUT
-                try:
-                    def _generate_embedding():
-                        with torch.no_grad():
-                            inputs = self._siglip_processor(images=pil_image, return_tensors="pt")
-                            # Get image features from vision model
-                            image_features = self._siglip_model.get_image_features(**inputs)
-
-                            # L2 normalize to unit vector
-                            embedding = image_features / image_features.norm(dim=-1, keepdim=True)
-                            result = embedding.squeeze().cpu().numpy()
-
-                            # Explicit memory cleanup
-                            del inputs, image_features, embedding
-                            if torch.cuda.is_available():
-                                torch.cuda.empty_cache()
-
-                            return result
-
-                    embedding = await asyncio.wait_for(
-                        asyncio.to_thread(_generate_embedding),
-                        timeout=30.0  # 30s max for embedding generation
-                    )
-
-                    # Close PIL image to free memory
-                    if hasattr(pil_image, 'close'):
-                        pil_image.close()
-
-                    self.logger.info(f"✅ Generated SigLIP visual embedding: {len(embedding)}D")
-                    return embedding.tolist()
-                except asyncio.TimeoutError:
-                    self.logger.error("❌ SigLIP embedding generation timed out after 30s")
-                    return None
-                finally:
-                    # Ensure PIL image is closed even on error
-                    if 'pil_image' in locals() and hasattr(pil_image, 'close'):
-                        try:
-                            pil_image.close()
-                        except:
-                            pass
-
-            elif image_url:
-                # Download image from URL
+            elif pil_image is None and image_url:
+                # Download image from URL if no PIL image provided
                 import httpx
-                pil_image = None
                 try:
                     async with httpx.AsyncClient(timeout=30.0) as client:
                         response = await client.get(image_url)
                         if response.status_code == 200:
                             pil_image = Image.open(io.BytesIO(response.content))
+                except Exception as e:
+                    self.logger.error(f"Failed to download image from URL: {e}")
+                    return None, None
 
-                            # Convert RGBA to RGB if necessary
-                            if pil_image.mode == 'RGBA':
-                                # Create white background
-                                rgb_image = Image.new('RGB', pil_image.size, (255, 255, 255))
-                                rgb_image.paste(pil_image, mask=pil_image.split()[3])  # Use alpha channel as mask
-                                pil_image = rgb_image
-                            elif pil_image.mode != 'RGB':
-                                pil_image = pil_image.convert('RGB')
+            if pil_image is None:
+                self.logger.error("No image data provided")
+                return None, None
 
-                            # Generate embedding using SigLIP model
-                            with torch.no_grad():
-                                inputs = self._siglip_processor(images=pil_image, return_tensors="pt")
-                                # Get image features from vision model
-                                image_features = self._siglip_model.get_image_features(**inputs)
+            # Ensure RGB format
+            if pil_image.mode == 'RGBA':
+                rgb_image = Image.new('RGB', pil_image.size, (255, 255, 255))
+                rgb_image.paste(pil_image, mask=pil_image.split()[3])
+                pil_image = rgb_image
+            elif pil_image.mode != 'RGB':
+                pil_image = pil_image.convert('RGB')
 
-                                # L2 normalize to unit vector
-                                embedding = image_features / image_features.norm(dim=-1, keepdim=True)
-                                result = embedding.squeeze().cpu().numpy()
+            # Generate embedding using SigLIP model WITH TIMEOUT
+            try:
+                def _generate_embedding():
+                    with torch.no_grad():
+                        inputs = self._siglip_processor(images=pil_image, return_tensors="pt")
+                        # Get image features from vision model
+                        image_features = self._siglip_model.get_image_features(**inputs)
 
-                                # Explicit memory cleanup
-                                del inputs, image_features, embedding
-                                if torch.cuda.is_available():
-                                    torch.cuda.empty_cache()
+                        # L2 normalize to unit vector
+                        embedding = image_features / image_features.norm(dim=-1, keepdim=True)
+                        result = embedding.squeeze().cpu().numpy()
 
-                            self.logger.info(f"✅ Generated SigLIP visual embedding from URL: {len(result)}D")
-                            return result.tolist()
-                finally:
-                    # Ensure PIL image is closed even on error
-                    if pil_image is not None and hasattr(pil_image, 'close'):
-                        try:
-                            pil_image.close()
-                        except:
-                            pass
+                        # Explicit memory cleanup
+                        del inputs, image_features, embedding
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+
+                        return result
+
+                embedding = await asyncio.wait_for(
+                    asyncio.to_thread(_generate_embedding),
+                    timeout=30.0  # 30s max for embedding generation
+                )
+
+                self.logger.info(f"✅ Generated SigLIP visual embedding: {len(embedding)}D")
+
+                # Return embedding AND PIL image for reuse (don't close it yet!)
+                # Only close if we created it (not if it was provided)
+                if image_was_provided:
+                    # Image was provided, return it for continued reuse
+                    return embedding.tolist(), pil_image
+                else:
+                    # We created the image, caller can reuse it
+                    return embedding.tolist(), pil_image
+
+            except asyncio.TimeoutError:
+                self.logger.error("❌ SigLIP embedding generation timed out after 30s")
+                # Close image on error if we created it
+                if not image_was_provided and pil_image and hasattr(pil_image, 'close'):
+                    try:
+                        pil_image.close()
+                    except:
+                        pass
+                return None, None
 
         except Exception as e:
             self.logger.error(f"SigLIP embedding generation failed: {e}")
             import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
+            # Close image on error if we created it
+            if not image_was_provided and pil_image and hasattr(pil_image, 'close'):
+                try:
+                    pil_image.close()
+                except:
+                    pass
 
-        return None
+        return None, None
 
     async def _generate_specialized_siglip_embeddings(
         self,
         image_url: Optional[str],
-        image_data: Optional[str]
-    ) -> Optional[Dict[str, List[float]]]:
+        image_data: Optional[str],
+        pil_image = None  # NEW: Accept pre-decoded PIL image
+    ) -> tuple[Optional[Dict[str, List[float]]], Optional[any]]:
         """
         Generate text-guided specialized visual embeddings using SigLIP.
 
@@ -450,6 +470,14 @@ class RealEmbeddingsService:
         Each embedding is unique and optimized for its specific search type.
 
         NOTE: Models should be pre-loaded using ensure_models_loaded() before calling this.
+
+        Args:
+            image_url: URL of image
+            image_data: Base64 encoded image data
+            pil_image: Optional pre-decoded PIL image (avoids redundant decoding)
+
+        Returns:
+            Tuple of (specialized embeddings dict or None, PIL image for reuse or None)
         """
         try:
             import torch
@@ -458,34 +486,46 @@ class RealEmbeddingsService:
             import io
             import numpy as np
             import asyncio
+            import httpx
 
             # Check if SigLIP model is loaded
             if self._siglip_model is None or self._siglip_processor is None:
                 self.logger.warning("⚠️ SigLIP model not loaded for specialized embeddings, skipping")
-                return None
+                return None, None
 
-            # Get PIL image
-            pil_image = None
+            # Use pre-decoded PIL image if provided, otherwise decode
+            image_was_provided = pil_image is not None
 
-            if image_data:
+            if pil_image is None and image_data:
                 # Remove data URL prefix if present
                 if image_data.startswith('data:image'):
                     image_data = image_data.split(',')[1]
 
-                image_bytes = base64.b64decode(image_data)
-                pil_image = Image.open(io.BytesIO(image_bytes))
+                try:
+                    image_bytes = base64.b64decode(image_data)
+                    pil_image = await asyncio.wait_for(
+                        asyncio.to_thread(Image.open, io.BytesIO(image_bytes)),
+                        timeout=30.0  # ✅ INCREASED from no timeout to 30s
+                    )
+                except asyncio.TimeoutError:
+                    self.logger.error("❌ Image decoding timed out after 30s (specialized embeddings)")
+                    return None, None
 
-            elif image_url:
+            elif pil_image is None and image_url:
                 # Download image from URL
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.get(image_url)
-                    if response.status_code == 200:
-                        pil_image = Image.open(io.BytesIO(response.content))
+                try:
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        response = await client.get(image_url)
+                        if response.status_code == 200:
+                            pil_image = Image.open(io.BytesIO(response.content))
+                except Exception as e:
+                    self.logger.error(f"Failed to download image from URL: {e}")
+                    return None, None
 
             if not pil_image:
-                return None
+                return None, None
 
-            # Convert RGBA to RGB if necessary
+            # Ensure RGB format
             if pil_image.mode == 'RGBA':
                 rgb_image = Image.new('RGB', pil_image.size, (255, 255, 255))
                 rgb_image.paste(pil_image, mask=pil_image.split()[3])
@@ -541,12 +581,16 @@ class RealEmbeddingsService:
                     specialized[embedding_type] = embedding.tolist()
                     self.logger.debug(f"✅ Generated {embedding_type} embedding (1152D) with prompt: '{text_prompt}'")
 
-                # Close PIL image to free memory
-                if hasattr(pil_image, 'close'):
-                    pil_image.close()
-
                 self.logger.info("✅ Generated 4 text-guided specialized SigLIP embeddings (1152D each)")
-                return specialized
+
+                # Return embeddings AND PIL image for reuse (don't close it yet!)
+                # Only close if we created it (not if it was provided)
+                if image_was_provided:
+                    # Image was provided, return it for continued reuse
+                    return specialized, pil_image
+                else:
+                    # We created the image, caller can reuse it
+                    return specialized, pil_image
 
             except asyncio.TimeoutError:
                 self.logger.error("❌ Specialized SigLIP embedding generation timed out after 30s")
@@ -554,20 +598,25 @@ class RealEmbeddingsService:
                     "❌ Specialized SigLIP embedding generation timeout (30s)",
                     level="error"
                 )
-                return None
-            finally:
-                # Ensure PIL image is closed even on error
-                if 'pil_image' in locals() and hasattr(pil_image, 'close'):
+                # Close image on error if we created it
+                if not image_was_provided and pil_image and hasattr(pil_image, 'close'):
                     try:
                         pil_image.close()
                     except:
                         pass
+                return None, None
 
         except Exception as e:
             self.logger.error(f"Specialized SigLIP embedding generation failed: {e}")
             import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
-            return None
+            # Close image on error if we created it
+            if not image_was_provided and pil_image and hasattr(pil_image, 'close'):
+                try:
+                    pil_image.close()
+                except:
+                    pass
+            return None, None
 
     def _generate_multimodal_fusion(
         self,
