@@ -1,8 +1,10 @@
 name: 🚀 MIVAA Deployment (Default)
 
 on:
-  push:
-    ##branches: [ "main", "production"]
+  # ❌ AUTO-DEPLOYMENT DISABLED - Prevents automatic restarts that interrupt jobs
+  # To deploy: Go to Actions → 🚀 MIVAA Deployment → Run workflow
+  # push:
+  #   branches: [ "main", "production" ]
   workflow_dispatch:
     inputs:
       deployment_reason:
@@ -830,27 +832,46 @@ jobs:
           ls -la /etc/systemd/system/mivaa-pdf-extractor.service
           "
 
-      # 4.5. Kill running jobs and clear state before restart
-      - name: 🧹 Clear running jobs before deployment
+      # 4.5. Check for active jobs before restart (JOB PROTECTION)
+      - name: 🔒 Check for active jobs (Job Protection)
         run: |
-          echo "🧹 Clearing all running jobs before deployment..."
+          echo "🔒 Checking for active jobs before restart..."
           echo "================================================"
-          ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
-          cd /var/www/mivaa-pdf-extractor
-          source .venv/bin/activate
 
-          # Set environment variables
-          export SUPABASE_URL='${{ secrets.SUPABASE_URL }}'
-          export SUPABASE_SERVICE_ROLE_KEY='${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}'
+          ACTIVE_JOBS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+          # Check if API is running
+          if curl -s http://localhost:8000/health > /dev/null 2>&1; then
+            # Get active job count from API
+            curl -s http://localhost:8000/api/jobs/health 2>/dev/null | jq -r '.active_jobs // 0' || echo '0'
+          else
+            echo '0'
+          fi
+          " || echo "0")
 
-          # Run the job cleanup script
-          python scripts/clear_jobs_before_deployment.py
+          echo "Active jobs found: $ACTIVE_JOBS"
 
-          echo '✅ Job cleanup complete - proceeding with deployment'
-          "
+          if [ "$ACTIVE_JOBS" != "0" ] && [ -n "$ACTIVE_JOBS" ]; then
+            echo ""
+            echo "❌ DEPLOYMENT BLOCKED!"
+            echo "⚠️  Found $ACTIVE_JOBS active job(s) currently processing"
+            echo ""
+            echo "📋 Job details:"
+            ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
+            curl -s http://localhost:8000/api/jobs/health 2>/dev/null | jq -r '.jobs[] | select(.status == \"processing\") | \"  - Job \(.id): \(.filename) (\(.progress)%)\"' || echo '  - Unable to fetch job details'
+            "
+            echo ""
+            echo "💡 Options:"
+            echo "  1. Wait for jobs to complete and try again"
+            echo "  2. Cancel jobs via admin panel first"
+            echo "  3. SSH to server and use: bash scripts/safe-restart.sh --force --reason \"deployment\""
+            echo ""
+            exit 1
+          fi
 
-      # 4.6. Restart service
-      - name: 🔄 Restart service
+          echo "✅ No active jobs - safe to proceed with restart"
+
+      # 4.6. Restart service (PROTECTED)
+      - name: 🔄 Restart service (Protected)
         run: |
           echo "🔄 Reloading systemd and restarting service..."
           ssh -o StrictHostKeyChecking=no root@104.248.68.3 "
@@ -858,8 +879,15 @@ jobs:
           sudo systemctl daemon-reload
           sudo systemctl enable mivaa-pdf-extractor
 
+          # Use safe restart script with force flag (since we already checked for jobs)
+          cd /var/www/mivaa-pdf-extractor
+
           # Restart the FastAPI service
+          echo 'Restarting service...'
           sudo systemctl restart mivaa-pdf-extractor
+
+          # Wait for service to start
+          sleep 3
 
           # Check service status
           sudo systemctl status mivaa-pdf-extractor --no-pager
