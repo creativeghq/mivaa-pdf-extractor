@@ -21,6 +21,7 @@ from datetime import datetime
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from app.config import get_settings
 from app.services.supabase_client import get_supabase_client, initialize_supabase
 from app.services.metadata_normalizer import normalize_metadata, get_normalization_report
 
@@ -35,7 +36,8 @@ async def normalize_products(workspace_id: str, dry_run: bool = False, verbose: 
         verbose: If True, show detailed normalization reports
     """
     # Initialize Supabase client
-    initialize_supabase()
+    settings = get_settings()
+    initialize_supabase(settings)
     supabase_client = get_supabase_client()
     supabase = supabase_client.client
     
