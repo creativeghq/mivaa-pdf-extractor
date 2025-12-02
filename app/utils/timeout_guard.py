@@ -229,18 +229,18 @@ class ProgressiveTimeoutStrategy:
         """
         Calculate timeout for PDF extraction based on document size.
 
-        Base: 20s per page (increased from 10s due to memory optimizations)
+        Base: 30s per page (increased from 20s - PyMuPDF can be slow on complex PDFs)
         Scaling: +5s per page for large PDFs (>50 pages)
         Max: 60min (increased from 30min)
         """
-        base_timeout = page_count * 30  # 30s per page (memory-optimized processing is slower)
+        base_timeout = page_count * 30  # 30s per page (PyMuPDF needs more time for complex PDFs like Harmony)
 
         # Add extra time for large PDFs
         if page_count > 50:
             extra_time = (page_count - 50) * 5  # Increased from 2s to 5s
             base_timeout += extra_time
 
-        # Add time based on file size (2s per MB, increased from 1s)
+        # Add time based on file size (3s per MB, increased from 2s)
         base_timeout += file_size_mb * 3
 
         # Cap at 60 minutes (increased from 30min to accommodate slower memory-optimized processing)
