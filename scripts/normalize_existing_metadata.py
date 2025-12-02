@@ -21,20 +21,21 @@ from datetime import datetime
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from app.database import get_supabase_client
+from app.services.supabase_client import get_supabase_client
 from app.services.metadata_normalizer import normalize_metadata, get_normalization_report
 
 
 async def normalize_products(workspace_id: str, dry_run: bool = False, verbose: bool = False):
     """
     Normalize metadata for all products in a workspace.
-    
+
     Args:
         workspace_id: Workspace ID to process
         dry_run: If True, show changes without applying them
         verbose: If True, show detailed normalization reports
     """
-    supabase = get_supabase_client()
+    supabase_client = get_supabase_client()
+    supabase = supabase_client.client
     
     print(f"\n{'='*80}")
     print(f"METADATA NORMALIZATION MIGRATION")
