@@ -233,7 +233,7 @@ class ProgressiveTimeoutStrategy:
         Scaling: +5s per page for large PDFs (>50 pages)
         Max: 60min (increased from 30min)
         """
-        base_timeout = page_count * 20  # 20s per page (memory-optimized processing is slower)
+        base_timeout = page_count * 30  # 30s per page (memory-optimized processing is slower)
 
         # Add extra time for large PDFs
         if page_count > 50:
@@ -241,7 +241,7 @@ class ProgressiveTimeoutStrategy:
             base_timeout += extra_time
 
         # Add time based on file size (2s per MB, increased from 1s)
-        base_timeout += file_size_mb * 2
+        base_timeout += file_size_mb * 3
 
         # Cap at 60 minutes (increased from 30min to accommodate slower memory-optimized processing)
         return min(base_timeout, 3600)
