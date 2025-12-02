@@ -27,6 +27,7 @@ import openai
 
 from app.services.ai_call_logger import AICallLogger
 from app.services.ai_client_service import get_ai_client_service
+from app.services.metadata_normalizer import normalize_metadata, get_normalization_report
 
 logger = logging.getLogger(__name__)
 
@@ -142,24 +143,62 @@ CRITICAL FIELDS (MUST extract these):
 3. factory_group_name - Parent company or group name (if mentioned)
 
 DYNAMIC FIELDS (extract ANY you find):
-Extract all other attributes you discover, organized by category:
+Extract all other attributes you discover, organized by category.
 
-- Material Properties: composition, type, blend, texture, finish, pattern, weight, density, durability
-- Dimensions: length, width, height, thickness, diameter, size, area, volume
-- Appearance: color, color_code, gloss_level, sheen, transparency, grain, visual_effects
-- Performance: water_resistance, fire_rating, slip_resistance, wear_rating, strength ratings
-- Application: recommended_use, installation_method, room_type, traffic_level, care_instructions
-- Compliance: certifications, standards, eco_friendly, sustainability, safety_ratings
-- Commercial: pricing, availability, supplier, sku, warranty
-- Design: designer, studio, collection, series, aesthetic_style
-- Technical: specifications, construction, manufacturing_process, grade, class, rating
+STANDARDIZED FIELD NAMES (use EXACTLY these names):
 
-IMPORTANT:
-- If you find attributes NOT in the above list, STILL EXTRACT THEM!
-- Group similar attributes together
-- Use snake_case for attribute names (e.g., "slip_resistance" not "Slip Resistance")
-- Include confidence scores (0.0-1.0) for each extraction
-- If a value is uncertain, mark confidence < 0.7
+**Commercial:**
+- grout_mapei: Mapei grout product name (e.g., "ULTRACOLOR PLUS")
+- grout_kerakoll: Kerakoll grout product name (e.g., "FUGABELLA")
+- grout_suppliers: Array of grout supplier names (e.g., ["MAPEI", "KERAKOLL"])
+- grout_color_codes: Object mapping colors to grout codes (e.g., {{"white": "100", "clay": "145"}})
+- sku_codes: Object mapping colors/variants to SKU codes (e.g., {{"white": "37885", "clay": "37889"}})
+- product_codes: Array of product codes (e.g., ["H48", "H22"])
+- pricing, availability, warranty
+
+**Design:**
+- designers: Array of designer names (e.g., ["José Manuel Ferrero"])
+- studio: Design studio name (e.g., "Estudi{{H}}ac")
+- studio_founded: Year studio was founded (e.g., "2003")
+- collection: Collection name (e.g., "VALENOVA")
+- philosophy: Design philosophy or concept
+- inspiration: Design inspiration source
+- aesthetic_style: Aesthetic style description
+
+**Packaging:**
+- pieces_per_box: Number of pieces per box
+- boxes_per_pallet: Number of boxes per pallet
+- weight_kg: Weight per box in kilograms
+- weight_lb: Weight per box in pounds
+- coverage_m2: Coverage area per box in square meters
+- coverage_sqft: Coverage area per box in square feet
+
+**Material Properties:**
+- finish: Surface finish type (e.g., "matt", "gloss")
+- body_type: Body type (e.g., "white body tile", "full body ceramics")
+- composition: Material composition
+- texture: Surface texture description
+
+**Appearance:**
+- colors: Array of available colors (e.g., ["White", "Clay", "Green"])
+- shade_variation: Shade variation rating (e.g., "V2", "V3")
+- visual_effect: Visual effect description
+
+**Application:**
+- recommended_use: Recommended use (e.g., "wall", "floor", "wall and floor")
+- installation: Installation method or type
+- traffic_level: Traffic level rating
+
+**Other categories:** performance, compliance, technical, dimensions
+
+CRITICAL RULES:
+1. Use EXACTLY the field names listed above (e.g., "grout_mapei" NOT "recommended_grout_mapei" or "grout_product_mapei")
+2. For designers: ALWAYS use array format, even for single designer
+3. For SKU codes: ALWAYS use object format mapping variants to codes
+4. For grout suppliers: Use "grout_mapei" and "grout_kerakoll" for product names, "grout_suppliers" for array of brands
+5. Use snake_case for ALL field names
+6. Include confidence scores (0.0-1.0) for each extraction
+7. If you find attributes NOT in the above list, STILL EXTRACT THEM but use consistent naming
 
 Return JSON in this exact format:
 {{
@@ -272,7 +311,29 @@ class DynamicMetadataExtractor:
             # Step 3: Validate critical fields
             validation_result = self._validate_critical_fields(extracted_data)
 
-            # Step 4: Auto-create material_properties entries for new discovered fields
+            # Step 4: Normalize metadata to standardized schema
+            original_data = extracted_data.copy()
+            normalized_data = {}
+
+            # Normalize each category
+            for category in ["critical", "discovered", "unknown"]:
+                if category in extracted_data:
+                    normalized_data[category] = normalize_metadata({category: extracted_data[category]}).get(category, {})
+
+            # Get normalization report for logging
+            normalization_report = get_normalization_report(
+                original_data.get("discovered", {}),
+                normalized_data.get("discovered", {})
+            )
+
+            if normalization_report["fields_normalized"] > 0:
+                self.logger.info(f"Normalized {normalization_report['fields_normalized']} metadata fields")
+                self.logger.debug(f"Normalization changes: {normalization_report['changes']}")
+
+            # Use normalized data
+            extracted_data = normalized_data
+
+            # Step 5: Auto-create material_properties entries for new discovered fields
             try:
                 await self._ensure_properties_exist(extracted_data)
             except AttributeError as ae:
@@ -282,13 +343,15 @@ class DynamicMetadataExtractor:
             except Exception as prop_error:
                 self.logger.warning(f"Failed to auto-create material_properties: {prop_error}")
 
-            # Step 5: Add metadata
+            # Step 6: Add metadata
             extracted_data["metadata"] = {
                 "extraction_timestamp": datetime.utcnow().isoformat(),
                 "extraction_method": f"ai_dynamic_{self.model}",
                 "validation_passed": validation_result["valid"],
                 "validation_errors": validation_result.get("errors", []),
-                "manual_overrides_applied": bool(manual_overrides)
+                "manual_overrides_applied": bool(manual_overrides),
+                "normalization_applied": normalization_report["fields_normalized"] > 0,
+                "fields_normalized": normalization_report["fields_normalized"]
             }
 
             return extracted_data
