@@ -28,6 +28,7 @@ import openai
 from app.services.ai_call_logger import AICallLogger
 from app.services.ai_client_service import get_ai_client_service
 from app.services.metadata_normalizer import normalize_metadata, get_normalization_report
+from app.services.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -247,24 +248,78 @@ class DynamicMetadataExtractor:
     Extracts metadata dynamically using AI, without hardcoded attribute checks.
     """
 
-    def __init__(self, model: str = "claude", job_id: Optional[str] = None):
+    def __init__(self, model: str = "claude", job_id: Optional[str] = None, workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"):
         """
         Initialize extractor.
 
         Args:
             model: AI model to use - supports "claude", "claude-vision", "claude-haiku-vision", "gpt", "gpt-vision"
             job_id: Optional job ID for AI call logging
+            workspace_id: Workspace ID for loading custom prompts from database
         """
         self.model = model
         self.job_id = job_id
+        self.workspace_id = workspace_id
         self.logger = logging.getLogger(__name__)
         self.ai_logger = AICallLogger()
+        self.supabase = get_supabase_client()
 
         # Check API keys based on model family (claude/gpt)
         if "claude" in model.lower() and not ANTHROPIC_API_KEY:
             raise ValueError("ANTHROPIC_API_KEY not set - cannot use Claude")
         if "gpt" in model.lower() and not OPENAI_API_KEY:
             raise ValueError("OPENAI_API_KEY not set - cannot use GPT")
+
+    async def _load_prompt_from_database(self, stage: str = "entity_creation", category: str = "products") -> Optional[str]:
+        """
+        Load extraction prompt from database.
+
+        Args:
+            stage: Extraction stage (default: "entity_creation" for metadata extraction)
+            category: Content category (default: "products")
+
+        Returns:
+            Prompt template from database, or None if not found
+        """
+        try:
+            # Try to get custom prompt first (is_custom = true)
+            result = self.supabase.client.table('extraction_prompts')\
+                .select('prompt_template, system_prompt, version, is_custom')\
+                .eq('workspace_id', self.workspace_id)\
+                .eq('stage', stage)\
+                .eq('category', category)\
+                .eq('is_custom', True)\
+                .order('version', desc=True)\
+                .limit(1)\
+                .execute()
+
+            if result.data and len(result.data) > 0:
+                prompt_data = result.data[0]
+                self.logger.info(f"✅ Loaded CUSTOM prompt from database (v{prompt_data['version']})")
+                return prompt_data['prompt_template']
+
+            # Fallback to default prompt (is_custom = false)
+            result = self.supabase.client.table('extraction_prompts')\
+                .select('prompt_template, system_prompt, version')\
+                .eq('workspace_id', self.workspace_id)\
+                .eq('stage', stage)\
+                .eq('category', category)\
+                .eq('is_custom', False)\
+                .order('version', desc=True)\
+                .limit(1)\
+                .execute()
+
+            if result.data and len(result.data) > 0:
+                prompt_data = result.data[0]
+                self.logger.info(f"✅ Loaded DEFAULT prompt from database (v{prompt_data['version']})")
+                return prompt_data['prompt_template']
+
+            self.logger.warning(f"⚠️ No prompt found in database for stage={stage}, category={category}")
+            return None
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to load prompt from database: {e}")
+            return None
     
     async def extract_metadata(
         self,
@@ -293,10 +348,20 @@ class DynamicMetadataExtractor:
             }
         """
         try:
-            # Step 1: AI extraction
-            prompt = get_dynamic_extraction_prompt(pdf_text, category_hint)
+            # Step 1: Load prompt from database (with fallback to hardcoded)
+            db_prompt_template = await self._load_prompt_from_database(stage="entity_creation", category="products")
 
-            # Call AI model based on model family
+            if db_prompt_template:
+                # Use database prompt - replace placeholders
+                category_context = f"\nMaterial Category Hint: This appears to be a {category_hint} product." if category_hint else ""
+                prompt = db_prompt_template.replace("{category_context}", category_context).replace("{pdf_text}", pdf_text[:4000])
+                self.logger.info("✅ Using DATABASE prompt for metadata extraction")
+            else:
+                # Fallback to hardcoded prompt
+                prompt = get_dynamic_extraction_prompt(pdf_text, category_hint)
+                self.logger.info("⚠️ Using HARDCODED fallback prompt for metadata extraction")
+
+            # Step 2: Call AI model based on model family
             if "claude" in self.model.lower():
                 ai_response = await self._call_claude(prompt)
             else:
