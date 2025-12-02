@@ -18,6 +18,29 @@ import sys
 import os
 from datetime import datetime
 
+# Load environment variables from systemd service if running on server
+# This ensures the script has access to SUPABASE_URL and other required env vars
+if os.path.exists('/etc/systemd/system/mivaa-pdf-extractor.service'):
+    import subprocess
+    try:
+        # Extract environment variables from systemd service file
+        result = subprocess.run(
+            ['systemctl', 'show', 'mivaa-pdf-extractor.service', '--property=Environment'],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        # Parse Environment=KEY=VALUE format
+        env_line = result.stdout.strip()
+        if env_line.startswith('Environment='):
+            env_vars = env_line[12:].split()  # Remove 'Environment=' prefix
+            for var in env_vars:
+                if '=' in var:
+                    key, value = var.split('=', 1)
+                    os.environ[key] = value
+    except Exception as e:
+        print(f"Warning: Could not load environment from systemd service: {e}")
+
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
