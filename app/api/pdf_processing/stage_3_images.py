@@ -115,30 +115,33 @@ async def process_stage_3_images(
     total_memory_gb = mem_stats.total_mb / 1024
 
     # Adjust batch size based on total system memory
+    # CRITICAL FIX: Reduced batch sizes for 16GB systems to prevent OOM crashes
+    # SigLIP model uses 2-3GB RAM, so we need much smaller batches
     if total_memory_gb < 10:  # Low memory systems (< 10GB)
         DEFAULT_BATCH_SIZE = 5
         MAX_BATCH_SIZE = 8
     elif total_memory_gb < 16:  # Medium memory systems (10-16GB)
-        DEFAULT_BATCH_SIZE = 20  
-        MAX_BATCH_SIZE = 30      
+        DEFAULT_BATCH_SIZE = 8   # Reduced from 20 to prevent 8GB+ memory spikes
+        MAX_BATCH_SIZE = 12      # Reduced from 30 to prevent OOM crashes
     else:  # High memory systems (> 16GB)
-        DEFAULT_BATCH_SIZE = 30  
-        MAX_BATCH_SIZE = 40      
+        DEFAULT_BATCH_SIZE = 30
+        MAX_BATCH_SIZE = 40
 
     BATCH_SIZE = memory_monitor.calculate_optimal_batch_size(
         default_batch_size=DEFAULT_BATCH_SIZE,
-        min_batch_size=3,  
+        min_batch_size=3,
         max_batch_size=MAX_BATCH_SIZE,
         memory_per_item_mb=50.0  # Increased estimate: 50MB per image (CLIP model overhead)
     )
 
-
+    # CRITICAL FIX: Reduced concurrency for 16GB systems to prevent memory exhaustion
+    # Processing 6 images concurrently with SigLIP model caused 8GB memory spikes
     if mem_stats.percent_used < 40:
-        CONCURRENT_IMAGES = 6  
+        CONCURRENT_IMAGES = 3  # Reduced from 6 to prevent memory spikes
     elif mem_stats.percent_used < 60:
-        CONCURRENT_IMAGES = 4  
+        CONCURRENT_IMAGES = 2  # Reduced from 4 for safer processing
     else:
-        CONCURRENT_IMAGES = 2 
+        CONCURRENT_IMAGES = 1  # Reduced from 2 when memory is already high
     
     logger.info(f"   🔧 DYNAMIC BATCH PROCESSING: {BATCH_SIZE} images per batch")
     logger.info(f"   🚀 Concurrency level: {CONCURRENT_IMAGES} images (memory: {mem_stats.percent_used:.1f}%)")
