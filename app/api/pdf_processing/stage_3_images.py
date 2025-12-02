@@ -105,7 +105,8 @@ async def process_stage_3_images(
     VECS_BATCH_SIZE = 20 
     
     # Circuit breakers for API calls
-    clip_breaker = CircuitBreaker(failure_threshold=5, timeout_seconds=60, name="CLIP")
+    # CLIP: More lenient settings for transient memory pressure failures
+    clip_breaker = CircuitBreaker(failure_threshold=8, timeout_seconds=45, half_open_max_calls=5, name="CLIP")
     llama_breaker = CircuitBreaker(failure_threshold=5, timeout_seconds=60, name="Llama")
     
     # Dynamic batch size calculation - MORE CONSERVATIVE for CLIP/SigLIP models
@@ -347,6 +348,37 @@ async def process_stage_3_images(
     logger.info(f"🚀 Starting consolidated batch processing for {len(material_images)} material images...")
     logger.info(f"   Operations: Upload → Save to DB → CLIP Embeddings → Llama Vision Analysis")
 
+    # CRITICAL FIX: Load CLIP/SigLIP models ONCE before ALL batches (not per batch)
+    # This prevents models from being loaded 12 times (once per batch), which:
+    # - Wastes 36+ seconds (12 loads × 3s each)
+    # - Causes memory fragmentation
+    # - Increases GC pressure
+    logger.info(f"🔧 Pre-loading CLIP/SigLIP models ONCE for all {len(material_images)} images...")
+    models_loaded = await embedding_service.ensure_models_loaded()
+    if not models_loaded:
+        logger.error(f"❌ Failed to load models, cannot process images")
+        return {
+            "status": "failed",
+            "error": "Failed to load SigLIP models",
+            "pdf_result_with_images": pdf_result_with_images,
+            "material_images": material_images,
+            "images_extracted": 0,
+            "images_processed": 0,
+            "clip_embeddings_generated": 0,
+            "clip_embeddings_expected": len(material_images),
+            "clip_completion_rate": 0,
+            "specialized_embeddings": 0,
+            "images_analyzed": 0,
+            "total_images_extracted": len(all_images),
+            "non_material_images": non_material_count,
+            "quality_flags": {
+                "clip_embeddings_complete": False,
+                "all_images_analyzed": False,
+                "specialized_embeddings_complete": False
+            }
+        }
+    logger.info(f"✅ SigLIP models loaded successfully - ready for batch processing")
+
     async def process_single_image_complete(img_data, image_index, total_images):
         """
         Complete processing for a single image: Save → CLIP → Llama Vision
@@ -531,14 +563,8 @@ async def process_stage_3_images(
         mem_stats = memory_monitor.get_memory_stats()
         logger.info(f"   💾 Memory before batch: {mem_stats.used_mb:.1f} MB ({mem_stats.percent_used:.1f}%)")
 
-        # CRITICAL FIX: Load CLIP/SigLIP models ONCE before batch processing
-        # This prevents models from being loaded multiple times per batch (which causes OOM)
-        logger.info(f"   🔧 Pre-loading CLIP/SigLIP models for batch {batch_num + 1}/{total_batches}...")
-        models_loaded = await embedding_service.ensure_models_loaded()
-        if not models_loaded:
-            logger.error(f"   ❌ Failed to load models for batch {batch_num + 1}, skipping batch")
-            continue
-        logger.info(f"   ✅ Models loaded and ready for batch processing")
+        # NOTE: Models already loaded once before all batches (see line 355)
+        # No need to reload per batch - this saves 36+ seconds total
 
         # Process batch in parallel with semaphore control
         async def process_with_semaphore(img_data, idx):
@@ -553,7 +579,7 @@ async def process_stage_3_images(
         batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
 
         # AGGRESSIVE MEMORY CLEANUP after batch
-        logger.info(f"   🧹 Starting aggressive memory cleanup after batch {batch_num + 1}/{total_batches}...")
+        logger.info(f"   🧹 Starting memory cleanup after batch {batch_num + 1}/{total_batches}...")
 
         # 1. Delete batch data explicitly (downloaded base64 images from Llama Vision)
         del batch_results
@@ -561,13 +587,9 @@ async def process_stage_3_images(
         del batch_images
         logger.info("   ✅ Deleted batch data from memory")
 
-        # 2. Unload SigLIP model to free memory (will reload on next use)
-        try:
-            unloaded = embedding_service.unload_siglip_model()
-            if unloaded:
-                logger.info("   ✅ Successfully unloaded SigLIP model")
-        except Exception as e:
-            logger.warning(f"   ⚠️ Failed to unload SigLIP model: {e}")
+        # 2. NOTE: SigLIP model NOT unloaded per batch anymore (loaded once for all batches)
+        #    This saves 36+ seconds total (12 batches × 3s load time)
+        #    Model will be unloaded ONCE after all batches complete
 
         # 3. Force garbage collection
         gc.collect()
@@ -596,6 +618,17 @@ async def process_stage_3_images(
         batch_count = await vecs_service.batch_upsert_image_embeddings(vecs_batch_records)
         logger.info(f"💾 Final batch upserted {batch_count} CLIP embeddings to VECS")
         vecs_batch_records.clear()
+
+    # CRITICAL FIX: Unload SigLIP model ONCE after ALL batches complete
+    # This frees 2-3GB of memory now that we're done with embeddings
+    logger.info("🧹 Unloading SigLIP model after all batches complete...")
+    try:
+        unloaded = embedding_service.unload_siglip_model()
+        if unloaded:
+            logger.info("✅ Successfully unloaded SigLIP model (freed ~2-3GB)")
+            gc.collect()  # Force GC to reclaim memory immediately
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to unload SigLIP model: {e}")
 
     # NOTE: No disk cleanup needed - local files were deleted immediately after upload in batch processing
     # All images are now stored in Supabase Storage only
