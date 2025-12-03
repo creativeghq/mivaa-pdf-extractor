@@ -178,6 +178,33 @@ async def process_stage_4_products(
     logger.info(f"     - Image-to-product links: {linking_results['image_product_links']}")
     logger.info(f"     - Image-to-chunk links: {linking_results['image_chunk_links']}")
 
+    # ✅ NEW: Match document entities to products and generate embeddings
+    entity_product_relationships = 0
+    entity_embeddings_generated = 0
+    if entities_created > 0:
+        logger.info(f"🔗 Matching {entities_created} document entities to products...")
+        from app.services.document_entity_service import DocumentEntityService
+        entity_service = DocumentEntityService(supabase.client)
+
+        # Match entities to products
+        matching_results = await entity_service.match_entities_to_products(
+            document_id=document_id,
+            workspace_id=workspace_id
+        )
+
+        entity_product_relationships = matching_results.get('relationships_created', 0)
+        logger.info(f"   ✅ Created {entity_product_relationships} entity-product relationships")
+
+        # Generate embeddings for entities
+        logger.info(f"🎨 Generating embeddings for {entities_created} document entities...")
+        embedding_results = await entity_service.generate_entity_embeddings(
+            document_id=document_id,
+            workspace_id=workspace_id
+        )
+
+        entity_embeddings_generated = embedding_results.get('embeddings_generated', 0)
+        logger.info(f"   ✅ Generated {entity_embeddings_generated} entity embeddings")
+
     await tracker._sync_to_database(stage="product_creation")
 
     logger.info(f"✅ [STAGE 4] Product Creation & Linking Complete")
@@ -196,6 +223,8 @@ async def process_stage_4_products(
             "logos": len([e for e in all_entities if e.entity_type == 'logo']),
             "specifications": len([e for e in all_entities if e.entity_type == 'specification'])
         }
+        checkpoint_metadata["entity_product_relationships"] = entity_product_relationships
+        checkpoint_metadata["entity_embeddings_generated"] = entity_embeddings_generated  # ✅ NEW
 
     await checkpoint_recovery_service.create_checkpoint(
         job_id=job_id,
@@ -217,5 +246,7 @@ async def process_stage_4_products(
     return {
         "products_created": products_created,
         "entities_created": entities_created,
+        "entity_product_relationships": entity_product_relationships,
+        "entity_embeddings_generated": entity_embeddings_generated,  # ✅ NEW
         "linking_results": linking_results
     }

@@ -282,13 +282,89 @@ async def process_stage_0_discovery(
     tracker.products_created = len(catalog.products)
     await tracker._sync_to_database(stage="product_discovery")
 
+    # ✅ NEW: Save discovered entities to document_entities table
+    entity_ids = []
+    if any(cat in extract_categories for cat in ["certificates", "logos", "specifications"]):
+        try:
+            from app.services.document_entity_service import DocumentEntityService, DocumentEntity
+            from app.database import get_supabase_client
+
+            supabase_client = get_supabase_client()
+            entity_service = DocumentEntityService(supabase_client)
+
+            # Convert discovered entities to DocumentEntity objects
+            entities_to_save = []
+
+            # Certificates
+            if "certificates" in extract_categories and catalog.certificates:
+                for cert in catalog.certificates:
+                    entity = DocumentEntity(
+                        entity_type="certificate",
+                        name=cert.name,
+                        page_range=cert.page_range,
+                        description=f"{cert.certificate_type or 'Certificate'} issued by {cert.issuer or 'Unknown'}",
+                        metadata={
+                            "certificate_type": cert.certificate_type,
+                            "issuer": cert.issuer,
+                            "issue_date": cert.issue_date,
+                            "expiry_date": cert.expiry_date,
+                            "standards": cert.standards or [],
+                            "confidence": cert.confidence
+                        }
+                    )
+                    entities_to_save.append(entity)
+
+            # Logos
+            if "logos" in extract_categories and catalog.logos:
+                for logo in catalog.logos:
+                    entity = DocumentEntity(
+                        entity_type="logo",
+                        name=logo.name,
+                        page_range=logo.page_range,
+                        description=logo.description,
+                        metadata={
+                            "logo_type": logo.logo_type,
+                            "confidence": logo.confidence
+                        }
+                    )
+                    entities_to_save.append(entity)
+
+            # Specifications
+            if "specifications" in extract_categories and catalog.specifications:
+                for spec in catalog.specifications:
+                    entity = DocumentEntity(
+                        entity_type="specification",
+                        name=spec.name,
+                        page_range=spec.page_range,
+                        description=spec.description,
+                        metadata={
+                            "spec_type": spec.spec_type,
+                            "confidence": spec.confidence
+                        }
+                    )
+                    entities_to_save.append(entity)
+
+            # Save all entities
+            if entities_to_save:
+                entity_ids = await entity_service.save_entities(
+                    entities=entities_to_save,
+                    source_document_id=document_id,
+                    workspace_id=workspace_id
+                )
+                logger.info(f"✅ Saved {len(entity_ids)} entities to document_entities table")
+
+        except Exception as entity_error:
+            logger.error(f"⚠️ Failed to save entities (continuing): {entity_error}")
+            # Don't fail the entire process if entity saving fails
+
     # Create PRODUCTS_DETECTED checkpoint (now includes all categories)
     checkpoint_data = {
         "document_id": document_id,
         "categories": extract_categories,
         "products_detected": len(catalog.products),
         "product_names": [p.name for p in catalog.products],
-        "total_pages": pdf_result.page_count
+        "total_pages": pdf_result.page_count,
+        "entity_ids": entity_ids  # Store entity IDs for later stages
     }
 
     # Add other categories if discovered

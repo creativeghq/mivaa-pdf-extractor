@@ -217,7 +217,256 @@ class DocumentEntityService:
         except Exception as e:
             self.logger.error(f"❌ Error linking entity to product: {e}")
             return False
-    
+
+    async def match_entities_to_products(
+        self,
+        document_id: str,
+        workspace_id: str
+    ) -> Dict[str, Any]:
+        """
+        Match document entities to products based on page overlap, factory, and manufacturer.
+
+        Matching criteria (in order of priority):
+        1. Page overlap - entity and product share pages
+        2. Factory/manufacturer match - same factory or manufacturer name
+        3. Name similarity - entity name mentions product name
+
+        Args:
+            document_id: Document ID to match entities for
+            workspace_id: Workspace ID
+
+        Returns:
+            Dictionary with matching statistics
+        """
+        try:
+            self.logger.info(f"🔗 Matching entities to products for document {document_id}")
+
+            # Fetch all entities for this document
+            entities_response = self.supabase.table('document_entities').select('*').eq(
+                'source_document_id', document_id
+            ).eq('workspace_id', workspace_id).execute()
+
+            if not entities_response.data:
+                self.logger.info("No entities found to match")
+                return {"relationships_created": 0, "entities_processed": 0}
+
+            entities = entities_response.data
+
+            # Fetch all products for this document
+            products_response = self.supabase.table('products').select('*').eq(
+                'source_document_id', document_id
+            ).eq('workspace_id', workspace_id).execute()
+
+            if not products_response.data:
+                self.logger.info("No products found to match")
+                return {"relationships_created": 0, "entities_processed": len(entities)}
+
+            products = products_response.data
+
+            relationships_created = 0
+            entities_processed = 0
+
+            for entity in entities:
+                entity_id = entity['id']
+                entity_type = entity['entity_type']
+                entity_name = entity.get('name', '')
+                entity_page_range = entity.get('page_range', [])
+                entity_factory = entity.get('factory_name', '').lower() if entity.get('factory_name') else None
+                entity_manufacturer = entity.get('manufacturer', '').lower() if entity.get('manufacturer') else None
+
+                entities_processed += 1
+                matched_products = []
+
+                for product in products:
+                    product_id = product['id']
+                    product_name = product.get('name', '')
+                    product_metadata = product.get('metadata', {})
+
+                    # Extract product page range from metadata
+                    product_page_range = product_metadata.get('page_range', [])
+                    product_factory = product_metadata.get('factory_name', '').lower() if product_metadata.get('factory_name') else None
+                    product_manufacturer = product_metadata.get('manufacturer', '').lower() if product_metadata.get('manufacturer') else None
+
+                    # Calculate match score
+                    match_score = 0.0
+                    match_reasons = []
+
+                    # 1. Page overlap (highest priority - 0.6)
+                    if entity_page_range and product_page_range:
+                        overlap = set(entity_page_range) & set(product_page_range)
+                        if overlap:
+                            overlap_ratio = len(overlap) / max(len(entity_page_range), len(product_page_range))
+                            match_score += 0.6 * overlap_ratio
+                            match_reasons.append(f"Page overlap: {len(overlap)} pages")
+
+                    # 2. Factory match (medium priority - 0.3)
+                    if entity_factory and product_factory and entity_factory == product_factory:
+                        match_score += 0.3
+                        match_reasons.append(f"Factory match: {entity_factory}")
+
+                    # 3. Manufacturer match (medium priority - 0.3)
+                    if entity_manufacturer and product_manufacturer and entity_manufacturer == product_manufacturer:
+                        match_score += 0.3
+                        match_reasons.append(f"Manufacturer match: {entity_manufacturer}")
+
+                    # 4. Name similarity (low priority - 0.1)
+                    if product_name.lower() in entity_name.lower() or entity_name.lower() in product_name.lower():
+                        match_score += 0.1
+                        match_reasons.append(f"Name similarity")
+
+                    # Create relationship if match score >= 0.5
+                    if match_score >= 0.5:
+                        matched_products.append({
+                            'product_id': product_id,
+                            'product_name': product_name,
+                            'match_score': match_score,
+                            'match_reasons': match_reasons
+                        })
+
+                # Link entity to all matched products
+                for match in matched_products:
+                    success = await self.link_entity_to_product(
+                        product_id=match['product_id'],
+                        entity_id=entity_id,
+                        relationship_type=entity_type,  # Use entity type as relationship type
+                        relevance_score=match['match_score'],
+                        metadata={
+                            'match_reasons': match['match_reasons'],
+                            'entity_name': entity_name,
+                            'product_name': match['product_name']
+                        }
+                    )
+
+                    if success:
+                        relationships_created += 1
+                        self.logger.info(
+                            f"   ✅ Linked {entity_type} '{entity_name}' to product '{match['product_name']}' "
+                            f"(score: {match['match_score']:.2f}, reasons: {', '.join(match['match_reasons'])})"
+                        )
+
+            self.logger.info(
+                f"✅ Entity matching complete: {relationships_created} relationships created "
+                f"from {entities_processed} entities"
+            )
+
+            return {
+                "relationships_created": relationships_created,
+                "entities_processed": entities_processed,
+                "products_available": len(products)
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ Error matching entities to products: {e}")
+            return {"relationships_created": 0, "entities_processed": 0, "error": str(e)}
+
+    async def generate_entity_embeddings(
+        self,
+        document_id: str,
+        workspace_id: str
+    ) -> Dict[str, Any]:
+        """
+        Generate embeddings for all document entities.
+
+        Creates text embeddings for entity content to enable semantic search.
+        Embeddings are stored in the embeddings table with entity_type='entity'.
+
+        Args:
+            document_id: Document ID to generate embeddings for
+            workspace_id: Workspace ID
+
+        Returns:
+            Dictionary with embedding generation statistics
+        """
+        try:
+            self.logger.info(f"🎨 Generating embeddings for document entities in {document_id}")
+
+            # Fetch all entities for this document
+            entities_response = self.supabase.table('document_entities').select('*').eq(
+                'source_document_id', document_id
+            ).eq('workspace_id', workspace_id).execute()
+
+            if not entities_response.data:
+                self.logger.info("No entities found to generate embeddings for")
+                return {"embeddings_generated": 0, "entities_processed": 0}
+
+            entities = entities_response.data
+
+            # Import embedding service
+            from app.services.embedding_service import EmbeddingService
+            embedding_service = EmbeddingService()
+
+            embeddings_generated = 0
+            entities_processed = 0
+
+            for entity in entities:
+                entity_id = entity['id']
+                entity_type = entity['entity_type']
+                entity_name = entity.get('name', '')
+                entity_description = entity.get('description', '')
+                entity_content = entity.get('content', '')
+
+                # Build text content for embedding
+                # Combine name, description, and content for rich semantic representation
+                text_parts = []
+                if entity_name:
+                    text_parts.append(f"Name: {entity_name}")
+                if entity_description:
+                    text_parts.append(f"Description: {entity_description}")
+                if entity_content:
+                    text_parts.append(f"Content: {entity_content}")
+
+                text_content = "\n".join(text_parts)
+
+                if not text_content.strip():
+                    self.logger.warning(f"⚠️ Entity {entity_id} has no text content, skipping embedding")
+                    continue
+
+                entities_processed += 1
+
+                try:
+                    # Generate text embedding using embedding service
+                    embedding_result = await embedding_service.generate_all_embeddings(
+                        entity_id=entity_id,
+                        entity_type="entity",  # Use 'entity' as entity_type for embeddings table
+                        text_content=text_content,
+                        image_data=None,
+                        material_properties={}
+                    )
+
+                    if embedding_result and embedding_result.get('success'):
+                        embeddings = embedding_result.get('embeddings', {})
+                        text_embedding = embeddings.get('text_512')
+
+                        if text_embedding:
+                            embeddings_generated += 1
+                            self.logger.info(
+                                f"   ✅ Generated embedding for {entity_type} '{entity_name}' "
+                                f"({len(text_content)} chars)"
+                            )
+                        else:
+                            self.logger.warning(f"   ⚠️ No text embedding returned for entity {entity_id}")
+                    else:
+                        self.logger.warning(f"   ⚠️ Embedding generation failed for entity {entity_id}")
+
+                except Exception as emb_error:
+                    self.logger.error(f"   ❌ Failed to generate embedding for entity {entity_id}: {emb_error}")
+                    continue
+
+            self.logger.info(
+                f"✅ Entity embedding generation complete: {embeddings_generated} embeddings generated "
+                f"from {entities_processed} entities"
+            )
+
+            return {
+                "embeddings_generated": embeddings_generated,
+                "entities_processed": entities_processed,
+                "total_entities": len(entities)
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ Error generating entity embeddings: {e}")
+            return {"embeddings_generated": 0, "entities_processed": 0, "error": str(e)}
+
     async def get_entities_for_product(
         self,
         product_id: str,

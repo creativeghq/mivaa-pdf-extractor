@@ -226,7 +226,8 @@ class SupabaseClient:
         image_info: Dict[str, Any],
         document_id: str,
         workspace_id: Optional[str] = None,
-        image_index: int = 0
+        image_index: int = 0,
+        category: Optional[str] = None
     ) -> Optional[str]:
         """
         Save a single image to document_images table.
@@ -239,6 +240,7 @@ class SupabaseClient:
             document_id: Document UUID
             workspace_id: Workspace UUID (optional)
             image_index: Index of image in processing sequence
+            category: Image category (product, certificate, logo, specification, general)
 
         Returns:
             Image ID if successful, None otherwise
@@ -269,6 +271,7 @@ class SupabaseClient:
                 'page_number': page_num,
                 'confidence': 0.95,
                 'processing_status': 'completed',
+                'category': category or 'general',  # ✅ NEW: Add category field
                 'metadata': {
                     'source': 'mivaa_pdf_extraction',
                     'image_index': image_index,

@@ -30,6 +30,51 @@ from app.services.checkpoint_recovery_service import ProcessingStage as Checkpoi
 logger = logging.getLogger(__name__)
 
 
+def _determine_image_category(page_number: int, catalog: Any) -> str:
+    """
+    Determine category for an image based on its page number and catalog.
+
+    Args:
+        page_number: Page number of the image
+        catalog: Product catalog with page classifications
+
+    Returns:
+        Category string: 'product', 'certificate', 'logo', 'specification', or 'general'
+    """
+    if not catalog:
+        return 'general'
+
+    try:
+        # Check if page is in product pages
+        if hasattr(catalog, 'products'):
+            for product in catalog.products:
+                if hasattr(product, 'page_range') and page_number in product.page_range:
+                    return 'product'
+
+        # Check if page is in certificate pages
+        if hasattr(catalog, 'certificates'):
+            for cert in catalog.certificates:
+                if hasattr(cert, 'page_range') and page_number in cert.page_range:
+                    return 'certificate'
+
+        # Check if page is in logo pages
+        if hasattr(catalog, 'logos'):
+            for logo in catalog.logos:
+                if hasattr(logo, 'page_range') and page_number in logo.page_range:
+                    return 'logo'
+
+        # Check if page is in specification pages
+        if hasattr(catalog, 'specifications'):
+            for spec in catalog.specifications:
+                if hasattr(spec, 'page_range') and page_number in spec.page_range:
+                    return 'specification'
+
+        return 'general'
+
+    except Exception:
+        return 'general'
+
+
 async def process_stage_3_images(
     file_content: bytes,
     document_id: str,
@@ -45,7 +90,8 @@ async def process_stage_3_images(
     tracker: Any,
     checkpoint_recovery_service: Any,
     logger: Any,
-    pdf_result_with_images: Any = None
+    pdf_result_with_images: Any = None,
+    catalog: Any = None
 ) -> Dict[str, Any]:
     """
     Stage 3: Consolidated Image Processing
@@ -409,12 +455,17 @@ async def process_stage_3_images(
             image_base64 = await download_image_to_base64(storage_url)
             logger.info(f"   📥 [{image_index}/{total_images}] Downloaded image once for reuse")
 
+            # ✅ NEW: Determine image category based on page number
+            page_number = img_data.get('page_number', 1)
+            image_category = _determine_image_category(page_number, catalog)
+
             # STEP 1: Save to database
             image_id = await supabase_client.save_single_image(
                 image_info=img_data,
                 document_id=document_id,
                 workspace_id=workspace_id,
-                image_index=image_index - 1
+                image_index=image_index - 1,
+                category=image_category  # ✅ NEW: Pass category
             )
 
             if not image_id:

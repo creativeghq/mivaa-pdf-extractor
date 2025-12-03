@@ -117,7 +117,8 @@ async def process_stage_2_chunking(
                 'chunk_size': chunk_size,
                 'chunk_overlap': chunk_overlap,
                 'workspace_id': workspace_id
-            }
+            },
+            catalog=catalog  # ✅ NEW: Pass catalog for category tagging
         ),
         timeout_seconds=chunking_timeout,
         operation_name="Chunking operation"

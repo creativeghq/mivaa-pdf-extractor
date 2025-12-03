@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from datetime import datetime
 import json
 
+from app.services.supabase_client import get_supabase_client
+
 logger = logging.getLogger(__name__)
 
 
@@ -47,12 +49,58 @@ class ProductVisionExtractor:
     enhanced product detection during PDF processing.
     """
     
-    def __init__(self):
+    def __init__(self, workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"):
         self.logger = logger
+        self.workspace_id = workspace_id
+        self.supabase = get_supabase_client()
         # Import here to avoid circular dependencies
         from .real_image_analysis_service import RealImageAnalysisService
         self.vision_service = RealImageAnalysisService()
-    
+
+    async def _load_prompt_from_database(self, stage: str, category: str) -> Optional[str]:
+        """
+        Load prompt template from database with fallback priority:
+        1. Custom prompt (is_custom=true)
+        2. Default prompt (is_custom=false)
+        3. None (will use hardcoded fallback)
+        """
+        try:
+            # Try custom prompt first
+            result = self.supabase.client.table('extraction_prompts')\
+                .select('prompt_template, system_prompt, version')\
+                .eq('workspace_id', self.workspace_id)\
+                .eq('stage', stage)\
+                .eq('category', category)\
+                .eq('is_custom', True)\
+                .order('version', desc=True)\
+                .limit(1)\
+                .execute()
+
+            if result.data and len(result.data) > 0:
+                self.logger.info(f"✅ Loaded CUSTOM prompt from database (v{result.data[0]['version']})")
+                return result.data[0]['prompt_template']
+
+            # Try default prompt
+            result = self.supabase.client.table('extraction_prompts')\
+                .select('prompt_template, system_prompt, version')\
+                .eq('workspace_id', self.workspace_id)\
+                .eq('stage', stage)\
+                .eq('category', category)\
+                .eq('is_custom', False)\
+                .order('version', desc=True)\
+                .limit(1)\
+                .execute()
+
+            if result.data and len(result.data) > 0:
+                self.logger.info(f"✅ Loaded DEFAULT prompt from database (v{result.data[0]['version']})")
+                return result.data[0]['prompt_template']
+
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Error loading prompt from database: {str(e)}")
+            return None
+
     async def extract_products_from_images(
         self,
         extracted_images: List[Dict[str, Any]],
@@ -118,7 +166,10 @@ class ProductVisionExtractor:
                 self.logger.warning("TOGETHER_API_KEY not set - skipping vision analysis")
                 return None
             
-            # Build context-aware prompt
+            # Load prompt from database (image_analysis/products for vision-based extraction)
+            db_prompt = await self._load_prompt_from_database(stage="image_analysis", category="products")
+
+            # Build context string
             context_str = ""
             if context:
                 catalog_name = context.get('catalog_name', '')
@@ -127,8 +178,15 @@ class ProductVisionExtractor:
                     context_str += f"\nCatalog: {catalog_name}"
                 if brand:
                     context_str += f"\nBrand: {brand}"
-            
-            prompt = f"""Analyze this product catalog image and extract ALL product information visible. This is a material/design catalog page.{context_str}
+
+            if db_prompt:
+                # Use database prompt with context replacement
+                prompt = db_prompt.replace("{context}", context_str)
+                self.logger.info("✅ Using DATABASE prompt for product vision extraction")
+            else:
+                # Fallback to hardcoded prompt
+                self.logger.info("⚠️ Using HARDCODED fallback prompt for product vision extraction")
+                prompt = f"""Analyze this product catalog image and extract ALL product information visible. This is a material/design catalog page.{context_str}
 
 Extract and return in JSON format:
 {{

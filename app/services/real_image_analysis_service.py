@@ -27,7 +27,7 @@ import io
 import anthropic
 
 from app.services.ai_call_logger import AICallLogger
-from app.services.supabase_client import SupabaseClient
+from app.services.supabase_client import SupabaseClient, get_supabase_client
 from app.services.ai_client_service import get_ai_client_service
 
 logger = logging.getLogger(__name__)
@@ -62,18 +62,72 @@ class RealImageAnalysisService:
     - CLIP: Visual embeddings for similarity search
     """
     
-    def __init__(self, supabase_client=None, embedding_service=None):
+    def __init__(self, supabase_client=None, embedding_service=None, workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"):
         self.logger = logger
         self.together_ai_url = "https://api.together.xyz/v1"
         self.anthropic_url = "https://api.anthropic.com/v1"
         self.clip_model = "clip-vit-base-patch32"
+        self.workspace_id = workspace_id
+        self.supabase = get_supabase_client()
 
         # Initialize AI logger
         self.ai_logger = AICallLogger()
 
         # Use provided embedding service (with loaded models) or create new instance
         self._embeddings_service = embedding_service
-        
+
+        # Load prompts from database
+        self._load_prompts_from_database()
+
+    def _load_prompts_from_database(self) -> None:
+        """Load image analysis prompts from database.
+
+        Loads:
+        - Version 3: Llama Vision analysis prompt
+        - Version 4: Claude Vision validation prompt
+        """
+        try:
+            result = self.supabase.client.table('extraction_prompts')\
+                .select('prompt_template, version')\
+                .eq('workspace_id', self.workspace_id)\
+                .eq('stage', 'image_analysis')\
+                .eq('category', 'products')\
+                .eq('is_custom', False)\
+                .in_('version', [3, 4])\
+                .execute()
+
+            if result.data and len(result.data) > 0:
+                self.llama_prompt = None
+                self.claude_prompt = None
+
+                for row in result.data:
+                    version = row['version']
+                    prompt = row['prompt_template']
+
+                    if version == 3:
+                        self.llama_prompt = prompt
+                        logger.info("✅ Using DATABASE prompt for Llama Vision analysis")
+                    elif version == 4:
+                        self.claude_prompt = prompt
+                        logger.info("✅ Using DATABASE prompt for Claude Vision validation")
+
+                # Set fallbacks if not found
+                if not self.llama_prompt:
+                    logger.warning("⚠️ Llama Vision prompt not found in database, using hardcoded fallback")
+                    self.llama_prompt = None
+                if not self.claude_prompt:
+                    logger.warning("⚠️ Claude Vision prompt not found in database, using hardcoded fallback")
+                    self.claude_prompt = None
+            else:
+                logger.warning("⚠️ No image analysis prompts found in database, using hardcoded fallbacks")
+                self.llama_prompt = None
+                self.claude_prompt = None
+
+        except Exception as e:
+            logger.error(f"❌ Failed to load prompts from database: {e}")
+            self.llama_prompt = None
+            self.claude_prompt = None
+
     async def analyze_image(
         self,
         image_url: str,
@@ -304,7 +358,13 @@ class RealImageAnalysisService:
             if not TOGETHER_API_KEY:
                 raise ValueError("TOGETHER_API_KEY not set - cannot perform Llama vision analysis")
 
-            prompt = """Analyze this material/product image and provide detailed analysis in JSON format:
+            # Use database prompt or hardcoded fallback
+            if self.llama_prompt:
+                prompt = self.llama_prompt
+                logger.info("✅ Using DATABASE prompt for Llama Vision analysis")
+            else:
+                logger.info("⚠️ Using HARDCODED fallback prompt for Llama Vision analysis")
+                prompt = """Analyze this material/product image and provide detailed analysis in JSON format:
 {
   "description": "<detailed description of what you see>",
   "objects_detected": ["<object1>", "<object2>"],
@@ -503,7 +563,13 @@ Respond ONLY with valid JSON, no additional text."""
             ai_service = get_ai_client_service()
             client = ai_service.anthropic
 
-            prompt = """Validate and analyze this material/product image. Provide response in JSON format:
+            # Use database prompt or hardcoded fallback
+            if self.claude_prompt:
+                prompt = self.claude_prompt
+                logger.info("✅ Using DATABASE prompt for Claude Vision validation")
+            else:
+                logger.info("⚠️ Using HARDCODED fallback prompt for Claude Vision validation")
+                prompt = """Validate and analyze this material/product image. Provide response in JSON format:
 {
   "quality_assessment": {
     "clarity": <0.0-1.0>,
@@ -636,7 +702,13 @@ Respond ONLY with valid JSON, no additional text."""
             ai_service = get_ai_client_service()
             client = ai_service.anthropic
 
-            prompt = """Validate and analyze this material/product image. Provide response in JSON format:
+            # Use database prompt or hardcoded fallback
+            if self.claude_prompt:
+                prompt = self.claude_prompt
+                logger.info("✅ Using DATABASE prompt for Claude Vision validation (base64)")
+            else:
+                logger.info("⚠️ Using HARDCODED fallback prompt for Claude Vision validation (base64)")
+                prompt = """Validate and analyze this material/product image. Provide response in JSON format:
 {
   "quality_assessment": {
     "clarity": <0.0-1.0>,

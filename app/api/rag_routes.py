@@ -2718,7 +2718,8 @@ async def process_document_with_discovery(
             loaded_components=loaded_components,
             tracker=tracker,
             checkpoint_recovery_service=checkpoint_recovery_service,
-            logger=logger
+            logger=logger,
+            catalog=catalog  # ✅ NEW: Pass catalog for category tagging
         )
 
         pdf_result_with_images = stage_3_result["pdf_result_with_images"]
@@ -4173,4 +4174,260 @@ async def get_stuck_job_statistics():
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get stuck job statistics: {str(e)}"
+        )
+
+
+# ============================================================================
+# RAG Knowledge Base Search (No PDF Upload Required)
+# ============================================================================
+
+class KnowledgeBaseSearchRequest(BaseModel):
+    """Request model for knowledge base search"""
+    query: str = Field(..., description="Search query")
+    workspace_id: str = Field(..., description="Workspace ID to search within")
+    search_types: List[str] = Field(
+        default=["products", "entities", "chunks"],
+        description="Types to search: products, entities, chunks, images"
+    )
+    categories: Optional[List[str]] = Field(
+        default=None,
+        description="Filter by categories: product, certificate, logo, specification, general"
+    )
+    entity_types: Optional[List[str]] = Field(
+        default=None,
+        description="Filter by entity types: certificate, logo, specification"
+    )
+    top_k: int = Field(default=10, description="Number of results to return per type")
+    similarity_threshold: float = Field(default=0.7, description="Minimum similarity score")
+
+
+class KnowledgeBaseSearchResponse(BaseModel):
+    """Response model for knowledge base search"""
+    query: str
+    total_results: int
+    products: List[Dict[str, Any]] = []
+    entities: List[Dict[str, Any]] = []
+    chunks: List[Dict[str, Any]] = []
+    images: List[Dict[str, Any]] = []
+    processing_time: float
+    search_metadata: Dict[str, Any]
+
+
+@router.post("/search/knowledge-base", response_model=KnowledgeBaseSearchResponse)
+async def search_knowledge_base(request: KnowledgeBaseSearchRequest):
+    """
+    🔍 Search existing knowledge base without uploading a PDF.
+
+    Uses the same **multi-vector search** as the main search endpoint, combining:
+    - text_embedding_1536 (20%) - Semantic understanding
+    - visual_clip_embedding_512 (20%) - Visual similarity
+    - color_clip_embedding_512 (15%) - Color palette matching
+    - texture_clip_embedding_512 (15%) - Texture pattern matching
+    - style_clip_embedding_512 (15%) - Design style matching
+    - material_clip_embedding_512 (15%) - Material type matching
+
+    Performs unified semantic search across:
+    - **Products** (with all metadata, embeddings, and material properties)
+    - **Document entities** (certificates, logos, specifications)
+    - **Chunks** (text content from PDFs with category tags)
+    - **Images** (visual content with CLIP embeddings)
+
+    Supports:
+    - Category filtering (product, certificate, logo, specification, general)
+    - Entity type filtering (certificate, logo, specification)
+    - Material property filtering via metadata
+
+    Example queries:
+    - "waterproof ceramic tiles with matte finish"
+    - "ISO 9001 certificates"
+    - "company logos"
+    - "installation specifications"
+    """
+    try:
+        start_time = datetime.utcnow()
+        logger.info(f"🔍 Knowledge base search: '{request.query}' in workspace {request.workspace_id}")
+
+        # Initialize services
+        supabase = get_supabase_client()
+
+        results = {
+            "products": [],
+            "entities": [],
+            "chunks": [],
+            "images": []
+        }
+
+        # 🎯 Search products using multi-vector search (same as main search endpoint)
+        if "products" in request.search_types:
+            logger.info("   🎯 Searching products with multi-vector search...")
+            try:
+                # Build material filters from categories if provided
+                material_filters = {}
+                if request.categories:
+                    material_filters['categories'] = request.categories
+
+                # Use the same multi_vector_search method as the main search endpoint
+                product_results = await llamaindex_service.multi_vector_search(
+                    query=request.query,
+                    workspace_id=request.workspace_id,
+                    top_k=request.top_k,
+                    material_filters=material_filters if material_filters else None,
+                    similarity_threshold=request.similarity_threshold
+                )
+
+                # Extract products from results
+                if product_results and product_results.get('results'):
+                    for result in product_results['results']:
+                        results["products"].append({
+                            "id": result.get('id'),
+                            "name": result.get('product_name') or result.get('name'),
+                            "description": result.get('description'),
+                            "metadata": result.get('metadata', {}),
+                            "relevance_score": result.get('weighted_score', 0.0),
+                            "type": "product",
+                            "embeddings": {
+                                "text": bool(result.get('text_embedding_1536')),
+                                "visual": bool(result.get('visual_clip_embedding_512')),
+                                "color": bool(result.get('color_clip_embedding_512')),
+                                "texture": bool(result.get('texture_clip_embedding_512')),
+                                "style": bool(result.get('style_clip_embedding_512')),
+                                "material": bool(result.get('material_clip_embedding_512'))
+                            }
+                        })
+
+                logger.info(f"   ✅ Found {len(results['products'])} products")
+
+            except Exception as e:
+                logger.warning(f"Product search failed: {e}")
+
+        # Search entities using embeddings
+        if "entities" in request.search_types:
+            logger.info("   Searching entities...")
+            try:
+                # Search entity embeddings using VECS
+                entity_search_results = await vecs_service.search_similar(
+                    collection_name="embeddings",
+                    query_embedding=query_embedding,
+                    limit=request.top_k * 2,  # Get more for filtering
+                    filters={"entity_type": "entity"}
+                )
+
+                # Fetch full entity details
+                for result in entity_search_results:
+                    entity_id = result.get('id')
+                    similarity = result.get('similarity', 0.0)
+
+                    if similarity < request.similarity_threshold:
+                        continue
+
+                    # Fetch entity from database
+                    entity_response = supabase.client.table('document_entities').select('*').eq(
+                        'id', entity_id
+                    ).eq('workspace_id', request.workspace_id).execute()
+
+                    if entity_response.data and len(entity_response.data) > 0:
+                        entity = entity_response.data[0]
+
+                        # Apply entity type filter
+                        if request.entity_types and entity.get('entity_type') not in request.entity_types:
+                            continue
+
+                        results["entities"].append({
+                            "id": entity['id'],
+                            "entity_type": entity.get('entity_type'),
+                            "name": entity.get('name'),
+                            "description": entity.get('description'),
+                            "metadata": entity.get('metadata', {}),
+                            "relevance_score": similarity,
+                            "type": "entity"
+                        })
+
+                # Sort and limit
+                results["entities"] = sorted(
+                    results["entities"],
+                    key=lambda x: x['relevance_score'],
+                    reverse=True
+                )[:request.top_k]
+
+            except Exception as e:
+                logger.warning(f"Entity search failed: {e}")
+
+        # Search chunks using embeddings
+        if "chunks" in request.search_types:
+            logger.info("   Searching chunks...")
+            try:
+                # Build category filter if provided
+                chunk_filters = {}
+                if request.categories:
+                    chunk_filters["category"] = request.categories
+
+                # Search chunk embeddings
+                chunks_response = supabase.client.table('document_chunks').select('*').eq(
+                    'workspace_id', request.workspace_id
+                ).limit(request.top_k * 3).execute()
+
+                if chunks_response.data:
+                    for chunk in chunks_response.data:
+                        # Apply category filter
+                        if request.categories and chunk.get('category') not in request.categories:
+                            continue
+
+                        # Simple text matching
+                        chunk_text = chunk.get('content', '').lower()
+                        query_lower = request.query.lower()
+
+                        score = 0.0
+                        query_words = query_lower.split()
+                        for word in query_words:
+                            if word in chunk_text:
+                                score += 0.15
+
+                        if score >= request.similarity_threshold:
+                            results["chunks"].append({
+                                "id": chunk['id'],
+                                "content": chunk.get('content', '')[:500],  # Truncate for response
+                                "category": chunk.get('category'),
+                                "metadata": chunk.get('metadata', {}),
+                                "relevance_score": min(score, 1.0),
+                                "type": "chunk"
+                            })
+
+                    # Sort and limit
+                    results["chunks"] = sorted(
+                        results["chunks"],
+                        key=lambda x: x['relevance_score'],
+                        reverse=True
+                    )[:request.top_k]
+
+            except Exception as e:
+                logger.warning(f"Chunk search failed: {e}")
+
+        processing_time = (datetime.utcnow() - start_time).total_seconds()
+        total_results = len(results["products"]) + len(results["entities"]) + len(results["chunks"]) + len(results["images"])
+
+        logger.info(f"✅ Knowledge base search complete: {total_results} results in {processing_time:.2f}s")
+
+        return KnowledgeBaseSearchResponse(
+            query=request.query,
+            total_results=total_results,
+            products=results["products"],
+            entities=results["entities"],
+            chunks=results["chunks"],
+            images=results["images"],
+            processing_time=processing_time,
+            search_metadata={
+                "search_types": request.search_types,
+                "categories_filter": request.categories,
+                "entity_types_filter": request.entity_types,
+                "similarity_threshold": request.similarity_threshold
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Knowledge base search failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Knowledge base search failed: {str(e)}"
         )

@@ -1687,6 +1687,120 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
             self.logger.error(f"Enrichment validation failed: {str(e)}")
             return False
 
+    def _aggregate_dimensions_from_chunks(self, document_id: str, product_name: str) -> List[Dict[str, Any]]:
+        """
+        Aggregate all dimensions from chunks related to this product.
+
+        Args:
+            document_id: Document ID to search chunks
+            product_name: Product name to match in chunks
+
+        Returns:
+            List of dimension dictionaries with width, height, depth, unit
+        """
+        try:
+            from app.utils.dimension_parser import DimensionParser
+
+            # Fetch all chunks for this document
+            chunks_response = self.supabase.client.table('document_chunks').select('content').eq('document_id', document_id).execute()
+
+            if not chunks_response.data:
+                return []
+
+            all_dimensions = []
+            product_name_normalized = product_name.upper().strip()
+
+            for chunk in chunks_response.data:
+                content = chunk.get('content', '')
+
+                # Only process chunks that mention this product
+                if product_name_normalized in content.upper():
+                    # Extract all dimensions from this chunk
+                    dimensions = DimensionParser.extract_all_dimensions(content)
+                    all_dimensions.extend(dimensions)
+
+            # Deduplicate dimensions
+            unique_dimensions = DimensionParser.deduplicate_dimensions(all_dimensions)
+
+            # Convert to dictionaries
+            return [dim.to_dict() for dim in unique_dimensions]
+
+        except Exception as e:
+            self.logger.warning(f"Failed to aggregate dimensions: {e}")
+            return []
+
+    def _aggregate_meta_fields_from_chunks(self, document_id: str, product_name: str) -> Dict[str, Any]:
+        """
+        Aggregate all meta fields (color, texture, finish, material, application) from chunks.
+
+        Similar to dimension aggregation, this collects ALL meta field mentions from chunks
+        related to this product and consolidates them into structured metadata.
+
+        Args:
+            document_id: Document ID to search chunks
+            product_name: Product name to match in chunks
+
+        Returns:
+            Dictionary with aggregated meta fields: {colors: [], textures: [], finishes: [], materials: [], applications: []}
+        """
+        try:
+            # Fetch all chunks for this document
+            chunks_response = self.supabase.client.table('document_chunks').select('content').eq('document_id', document_id).execute()
+
+            if not chunks_response.data:
+                return {}
+
+            # Meta field keywords (same as used in quality scoring)
+            meta_keywords = {
+                'colors': ['white', 'black', 'gray', 'grey', 'beige', 'brown', 'blue', 'green', 'red', 'yellow', 'natural', 'clay', 'sand', 'taupe', 'ivory', 'cream', 'charcoal'],
+                'textures': ['smooth', 'rough', 'textured', 'polished', 'brushed', 'embossed', 'matte', 'glossy', 'satin', 'honed'],
+                'finishes': ['matte', 'glossy', 'satin', 'polished', 'honed', 'brushed', 'natural', 'unglazed', 'glazed', 'semi-gloss'],
+                'materials': ['ceramic', 'porcelain', 'stone', 'marble', 'granite', 'wood', 'metal', 'glass', 'concrete', 'terracotta', 'slate'],
+                'applications': ['indoor', 'outdoor', 'wall', 'floor', 'bathroom', 'kitchen', 'commercial', 'residential', 'waterproof', 'wet areas']
+            }
+
+            # Collect meta fields
+            aggregated = {
+                'colors': set(),
+                'textures': set(),
+                'finishes': set(),
+                'materials': set(),
+                'applications': set()
+            }
+
+            product_name_normalized = product_name.upper().strip()
+
+            for chunk in chunks_response.data:
+                content = chunk.get('content', '')
+
+                # Only process chunks that mention this product
+                if product_name_normalized in content.upper():
+                    content_lower = content.lower()
+
+                    # Extract each meta field type
+                    for field_type, keywords in meta_keywords.items():
+                        for keyword in keywords:
+                            if keyword in content_lower:
+                                aggregated[field_type].add(keyword)
+
+            # Convert sets to sorted lists and remove empty fields
+            result = {}
+            for field_type, values in aggregated.items():
+                if values:
+                    result[field_type] = sorted(list(values))
+
+            if result:
+                self.logger.info(
+                    f"🎨 Aggregated meta fields for {product_name}: "
+                    f"{sum(len(v) for v in result.values())} total values across {len(result)} categories"
+                )
+
+            return result
+
+        except Exception as e:
+            self.logger.warning(f"Failed to aggregate meta fields: {e}")
+            return {}
+
     def _build_enriched_product_data(
         self,
         chunk: Dict[str, Any],
@@ -1731,6 +1845,34 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
                 metadata['materials'] = enrichment_data['materials']
             if enrichment_data.get('colors'):
                 metadata['colors'] = enrichment_data['colors']
+
+            # ✅ NEW: Aggregate all available sizes from related chunks
+            available_sizes = self._aggregate_dimensions_from_chunks(document_id, product_name)
+            if available_sizes:
+                metadata['available_sizes'] = available_sizes
+                self.logger.info(f"📏 Aggregated {len(available_sizes)} dimensions for {product_name}")
+
+            # ✅ NEW: Aggregate all meta fields from related chunks
+            meta_fields = self._aggregate_meta_fields_from_chunks(document_id, product_name)
+            if meta_fields:
+                # Merge with existing metadata (deduplication logic)
+                for field_type, values in meta_fields.items():
+                    if field_type not in metadata or not metadata[field_type]:
+                        # No existing data - use aggregated values
+                        metadata[field_type] = values
+                    elif isinstance(metadata[field_type], str):
+                        # Existing data is a single string - convert to list and merge
+                        existing_values = {metadata[field_type].lower()}
+                        new_values = set(v.lower() for v in values)
+                        merged = existing_values | new_values
+                        metadata[field_type] = sorted(list(merged))
+                    elif isinstance(metadata[field_type], list):
+                        # Existing data is a list - merge and deduplicate (case-insensitive)
+                        existing_values = set(v.lower() if isinstance(v, str) else v for v in metadata[field_type])
+                        new_values = set(v.lower() for v in values)
+                        merged = existing_values | new_values
+                        metadata[field_type] = sorted(list(merged))
+                    # If existing data is dict or other type, keep it as-is (AI extraction takes priority)
 
             # Build product data
             product_data = {

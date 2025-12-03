@@ -1839,11 +1839,57 @@ class LlamaIndexService:
                 "message": f"Failed to index document: {str(e)}"
             }
 
+    def _determine_chunk_category(self, page_number: int, catalog: Any) -> str:
+        """
+        Determine category for a chunk based on its page number and catalog.
+
+        Args:
+            page_number: Page number of the chunk
+            catalog: Product catalog with page classifications
+
+        Returns:
+            Category string: 'product', 'certificate', 'logo', 'specification', or 'general'
+        """
+        if not catalog:
+            return 'general'
+
+        try:
+            # Check if page is in product pages
+            if hasattr(catalog, 'products'):
+                for product in catalog.products:
+                    if hasattr(product, 'page_range') and page_number in product.page_range:
+                        return 'product'
+
+            # Check if page is in certificate pages
+            if hasattr(catalog, 'certificates'):
+                for cert in catalog.certificates:
+                    if hasattr(cert, 'page_range') and page_number in cert.page_range:
+                        return 'certificate'
+
+            # Check if page is in logo pages
+            if hasattr(catalog, 'logos'):
+                for logo in catalog.logos:
+                    if hasattr(logo, 'page_range') and page_number in logo.page_range:
+                        return 'logo'
+
+            # Check if page is in specification pages
+            if hasattr(catalog, 'specifications'):
+                for spec in catalog.specifications:
+                    if hasattr(spec, 'page_range') and page_number in spec.page_range:
+                        return 'specification'
+
+            return 'general'
+
+        except Exception as e:
+            self.logger.warning(f"Failed to determine chunk category: {e}")
+            return 'general'
+
     async def index_pdf_content(
         self,
         pdf_content: bytes,
         document_id: str,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        catalog: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
         Index PDF content for RAG operations.
@@ -1852,6 +1898,7 @@ class LlamaIndexService:
             pdf_content: Raw PDF bytes
             document_id: Unique identifier for the document
             metadata: Optional metadata to associate with the document
+            catalog: Optional product catalog for category tagging
 
         Returns:
             Dict containing indexing results and statistics
@@ -1956,14 +2003,25 @@ class LlamaIndexService:
                             except Exception as emb_gen_error:
                                 self.logger.warning(f"Failed to generate embedding for chunk {chunks_saved}: {emb_gen_error}")
 
+                            # ✅ NEW: Determine chunk category based on page number
+                            page_number = node.metadata.get('page_label', 1) if hasattr(node, 'metadata') else 1
+                            try:
+                                page_number = int(page_number)
+                            except (ValueError, TypeError):
+                                page_number = 1
+
+                            chunk_category = self._determine_chunk_category(page_number, catalog)
+
                             chunk_data = {
                                 "id": chunk_id,
                                 "document_id": document_id,
                                 "workspace_id": workspace_id,
                                 "content": node.text,
+                                "category": chunk_category,  # ✅ NEW: Add category field
                                 "metadata": {
                                     "node_id": node_id,
                                     "char_count": len(node.text),
+                                    "page_number": page_number,
                                     **(node.metadata if hasattr(node, 'metadata') else {})
                                 },
                                 "chunk_index": chunks_saved,
@@ -3103,12 +3161,22 @@ Summary:"""
                             # Continue with storage if classification fails (fail-safe)
                             classification_result = None
 
+                        # ✅ NEW: Determine chunk category based on page number
+                        page_number = node.metadata.get('page_label', 1) if hasattr(node, 'metadata') else 1
+                        try:
+                            page_number = int(page_number)
+                        except (ValueError, TypeError):
+                            page_number = 1
+
+                        chunk_category = self._determine_chunk_category(page_number, catalog)
+
                         # Store chunk in document_chunks table
                         chunk_data = {
                             'document_id': document_id,
                             'workspace_id': metadata.get('workspace_id'),
                             'content': node.text,
                             'chunk_index': i,
+                            'category': chunk_category,  # ✅ NEW: Add category field
                             'content_hash': content_hash,  # ✅ NEW: Store hash
                             'metadata': {
                                 'chunk_id': node.metadata.get('chunk_id', f"{document_id}_chunk_{i}"),
@@ -3118,6 +3186,7 @@ Summary:"""
                                 'quality_score': quality_score,  # ✅ NEW: Store quality score
                                 'has_parent': node.parent_node is not None,
                                 'has_children': len(node.child_nodes) > 0 if hasattr(node, 'child_nodes') and node.child_nodes is not None else False,
+                                'page_number': page_number,
                                 **node.metadata
                             }
                         }
@@ -3349,14 +3418,77 @@ Summary:"""
         hash_object = hashlib.sha256(normalized.encode('utf-8'))
         return hash_object.hexdigest()
 
+    def _is_dimension_chunk(self, content: str) -> bool:
+        """
+        Check if chunk contains dimension information.
+
+        Dimension chunks are valuable even if short (e.g., "NOVA 15×38").
+
+        Args:
+            content: Text content to check
+
+        Returns:
+            True if chunk contains dimensions
+        """
+        import re
+
+        # Dimension patterns
+        dimension_patterns = [
+            r'\d+(?:\.\d+)?\s*[×x]\s*\d+(?:\.\d+)?',  # 15×38, 20x40
+            r'\d+(?:\.\d+)?\s*[×x]\s*\d+(?:\.\d+)?\s*[×x]\s*\d+(?:\.\d+)?',  # 15×38×2.5
+            r'\d+(?:\.\d+)?\s*(?:cm|mm|m|in|inch)',  # 15 cm, 20mm
+        ]
+
+        for pattern in dimension_patterns:
+            if re.search(pattern, content, re.IGNORECASE):
+                return True
+
+        return False
+
+    def _is_meta_rich_chunk(self, content: str) -> bool:
+        """
+        Check if chunk contains rich metadata (color, texture, finish, material, application).
+
+        Meta-rich chunks are valuable even if short (e.g., "Available in matte finish").
+
+        Args:
+            content: Text content to check
+
+        Returns:
+            True if chunk contains metadata keywords
+        """
+        content_lower = content.lower()
+
+        # Meta field keywords (same as used in product discovery)
+        meta_keywords = {
+            'color': ['white', 'black', 'gray', 'grey', 'beige', 'brown', 'blue', 'green', 'red', 'yellow', 'natural', 'clay', 'sand', 'taupe'],
+            'texture': ['smooth', 'rough', 'textured', 'polished', 'brushed', 'embossed', 'matte', 'glossy'],
+            'finish': ['matte', 'glossy', 'satin', 'polished', 'honed', 'brushed', 'natural', 'unglazed', 'glazed'],
+            'material': ['ceramic', 'porcelain', 'stone', 'marble', 'granite', 'wood', 'metal', 'glass', 'concrete'],
+            'application': ['indoor', 'outdoor', 'wall', 'floor', 'bathroom', 'kitchen', 'commercial', 'residential', 'waterproof']
+        }
+
+        # Count how many meta keywords are present
+        meta_count = 0
+        for category, keywords in meta_keywords.items():
+            for keyword in keywords:
+                if keyword in content_lower:
+                    meta_count += 1
+                    break  # Count each category only once
+
+        # Consider it meta-rich if it has 2+ meta categories
+        return meta_count >= 2
+
     def _calculate_chunk_quality(self, content: str) -> float:
         """
-        ✅ NEW: Calculate quality score for a chunk.
+        ✅ ENHANCED: Calculate quality score for a chunk.
 
         Metrics:
         - Length score (0.0-1.0): Optimal length is 500-2000 characters
         - Boundary score (0.7 or 1.0): Ends with proper punctuation
         - Semantic score (0.0-1.0): Has 3+ sentences
+        - Dimension boost: +0.3 for dimension-rich chunks
+        - Meta boost: +0.3 for meta-rich chunks (color, texture, finish, material, application)
 
         Args:
             content: Text content to score
@@ -3365,10 +3497,18 @@ Summary:"""
             Quality score (0.0-1.0)
         """
         try:
+            # Check if this is a dimension or meta-rich chunk (boost quality)
+            is_dimension_chunk = self._is_dimension_chunk(content)
+            is_meta_chunk = self._is_meta_rich_chunk(content)
+
             # Check content length (optimal: 500-2000 characters)
             length = len(content)
             if length < 500:
-                length_score = length / 500  # Penalize short chunks
+                # Don't penalize dimension or meta-rich chunks as heavily
+                if is_dimension_chunk or is_meta_chunk:
+                    length_score = max(0.7, length / 500)
+                else:
+                    length_score = length / 500  # Penalize short chunks
             elif length > 2000:
                 length_score = max(0.5, 1.0 - (length - 2000) / 3000)  # Penalize very long chunks
             else:
@@ -3388,6 +3528,10 @@ Summary:"""
                 boundary_score * 0.4 +
                 semantic_score * 0.3
             )
+
+            # Boost dimension and meta-rich chunks to ensure they pass 0.7 threshold
+            if (is_dimension_chunk or is_meta_chunk) and quality_score < 0.7:
+                quality_score = min(1.0, quality_score + 0.3)
 
             return round(quality_score, 3)
         except Exception as e:

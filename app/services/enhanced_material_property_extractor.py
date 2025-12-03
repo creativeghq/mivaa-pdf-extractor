@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional, Union, Tuple
 from enum import Enum
 
+from app.services.supabase_client import get_supabase_client
+
 # Set up logging
 logger = logging.getLogger(__name__)
 
@@ -120,30 +122,98 @@ class EnhancedMaterialPropertyExtractor:
     that leverages TogetherAI's LLaMA Vision model for sophisticated document understanding.
     """
     
-    def __init__(self, together_ai_client=None, confidence_threshold: float = 0.7):
+    def __init__(self, together_ai_client=None, confidence_threshold: float = 0.7, workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"):
         """Initialize the enhanced property extractor.
-        
+
         Args:
             together_ai_client: TogetherAI service client
             confidence_threshold: Minimum confidence for property extraction
+            workspace_id: Workspace ID for loading custom prompts
         """
         self.together_ai_client = together_ai_client
         self.confidence_threshold = confidence_threshold
+        self.workspace_id = workspace_id
+        self.supabase = get_supabase_client()
         self._setup_property_extractors()
         
     def _setup_property_extractors(self) -> None:
         """Set up category-specific property extraction patterns and prompts."""
-        self.extraction_prompts = {
-            PropertyExtractionCategory.SLIP_SAFETY_RATINGS: self._create_slip_safety_prompt(),
-            PropertyExtractionCategory.SURFACE_GLOSS_REFLECTIVITY: self._create_gloss_prompt(),
-            PropertyExtractionCategory.MECHANICAL_PROPERTIES_EXTENDED: self._create_mechanical_prompt(),
-            PropertyExtractionCategory.THERMAL_PROPERTIES: self._create_thermal_prompt(),
-            PropertyExtractionCategory.WATER_MOISTURE_RESISTANCE: self._create_water_resistance_prompt(),
-            PropertyExtractionCategory.CHEMICAL_HYGIENE_RESISTANCE: self._create_chemical_prompt(),
-            PropertyExtractionCategory.ACOUSTIC_ELECTRICAL_PROPERTIES: self._create_acoustic_prompt(),
-            PropertyExtractionCategory.ENVIRONMENTAL_SUSTAINABILITY: self._create_environmental_prompt(),
-            PropertyExtractionCategory.DIMENSIONAL_AESTHETIC: self._create_aesthetic_prompt()
+        # Try to load prompts from database first
+        db_prompts = self._load_prompts_from_database()
+
+        # Map database prompts (by version) to PropertyExtractionCategory enums
+        # Version 1 = SLIP_SAFETY_RATINGS, Version 2 = SURFACE_GLOSS_REFLECTIVITY, etc.
+        version_to_category = {
+            1: PropertyExtractionCategory.SLIP_SAFETY_RATINGS,
+            2: PropertyExtractionCategory.SURFACE_GLOSS_REFLECTIVITY,
+            3: PropertyExtractionCategory.MECHANICAL_PROPERTIES_EXTENDED,
+            4: PropertyExtractionCategory.THERMAL_PROPERTIES,
+            5: PropertyExtractionCategory.WATER_MOISTURE_RESISTANCE,
+            6: PropertyExtractionCategory.CHEMICAL_HYGIENE_RESISTANCE,
+            7: PropertyExtractionCategory.ACOUSTIC_ELECTRICAL_PROPERTIES,
+            8: PropertyExtractionCategory.ENVIRONMENTAL_SUSTAINABILITY,
+            9: PropertyExtractionCategory.DIMENSIONAL_AESTHETIC
         }
+
+        # Build extraction_prompts dict with database prompts or hardcoded fallbacks
+        self.extraction_prompts = {}
+        for version, category in version_to_category.items():
+            if version in db_prompts:
+                self.extraction_prompts[category] = db_prompts[version]
+                logger.info(f"✅ Using DATABASE prompt for {category.value} (version {version})")
+            else:
+                # Fallback to hardcoded prompts
+                logger.info(f"⚠️ Using HARDCODED fallback prompt for {category.value}")
+                if category == PropertyExtractionCategory.SLIP_SAFETY_RATINGS:
+                    self.extraction_prompts[category] = self._create_slip_safety_prompt()
+                elif category == PropertyExtractionCategory.SURFACE_GLOSS_REFLECTIVITY:
+                    self.extraction_prompts[category] = self._create_gloss_prompt()
+                elif category == PropertyExtractionCategory.MECHANICAL_PROPERTIES_EXTENDED:
+                    self.extraction_prompts[category] = self._create_mechanical_prompt()
+                elif category == PropertyExtractionCategory.THERMAL_PROPERTIES:
+                    self.extraction_prompts[category] = self._create_thermal_prompt()
+                elif category == PropertyExtractionCategory.WATER_MOISTURE_RESISTANCE:
+                    self.extraction_prompts[category] = self._create_water_resistance_prompt()
+                elif category == PropertyExtractionCategory.CHEMICAL_HYGIENE_RESISTANCE:
+                    self.extraction_prompts[category] = self._create_chemical_prompt()
+                elif category == PropertyExtractionCategory.ACOUSTIC_ELECTRICAL_PROPERTIES:
+                    self.extraction_prompts[category] = self._create_acoustic_prompt()
+                elif category == PropertyExtractionCategory.ENVIRONMENTAL_SUSTAINABILITY:
+                    self.extraction_prompts[category] = self._create_environmental_prompt()
+                elif category == PropertyExtractionCategory.DIMENSIONAL_AESTHETIC:
+                    self.extraction_prompts[category] = self._create_aesthetic_prompt()
+
+    def _load_prompts_from_database(self) -> Dict[int, str]:
+        """Load all material property prompts from database.
+
+        Returns:
+            Dict mapping version number to prompt template
+        """
+        try:
+            result = self.supabase.client.table('extraction_prompts')\
+                .select('prompt_template, version')\
+                .eq('workspace_id', self.workspace_id)\
+                .eq('stage', 'entity_creation')\
+                .eq('category', 'material_properties')\
+                .eq('is_custom', False)\
+                .execute()
+
+            if result.data and len(result.data) > 0:
+                prompts_by_version = {}
+                for row in result.data:
+                    version = row['version']
+                    prompt = row['prompt_template']
+                    prompts_by_version[version] = prompt
+
+                logger.info(f"✅ Loaded {len(prompts_by_version)} material property prompts from database")
+                return prompts_by_version
+            else:
+                logger.warning("⚠️ No material property prompts found in database, using hardcoded fallbacks")
+                return {}
+
+        except Exception as e:
+            logger.error(f"❌ Failed to load prompts from database: {e}")
+            return {}
         
     def _create_slip_safety_prompt(self) -> str:
         """Create specialized prompt for slip/safety property extraction."""
