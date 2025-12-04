@@ -6275,28 +6275,34 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
     async def _classify_image_material(
         self,
         image_base64: str,
-        confidence_threshold: float = 0.6
+        confidence_threshold: float = 0.6,
+        max_retries: int = 3
     ) -> Dict[str, Any]:
         """
-        Classify if an image contains material/product content.
-        
+        Classify if an image contains material/product content with retry logic.
+
         Uses Llama Vision to determine if image shows:
         - Material samples/swatches
         - Product photos
         - Technical specifications
         - Application examples
-        
+
         Args:
             image_base64: Base64-encoded image
             confidence_threshold: Minimum confidence to classify as material (default: 0.6)
-            
+            max_retries: Maximum number of retry attempts (default: 3)
+
         Returns:
             Dict with keys:
             - is_material: bool
             - confidence: float (0.0-1.0)
             - reasoning: str
         """
-        try:
+        import asyncio
+        import sentry_sdk
+
+        for attempt in range(max_retries):
+            try:
             # Prepare classification prompt
             classification_prompt = """Analyze this image and determine if it contains material/product content.
 
@@ -6323,30 +6329,41 @@ Respond in JSON format:
 
             # Call Llama Vision using TogetherAI service
             from .together_ai_service import get_together_ai_service
+            import httpx
 
             together_service = await get_together_ai_service()
-            response = await together_service.client.chat.completions.create(
-                model="meta-llama/Llama-4-Scout-17B-16E-Instruct",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": classification_prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{image_base64}"
+
+            # Use httpx client to make API request (together_service.client is httpx.AsyncClient)
+            response = await together_service.client.post(
+                together_service.config.base_url,
+                json={
+                    "model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": classification_prompt},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{image_base64}"
+                                    }
                                 }
-                            }
-                        ]
-                    }
-                ],
-                max_tokens=200,
-                temperature=0.1  # Low temperature for consistent classification
+                            ]
+                        }
+                    ],
+                    "max_tokens": 200,
+                    "temperature": 0.1  # Low temperature for consistent classification
+                }
             )
 
+            # Check response status
+            if response.status_code != 200:
+                raise Exception(f"TogetherAI API error: {response.status_code} - {response.text}")
+
             # Parse response
-            response_text = response.choices[0].message.content.strip()
+            response_data = response.json()
+            response_text = response_data["choices"][0]["message"]["content"].strip()
             
             # Extract JSON from response (handle markdown code blocks)
             if "```json" in response_text:
@@ -6373,11 +6390,36 @@ Respond in JSON format:
 
             return classification
 
-        except Exception as e:
-            self.logger.error(f"❌ Image classification failed: {e}")
-            # Default to accepting image if classification fails (fail-open)
-            return {
-                "is_material": True,  # Accept by default to avoid losing images
-                "confidence": 0.5,
-                "reasoning": f"Classification failed: {str(e)}"
-            }
+            except Exception as e:
+                self.logger.error(f"❌ Image classification attempt {attempt + 1}/{max_retries} failed: {e}")
+
+                # Log to Sentry on first failure
+                if attempt == 0:
+                    sentry_sdk.capture_exception(e)
+
+                # If this is the last attempt, use fallback
+                if attempt == max_retries - 1:
+                    self.logger.warning(f"All {max_retries} classification attempts failed, using fallback")
+
+                    # Log final failure to Sentry with context
+                    sentry_sdk.capture_message(
+                        f"Image classification failed after {max_retries} attempts",
+                        level="error",
+                        extras={
+                            "error": str(e),
+                            "confidence_threshold": confidence_threshold,
+                            "max_retries": max_retries
+                        }
+                    )
+
+                    # Default to accepting image if classification fails (fail-open)
+                    return {
+                        "is_material": True,  # Accept by default to avoid losing images
+                        "confidence": 0.5,
+                        "reasoning": f"Classification failed after {max_retries} attempts: {str(e)}"
+                    }
+
+                # Wait before retry with exponential backoff
+                wait_time = 2 ** attempt  # 1s, 2s, 4s
+                self.logger.info(f"Retrying in {wait_time}s...")
+                await asyncio.sleep(wait_time)
