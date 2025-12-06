@@ -2,6 +2,7 @@
 Admin Prompt Service
 
 Manages extraction prompts for admins including CRUD operations and audit trail.
+UPDATED: Now uses UnifiedPromptService for all prompt operations.
 """
 
 import logging
@@ -10,15 +11,17 @@ from datetime import datetime
 from uuid import UUID
 
 from app.services.supabase_client import get_supabase_client
+from app.services.unified_prompt_service import UnifiedPromptService
 
 logger = logging.getLogger(__name__)
 
 
 class AdminPromptService:
     """Service for managing extraction prompts"""
-    
+
     def __init__(self):
         self.supabase = get_supabase_client()
+        self.prompt_service = UnifiedPromptService()
     
     async def get_prompts(
         self,
@@ -28,33 +31,25 @@ class AdminPromptService:
     ) -> List[Dict[str, Any]]:
         """
         Get all prompts for workspace, optionally filtered by stage/category
-        
+
         Args:
             workspace_id: Workspace ID
             stage: Optional stage filter
             category: Optional category filter
-            
+
         Returns:
             List of prompts
         """
         try:
-            query = self.supabase.client.table('extraction_prompts')\
-                .select('*')\
-                .eq('workspace_id', workspace_id)
-            
-            if stage:
-                query = query.eq('stage', stage)
-            if category:
-                query = query.eq('category', category)
-            
-            result = query.order('stage').order('category').execute()
-            
-            return result.data if result.data else []
-            
+            return await self.prompt_service.get_extraction_prompts(
+                workspace_id=workspace_id,
+                stage=stage,
+                category=category
+            )
         except Exception as e:
             logger.error(f"Error fetching prompts: {str(e)}")
             return []
-    
+
     async def get_prompt(
         self,
         workspace_id: str,
@@ -63,24 +58,15 @@ class AdminPromptService:
     ) -> Optional[Dict[str, Any]]:
         """Get specific prompt"""
         try:
-            result = self.supabase.client.table('extraction_prompts')\
-                .select('*')\
-                .eq('workspace_id', workspace_id)\
-                .eq('stage', stage)\
-                .eq('category', category)\
-                .order('version', desc=True)\
-                .limit(1)\
-                .execute()
-            
-            if result.data and len(result.data) > 0:
-                return result.data[0]
-            
-            return None
-            
+            return await self.prompt_service.get_extraction_prompt(
+                workspace_id=workspace_id,
+                stage=stage,
+                category=category
+            )
         except Exception as e:
             logger.error(f"Error fetching prompt: {str(e)}")
             return None
-    
+
     async def update_prompt(
         self,
         workspace_id: str,
@@ -161,16 +147,17 @@ class AdminPromptService:
         self,
         prompt_id: str
     ) -> List[Dict[str, Any]]:
-        """Get change history for a prompt"""
+        """Get change history for a prompt - now uses unified prompt_history table"""
         try:
-            result = self.supabase.client.table('extraction_prompt_history')\
+            result = self.supabase.client.table('prompt_history')\
                 .select('*')\
                 .eq('prompt_id', prompt_id)\
                 .order('changed_at', desc=True)\
+                .limit(5)\
                 .execute()
-            
+
             return result.data if result.data else []
-            
+
         except Exception as e:
             logger.error(f"Error fetching prompt history: {str(e)}")
             return []
@@ -291,20 +278,20 @@ class AdminPromptService:
         changed_by: str,
         change_reason: str
     ) -> None:
-        """Create audit trail entry"""
+        """Create audit trail entry - now uses unified prompt_history table"""
         try:
-            self.supabase.client.table('extraction_prompt_history')\
+            self.supabase.client.table('prompt_history')\
                 .insert({
                     'prompt_id': prompt_id,
-                    'old_prompt': old_prompt,
-                    'new_prompt': new_prompt,
+                    'old_prompt_text': old_prompt,
+                    'new_prompt_text': new_prompt,
                     'changed_by': changed_by,
                     'change_reason': change_reason
                 })\
                 .execute()
-            
+
             logger.info(f"Created audit entry for prompt {prompt_id}")
-            
+
         except Exception as e:
             logger.error(f"Error creating audit entry: {str(e)}")
             # Don't raise - audit trail failure shouldn't block the update

@@ -2,6 +2,7 @@
 Prompt Template Service
 
 Manages customizable AI prompts for different extraction stages and industries.
+UPDATED: Now uses UnifiedPromptService for all prompt operations.
 """
 
 import logging
@@ -9,12 +10,16 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 from app.services.supabase_client import get_supabase_client
+from app.services.unified_prompt_service import UnifiedPromptService
 
 logger = logging.getLogger(__name__)
 
 
 class PromptTemplateService:
     """Service for managing prompt templates."""
+
+    def __init__(self):
+        self.prompt_service = UnifiedPromptService()
 
     async def get_template(
         self,
@@ -42,72 +47,12 @@ class PromptTemplateService:
             Template dict or None if not found
         """
         try:
-            supabase = get_supabase_client().client
-
-            # Try exact match first: industry + category
-            if industry and category:
-                response = supabase.table('prompt_templates')\
-                    .select('*')\
-                    .eq('workspace_id', workspace_id)\
-                    .eq('stage', stage)\
-                    .eq('industry', industry)\
-                    .eq('category', category)\
-                    .eq('is_active', True)\
-                    .order('updated_at', desc=True)\
-                    .limit(1)\
-                    .execute()
-
-                if response.data:
-                    return response.data[0]
-
-            # Try industry match (any category)
-            if industry:
-                response = supabase.table('prompt_templates')\
-                    .select('*')\
-                    .eq('workspace_id', workspace_id)\
-                    .eq('stage', stage)\
-                    .eq('industry', industry)\
-                    .is_('category', 'null')\
-                    .eq('is_active', True)\
-                    .order('updated_at', desc=True)\
-                    .limit(1)\
-                    .execute()
-
-                if response.data:
-                    return response.data[0]
-
-            # Try category match (any industry)
-            if category:
-                response = supabase.table('prompt_templates')\
-                    .select('*')\
-                    .eq('workspace_id', workspace_id)\
-                    .eq('stage', stage)\
-                    .eq('category', category)\
-                    .is_('industry', 'null')\
-                    .eq('is_active', True)\
-                    .order('updated_at', desc=True)\
-                    .limit(1)\
-                    .execute()
-
-                if response.data:
-                    return response.data[0]
-
-            # Try default template
-            response = supabase.table('prompt_templates')\
-                .select('*')\
-                .eq('workspace_id', workspace_id)\
-                .eq('stage', stage)\
-                .eq('is_default', True)\
-                .eq('is_active', True)\
-                .order('updated_at', desc=True)\
-                .limit(1)\
-                .execute()
-
-            if response.data:
-                return response.data[0]
-
-            return None
-
+            return await self.prompt_service.get_template_prompt(
+                workspace_id=workspace_id,
+                stage=stage,
+                category=category,
+                industry=industry
+            )
         except Exception as e:
             logger.error(f"Failed to get template: {str(e)}")
             return None
@@ -122,28 +67,11 @@ class PromptTemplateService:
     ) -> List[Dict[str, Any]]:
         """List all prompt templates with optional filtering."""
         try:
-            supabase = get_supabase_client().client
-
-            query = supabase.table('prompt_templates').select('*').eq('workspace_id', workspace_id)
-
-            if stage:
-                query = query.eq('stage', stage)
-
-            if category:
-                query = query.eq('category', category)
-
-            if industry:
-                query = query.eq('industry', industry)
-
-            if not include_inactive:
-                query = query.eq('is_active', True)
-
-            # Order by default first, then by name
-            query = query.order('is_default', desc=True).order('name')
-
-            response = query.execute()
-            return response.data if response.data else []
-
+            return await self.prompt_service.get_template_prompts(
+                workspace_id=workspace_id,
+                stage=stage,
+                industry=industry
+            )
         except Exception as e:
             logger.error(f"Failed to list templates: {str(e)}")
             return []

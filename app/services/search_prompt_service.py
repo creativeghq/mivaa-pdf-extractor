@@ -3,6 +3,7 @@ Search Prompt Service
 
 Manages admin-configurable prompts for search result enhancement, formatting, filtering, and enrichment.
 Allows admins to customize search behavior without code changes.
+UPDATED: Now uses UnifiedPromptService for all prompt operations.
 """
 
 import logging
@@ -10,28 +11,31 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 import json
 
+from app.services.unified_prompt_service import UnifiedPromptService
+
 logger = logging.getLogger(__name__)
 
 
 class SearchPromptService:
     """Service for managing and applying admin-configurable search prompts."""
-    
+
     # Prompt types
     ENHANCEMENT = "enhancement"
     FORMATTING = "formatting"
     FILTERING = "filtering"
     ENRICHMENT = "enrichment"
-    
+
     def __init__(self, supabase_client, llm_client=None):
         """
         Initialize the service.
-        
+
         Args:
             supabase_client: Supabase client for database operations
             llm_client: Optional LLM client for prompt execution (OpenAI, Anthropic, etc.)
         """
         self.supabase = supabase_client
         self.llm_client = llm_client
+        self.prompt_service = UnifiedPromptService()
         self._prompt_cache = {}
     
     async def get_active_prompts(
@@ -41,40 +45,19 @@ class SearchPromptService:
     ) -> List[Dict[str, Any]]:
         """
         Get active prompts for a workspace.
-        
+
         Args:
             workspace_id: Workspace ID
-            prompt_type: Optional filter by prompt type
-            
+            prompt_type: Optional filter by prompt type (enhancement, formatting, filtering, enrichment)
+
         Returns:
             List of active prompts
         """
         try:
-            # Check cache first
-            cache_key = f"{workspace_id}:{prompt_type or 'all'}"
-            if cache_key in self._prompt_cache:
-                cached_data, cached_time = self._prompt_cache[cache_key]
-                # Cache for 5 minutes
-                if (datetime.now() - cached_time).seconds < 300:
-                    return cached_data
-            
-            # Build query
-            query = self.supabase.table('admin_search_prompts').select('*').eq(
-                'workspace_id', workspace_id
-            ).eq('is_active', True)
-            
-            if prompt_type:
-                query = query.eq('prompt_type', prompt_type)
-            
-            response = query.order('created_at', desc=False).execute()
-            
-            prompts = response.data or []
-            
-            # Update cache
-            self._prompt_cache[cache_key] = (prompts, datetime.now())
-            
-            return prompts
-            
+            return await self.prompt_service.get_search_prompts(
+                workspace_id=workspace_id,
+                prompt_subtype=prompt_type
+            )
         except Exception as e:
             logger.error(f"Error getting active prompts: {e}", exc_info=True)
             return []
