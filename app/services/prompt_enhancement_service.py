@@ -11,6 +11,7 @@ from datetime import datetime
 from dataclasses import dataclass
 
 from app.services.supabase_client import get_supabase_client
+from app.services.unified_prompt_service import UnifiedPromptService
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +31,10 @@ class EnhancedPrompt:
 
 class PromptEnhancementService:
     """Service for enhancing agent prompts with context and customizations"""
-    
+
     def __init__(self):
         self.supabase = get_supabase_client()
+        self.prompt_service = UnifiedPromptService()
         
     async def enhance_prompt(
         self,
@@ -112,42 +114,26 @@ class PromptEnhancementService:
         stage: str,
         category: str
     ) -> Optional[Dict[str, Any]]:
-        """Get prompt from database (custom or default)"""
+        """Get prompt from unified prompts table"""
         try:
-            # First try to get custom prompt (is_custom = true)
-            result = self.supabase.client.table('extraction_prompts')\
-                .select('prompt_template, system_prompt, version, is_custom')\
-                .eq('workspace_id', workspace_id)\
-                .eq('stage', stage)\
-                .eq('category', category)\
-                .eq('is_custom', True)\
-                .order('version', desc=True)\
-                .limit(1)\
-                .execute()
+            # Use unified prompt service to get extraction prompt
+            prompt_data = await self.prompt_service.get_extraction_prompt(
+                workspace_id=workspace_id,
+                stage=stage,
+                category=category
+            )
 
-            # If no custom prompt, try to get default prompt (is_custom = false)
-            if not result.data or len(result.data) == 0:
-                result = self.supabase.client.table('extraction_prompts')\
-                    .select('prompt_template, system_prompt, version, is_custom')\
-                    .eq('workspace_id', workspace_id)\
-                    .eq('stage', stage)\
-                    .eq('category', category)\
-                    .eq('is_custom', False)\
-                    .order('version', desc=True)\
-                    .limit(1)\
-                    .execute()
-
-            if result.data and len(result.data) > 0:
+            if prompt_data:
                 return {
-                    'template': result.data[0]['prompt_template'],
-                    'system_prompt': result.data[0].get('system_prompt'),
-                    'version': result.data[0]['version']
+                    'template': prompt_data.get('prompt_text') or prompt_data.get('system_prompt'),
+                    'version': prompt_data.get('version', 1),
+                    'is_custom': prompt_data.get('is_custom', False)
                 }
 
             return None
 
         except Exception as e:
-            logger.error(f"Error fetching prompt from database: {str(e)}")
+            logger.error(f"Error fetching custom prompt: {str(e)}")
             return None
     
     def get_default_prompt(self, stage: str, category: str) -> str:

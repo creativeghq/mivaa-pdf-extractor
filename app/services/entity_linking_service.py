@@ -285,13 +285,18 @@ class EntityLinkingService:
             chunk_pages = {}
             for chunk in chunks_response.data:
                 metadata = chunk.get('metadata', {})
-                page_number = metadata.get('page_number')
+                # ✅ FIX: Chunks use 'page_label' (string) not 'page_number'
+                page_label = metadata.get('page_label')
 
-                if page_number:
-                    if page_number not in page_to_chunks:
-                        page_to_chunks[page_number] = []
-                    page_to_chunks[page_number].append(chunk['id'])
-                    chunk_pages[chunk['id']] = page_number
+                if page_label:
+                    try:
+                        page_number = int(page_label)
+                        if page_number not in page_to_chunks:
+                            page_to_chunks[page_number] = []
+                        page_to_chunks[page_number].append(chunk['id'])
+                        chunk_pages[chunk['id']] = page_number
+                    except (ValueError, TypeError):
+                        self.logger.warning(f"⚠️ Invalid page_label '{page_label}' for chunk {chunk['id']}")
             
             # Link images to chunks on same page
             for image in images_response.data:
@@ -371,7 +376,15 @@ class EntityLinkingService:
 
             for chunk in chunks_response.data:
                 chunk_metadata = chunk.get('metadata', {})
-                chunk_page = chunk_metadata.get('page_number')
+                # ✅ FIX: Chunks use 'page_label' (string) not 'page_number'
+                page_label = chunk_metadata.get('page_label')
+                chunk_page = None
+                if page_label:
+                    try:
+                        chunk_page = int(page_label)
+                    except (ValueError, TypeError):
+                        self.logger.warning(f"⚠️ Invalid page_label '{page_label}' for chunk {chunk['id']}")
+
                 chunk_content = chunk.get('content', '').lower()
 
                 for product in products_response.data:
