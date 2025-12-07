@@ -72,6 +72,25 @@ async def process_stage_2_chunking(
     llamaindex_service = LlamaIndexService()
     
     # Create document in database
+    doc_metadata = {
+        'title': title or filename,
+        'description': description,
+        'page_count': pdf_result.page_count,
+        'tags': document_tags,
+        'products_discovered': len(catalog.products),
+        'product_names': [p.name for p in catalog.products],
+        'focused_extraction': focused_extraction,
+        'discovery_model': discovery_model
+    }
+
+    # Add catalog-level factory info if discovered
+    if catalog.catalog_factory:
+        doc_metadata['catalog_factory'] = catalog.catalog_factory
+    if catalog.catalog_factory_group:
+        doc_metadata['catalog_factory_group'] = catalog.catalog_factory_group
+    if catalog.catalog_manufacturer:
+        doc_metadata['catalog_manufacturer'] = catalog.catalog_manufacturer
+
     doc_data = {
         'id': document_id,
         'workspace_id': workspace_id,
@@ -80,19 +99,12 @@ async def process_stage_2_chunking(
         'file_size': len(file_content),
         'file_path': f'pdf-documents/{document_id}/{filename}',
         'processing_status': 'processing',
-        'metadata': {
-            'title': title or filename,
-            'description': description,
-            'page_count': pdf_result.page_count,
-            'tags': document_tags,
-            'products_discovered': len(catalog.products),
-            'product_names': [p.name for p in catalog.products],
-            'focused_extraction': focused_extraction,
-            'discovery_model': discovery_model
-        }
+        'metadata': doc_metadata
     }
     supabase.client.table('documents').upsert(doc_data).execute()
     logger.info(f"✅ Created documents table record for {document_id}")
+    if catalog.catalog_factory:
+        logger.info(f"   🏭 Catalog factory: {catalog.catalog_factory}")
     
     # Process chunks using LlamaIndex (with progressive timeout)
     logger.info(f"📝 Calling index_pdf_content with {len(file_content)} bytes, product_pages={sorted(product_pages)}")

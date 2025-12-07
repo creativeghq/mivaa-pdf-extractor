@@ -120,18 +120,112 @@ def find_standard_field(field_name: str, category: str, threshold: float = 0.6) 
 
 
 # ============================================================================
+# NULL VALUE DETECTION
+# ============================================================================
+
+# All variations of "not found" that should be treated as null
+NOT_FOUND_VALUES = {
+    "not found",
+    "not explicitly mentioned",
+    "not mentioned",
+    "not available",
+    "not specified",
+    "unknown",
+    "n/a",
+    "na",
+    "none",
+    "-",
+    "",
+}
+
+
+def is_not_found_value(value: Any) -> bool:
+    """Check if a value represents a 'not found' placeholder."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.lower().strip() in NOT_FOUND_VALUES
+    return False
+
+
+def normalize_null_value(value: Any) -> Any:
+    """Normalize 'not found' variations to None (will be excluded from metadata)."""
+    if is_not_found_value(value):
+        return None
+    return value
+
+
+# ============================================================================
+# MATERIAL CATEGORY NORMALIZATION
+# ============================================================================
+
+# Standard material categories - normalize variations to these
+MATERIAL_CATEGORY_MAPPING = {
+    # Tiles
+    "tile": "Tile",
+    "tiles": "Tile",
+    "ceramic": "Ceramic Tile",
+    "ceramic tile": "Ceramic Tile",
+    "ceramic tiles": "Ceramic Tile",
+    "porcelain": "Porcelain Tile",
+    "porcelain tile": "Porcelain Tile",
+    "porcelain tiles": "Porcelain Tile",
+    # Stone
+    "stone": "Natural Stone",
+    "natural stone": "Natural Stone",
+    "marble": "Marble",
+    "granite": "Granite",
+    # Wood
+    "wood": "Wood",
+    "hardwood": "Hardwood",
+    "laminate": "Laminate",
+    "mdf": "MDF",
+    # Other
+    "glass": "Glass",
+    "metal": "Metal",
+    "composite": "Composite",
+}
+
+
+def normalize_material_category(category: str) -> str:
+    """Normalize material category to standard format."""
+    if not category:
+        return None
+
+    normalized = category.lower().strip()
+    return MATERIAL_CATEGORY_MAPPING.get(normalized, category.title())
+
+
+# ============================================================================
 # FIELD VALUE NORMALIZATION
 # ============================================================================
 
 def normalize_field_value(value: Any, field_name: str) -> Any:
     """
     Normalize field values to consistent formats.
-    
+
     Examples:
         - Single designer string → array: "John Doe" → ["John Doe"]
         - Individual SKU fields → object: {"sku_white": "123"} → {"white": "123"}
         - Grout supplier object → string: {"value": "MAPEI", "product": "..."} → "MAPEI ULTRACOLOR PLUS"
+        - "not found" variations → None
+        - Material category variations → Standard format
     """
+    # First, check if it's a "not found" value
+    if is_not_found_value(value):
+        return None
+
+    # Normalize material category
+    if field_name == "material_category":
+        return normalize_material_category(value) if isinstance(value, str) else value
+
+    # Normalize factory/manufacturer names - clean up "not found" values
+    if field_name in ["factory_name", "factory_group_name", "manufacturer"]:
+        if is_not_found_value(value):
+            return None
+        # Return as-is if it's a valid value
+        return value
+
     # Handle designer normalization (single → array)
     if field_name == "designers":
         if isinstance(value, str):

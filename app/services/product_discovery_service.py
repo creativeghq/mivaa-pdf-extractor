@@ -162,6 +162,11 @@ class ProductCatalog:
     logos: List[LogoInfo] = None
     specifications: List[SpecificationInfo] = None
 
+    # Catalog-level factory info (inherited by products without factory info)
+    catalog_factory: Optional[str] = None  # e.g., "HARMONY"
+    catalog_factory_group: Optional[str] = None  # e.g., "Peronda Group"
+    catalog_manufacturer: Optional[str] = None  # e.g., "Peronda Group"
+
     # Metadata
     total_pages: int = 0
     total_images: int = 0
@@ -1121,11 +1126,25 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
         for page_str, classification in result.get("page_classification", {}).items():
             page_classification[int(page_str)] = classification
 
+        # Extract catalog-level factory info (from cover/intro pages)
+        catalog_factory = result.get("catalog_factory")
+        catalog_factory_group = result.get("catalog_factory_group")
+        catalog_manufacturer = result.get("catalog_manufacturer")
+
+        # Log if catalog-level factory info was found
+        if catalog_factory:
+            self.logger.info(f"   🏭 Catalog factory: {catalog_factory}")
+        if catalog_factory_group:
+            self.logger.info(f"   🏢 Catalog factory group: {catalog_factory_group}")
+
         catalog = ProductCatalog(
             products=products,
             certificates=certificates,
             logos=logos,
             specifications=specifications,
+            catalog_factory=catalog_factory,
+            catalog_factory_group=catalog_factory_group,
+            catalog_manufacturer=catalog_manufacturer,
             total_pages=total_pages,
             total_images=0,  # Will be updated later
             content_classification=page_classification,
@@ -1810,7 +1829,19 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
 
         prompt = f"""Analyze these PDF pages and identify all {', '.join(categories)}.
 
-For each product found, provide:
+**FIRST: EXTRACT DOCUMENT-LEVEL INFORMATION**
+Look at the cover page, intro pages, and headers/footers to identify:
+1. **catalog_factory**: The main factory/brand name for this catalog (e.g., "HARMONY", "Porcelanosa")
+2. **catalog_factory_group**: The parent company or group (e.g., "Peronda Group", "Porcelanosa Group")
+3. **catalog_manufacturer**: The manufacturer if different from factory
+
+This information typically appears on:
+- Cover page (large logo/brand name)
+- Footer/header of pages
+- "About Us" or intro sections
+- Copyright notices
+
+**THEN: For each product found, provide:**
 1. Product name
 2. Page numbers where it appears (as a range, e.g., [5, 6, 7])
 3. Brief description
@@ -1832,6 +1863,9 @@ For EACH page in the product's page_range, classify it as:
 
 Return results in JSON format:
 {{
+  "catalog_factory": "HARMONY",
+  "catalog_factory_group": "Peronda Group",
+  "catalog_manufacturer": "Peronda Group",
   "products": [
     {{
       "name": "Product Name",
@@ -1847,6 +1881,7 @@ Return results in JSON format:
 }}
 
 IMPORTANT:
+- **ALWAYS extract catalog_factory from cover/intro pages** - this is the brand that makes ALL products in this catalog
 - Look at product names, images, and layouts
 - Exclude index pages, table of contents, and cross-references
 - Only include actual product pages with detailed information

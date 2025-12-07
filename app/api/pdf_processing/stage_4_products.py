@@ -56,6 +56,15 @@ async def process_stage_4_products(
     products_created = 0
     product_id_map = {}  # Map product name to product ID for entity linking
     
+    # Helper to check if a value is a "not found" placeholder
+    def is_not_found(val):
+        if not val:
+            return True
+        if isinstance(val, str):
+            normalized = val.lower().strip()
+            return normalized in ['not found', 'not explicitly mentioned', 'not mentioned', 'n/a', 'unknown', '']
+        return False
+
     for product in catalog.products:
         try:
             # Use product.metadata field (new architecture - products + metadata inseparable)
@@ -69,7 +78,21 @@ async def process_stage_4_products(
             # ALWAYS save image_indices (even if None or empty list)
             if 'image_indices' not in metadata:
                 metadata['image_indices'] = product.image_indices if product.image_indices is not None else []
-            
+
+            # Inherit catalog-level factory info if product doesn't have it
+            if is_not_found(metadata.get('factory_name')) and catalog.catalog_factory:
+                metadata['factory_name'] = catalog.catalog_factory
+                logger.debug(f"   📋 Inherited factory_name '{catalog.catalog_factory}' for {product.name}")
+
+            if is_not_found(metadata.get('factory_group_name')) and catalog.catalog_factory_group:
+                metadata['factory_group_name'] = catalog.catalog_factory_group
+                logger.debug(f"   📋 Inherited factory_group_name '{catalog.catalog_factory_group}' for {product.name}")
+
+            # Clean up "not found" values - set to None instead
+            for key in ['factory_name', 'factory_group_name', 'material_category']:
+                if is_not_found(metadata.get(key)):
+                    metadata[key] = None
+
             product_data = {
                 'source_document_id': document_id,
                 'workspace_id': workspace_id,
@@ -77,15 +100,15 @@ async def process_stage_4_products(
                 'description': product.description or '',
                 'metadata': metadata  # ALL product metadata stored here
             }
-            
+
             result = supabase.client.table('products').insert(product_data).execute()
-            
+
             if result.data and len(result.data) > 0:
                 product_id = result.data[0]['id']
                 product_id_map[product.name] = product_id
                 products_created += 1
                 logger.info(f"   ✅ Created product: {product.name} (ID: {product_id})")
-        
+
         except Exception as e:
             logger.error(f"Failed to create product {product.name}: {e}")
     
