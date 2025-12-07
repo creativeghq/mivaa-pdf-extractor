@@ -13,8 +13,8 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 
 from app.services.ai_client_service import get_ai_client_service
-from app.services.ai_logger import get_ai_logger
-from app.core.supabase_client import get_supabase_client
+from app.services.ai_call_logger import AICallLogger
+from app.services.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ class SpaceformerService:
     def __init__(self):
         """Initialize Spaceformer service"""
         self.ai_service = get_ai_client_service()
-        self.ai_logger = get_ai_logger()
+        self.ai_logger = AICallLogger()
         self.supabase = get_supabase_client()
 
     async def analyze_space(
