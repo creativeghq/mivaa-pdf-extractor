@@ -969,16 +969,27 @@ Return ONLY valid JSON. Use null for missing fields."""
             visual_query = " ".join(visual_parts) if visual_parts else query
 
             # Build filters dictionary (remove null values and visual_query)
+            # Map AI output fields to actual database metadata fields
+            field_mapping = {
+                "material_type": "material_category",  # AI says "material_type", DB uses "material_category"
+                "colors": "appearance.colors",  # Nested in appearance object
+                "finish": "appearance.finish",  # Nested in appearance object
+                "application": "application.recommended_use",  # Nested in application object
+            }
+
             filters = {}
             for key, value in parsed_data.items():
                 if key in ("visual_query", "is_product_name", "product_name"):
                     continue
                 if value is not None and value != [] and value != "":
+                    # Map to actual DB field name
+                    db_key = field_mapping.get(key, key)
+
                     # Handle properties as array containment
                     if key == "properties" and isinstance(value, list):
-                        filters[key] = {"contains": value}
+                        filters[db_key] = {"contains": value}
                     else:
-                        filters[key] = value
+                        filters[db_key] = value
 
             self.logger.info(f"🧠 Query parsed: '{query}' → visual_query='{visual_query}', filters={filters}")
 

@@ -5450,10 +5450,27 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
                     if material_filters:
                         filter_match = True
                         for filter_key, filter_value in material_filters.items():
-                            product_value = product_metadata.get(filter_key)
+                            # Handle nested paths like "appearance.colors"
+                            if '.' in filter_key:
+                                path_parts = filter_key.split('.')
+                                product_value = product_metadata
+                                for part in path_parts:
+                                    if isinstance(product_value, dict):
+                                        product_value = product_value.get(part)
+                                    else:
+                                        product_value = None
+                                        break
+                            else:
+                                product_value = product_metadata.get(filter_key)
+
                             if product_value is None:
                                 filter_match = False
                                 break
+
+                            # Handle dict values with 'value' key (e.g., {"value": "matt", "confidence": 0.9})
+                            if isinstance(product_value, dict) and 'value' in product_value:
+                                product_value = product_value['value']
+
                             if isinstance(filter_value, list):
                                 if str(product_value).lower() not in [str(v).lower() for v in filter_value]:
                                     filter_match = False
