@@ -5346,39 +5346,25 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
         workspace_id: str,
         top_k: int = 10,
         material_filters: Optional[Dict[str, Any]] = None,
-        text_weight: float = 0.20,
-        visual_weight: float = 0.20,
-        color_weight: float = 0.15,
-        texture_weight: float = 0.15,
-        style_weight: float = 0.15,
-        material_weight: float = 0.15,
-        similarity_threshold: float = 0.7
+        text_weight: float = 0.60,
+        visual_weight: float = 0.40,
+        similarity_threshold: float = 0.3
     ) -> Dict[str, Any]:
         """
-        🎯 ENHANCED Multi-vector search combining 6 specialized CLIP embeddings + metadata filtering.
+        🎯 Multi-vector search using proper JOIN relationships.
 
-        Combines:
-        - text_embedding_1536 (20% weight) - Semantic understanding
-        - visual_clip_embedding_512 (20% weight) - Visual similarity
-        - color_clip_embedding_512 (15% weight) - Color palette matching
-        - texture_clip_embedding_512 (15% weight) - Texture pattern matching
-        - style_clip_embedding_512 (15% weight) - Design style matching
-        - material_clip_embedding_512 (15% weight) - Material type matching
-
-        + JSONB metadata filtering for properties (waterproof, outdoor, finish, etc.)
+        Architecture:
+        - Text embeddings (1536D): embeddings table → chunk_product_relationships → products
+        - Visual embeddings (1152D SigLIP): vecs.image_siglip_embeddings → product_image_relationships → products
 
         Args:
             query: Search query text
             workspace_id: Workspace ID to filter results
             top_k: Number of results to return
-            material_filters: Optional JSONB metadata filters (e.g., {"finish": "matte", "properties": ["waterproof"]})
-            text_weight: Weight for text embeddings (default 0.20)
-            visual_weight: Weight for visual embeddings (default 0.20)
-            color_weight: Weight for color embeddings (default 0.15)
-            texture_weight: Weight for texture embeddings (default 0.15)
-            style_weight: Weight for style embeddings (default 0.15)
-            material_weight: Weight for material embeddings (default 0.15)
-            similarity_threshold: Minimum similarity score (default 0.7)
+            material_filters: Optional JSONB metadata filters
+            text_weight: Weight for text embeddings (default 0.60)
+            visual_weight: Weight for visual embeddings (default 0.40)
+            similarity_threshold: Minimum similarity score (default 0.3)
 
         Returns:
             Dictionary containing search results with weighted scores
@@ -5399,10 +5385,10 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
                     "processing_time": time.time() - start_time
                 }
 
-            # Generate query embedding using the centralized embedding service
+            # Generate query embedding (1536D for text search)
             query_embedding = await self.embedding_service.generate_embedding(
                 text=query,
-                embedding_type="openai"  # Use OpenAI for text embedding
+                embedding_type="openai"
             )
 
             if not query_embedding:
@@ -5413,65 +5399,77 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
                     "processing_time": time.time() - start_time
                 }
 
-            # Convert embedding to PostgreSQL vector format
             embedding_str = f"[{','.join(map(str, query_embedding))}]"
 
-            # Build JSONB metadata filter conditions
+            # Build metadata filter conditions
             metadata_conditions = []
             if material_filters:
                 for key, value in material_filters.items():
                     if isinstance(value, dict) and "contains" in value:
-                        # Array containment (e.g., properties contains ["waterproof", "outdoor"])
                         contains_values = value["contains"]
                         if isinstance(contains_values, list):
                             for item in contains_values:
                                 metadata_conditions.append(f"p.metadata->'{key}' ? '{item}'")
                     elif isinstance(value, list):
-                        # IN clause (e.g., color IN ["beige", "white"])
                         values_str = "', '".join(str(v) for v in value)
                         metadata_conditions.append(f"p.metadata->>'{key}' IN ('{values_str}')")
                     else:
-                        # Exact match (e.g., finish = "matte")
                         metadata_conditions.append(f"p.metadata->>'{key}' = '{value}'")
 
             metadata_filter_sql = ""
             if metadata_conditions:
                 metadata_filter_sql = "AND " + " AND ".join(metadata_conditions)
 
-            # 🎯 Enhanced multi-vector search query combining all 6 embedding types + metadata filters
+            # Multi-vector search with proper JOINs to embeddings tables
+            # Step 1: Text-based search via embeddings table
             query_sql = f"""
+            WITH text_scores AS (
+                SELECT DISTINCT ON (p.id)
+                    p.id,
+                    p.name as product_name,
+                    p.description,
+                    p.metadata,
+                    p.workspace_id,
+                    p.document_id,
+                    (1 - (e.embedding <=> '{embedding_str}'::vector(1536))) as text_similarity
+                FROM products p
+                INNER JOIN chunk_product_relationships cpr ON cpr.product_id = p.id
+                INNER JOIN embeddings e ON e.chunk_id = cpr.chunk_id
+                WHERE p.workspace_id = '{workspace_id}'
+                    AND e.embedding IS NOT NULL
+                    AND e.dimensions = 1536
+                    {metadata_filter_sql}
+                ORDER BY p.id, text_similarity DESC
+            ),
+            visual_scores AS (
+                SELECT DISTINCT ON (p.id)
+                    p.id,
+                    (1 - (v.vec <=> '{embedding_str}'::vector(1152))) as visual_similarity
+                FROM products p
+                INNER JOIN product_image_relationships pir ON pir.product_id = p.id
+                INNER JOIN vecs.image_siglip_embeddings v ON v.id = pir.image_id
+                WHERE p.workspace_id = '{workspace_id}'
+                ORDER BY p.id, visual_similarity DESC
+            )
             SELECT
-                p.id,
-                p.product_name,
-                p.description,
-                p.metadata,
-                p.workspace_id,
-                p.document_id,
+                t.id,
+                t.product_name,
+                t.description,
+                t.metadata,
+                t.workspace_id,
+                t.document_id,
+                t.text_similarity,
+                COALESCE(v.visual_similarity, 0) as visual_similarity,
                 (
-                    ({text_weight} * (1 - (p.text_embedding_1536 <=> '{embedding_str}'::vector(1536)))) +
-                    ({visual_weight} * (1 - (p.visual_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
-                    ({color_weight} * (1 - (p.color_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
-                    ({texture_weight} * (1 - (p.texture_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
-                    ({style_weight} * (1 - (p.style_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
-                    ({material_weight} * (1 - (p.material_clip_embedding_512 <=> '{embedding_str}'::vector(512))))
+                    {text_weight} * COALESCE(t.text_similarity, 0) +
+                    {visual_weight} * COALESCE(v.visual_similarity, 0)
                 ) as weighted_score
-            FROM products p
-            WHERE p.workspace_id = '{workspace_id}'
-                AND p.text_embedding_1536 IS NOT NULL
-                AND p.visual_clip_embedding_512 IS NOT NULL
-                AND p.color_clip_embedding_512 IS NOT NULL
-                AND p.texture_clip_embedding_512 IS NOT NULL
-                AND p.style_clip_embedding_512 IS NOT NULL
-                AND p.material_clip_embedding_512 IS NOT NULL
-                {metadata_filter_sql}
-                AND (
-                    ({text_weight} * (1 - (p.text_embedding_1536 <=> '{embedding_str}'::vector(1536)))) +
-                    ({visual_weight} * (1 - (p.visual_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
-                    ({color_weight} * (1 - (p.color_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
-                    ({texture_weight} * (1 - (p.texture_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
-                    ({style_weight} * (1 - (p.style_clip_embedding_512 <=> '{embedding_str}'::vector(512)))) +
-                    ({material_weight} * (1 - (p.material_clip_embedding_512 <=> '{embedding_str}'::vector(512))))
-                ) >= {similarity_threshold}
+            FROM text_scores t
+            LEFT JOIN visual_scores v ON v.id = t.id
+            WHERE (
+                {text_weight} * COALESCE(t.text_similarity, 0) +
+                {visual_weight} * COALESCE(v.visual_similarity, 0)
+            ) >= {similarity_threshold}
             ORDER BY weighted_score DESC
             LIMIT {top_k}
             """
@@ -5490,6 +5488,8 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
                         "workspace_id": row.get("workspace_id"),
                         "document_id": row.get("document_id"),
                         "score": row.get("weighted_score", 0.0),
+                        "text_score": row.get("text_similarity", 0.0),
+                        "visual_score": row.get("visual_similarity", 0.0),
                         "search_type": "multi_vector"
                     })
 
@@ -5544,16 +5544,12 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
                 "processing_time": time.time() - start_time,
                 "weights": {
                     "text": text_weight,
-                    "visual": visual_weight,
-                    "color": color_weight,
-                    "texture": texture_weight,
-                    "style": style_weight,
-                    "material": material_weight
+                    "visual": visual_weight
                 },
                 "material_filters_applied": material_filters if material_filters else None,
-                "metadata_validation_enabled": True,  # NEW: Always enabled
+                "metadata_validation_enabled": True,
                 "query": query,
-                "search_type": "multi_vector_enhanced"
+                "search_type": "multi_vector"
             }
 
         except Exception as e:
@@ -5713,29 +5709,46 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
             # Convert embedding to PostgreSQL vector format
             embedding_str = f"[{','.join(map(str, query_embedding))}]"
 
-            # Hybrid search query combining vector similarity and full-text search
+            # Escape single quotes in query for SQL
+            safe_query = query.replace("'", "''")
+
+            # Hybrid search using JOINs to embeddings table + full-text search on products
             query_sql = f"""
+            WITH semantic_scores AS (
+                SELECT DISTINCT ON (p.id)
+                    p.id,
+                    p.name as product_name,
+                    p.description,
+                    p.metadata,
+                    p.workspace_id,
+                    p.document_id,
+                    (1 - (e.embedding <=> '{embedding_str}'::vector(1536))) as semantic_score
+                FROM products p
+                INNER JOIN chunk_product_relationships cpr ON cpr.product_id = p.id
+                INNER JOIN embeddings e ON e.chunk_id = cpr.chunk_id
+                WHERE p.workspace_id = '{workspace_id}'
+                    AND e.embedding IS NOT NULL
+                    AND e.dimensions = 1536
+                ORDER BY p.id, semantic_score DESC
+            )
             SELECT
-                p.id,
-                p.product_name,
-                p.description,
-                p.metadata,
-                p.workspace_id,
-                p.document_id,
+                s.id,
+                s.product_name,
+                s.description,
+                s.metadata,
+                s.workspace_id,
+                s.document_id,
+                s.semantic_score,
+                COALESCE(ts_rank(to_tsvector('english', COALESCE(s.product_name, '') || ' ' || COALESCE(s.description, '')), plainto_tsquery('english', '{safe_query}')), 0) as keyword_score,
                 (
-                    ({semantic_weight} * (1 - (p.text_embedding_1536 <=> '{embedding_str}'::vector(1536)))) +
-                    ({keyword_weight} * ts_rank(p.search_vector, plainto_tsquery('english', '{query}')))
-                ) as hybrid_score,
-                (1 - (p.text_embedding_1536 <=> '{embedding_str}'::vector(1536))) as semantic_score,
-                ts_rank(p.search_vector, plainto_tsquery('english', '{query}')) as keyword_score
-            FROM products p
-            WHERE p.workspace_id = '{workspace_id}'
-                AND p.text_embedding_1536 IS NOT NULL
-                AND p.search_vector IS NOT NULL
-                AND (
-                    (1 - (p.text_embedding_1536 <=> '{embedding_str}'::vector(1536))) >= {similarity_threshold}
-                    OR p.search_vector @@ plainto_tsquery('english', '{query}')
-                )
+                    {semantic_weight} * COALESCE(s.semantic_score, 0) +
+                    {keyword_weight} * COALESCE(ts_rank(to_tsvector('english', COALESCE(s.product_name, '') || ' ' || COALESCE(s.description, '')), plainto_tsquery('english', '{safe_query}')), 0)
+                ) as hybrid_score
+            FROM semantic_scores s
+            WHERE (
+                s.semantic_score >= {similarity_threshold}
+                OR to_tsvector('english', COALESCE(s.product_name, '') || ' ' || COALESCE(s.description, '')) @@ plainto_tsquery('english', '{safe_query}')
+            )
             ORDER BY hybrid_score DESC
             LIMIT {top_k}
             """

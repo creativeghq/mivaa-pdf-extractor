@@ -333,21 +333,22 @@ RESPOND WITH ONLY THE DESCRIPTION, NO ADDITIONAL TEXT."""
         product_id: str,
         enrichment_result: Dict[str, Any]
     ) -> bool:
-        """Store enrichment results in database with all 6 embedding types and real quality scores."""
-        try:
-            # Update product with enrichment data
-            product_embeddings = enrichment_result.get('product_embedding', {})
+        """
+        Store enrichment results in database.
 
-            # Step 5: Calculate real quality score (not hardcoded)
+        NOTE: Embeddings are NOT stored on the products table.
+        - Text embeddings → stored in `embeddings` table linked via chunk_product_relationships
+        - Visual embeddings → stored in VECS collections linked via product_image_relationships
+
+        This method only stores enrichment metadata, descriptions, and quality scores.
+        """
+        try:
+            # Calculate real quality score (not hardcoded)
             product_data = {
                 "name": enrichment_result.get('name', ''),
                 "description": enrichment_result.get('enhanced_description', ''),
                 "long_description": enrichment_result.get('enhanced_description', ''),
                 "properties": enrichment_result.get('material_properties', {}),
-                "text_embedding_1536": product_embeddings.get('text_1536'),
-                "visual_clip_embedding_512": product_embeddings.get('visual_clip_512'),
-                "multimodal_fusion_embedding_2048": product_embeddings.get('multimodal_2048'),
-                # Removed fake embeddings: color_256, texture_256, application_512
                 "metadata": {
                     "related_images": enrichment_result.get('related_images', []),
                     "related_products": enrichment_result.get('related_products', [])
@@ -356,17 +357,10 @@ RESPOND WITH ONLY THE DESCRIPTION, NO ADDITIONAL TEXT."""
 
             quality_score, quality_metrics = self.quality_scoring_service.calculate_product_quality_score(product_data)
 
+            # Update product with enrichment data (NO embeddings - they're in separate tables)
             update_data = {
                 "long_description": enrichment_result.get('enhanced_description', ''),
-                # Store 3 real embedding types
-                "text_embedding_1536": product_embeddings.get('text_1536'),
-                "visual_clip_embedding_512": product_embeddings.get('visual_clip_512'),
-                "multimodal_fusion_embedding_2048": product_embeddings.get('multimodal_2048'),
-                # Removed fake embeddings: color_256, texture_256, application_512
-                # Keep legacy embedding field for backward compatibility
-                "embedding": product_embeddings.get('text_1536'),
                 "properties": enrichment_result.get('material_properties', {}),
-                # Step 5: Store real quality scores (not hardcoded 0.85, 0.90, 0.95)
                 "quality_score": quality_score,
                 "quality_metrics": quality_metrics,
                 "metadata": {
@@ -374,7 +368,6 @@ RESPOND WITH ONLY THE DESCRIPTION, NO ADDITIONAL TEXT."""
                     "enrichment_timestamp": enrichment_result.get('enrichment_timestamp'),
                     "related_images": enrichment_result.get('related_images', []),
                     "related_products": enrichment_result.get('related_products', []),
-                    "embedding_types_generated": list(product_embeddings.keys()),
                     "quality_score": quality_score,
                     "quality_metrics": quality_metrics
                 },
@@ -386,7 +379,7 @@ RESPOND WITH ONLY THE DESCRIPTION, NO ADDITIONAL TEXT."""
             ).eq('id', product_id).execute()
 
             if response.data:
-                self.logger.info(f"✅ Stored 3 real embedding types for product {product_id}")
+                self.logger.info(f"✅ Stored enrichment results for product {product_id}")
 
             return bool(response.data)
 
