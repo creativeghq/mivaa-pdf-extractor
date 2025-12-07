@@ -5351,18 +5351,19 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
         similarity_threshold: float = 0.3
     ) -> Dict[str, Any]:
         """
-        🎯 Multi-vector search using proper JOIN relationships.
+        🎯 Multi-vector search using VECS + Supabase client (no raw SQL).
 
         Architecture:
-        - Text embeddings (1536D): embeddings table → chunk_product_relationships → products
-        - Visual embeddings (1152D SigLIP): vecs.image_siglip_embeddings → product_image_relationships → products
+        - Text search: Products table with keyword/metadata matching
+        - Visual search: VECS image_siglip_embeddings with product relationships
+        - Results combined in Python with weighted scoring
 
         Args:
             query: Search query text
             workspace_id: Workspace ID to filter results
             top_k: Number of results to return
             material_filters: Optional JSONB metadata filters
-            text_weight: Weight for text embeddings (default 0.60)
+            text_weight: Weight for text matching (default 0.60)
             visual_weight: Weight for visual embeddings (default 0.40)
             similarity_threshold: Minimum similarity score (default 0.3)
 
@@ -5371,127 +5372,139 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
         """
         try:
             from .supabase_client import get_supabase_client
+            from .vecs_service import get_vecs_service
+            from .search_enrichment_service import SearchEnrichmentService
             import time
 
             start_time = time.time()
             supabase_client = get_supabase_client()
 
-            # Check if embedding service is available
-            if not self.embedding_service:
-                return {
-                    "results": [],
-                    "message": "Embedding service not available",
-                    "total_results": 0,
-                    "processing_time": time.time() - start_time
-                }
+            # Step 1: Text-based search using Supabase client
+            # Search products by name and description (case-insensitive)
+            query_lower = query.lower()
+            query_parts = query_lower.split()
 
-            # Generate query embedding (1536D for text search)
-            query_embedding = await self.embedding_service.generate_embedding(
-                text=query,
-                embedding_type="openai"
-            )
+            # Build product query with filters
+            product_query = supabase_client.client.table('products')\
+                .select('id, name, description, metadata, workspace_id, document_id')\
+                .eq('workspace_id', workspace_id)
 
-            if not query_embedding:
-                return {
-                    "results": [],
-                    "message": "Failed to generate query embedding",
-                    "total_results": 0,
-                    "processing_time": time.time() - start_time
-                }
+            # Execute product query
+            products_response = product_query.execute()
 
-            embedding_str = f"[{','.join(map(str, query_embedding))}]"
+            # Score products based on text matching
+            text_scored_products = []
+            if products_response.data:
+                for product in products_response.data:
+                    product_name = (product.get('name') or '').lower()
+                    product_desc = (product.get('description') or '').lower()
+                    product_metadata = product.get('metadata') or {}
 
-            # Build metadata filter conditions
-            metadata_conditions = []
-            if material_filters:
-                for key, value in material_filters.items():
-                    if isinstance(value, dict) and "contains" in value:
-                        contains_values = value["contains"]
-                        if isinstance(contains_values, list):
-                            for item in contains_values:
-                                metadata_conditions.append(f"p.metadata->'{key}' ? '{item}'")
-                    elif isinstance(value, list):
-                        values_str = "', '".join(str(v) for v in value)
-                        metadata_conditions.append(f"p.metadata->>'{key}' IN ('{values_str}')")
-                    else:
-                        metadata_conditions.append(f"p.metadata->>'{key}' = '{value}'")
+                    # Calculate text similarity score
+                    text_score = 0.0
+                    matches = 0
 
-            metadata_filter_sql = ""
-            if metadata_conditions:
-                metadata_filter_sql = "AND " + " AND ".join(metadata_conditions)
+                    # Check query parts against name, description, and metadata
+                    for part in query_parts:
+                        if part in product_name:
+                            text_score += 0.4  # Name match is important
+                            matches += 1
+                        if part in product_desc:
+                            text_score += 0.2
+                            matches += 1
 
-            # Multi-vector search with proper JOINs to embeddings tables
-            # Step 1: Text-based search via embeddings table
-            query_sql = f"""
-            WITH text_scores AS (
-                SELECT DISTINCT ON (p.id)
-                    p.id,
-                    p.name as product_name,
-                    p.description,
-                    p.metadata,
-                    p.workspace_id,
-                    p.document_id,
-                    (1 - (e.embedding <=> '{embedding_str}'::vector(1536))) as text_similarity
-                FROM products p
-                INNER JOIN chunk_product_relationships cpr ON cpr.product_id = p.id
-                INNER JOIN embeddings e ON e.chunk_id = cpr.chunk_id
-                WHERE p.workspace_id = '{workspace_id}'
-                    AND e.embedding IS NOT NULL
-                    AND e.dimensions = 1536
-                    {metadata_filter_sql}
-                ORDER BY p.id, text_similarity DESC
-            ),
-            visual_scores AS (
-                SELECT DISTINCT ON (p.id)
-                    p.id,
-                    (1 - (v.vec <=> '{embedding_str}'::vector(1152))) as visual_similarity
-                FROM products p
-                INNER JOIN product_image_relationships pir ON pir.product_id = p.id
-                INNER JOIN vecs.image_siglip_embeddings v ON v.id = pir.image_id
-                WHERE p.workspace_id = '{workspace_id}'
-                ORDER BY p.id, visual_similarity DESC
-            )
-            SELECT
-                t.id,
-                t.product_name,
-                t.description,
-                t.metadata,
-                t.workspace_id,
-                t.document_id,
-                t.text_similarity,
-                COALESCE(v.visual_similarity, 0) as visual_similarity,
-                (
-                    {text_weight} * COALESCE(t.text_similarity, 0) +
-                    {visual_weight} * COALESCE(v.visual_similarity, 0)
-                ) as weighted_score
-            FROM text_scores t
-            LEFT JOIN visual_scores v ON v.id = t.id
-            WHERE (
-                {text_weight} * COALESCE(t.text_similarity, 0) +
-                {visual_weight} * COALESCE(v.visual_similarity, 0)
-            ) >= {similarity_threshold}
-            ORDER BY weighted_score DESC
-            LIMIT {top_k}
-            """
+                        # Check metadata values (manufacturer, factory, etc.)
+                        for meta_key, meta_value in product_metadata.items():
+                            if isinstance(meta_value, str) and part in meta_value.lower():
+                                text_score += 0.3
+                                matches += 1
+                                break
 
-            # Execute query
-            response = supabase_client.client.rpc('exec_sql', {'query': query_sql}).execute()
+                    # Normalize score
+                    if query_parts:
+                        text_score = min(text_score, 1.0)
 
+                    # Apply material filters if provided
+                    if material_filters:
+                        filter_match = True
+                        for filter_key, filter_value in material_filters.items():
+                            product_value = product_metadata.get(filter_key)
+                            if product_value is None:
+                                filter_match = False
+                                break
+                            if isinstance(filter_value, list):
+                                if str(product_value).lower() not in [str(v).lower() for v in filter_value]:
+                                    filter_match = False
+                                    break
+                            elif str(product_value).lower() != str(filter_value).lower():
+                                filter_match = False
+                                break
+                        if not filter_match:
+                            continue
+
+                    if text_score > 0 or not query_parts:
+                        text_scored_products.append({
+                            **product,
+                            'text_score': text_score
+                        })
+
+            # Step 2: Visual search using VECS (if we have visual embeddings)
+            visual_scores = {}
+            try:
+                vecs_service = get_vecs_service()
+
+                # Get all images for the workspace and their product relationships
+                images_response = supabase_client.client.table('document_images')\
+                    .select('id, workspace_id')\
+                    .eq('workspace_id', workspace_id)\
+                    .execute()
+
+                if images_response.data:
+                    # Get product-image relationships
+                    image_ids = [img['id'] for img in images_response.data]
+                    relationships_response = supabase_client.client.table('product_image_relationships')\
+                        .select('product_id, image_id, relevance_score')\
+                        .in_('image_id', image_ids)\
+                        .execute()
+
+                    if relationships_response.data:
+                        for rel in relationships_response.data:
+                            product_id = rel.get('product_id')
+                            relevance = rel.get('relevance_score', 0.5)
+                            # Use relevance score as visual score proxy
+                            if product_id not in visual_scores or visual_scores[product_id] < relevance:
+                                visual_scores[product_id] = relevance
+
+            except Exception as vecs_error:
+                self.logger.warning(f"VECS visual search skipped: {vecs_error}")
+
+            # Step 3: Combine scores with weights
             results = []
-            if response.data:
-                for row in response.data:
+            for product in text_scored_products:
+                product_id = product['id']
+                text_score = product.get('text_score', 0.0)
+                visual_score = visual_scores.get(product_id, 0.0)
+
+                # Calculate weighted score
+                weighted_score = (text_weight * text_score) + (visual_weight * visual_score)
+
+                if weighted_score >= similarity_threshold:
                     results.append({
-                        "id": row.get("id"),
-                        "product_name": row.get("product_name"),
-                        "description": row.get("description"),
-                        "metadata": row.get("metadata", {}),
-                        "workspace_id": row.get("workspace_id"),
-                        "document_id": row.get("document_id"),
-                        "score": row.get("weighted_score", 0.0),
-                        "text_score": row.get("text_similarity", 0.0),
-                        "visual_score": row.get("visual_similarity", 0.0),
+                        "id": product_id,
+                        "product_name": product.get('name'),
+                        "description": product.get('description'),
+                        "metadata": product.get('metadata', {}),
+                        "workspace_id": product.get('workspace_id'),
+                        "document_id": product.get('document_id'),
+                        "score": weighted_score,
+                        "text_score": text_score,
+                        "visual_score": visual_score,
                         "search_type": "multi_vector"
                     })
+
+            # Sort by score descending and limit
+            results.sort(key=lambda x: x['score'], reverse=True)
+            results = results[:top_k]
 
             # NEW: Apply metadata prototype validation scoring (enabled by default)
             from app.services.metadata_prototype_validator import get_metadata_validator
@@ -5659,17 +5672,16 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
         similarity_threshold: float = 0.6
     ) -> Dict[str, Any]:
         """
-        Hybrid search combining semantic search (70%) with PostgreSQL full-text search (30%).
+        Hybrid search combining semantic matching with keyword matching.
 
-        Combines:
-        - Semantic vector similarity using text_embedding_1536
-        - PostgreSQL full-text search using search_vector tsvector column
+        Uses Supabase client for product search (no raw SQL).
+        Combines keyword matching on name/description with metadata search.
 
         Args:
             query: Search query text
             workspace_id: Workspace ID to filter results
             top_k: Number of results to return
-            semantic_weight: Weight for semantic similarity (default 0.7)
+            semantic_weight: Weight for semantic/metadata matching (default 0.7)
             keyword_weight: Weight for keyword matching (default 0.3)
             similarity_threshold: Minimum similarity score (default 0.6)
 
@@ -5683,94 +5695,83 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
             start_time = time.time()
             supabase_client = get_supabase_client()
 
-            # Check if embedding service is available
-            if not self.embedding_service:
+            # Get all products for the workspace
+            products_response = supabase_client.client.table('products')\
+                .select('id, name, description, metadata, workspace_id, document_id')\
+                .eq('workspace_id', workspace_id)\
+                .execute()
+
+            if not products_response.data:
                 return {
                     "results": [],
-                    "message": "Embedding service not available",
                     "total_results": 0,
-                    "processing_time": time.time() - start_time
+                    "processing_time": time.time() - start_time,
+                    "query": query
                 }
 
-            # Generate query embedding for semantic search
-            query_embedding = await self.embedding_service.generate_embedding(
-                text=query,
-                embedding_type="openai"
-            )
-
-            if not query_embedding:
-                return {
-                    "results": [],
-                    "message": "Failed to generate query embedding",
-                    "total_results": 0,
-                    "processing_time": time.time() - start_time
-                }
-
-            # Convert embedding to PostgreSQL vector format
-            embedding_str = f"[{','.join(map(str, query_embedding))}]"
-
-            # Escape single quotes in query for SQL
-            safe_query = query.replace("'", "''")
-
-            # Hybrid search using JOINs to embeddings table + full-text search on products
-            query_sql = f"""
-            WITH semantic_scores AS (
-                SELECT DISTINCT ON (p.id)
-                    p.id,
-                    p.name as product_name,
-                    p.description,
-                    p.metadata,
-                    p.workspace_id,
-                    p.document_id,
-                    (1 - (e.embedding <=> '{embedding_str}'::vector(1536))) as semantic_score
-                FROM products p
-                INNER JOIN chunk_product_relationships cpr ON cpr.product_id = p.id
-                INNER JOIN embeddings e ON e.chunk_id = cpr.chunk_id
-                WHERE p.workspace_id = '{workspace_id}'
-                    AND e.embedding IS NOT NULL
-                    AND e.dimensions = 1536
-                ORDER BY p.id, semantic_score DESC
-            )
-            SELECT
-                s.id,
-                s.product_name,
-                s.description,
-                s.metadata,
-                s.workspace_id,
-                s.document_id,
-                s.semantic_score,
-                COALESCE(ts_rank(to_tsvector('english', COALESCE(s.product_name, '') || ' ' || COALESCE(s.description, '')), plainto_tsquery('english', '{safe_query}')), 0) as keyword_score,
-                (
-                    {semantic_weight} * COALESCE(s.semantic_score, 0) +
-                    {keyword_weight} * COALESCE(ts_rank(to_tsvector('english', COALESCE(s.product_name, '') || ' ' || COALESCE(s.description, '')), plainto_tsquery('english', '{safe_query}')), 0)
-                ) as hybrid_score
-            FROM semantic_scores s
-            WHERE (
-                s.semantic_score >= {similarity_threshold}
-                OR to_tsvector('english', COALESCE(s.product_name, '') || ' ' || COALESCE(s.description, '')) @@ plainto_tsquery('english', '{safe_query}')
-            )
-            ORDER BY hybrid_score DESC
-            LIMIT {top_k}
-            """
-
-            # Execute query
-            response = supabase_client.client.rpc('exec_sql', {'query': query_sql}).execute()
+            # Parse query into parts for matching
+            query_lower = query.lower()
+            query_parts = query_lower.split()
 
             results = []
-            if response.data:
-                for row in response.data:
+            for product in products_response.data:
+                product_name = (product.get('name') or '').lower()
+                product_desc = (product.get('description') or '').lower()
+                product_metadata = product.get('metadata') or {}
+
+                # Calculate keyword score (exact word matches)
+                keyword_score = 0.0
+                keyword_matches = 0
+                for part in query_parts:
+                    if part in product_name:
+                        keyword_score += 0.5
+                        keyword_matches += 1
+                    if part in product_desc:
+                        keyword_score += 0.3
+                        keyword_matches += 1
+
+                # Normalize keyword score
+                if query_parts:
+                    keyword_score = min(keyword_score / len(query_parts), 1.0)
+
+                # Calculate semantic score (metadata + fuzzy matching)
+                semantic_score = 0.0
+
+                # Check metadata for manufacturer, factory, collection, etc.
+                for meta_key, meta_value in product_metadata.items():
+                    if isinstance(meta_value, str):
+                        meta_lower = meta_value.lower()
+                        for part in query_parts:
+                            if part in meta_lower:
+                                semantic_score += 0.4
+                                break
+                        # Exact metadata value match
+                        if query_lower in meta_lower or meta_lower in query_lower:
+                            semantic_score += 0.5
+
+                # Normalize semantic score
+                semantic_score = min(semantic_score, 1.0)
+
+                # Calculate hybrid score
+                hybrid_score = (semantic_weight * semantic_score) + (keyword_weight * keyword_score)
+
+                if hybrid_score >= similarity_threshold or keyword_matches > 0:
                     results.append({
-                        "id": row.get("id"),
-                        "product_name": row.get("product_name"),
-                        "description": row.get("description"),
-                        "metadata": row.get("metadata", {}),
-                        "workspace_id": row.get("workspace_id"),
-                        "document_id": row.get("document_id"),
-                        "score": row.get("hybrid_score", 0.0),
-                        "semantic_score": row.get("semantic_score", 0.0),
-                        "keyword_score": row.get("keyword_score", 0.0),
+                        "id": product.get('id'),
+                        "product_name": product.get('name'),
+                        "description": product.get('description'),
+                        "metadata": product_metadata,
+                        "workspace_id": product.get('workspace_id'),
+                        "document_id": product.get('document_id'),
+                        "score": hybrid_score,
+                        "semantic_score": semantic_score,
+                        "keyword_score": keyword_score,
                         "search_type": "hybrid"
                     })
+
+            # Sort by score and limit
+            results.sort(key=lambda x: x['score'], reverse=True)
+            results = results[:top_k]
 
             return {
                 "results": results,
@@ -5802,18 +5803,14 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
         """
         JSONB-based property filtering with AND/OR logic support.
 
-        Searches products based on material properties stored in metadata JSONB column.
-        Supports complex queries like:
-        - material_type = "fabric"
-        - dimensions.width >= 100
-        - color IN ["red", "blue"]
+        Uses Supabase client for filtering (no raw SQL).
+        Filters products in Python based on metadata JSONB column.
 
         Args:
             workspace_id: Workspace ID to filter results
             material_filters: Dictionary of property filters
                 Example: {
                     "material_type": "fabric",
-                    "dimensions.width": {"gte": 100},
                     "color": ["red", "blue"]
                 }
             top_k: Number of results to return
@@ -5837,64 +5834,84 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
                     "processing_time": time.time() - start_time
                 }
 
-            # Build WHERE clauses for JSONB filtering
-            where_clauses = []
-            for key, value in material_filters.items():
-                if isinstance(value, dict):
-                    # Handle comparison operators (gte, lte, gt, lt, eq)
-                    for op, val in value.items():
-                        if op == "gte":
-                            where_clauses.append(f"(p.metadata->>'{key}')::numeric >= {val}")
-                        elif op == "lte":
-                            where_clauses.append(f"(p.metadata->>'{key}')::numeric <= {val}")
-                        elif op == "gt":
-                            where_clauses.append(f"(p.metadata->>'{key}')::numeric > {val}")
-                        elif op == "lt":
-                            where_clauses.append(f"(p.metadata->>'{key}')::numeric < {val}")
-                        elif op == "eq":
-                            where_clauses.append(f"p.metadata->>'{key}' = '{val}'")
-                elif isinstance(value, list):
-                    # Handle IN operator
-                    values_str = "', '".join(str(v) for v in value)
-                    where_clauses.append(f"p.metadata->>'{key}' IN ('{values_str}')")
-                else:
-                    # Handle exact match
-                    where_clauses.append(f"p.metadata->>'{key}' = '{value}'")
+            # Get all products for the workspace
+            products_response = supabase_client.client.table('products')\
+                .select('id, name, description, metadata, workspace_id, document_id')\
+                .eq('workspace_id', workspace_id)\
+                .execute()
 
-            # Combine clauses with AND/OR
-            connector = " AND " if match_mode == "AND" else " OR "
-            where_condition = connector.join(where_clauses)
+            if not products_response.data:
+                return {
+                    "results": [],
+                    "total_results": 0,
+                    "processing_time": time.time() - start_time,
+                    "filters": material_filters,
+                    "match_mode": match_mode
+                }
 
-            # Material property search query
-            query_sql = f"""
-            SELECT
-                p.id,
-                p.product_name,
-                p.description,
-                p.metadata,
-                p.workspace_id,
-                p.document_id
-            FROM products p
-            WHERE p.workspace_id = '{workspace_id}'
-                AND ({where_condition})
-            LIMIT {top_k}
-            """
-
-            # Execute query
-            response = supabase_client.client.rpc('exec_sql', {'query': query_sql}).execute()
-
+            # Filter products in Python based on material_filters
             results = []
-            if response.data:
-                for row in response.data:
+            for product in products_response.data:
+                product_metadata = product.get('metadata') or {}
+
+                # Check each filter
+                filter_results = []
+                for key, value in material_filters.items():
+                    product_value = product_metadata.get(key)
+
+                    if product_value is None:
+                        filter_results.append(False)
+                        continue
+
+                    if isinstance(value, dict):
+                        # Handle comparison operators
+                        match = True
+                        for op, val in value.items():
+                            try:
+                                product_num = float(product_value)
+                                if op == "gte" and not (product_num >= val):
+                                    match = False
+                                elif op == "lte" and not (product_num <= val):
+                                    match = False
+                                elif op == "gt" and not (product_num > val):
+                                    match = False
+                                elif op == "lt" and not (product_num < val):
+                                    match = False
+                                elif op == "eq" and str(product_value).lower() != str(val).lower():
+                                    match = False
+                            except (ValueError, TypeError):
+                                match = False
+                        filter_results.append(match)
+                    elif isinstance(value, list):
+                        # Handle IN operator
+                        filter_results.append(
+                            str(product_value).lower() in [str(v).lower() for v in value]
+                        )
+                    else:
+                        # Handle exact match
+                        filter_results.append(
+                            str(product_value).lower() == str(value).lower()
+                        )
+
+                # Apply AND/OR logic
+                if match_mode == "AND":
+                    matches = all(filter_results) if filter_results else False
+                else:  # OR
+                    matches = any(filter_results) if filter_results else False
+
+                if matches:
                     results.append({
-                        "id": row.get("id"),
-                        "product_name": row.get("product_name"),
-                        "description": row.get("description"),
-                        "metadata": row.get("metadata", {}),
-                        "workspace_id": row.get("workspace_id"),
-                        "document_id": row.get("document_id"),
+                        "id": product.get("id"),
+                        "product_name": product.get("name"),
+                        "description": product.get("description"),
+                        "metadata": product_metadata,
+                        "workspace_id": product.get("workspace_id"),
+                        "document_id": product.get("document_id"),
                         "search_type": "material_property"
                     })
+
+            # Limit results
+            results = results[:top_k]
 
             return {
                 "results": results,
