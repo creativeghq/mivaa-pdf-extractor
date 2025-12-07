@@ -531,7 +531,19 @@ Focus your analysis on fulfilling this specific request while still providing co
 
         prompt = f"""You are analyzing a material/product catalog PDF with {total_pages} pages.
 
-Your task is to identify and extract content across the following categories:
+**FIRST: EXTRACT DOCUMENT-LEVEL INFORMATION**
+Look at the cover page, intro pages, and headers/footers to identify:
+1. **catalog_factory**: The main factory/brand name for this catalog (e.g., "HARMONY", "Porcelanosa")
+2. **catalog_factory_group**: The parent company or group (e.g., "Peronda Group", "Porcelanosa Group")
+3. **catalog_manufacturer**: The manufacturer if different from factory
+
+This information typically appears on:
+- Cover page (large logo/brand name)
+- Footer/header of pages
+- "About Us" or intro sections
+- Copyright notices
+
+**THEN: Extract content across the following categories:**
 {chr(10).join(category_instructions)}
 
 {agent_context}
@@ -555,6 +567,9 @@ Your task is to identify and extract content across the following categories:
 **OUTPUT FORMAT (JSON):**
 ```json
 {{
+  "catalog_factory": "HARMONY",
+  "catalog_factory_group": "Peronda Group",
+  "catalog_manufacturer": "Peronda Group",
   "products": [
     {{
       "name": "NOVA",
@@ -565,15 +580,14 @@ Your task is to identify and extract content across the following categories:
       "metadata": {{
         "designer": "SG NY",
         "studio": "SG NY",
-        "category": "tiles",
+        "material_category": "Ceramic Tile",
         "dimensions": ["15×38", "20×40"],
         "variants": [
           {{"type": "color", "value": "beige"}},
           {{"type": "finish", "value": "matte"}}
         ],
-        "factory": "Castellón Factory",
-        "factory_group": "Harmony Group",
-        "manufacturer": "Harmony Materials",
+        "factory_name": "HARMONY",
+        "factory_group_name": "Peronda Group",
         "country_of_origin": "Spain",
         "slip_resistance": "R11",
         "fire_rating": "A1",
@@ -584,51 +598,19 @@ Your task is to identify and extract content across the following categories:
       }}
     }}
   ],
-  "certificates": [
-    {{
-      "name": "ISO 9001:2015",
-      "certificate_type": "quality_management",
-      "issuer": "TÜV SÜD",
-      "issue_date": "2023-01-15",
-      "expiry_date": "2026-01-15",
-      "standards": ["ISO 9001:2015"],
-      "page_range": [45, 46],
-      "confidence": 0.92
-    }}
-  ],
-  "logos": [
-    {{
-      "name": "Company Logo",
-      "logo_type": "company",
-      "description": "Main company brand logo",
-      "page_range": [1, 2],
-      "confidence": 0.98
-    }}
-  ],
-  "specifications": [
-    {{
-      "name": "Installation Guide",
-      "spec_type": "installation",
-      "description": "Step-by-step installation instructions",
-      "page_range": [50, 52],
-      "confidence": 0.90
-    }}
-  ],
-  "page_classification": {{
-    "1": "logo",
-    "2": "marketing",
-    "12": "product",
-    "13": "product",
-    "45": "certificate",
-    "50": "specification"
-  }},
+  "certificates": [...],
+  "logos": [...],
+  "specifications": [...],
+  "page_classification": {{...}},
   "total_products": 14,
-  "total_certificates": 3,
-  "total_logos": 5,
-  "total_specifications": 2,
   "confidence_score": 0.92
 }}
 ```
+
+**IMPORTANT:**
+- ALWAYS extract catalog_factory from cover/intro pages - this is the brand that makes ALL products
+- Products inherit factory_name from catalog_factory if not specified individually
+- Use consistent field names: factory_name (not factory), factory_group_name (not factory_group), material_category (not category)
 
 **PDF CONTENT:**
 {pdf_text[:200000]}
@@ -746,7 +728,19 @@ Return ONLY valid JSON with ALL products found in the index."""
 
 **USER REQUEST:** "{agent_prompt}"
 
-Your task is to identify and extract content across the following categories:
+**FIRST: EXTRACT DOCUMENT-LEVEL INFORMATION**
+Look at the cover page, intro pages, and headers/footers to identify:
+1. **catalog_factory**: The main factory/brand name for this catalog (e.g., "HARMONY", "Porcelanosa")
+2. **catalog_factory_group**: The parent company or group (e.g., "Peronda Group", "Porcelanosa Group")
+3. **catalog_manufacturer**: The manufacturer if different from factory
+
+This information typically appears on:
+- Cover page (large logo/brand name)
+- Footer/header of pages
+- "About Us" or intro sections
+- Copyright notices
+
+**THEN: Extract content across the following categories:**
 {chr(10).join(category_sections)}
 
 **⚠️ CRITICAL - PDF EXCERPT HANDLING**:
@@ -787,6 +781,9 @@ This PDF has {total_pages} pages (numbered 1 to {total_pages}). It may be an EXC
 **OUTPUT FORMAT (JSON):**
 ```json
 {{
+  "catalog_factory": "HARMONY",
+  "catalog_factory_group": "Peronda Group",
+  "catalog_manufacturer": "Peronda Group",
   "products": [
     {{
       "name": "NOVA",
@@ -797,15 +794,14 @@ This PDF has {total_pages} pages (numbered 1 to {total_pages}). It may be an EXC
       "metadata": {{
         "designer": "SG NY",
         "studio": "SG NY",
-        "category": "tiles",
+        "material_category": "Ceramic Tile",
         "dimensions": ["15×38", "20×40"],
         "variants": [
           {{"type": "color", "value": "beige"}},
           {{"type": "finish", "value": "matte"}}
         ],
-        "factory": "Castellón Factory",
-        "factory_group": "Harmony Group",
-        "manufacturer": "Harmony Materials",
+        "factory_name": "HARMONY",
+        "factory_group_name": "Peronda Group",
         "country_of_origin": "Spain",
         "slip_resistance": "R11",
         "fire_rating": "A1",
@@ -816,51 +812,19 @@ This PDF has {total_pages} pages (numbered 1 to {total_pages}). It may be an EXC
       }}
     }}
   ],
-  "certificates": [
-    {{
-      "name": "ISO 9001:2015",
-      "certificate_type": "quality_management",
-      "issuer": "TÜV SÜD",
-      "issue_date": "2023-01-15",
-      "expiry_date": "2026-01-15",
-      "standards": ["ISO 9001:2015"],
-      "page_range": [45, 46],
-      "confidence": 0.92
-    }}
-  ],
-  "logos": [
-    {{
-      "name": "Company Logo",
-      "logo_type": "company",
-      "description": "Main company brand logo",
-      "page_range": [1, 2],
-      "confidence": 0.98
-    }}
-  ],
-  "specifications": [
-    {{
-      "name": "Installation Guide",
-      "spec_type": "installation",
-      "description": "Step-by-step installation instructions",
-      "page_range": [50, 52],
-      "confidence": 0.90
-    }}
-  ],
-  "page_classification": {{
-    "1": "logo",
-    "2": "marketing",
-    "12": "product",
-    "13": "product",
-    "45": "certificate",
-    "50": "specification"
-  }},
+  "certificates": [...],
+  "logos": [...],
+  "specifications": [...],
+  "page_classification": {{...}},
   "total_products": 14,
-  "total_certificates": 3,
-  "total_logos": 5,
-  "total_specifications": 2,
   "confidence_score": 0.92
 }}
 ```
+
+**IMPORTANT:**
+- ALWAYS extract catalog_factory from cover/intro pages - this is the brand that makes ALL products
+- Products inherit factory_name from catalog_factory if not specified individually
+- Use consistent field names: factory_name (not factory), factory_group_name (not factory_group), material_category (not category)
 
 **PDF CONTENT:**
 {pdf_text[:200000]}
