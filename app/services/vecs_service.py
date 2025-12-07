@@ -267,13 +267,23 @@ class VecsService:
                 data=query_embedding,
                 limit=limit,
                 filters=filters,
-                include_value=False,  # Don't return the embedding vector
+                include_value=True,  # Return distance for similarity scoring
                 include_metadata=include_metadata
             )
 
-            # Format results
+            # Format results - handle different return formats based on include_value/include_metadata
             formatted_results = []
-            for image_id, distance, metadata in results:
+            for result_tuple in results:
+                # With include_value=True and include_metadata=True: (id, distance, metadata)
+                # With include_value=True and include_metadata=False: (id, distance)
+                # With include_value=False and include_metadata=True: (id, metadata)
+                # With include_value=False and include_metadata=False: just id (string)
+                if include_metadata:
+                    image_id, distance, metadata = result_tuple
+                else:
+                    image_id, distance = result_tuple
+                    metadata = None
+
                 result = {
                     "image_id": image_id,
                     "similarity_score": 1 - distance,  # Convert distance to similarity
