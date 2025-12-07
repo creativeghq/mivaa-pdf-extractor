@@ -5394,6 +5394,13 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
 
             # Score products based on text matching
             text_scored_products = []
+
+            # Stop words that shouldn't contribute to matching
+            stop_words = {'by', 'the', 'a', 'an', 'and', 'or', 'for', 'with', 'in', 'on', 'at', 'to', 'of'}
+
+            # Filter out stop words from query
+            significant_query_parts = [p for p in query_parts if p not in stop_words]
+
             if products_response.data:
                 for product in products_response.data:
                     product_name = (product.get('name') or '').lower()
@@ -5402,27 +5409,42 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
 
                     # Calculate text similarity score
                     text_score = 0.0
-                    matches = 0
 
-                    # Check query parts against name, description, and metadata
-                    for part in query_parts:
-                        if part in product_name:
-                            text_score += 0.4  # Name match is important
-                            matches += 1
-                        if part in product_desc:
-                            text_score += 0.2
-                            matches += 1
+                    # PRIORITY 1: Exact full query match in name (highest priority)
+                    if query_lower in product_name:
+                        text_score = 1.0  # Perfect match
+                    else:
+                        # PRIORITY 2: Check significant word matches (excluding stop words)
+                        name_matches = 0
+                        for part in significant_query_parts:
+                            if part in product_name:
+                                name_matches += 1
+                                text_score += 0.4  # Name match is important
 
-                        # Check metadata values (manufacturer, factory, etc.)
-                        for meta_key, meta_value in product_metadata.items():
-                            if isinstance(meta_value, str) and part in meta_value.lower():
-                                text_score += 0.3
-                                matches += 1
-                                break
+                        # Bonus for matching ALL significant parts in name
+                        if significant_query_parts and name_matches == len(significant_query_parts):
+                            text_score += 0.3  # All significant words matched in name
+
+                        # PRIORITY 3: Description matches (lower weight)
+                        for part in significant_query_parts:
+                            if part in product_desc:
+                                text_score += 0.15
+
+                        # PRIORITY 4: Metadata matches (manufacturer, factory, brand)
+                        for part in significant_query_parts:
+                            for meta_key, meta_value in product_metadata.items():
+                                if isinstance(meta_value, str) and part in meta_value.lower():
+                                    text_score += 0.2
+                                    break
+                                # Handle nested dict values (e.g., brand: {value: "ONSET"})
+                                if isinstance(meta_value, dict):
+                                    nested_val = meta_value.get('value', '')
+                                    if isinstance(nested_val, str) and part in nested_val.lower():
+                                        text_score += 0.2
+                                        break
 
                     # Normalize score
-                    if query_parts:
-                        text_score = min(text_score, 1.0)
+                    text_score = min(text_score, 1.0)
 
                     # Apply material filters if provided
                     if material_filters:
