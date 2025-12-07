@@ -6086,23 +6086,46 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
 
     async def _generate_clip_embedding(self, image: 'Image') -> Optional[List[float]]:
         """
-        Generate CLIP embedding for an image.
+        Generate SigLIP visual embedding for an image.
+
+        Uses RealEmbeddingsService which has SigLIP model loaded.
 
         Args:
             image: PIL Image object
 
         Returns:
-            List of floats representing the CLIP embedding (512 dimensions)
+            List of floats representing the visual embedding (1152 dimensions for SigLIP)
         """
         try:
-            # TODO: Integrate with actual CLIP model
-            # For now, return a placeholder embedding
-            # In production, this should call the CLIP embedding service
-            self.logger.warning("CLIP embedding generation not yet implemented - using placeholder")
-            return [0.0] * 512  # Placeholder 512-dimensional embedding
+            from .real_embeddings_service import RealEmbeddingsService
+            import io
+            import base64
+
+            embeddings_service = RealEmbeddingsService()
+
+            # Load model if not already loaded
+            await embeddings_service.ensure_models_loaded()
+
+            # Convert PIL image to base64
+            buffered = io.BytesIO()
+            image.save(buffered, format="JPEG")
+            image_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+
+            # Generate embedding using SigLIP
+            embedding, model_used, _ = await embeddings_service._generate_visual_embedding(
+                image_url=None,
+                image_data=image_base64
+            )
+
+            if embedding:
+                self.logger.info(f"✅ Generated visual embedding ({len(embedding)}D) using {model_used}")
+                return embedding
+
+            self.logger.warning("⚠️ Visual embedding generation returned None")
+            return None
 
         except Exception as e:
-            self.logger.error(f"Failed to generate CLIP embedding: {e}")
+            self.logger.error(f"Failed to generate visual embedding: {e}")
             return None
 
     async def search_all_strategies(
