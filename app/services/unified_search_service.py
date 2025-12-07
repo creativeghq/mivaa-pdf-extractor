@@ -917,9 +917,17 @@ class UnifiedSearchService:
                 model="gpt-4o-mini",
                 messages=[{
                     "role": "system",
-                    "content": """You are a material search query parser. Extract structured search parameters from natural language queries.
+                    "content": """You are a material search query parser. Analyze the query and determine if it's:
+1. A PRODUCT NAME search (e.g., "MAISON by ONSET", "NOVA collection", "LOG by ALT Design")
+2. A DESCRIPTIVE search (e.g., "waterproof ceramic tiles for outdoor patio")
 
-Focus on extracting:
+For PRODUCT NAME searches:
+- Set is_product_name: true
+- Set product_name: the exact product name from the query
+- Leave all other fields null
+
+For DESCRIPTIVE searches, extract:
+- is_product_name: false
 - material_type: Type of material (ceramic, porcelain, fabric, wood, metal, etc.)
 - properties: Functional properties (waterproof, outdoor, slip-resistant, fire-resistant, etc.)
 - finish: Surface finish (matte, glossy, textured, polished, brushed, etc.)
@@ -928,8 +936,10 @@ Focus on extracting:
 - style: Design style (modern, rustic, minimalist, industrial, etc.)
 - dimensions: Size specifications if mentioned
 
-Return ONLY valid JSON with these fields. Use null for missing fields.
-For visual_query, combine material_type + style + finish (the core visual concept)."""
+IMPORTANT: If the query looks like a product/collection name (contains "by", brand names,
+ALL CAPS words, or doesn't describe material properties), treat it as a PRODUCT NAME search.
+
+Return ONLY valid JSON. Use null for missing fields."""
                 }, {
                     "role": "user",
                     "content": f"Parse this query: {query}"
@@ -940,6 +950,12 @@ For visual_query, combine material_type + style + finish (the core visual concep
 
             # Parse response
             parsed_data = json.loads(response.choices[0].message.content)
+
+            # Check if this is a product name search
+            if parsed_data.get("is_product_name") or parsed_data.get("product_name"):
+                # For product name searches, return the original query unchanged
+                self.logger.info(f"🧠 Query identified as PRODUCT NAME: '{query}' → passing through unchanged")
+                return query, {}
 
             # Build visual query (core concept for embedding)
             visual_parts = []
@@ -955,7 +971,7 @@ For visual_query, combine material_type + style + finish (the core visual concep
             # Build filters dictionary (remove null values and visual_query)
             filters = {}
             for key, value in parsed_data.items():
-                if key == "visual_query":
+                if key in ("visual_query", "is_product_name", "product_name"):
                     continue
                 if value is not None and value != [] and value != "":
                     # Handle properties as array containment
