@@ -5446,9 +5446,10 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
                     # Normalize score
                     text_score = min(text_score, 1.0)
 
-                    # Apply material filters if provided
+                    # Apply material filters as SOFT BOOSTS (not hard requirements)
+                    # Each matching filter adds to the score instead of excluding non-matches
+                    filter_boost = 0.0
                     if material_filters:
-                        filter_match = True
                         for filter_key, filter_value in material_filters.items():
                             # Handle nested paths like "appearance.colors"
                             if '.' in filter_key:
@@ -5464,31 +5465,30 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
                                 product_value = product_metadata.get(filter_key)
 
                             if product_value is None:
-                                filter_match = False
-                                break
+                                continue  # Skip this filter, don't exclude product
 
                             # Handle dict values with 'value' key (e.g., {"value": "matt", "confidence": 0.9})
                             if isinstance(product_value, dict) and 'value' in product_value:
                                 product_value = product_value['value']
 
-                            # Use contains matching instead of exact match for flexibility
-                            # e.g., "ceramic" should match "ceramic tile" and "ceramic"
+                            # Handle list values (e.g., colors: ["white", "sand", "brown"])
+                            if isinstance(product_value, list):
+                                product_value = ' '.join(str(v) for v in product_value)
+
+                            # Use contains matching for flexibility
                             product_value_str = str(product_value).lower()
                             if isinstance(filter_value, list):
-                                # Check if any filter value is contained in product value
                                 matched = any(str(v).lower() in product_value_str or product_value_str in str(v).lower()
                                             for v in filter_value)
-                                if not matched:
-                                    filter_match = False
-                                    break
+                                if matched:
+                                    filter_boost += 0.15  # Boost for matching filter
                             else:
                                 filter_value_str = str(filter_value).lower()
-                                # Match if either contains the other
-                                if filter_value_str not in product_value_str and product_value_str not in filter_value_str:
-                                    filter_match = False
-                                    break
-                        if not filter_match:
-                            continue
+                                if filter_value_str in product_value_str or product_value_str in filter_value_str:
+                                    filter_boost += 0.15  # Boost for matching filter
+
+                    # Add filter boost to text score
+                    text_score += filter_boost
 
                     if text_score > 0 or not query_parts:
                         text_scored_products.append({
