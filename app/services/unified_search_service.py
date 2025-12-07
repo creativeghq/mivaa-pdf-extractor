@@ -928,16 +928,26 @@ For PRODUCT NAME searches:
 
 For DESCRIPTIVE searches, extract:
 - is_product_name: false
-- material_type: Type of material (ceramic, porcelain, fabric, wood, metal, etc.)
+- material_type: Type of material - ONLY if EXPLICITLY stated (ceramic, porcelain, fabric, wood, metal, tile, etc.)
+- material_type_explicit: true if the user explicitly mentioned the material type, false if you're inferring it
 - properties: Functional properties (waterproof, outdoor, slip-resistant, fire-resistant, etc.)
-- finish: Surface finish (matte, glossy, textured, polished, brushed, etc.)
-- colors: Color names or descriptions (beige, white, gray, blue, etc.)
-- application: Use case or location (patio, bathroom, kitchen, flooring, wall, etc.)
-- style: Design style (modern, rustic, minimalist, industrial, etc.)
+- finish: Surface finish (matte, glossy, textured, polished, brushed, matt, etc.)
+- colors: Color names or descriptions (beige, white, gray, blue, sand, taupe, etc.)
+- pattern: Visual pattern (wood pattern, marble pattern, geometric, stripes, etc.)
+- application: Use case or location (patio, bathroom, kitchen, flooring, wall, shower, etc.)
+- style: Design style (modern, rustic, minimalist, industrial, mediterranean, etc.)
 - dimensions: Size specifications if mentioned
+- designer: Designer or studio name if mentioned
+- collection: Collection name if mentioned
+- factory: Factory or manufacturer name if mentioned
 
-IMPORTANT: If the query looks like a product/collection name (contains "by", brand names,
-ALL CAPS words, or doesn't describe material properties), treat it as a PRODUCT NAME search.
+IMPORTANT RULES:
+1. If the query looks like a product/collection name (contains "by", brand names, ALL CAPS words), treat it as PRODUCT NAME search.
+2. For material_type: ONLY set if user EXPLICITLY says it. Examples:
+   - "ceramic tile with wood pattern" → material_type="ceramic tile", material_type_explicit=true
+   - "wood pattern" → material_type=null, material_type_explicit=false (could be ceramic, wood, MDF)
+   - "baxi" → material_type=null (brand spans multiple categories)
+3. pattern is separate from material_type - "wood pattern" is a pattern, not necessarily wood material.
 
 Return ONLY valid JSON. Use null for missing fields."""
                 }, {
@@ -969,24 +979,42 @@ Return ONLY valid JSON. Use null for missing fields."""
             visual_query = " ".join(visual_parts) if visual_parts else query
 
             # Build filters dictionary (remove null values and visual_query)
-            # Map AI output fields to actual database metadata fields
+            # Comprehensive mapping from AI output fields to actual database metadata fields
             field_mapping = {
-                "colors": "appearance.colors",  # Nested in appearance object
-                "finish": "appearance.finish",  # Nested in appearance object
-                "application": "application.recommended_use",  # Nested in application object
+                # Appearance (nested in appearance object)
+                "colors": "appearance.colors",
+                "finish": "appearance.finish",
+                "pattern": "appearance.pattern",
+                # Application (nested in application object)
+                "application": "application.recommended_use",
+                # Design (nested in design object)
+                "style": "design.aesthetic_style",
+                "designer": "design.designers",
+                "collection": "design.collection",
+                # Material properties (nested in material_properties object)
+                "properties": "material_properties",
+                # Top-level fields (no mapping needed, but listed for clarity)
+                "factory": "factory_name",
+                "dimensions": "dimensions",
+                # Category - only if explicitly stated
+                "material_type": "material_category",
             }
 
-            # Fields to SKIP from filters - too presumptuous and causes incorrect filtering
-            # e.g., "baxi" brand spans multiple categories (AC, heat pumps, boilers)
-            # e.g., "wood pattern" could be ceramic tile, actual wood, MDF, laminate
-            skip_fields = {"material_type", "material_category"}
+            # Fields that are metadata about parsing, not actual filters
+            skip_fields = {"is_product_name", "product_name", "visual_query", "material_type_explicit"}
 
             filters = {}
             for key, value in parsed_data.items():
-                if key in ("visual_query", "is_product_name", "product_name"):
-                    continue
                 if key in skip_fields:
-                    continue  # Don't pass category filters - let text/visual search handle it
+                    continue
+
+                # Special handling for material_type - only pass if EXPLICITLY stated
+                if key == "material_type":
+                    if not parsed_data.get("material_type_explicit", False):
+                        # Category was inferred, not explicit - skip it
+                        # e.g., "wood pattern" shouldn't filter to wood category
+                        continue
+
                 if value is not None and value != [] and value != "":
                     # Map to actual DB field name
                     db_key = field_mapping.get(key, key)
