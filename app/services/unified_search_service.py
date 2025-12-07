@@ -971,16 +971,22 @@ Return ONLY valid JSON. Use null for missing fields."""
             # Build filters dictionary (remove null values and visual_query)
             # Map AI output fields to actual database metadata fields
             field_mapping = {
-                "material_type": "material_category",  # AI says "material_type", DB uses "material_category"
                 "colors": "appearance.colors",  # Nested in appearance object
                 "finish": "appearance.finish",  # Nested in appearance object
                 "application": "application.recommended_use",  # Nested in application object
             }
 
+            # Fields to SKIP from filters - too presumptuous and causes incorrect filtering
+            # e.g., "baxi" brand spans multiple categories (AC, heat pumps, boilers)
+            # e.g., "wood pattern" could be ceramic tile, actual wood, MDF, laminate
+            skip_fields = {"material_type", "material_category"}
+
             filters = {}
             for key, value in parsed_data.items():
                 if key in ("visual_query", "is_product_name", "product_name"):
                     continue
+                if key in skip_fields:
+                    continue  # Don't pass category filters - let text/visual search handle it
                 if value is not None and value != [] and value != "":
                     # Map to actual DB field name
                     db_key = field_mapping.get(key, key)
