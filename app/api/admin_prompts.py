@@ -22,15 +22,18 @@ class PromptResponse(BaseModel):
     """Prompt response model"""
     id: str
     workspace_id: str
-    stage: str
+    stage: Optional[str] = None
     category: str
+    name: Optional[str] = None
+    prompt_type: Optional[str] = None
     prompt_template: str
     system_prompt: Optional[str] = None
-    is_custom: bool
-    version: int
+    is_custom: bool = False
+    version: int = 1
     created_by: Optional[str] = None
     created_at: str
     updated_at: str
+    used_in: Optional[List[str]] = None
 
 
 class UpdatePromptRequest(BaseModel):

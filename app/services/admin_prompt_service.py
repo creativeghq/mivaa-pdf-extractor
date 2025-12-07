@@ -27,25 +27,57 @@ class AdminPromptService:
         self,
         workspace_id: str,
         stage: Optional[str] = None,
-        category: Optional[str] = None
+        category: Optional[str] = None,
+        prompt_type: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
-        Get all prompts for workspace, optionally filtered by stage/category
+        Get all prompts from unified table, optionally filtered.
 
         Args:
             workspace_id: Workspace ID
             stage: Optional stage filter
             category: Optional category filter
+            prompt_type: Optional prompt_type filter (agent, extraction, template, search)
 
         Returns:
-            List of prompts
+            List of prompts with used_in field
         """
         try:
-            return await self.prompt_service.get_extraction_prompts(
-                workspace_id=workspace_id,
-                stage=stage,
-                category=category
-            )
+            # Query unified prompts table directly to get ALL prompts
+            query = self.supabase.client.table('prompts')\
+                .select('*')\
+                .eq('is_active', True)
+
+            if stage and stage != 'all':
+                query = query.eq('stage', stage)
+            if category and category != 'all':
+                query = query.eq('category', category)
+            if prompt_type and prompt_type != 'all':
+                query = query.eq('prompt_type', prompt_type)
+
+            result = query.order('prompt_type').order('stage').order('category').execute()
+
+            # Transform to include prompt_template for backward compatibility
+            prompts = []
+            for p in (result.data or []):
+                prompts.append({
+                    'id': p.get('id'),
+                    'workspace_id': p.get('workspace_id') or workspace_id,
+                    'stage': p.get('stage') or 'general',
+                    'category': p.get('category'),
+                    'name': p.get('name'),
+                    'prompt_type': p.get('prompt_type'),
+                    'prompt_template': p.get('prompt_text') or p.get('system_prompt') or '',
+                    'system_prompt': p.get('system_prompt'),
+                    'is_custom': p.get('is_custom', False),
+                    'version': p.get('version', 1),
+                    'created_by': p.get('created_by'),
+                    'created_at': p.get('created_at'),
+                    'updated_at': p.get('updated_at'),
+                    'used_in': p.get('used_in') or []
+                })
+
+            return prompts
         except Exception as e:
             logger.error(f"Error fetching prompts: {str(e)}")
             return []
