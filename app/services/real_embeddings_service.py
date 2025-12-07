@@ -171,11 +171,32 @@ class RealEmbeddingsService:
             embeddings["success"] = True
 
             return embeddings
-            
+
         except Exception as e:
             self.logger.error(f"❌ Embedding generation failed: {e}")
             return {"success": False, "error": str(e)}
-    
+
+    async def generate_embedding(
+        self,
+        text: str,
+        embedding_type: str = "openai",
+        dimensions: int = 1536
+    ) -> Optional[List[float]]:
+        """
+        Public method to generate a single text embedding.
+
+        This is the main entry point for generating query embeddings for search.
+
+        Args:
+            text: Text to embed
+            embedding_type: Type of embedding ("openai" for text-embedding-3-small)
+            dimensions: Embedding dimensions (default 1536)
+
+        Returns:
+            List of floats representing the embedding, or None if failed
+        """
+        return await self._generate_text_embedding(text=text, dimensions=dimensions)
+
     async def _generate_text_embedding(
         self,
         text: str,
