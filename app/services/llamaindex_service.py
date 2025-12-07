@@ -5386,7 +5386,7 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
 
             # Build product query with filters
             product_query = supabase_client.client.table('products')\
-                .select('id, name, description, metadata, workspace_id, document_id')\
+                .select('id, name, description, metadata, workspace_id, source_document_id')\
                 .eq('workspace_id', workspace_id)
 
             # Execute product query
@@ -5495,7 +5495,7 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
                         "description": product.get('description'),
                         "metadata": product.get('metadata', {}),
                         "workspace_id": product.get('workspace_id'),
-                        "document_id": product.get('document_id'),
+                        "source_document_id": product.get('source_document_id'),
                         "score": weighted_score,
                         "text_score": text_score,
                         "visual_score": visual_score,
@@ -5697,7 +5697,7 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
 
             # Get all products for the workspace
             products_response = supabase_client.client.table('products')\
-                .select('id, name, description, metadata, workspace_id, document_id')\
+                .select('id, name, description, metadata, workspace_id, source_document_id')\
                 .eq('workspace_id', workspace_id)\
                 .execute()
 
@@ -5762,7 +5762,7 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
                         "description": product.get('description'),
                         "metadata": product_metadata,
                         "workspace_id": product.get('workspace_id'),
-                        "document_id": product.get('document_id'),
+                        "source_document_id": product.get('source_document_id'),
                         "score": hybrid_score,
                         "semantic_score": semantic_score,
                         "keyword_score": keyword_score,
@@ -5836,7 +5836,7 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
 
             # Get all products for the workspace
             products_response = supabase_client.client.table('products')\
-                .select('id, name, description, metadata, workspace_id, document_id')\
+                .select('id, name, description, metadata, workspace_id, source_document_id')\
                 .eq('workspace_id', workspace_id)\
                 .execute()
 
@@ -5906,7 +5906,7 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
                         "description": product.get("description"),
                         "metadata": product_metadata,
                         "workspace_id": product.get("workspace_id"),
-                        "document_id": product.get("document_id"),
+                        "source_document_id": product.get("source_document_id"),
                         "search_type": "material_property"
                     })
 
