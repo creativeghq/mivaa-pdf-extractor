@@ -5471,13 +5471,22 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
                             if isinstance(product_value, dict) and 'value' in product_value:
                                 product_value = product_value['value']
 
+                            # Use contains matching instead of exact match for flexibility
+                            # e.g., "ceramic" should match "ceramic tile" and "ceramic"
+                            product_value_str = str(product_value).lower()
                             if isinstance(filter_value, list):
-                                if str(product_value).lower() not in [str(v).lower() for v in filter_value]:
+                                # Check if any filter value is contained in product value
+                                matched = any(str(v).lower() in product_value_str or product_value_str in str(v).lower()
+                                            for v in filter_value)
+                                if not matched:
                                     filter_match = False
                                     break
-                            elif str(product_value).lower() != str(filter_value).lower():
-                                filter_match = False
-                                break
+                            else:
+                                filter_value_str = str(filter_value).lower()
+                                # Match if either contains the other
+                                if filter_value_str not in product_value_str and product_value_str not in filter_value_str:
+                                    filter_match = False
+                                    break
                         if not filter_match:
                             continue
 
