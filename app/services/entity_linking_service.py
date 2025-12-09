@@ -114,8 +114,9 @@ class EntityLinkingService:
                 if not product_name:
                     # Find product whose page_range contains this image's page
                     for pid, page_range in product_page_ranges.items():
-                        if page_range and len(page_range) >= 2:
-                            start_page, end_page = page_range[0], page_range[1]
+                        if page_range and len(page_range) > 0:
+            
+                            start_page, end_page = min(page_range), max(page_range)
                             if start_page <= page_number <= end_page:
                                 # Find product name by ID
                                 for pname, pid_check in product_name_to_id.items():

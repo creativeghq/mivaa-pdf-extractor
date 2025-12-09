@@ -149,13 +149,13 @@ class RelevancyService:
                 product = product_result.data[0]
                 product_name = product.get('name', 'Unknown')
                 metadata = product.get('metadata', {})
-                page_ranges = metadata.get('page_ranges', [])
+                page_range = metadata.get('page_range', [])
 
                 logger.debug(f"   Processing product: {product_name} (ID: {product_id})")
-                logger.debug(f"   Page ranges: {page_ranges}")
+                logger.debug(f"   Page range: {page_range}")
 
-                if not page_ranges:
-                    logger.warning(f"   ⚠️ Product {product_name} has no page_ranges in metadata")
+                if not page_range:
+                    logger.warning(f"   ⚠️ Product {product_name} has no page_range in metadata")
                     products_without_pages += 1
 
                     # FALLBACK: Try to link ALL images from this document to this product
@@ -191,14 +191,15 @@ class RelevancyService:
                     products_processed += 1
                     continue
 
-                # Get images within product page ranges
-                for page_range in page_ranges:
-                    start_page = page_range.get('start', 0)
-                    end_page = page_range.get('end', 0)
+                # ✅ FIX: page_range is a simple list of page numbers [12, 13, 14], not a list of dicts
+                # Get the min and max page numbers from the list
+                if isinstance(page_range, list) and len(page_range) > 0:
+                    start_page = min(page_range)
+                    end_page = max(page_range)
 
-                    logger.debug(f"   Searching for images in pages {start_page}-{end_page}")
+                    logger.debug(f"   Searching for images in pages {start_page}-{end_page} (from page_range: {page_range})")
 
-                    # ✅ FIX: Use page_number column directly (integer), not JSONB operator
+                    # Get all images within this product's page range
                     images_result = self.supabase_client.client.table('document_images')\
                         .select('id, page_number')\
                         .eq('document_id', document_id)\

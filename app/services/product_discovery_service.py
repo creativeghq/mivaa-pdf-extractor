@@ -79,9 +79,55 @@ class ProductInfo:
         "studio": "SG NY",
         "category": "tiles",
 
-        # Dimensions and variants
-        "dimensions": ["15×38", "20×40"],
-        "variants": [{"type": "color", "value": "beige"}],
+        # Dimensions (all unique sizes across variants)
+        "dimensions": ["15×38", "20×40", "7×14.8"],
+
+        # Product variants (SKU codes with colors, shapes, patterns)
+        # Each variant is a complete product configuration
+        "variants": [
+            {
+                "sku": "37885",
+                "name": "FOLD WHITE/15X38",
+                "color": "WHITE",
+                "shape": "FOLD",
+                "pattern": null,
+                "size": "15×38",
+                "pattern_count": null,
+                "mapei_code": "100"
+            },
+            {
+                "sku": "39656",
+                "name": "VALENOVA WHITE LT/11,8X11,8",
+                "color": "WHITE LT",
+                "shape": null,
+                "pattern": null,
+                "size": "11.8×11.8",
+                "pattern_count": 12,
+                "mapei_code": "100"
+            },
+            {
+                "sku": "40123",
+                "name": "CHEVRON OAK/20X120",
+                "color": "OAK",
+                "shape": null,
+                "pattern": "CHEVRON",
+                "size": "20×120",
+                "pattern_count": null,
+                "mapei_code": null
+            }
+        ],
+
+        # Available colors (when listed without individual SKUs)
+        "available_colors": ["clay", "sand", "white", "taupe"],
+
+        # Packaging details (CRITICAL for quote management)
+        "packaging": {
+            "pieces_per_box": 12,
+            "boxes_per_pallet": 48,
+            "weight_per_box_kg": 18.5,
+            "coverage_per_box_m2": 1.14,
+            "coverage_per_box_sqft": 12.27
+        },
 
         # Factory/Group identification (for agentic queries)
         "factory": "Castellón Factory",
@@ -582,10 +628,65 @@ This information typically appears on:
         "studio": "SG NY",
         "material_category": "Ceramic Tile",
         "dimensions": ["15×38", "20×40"],
+
+        // ✅ CRITICAL: Product variants with SKU codes, colors, shapes, patterns
+        // Each variant is a COMPLETE product configuration with its own SKU
         "variants": [
-          {{"type": "color", "value": "beige"}},
-          {{"type": "finish", "value": "matte"}}
+          {{
+            "sku": "37885",
+            "name": "FOLD WHITE/15X38",
+            "color": "WHITE",
+            "shape": "FOLD",
+            "pattern": null,
+            "size": "15×38",
+            "pattern_count": null,
+            "mapei_code": "100"
+          }},
+          {{
+            "sku": "37889",
+            "name": "FOLD CLAY/15X38",
+            "color": "CLAY",
+            "shape": "FOLD",
+            "pattern": null,
+            "size": "15×38",
+            "pattern_count": null,
+            "mapei_code": "145"
+          }},
+          {{
+            "sku": "38343",
+            "name": "TRI. FOLD WHITE/7X14,8",
+            "color": "WHITE",
+            "shape": "TRI. FOLD",
+            "pattern": null,
+            "size": "7×14.8",
+            "pattern_count": null,
+            "mapei_code": "100"
+          }},
+          {{
+            "sku": "39656",
+            "name": "VALENOVA WHITE LT/11,8X11,8",
+            "color": "WHITE LT",
+            "shape": null,
+            "pattern": null,
+            "size": "11.8×11.8",
+            "pattern_count": 12,
+            "mapei_code": "100"
+          }},
+          {{
+            "sku": "40123",
+            "name": "CHEVRON OAK/20X120",
+            "color": "OAK",
+            "shape": null,
+            "pattern": "CHEVRON",
+            "size": "20×120",
+            "pattern_count": null,
+            "mapei_code": null
+          }}
         ],
+
+        // Available colors (when listed without individual SKUs)
+        "available_colors": ["clay", "sand", "white", "taupe"],
+
         "factory_name": "HARMONY",
         "factory_group_name": "Peronda Group",
         "country_of_origin": "Spain",
@@ -594,7 +695,16 @@ This information typically appears on:
         "thickness": "8mm",
         "water_absorption": "Class 3",
         "finish": "matte",
-        "material": "ceramic"
+        "material": "ceramic",
+
+        // Packaging details (CRITICAL for quote management)
+        "packaging": {{
+          "pieces_per_box": 12,
+          "boxes_per_pallet": 48,
+          "weight_per_box_kg": 18.5,
+          "coverage_per_box_m2": 1.14,
+          "coverage_per_box_sqft": 12.27
+        }}
       }}
     }}
   ],
@@ -607,10 +717,95 @@ This information typically appears on:
 }}
 ```
 
+**CRITICAL: Product Variant Extraction Rules**
+
+Products often have multiple SKU codes representing different variants (colors, shapes, patterns, sizes).
+You MUST identify the MAIN PRODUCT NAME and extract ALL variants as separate entries.
+
+**Example 1 - Color & Shape Variants:**
+```
+37885 FOLD WHITE/15X38
+37889 FOLD CLAY/15X38
+37888 FOLD GREEN/15X38
+38343 TRI. FOLD WHITE/7X14,8
+38341 TRI. FOLD CLAY/7X14,8
+```
+
+**Extraction:**
+- Main Product: "FOLD"
+- Variants:
+  * SKU 37885: color="WHITE", shape="FOLD", size="15×38"
+  * SKU 37889: color="CLAY", shape="FOLD", size="15×38"
+  * SKU 37888: color="GREEN", shape="FOLD", size="15×38"
+  * SKU 38343: color="WHITE", shape="TRI. FOLD", size="7×14.8"
+  * SKU 38341: color="CLAY", shape="TRI. FOLD", size="7×14.8"
+
+**Example 2 - Pattern Variants:**
+```
+39656 VALENOVA WHITE LT/11,8X11,8
+12 patterns · * 100 Mapei
+39659 VALENOVA CLAY LT/11,8X11,8
+12 patterns · ** 40 Kerakoll
+```
+
+**Extraction:**
+- Main Product: "VALENOVA"
+- Variants:
+  * SKU 39656: color="WHITE LT", size="11.8×11.8", pattern_count=12, mapei_code="100"
+  * SKU 39659: color="CLAY LT", size="11.8×11.8", pattern_count=12, mapei_code="40"
+
+**Variant Extraction Rules:**
+1. **Identify the base product name** (e.g., "FOLD", "VALENOVA", "NOVA")
+2. **Extract ALL SKU codes** - these are typically 5-digit numbers at the start of each line
+3. **Parse variant attributes from the full name:**
+   - Color: Extract color name (WHITE, CLAY, GREEN, SAND, TAUPE, etc.)
+   - Shape/Pattern: Extract shape OR pattern modifier (TRI., RECT., HEX., CHEVRON, HERRINGBONE, etc.)
+   - Size: Extract dimensions (15×38, 11.8×11.8, etc.)
+4. **Extract pattern count** if mentioned (e.g., "12 patterns")
+5. **Extract reference codes** (Mapei codes, Kerakoll codes, etc.)
+6. **Extract available colors from lists** - Look for color lists like "clay · sand · white · taupe" and create variants for each
+7. **DO NOT create separate products for each color** - they are variants of the SAME product
+8. **DO NOT confuse product names with colors** - "VALENOVA CLAY" is product "VALENOVA" with color "CLAY", NOT a product called "VALENOVA CLAY"
+
+**Color List Extraction:**
+When you see color lists like:
+```
+VALENOVA by SG NY
+White Body Tile
+11,8x11,8 cm
+clay · sand · white · taupe
+```
+
+Extract as:
+- Product: "VALENOVA"
+- Available colors: ["clay", "sand", "white", "taupe"]
+- If SKUs are listed separately for each color, create full variants
+- If only color list is shown, store as "available_colors" in metadata
+
+**Packaging Details Extraction (CRITICAL for Quote Management):**
+
+Extract ALL packaging information found in the PDF:
+- **pieces_per_box**: Number of pieces/tiles per box
+- **boxes_per_pallet**: Number of boxes per pallet
+- **weight_per_box_kg**: Weight per box in kilograms
+- **weight_per_box_lb**: Weight per box in pounds (if provided)
+- **coverage_per_box_m2**: Coverage area per box in square meters
+- **coverage_per_box_sqft**: Coverage area per box in square feet
+
+Common patterns to look for:
+- "12 pcs/box", "pieces per box: 12"
+- "48 boxes/pallet", "boxes per pallet: 48"
+- "18.5 kg/box", "weight: 18.5 kg"
+- "1.14 m²/box", "coverage: 1.14 m²"
+- "12.27 sqft/box", "coverage: 12.27 sqft"
+
 **IMPORTANT:**
 - ALWAYS extract catalog_factory from cover/intro pages - this is the brand that makes ALL products
 - Products inherit factory_name from catalog_factory if not specified individually
 - Use consistent field names: factory_name (not factory), factory_group_name (not factory_group), material_category (not category)
+- Each variant MUST have: sku, name (full variant name), color, size
+- Optional variant fields: shape, pattern, pattern_count, mapei_code, kerakoll_code
+- ALWAYS extract packaging details when available - critical for quote calculations
 
 **PDF CONTENT:**
 {pdf_text[:200000]}

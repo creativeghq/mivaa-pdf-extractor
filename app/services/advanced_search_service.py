@@ -260,13 +260,80 @@ class AdvancedSearchService:
             self.logger.error(f"Query optimization failed: {e}")
             return query
     
+    async def multi_query_expansion(self, query: str, num_variations: int = 3) -> List[str]:
+        """
+        Generate multiple query variations using LLM for better recall.
+
+        This is a Phase 1 RAG optimization that generates different ways
+        to ask the same question, improving retrieval recall.
+
+        Args:
+            query: Original query
+            num_variations: Number of query variations to generate
+
+        Returns:
+            List of query variations including the original
+        """
+        try:
+            from app.services.ai_client_service import AIClientService
+
+            # Check if multi-query is enabled
+            if not hasattr(self, 'enable_multi_query') or not self.enable_multi_query:
+                return [query]
+
+            # Check cache first
+            cache_key = f"multi_query:{query}"
+            if cache_key in self.query_expansion_cache:
+                return self.query_expansion_cache[cache_key]
+
+            # Generate variations using LLM
+            ai_client = AIClientService()
+            prompt = f"""Generate {num_variations} different ways to ask this question.
+Each variation should preserve the original intent but use different wording.
+
+Original question: {query}
+
+Variations:
+1."""
+
+            response = await ai_client.generate_text(
+                prompt=prompt,
+                model="gpt-4o-mini",  # Use cheaper model for query expansion
+                max_tokens=200,
+                temperature=0.7  # Higher temperature for diversity
+            )
+
+            # Parse variations from response
+            variations = [query]  # Always include original
+            lines = response.strip().split('\n')
+            for line in lines:
+                # Extract variation from numbered list
+                match = re.match(r'^\d+\.\s*(.+)$', line.strip())
+                if match:
+                    variation = match.group(1).strip()
+                    if variation and variation != query:
+                        variations.append(variation)
+
+            # Limit to requested number + original
+            variations = variations[:num_variations + 1]
+
+            # Cache the result
+            self.query_expansion_cache[cache_key] = variations
+
+            self.logger.info(f"Generated {len(variations)} query variations for: {query}")
+            return variations
+
+        except Exception as e:
+            self.logger.error(f"Multi-query expansion failed: {e}")
+            return [query]  # Fallback to original query
+
     async def _expand_query(self, query: str) -> QueryExpansion:
         """
         Expand query with synonyms and related terms.
-        
+
         Args:
             query: Original query
-            
+
         Returns:
             QueryExpansion object with expanded terms
         """
@@ -274,11 +341,11 @@ class AdvancedSearchService:
             # Tokenize and clean query
             tokens = word_tokenize(query.lower())
             tokens = [token for token in tokens if token.isalnum() and token not in self.stop_words]
-            
+
             expanded_terms = []
             synonyms = {}
             related_concepts = []
-            
+
             # Get synonyms using WordNet
             if self.enable_synonym_expansion:
                 for token in tokens:
@@ -288,11 +355,11 @@ class AdvancedSearchService:
                             synonym = lemma.name().replace('_', ' ')
                             if synonym != token and synonym not in token_synonyms:
                                 token_synonyms.append(synonym)
-                    
+
                     if token_synonyms:
                         synonyms[token] = token_synonyms[:3]  # Limit to top 3 synonyms
                         expanded_terms.extend(token_synonyms[:2])  # Add top 2 to expanded terms
-            
+
             # Extract related concepts using simple heuristics
             # In a production system, this could use more sophisticated NLP models
             for token in tokens:

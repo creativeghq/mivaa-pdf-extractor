@@ -75,6 +75,75 @@ class Settings(BaseSettings):
     enable_chunk_relationships: bool = Field(default=True, env="ENABLE_CHUNK_RELATIONSHIPS")
     fallback_on_error: bool = Field(default=True, env="FALLBACK_ON_ERROR")  # Always fallback to existing pipeline on error
 
+    # Phase 1: Quick Wins
+    enable_multi_query: bool = Field(default=False, env="ENABLE_MULTI_QUERY")
+    enable_embedding_cache: bool = Field(default=False, env="ENABLE_EMBEDDING_CACHE")
+    enable_relevance_truncation: bool = Field(default=False, env="ENABLE_RELEVANCE_TRUNCATION")
+    enable_adaptive_chunk_sizing: bool = Field(default=False, env="ENABLE_ADAPTIVE_CHUNK_SIZING")
+
+    # Phase 2: High Impact
+    enable_cross_encoder_reranking: bool = Field(default=False, env="ENABLE_CROSS_ENCODER_RERANKING")
+    enable_parent_child_chunking: bool = Field(default=False, env="ENABLE_PARENT_CHILD_CHUNKING")
+    enable_ensemble_retrieval: bool = Field(default=False, env="ENABLE_ENSEMBLE_RETRIEVAL")
+    enable_hyde: bool = Field(default=False, env="ENABLE_HYDE")
+
+    # Phase 3: Advanced Features
+    enable_semantic_embedding_chunking: bool = Field(default=False, env="ENABLE_SEMANTIC_EMBEDDING_CHUNKING")
+    enable_llm_reranking: bool = Field(default=False, env="ENABLE_LLM_RERANKING")
+    enable_sliding_window_retrieval: bool = Field(default=False, env="ENABLE_SLIDING_WINDOW_RETRIEVAL")
+
+    # Phase 4: Research (Future)
+    enable_late_interaction: bool = Field(default=False, env="ENABLE_LATE_INTERACTION")
+
+    # RAG Performance Tuning Parameters
+    # Multi-Query Expansion
+    multi_query_variations: int = Field(default=3, env="MULTI_QUERY_VARIATIONS")
+
+    # Embedding Cache
+    embedding_cache_ttl: int = Field(default=86400, env="EMBEDDING_CACHE_TTL")  # 24 hours
+    embedding_cache_max_size: int = Field(default=10000, env="EMBEDDING_CACHE_MAX_SIZE")
+
+    # Relevance Truncation
+    relevance_min_score: float = Field(default=0.7, env="RELEVANCE_MIN_SCORE")
+
+    # Adaptive Chunk Sizing
+    adaptive_chunk_min_size: int = Field(default=256, env="ADAPTIVE_CHUNK_MIN_SIZE")
+    adaptive_chunk_max_size: int = Field(default=1500, env="ADAPTIVE_CHUNK_MAX_SIZE")
+    adaptive_chunk_technical_threshold: int = Field(default=10, env="ADAPTIVE_CHUNK_TECHNICAL_THRESHOLD")
+    adaptive_chunk_complexity_threshold: float = Field(default=0.7, env="ADAPTIVE_CHUNK_COMPLEXITY_THRESHOLD")
+
+    # Cross-Encoder Reranking
+    cross_encoder_model: str = Field(default="cross-encoder/ms-marco-MiniLM-L-6-v2", env="CROSS_ENCODER_MODEL")
+    cross_encoder_top_k: int = Field(default=10, env="CROSS_ENCODER_TOP_K")
+
+    # Parent-Child Chunking
+    parent_chunk_size: int = Field(default=2048, env="PARENT_CHUNK_SIZE")
+    child_chunk_size: int = Field(default=256, env="CHILD_CHUNK_SIZE")
+    child_chunk_overlap: int = Field(default=50, env="CHILD_CHUNK_OVERLAP")
+
+    # Ensemble Retrieval
+    ensemble_weights: Dict[str, float] = Field(
+        default={"semantic": 0.4, "hybrid": 0.3, "multi_vector": 0.3},
+        env="ENSEMBLE_WEIGHTS"
+    )
+
+    # HyDE (Hypothetical Document Embeddings)
+    hyde_cache_enabled: bool = Field(default=True, env="HYDE_CACHE_ENABLED")
+    hyde_cache_ttl: int = Field(default=3600, env="HYDE_CACHE_TTL")  # 1 hour
+
+    # Semantic Embedding Chunking
+    semantic_similarity_threshold: float = Field(default=0.8, env="SEMANTIC_SIMILARITY_THRESHOLD")
+
+    # LLM Reranking
+    llm_reranking_top_k: int = Field(default=5, env="LLM_RERANKING_TOP_K")
+    llm_reranking_model: str = Field(default="gpt-4o-mini", env="LLM_RERANKING_MODEL")
+
+    # Sliding Window Retrieval
+    sliding_window_max_tokens: int = Field(default=4000, env="SLIDING_WINDOW_MAX_TOKENS")
+    sliding_window_simple_top_k: int = Field(default=3, env="SLIDING_WINDOW_SIMPLE_TOP_K")
+    sliding_window_medium_top_k: int = Field(default=5, env="SLIDING_WINDOW_MEDIUM_TOP_K")
+    sliding_window_complex_top_k: int = Field(default=10, env="SLIDING_WINDOW_COMPLEX_TOP_K")
+
     # Security Settings
     max_requests_per_minute: int = Field(default=60, env="MAX_REQUESTS_PER_MINUTE")
     

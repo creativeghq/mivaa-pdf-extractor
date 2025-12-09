@@ -51,13 +51,14 @@ class RealEmbeddingsService:
     Removed fake embeddings and CLIP fallback.
     """
 
-    def __init__(self, supabase_client=None):
+    def __init__(self, supabase_client=None, config=None):
         """Initialize embeddings service."""
         self.supabase = supabase_client
         self.logger = logger
         self.openai_api_key = OPENAI_API_KEY
         self.together_api_key = TOGETHER_AI_API_KEY
         self.mivaa_gateway_url = MIVAA_GATEWAY_URL
+        self.config = config
 
         # Initialize AI logger
         self.ai_logger = AICallLogger()
@@ -66,6 +67,22 @@ class RealEmbeddingsService:
         self._models_loaded = False
         self._siglip_model = None
         self._siglip_processor = None
+
+        # Initialize embedding cache (Phase 1 optimization)
+        self._embedding_cache = None
+        if config and getattr(config, 'enable_embedding_cache', False):
+            try:
+                from app.services.embedding_cache_service import EmbeddingCacheService
+                redis_url = os.getenv("REDIS_URL")
+                self._embedding_cache = EmbeddingCacheService(
+                    redis_url=redis_url,
+                    ttl=getattr(config, 'embedding_cache_ttl', 86400),
+                    max_size=getattr(config, 'embedding_cache_max_size', 10000),
+                    enabled=True
+                )
+                self.logger.info("✅ Embedding cache initialized")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize embedding cache: {e}")
     
     async def generate_all_embeddings(
         self,
@@ -203,7 +220,7 @@ class RealEmbeddingsService:
         job_id: Optional[str] = None,
         dimensions: int = 1536
     ) -> Optional[List[float]]:
-        """Generate text embedding using OpenAI.
+        """Generate text embedding using OpenAI with caching support.
 
         Args:
             text: Text to embed
@@ -215,6 +232,14 @@ class RealEmbeddingsService:
             if not self.openai_api_key:
                 self.logger.warning("OpenAI API key not available")
                 return None
+
+            # Check cache first (Phase 1 optimization)
+            model_name = f"text-embedding-3-small-{dimensions}d"
+            if self._embedding_cache:
+                cached_embedding = await self._embedding_cache.get(text, model_name)
+                if cached_embedding is not None:
+                    self.logger.debug(f"✅ Cache hit for text embedding ({dimensions}D)")
+                    return cached_embedding.tolist()
 
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -232,6 +257,10 @@ class RealEmbeddingsService:
                 if response.status_code == 200:
                     data = response.json()
                     embedding = data["data"][0]["embedding"]
+
+                    # Cache the embedding (Phase 1 optimization)
+                    if self._embedding_cache:
+                        await self._embedding_cache.set(text, model_name, np.array(embedding))
 
                     # Log AI call
                     latency_ms = int((time.time() - start_time) * 1000)
