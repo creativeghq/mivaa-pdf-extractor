@@ -7,6 +7,8 @@ based on product discovery results, then extracting ONLY those pages.
 
 import logging
 from typing import Dict, Any, Set
+import sentry_sdk
+
 from app.schemas.jobs import ProcessingStage
 from app.utils.timeout_guard import with_timeout, ProgressiveTimeoutStrategy
 
@@ -109,7 +111,18 @@ async def process_stage_1_focused_extraction(
         operation_name="Focused PDF text extraction"
     )
 
-    logger.info(f"✅ Extracted text from {len(product_pages)} product pages")
+    # ============================================================
+    # MONITORING: Track Stage 1 metrics
+    # ============================================================
+    extracted_pages_count = len(product_pages)
+    total_pages_count = page_count
+    text_length = len(pdf_result.markdown_content) if pdf_result.markdown_content else 0
+    extraction_rate = (extracted_pages_count / total_pages_count) if total_pages_count > 0 else 0
+
+    logger.info(f"✅ [STAGE 1] Focused Extraction Complete:")
+    logger.info(f"   Extracted Pages: {extracted_pages_count}/{total_pages_count} ({extraction_rate*100:.1f}%)")
+    logger.info(f"   Text Length: {text_length:,} characters")
+    logger.info(f"   Focused Extraction: {'ENABLED' if focused_extraction else 'DISABLED'}")
 
     # Update processed_documents with extracted content
     supabase = get_supabase_client()
@@ -120,12 +133,15 @@ async def process_stage_1_focused_extraction(
                 "filename": document_id,  # Will be updated with actual filename later
                 "file_size": len(file_content),
                 "page_count": page_count,
-                "extracted_pages": len(product_pages)
+                "extracted_pages": extracted_pages_count,
+                "text_length": text_length,
+                "extraction_rate": extraction_rate
             }
         }).eq('id', document_id).execute()
         logger.info(f"✅ Updated processed_documents with extracted content")
     except Exception as e:
         logger.warning(f"⚠️ Failed to update processed_documents content: {e}")
+        sentry_sdk.capture_exception(e)
 
     # Create PDF_EXTRACTED checkpoint
     from app.services.checkpoint_recovery_service import ProcessingStage as CheckpointStage
@@ -135,18 +151,30 @@ async def process_stage_1_focused_extraction(
         data={
             "document_id": document_id,
             "product_pages": sorted(list(product_pages)),
-            "total_pages": page_count,
-            "extracted_pages": len(product_pages)
+            "total_pages": total_pages_count,
+            "extracted_pages": extracted_pages_count
         },
         metadata={
             "focused_extraction": focused_extraction,
-            "file_size_mb": file_size_mb
+            "file_size_mb": file_size_mb,
+            # NEW: Add comprehensive metrics to checkpoint
+            "text_length": text_length,
+            "extraction_rate": extraction_rate
         }
     )
     logger.info(f"✅ Created PDF_EXTRACTED checkpoint for job {job_id}")
 
+    # ============================================================
+    # RETURN DATA: Include comprehensive metrics
+    # ============================================================
     return {
         "product_pages": product_pages,
-        "pdf_result": pdf_result
+        "pdf_result": pdf_result,
+        # NEW: Return Stage 1 metrics
+        "extracted_pages_count": extracted_pages_count,
+        "total_pages_count": total_pages_count,
+        "text_length": text_length,
+        "extraction_rate": extraction_rate,
+        "focused_extraction": focused_extraction
     }
 

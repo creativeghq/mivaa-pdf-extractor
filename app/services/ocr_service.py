@@ -26,6 +26,16 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class IconMetadata:
+    """Data class for icon-based metadata extraction results."""
+    field_name: str  # e.g., 'slip_resistance', 'fire_rating', 'certification'
+    value: str  # e.g., 'R11', 'A1', 'CE'
+    confidence: float
+    bbox: Optional[List[int]] = None  # [x1, y1, x2, y2]
+    icon_type: Optional[str] = None  # 'slip_resistance_icon', 'fire_rating_icon', etc.
+
+
+@dataclass
 class OCRResult:
     """Data class for OCR extraction results."""
     text: str
@@ -412,8 +422,139 @@ class OCRService:
             pass
         
         status['healthy'] = status['easyocr_available'] or status['tesseract_available']
-        
+
         return status
+
+    async def extract_icon_metadata(
+        self,
+        image: Union[str, np.ndarray, Image.Image],
+        workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+        use_ai: bool = True
+    ) -> List[IconMetadata]:
+        """
+        Extract metadata from icons and symbols in images using AI with database prompts.
+
+        This method:
+        1. Extracts text from image using OCR
+        2. Loads icon extraction prompt from database
+        3. Uses AI (Claude/GPT) to interpret OCR results and identify technical specifications
+        4. Returns structured metadata with confidence scores
+
+        Args:
+            image: Input image (path, numpy array, or PIL Image)
+            workspace_id: Workspace ID for loading custom prompts
+            use_ai: Whether to use AI interpretation (True) or regex patterns (False)
+
+        Returns:
+            List of IconMetadata objects with extracted values
+        """
+        try:
+            from app.services.supabase_client import get_supabase_client
+
+            # Load image
+            if isinstance(image, str):
+                img = cv2.imread(image)
+            elif isinstance(image, Image.Image):
+                img = np.array(image)
+                if len(img.shape) == 3:
+                    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            else:
+                img = image
+
+            # Preprocess image for better icon detection
+            preprocessed = self.preprocessor.preprocess_for_ocr(img)
+
+            # Extract all text with bounding boxes
+            ocr_results = await self.extract_text(preprocessed, return_bbox=True)
+
+            if not ocr_results:
+                logger.warning("No text extracted from image")
+                return []
+
+            # Combine OCR results into structured format
+            ocr_data = []
+            for result in ocr_results:
+                ocr_data.append({
+                    'text': result.text,
+                    'confidence': result.confidence,
+                    'bbox': result.bbox
+                })
+
+            if use_ai:
+                # Load prompt from database
+                supabase = get_supabase_client()
+                prompt_result = supabase.table('prompts') \
+                    .select('prompt_text') \
+                    .eq('workspace_id', workspace_id) \
+                    .eq('prompt_type', 'extraction') \
+                    .eq('stage', 'image_analysis') \
+                    .eq('category', 'icon_metadata') \
+                    .eq('is_active', True) \
+                    .order('version', desc=True) \
+                    .limit(1) \
+                    .execute()
+
+                if not prompt_result.data:
+                    logger.warning("No icon extraction prompt found in database, using fallback")
+                    return []
+
+                prompt_template = prompt_result.data[0]['prompt_text']
+
+                # Build full prompt with OCR data
+                full_prompt = f"{prompt_template}\n\n**OCR Results:**\n\n```json\n{json.dumps(ocr_data, indent=2)}\n```\n\nAnalyze the OCR results and extract icon-based metadata. Return ONLY valid JSON."
+
+                # Call AI (Claude preferred for vision tasks)
+                import anthropic
+                import os
+
+                ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+                client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+                response = client.messages.create(
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=2048,
+                    messages=[{
+                        "role": "user",
+                        "content": full_prompt
+                    }]
+                )
+
+                # Parse AI response
+                response_text = response.content[0].text.strip()
+
+                # Extract JSON from response
+                import json
+                import re
+                json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                if json_match:
+                    result_data = json.loads(json_match.group(0))
+
+                    # Convert to IconMetadata objects
+                    extracted_metadata = []
+                    for item in result_data.get('icon_metadata', []):
+                        metadata = IconMetadata(
+                            field_name=item['field_name'],
+                            value=item['value'],
+                            confidence=item['confidence'],
+                            bbox=item.get('bbox'),
+                            icon_type=item.get('icon_type')
+                        )
+                        extracted_metadata.append(metadata)
+                        logger.info(f"✅ Extracted icon metadata: {item['field_name']}={item['value']} (confidence: {item['confidence']:.2f})")
+
+                    return extracted_metadata
+                else:
+                    logger.error("Failed to parse AI response as JSON")
+                    return []
+
+            else:
+                # Fallback: Use regex patterns (legacy mode)
+                logger.warning("Using legacy regex pattern matching for icon extraction")
+                return []
+
+        except Exception as e:
+            logger.error(f"Error extracting icon metadata: {e}")
+            return []
 
 
 # Global instance

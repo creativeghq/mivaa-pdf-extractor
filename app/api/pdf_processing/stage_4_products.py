@@ -55,7 +55,10 @@ async def process_stage_4_products(
     # Create products in database (with metadata)
     products_created = 0
     product_id_map = {}  # Map product name to product ID for entity linking
-    
+    metadata_consolidation_count = 0
+    metadata_consolidation_failed = 0
+    metadata_consolidation_ai_calls = 0
+
     # Helper to check if a value is a "not found" placeholder
     def is_not_found(val):
         if not val:
@@ -93,12 +96,87 @@ async def process_stage_4_products(
                 if is_not_found(metadata.get(key)):
                     metadata[key] = None
 
+            # Consolidate metadata from multiple sources
+            try:
+                from app.services.metadata_consolidation_service import MetadataConsolidationService
+                consolidation_service = MetadataConsolidationService(workspace_id=workspace_id)
+
+                # Collect metadata from all sources
+                metadata_sources = {
+                    "ai_text_extraction": metadata,  # From product discovery
+                    "factory_defaults": {}
+                }
+
+                # Add factory defaults if available
+                if catalog.catalog_factory:
+                    metadata_sources["factory_defaults"]["factory_name"] = catalog.catalog_factory
+                if catalog.catalog_factory_group:
+                    metadata_sources["factory_defaults"]["factory_group_name"] = catalog.catalog_factory_group
+
+                # Get visual metadata from product images
+                if product.image_indices:
+                    visual_metadata_list = []
+                    for img_idx in product.image_indices:
+                        try:
+                            # Fetch image visual_metadata
+                            img_result = supabase.client.table('document_images') \
+                                .select('visual_metadata') \
+                                .eq('document_id', document_id) \
+                                .eq('page_number', img_idx) \
+                                .limit(1) \
+                                .execute()
+
+                            if img_result.data and img_result.data[0].get('visual_metadata'):
+                                visual_metadata_list.append(img_result.data[0]['visual_metadata'])
+                        except Exception as e:
+                            logger.debug(f"   ⚠️ Could not fetch visual metadata for image {img_idx}: {e}")
+
+                    # Merge visual metadata from all product images
+                    if visual_metadata_list:
+                        merged_visual = {}
+                        for vm in visual_metadata_list:
+                            for field, data in vm.items():
+                                if field not in merged_visual or data.get('confidence', 0) > merged_visual[field].get('confidence', 0):
+                                    merged_visual[field] = data
+
+                        # Extract primary values for consolidation
+                        visual_metadata_extracted = {}
+                        for field, data in merged_visual.items():
+                            if isinstance(data, dict) and 'primary' in data:
+                                visual_metadata_extracted[field] = data['primary']
+
+                        if visual_metadata_extracted:
+                            metadata_sources["visual_embeddings"] = visual_metadata_extracted
+
+                # Consolidate all metadata sources
+                consolidated_metadata = await consolidation_service.consolidate_metadata(
+                    product_id=product.name,  # Use name as temp ID
+                    sources=metadata_sources,
+                    existing_metadata=metadata
+                )
+                metadata_consolidation_ai_calls += 1
+
+                # Use consolidated metadata
+                metadata = consolidated_metadata
+                metadata_consolidation_count += 1
+                logger.info(f"   ✅ Consolidated metadata for {product.name} (confidence: {metadata.get('_overall_confidence', 0):.2f})")
+
+            except Exception as e:
+                metadata_consolidation_failed += 1
+                logger.warning(f"   ⚠️ Metadata consolidation failed for {product.name}, using original metadata: {e}")
+                # Send to Sentry
+                try:
+                    import sentry_sdk
+                    sentry_sdk.capture_exception(e)
+                except:
+                    pass
+
             product_data = {
                 'source_document_id': document_id,
                 'workspace_id': workspace_id,
                 'name': product.name,
                 'description': product.description or '',
-                'metadata': metadata  # ALL product metadata stored here
+                'metadata': metadata  # ALL product metadata stored here (now consolidated)
             }
 
             result = supabase.client.table('products').insert(product_data).execute()
@@ -231,11 +309,17 @@ async def process_stage_4_products(
     await tracker._sync_to_database(stage="product_creation")
 
     logger.info(f"✅ [STAGE 4] Product Creation & Linking Complete")
+    logger.info(f"   Products Created: {products_created}")
+    logger.info(f"   Metadata Consolidation: {metadata_consolidation_count} successful, {metadata_consolidation_failed} failed")
+    logger.info(f"   AI Calls for Consolidation: {metadata_consolidation_ai_calls}")
 
     # Create PRODUCTS_CREATED checkpoint
     checkpoint_metadata = {
         "entity_links": linking_results,
-        "product_names": [p.name for p in catalog.products]
+        "product_names": [p.name for p in catalog.products],
+        "metadata_consolidation_count": metadata_consolidation_count,  # ✅ NEW
+        "metadata_consolidation_failed": metadata_consolidation_failed,  # ✅ NEW
+        "metadata_consolidation_ai_calls": metadata_consolidation_ai_calls  # ✅ NEW
     }
 
     # Add document entity info if any were created
@@ -270,6 +354,9 @@ async def process_stage_4_products(
         "products_created": products_created,
         "entities_created": entities_created,
         "entity_product_relationships": entity_product_relationships,
-        "entity_embeddings_generated": entity_embeddings_generated,  # ✅ NEW
-        "linking_results": linking_results
+        "entity_embeddings_generated": entity_embeddings_generated,
+        "linking_results": linking_results,
+        "metadata_consolidation_count": metadata_consolidation_count,  # ✅ NEW
+        "metadata_consolidation_failed": metadata_consolidation_failed,  # ✅ NEW
+        "metadata_consolidation_ai_calls": metadata_consolidation_ai_calls  # ✅ NEW
     }

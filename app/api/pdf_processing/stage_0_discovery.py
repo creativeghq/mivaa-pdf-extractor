@@ -13,6 +13,7 @@ import tempfile
 import aiofiles
 from typing import Dict, Any, List, Set
 from datetime import datetime
+import sentry_sdk
 
 from app.utils.timeout_guard import with_timeout, ProgressiveTimeoutStrategy
 from app.utils.circuit_breaker import CircuitBreaker, CircuitBreakerError
@@ -257,6 +258,7 @@ async def process_stage_0_discovery(
             )
         except CircuitBreakerError as cb_error:
             logger.error(f"❌ Product discovery failed (circuit breaker OPEN): {cb_error}")
+            sentry_sdk.capture_exception(cb_error)
             raise Exception(f"Product discovery service unavailable: {cb_error}")
 
         # Log memory after discovery
@@ -264,22 +266,39 @@ async def process_stage_0_discovery(
         logger.info(f"💾 Memory after discovery: {mem_after.used_mb:.1f} MB ({mem_after.percent_used:.1f}%)")
 
     except Exception as discovery_error:
+        # Capture exception in Sentry
+        sentry_sdk.capture_exception(discovery_error)
         # Re-raise discovery errors to be handled by outer exception handler
         raise discovery_error
 
+    # ============================================================
+    # MONITORING: Track Stage 0 metrics
+    # ============================================================
+    products_discovered = len(catalog.products)
+    certificates_discovered = len(catalog.certificates) if "certificates" in extract_categories else 0
+    logos_discovered = len(catalog.logos) if "logos" in extract_categories else 0
+    specifications_discovered = len(catalog.specifications) if "specifications" in extract_categories else 0
+    total_entities = products_discovered + certificates_discovered + logos_discovered + specifications_discovered
+
+    # Calculate processing time
+    discovery_time_ms = catalog.processing_time_ms
+
     logger.info(f"✅ [STAGE 0] Discovery Complete:")
     logger.info(f"   Categories: {', '.join(extract_categories)}")
-    logger.info(f"   Products: {len(catalog.products)}")
+    logger.info(f"   Products: {products_discovered}")
     if "certificates" in extract_categories:
-        logger.info(f"   Certificates: {len(catalog.certificates)}")
+        logger.info(f"   Certificates: {certificates_discovered}")
     if "logos" in extract_categories:
-        logger.info(f"   Logos: {len(catalog.logos)}")
+        logger.info(f"   Logos: {logos_discovered}")
     if "specifications" in extract_categories:
-        logger.info(f"   Specifications: {len(catalog.specifications)}")
+        logger.info(f"   Specifications: {specifications_discovered}")
+    logger.info(f"   Total Entities: {total_entities}")
     logger.info(f"   Confidence: {catalog.confidence_score:.2f}")
+    logger.info(f"   Processing Time: {discovery_time_ms:.0f}ms")
+    logger.info(f"   Model Used: {catalog.model_used}")
 
     # Update tracker
-    tracker.products_created = len(catalog.products)
+    tracker.products_created = products_discovered
     await tracker._sync_to_database(stage="product_discovery")
 
     # ✅ NEW: Save discovered entities to document_entities table
@@ -355,6 +374,7 @@ async def process_stage_0_discovery(
 
         except Exception as entity_error:
             logger.error(f"⚠️ Failed to save entities (continuing): {entity_error}")
+            sentry_sdk.capture_exception(entity_error)
             # Don't fail the entire process if entity saving fails
 
     # Create PRODUCTS_DETECTED checkpoint (now includes all categories)
@@ -384,16 +404,36 @@ async def process_stage_0_discovery(
         data=checkpoint_data,
         metadata={
             "confidence_score": catalog.confidence_score,
-            "discovery_model": discovery_model
+            "discovery_model": discovery_model,
+            # NEW: Add comprehensive metrics to checkpoint
+            "products_discovered": products_discovered,
+            "certificates_discovered": certificates_discovered,
+            "logos_discovered": logos_discovered,
+            "specifications_discovered": specifications_discovered,
+            "total_entities": total_entities,
+            "processing_time_ms": discovery_time_ms,
+            "model_used": catalog.model_used
         }
     )
     logger.info(f"✅ Created PRODUCTS_DETECTED checkpoint for job {job_id}")
 
+    # ============================================================
+    # RETURN DATA: Include comprehensive metrics
+    # ============================================================
     return {
         "catalog": catalog,
-        "pdf_result": pdf_result,  # Return full PDF result
+        "pdf_result": pdf_result,
         "page_count": pdf_result.page_count,
         "file_size_mb": file_size_mb,
-        "temp_pdf_path": temp_pdf_path
+        "temp_pdf_path": temp_pdf_path,
+        # NEW: Return Stage 0 metrics
+        "products_discovered": products_discovered,
+        "certificates_discovered": certificates_discovered,
+        "logos_discovered": logos_discovered,
+        "specifications_discovered": specifications_discovered,
+        "total_entities": total_entities,
+        "discovery_time_ms": discovery_time_ms,
+        "discovery_model": catalog.model_used,
+        "confidence_score": catalog.confidence_score
     }
 

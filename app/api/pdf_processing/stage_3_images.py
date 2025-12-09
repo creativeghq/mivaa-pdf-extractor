@@ -719,6 +719,80 @@ async def process_stage_3_images(
     gc.collect()
     logger.info("💾 Memory freed after Stage 3 (Image Processing)")
 
+    # ✅ Stage 3.5 - Convert embeddings to text metadata
+    logger.info("🔤 Stage 3.5: Converting embeddings to text metadata...")
+    embedding_to_text_count = 0
+    embedding_to_text_failed = 0
+    embedding_to_text_ai_calls = 0
+    try:
+        from app.services.embedding_to_text_service import EmbeddingToTextService
+        embedding_to_text_service = EmbeddingToTextService(workspace_id=workspace_id)
+
+        # Get all images with specialized embeddings
+        images_with_embeddings = supabase.client.table('document_images') \
+            .select('id') \
+            .eq('document_id', document_id) \
+            .eq('is_material_image', True) \
+            .execute()
+
+        if images_with_embeddings.data:
+            total_images_to_process = len(images_with_embeddings.data)
+            logger.info(f"   Processing {total_images_to_process} images for embedding-to-text conversion...")
+
+            for idx, img in enumerate(images_with_embeddings.data, 1):
+                image_id = img['id']
+
+                try:
+                    # Fetch specialized embeddings from VECS
+                    embeddings = {}
+                    for emb_type in ['color', 'texture', 'material', 'style']:
+                        collection_name = f"image_{emb_type}_embeddings"
+                        try:
+                            collection = vecs_service.get_or_create_collection(collection_name, dimension=1152)
+                            result = collection.fetch(ids=[image_id])
+                            if result and len(result) > 0:
+                                embeddings[f"{emb_type}_siglip_1152"] = result[0][1]  # (id, vector, metadata)
+                        except Exception as e:
+                            logger.debug(f"   ⚠️ No {emb_type} embedding for image {image_id}: {e}")
+
+                    if embeddings:
+                        # Convert embeddings to text
+                        metadata_result = await embedding_to_text_service.convert_embeddings_to_metadata(
+                            image_id=image_id,
+                            embeddings=embeddings
+                        )
+                        embedding_to_text_ai_calls += 1
+
+                        if metadata_result:
+                            # Save to document_images.visual_metadata
+                            supabase.client.table('document_images').update({
+                                'visual_metadata': metadata_result
+                            }).eq('id', image_id).execute()
+
+                            embedding_to_text_count += 1
+                            logger.info(f"   ✅ [{idx}/{total_images_to_process}] Converted embeddings to text for image {image_id}")
+                        else:
+                            embedding_to_text_failed += 1
+                            logger.warning(f"   ⚠️ [{idx}/{total_images_to_process}] No metadata returned for image {image_id}")
+                    else:
+                        logger.debug(f"   ⏭️  [{idx}/{total_images_to_process}] No embeddings found for image {image_id}")
+
+                except Exception as e:
+                    embedding_to_text_failed += 1
+                    logger.warning(f"   ❌ [{idx}/{total_images_to_process}] Failed to convert embeddings for image {image_id}: {e}")
+
+        logger.info(f"✅ Stage 3.5 Complete: {embedding_to_text_count}/{len(images_with_embeddings.data) if images_with_embeddings.data else 0} image embeddings converted to text")
+        logger.info(f"   AI Calls: {embedding_to_text_ai_calls}, Failed: {embedding_to_text_failed}")
+
+    except Exception as e:
+        logger.error(f"❌ Embedding-to-text conversion failed: {e}")
+        # Send to Sentry
+        try:
+            import sentry_sdk
+            sentry_sdk.capture_exception(e)
+        except:
+            pass
+
     # Unload SigLIP model to free memory
     logger.info("   🔄 Unloading SigLIP model to free memory...")
     try:
@@ -737,16 +811,19 @@ async def process_stage_3_images(
     # Calculate quality metrics
     expected_clip_embeddings = images_saved_count * 5  # 5 types per image
     clip_completion_rate = (clip_embeddings_generated / expected_clip_embeddings) if expected_clip_embeddings > 0 else 0
+    embedding_to_text_rate = (embedding_to_text_count / images_saved_count) if images_saved_count > 0 else 0
 
     quality_flags = {
         "clip_embeddings_complete": clip_completion_rate >= 0.9,  # 90% threshold
         "all_images_analyzed": images_processed == images_saved_count,
-        "specialized_embeddings_complete": specialized_embeddings_generated >= (images_saved_count * 4)  # 4 specialized types
+        "specialized_embeddings_complete": specialized_embeddings_generated >= (images_saved_count * 4),  # 4 specialized types
+        "visual_metadata_extracted": embedding_to_text_rate >= 0.8  # 80% threshold for Stage 3.5
     }
 
     logger.info(f"📊 Quality Metrics:")
     logger.info(f"   CLIP Completion Rate: {clip_completion_rate:.1%} ({clip_embeddings_generated}/{expected_clip_embeddings})")
     logger.info(f"   Images Analyzed: {images_processed}/{images_saved_count}")
+    logger.info(f"   Visual Metadata Extracted: {embedding_to_text_rate:.1%} ({embedding_to_text_count}/{images_saved_count})")
     logger.info(f"   Quality Flags: {quality_flags}")
 
     return {
@@ -762,6 +839,10 @@ async def process_stage_3_images(
         "images_analyzed": images_processed,
         "total_images_extracted": len(all_images),
         "non_material_images": non_material_count,
+        "embedding_to_text_count": embedding_to_text_count,  # ✅ NEW
+        "embedding_to_text_failed": embedding_to_text_failed,  # ✅ NEW
+        "embedding_to_text_ai_calls": embedding_to_text_ai_calls,  # ✅ NEW
+        "embedding_to_text_rate": embedding_to_text_rate,  # ✅ NEW
         "quality_flags": quality_flags
     }
 
