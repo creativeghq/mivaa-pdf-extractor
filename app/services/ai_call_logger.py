@@ -38,6 +38,9 @@ class AICallLogger:
         """Initialize AI Call Logger"""
         self.supabase = get_supabase_client()
         self.logger = logging.getLogger(__name__)
+        # Import credits service here to avoid circular imports
+        from app.services.credits_integration_service import get_credits_service
+        self.credits_service = get_credits_service()
     @async_retry_with_backoff(max_retries=3, initial_delay=1.0, backoff_multiplier=2.0, max_delay=10.0)
     
     async def log_ai_call(
@@ -128,11 +131,13 @@ class AICallLogger:
         action: str,
         job_id: Optional[str] = None,
         fallback_reason: Optional[str] = None,
-        request_data: Optional[Dict[str, Any]] = None
+        request_data: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        workspace_id: Optional[str] = None
     ) -> bool:
         """
-        Log a Claude API call.
-        
+        Log a Claude API call and debit credits from user account.
+
         Args:
             task: Type of task
             model: Claude model (claude-haiku-4-5, claude-sonnet-4-5)
@@ -144,7 +149,9 @@ class AICallLogger:
             job_id: Optional job ID
             fallback_reason: Optional fallback reason
             request_data: Optional request data
-            
+            user_id: Optional user ID for credit debit
+            workspace_id: Optional workspace ID for credit debit
+
         Returns:
             bool: True if logged successfully
         """
@@ -152,13 +159,25 @@ class AICallLogger:
             # Extract token usage from Claude response
             input_tokens = response.usage.input_tokens if hasattr(response, 'usage') else 0
             output_tokens = response.usage.output_tokens if hasattr(response, 'usage') else 0
-            
+
             # Calculate cost based on model
             cost = self._calculate_claude_cost(model, input_tokens, output_tokens)
-            
+
+            # Debit credits if user_id provided
+            if user_id:
+                await self.credits_service.debit_credits_for_ai_operation(
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    operation_type=task,
+                    model_name=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    metadata={'job_id': job_id} if job_id else None
+                )
+
             # Extract response text
             response_text = response.content[0].text if hasattr(response, 'content') else str(response)
-            
+
             return await self.log_ai_call(
                 task=task,
                 model=model,
@@ -190,11 +209,13 @@ class AICallLogger:
         action: str,
         job_id: Optional[str] = None,
         fallback_reason: Optional[str] = None,
-        request_data: Optional[Dict[str, Any]] = None
+        request_data: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        workspace_id: Optional[str] = None
     ) -> bool:
         """
-        Log a GPT API call.
-        
+        Log a GPT API call and debit credits from user account.
+
         Args:
             task: Type of task
             model: GPT model (gpt-5, gpt-4o)
@@ -206,7 +227,9 @@ class AICallLogger:
             job_id: Optional job ID
             fallback_reason: Optional fallback reason
             request_data: Optional request data
-            
+            user_id: Optional user ID for credit debit
+            workspace_id: Optional workspace ID for credit debit
+
         Returns:
             bool: True if logged successfully
         """
@@ -214,10 +237,22 @@ class AICallLogger:
             # Extract token usage from GPT response
             input_tokens = response.usage.prompt_tokens if hasattr(response, 'usage') else 0
             output_tokens = response.usage.completion_tokens if hasattr(response, 'usage') else 0
-            
+
             # Calculate cost based on model
             cost = self._calculate_gpt_cost(model, input_tokens, output_tokens)
-            
+
+            # Debit credits if user_id provided
+            if user_id:
+                await self.credits_service.debit_credits_for_ai_operation(
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    operation_type=task,
+                    model_name=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    metadata={'job_id': job_id} if job_id else None
+                )
+
             # Extract response text
             response_text = response.choices[0].message.content if hasattr(response, 'choices') else str(response)
             
