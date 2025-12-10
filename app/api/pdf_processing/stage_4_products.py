@@ -333,6 +333,7 @@ async def process_stage_4_products(
         checkpoint_metadata["entity_product_relationships"] = entity_product_relationships
         checkpoint_metadata["entity_embeddings_generated"] = entity_embeddings_generated  # ✅ NEW
 
+    # Create PRODUCTS_CREATED checkpoint
     await checkpoint_recovery_service.create_checkpoint(
         job_id=job_id,
         stage=CheckpointStage.PRODUCTS_CREATED,
@@ -344,6 +345,59 @@ async def process_stage_4_products(
         metadata=checkpoint_metadata
     )
     logger.info(f"✅ Created PRODUCTS_CREATED checkpoint for job {job_id}")
+
+    # Create DOCUMENT_ENTITIES_CREATED checkpoint (if entities were created)
+    if entities_created > 0:
+        await checkpoint_recovery_service.create_checkpoint(
+            job_id=job_id,
+            stage=CheckpointStage.DOCUMENT_ENTITIES_CREATED,
+            data={
+                "document_id": document_id,
+                "entities_created": entities_created,
+                "entity_product_relationships": entity_product_relationships,
+                "entity_embeddings_generated": entity_embeddings_generated
+            },
+            metadata={
+                "entity_types": {
+                    "certificates": len([e for e in all_entities if e.entity_type == 'certificate']),
+                    "logos": len([e for e in all_entities if e.entity_type == 'logo']),
+                    "specifications": len([e for e in all_entities if e.entity_type == 'specification'])
+                },
+                "extract_categories": extract_categories
+            }
+        )
+        logger.info(f"✅ Created DOCUMENT_ENTITIES_CREATED checkpoint for job {job_id}")
+
+    # Create METADATA_EXTRACTED checkpoint (metadata consolidation metrics)
+    if metadata_consolidation_count > 0 or products_created > 0:
+        # Get factory metadata from first product if available
+        factory_metadata = {}
+        if catalog.products and len(catalog.products) > 0:
+            first_product = catalog.products[0]
+            if hasattr(first_product, 'metadata') and first_product.metadata:
+                factory_metadata = {
+                    "factory_name": first_product.metadata.get('factory_name'),
+                    "factory_group": first_product.metadata.get('factory_group'),
+                    "manufacturer": first_product.metadata.get('manufacturer'),
+                    "country_of_origin": first_product.metadata.get('country_of_origin')
+                }
+
+        await checkpoint_recovery_service.create_checkpoint(
+            job_id=job_id,
+            stage=CheckpointStage.METADATA_EXTRACTED,
+            data={
+                "document_id": document_id,
+                "metadata_consolidation_count": metadata_consolidation_count,
+                "metadata_consolidation_failed": metadata_consolidation_failed,
+                "products_with_metadata": products_created
+            },
+            metadata={
+                "factory_metadata": factory_metadata,
+                "metadata_consolidation_ai_calls": metadata_consolidation_ai_calls,
+                "avg_metadata_fields_per_product": metadata_consolidation_count / products_created if products_created > 0 else 0
+            }
+        )
+        logger.info(f"✅ Created METADATA_EXTRACTED checkpoint for job {job_id}")
 
     # Force garbage collection after product creation to free memory
     import gc

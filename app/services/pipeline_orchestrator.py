@@ -411,17 +411,29 @@ class PipelineOrchestrator:
                     'product_image_relationships': product_image_rels
                 }
 
-                # Create checkpoint
+                # Create RELATIONSHIPS_CREATED checkpoint
                 await checkpoint_recovery_service.create_checkpoint(
                     job_id=job_id,
-                    stage=CheckpointStage.COMPLETED,
+                    stage=CheckpointStage.RELATIONSHIPS_CREATED,
                     data={
                         "document_id": document_id,
                         "chunk_image_relationships": chunk_image_rels,
                         "product_image_relationships": product_image_rels
                     },
                     metadata={
-                        "similarity_threshold": similarity_threshold
+                        "similarity_threshold": similarity_threshold,
+                        "relationships": {
+                            "chunk_product": results['stages'].get('chunks', {}).get('relationships_created', 0),
+                            "product_image": product_image_rels,
+                            "chunk_image": chunk_image_rels,
+                            "product_document_entities": results['stages'].get('products', {}).get('entity_product_relationships', 0),
+                            "total_relationships": (
+                                results['stages'].get('chunks', {}).get('relationships_created', 0) +
+                                product_image_rels +
+                                chunk_image_rels +
+                                results['stages'].get('products', {}).get('entity_product_relationships', 0)
+                            )
+                        }
                     }
                 )
 

@@ -34,6 +34,9 @@ class ProcessingStage(str, Enum):
     IMAGE_EMBEDDINGS_GENERATED = "image_embeddings_generated"
     PRODUCTS_DETECTED = "products_detected"
     PRODUCTS_CREATED = "products_created"
+    RELATIONSHIPS_CREATED = "relationships_created"
+    DOCUMENT_ENTITIES_CREATED = "document_entities_created"
+    METADATA_EXTRACTED = "metadata_extracted"
     COMPLETED = "completed"
 
 

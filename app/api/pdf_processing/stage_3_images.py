@@ -696,7 +696,7 @@ async def process_stage_3_images(
     # Sync tracker to database
     await tracker._sync_to_database(stage="image_processing")
 
-    # Create IMAGES_EXTRACTED checkpoint
+    # Create IMAGES_EXTRACTED checkpoint with comprehensive metadata
     await checkpoint_recovery_service.create_checkpoint(
         job_id=job_id,
         stage=CheckpointStage.IMAGES_EXTRACTED,
@@ -711,7 +711,21 @@ async def process_stage_3_images(
             "total_images_extracted": len(all_images),
             "material_images": len(material_images),
             "non_material_images": non_material_count,
-            "classification_errors": classification_errors
+            "classification_errors": classification_errors,
+            "clip_embeddings": {
+                "visual_clip_512": images_saved_count,  # 1 per image
+                "color_siglip_1152": specialized_embeddings_generated // 4 if specialized_embeddings_generated > 0 else 0,
+                "texture_siglip_1152": specialized_embeddings_generated // 4 if specialized_embeddings_generated > 0 else 0,
+                "style_siglip_1152": specialized_embeddings_generated // 4 if specialized_embeddings_generated > 0 else 0,
+                "material_siglip_1152": specialized_embeddings_generated // 4 if specialized_embeddings_generated > 0 else 0,
+                "total": clip_embeddings_generated + specialized_embeddings_generated
+            },
+            "embedding_to_text": {
+                "converted": embedding_to_text_count,
+                "failed": embedding_to_text_failed,
+                "ai_calls": embedding_to_text_ai_calls,
+                "conversion_rate": embedding_to_text_rate
+            }
         }
     )
 
