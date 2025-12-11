@@ -358,12 +358,12 @@ class RealQualityScoringService:
         """Calculate embedding coverage for products (all 6 types)."""
         coverage = 0.0
         total = 6
-        
+
         if product_data.get('text_embedding_1536'):
             coverage += 1
         if product_data.get('visual_clip_embedding_512'):
             coverage += 1
-        if product_data.get('multimodal_fusion_embedding_2048'):
+        if product_data.get('multimodal_fusion_embedding_2688'):
             coverage += 1
         if product_data.get('color_embedding_256'):
             coverage += 1
@@ -371,7 +371,7 @@ class RealQualityScoringService:
             coverage += 1
         if product_data.get('application_embedding_512'):
             coverage += 1
-        
+
         return coverage / total
     
     def _calculate_coherence(self, content: str) -> float:

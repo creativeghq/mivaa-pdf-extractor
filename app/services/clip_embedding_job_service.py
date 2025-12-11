@@ -303,7 +303,7 @@ class CLIPEmbeddingJobService:
                 embeddings_count += 1
                 logger.debug(f"✅ Saved visual CLIP embedding for image {image_id}")
 
-            # Save visual CLIP to VECS collection
+            # Save visual SigLIP to VECS collection
             if visual_embedding:
                 metadata = {
                     'document_id': document_id,
@@ -313,10 +313,10 @@ class CLIPEmbeddingJobService:
                 }
                 await self.vecs_service.upsert_image_embedding(
                     image_id=image_id,
-                    clip_embedding=visual_embedding,
+                    siglip_embedding=visual_embedding,  # ✅ Fixed: Changed from clip_embedding to siglip_embedding
                     metadata=metadata
                 )
-                logger.debug(f"✅ Saved visual CLIP to VECS for image {image_id}")
+                logger.debug(f"✅ Saved visual SigLIP to VECS for image {image_id}")
 
             # Save specialized CLIP embeddings to VECS collections
             specialized_embeddings = {}

@@ -62,13 +62,13 @@ class CheckpointRecoveryService:
     ) -> bool:
         """
         Create a checkpoint for a job at a specific stage.
-        
+
         Args:
             job_id: Job identifier
             stage: Processing stage
             data: Data to save (e.g., chunk IDs, image IDs, etc.)
             metadata: Additional metadata
-            
+
         Returns:
             bool: True if checkpoint created successfully
         """
@@ -80,15 +80,29 @@ class CheckpointRecoveryService:
                 "metadata": metadata or {},
                 "created_at": datetime.utcnow().isoformat()
             }
-            
+
             # Upsert checkpoint (update if exists, insert if not)
             self.supabase_client.client.table(self.checkpoints_table)\
                 .upsert(checkpoint_data, on_conflict="job_id,stage")\
                 .execute()
-            
+
+            # ✅ CRITICAL FIX: Update background_jobs.last_checkpoint for frontend polling
+            # This allows the UI to track progress in real-time
+            self.supabase_client.client.table(self.jobs_table)\
+                .update({
+                    "last_checkpoint": {
+                        "stage": stage.value,
+                        "metadata": metadata or {},
+                        "created_at": datetime.utcnow().isoformat()
+                    },
+                    "updated_at": datetime.utcnow().isoformat()
+                })\
+                .eq("id", job_id)\
+                .execute()
+
             logger.info(f"✅ Checkpoint created: {job_id} @ {stage.value}")
             return True
-            
+
         except Exception as e:
             logger.error(f"❌ Failed to create checkpoint for {job_id} @ {stage.value}: {e}")
             return False

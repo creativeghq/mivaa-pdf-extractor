@@ -4,11 +4,11 @@ Real Embeddings Service - Step 4 Implementation
 Generates 3 real embedding types using AI models:
 1. Text (1536D) - OpenAI text-embedding-3-small
 2. Visual Embeddings (1152D) - Google SigLIP ViT-SO400M
-3. Multimodal Fusion (2688D) - Combined text+visual (1536D + 1152D)
+3. Multimodal Fusion (2688D) - Combined text+visual (1536D + 1152D = 2688D)
 
 Visual Embedding Strategy:
 - Uses Google SigLIP ViT-SO400M exclusively (1152D embeddings)
-- Text-guided specialized embeddings for color, texture, material, style
+- Text-guided specialized embeddings for color, texture, material, style (each 1152D)
 
 Removed fake embeddings and CLIP fallback - SigLIP only for consistency.
 """
@@ -41,11 +41,11 @@ class RealEmbeddingsService:
     This service provides:
     - Text embeddings via OpenAI (1536D)
     - Visual embeddings (1152D) - Google SigLIP ViT-SO400M exclusively
-    - Multimodal fusion (2688D) - combined text+visual (1536D + 1152D)
+    - Multimodal fusion (2688D) - combined text+visual (1536D + 1152D = 2688D)
 
     Visual Embedding Strategy:
     - Uses SigLIP exclusively for all visual embeddings (1152D)
-    - Text-guided specialized embeddings for color, texture, material, style
+    - Text-guided specialized embeddings for color, texture, material, style (each 1152D)
     - No CLIP fallback - SigLIP only for dimensional consistency
 
     Removed fake embeddings and CLIP fallback.
@@ -130,7 +130,7 @@ class RealEmbeddingsService:
                 embeddings["metadata"]["confidence_scores"]["text"] = 0.95
                 self.logger.info("✅ Text embedding generated (1536D)")
             
-            # 2. Visual Embedding (512D) - REAL (SigLIP with CLIP fallback)
+            # 2. Visual Embedding (1152D) - REAL (SigLIP exclusive)
             pil_image_for_reuse = None  # Track PIL image for reuse
             if image_url or image_data:
                 visual_embedding, model_used, pil_image_for_reuse = await self._generate_visual_embedding(
@@ -138,12 +138,13 @@ class RealEmbeddingsService:
                 )
                 if visual_embedding:
                     # Store with both key names for compatibility
-                    embeddings["embeddings"]["visual_512"] = visual_embedding  # Expected by llamaindex_service
+                    embeddings["embeddings"]["visual_1152"] = visual_embedding  # SigLIP 1152D
+                    embeddings["embeddings"]["visual_512"] = visual_embedding  # Legacy key for backward compatibility
                     embeddings["embeddings"]["visual_clip_512"] = visual_embedding  # Legacy key
                     embeddings["metadata"]["model_versions"]["visual"] = model_used
-                    # Higher confidence for SigLIP, lower for CLIP fallback
-                    embeddings["metadata"]["confidence_scores"]["visual"] = 0.95 if "siglip" in model_used else 0.90
-                    self.logger.info(f"✅ Visual embedding generated (512D) using {model_used}")
+                    # High confidence for SigLIP
+                    embeddings["metadata"]["confidence_scores"]["visual"] = 0.95
+                    self.logger.info(f"✅ Visual embedding generated (1152D) using {model_used}")
 
                 # 2a. Generate text-guided specialized visual embeddings for pattern/color/texture matching
                 # ✅ REUSE PIL image from visual embedding to avoid redundant decoding!
@@ -168,13 +169,14 @@ class RealEmbeddingsService:
                     except:
                         pass
 
-            # 3. Multimodal Fusion Embedding (2048D) - REAL
-            if embeddings["embeddings"].get("text_1536") and embeddings["embeddings"].get("visual_512"):
+            # 3. Multimodal Fusion Embedding (2688D) - REAL (1536D text + 1152D visual)
+            if embeddings["embeddings"].get("text_1536") and embeddings["embeddings"].get("visual_1152"):
                 multimodal_embedding = self._generate_multimodal_fusion(
                     embeddings["embeddings"]["text_1536"],
-                    embeddings["embeddings"]["visual_512"]
+                    embeddings["embeddings"]["visual_1152"]
                 )
-                embeddings["embeddings"]["multimodal_2048"] = multimodal_embedding
+                embeddings["embeddings"]["multimodal_2688"] = multimodal_embedding
+                embeddings["embeddings"]["multimodal_2048"] = multimodal_embedding  # Legacy key for backward compatibility
                 embeddings["metadata"]["model_versions"]["multimodal"] = "fusion-v1"
                 embeddings["metadata"]["confidence_scores"]["multimodal"] = 0.92
                 self.logger.info("✅ Multimodal fusion embedding generated (2048D)")
@@ -673,8 +675,11 @@ class RealEmbeddingsService:
         text_embedding: List[float],
         visual_embedding: List[float]
     ) -> List[float]:
-        """Generate multimodal fusion embedding by concatenating text and visual."""
-        # Concatenate text (1536D) + visual (512D) = 2048D
+        """Generate multimodal fusion embedding by concatenating text and visual.
+
+        Returns:
+            Combined embedding: text (1536D) + visual (1152D) = 2688D
+        """
         return text_embedding + visual_embedding
     
     # Removed fake embedding methods:
