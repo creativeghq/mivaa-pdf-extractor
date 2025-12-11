@@ -142,9 +142,9 @@ class AdminPromptService:
                 new_version = current['version'] + 1
                 
                 # Update existing prompt
-                result = self.supabase.client.table('extraction_prompts')\
+                result = self.supabase.client.table('prompts')\
                     .update({
-                        'prompt_template': prompt_template,
+                        'prompt_text': prompt_template,
                         'system_prompt': system_prompt,
                         'version': new_version,
                         'is_custom': True,
@@ -152,23 +152,24 @@ class AdminPromptService:
                     })\
                     .eq('id', current['id'])\
                     .execute()
-                
+
                 return result.data[0] if result.data else {}
             else:
                 # Create new prompt
-                result = self.supabase.client.table('extraction_prompts')\
+                result = self.supabase.client.table('prompts')\
                     .insert({
                         'workspace_id': workspace_id,
+                        'prompt_type': 'extraction',
                         'stage': stage,
                         'category': category,
-                        'prompt_template': prompt_template,
+                        'prompt_text': prompt_template,
                         'system_prompt': system_prompt,
                         'is_custom': True,
                         'version': 1,
                         'created_by': changed_by
                     })\
                     .execute()
-                
+
                 return result.data[0] if result.data else {}
                 
         except Exception as e:

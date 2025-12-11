@@ -283,9 +283,10 @@ class DynamicMetadataExtractor:
         """
         try:
             # Try to get custom prompt first (is_custom = true)
-            result = self.supabase.client.table('extraction_prompts')\
-                .select('prompt_template, system_prompt, version, is_custom')\
+            result = self.supabase.client.table('prompts')\
+                .select('prompt_text, system_prompt, version, is_custom')\
                 .eq('workspace_id', self.workspace_id)\
+                .eq('prompt_type', 'extraction')\
                 .eq('stage', stage)\
                 .eq('category', category)\
                 .eq('is_custom', True)\
@@ -296,12 +297,13 @@ class DynamicMetadataExtractor:
             if result.data and len(result.data) > 0:
                 prompt_data = result.data[0]
                 self.logger.info(f"✅ Loaded CUSTOM prompt from database (v{prompt_data['version']})")
-                return prompt_data['prompt_template']
+                return prompt_data['prompt_text']
 
             # Fallback to default prompt (is_custom = false)
-            result = self.supabase.client.table('extraction_prompts')\
-                .select('prompt_template, system_prompt, version')\
+            result = self.supabase.client.table('prompts')\
+                .select('prompt_text, system_prompt, version')\
                 .eq('workspace_id', self.workspace_id)\
+                .eq('prompt_type', 'extraction')\
                 .eq('stage', stage)\
                 .eq('category', category)\
                 .eq('is_custom', False)\
@@ -312,7 +314,7 @@ class DynamicMetadataExtractor:
             if result.data and len(result.data) > 0:
                 prompt_data = result.data[0]
                 self.logger.info(f"✅ Loaded DEFAULT prompt from database (v{prompt_data['version']})")
-                return prompt_data['prompt_template']
+                return prompt_data['prompt_text']
 
             self.logger.warning(f"⚠️ No prompt found in database for stage={stage}, category={category}")
             return None

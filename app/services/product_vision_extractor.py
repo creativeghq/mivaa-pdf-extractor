@@ -66,9 +66,10 @@ class ProductVisionExtractor:
         """
         try:
             # Try custom prompt first
-            result = self.supabase.client.table('extraction_prompts')\
-                .select('prompt_template, system_prompt, version')\
+            result = self.supabase.client.table('prompts')\
+                .select('prompt_text, system_prompt, version')\
                 .eq('workspace_id', self.workspace_id)\
+                .eq('prompt_type', 'extraction')\
                 .eq('stage', stage)\
                 .eq('category', category)\
                 .eq('is_custom', True)\
@@ -78,12 +79,13 @@ class ProductVisionExtractor:
 
             if result.data and len(result.data) > 0:
                 self.logger.info(f"✅ Loaded CUSTOM prompt from database (v{result.data[0]['version']})")
-                return result.data[0]['prompt_template']
+                return result.data[0]['prompt_text']
 
             # Try default prompt
-            result = self.supabase.client.table('extraction_prompts')\
-                .select('prompt_template, system_prompt, version')\
+            result = self.supabase.client.table('prompts')\
+                .select('prompt_text, system_prompt, version')\
                 .eq('workspace_id', self.workspace_id)\
+                .eq('prompt_type', 'extraction')\
                 .eq('stage', stage)\
                 .eq('category', category)\
                 .eq('is_custom', False)\
@@ -93,7 +95,7 @@ class ProductVisionExtractor:
 
             if result.data and len(result.data) > 0:
                 self.logger.info(f"✅ Loaded DEFAULT prompt from database (v{result.data[0]['version']})")
-                return result.data[0]['prompt_template']
+                return result.data[0]['prompt_text']
 
             return None
 

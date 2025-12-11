@@ -87,9 +87,10 @@ class RealImageAnalysisService:
         - Version 4: Claude Vision validation prompt
         """
         try:
-            result = self.supabase.client.table('extraction_prompts')\
-                .select('prompt_template, version')\
+            result = self.supabase.client.table('prompts')\
+                .select('prompt_text, version')\
                 .eq('workspace_id', self.workspace_id)\
+                .eq('prompt_type', 'extraction')\
                 .eq('stage', 'image_analysis')\
                 .eq('category', 'products')\
                 .eq('is_custom', False)\
@@ -102,7 +103,7 @@ class RealImageAnalysisService:
 
                 for row in result.data:
                     version = row['version']
-                    prompt = row['prompt_template']
+                    prompt = row['prompt_text']
 
                     if version == 3:
                         self.llama_prompt = prompt

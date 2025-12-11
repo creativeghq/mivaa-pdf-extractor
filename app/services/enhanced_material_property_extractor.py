@@ -190,9 +190,10 @@ class EnhancedMaterialPropertyExtractor:
             Dict mapping version number to prompt template
         """
         try:
-            result = self.supabase.client.table('extraction_prompts')\
-                .select('prompt_template, version')\
+            result = self.supabase.client.table('prompts')\
+                .select('prompt_text, version')\
                 .eq('workspace_id', self.workspace_id)\
+                .eq('prompt_type', 'extraction')\
                 .eq('stage', 'entity_creation')\
                 .eq('category', 'material_properties')\
                 .eq('is_custom', False)\
@@ -202,7 +203,7 @@ class EnhancedMaterialPropertyExtractor:
                 prompts_by_version = {}
                 for row in result.data:
                     version = row['version']
-                    prompt = row['prompt_template']
+                    prompt = row['prompt_text']
                     prompts_by_version[version] = prompt
 
                 logger.info(f"✅ Loaded {len(prompts_by_version)} material property prompts from database")
