@@ -297,9 +297,19 @@ async def process_stage_0_discovery(
     logger.info(f"   Processing Time: {discovery_time_ms:.0f}ms")
     logger.info(f"   Model Used: {catalog.model_used}")
 
-    # Update tracker
+    # Update tracker with comprehensive metadata
     tracker.products_created = products_discovered
+
+    # Stage 0 progress: 0% → 10% (fixed when complete)
+    await tracker.update_stage(
+        ProcessingStage.INITIALIZING,
+        stage_name="product_discovery",
+        progress_percentage=10
+    )
+
     await tracker._sync_to_database(stage="product_discovery")
+
+    logger.info(f"📊 Progress updated: 10% (Stage 0 complete - {products_discovered} products discovered)")
 
     # ✅ NEW: Save discovered entities to document_entities table
     entity_ids = []

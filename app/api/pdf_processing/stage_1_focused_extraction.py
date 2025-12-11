@@ -143,6 +143,17 @@ async def process_stage_1_focused_extraction(
         logger.warning(f"⚠️ Failed to update processed_documents content: {e}")
         sentry_sdk.capture_exception(e)
 
+    # Stage 1 progress: 10% → 30% (fixed when complete)
+    await tracker.update_stage(
+        ProcessingStage.EXTRACTING_TEXT,
+        stage_name="focused_extraction",
+        progress_percentage=30
+    )
+
+    await tracker._sync_to_database(stage="focused_extraction")
+
+    logger.info(f"📊 Progress updated: 30% (Stage 1 complete - {extracted_pages_count} pages extracted)")
+
     # Create PDF_EXTRACTED checkpoint
     from app.services.checkpoint_recovery_service import ProcessingStage as CheckpointStage
     await checkpoint_recovery_service.create_checkpoint(

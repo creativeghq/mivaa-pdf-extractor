@@ -661,11 +661,22 @@ async def process_stage_3_images(
 
         logger.info(f"   ✅ Batch {batch_num + 1}/{total_batches} complete: {clip_embeddings_generated} CLIP embeddings generated so far")
 
-        # Update progress after each batch
+        # Update progress after each batch with percentage calculation
+        # Stage 3 progress: 50% (start) → 70% (end)
+        # Calculate based on images processed, not pages
+        progress_pct = 50 + int((images_saved_count / len(material_images)) * 20)  # 50-70%
+
         await tracker.update_database_stats(
             images_stored=images_saved_count,
         )
+        await tracker.update_stage(
+            CheckpointStage.IMAGES_EXTRACTED,
+            stage_name="image_processing",
+            progress_percentage=progress_pct
+        )
         await tracker._sync_to_database(stage="image_processing")
+
+        logger.info(f"   📊 Progress updated: {progress_pct}% ({images_saved_count}/{len(material_images)} images processed)")
 
     # Final VECS batch upsert for remaining records
     if vecs_batch_records:

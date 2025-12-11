@@ -146,10 +146,18 @@ async def process_stage_2_chunking(
         sync_to_db=True
     )
 
+    # Stage 2 progress: 30% → 50% (fixed when complete)
+    await tracker.update_stage(
+        ProcessingStage.SAVING_TO_DATABASE,
+        stage_name="chunking",
+        progress_percentage=50
+    )
+
     # Sync progress to database with stage name
     await tracker._sync_to_database(stage="chunking")
 
     logger.info(f"✅ [STAGE 2] Chunking Complete: {tracker.chunks_created} chunks created")
+    logger.info(f"📊 Progress updated: 50% (Stage 2 complete - {tracker.chunks_created} chunks + embeddings)")
     
     # Create CHUNKS_CREATED checkpoint
     await checkpoint_recovery_service.create_checkpoint(

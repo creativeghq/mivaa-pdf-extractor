@@ -146,14 +146,19 @@ class ProgressTracker:
                 'progress': int(progress_pct),
                 'metadata': {
                     'current_stage': self.current_stage.value,
+                    'total_pages': self.total_pages,
                     'pages_completed': self.pages_completed,
                     'pages_failed': self.pages_failed,
                     'pages_skipped': self.pages_skipped,
                     'database_records_created': self.database_records_created,
                     'knowledge_base_entries': self.knowledge_base_entries,
-                    'images_extracted': self.images_stored,  # Use images_extracted for API compatibility
+                    'images_extracted': self.images_stored,  # Material images saved to DB
+                    'total_images_extracted': self.total_images_extracted,  # All images found in PDF
                     'chunks_created': self.chunks_created,
                     'products_created': self.products_created,
+                    'embeddings_generated': self.chunks_created + (self.images_stored * 5),  # Text embeddings + 5 image embeddings per image
+                    'ocr_pages_processed': self.ocr_pages_processed,
+                    'total_text_extracted': self.total_text_extracted,
                     'errors_count': len(self.errors),
                     'warnings_count': len(self.warnings)
                 },
@@ -175,9 +180,13 @@ class ProgressTracker:
                     'completed_items': self.pages_completed,
                     'metadata': {
                         'current_page': self.current_page,
-                        'images_extracted': self.images_stored,  # ✅ FIX: Use images_stored (material images saved to DB) not total_images_extracted (all images found in PDF)
+                        'total_pages': self.total_pages,
+                        'images_extracted': self.images_stored,  # Material images saved to DB
+                        'total_images_extracted': self.total_images_extracted,  # All images found
                         'chunks_created': self.chunks_created,
-                        'products_created': self.products_created
+                        'products_created': self.products_created,
+                        'embeddings_generated': self.chunks_created + (self.images_stored * 5),
+                        'ocr_pages_processed': self.ocr_pages_processed
                     },
                     'updated_at': datetime.utcnow().isoformat()
                 }

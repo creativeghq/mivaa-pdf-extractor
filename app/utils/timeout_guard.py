@@ -162,7 +162,7 @@ class TimeoutConstants:
     
     # AI Model Calls
     CLAUDE_API_CALL = 120  # 2min for Claude API
-    LLAMA_VISION_CALL = 90  # 1.5min for Llama Vision
+    LLAMA_VISION_CALL = 30  # 30s for Llama Vision (reduced from 90s - typical response: 5-15s)
     CLIP_EMBEDDING = 90  # 90s for CLIP embedding (includes 4 specialized embeddings: 4×15s + overhead)
     GPT_API_CALL = 60  # 1min for GPT API
     

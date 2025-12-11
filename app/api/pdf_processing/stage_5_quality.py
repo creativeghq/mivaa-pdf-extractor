@@ -62,8 +62,7 @@ async def process_stage_5_quality(
     from app.services.claude_validation_service import ClaudeValidationService
     
     logger.info("⚡ [STAGE 5] Quality Enhancement - Starting (Async)...")
-    await tracker.update_stage(ProcessingStage.COMPLETED, stage_name="quality_enhancement")
-    
+
     # Process Claude validation queue (for low-scoring images) with circuit breaker
     claude_service = ClaudeValidationService()
     try:
@@ -76,8 +75,17 @@ async def process_stage_5_quality(
     except CircuitBreakerError as cb_error:
         logger.warning(f"⚠️ Claude validation skipped (circuit breaker open): {cb_error}")
         validation_results = {'validated': 0, 'avg_improvement': 0}
-    
+
+    # Stage 5 progress: 85% → 100% (fixed when complete)
+    await tracker.update_stage(
+        ProcessingStage.COMPLETED,
+        stage_name="quality_enhancement",
+        progress_percentage=100
+    )
+
     await tracker._sync_to_database(stage="quality_enhancement")
+
+    logger.info(f"📊 Progress updated: 100% (Stage 5 complete - {validation_results.get('validated', 0)} images validated)")
     
     # NOTE: Cleanup moved to admin panel cron job
     

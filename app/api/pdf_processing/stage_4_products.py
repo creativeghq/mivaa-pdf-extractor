@@ -306,12 +306,20 @@ async def process_stage_4_products(
         entity_embeddings_generated = embedding_results.get('embeddings_generated', 0)
         logger.info(f"   ✅ Generated {entity_embeddings_generated} entity embeddings")
 
+    # Stage 4 progress: 70% → 85% (fixed when complete)
+    await tracker.update_stage(
+        ProcessingStage.FINALIZING,
+        stage_name="product_creation",
+        progress_percentage=85
+    )
+
     await tracker._sync_to_database(stage="product_creation")
 
     logger.info(f"✅ [STAGE 4] Product Creation & Linking Complete")
     logger.info(f"   Products Created: {products_created}")
     logger.info(f"   Metadata Consolidation: {metadata_consolidation_count} successful, {metadata_consolidation_failed} failed")
     logger.info(f"   AI Calls for Consolidation: {metadata_consolidation_ai_calls}")
+    logger.info(f"📊 Progress updated: 85% (Stage 4 complete - {products_created} products created)")
 
     # Create PRODUCTS_CREATED checkpoint
     checkpoint_metadata = {
