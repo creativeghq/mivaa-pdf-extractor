@@ -2,12 +2,28 @@
 """
 Complete Database Reset Script (Python Version)
 
-This script:
-1. Deletes knowledge base data (chunks, embeddings, products, images, etc.)
-2. PRESERVES user data (users, profiles, workspaces, API keys)
-3. Deletes all files from storage buckets EXCEPT pdf-documents folder
-4. Verifies cleanup was successful
-5. Reports storage and resource usage
+This script performs a comprehensive cleanup of all user-generated data while preserving
+system configuration and authentication data.
+
+DELETES:
+1. Knowledge base data (chunks, embeddings, products, images, etc.)
+2. Agent chat conversations and messages
+3. CRM contacts and relationships
+4. All jobs (background_jobs, job_checkpoints, job_progress)
+5. Moodboards and moodboard items
+6. 3D generation history
+7. All analytics data
+8. All metadata values and relevancy relationships
+9. All quotes and quote items
+10. All files from storage buckets EXCEPT pdf-documents folder
+
+PRESERVES:
+1. User data (users, profiles, workspaces, API keys)
+2. Global upsells (admin-managed upsell items)
+3. Global timeline elements (timeline_steps)
+4. Material metadata field definitions (schema)
+5. PDF files in pdf-documents folder
+6. System settings and configuration
 """
 
 import os
@@ -23,27 +39,84 @@ if not SUPABASE_SERVICE_ROLE_KEY:
     sys.exit(1)
 
 # Tables to clear (in order to respect foreign key constraints)
+# Order matters! Delete child tables before parent tables
 TABLES_TO_CLEAR = [
-    'job_progress',
-    'ai_analysis_queue',
-    'embeddings',
-    'document_images',
-    'document_chunks',
-    'products',
-    'background_jobs',
-    'documents',
-    'processed_documents',
-    'materials_catalog',
-    'material_visual_analysis',
-    'processing_results',
-    'quality_metrics_daily',
-    'quality_scoring_logs',
-    'analytics_events',
-    'agent_tasks',
-    'generation_3d',
-    'scraped_materials_temp',
-    'scraping_sessions',
-    'scraping_pages'
+    # Agent Chat System (DELETE)
+    'agent_chat_messages',           # Chat messages (child of conversations)
+    'agent_chat_conversations',      # Chat conversations
+    'agent_uploaded_files',          # Files uploaded in chat
+
+    # CRM Contacts (DELETE)
+    'crm_contact_relationships',     # Contact relationships (child of contacts)
+    'crm_contacts',                  # CRM contacts
+
+    # Quotes System (DELETE - except global upsells and timeline steps)
+    'quote_timeline',                # Quote timeline progress (child of quotes)
+    'quote_upsells',                 # Quote upsells junction (child of quotes)
+    'quote_items',                   # Quote items (child of quotes)
+    'quotes',                        # Quotes
+    'status_tags',                   # Custom status tags
+    # NOTE: 'upsells' and 'timeline_steps' are PRESERVED (global data)
+
+    # Moodboards (DELETE)
+    'moodboard_quote_requests',      # Moodboard quote requests (child of moodboards)
+    'moodboard_products',            # Moodboard products (child of moodboards)
+    'moodboard_items',               # Moodboard items (child of moodboards)
+    'moodboards',                    # Moodboards
+
+    # 3D Generation (DELETE)
+    'generation_3d',                 # 3D generation history
+
+    # Analytics (DELETE)
+    'analytics_events',              # Analytics events
+    'quality_metrics_daily',         # Daily quality metrics
+    'quality_scoring_logs',          # Quality scoring logs
+    'recommendation_analytics',      # Recommendation analytics (if exists)
+
+    # Document Entities & Relationships (DELETE)
+    'product_document_relationships', # Product-document entity relationships
+    'document_entities',             # Document entities (certificates, logos, specs)
+
+    # Relevancy Relationships (DELETE)
+    'product_chunk_relationships',   # Product-chunk relevancies
+    'chunk_image_relationships',     # Chunk-image relevancies
+    'product_image_relationships',   # Product-image relevancies
+
+    # Metadata (DELETE)
+    'metafield_values',              # Metafield values (child of metadata fields)
+    # NOTE: 'material_metadata_fields' is PRESERVED (schema definition)
+
+    # PDF Processing & Knowledge Base (DELETE)
+    'job_checkpoints',               # Job checkpoints (child of background_jobs)
+    'job_progress',                  # Job progress tracking (child of background_jobs)
+    'ai_analysis_queue',             # AI analysis queue
+    'image_processing_queue',        # Image processing queue
+    'embeddings',                    # Text and image embeddings
+    'document_images',               # Extracted images from PDFs
+    'document_chunks',               # Semantic text chunks
+    'products',                      # Extracted products
+    'background_jobs',               # Processing jobs
+    'documents',                     # PDF documents metadata
+    'processed_documents',           # Processed document records
+
+    # Materials & Catalog (DELETE)
+    'materials_catalog',             # Materials catalog entries
+    'material_visual_analysis',      # Visual analysis results
+
+    # Processing & Quality (DELETE)
+    'processing_results',            # Processing results
+
+    # Agent Tasks (DELETE)
+    'agent_tasks',                   # Agent task records
+
+    # Web Scraping (DELETE)
+    'scraped_materials_temp',        # Temporary scraped materials
+    'scraping_sessions',             # Scraping sessions
+    'scraping_pages',                # Scraping pages
+
+    # Data Import (DELETE)
+    'data_import_jobs',              # Data import jobs (if exists)
+    'data_import_history',           # Data import history (if exists)
 ]
 
 # Storage buckets configuration
@@ -221,21 +294,30 @@ def clear_bucket(bucket_config):
 def main():
     """Main cleanup function"""
     print('═' * 100)
-    print('🔄 KNOWLEDGE BASE RESET (PRESERVING USER DATA)')
+    print('🔄 COMPLETE DATABASE RESET (PRESERVING USER DATA & SYSTEM CONFIG)')
     print('═' * 100)
     print('')
     print('✅ PRESERVED:')
     print('   • Users & Authentication')
     print('   • Profiles & Workspaces')
     print('   • API Keys & Usage Logs')
+    print('   • Global Upsells (admin-managed)')
+    print('   • Global Timeline Elements (timeline_steps)')
+    print('   • Material Metadata Field Definitions (schema)')
     print('   • PDF files in pdf-documents folder')
+    print('   • System Settings & Configuration')
     print('')
     print('🗑️  WILL DELETE:')
+    print('   • Agent Chat Conversations & Messages')
+    print('   • CRM Contacts & Relationships')
+    print('   • All Jobs (background_jobs, checkpoints, progress)')
+    print('   • Moodboards & Moodboard Items')
+    print('   • 3D Generation History')
+    print('   • All Analytics Data')
+    print('   • All Metadata Values & Relevancy Relationships')
+    print('   • All Quotes & Quote Items')
     print('   • PDF Processing Data (chunks, embeddings, images)')
     print('   • Products & Materials Catalog')
-    print('   • Background Jobs & Processing Results')
-    print('   • Analytics & Agent Tasks')
-    print('   • 3D Generation History')
     print('   • Storage files (except pdf-documents folder)')
     print('')
     print('═' * 100)
@@ -280,7 +362,11 @@ def main():
     print('\n✅ PRESERVED DATA:')
     print('   • Users, Profiles, Workspaces remain intact')
     print('   • API Keys and authentication preserved')
+    print('   • Global Upsells (admin-managed upsell items)')
+    print('   • Global Timeline Elements (timeline_steps)')
+    print('   • Material Metadata Field Definitions (schema)')
     print(f'   • {total_files_skipped} files preserved in pdf-documents folder')
+    print('   • System Settings & Configuration')
 
     print(f"\n📅 Completed: {datetime.now().isoformat()}")
     print('═' * 100)
