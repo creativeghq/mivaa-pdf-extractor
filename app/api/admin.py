@@ -321,6 +321,13 @@ async def get_job_status(
     - **job_id**: Unique identifier for the job
     """
     try:
+        # Validate UUID format
+        import uuid
+        try:
+            uuid.UUID(job_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid job ID format: {job_id}. Must be a valid UUID.")
+
         # Check active jobs first
         if job_id in active_jobs:
             job_info = active_jobs[job_id]

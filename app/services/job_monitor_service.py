@@ -156,7 +156,19 @@ class JobMonitorService:
                 .lt("last_heartbeat", cutoff_time.isoformat())\
                 .execute()
 
-            stuck_jobs = result.data or []
+            # Handle both dict and object response types
+            stuck_jobs = []
+            if isinstance(result, dict):
+                stuck_jobs = result.get('data', []) or []
+            elif hasattr(result, 'data'):
+                stuck_jobs = result.data or []
+            elif isinstance(result, str):
+                # Handle case where result is a string (error case)
+                logger.error(f"❌ Unexpected string result from Supabase: {result}")
+                return []
+            else:
+                logger.error(f"❌ Unexpected result type from Supabase: {type(result)}")
+                return []
 
             if stuck_jobs:
                 logger.warning(f"🫀 Detected {len(stuck_jobs)} jobs with stale heartbeat (>{heartbeat_timeout_seconds}s)")

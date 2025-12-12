@@ -283,8 +283,9 @@ class DynamicMetadataExtractor:
         """
         try:
             # Try to get custom prompt first (is_custom = true)
+            # Only select columns that exist in the prompts table
             result = self.supabase.client.table('prompts')\
-                .select('prompt_text, system_prompt, version, is_custom')\
+                .select('prompt_text, version, is_custom')\
                 .eq('workspace_id', self.workspace_id)\
                 .eq('prompt_type', 'extraction')\
                 .eq('stage', stage)\
@@ -301,7 +302,7 @@ class DynamicMetadataExtractor:
 
             # Fallback to default prompt (is_custom = false)
             result = self.supabase.client.table('prompts')\
-                .select('prompt_text, system_prompt, version')\
+                .select('prompt_text, version')\
                 .eq('workspace_id', self.workspace_id)\
                 .eq('prompt_type', 'extraction')\
                 .eq('stage', stage)\
