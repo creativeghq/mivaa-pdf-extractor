@@ -1461,6 +1461,7 @@ from app.api.prompt_templates import router as prompt_templates_router
 from app.api.admin_restart_routes import router as admin_restart_router
 from app.api.spaceformer_routes import router as spaceformer_router
 from app.api.user_feedback import router as user_feedback_router
+from app.api.interior_design_routes import router as interior_design_router
 
 app.include_router(search_router)
 app.include_router(images_router)
@@ -1488,6 +1489,7 @@ app.include_router(prompt_templates_router)  # NEW: Customizable AI prompt templ
 app.include_router(admin_restart_router)  # NEW: Admin restart protection with job awareness
 app.include_router(spaceformer_router)  # NEW: Spatial analysis with Claude Vision (room layout, materials, accessibility)
 app.include_router(user_feedback_router)  # NEW: User feedback with AI sentiment analysis (aspect-based, trends)
+app.include_router(interior_design_router)  # NEW: Interior design generation with streaming progress
 
 
 # ============================================================================
