@@ -306,7 +306,7 @@ Focus on:
 
         # Call Claude API
         response = anthropic_client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model="claude-3-5-sonnet-20240620",
             max_tokens=2048,
             messages=[
                 {
@@ -398,7 +398,7 @@ async def test_claude_integration(supabase: SupabaseClient = Depends(get_supabas
 
         # Call Claude Vision API
         response = anthropic_client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model="claude-3-5-sonnet-20240620",
             max_tokens=1024,
             messages=[{
                 "role": "user",
@@ -440,7 +440,7 @@ async def test_claude_integration(supabase: SupabaseClient = Depends(get_supabas
 
         await ai_logger.log_claude_call(
             task="test_vision_integration",
-            model="claude-3-5-sonnet-20241022",
+            model="claude-3-5-sonnet-20240620",
             response=response,
             latency_ms=latency_ms,
             confidence_score=confidence_score,
@@ -454,7 +454,7 @@ async def test_claude_integration(supabase: SupabaseClient = Depends(get_supabas
             "claude_response": response_text,
             "processing_time_ms": processing_time,
             "api_key_available": bool(settings.anthropic_api_key),
-            "model_used": "claude-3-5-sonnet-20241022"
+            "model_used": "claude-3-5-sonnet-20240620"
         }
 
     except Exception as e:
