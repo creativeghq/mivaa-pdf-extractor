@@ -165,7 +165,7 @@ async def generate_with_huggingface(model: dict, prompt: str, width: int, height
 
             async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(
-                    f"https://api-inference.huggingface.co/models/{hf_model}",
+                    f"https://router.huggingface.co/models/{hf_model}",
                     headers={
                         "Authorization": f"Bearer {api_token}",
                         "Content-Type": "application/json"
