@@ -1,10 +1,8 @@
 name: 🚀 MIVAA Deployment (Default)
 
 on:
-  # ❌ AUTO-DEPLOYMENT DISABLED - Prevents automatic restarts that interrupt jobs
-  # To deploy: Go to Actions → 🚀 MIVAA Deployment → Run workflow
-  # push:
-  #   branches: [ "main", "production" ]
+  push:
+    branches: [ "main", "production" ]
   workflow_dispatch:
     inputs:
       deployment_reason:
