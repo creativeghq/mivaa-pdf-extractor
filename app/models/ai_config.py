@@ -34,7 +34,7 @@ class AIModelConfig(BaseModel):
         description="Primary image classification model (Llama Vision)"
     )
     classification_validation_model: str = Field(
-        default="claude-sonnet-4-20250514",
+        default="claude-sonnet-4-5-20250929",
         description="Validation model for low-confidence classifications (Claude)"
     )
     classification_confidence_threshold: float = Field(
@@ -43,10 +43,10 @@ class AIModelConfig(BaseModel):
         le=1.0,
         description="Confidence threshold for triggering validation"
     )
-    
+
     # Product Discovery Model
-    discovery_model: Literal["claude-sonnet-4-20250514", "gpt-5", "gpt-4o"] = Field(
-        default="claude-sonnet-4-20250514",
+    discovery_model: Literal["claude-sonnet-4-5-20250929", "gpt-5", "gpt-4o"] = Field(
+        default="claude-sonnet-4-5-20250929",
         description="Model for product discovery (Claude Sonnet 4.5, GPT-5, or GPT-4o)"
     )
     
