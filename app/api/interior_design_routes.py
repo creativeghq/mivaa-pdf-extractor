@@ -20,13 +20,16 @@ router = APIRouter(prefix="/api", tags=["interior-design"])
 # Model configurations
 # Text-to-Image Models (for prompts without reference images)
 TEXT_TO_IMAGE_MODELS = [
-    # Hugging Face Models (Free tier available)
-    {"id": "flux-schnell", "name": "FLUX.1-schnell", "provider": "huggingface", "hf_model": "black-forest-labs/FLUX.1-schnell", "capability": "text-to-image"},
-    {"id": "sdxl", "name": "SDXL", "provider": "huggingface", "hf_model": "stabilityai/stable-diffusion-xl-base-1.0", "capability": "text-to-image"},
+    # Hugging Face Models (Free tier available - using Inference Endpoints API)
+    # Note: FLUX and SDXL require Pro subscription or Inference Endpoints
+    # Using Stable Diffusion 2.1 which is available on free tier
     {"id": "sd-2.1", "name": "Stable Diffusion 2.1", "provider": "huggingface", "hf_model": "stabilityai/stable-diffusion-2-1", "capability": "text-to-image"},
+    {"id": "sd-1.5", "name": "Stable Diffusion 1.5", "provider": "huggingface", "hf_model": "runwayml/stable-diffusion-v1-5", "capability": "text-to-image"},
 
     # Replicate Models (require proper version hashes - currently disabled until versions are added)
     # {"id": "flux-dev", "name": "FLUX.1-dev", "provider": "replicate", "version": "NEEDS_VERSION_HASH", "capability": "text-to-image"},
+    # {"id": "flux-schnell", "name": "FLUX.1-schnell", "provider": "replicate", "version": "NEEDS_VERSION_HASH", "capability": "text-to-image"},
+    # {"id": "sdxl", "name": "SDXL", "provider": "replicate", "version": "NEEDS_VERSION_HASH", "capability": "text-to-image"},
     # {"id": "playground-v2.5", "name": "Playground v2.5", "provider": "replicate", "version": "NEEDS_VERSION_HASH", "capability": "text-to-image"},
     # {"id": "stable-diffusion-3", "name": "Stable Diffusion 3", "provider": "replicate", "version": "NEEDS_VERSION_HASH", "capability": "text-to-image"},
 ]
