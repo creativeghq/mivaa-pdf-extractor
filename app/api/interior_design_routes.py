@@ -246,13 +246,16 @@ async def create_interior_design(request: InteriorRequest):
         "image_urls": []
     } for m in models_to_use]
 
+    # Determine request type for CHECK constraint
+    request_type = 'image-to-image' if request.image else 'text-to-image'
+
     async with get_db_connection() as conn:
         await conn.execute(
             """INSERT INTO generation_3d (
                 id, user_id, workspace_id, generation_name, generation_type,
-                generation_status, progress_percentage,
+                generation_status, progress_percentage, request_type,
                 input_data, metadata
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)""",
             job_id,
             request.user_id,
             request.workspace_id,
@@ -260,12 +263,12 @@ async def create_interior_design(request: InteriorRequest):
             'interior_design',
             'processing',
             0,
+            request_type,  # Add request_type column for CHECK constraint
             json.dumps({
                 "prompt": request.prompt,
                 "room_type": request.room_type,
                 "style": request.style,
                 "enhanced_prompt": enhanced_prompt,
-                "request_type": 'image-to-image' if request.image else 'text-to-image',
                 "reference_image": request.image
             }),
             json.dumps({
