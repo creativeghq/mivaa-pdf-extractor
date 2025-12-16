@@ -260,8 +260,8 @@ async def create_interior_design(request: InteriorRequest):
     # Prepare models_queue (list of model IDs)
     models_queue = [{"id": m["id"], "name": m["name"], "provider": m["provider"]} for m in models_to_use]
 
-    # Determine request type
-    request_type = 'image-to-image' if request.image else 'text-to-image'
+    # Determine request type (use underscores to match DB constraint)
+    request_type = 'image_to_image' if request.image else 'text_to_image'
 
     # Insert job into database using Supabase
     supabase = get_supabase_client()
@@ -277,7 +277,7 @@ async def create_interior_design(request: InteriorRequest):
         'request_type': request_type,
         'models_queue': models_queue,  # Supabase handles JSONB automatically
         'models_results': {},  # Empty dict
-        'workflow_status': 'generating'
+        'workflow_status': 'processing'  # Use valid constraint value
     }).execute()
 
     # Start background processing
