@@ -8,7 +8,7 @@ Integrates with Supabase database functions for atomic credit operations.
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
-from app.core.supabase_client import get_supabase_client
+from app.services.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
