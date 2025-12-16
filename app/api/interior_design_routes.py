@@ -13,7 +13,7 @@ import os
 import httpx
 from datetime import datetime
 import uuid
-from app.database.connection import get_db_connection
+from app.services.supabase_client import get_supabase_client
 
 router = APIRouter(prefix="/api", tags=["interior-design"])
 
@@ -137,7 +137,7 @@ async def generate_with_replicate(model: dict, prompt: str, width: int, height: 
 
 
 async def atomic_update_model_result(job_id: str, model_id: str, success: bool, image_url: Optional[str] = None, error: Optional[str] = None):
-    """Atomically update a single model result using PostgreSQL RPC"""
+    """Atomically update a single model result using Supabase RPC"""
     model_result = {
         "model_id": model_id,
         "status": "completed" if success else "failed",
@@ -150,64 +150,24 @@ async def atomic_update_model_result(job_id: str, model_id: str, success: bool, 
         model_result["error"] = error
         model_result["image_urls"] = []
 
-    async with get_db_connection() as conn:
-        try:
-            # Try using PostgreSQL RPC function for atomic update
-            result = await conn.fetchrow(
-                "SELECT * FROM update_model_result($1, $2, $3)",
-                job_id, model_id, json.dumps(model_result)
-            )
-            if result:
-                print(f"📊 Progress: {result['progress_percentage']}% ({result['completed_models']}/{result['total_models']} models)")
-        except Exception as e:
-            # Fallback to direct update if RPC doesn't exist
-            if "does not exist" in str(e):
-                print(f"⚠️  RPC function not found, using fallback")
-                await atomic_update_model_result_fallback(job_id, model_id, success, image_url, error)
-            else:
-                raise
+    try:
+        # Use Supabase RPC function for atomic update
+        supabase = get_supabase_client()
+        result = supabase.client.rpc(
+            'update_model_result',
+            {
+                'p_job_id': job_id,
+                'p_model_id': model_id,
+                'p_model_result': model_result
+            }
+        ).execute()
 
-
-async def atomic_update_model_result_fallback(job_id: str, model_id: str, success: bool, image_url: Optional[str] = None, error: Optional[str] = None):
-    """Fallback method - still has race condition but better than nothing"""
-    async with get_db_connection() as conn:
-        row = await conn.fetchrow("SELECT models_results, models_queue FROM generation_3d WHERE id = $1", job_id)
-
-        if not row:
-            return
-
-        models_results = row['models_results'] if row['models_results'] else {}
-        models_queue = row['models_queue'] if row['models_queue'] else []
-
-        # Update result
-        model_result = {
-            "model_id": model_id,
-            "status": "completed" if success else "failed",
-            "generated_at": datetime.utcnow().isoformat()
-        }
-
-        if success and image_url:
-            model_result["image_urls"] = [image_url]
-        elif not success and error:
-            model_result["error"] = error
-            model_result["image_urls"] = []
-
-        models_results[model_id] = model_result
-
-        # Calculate progress
-        total = len(models_queue)
-        completed = len(models_results)
-        progress = int((completed / total) * 100) if total > 0 else 0
-
-        await conn.execute(
-            """UPDATE generation_3d
-               SET models_results = $1, progress_percentage = $2,
-                   generation_status = $3, updated_at = NOW(),
-                   completed_at = CASE WHEN $3 = 'completed' THEN NOW() ELSE completed_at END
-               WHERE id = $4""",
-            json.dumps(models_results), progress,
-            'completed' if progress >= 100 else 'processing', job_id
-        )
+        if result.data:
+            data = result.data[0] if isinstance(result.data, list) else result.data
+            print(f"📊 Progress: {data.get('progress_percentage', 0)}% ({data.get('completed_models', 0)}/{data.get('total_models', 0)} models)")
+    except Exception as e:
+        print(f"❌ Error updating model result: {e}")
+        raise
 
 
 async def process_generation_background(job_id: str, request: InteriorRequest, models_to_use: List[dict], enhanced_prompt: str):
@@ -216,11 +176,11 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
     try:
         replicate_token = os.getenv("REPLICATE_API_TOKEN")
         if not replicate_token:
-            async with get_db_connection() as conn:
-                await conn.execute(
-                    "UPDATE generation_3d SET generation_status = 'failed', error_message = $1 WHERE id = $2",
-                    "REPLICATE_API_TOKEN not configured", job_id
-                )
+            supabase = get_supabase_client()
+            supabase.client.table('generation_3d').update({
+                'generation_status': 'failed',
+                'error_message': 'REPLICATE_API_TOKEN not configured'
+            }).eq('id', job_id).execute()
             return
 
         # Semaphore to limit concurrent requests (3 at a time)
@@ -251,20 +211,22 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
 
     except asyncio.TimeoutError:
         print(f"⏰ Job {job_id} timed out after 10 minutes")
-        async with get_db_connection() as conn:
-            await conn.execute(
-                "UPDATE generation_3d SET generation_status = 'failed', error_message = $1, completed_at = NOW() WHERE id = $2",
-                "Job timed out after 10 minutes", job_id
-            )
+        supabase = get_supabase_client()
+        supabase.client.table('generation_3d').update({
+            'generation_status': 'failed',
+            'error_message': 'Job timed out after 10 minutes',
+            'completed_at': datetime.utcnow().isoformat()
+        }).eq('id', job_id).execute()
     except Exception as e:
         print(f"❌ FATAL ERROR in job {job_id}: {e}")
         import traceback
         traceback.print_exc()
-        async with get_db_connection() as conn:
-            await conn.execute(
-                "UPDATE generation_3d SET generation_status = 'failed', error_message = $1, completed_at = NOW() WHERE id = $2",
-                f"Background task error: {str(e)}", job_id
-            )
+        supabase = get_supabase_client()
+        supabase.client.table('generation_3d').update({
+            'generation_status': 'failed',
+            'error_message': f"Background task error: {str(e)}",
+            'completed_at': datetime.utcnow().isoformat()
+        }).eq('id', job_id).execute()
 
 
 @router.post("/interior")
@@ -301,26 +263,22 @@ async def create_interior_design(request: InteriorRequest):
     # Determine request type
     request_type = 'image-to-image' if request.image else 'text-to-image'
 
-    async with get_db_connection() as conn:
-        await conn.execute(
-            """INSERT INTO generation_3d (
-                id, user_id, workspace_id, prompt, room_type, style,
-                generation_status, progress_percentage, request_type,
-                models_queue, models_results, workflow_status
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)""",
-            job_id,
-            request.user_id,
-            request.workspace_id,
-            enhanced_prompt,
-            request.room_type,
-            request.style,
-            'processing',
-            0,
-            request_type,
-            json.dumps(models_queue),  # models_queue as JSONB array
-            json.dumps({}),  # models_results starts empty (dict)
-            'generating'  # workflow_status
-        )
+    # Insert job into database using Supabase
+    supabase = get_supabase_client()
+    supabase.client.table('generation_3d').insert({
+        'id': job_id,
+        'user_id': request.user_id,
+        'workspace_id': request.workspace_id,
+        'prompt': enhanced_prompt,
+        'room_type': request.room_type,
+        'style': request.style,
+        'generation_status': 'processing',
+        'progress_percentage': 0,
+        'request_type': request_type,
+        'models_queue': models_queue,  # Supabase handles JSONB automatically
+        'models_results': {},  # Empty dict
+        'workflow_status': 'generating'
+    }).execute()
 
     # Start background processing
     asyncio.create_task(process_generation_background(job_id, request, models_to_use, enhanced_prompt))
