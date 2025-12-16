@@ -20,13 +20,15 @@ router = APIRouter(prefix="/api", tags=["interior-design"])
 # Model configurations
 # Text-to-Image Models (for prompts without reference images)
 TEXT_TO_IMAGE_MODELS = [
-    {"id": "flux-dev", "name": "FLUX.1-dev", "provider": "replicate", "capability": "text-to-image"},
-    {"id": "flux-schnell", "name": "FLUX.1-schnell", "provider": "replicate", "capability": "text-to-image"},
-    {"id": "sdxl", "name": "SDXL", "provider": "replicate", "capability": "text-to-image"},
-    {"id": "playground-v2.5", "name": "Playground v2.5", "provider": "replicate", "capability": "text-to-image"},
-    {"id": "stable-diffusion-3", "name": "Stable Diffusion 3", "provider": "replicate", "capability": "text-to-image"},
-    {"id": "kandinsky-2.2", "name": "Kandinsky 2.2", "provider": "replicate", "capability": "text-to-image"},
-    {"id": "proteus-v0.2", "name": "Proteus v0.2", "provider": "replicate", "capability": "text-to-image"},
+    # Hugging Face Models (Free tier available)
+    {"id": "flux-schnell", "name": "FLUX.1-schnell", "provider": "huggingface", "hf_model": "black-forest-labs/FLUX.1-schnell", "capability": "text-to-image"},
+    {"id": "sdxl", "name": "SDXL", "provider": "huggingface", "hf_model": "stabilityai/stable-diffusion-xl-base-1.0", "capability": "text-to-image"},
+    {"id": "sd-2.1", "name": "Stable Diffusion 2.1", "provider": "huggingface", "hf_model": "stabilityai/stable-diffusion-2-1", "capability": "text-to-image"},
+
+    # Replicate Models (require proper version hashes - currently disabled until versions are added)
+    # {"id": "flux-dev", "name": "FLUX.1-dev", "provider": "replicate", "version": "NEEDS_VERSION_HASH", "capability": "text-to-image"},
+    # {"id": "playground-v2.5", "name": "Playground v2.5", "provider": "replicate", "version": "NEEDS_VERSION_HASH", "capability": "text-to-image"},
+    # {"id": "stable-diffusion-3", "name": "Stable Diffusion 3", "provider": "replicate", "version": "NEEDS_VERSION_HASH", "capability": "text-to-image"},
 ]
 
 # Image-to-Image Models (for interior design transformation with reference images)
@@ -136,6 +138,71 @@ async def generate_with_replicate(model: dict, prompt: str, width: int, height: 
                 raise
 
 
+async def generate_with_huggingface(model: dict, prompt: str, width: int, height: int, api_token: str, max_retries: int = 3) -> str:
+    """Generate image using Hugging Face Inference API with retry logic"""
+
+    hf_model = model.get("hf_model")
+    if not hf_model:
+        raise Exception(f"No Hugging Face model specified for {model['name']}")
+
+    for attempt in range(max_retries):
+        try:
+            # Build request payload for Hugging Face
+            payload = {
+                "inputs": prompt,
+                "parameters": {
+                    "num_inference_steps": 20,
+                    "guidance_scale": 7.5,
+                    "width": width,
+                    "height": height,
+                }
+            }
+
+            # Special handling for FLUX.1-schnell (requires fewer steps and no guidance)
+            if "FLUX.1-schnell" in hf_model:
+                payload["parameters"]["num_inference_steps"] = 4
+                payload["parameters"]["guidance_scale"] = 0
+
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(
+                    f"https://api-inference.huggingface.co/models/{hf_model}",
+                    headers={
+                        "Authorization": f"Bearer {api_token}",
+                        "Content-Type": "application/json"
+                    },
+                    json=payload
+                )
+
+                if response.status_code == 503:
+                    # Model is loading, wait and retry
+                    error_data = response.json()
+                    wait_time = error_data.get("estimated_time", 20)
+                    print(f"⏳ [{model['name']}] Model loading, waiting {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                    continue
+
+                if response.status_code != 200:
+                    raise Exception(f"Hugging Face API error ({response.status_code}): {response.text}")
+
+                # Save image to temporary location and upload to storage
+                # For now, we'll use base64 encoding
+                import base64
+                image_data = response.content
+                image_base64 = base64.b64encode(image_data).decode('utf-8')
+
+                # Return data URL (you may want to upload to S3/Supabase Storage instead)
+                return f"data:image/png;base64,{image_base64}"
+
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt
+                print(f"⚠️ [{model['name']}] Attempt {attempt + 1} failed: {e}. Retrying in {wait_time}s...")
+                await asyncio.sleep(wait_time)
+            else:
+                print(f"❌ [{model['name']}] All {max_retries} attempts failed")
+                raise
+
+
 async def atomic_update_model_result(job_id: str, model_id: str, success: bool, image_url: Optional[str] = None, error: Optional[str] = None):
     """Atomically update a single model result using Supabase RPC"""
     model_result = {
@@ -174,12 +241,19 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
     """Background task with parallel processing, retry logic, timeout, and error handling"""
 
     try:
+        # Get API tokens
         replicate_token = os.getenv("REPLICATE_API_TOKEN")
-        if not replicate_token:
+        huggingface_token = os.getenv("HUGGINGFACE_API_TOKEN")
+
+        # Check if we have at least one API token
+        has_replicate = replicate_token is not None
+        has_huggingface = huggingface_token is not None
+
+        if not has_replicate and not has_huggingface:
             supabase = get_supabase_client()
             supabase.client.table('generation_3d').update({
                 'generation_status': 'failed',
-                'error_message': 'REPLICATE_API_TOKEN not configured'
+                'error_message': 'No API tokens configured (need REPLICATE_API_TOKEN or HUGGINGFACE_API_TOKEN)'
             }).eq('id', job_id).execute()
             return
 
@@ -189,11 +263,26 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
         async def process_one_model(model: dict):
             async with semaphore:
                 try:
-                    print(f"🎨 Starting generation for {model['name']}")
-                    image_url = await generate_with_replicate(
-                        model, enhanced_prompt, request.width, request.height,
-                        request.image, replicate_token, max_retries=3
-                    )
+                    print(f"🎨 Starting generation for {model['name']} (provider: {model['provider']})")
+
+                    # Route to correct provider
+                    if model['provider'] == 'huggingface':
+                        if not huggingface_token:
+                            raise Exception("HUGGINGFACE_API_TOKEN not configured")
+                        image_url = await generate_with_huggingface(
+                            model, enhanced_prompt, request.width, request.height,
+                            huggingface_token, max_retries=3
+                        )
+                    elif model['provider'] == 'replicate':
+                        if not replicate_token:
+                            raise Exception("REPLICATE_API_TOKEN not configured")
+                        image_url = await generate_with_replicate(
+                            model, enhanced_prompt, request.width, request.height,
+                            request.image, replicate_token, max_retries=3
+                        )
+                    else:
+                        raise Exception(f"Unknown provider: {model['provider']}")
+
                     print(f"✅ {model['name']} completed successfully")
                     await atomic_update_model_result(job_id, model['id'], True, image_url)
                 except Exception as e:
