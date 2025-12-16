@@ -241,9 +241,9 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
     """Background task with parallel processing, retry logic, timeout, and error handling"""
 
     try:
-        # Get API tokens
+        # Get API tokens (try both common environment variable names)
         replicate_token = os.getenv("REPLICATE_API_TOKEN")
-        huggingface_token = os.getenv("HUGGINGFACE_API_TOKEN")
+        huggingface_token = os.getenv("HUGGINGFACE_API_TOKEN") or os.getenv("HUGGINGFACE_API_KEY") or os.getenv("HUGGING_FACE_ACCESS_TOKEN")
 
         # Check if we have at least one API token
         has_replicate = replicate_token is not None
