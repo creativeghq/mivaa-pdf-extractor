@@ -18,32 +18,25 @@ from app.services.supabase_client import get_supabase_client
 
 router = APIRouter(prefix="/api", tags=["interior-design"])
 
-# Model configurations
+# Model configurations - All Replicate models
 # Text-to-Image Models (for prompts without reference images)
 TEXT_TO_IMAGE_MODELS = [
-    # Hugging Face Models (Pro plan - all models available)
-    {"id": "flux-schnell", "name": "FLUX.1-schnell", "provider": "huggingface", "hf_model": "black-forest-labs/FLUX.1-schnell", "capability": "text-to-image"},
-    {"id": "sdxl", "name": "SDXL", "provider": "huggingface", "hf_model": "stabilityai/stable-diffusion-xl-base-1.0", "capability": "text-to-image"},
-    {"id": "sd-2.1", "name": "Stable Diffusion 2.1", "provider": "huggingface", "hf_model": "stabilityai/stable-diffusion-2-1", "capability": "text-to-image"},
-
-    # Replicate Models - Text-to-Image
-    {"id": "flux-dev", "name": "FLUX.1-dev", "provider": "replicate", "model": "black-forest-labs/flux-dev", "capability": "text-to-image"},
-    {"id": "playground-v2.5", "name": "Playground v2.5", "provider": "replicate", "model": "playgroundai/playground-v2.5-1024px-aesthetic", "version": "a45f82a1382bed5c7aeb861dac7c7d191b0fdf74d8d57c4a0e6ed7d4d0bf7d24", "capability": "text-to-image"},
-    {"id": "sd3", "name": "Stable Diffusion 3", "provider": "replicate", "model": "stability-ai/stable-diffusion-3", "capability": "text-to-image"},
+    {"id": "flux-dev", "name": "FLUX.1-dev", "provider": "replicate", "model": "black-forest-labs/flux-dev", "capability": "text-to-image", "cost_per_generation": 0.025},
+    {"id": "playground-v2.5", "name": "Playground v2.5", "provider": "replicate", "model": "playgroundai/playground-v2.5-1024px-aesthetic", "version": "a45f82a1382bed5c7aeb861dac7c7d191b0fdf74d8d57c4a0e6ed7d4d0bf7d24", "capability": "text-to-image", "cost_per_generation": 0.01},
+    {"id": "sd3", "name": "Stable Diffusion 3", "provider": "replicate", "model": "stability-ai/stable-diffusion-3", "capability": "text-to-image", "cost_per_generation": 0.055},
 ]
 
 # Image-to-Image Models (for interior design transformation with reference images)
 IMAGE_TO_IMAGE_MODELS = [
     # Working models - recommended for production
-    {"id": "comfyui-interior-remodel", "name": "ComfyUI Interior Remodel", "provider": "replicate", "model": "jschoormans/comfyui-interior-remodel", "version": "2a360362540e1f6cfe59c9db4aa8aa9059233d40e638aae0cdeb6b41f3d0dcce", "capability": "image-to-image", "status": "working"},
-    {"id": "interiorly-gen1-dev", "name": "Interiorly Gen1 Dev", "provider": "replicate", "model": "julian-at/interiorly-gen1-dev", "version": "5e3080d1b308e80197b32f0ce638daa8a329d0cf42068739723d8259e44b445e", "capability": "image-to-image", "status": "working"},
-    {"id": "designer-architecture", "name": "Designer Architecture", "provider": "replicate", "model": "davisbrown/designer-architecture", "version": "0d6f0893b05f14500ce03e45f54290cbffb907d14db49699f2823d0fd35def46", "capability": "image-to-image", "status": "working"},
+    {"id": "comfyui-interior-remodel", "name": "ComfyUI Interior Remodel", "provider": "replicate", "model": "jschoormans/comfyui-interior-remodel", "version": "2a360362540e1f6cfe59c9db4aa8aa9059233d40e638aae0cdeb6b41f3d0dcce", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.02},
+    {"id": "interiorly-gen1-dev", "name": "Interiorly Gen1 Dev", "provider": "replicate", "model": "julian-at/interiorly-gen1-dev", "version": "5e3080d1b308e80197b32f0ce638daa8a329d0cf42068739723d8259e44b445e", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.015},
+    {"id": "designer-architecture", "name": "Designer Architecture", "provider": "replicate", "model": "davisbrown/designer-architecture", "version": "0d6f0893b05f14500ce03e45f54290cbffb907d14db49699f2823d0fd35def46", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.018},
 
     # Additional models - may have issues but available for testing
-    {"id": "interior-ai", "name": "Interior AI", "provider": "replicate", "model": "erayyavuz/interior-ai", "version": "e299c531485aac511610a878ef44b554381355de5ee032d109fcae5352f39fa9", "capability": "image-to-image", "status": "experimental"},
-    {"id": "interior-v2", "name": "Interior V2", "provider": "replicate", "model": "jschoormans/interior-v2", "version": "8372bd24c6011ea957a0861f0146671eed615e375f038c13259c1882e3c8bac7", "capability": "image-to-image", "status": "experimental"},
-    {"id": "adirik-interior-design", "name": "Adirik Interior Design", "provider": "replicate", "model": "adirik/interior-design", "version": "76604baddc85b1b4616e1c6475eca080da339c8875bd4996705440484a6eac38", "capability": "image-to-image", "status": "experimental"},
-    {"id": "interior-design-sdxl", "name": "Interior Design SDXL", "provider": "replicate", "model": "rocketdigitalai/interior-design-sdxl", "version": "a3c091059a25590ce2d5ea13651fab63f447f21760e50c358d4b850e844f59ee", "capability": "image-to-image", "status": "experimental"},
+    {"id": "interior-v2", "name": "Interior V2", "provider": "replicate", "model": "jschoormans/interior-v2", "version": "8372bd24c6011ea957a0861f0146671eed615e375f038c13259c1882e3c8bac7", "capability": "image-to-image", "status": "experimental", "cost_per_generation": 0.02},
+    {"id": "adirik-interior-design", "name": "Adirik Interior Design", "provider": "replicate", "model": "adirik/interior-design", "version": "76604baddc85b1b4616e1c6475eca080da339c8875bd4996705440484a6eac38", "capability": "image-to-image", "status": "experimental", "cost_per_generation": 0.015},
+    {"id": "interior-design-sdxl", "name": "Interior Design SDXL", "provider": "replicate", "model": "rocketdigitalai/interior-design-sdxl", "version": "a3c091059a25590ce2d5ea13651fab63f447f21760e50c358d4b850e844f59ee", "capability": "image-to-image", "status": "experimental", "cost_per_generation": 0.022},
 ]
 
 # Combined list - use all models by default
@@ -148,66 +141,6 @@ async def generate_with_replicate(model: dict, prompt: str, width: int, height: 
                 raise
 
 
-async def generate_with_huggingface(model: dict, prompt: str, width: int, height: int, api_token: str, max_retries: int = 3) -> str:
-    """Generate image using Hugging Face Inference API with retry logic
-
-    Uses the Inference Providers API which routes to available providers.
-    Docs: https://huggingface.co/docs/inference-providers/en/index
-    """
-
-    hf_model = model.get("hf_model")
-    if not hf_model:
-        raise Exception(f"No Hugging Face model specified for {model['name']}")
-
-    for attempt in range(max_retries):
-        try:
-            # Use Hugging Face Inference Providers API
-            # This API automatically routes to available providers (fal, replicate, etc.)
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                # Build form data for text-to-image endpoint
-                # The Inference Providers API uses a simpler format
-                response = await client.post(
-                    f"https://api-inference.huggingface.co/models/{hf_model}",
-                    headers={
-                        "Authorization": f"Bearer {api_token}",
-                    },
-                    json={"inputs": prompt}
-                )
-
-                if response.status_code == 503:
-                    # Model is loading, wait and retry
-                    try:
-                        error_data = response.json()
-                        wait_time = error_data.get("estimated_time", 20)
-                        print(f"⏳ [{model['name']}] Model loading, waiting {wait_time}s...")
-                        await asyncio.sleep(wait_time)
-                        continue
-                    except:
-                        # If we can't parse the error, just wait and retry
-                        await asyncio.sleep(20)
-                        continue
-
-                if response.status_code != 200:
-                    raise Exception(f"Hugging Face API error ({response.status_code}): {response.text}")
-
-                # The response is the image bytes directly
-                import base64
-                image_data = response.content
-                image_base64 = base64.b64encode(image_data).decode('utf-8')
-
-                # Return data URL (you may want to upload to S3/Supabase Storage instead)
-                return f"data:image/png;base64,{image_base64}"
-
-        except Exception as e:
-            if attempt < max_retries - 1:
-                wait_time = 2 ** attempt
-                print(f"⚠️ [{model['name']}] Attempt {attempt + 1} failed: {e}. Retrying in {wait_time}s...")
-                await asyncio.sleep(wait_time)
-            else:
-                print(f"❌ [{model['name']}] All {max_retries} attempts failed")
-                raise
-
-
 async def download_and_upload_to_supabase(image_url: str, job_id: str, model_id: str) -> str:
     """Download image from temporary URL and upload to Supabase Storage
 
@@ -260,12 +193,13 @@ async def download_and_upload_to_supabase(image_url: str, job_id: str, model_id:
         return image_url
 
 
-async def atomic_update_model_result(job_id: str, model_id: str, success: bool, image_url: Optional[str] = None, error: Optional[str] = None):
+async def atomic_update_model_result(job_id: str, model_id: str, success: bool, image_url: Optional[str] = None, cost: float = 0.0, error: Optional[str] = None):
     """Atomically update a single model result using Supabase RPC"""
     model_result = {
         "model_id": model_id,
         "status": "completed" if success else "failed",
-        "generated_at": datetime.utcnow().isoformat()
+        "generated_at": datetime.utcnow().isoformat(),
+        "cost": cost
     }
 
     if success and image_url:
@@ -298,19 +232,14 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
     """Background task with parallel processing, retry logic, timeout, and error handling"""
 
     try:
-        # Get API tokens (try both common environment variable names)
+        # Get Replicate API token
         replicate_token = os.getenv("REPLICATE_API_TOKEN")
-        huggingface_token = os.getenv("HUGGINGFACE_API_TOKEN") or os.getenv("HUGGINGFACE_API_KEY") or os.getenv("HUGGING_FACE_ACCESS_TOKEN")
 
-        # Check if we have at least one API token
-        has_replicate = replicate_token is not None
-        has_huggingface = huggingface_token is not None
-
-        if not has_replicate and not has_huggingface:
+        if not replicate_token:
             supabase = get_supabase_client()
             supabase.client.table('generation_3d').update({
                 'generation_status': 'failed',
-                'error_message': 'No API tokens configured (need REPLICATE_API_TOKEN or HUGGINGFACE_API_TOKEN)'
+                'error_message': 'REPLICATE_API_TOKEN not configured'
             }).eq('id', job_id).execute()
             return
 
@@ -320,33 +249,24 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
         async def process_one_model(model: dict):
             async with semaphore:
                 try:
-                    print(f"🎨 Starting generation for {model['name']} (provider: {model['provider']})")
+                    print(f"🎨 Starting generation for {model['name']}")
 
-                    # Route to correct provider
-                    if model['provider'] == 'huggingface':
-                        if not huggingface_token:
-                            raise Exception("HUGGINGFACE_API_TOKEN not configured")
-                        temp_image_url = await generate_with_huggingface(
-                            model, enhanced_prompt, request.width, request.height,
-                            huggingface_token, max_retries=3
-                        )
-                    elif model['provider'] == 'replicate':
-                        if not replicate_token:
-                            raise Exception("REPLICATE_API_TOKEN not configured")
-                        temp_image_url = await generate_with_replicate(
-                            model, enhanced_prompt, request.width, request.height,
-                            request.image, replicate_token, max_retries=3
-                        )
-                    else:
-                        raise Exception(f"Unknown provider: {model['provider']}")
+                    # Generate with Replicate
+                    temp_image_url = await generate_with_replicate(
+                        model, enhanced_prompt, request.width, request.height,
+                        request.image, replicate_token, max_retries=3
+                    )
 
                     print(f"✅ {model['name']} generation completed, uploading to Supabase Storage...")
 
                     # Download and upload to Supabase Storage for permanent storage
                     permanent_url = await download_and_upload_to_supabase(temp_image_url, job_id, model['id'])
 
-                    print(f"✅ {model['name']} completed successfully with permanent URL")
-                    await atomic_update_model_result(job_id, model['id'], True, permanent_url)
+                    # Calculate cost
+                    cost = model.get('cost_per_generation', 0.0)
+
+                    print(f"✅ {model['name']} completed successfully (cost: ${cost:.3f})")
+                    await atomic_update_model_result(job_id, model['id'], True, permanent_url, cost)
                 except Exception as e:
                     print(f"❌ {model['name']} failed: {e}")
                     await atomic_update_model_result(job_id, model['id'], False, error=str(e))
@@ -359,6 +279,18 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
         )
 
         print(f"✅ Job {job_id} completed")
+
+        # Deduct credits from user account
+        try:
+            supabase = get_supabase_client()
+            result = supabase.client.rpc('deduct_generation_credits', {'p_job_id': job_id}).execute()
+            if result.data:
+                credit_info = result.data[0] if isinstance(result.data, list) else result.data
+                print(f"💳 Credits deducted: {credit_info.get('credits_deducted')} (${credit_info.get('cost_usd'):.3f})")
+                print(f"💰 New balance: {credit_info.get('new_balance')} credits")
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to deduct credits: {e}")
+            # Don't fail the job if credit deduction fails - log it for manual review
 
     except asyncio.TimeoutError:
         print(f"⏰ Job {job_id} timed out after 10 minutes")
