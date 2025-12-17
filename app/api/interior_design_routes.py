@@ -25,21 +25,24 @@ TEXT_TO_IMAGE_MODELS = [
     {"id": "sdxl", "name": "SDXL", "provider": "huggingface", "hf_model": "stabilityai/stable-diffusion-xl-base-1.0", "capability": "text-to-image"},
     {"id": "sd-2.1", "name": "Stable Diffusion 2.1", "provider": "huggingface", "hf_model": "stabilityai/stable-diffusion-2-1", "capability": "text-to-image"},
 
-    # Replicate Models (require proper version hashes - provide these to enable)
-    # {"id": "flux-dev", "name": "FLUX.1-dev", "provider": "replicate", "version": "NEEDS_VERSION_HASH", "capability": "text-to-image"},
-    # {"id": "playground-v2.5", "name": "Playground v2.5", "provider": "replicate", "version": "NEEDS_VERSION_HASH", "capability": "text-to-image"},
-    # {"id": "stable-diffusion-3", "name": "Stable Diffusion 3", "provider": "replicate", "version": "NEEDS_VERSION_HASH", "capability": "text-to-image"},
+    # Replicate Models - Text-to-Image
+    {"id": "flux-dev", "name": "FLUX.1-dev", "provider": "replicate", "model": "black-forest-labs/flux-dev", "capability": "text-to-image"},
+    {"id": "playground-v2.5", "name": "Playground v2.5", "provider": "replicate", "model": "playgroundai/playground-v2.5-1024px-aesthetic", "version": "a45f82a1382bed5c7aeb861dac7c7d191b0fdf74d8d57c4a0e6ed7d4d0bf7d24", "capability": "text-to-image"},
+    {"id": "sd3", "name": "Stable Diffusion 3", "provider": "replicate", "model": "stability-ai/stable-diffusion-3", "capability": "text-to-image"},
 ]
 
 # Image-to-Image Models (for interior design transformation with reference images)
 IMAGE_TO_IMAGE_MODELS = [
-    {"id": "jschoormans/comfyui-interior-remodel", "name": "ComfyUI Interior Remodel", "provider": "replicate", "capability": "image-to-image", "status": "working"},
-    {"id": "julian-at/interiorly-gen1-dev", "name": "Interiorly Gen1 Dev", "provider": "replicate", "capability": "image-to-image", "status": "working"},
-    {"id": "davisbrown/designer-architecture", "name": "Designer Architecture", "provider": "replicate", "capability": "image-to-image", "status": "working"},
-    {"id": "erayyavuz/interior-ai", "name": "Interior AI", "provider": "replicate", "capability": "image-to-image", "status": "failing"},
-    {"id": "jschoormans/interior-v2", "name": "Interior V2", "provider": "replicate", "capability": "image-to-image", "status": "failing"},
-    {"id": "adirik/interior-design", "name": "Adirik Interior Design", "provider": "replicate", "capability": "image-to-image", "status": "failing"},
-    {"id": "rocketdigitalai/interior-design-sdxl", "name": "Interior Design SDXL", "provider": "replicate", "capability": "image-to-image", "status": "failing"},
+    # Working models - recommended for production
+    {"id": "comfyui-interior-remodel", "name": "ComfyUI Interior Remodel", "provider": "replicate", "model": "jschoormans/comfyui-interior-remodel", "version": "2a360362540e1f6cfe59c9db4aa8aa9059233d40e638aae0cdeb6b41f3d0dcce", "capability": "image-to-image", "status": "working"},
+    {"id": "interiorly-gen1-dev", "name": "Interiorly Gen1 Dev", "provider": "replicate", "model": "julian-at/interiorly-gen1-dev", "version": "5e3080d1b308e80197b32f0ce638daa8a329d0cf42068739723d8259e44b445e", "capability": "image-to-image", "status": "working"},
+    {"id": "designer-architecture", "name": "Designer Architecture", "provider": "replicate", "model": "davisbrown/designer-architecture", "version": "0d6f0893b05f14500ce03e45f54290cbffb907d14db49699f2823d0fd35def46", "capability": "image-to-image", "status": "working"},
+
+    # Additional models - may have issues but available for testing
+    {"id": "interior-ai", "name": "Interior AI", "provider": "replicate", "model": "erayyavuz/interior-ai", "version": "e299c531485aac511610a878ef44b554381355de5ee032d109fcae5352f39fa9", "capability": "image-to-image", "status": "experimental"},
+    {"id": "interior-v2", "name": "Interior V2", "provider": "replicate", "model": "jschoormans/interior-v2", "version": "8372bd24c6011ea957a0861f0146671eed615e375f038c13259c1882e3c8bac7", "capability": "image-to-image", "status": "experimental"},
+    {"id": "adirik-interior-design", "name": "Adirik Interior Design", "provider": "replicate", "model": "adirik/interior-design", "version": "76604baddc85b1b4616e1c6475eca080da339c8875bd4996705440484a6eac38", "capability": "image-to-image", "status": "experimental"},
+    {"id": "interior-design-sdxl", "name": "Interior Design SDXL", "provider": "replicate", "model": "rocketdigitalai/interior-design-sdxl", "version": "a3c091059a25590ce2d5ea13651fab63f447f21760e50c358d4b850e844f59ee", "capability": "image-to-image", "status": "experimental"},
 ]
 
 # Combined list - use all models by default
@@ -80,8 +83,17 @@ async def generate_with_replicate(model: dict, prompt: str, width: int, height: 
                 input_data["image"] = image_url
                 input_data["strength"] = 0.8
 
-            # Determine model identifier
-            model_identifier = model.get("version") if model.get("version") else model["id"]
+            # Determine model identifier - use version if available, otherwise use model name
+            # Replicate API accepts either "version" (hash) or "model" (owner/name format)
+            prediction_payload = {"input": input_data}
+
+            if model.get("version"):
+                prediction_payload["version"] = model["version"]
+            elif model.get("model"):
+                # Use model name format (e.g., "black-forest-labs/flux-dev")
+                prediction_payload["version"] = model["model"]
+            else:
+                raise Exception(f"Model {model['name']} missing both 'version' and 'model' fields")
 
             async with httpx.AsyncClient(timeout=300.0) as client:
                 # Create prediction
@@ -91,10 +103,7 @@ async def generate_with_replicate(model: dict, prompt: str, width: int, height: 
                         "Authorization": f"Bearer {api_token}",
                         "Content-Type": "application/json"
                     },
-                    json={
-                        "version": model_identifier,
-                        "input": input_data
-                    }
+                    json=prediction_payload
                 )
 
                 if response.status_code != 201:
