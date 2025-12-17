@@ -148,7 +148,11 @@ async def generate_with_replicate(model: dict, prompt: str, width: int, height: 
 
 
 async def generate_with_huggingface(model: dict, prompt: str, width: int, height: int, api_token: str, max_retries: int = 3) -> str:
-    """Generate image using Hugging Face Inference API with retry logic"""
+    """Generate image using Hugging Face Inference API with retry logic
+
+    Uses the Inference Providers API which routes to available providers.
+    Docs: https://huggingface.co/docs/inference-providers/en/index
+    """
 
     hf_model = model.get("hf_model")
     if not hf_model:
@@ -156,45 +160,36 @@ async def generate_with_huggingface(model: dict, prompt: str, width: int, height
 
     for attempt in range(max_retries):
         try:
-            # Build request payload for Hugging Face
-            payload = {
-                "inputs": prompt,
-                "parameters": {
-                    "num_inference_steps": 20,
-                    "guidance_scale": 7.5,
-                    "width": width,
-                    "height": height,
-                }
-            }
-
-            # Special handling for FLUX.1-schnell (requires fewer steps and no guidance)
-            if "FLUX.1-schnell" in hf_model:
-                payload["parameters"]["num_inference_steps"] = 4
-                payload["parameters"]["guidance_scale"] = 0
-
+            # Use Hugging Face Inference Providers API
+            # This API automatically routes to available providers (fal, replicate, etc.)
             async with httpx.AsyncClient(timeout=120.0) as client:
+                # Build form data for text-to-image endpoint
+                # The Inference Providers API uses a simpler format
                 response = await client.post(
-                    f"https://router.huggingface.co/models/{hf_model}",
+                    f"https://api-inference.huggingface.co/models/{hf_model}",
                     headers={
                         "Authorization": f"Bearer {api_token}",
-                        "Content-Type": "application/json"
                     },
-                    json=payload
+                    json={"inputs": prompt}
                 )
 
                 if response.status_code == 503:
                     # Model is loading, wait and retry
-                    error_data = response.json()
-                    wait_time = error_data.get("estimated_time", 20)
-                    print(f"⏳ [{model['name']}] Model loading, waiting {wait_time}s...")
-                    await asyncio.sleep(wait_time)
-                    continue
+                    try:
+                        error_data = response.json()
+                        wait_time = error_data.get("estimated_time", 20)
+                        print(f"⏳ [{model['name']}] Model loading, waiting {wait_time}s...")
+                        await asyncio.sleep(wait_time)
+                        continue
+                    except:
+                        # If we can't parse the error, just wait and retry
+                        await asyncio.sleep(20)
+                        continue
 
                 if response.status_code != 200:
                     raise Exception(f"Hugging Face API error ({response.status_code}): {response.text}")
 
-                # Save image to temporary location and upload to storage
-                # For now, we'll use base64 encoding
+                # The response is the image bytes directly
                 import base64
                 image_data = response.content
                 image_base64 = base64.b64encode(image_data).decode('utf-8')
