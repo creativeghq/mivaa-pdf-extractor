@@ -266,10 +266,10 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
                     cost = model.get('cost_per_generation', 0.0)
 
                     print(f"✅ {model['name']} completed successfully (cost: ${cost:.3f})")
-                    await atomic_update_model_result(job_id, model['id'], True, permanent_url, cost)
+                    await atomic_update_model_result(job_id, model['id'], True, permanent_url, cost, None)
                 except Exception as e:
                     print(f"❌ {model['name']} failed: {e}")
-                    await atomic_update_model_result(job_id, model['id'], False, error=str(e))
+                    await atomic_update_model_result(job_id, model['id'], False, None, 0.0, str(e))
 
         # Process all models in parallel with 10-minute timeout
         tasks = [process_one_model(m) for m in models_to_use]
