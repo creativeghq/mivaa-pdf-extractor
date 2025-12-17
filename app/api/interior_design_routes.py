@@ -13,6 +13,7 @@ import os
 import httpx
 from datetime import datetime
 import uuid
+import io
 from app.services.supabase_client import get_supabase_client
 
 router = APIRouter(prefix="/api", tags=["interior-design"])
@@ -207,6 +208,58 @@ async def generate_with_huggingface(model: dict, prompt: str, width: int, height
                 raise
 
 
+async def download_and_upload_to_supabase(image_url: str, job_id: str, model_id: str) -> str:
+    """Download image from temporary URL and upload to Supabase Storage
+
+    Args:
+        image_url: Temporary URL from Replicate/HuggingFace
+        job_id: Generation job ID
+        model_id: Model identifier
+
+    Returns:
+        Public URL of the uploaded image in Supabase Storage
+    """
+    try:
+        # Download image from temporary URL
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.get(image_url)
+            if response.status_code != 200:
+                raise Exception(f"Failed to download image: {response.status_code}")
+
+            image_data = response.content
+
+            # Determine file extension from URL or content-type
+            content_type = response.headers.get('content-type', 'image/webp')
+            if 'png' in content_type or image_url.endswith('.png'):
+                ext = 'png'
+            elif 'jpeg' in content_type or 'jpg' in content_type or image_url.endswith(('.jpg', '.jpeg')):
+                ext = 'jpg'
+            else:
+                ext = 'webp'
+
+            # Create unique filename
+            filename = f"{job_id}/{model_id}_{uuid.uuid4().hex[:8]}.{ext}"
+
+            # Upload to Supabase Storage
+            supabase = get_supabase_client()
+            result = supabase.client.storage.from_('designer-assets').upload(
+                filename,
+                image_data,
+                file_options={"content-type": content_type}
+            )
+
+            # Get public URL
+            public_url = supabase.client.storage.from_('designer-assets').get_public_url(filename)
+
+            print(f"✅ Uploaded image to Supabase Storage: {public_url}")
+            return public_url
+
+    except Exception as e:
+        print(f"❌ Error uploading to Supabase Storage: {e}")
+        # Return original URL as fallback
+        return image_url
+
+
 async def atomic_update_model_result(job_id: str, model_id: str, success: bool, image_url: Optional[str] = None, error: Optional[str] = None):
     """Atomically update a single model result using Supabase RPC"""
     model_result = {
@@ -273,22 +326,27 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
                     if model['provider'] == 'huggingface':
                         if not huggingface_token:
                             raise Exception("HUGGINGFACE_API_TOKEN not configured")
-                        image_url = await generate_with_huggingface(
+                        temp_image_url = await generate_with_huggingface(
                             model, enhanced_prompt, request.width, request.height,
                             huggingface_token, max_retries=3
                         )
                     elif model['provider'] == 'replicate':
                         if not replicate_token:
                             raise Exception("REPLICATE_API_TOKEN not configured")
-                        image_url = await generate_with_replicate(
+                        temp_image_url = await generate_with_replicate(
                             model, enhanced_prompt, request.width, request.height,
                             request.image, replicate_token, max_retries=3
                         )
                     else:
                         raise Exception(f"Unknown provider: {model['provider']}")
 
-                    print(f"✅ {model['name']} completed successfully")
-                    await atomic_update_model_result(job_id, model['id'], True, image_url)
+                    print(f"✅ {model['name']} generation completed, uploading to Supabase Storage...")
+
+                    # Download and upload to Supabase Storage for permanent storage
+                    permanent_url = await download_and_upload_to_supabase(temp_image_url, job_id, model['id'])
+
+                    print(f"✅ {model['name']} completed successfully with permanent URL")
+                    await atomic_update_model_result(job_id, model['id'], True, permanent_url)
                 except Exception as e:
                     print(f"❌ {model['name']} failed: {e}")
                     await atomic_update_model_result(job_id, model['id'], False, error=str(e))
