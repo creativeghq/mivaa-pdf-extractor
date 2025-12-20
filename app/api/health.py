@@ -170,22 +170,24 @@ async def detailed_health_check() -> DetailedHealthResponse:
         
         # Get query metrics
         metrics = query_metrics.get_metrics()
-        
-        # Get circuit breaker status
-        circuit_breaker_status = job_monitor_service.circuit_breaker.get_state()
-        
+
+        # Circuit breaker status - JobMonitorService no longer uses circuit breaker
+        # Return a simple status based on database health
+        circuit_breaker_status = {
+            "state": "closed" if db_health["healthy"] else "open",
+            "failure_count": db_health.get("consecutive_failures", 0)
+        }
+
         # Determine overall status
         overall_status = "healthy"
-        
+
         if not db_health["healthy"]:
             overall_status = "unhealthy"
         elif monitor_health["health"] == "degraded":
             overall_status = "degraded"
-        elif circuit_breaker_status["state"] == "open":
-            overall_status = "degraded"
         elif metrics["slow_query_percentage"] > 20:  # More than 20% slow queries
             overall_status = "degraded"
-        
+
         return {
             "overall_status": overall_status,
             "database": db_health,
@@ -290,12 +292,21 @@ async def circuit_breaker_status() -> Dict[str, CircuitBreakerState]:
     - `half_open`: Testing recovery
 
     **Protected Services**:
-    - `job_monitor_db`: Job monitor database operations
+    - `job_monitor_db`: Job monitor database operations (now uses simple error handling)
 
     **Use Case**: Resilience monitoring, failure detection
+
+    **Note**: JobMonitorService no longer uses circuit breaker pattern.
+    Status is derived from database health metrics.
     """
+    # Get database health to determine circuit breaker status
+    db_health = await database_health_service.get_health()
+
     return {
-        "job_monitor_db": job_monitor_service.circuit_breaker.get_state()
+        "job_monitor_db": {
+            "state": "closed" if db_health["healthy"] else "open",
+            "failure_count": db_health.get("consecutive_failures", 0)
+        }
     }
 
 
