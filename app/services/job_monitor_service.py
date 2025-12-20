@@ -79,14 +79,6 @@ class JobMonitorService:
             "circuit_breaker_trips": 0
         }
 
-        # Initialize circuit breaker for database operations
-        self.circuit_breaker = CircuitBreaker(
-            name="job_monitor_db",
-            failure_threshold=5,
-            recovery_timeout=60.0,
-            success_threshold=2
-        )
-
         logger.info(f"JobMonitorService initialized (check_interval={check_interval_seconds}s, timeout={stuck_job_timeout_minutes}min)")
     
     async def start(self):
