@@ -20,6 +20,8 @@ from enum import Enum
 
 from app.services.supabase_client import get_supabase_client
 from app.utils.timestamp_utils import normalize_timestamp
+from app.utils.retry_utils import retry_async
+from app.utils.query_metrics import track_query_performance
 
 logger = logging.getLogger(__name__)
 
@@ -176,34 +178,40 @@ class CheckpointRecoveryService:
         logger.info(f"✅ Job {job_id} can resume from {stage.value}")
         return True, stage
     
+    @retry_async(
+        max_attempts=3,
+        base_delay=2.0,
+        exceptions=(Exception,)
+    )
+    @track_query_performance("background_jobs", "select_stuck_jobs")
     async def detect_stuck_jobs(self, timeout_minutes: int = 30) -> List[Dict[str, Any]]:
         """
         Detect jobs that are stuck (processing for too long without progress).
-        
+
         Args:
             timeout_minutes: Consider job stuck if processing longer than this
-            
+
         Returns:
             List of stuck job records
         """
         try:
             cutoff_time = (datetime.utcnow() - timedelta(minutes=timeout_minutes)).isoformat()
-            
+
             result = self.supabase_client.client.table(self.jobs_table)\
                 .select("*")\
                 .eq("status", "processing")\
                 .lt("updated_at", cutoff_time)\
                 .execute()
-            
+
             stuck_jobs = result.data or []
-            
+
             if stuck_jobs:
                 logger.warning(f"🛑 Found {len(stuck_jobs)} stuck jobs (>{timeout_minutes}min without update)")
                 for job in stuck_jobs:
                     logger.warning(f"   - {job['id']}: {job.get('filename', 'unknown')} (updated: {job['updated_at']})")
-            
+
             return stuck_jobs
-            
+
         except Exception as e:
             logger.error(f"❌ Failed to detect stuck jobs: {e}")
             return []

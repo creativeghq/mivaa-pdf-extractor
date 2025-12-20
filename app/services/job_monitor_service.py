@@ -21,6 +21,9 @@ from app.services.checkpoint_recovery_service import (
     checkpoint_recovery_service,
     ProcessingStage
 )
+from app.utils.retry_utils import retry_async
+from app.utils.query_metrics import track_query_performance, query_metrics
+from app.utils.circuit_breaker import CircuitBreaker, CircuitBreakerError
 
 logger = logging.getLogger(__name__)
 
@@ -36,14 +39,17 @@ except ImportError:
 class JobMonitorService:
     """
     Monitors background jobs and performs auto-recovery.
-    
+
     Features:
     - Detect stuck jobs
     - Auto-restart from checkpoints
     - Kill zombie processes
     - Health reporting
+    - Retry logic with exponential backoff
+    - Circuit breaker for database protection
+    - Query performance tracking
     """
-    
+
     def __init__(
         self,
         check_interval_seconds: int = 60,
@@ -52,7 +58,7 @@ class JobMonitorService:
     ):
         """
         Initialize job monitor service.
-        
+
         Args:
             check_interval_seconds: How often to check for stuck jobs
             stuck_job_timeout_minutes: Consider job stuck if no update for this long
@@ -68,8 +74,19 @@ class JobMonitorService:
             "stuck_jobs_detected": 0,
             "jobs_restarted": 0,
             "jobs_failed": 0,
-            "last_check": None
+            "last_check": None,
+            "errors": 0,
+            "circuit_breaker_trips": 0
         }
+
+        # Initialize circuit breaker for database operations
+        self.circuit_breaker = CircuitBreaker(
+            name="job_monitor_db",
+            failure_threshold=5,
+            recovery_timeout=60.0,
+            success_threshold=2
+        )
+
         logger.info(f"JobMonitorService initialized (check_interval={check_interval_seconds}s, timeout={stuck_job_timeout_minutes}min)")
     
     async def start(self):
@@ -133,6 +150,12 @@ class JobMonitorService:
         except Exception as e:
             logger.error(f"❌ Error in check_and_recover: {e}", exc_info=True)
 
+    @retry_async(
+        max_attempts=3,
+        base_delay=2.0,
+        exceptions=(Exception,)
+    )
+    @track_query_performance("background_jobs", "select_heartbeat_timeout")
     async def _detect_heartbeat_timeout_jobs(self, heartbeat_timeout_seconds: int = 900) -> List[Dict[str, Any]]:
         """
         Detect jobs that haven't sent a heartbeat in heartbeat_timeout_seconds.
@@ -149,12 +172,17 @@ class JobMonitorService:
         try:
             cutoff_time = datetime.utcnow() - timedelta(seconds=heartbeat_timeout_seconds)
 
-            # Find processing jobs with stale heartbeat
-            result = self.supabase_client.client.table("background_jobs")\
-                .select("*")\
-                .eq("status", "processing")\
-                .lt("last_heartbeat", cutoff_time.isoformat())\
-                .execute()
+            # Wrap database call with circuit breaker
+            @self.circuit_breaker.call
+            async def query_heartbeat_jobs():
+                result = self.supabase_client.client.table("background_jobs")\
+                    .select("*")\
+                    .eq("status", "processing")\
+                    .lt("last_heartbeat", cutoff_time.isoformat())\
+                    .execute()
+                return result
+
+            result = await query_heartbeat_jobs()
 
             # Handle both dict and object response types
             stuck_jobs = []
@@ -175,7 +203,13 @@ class JobMonitorService:
 
             return stuck_jobs
 
+        except CircuitBreakerError as e:
+            # Circuit breaker is open - database is down
+            self.stats["circuit_breaker_trips"] += 1
+            logger.error(f"🔴 Circuit breaker open: {e}")
+            return []
         except Exception as e:
+            self.stats["errors"] += 1
             logger.error(f"❌ Error detecting heartbeat timeout jobs: {e}")
             return []
     
