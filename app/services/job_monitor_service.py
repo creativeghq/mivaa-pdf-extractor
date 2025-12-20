@@ -23,7 +23,6 @@ from app.services.checkpoint_recovery_service import (
 )
 from app.utils.retry_utils import retry_async
 from app.utils.query_metrics import track_query_performance, query_metrics
-from app.utils.circuit_breaker import CircuitBreaker, CircuitBreakerError
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +74,7 @@ class JobMonitorService:
             "jobs_restarted": 0,
             "jobs_failed": 0,
             "last_check": None,
-            "errors": 0,
-            "circuit_breaker_trips": 0
+            "errors": 0
         }
 
         logger.info(f"JobMonitorService initialized (check_interval={check_interval_seconds}s, timeout={stuck_job_timeout_minutes}min)")
@@ -164,17 +162,12 @@ class JobMonitorService:
         try:
             cutoff_time = datetime.utcnow() - timedelta(seconds=heartbeat_timeout_seconds)
 
-            # Wrap database call with circuit breaker
-            @self.circuit_breaker.call
-            async def query_heartbeat_jobs():
-                result = self.supabase_client.client.table("background_jobs")\
-                    .select("*")\
-                    .eq("status", "processing")\
-                    .lt("last_heartbeat", cutoff_time.isoformat())\
-                    .execute()
-                return result
-
-            result = await query_heartbeat_jobs()
+            # Query jobs with heartbeat timeout
+            result = self.supabase_client.client.table("background_jobs")\
+                .select("*")\
+                .eq("status", "processing")\
+                .lt("last_heartbeat", cutoff_time.isoformat())\
+                .execute()
 
             # Handle both dict and object response types
             stuck_jobs = []
@@ -195,11 +188,6 @@ class JobMonitorService:
 
             return stuck_jobs
 
-        except CircuitBreakerError as e:
-            # Circuit breaker is open - database is down
-            self.stats["circuit_breaker_trips"] += 1
-            logger.error(f"🔴 Circuit breaker open: {e}")
-            return []
         except Exception as e:
             self.stats["errors"] += 1
             logger.error(f"❌ Error detecting heartbeat timeout jobs: {e}")
