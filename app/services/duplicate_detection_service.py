@@ -17,9 +17,9 @@ import logging
 from typing import List, Dict, Any, Tuple, Optional
 from datetime import datetime
 import numpy as np
-from difflib import SequenceMatcher
 
 from app.services.supabase_client import SupabaseClient
+from app.utils.text_similarity import calculate_string_similarity, calculate_text_similarity
 
 logger = logging.getLogger(__name__)
 
@@ -338,15 +338,7 @@ class DuplicateDetectionService:
     
     def _calculate_name_similarity(self, name1: str, name2: str) -> float:
         """Calculate name similarity using sequence matching."""
-        if not name1 or not name2:
-            return 0.0
-        
-        # Normalize names
-        name1_norm = name1.lower().strip()
-        name2_norm = name2.lower().strip()
-        
-        # Use SequenceMatcher for fuzzy string matching
-        return SequenceMatcher(None, name1_norm, name2_norm).ratio()
+        return calculate_string_similarity(name1, name2, case_sensitive=False)
 
     async def _calculate_description_similarity(
         self,
@@ -354,12 +346,9 @@ class DuplicateDetectionService:
         desc2: str
     ) -> float:
         """Calculate semantic similarity between descriptions."""
-        if not desc1 or not desc2:
-            return 0.0
-
-        # For now, use simple text matching
+        # Use text similarity with sequence matching
         # TODO: Use semantic embeddings for better accuracy
-        return SequenceMatcher(None, desc1.lower(), desc2.lower()).ratio()
+        return calculate_text_similarity(desc1, desc2, method="sequence")
 
     # Visual similarity REMOVED - not used for duplicate detection
     # Different materials can look similar but are NOT duplicates if from different factories
@@ -397,7 +386,8 @@ class DuplicateDetectionService:
                     matching_values += 1
                 elif isinstance(val1, str) and isinstance(val2, str):
                     # Fuzzy match for strings
-                    if SequenceMatcher(None, val1.lower(), val2.lower()).ratio() > 0.8:
+                    similarity = calculate_string_similarity(val1, val2)
+                    if similarity > 0.8:
                         matching_values += 0.8
 
         # Calculate similarity as average of key and value matches

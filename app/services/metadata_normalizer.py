@@ -14,7 +14,8 @@ This allows the system to:
 import logging
 import re
 from typing import Dict, Any, List, Optional, Tuple
-from difflib import SequenceMatcher
+
+from app.utils.text_similarity import calculate_string_similarity
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ STANDARD_SCHEMA = {
 
 def calculate_similarity(str1: str, str2: str) -> float:
     """Calculate similarity between two strings (0.0 to 1.0)."""
-    return SequenceMatcher(None, str1.lower(), str2.lower()).ratio()
+    return calculate_string_similarity(str1, str2, case_sensitive=False)
 
 
 def find_standard_field(field_name: str, category: str, threshold: float = 0.6) -> Optional[str]:

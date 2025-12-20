@@ -9,7 +9,6 @@ import logging
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timedelta
 import re
-from difflib import SequenceMatcher
 from collections import defaultdict
 
 from ..services.supabase_client import SupabaseClient
@@ -20,6 +19,7 @@ from ..schemas.suggestions import (
     ExpandedQuery,
     PopularSearch
 )
+from ..utils.text_similarity import calculate_string_similarity
 
 logger = logging.getLogger(__name__)
 
@@ -437,17 +437,16 @@ class SearchSuggestionsService:
 
             # Find similar queries using fuzzy matching
             corrections = []
-            query_lower = query.lower()
 
             for row in response.data:
-                candidate = row["query_text"].lower()
+                candidate = row["query_text"]
 
                 # Skip exact matches
-                if candidate == query_lower:
+                if candidate.lower() == query.lower():
                     continue
 
                 # Calculate similarity
-                similarity = SequenceMatcher(None, query_lower, candidate).ratio()
+                similarity = calculate_string_similarity(query, candidate, case_sensitive=False)
 
                 # If similarity is high enough, suggest as correction
                 if similarity >= 0.75:
