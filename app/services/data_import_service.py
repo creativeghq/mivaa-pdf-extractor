@@ -55,6 +55,9 @@ class DataImportService:
             
             # Update job status to processing
             await self._update_job_status(job_id, 'processing', started_at=datetime.utcnow())
+
+            # 🆕 Update background_jobs to 'processing'
+            await self._update_background_job_status(job_id, 'processing', started_at=datetime.utcnow())
             
             # Get products from job metadata
             products = job.get('metadata', {}).get('products', [])
@@ -101,7 +104,8 @@ class DataImportService:
                     processed=processed_count,
                     failed=failed_count,
                     total=total_products,
-                    stage=f'batch_{batch_index + 1}'
+                    stage=f'batch_{batch_index + 1}',
+                    progress_percent=progress
                 )
                 
                 # Save checkpoint
@@ -125,7 +129,21 @@ class DataImportService:
                 processed_products=processed_count,
                 failed_products=failed_count
             )
-            
+
+            # 🆕 Update background_jobs to 'completed'
+            await self._update_background_job_status(
+                job_id=job_id,
+                status='completed',
+                completed_at=datetime.utcnow(),
+                progress_percent=100,
+                metadata={
+                    'total_products': total_products,
+                    'processed': processed_count,
+                    'failed': failed_count,
+                    'completion_rate': (processed_count / total_products * 100) if total_products > 0 else 0
+                }
+            )
+
             logger.info(f"🎉 Import job {job_id} completed: {processed_count}/{total_products} products processed")
             
             return {
@@ -139,7 +157,7 @@ class DataImportService:
             
         except Exception as e:
             logger.error(f"❌ Import job {job_id} failed: {e}", exc_info=True)
-            
+
             # Mark job as failed
             await self._update_job_status(
                 job_id=job_id,
@@ -147,7 +165,15 @@ class DataImportService:
                 error_message=str(e),
                 completed_at=datetime.utcnow()
             )
-            
+
+            # 🆕 Update background_jobs to 'failed'
+            await self._update_background_job_status(
+                job_id=job_id,
+                status='failed',
+                error_message=str(e),
+                completed_at=datetime.utcnow()
+            )
+
             raise
 
     async def _process_batch(
@@ -504,20 +530,102 @@ class DataImportService:
         processed: int,
         failed: int,
         total: int,
-        stage: str
+        stage: str,
+        progress_percent: int = None
     ) -> None:
-        """Update job progress in database."""
+        """Update job progress in database and job_progress table."""
         try:
+            if progress_percent is None:
+                progress_percent = int((processed / total) * 100) if total > 0 else 0
+
+            # Update data_import_jobs table
             self.supabase.table('data_import_jobs').update({
                 'processed_products': processed,
                 'failed_products': failed,
                 'metadata': {
                     'current_stage': stage,
-                    'progress_percentage': int((processed / total) * 100) if total > 0 else 0
+                    'progress_percentage': progress_percent
                 }
             }).eq('id', job_id).execute()
+
+            # 🆕 Get background_job_id from data_import_jobs
+            job_response = self.supabase.table('data_import_jobs').select('background_job_id').eq('id', job_id).single().execute()
+            background_job_id = job_response.data.get('background_job_id') if job_response.data else None
+
+            if background_job_id:
+                # 🆕 Update job_progress table (upsert)
+                self.supabase.table('job_progress').upsert({
+                    'job_id': background_job_id,
+                    'stage': f'xml_import_{stage}',
+                    'progress_percent': progress_percent,
+                    'current_step': f'Processing: {processed}/{total} products',
+                    'details': {
+                        'processed': processed,
+                        'failed': failed,
+                        'total': total,
+                        'current_stage': stage
+                    }
+                }, on_conflict='job_id,stage').execute()
+
+                # 🆕 Update background_jobs heartbeat and progress
+                self.supabase.table('background_jobs').update({
+                    'progress_percent': progress_percent,
+                    'last_heartbeat': datetime.utcnow().isoformat(),
+                    'metadata': {
+                        'processed': processed,
+                        'failed': failed,
+                        'total': total,
+                        'current_stage': stage
+                    }
+                }).eq('id', background_job_id).execute()
+
+                logger.debug(f"📊 Updated job progress: {progress_percent}% ({processed}/{total} products)")
         except Exception as e:
             logger.error(f"Failed to update job progress: {e}")
+
+    async def _update_background_job_status(
+        self,
+        job_id: str,
+        status: str,
+        **kwargs
+    ) -> None:
+        """
+        Update background_jobs status via data_import_jobs.
+
+        Args:
+            job_id: data_import_jobs ID
+            status: New status
+            **kwargs: Additional fields (started_at, completed_at, error_message, progress_percent, metadata)
+        """
+        try:
+            # Get background_job_id from data_import_jobs
+            job_response = self.supabase.table('data_import_jobs').select('background_job_id').eq('id', job_id).single().execute()
+            background_job_id = job_response.data.get('background_job_id') if job_response.data else None
+
+            if not background_job_id:
+                logger.warning(f"No background_job_id found for data_import_job {job_id}")
+                return
+
+            # Build update data
+            update_data = {'status': status}
+
+            # Convert datetime objects to ISO strings
+            for key, value in kwargs.items():
+                if isinstance(value, datetime):
+                    update_data[key] = value.isoformat()
+                else:
+                    update_data[key] = value
+
+            # Always update last_heartbeat
+            update_data['last_heartbeat'] = datetime.utcnow().isoformat()
+
+            # Update background_jobs table
+            self.supabase.table('background_jobs').update(update_data).eq('id', background_job_id).execute()
+            logger.info(f"✅ Updated background_job {background_job_id} status to {status}")
+
+        except Exception as e:
+            logger.error(f"Failed to update background_job status: {e}")
+            # Don't raise - this is non-critical
 
     async def _record_import_history(
         self,

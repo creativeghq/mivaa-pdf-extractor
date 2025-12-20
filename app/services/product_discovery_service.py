@@ -258,6 +258,115 @@ class ProductDiscoveryService:
         if "gpt" in model.lower() and not OPENAI_API_KEY:
             raise ValueError("OPENAI_API_KEY not set - cannot use GPT")
     
+    async def discover_products_from_text(
+        self,
+        markdown_text: str,
+        source_type: str = "web_scraping",
+        categories: List[str] = None,
+        agent_prompt: Optional[str] = None,
+        workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+        enable_prompt_enhancement: bool = True,
+        job_id: Optional[str] = None
+    ) -> ProductCatalog:
+        """
+        Discover products from markdown text (web scraping, XML, or any text source).
+
+        This is the UNIFIED product discovery method that works with ANY markdown text source:
+        - Web scraping (Firecrawl markdown)
+        - XML imports (converted to markdown)
+        - Manual text input
+        - Future text sources
+
+        **ARCHITECTURE:**
+        - Reuses existing text-based discovery pipeline
+        - Reuses existing metadata extraction
+        - NO changes to PDF pipeline
+        - NO changes to XML pipeline
+
+        Args:
+            markdown_text: Markdown-formatted text content to analyze
+            source_type: Type of source ("web_scraping", "xml_import", "manual")
+            categories: Categories to discover (products, certificates, logos, specifications). Default: ["products"]
+            agent_prompt: Optional natural language prompt from agent
+            workspace_id: Workspace ID for custom prompts
+            enable_prompt_enhancement: Whether to enhance prompts with admin templates
+            job_id: Optional job ID for tracking
+
+        Returns:
+            ProductCatalog with all discovered content
+
+        Example:
+            ```python
+            # Web scraping use case
+            service = ProductDiscoveryService(model="claude")
+            catalog = await service.discover_products_from_text(
+                markdown_text=firecrawl_markdown,
+                source_type="web_scraping",
+                categories=["products"]
+            )
+            ```
+        """
+        start_time = datetime.now()
+
+        # Default to products only if not specified
+        if categories is None:
+            categories = ["products"]
+
+        try:
+            self.logger.info(f"🔍 Starting TEXT-BASED discovery from {source_type.upper()}")
+            self.logger.info(f"   Text length: {len(markdown_text):,} characters")
+            self.logger.info(f"   Categories: {', '.join(categories)}")
+            if agent_prompt:
+                self.logger.info(f"   Agent Prompt: '{agent_prompt}'")
+
+            # Estimate total pages from text length (rough estimate: 2000 chars per page)
+            estimated_pages = max(1, len(markdown_text) // 2000)
+
+            # Use iterative batch discovery (same as PDF text-based discovery)
+            catalog = await self._iterative_batch_discovery(
+                pdf_text=markdown_text,
+                total_pages=estimated_pages,
+                categories=categories,
+                agent_prompt=agent_prompt,
+                workspace_id=workspace_id,
+                enable_prompt_enhancement=enable_prompt_enhancement,
+                job_id=job_id
+            )
+
+            self.logger.info(f"✅ Discovery complete: Found {len(catalog.products)} products")
+            for product in catalog.products:
+                self.logger.info(f"   📦 {product.name}")
+
+            # Enrich products with metadata using full text
+            if "products" in categories and catalog.products:
+                self.logger.info(f"🔍 Extracting detailed metadata for each product...")
+                catalog = await self._enrich_products_with_metadata(
+                    catalog,
+                    markdown_text,
+                    job_id
+                )
+
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            catalog.processing_time_ms = processing_time
+            catalog.model_used = self.model
+
+            # Log comprehensive results
+            self.logger.info(f"✅ Text-based discovery complete in {processing_time:.0f}ms:")
+            if "products" in categories:
+                self.logger.info(f"   📦 Products: {len(catalog.products)}")
+            if "certificates" in categories:
+                self.logger.info(f"   📜 Certificates: {len(catalog.certificates)}")
+            if "logos" in categories:
+                self.logger.info(f"   🎨 Logos: {len(catalog.logos)}")
+            if "specifications" in categories:
+                self.logger.info(f"   📋 Specifications: {len(catalog.specifications)}")
+
+            return catalog
+
+        except Exception as e:
+            self.logger.error(f"❌ Text-based product discovery failed: {e}")
+            raise
+
     async def discover_products(
         self,
         pdf_content: bytes,
