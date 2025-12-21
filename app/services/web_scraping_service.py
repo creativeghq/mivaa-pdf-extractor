@@ -24,7 +24,7 @@ import json
 from app.services.product_discovery_service import ProductDiscoveryService
 from app.services.supabase_client import get_supabase_client
 from app.services.async_queue_service import AsyncQueueService
-from app.utils.retry_utils import async_retry_with_exponential_backoff
+from app.utils.retry_utils import retry_async
 from app.utils.circuit_breaker import claude_breaker, gpt_breaker, CircuitBreakerError
 from app.utils.timeout_guard import with_timeout, TimeoutError, TimeoutConstants
 
@@ -340,7 +340,7 @@ class WebScrapingService:
 
             raise RuntimeError(f"Scraping session processing failed: {str(e)}") from e
 
-    @async_retry_with_exponential_backoff(
+    @retry_async(
         max_attempts=3,
         base_delay=2.0,
         max_delay=30.0,
@@ -458,7 +458,7 @@ class WebScrapingService:
             self.logger.error(f"Failed to fetch scraped markdown: {e}")
             return ""
 
-    @async_retry_with_exponential_backoff(
+    @retry_async(
         max_attempts=3,
         base_delay=1.0,
         max_delay=10.0,
@@ -519,7 +519,7 @@ class WebScrapingService:
             self.logger.error(f"Failed to create products in database: {e}")
             raise
 
-    @async_retry_with_exponential_backoff(
+    @retry_async(
         max_attempts=3,
         base_delay=0.5,
         max_delay=5.0,
