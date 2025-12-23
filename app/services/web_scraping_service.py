@@ -211,13 +211,14 @@ class WebScrapingService:
                 )
 
             # ============================================================
-            # STEP 4: Create products in database
+            # STEP 4: Create products in database (with chunks & embeddings)
             # ============================================================
             created_products = await self._create_products_in_database(
                 catalog=catalog,
                 workspace_id=workspace_id,
                 session_id=session_id,
-                source_url=session.get('source_url')
+                source_url=session.get('source_url'),
+                job_id=job_id
             )
 
             # Update job progress: Products created
@@ -469,7 +470,8 @@ class WebScrapingService:
         catalog: Any,
         workspace_id: str,
         session_id: str,
-        source_url: str
+        source_url: str,
+        job_id: str = None
     ) -> List[Dict[str, Any]]:
         """
         Create products in database from discovered catalog.
@@ -496,6 +498,8 @@ class WebScrapingService:
                     "description": product.description or "",
                     "metadata": product.metadata or {},
                     "source_type": "web_scraping",
+                    "source_job_id": job_id,
+                    "import_batch_id": f"scraping_{session_id}",
                     "source_url": source_url,
                     "source_reference": session_id,
                     "confidence_score": product.confidence,
@@ -508,8 +512,18 @@ class WebScrapingService:
 
                 if response.data:
                     created_product = response.data[0]
+                    product_id = created_product['id']
                     created_products.append(created_product)
-                    self.logger.info(f"   ✅ Created product: {product.name} (ID: {created_product['id']})")
+                    self.logger.info(f"   ✅ Created product: {product.name} (ID: {product_id})")
+
+                    # Create chunk and queue embedding generation
+                    await self._create_product_chunk_and_embedding(
+                        product_id=product_id,
+                        product_name=product.name,
+                        description=product.description or "",
+                        workspace_id=workspace_id,
+                        job_id=job_id
+                    )
                 else:
                     self.logger.warning(f"   ⚠️ Failed to create product: {product.name}")
 
@@ -518,6 +532,67 @@ class WebScrapingService:
         except Exception as e:
             self.logger.error(f"Failed to create products in database: {e}")
             raise
+
+    async def _create_product_chunk_and_embedding(
+        self,
+        product_id: str,
+        product_name: str,
+        description: str,
+        workspace_id: str,
+        job_id: str = None
+    ) -> None:
+        """
+        Create document chunk and queue embedding generation for a product.
+
+        This makes scraped products searchable by creating chunks and embeddings
+        similar to PDF and XML imports.
+
+        Args:
+            product_id: Product ID
+            product_name: Product name
+            description: Product description
+            workspace_id: Workspace ID
+            job_id: Job ID for source tracking
+        """
+        try:
+            # Skip if description is too short
+            if not description or len(description) < 50:
+                self.logger.info(f"   ⏭️ Skipping chunk creation for {product_name} - insufficient content")
+                return
+
+            # Create chunk record
+            chunk_record = {
+                "product_id": product_id,
+                "workspace_id": workspace_id,
+                "content": description,
+                "chunk_index": 0,
+                "source_type": "web_scraping",
+                "source_job_id": job_id,
+                "metadata": {
+                    "source": "web_scraping",
+                    "product_name": product_name,
+                    "auto_generated": True
+                }
+            }
+
+            chunk_response = self.supabase.client.table('document_chunks').insert(chunk_record).execute()
+
+            if chunk_response.data:
+                chunk_id = chunk_response.data[0]['id']
+                self.logger.info(f"   ✅ Created chunk {chunk_id} for product {product_name}")
+
+                # Queue for embedding generation (async)
+                async_queue = AsyncQueueService()
+                await async_queue.queue_ai_analysis_jobs(
+                    document_id=product_id,  # Use product_id as document_id
+                    chunks=[{'id': chunk_id}],
+                    analysis_type='embedding_generation',
+                    priority=0
+                )
+
+        except Exception as e:
+            self.logger.error(f"   ❌ Failed to create chunk for product {product_name}: {e}")
+            # Don't raise - product is already created
 
     @retry_async(
         max_attempts=3,

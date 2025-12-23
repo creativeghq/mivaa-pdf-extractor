@@ -375,6 +375,11 @@ class DataImportService:
                 "updated_at": datetime.utcnow().isoformat()
             }
 
+            # Add source tracking fields
+            product_record['source_type'] = 'xml_import'
+            product_record['source_job_id'] = job_id
+            product_record['import_batch_id'] = f"xml_{job_id}"
+
             # Insert product into database
             insert_response = self.supabase.table('products').insert(product_record).execute()
 
@@ -387,12 +392,12 @@ class DataImportService:
             # Link downloaded images to product
             downloaded_images = product_data.get('downloaded_images', [])
             if downloaded_images:
-                await self._link_images_to_product(product_id, downloaded_images, workspace_id)
+                await self._link_images_to_product(product_id, downloaded_images, workspace_id, job_id)
 
             # Queue for async text processing (chunking, embeddings)
             # This happens in background - product is already created
             if product_data.get('description'):
-                await self._queue_text_processing(product_id, product_data, workspace_id)
+                await self._queue_text_processing(product_id, product_data, workspace_id, job_id)
 
         except Exception as e:
             logger.error(f"❌ Failed to create product {product_data.get('name')}: {e}")
@@ -402,7 +407,8 @@ class DataImportService:
         self,
         product_id: str,
         downloaded_images: List[Dict[str, Any]],
-        workspace_id: str
+        workspace_id: str,
+        job_id: str = None
     ) -> None:
         """
         Link downloaded images to product in database.
@@ -428,6 +434,8 @@ class DataImportService:
                     "filename": img['filename'],
                     "content_type": img['content_type'],
                     "size_bytes": img['size_bytes'],
+                    "source_type": "xml_import",
+                    "source_job_id": job_id,
                     "metadata": {
                         "source": "xml_import",
                         "index": img['index']
@@ -447,7 +455,8 @@ class DataImportService:
         self,
         product_id: str,
         product_data: Dict[str, Any],
-        workspace_id: str
+        workspace_id: str,
+        job_id: str = None
     ) -> None:
         """
         Queue product text for async processing (chunking, embeddings).
@@ -474,6 +483,8 @@ class DataImportService:
                 "workspace_id": workspace_id,
                 "content": description,
                 "chunk_index": 0,
+                "source_type": "xml_import",
+                "source_job_id": job_id,
                 "metadata": {
                     "source": "xml_import",
                     "product_name": product_data.get('name'),
@@ -481,7 +492,7 @@ class DataImportService:
                 }
             }
 
-            chunk_response = self.supabase.table('chunks').insert(chunk_record).execute()
+            chunk_response = self.supabase.table('document_chunks').insert(chunk_record).execute()
 
             if chunk_response.data:
                 chunk_id = chunk_response.data[0]['id']
