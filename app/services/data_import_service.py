@@ -83,119 +83,119 @@ class DataImportService:
                 # ✅ NEW: Set transaction data
                 transaction.set_data("total_products", total_products)
                 transaction.set_data("batch_size", self.batch_size)
-            
-            # Check for existing checkpoint
-            last_checkpoint = await checkpoint_recovery_service.get_last_checkpoint(job_id)
-            start_batch = 0
-            if last_checkpoint:
-                start_batch = last_checkpoint.get('batch_index', 0)
-                logger.info(f"♻️ Resuming from batch {start_batch}")
-            
-            # Process in batches
-            processed_count = 0
-            failed_count = 0
-            
-            for batch_index in range(start_batch, (total_products + self.batch_size - 1) // self.batch_size):
-                batch_start = batch_index * self.batch_size
-                batch_end = min(batch_start + self.batch_size, total_products)
-                batch = products[batch_start:batch_end]
 
-                logger.info(f"🔄 Processing batch {batch_index + 1}: products {batch_start + 1}-{batch_end}")
+                # Check for existing checkpoint
+                last_checkpoint = await checkpoint_recovery_service.get_last_checkpoint(job_id)
+                start_batch = 0
+                if last_checkpoint:
+                    start_batch = last_checkpoint.get('batch_index', 0)
+                    logger.info(f"♻️ Resuming from batch {start_batch}")
 
-                # ✅ NEW: Add breadcrumb for batch processing
-                sentry_sdk.add_breadcrumb(
-                    category="xml_import",
-                    message=f"Processing batch {batch_index + 1}: products {batch_start + 1}-{batch_end}",
-                    level="info",
-                    data={"batch_index": batch_index + 1, "batch_size": len(batch)}
+                # Process in batches
+                processed_count = 0
+                failed_count = 0
+
+                for batch_index in range(start_batch, (total_products + self.batch_size - 1) // self.batch_size):
+                    batch_start = batch_index * self.batch_size
+                    batch_end = min(batch_start + self.batch_size, total_products)
+                    batch = products[batch_start:batch_end]
+
+                    logger.info(f"🔄 Processing batch {batch_index + 1}: products {batch_start + 1}-{batch_end}")
+
+                    # ✅ NEW: Add breadcrumb for batch processing
+                    sentry_sdk.add_breadcrumb(
+                        category="xml_import",
+                        message=f"Processing batch {batch_index + 1}: products {batch_start + 1}-{batch_end}",
+                        level="info",
+                        data={"batch_index": batch_index + 1, "batch_size": len(batch)}
+                    )
+
+                    # Process batch
+                    batch_result = await self._process_batch(
+                        job_id=job_id,
+                        workspace_id=workspace_id,
+                        products=batch,
+                        batch_index=batch_index,
+                        field_mappings=job.get('field_mappings', {})
+                    )
+
+                    processed_count += batch_result['processed']
+                    failed_count += batch_result['failed']
+
+                    # Update progress
+                    progress = int((batch_end / total_products) * 100)
+                    await self._update_job_progress(
+                        job_id=job_id,
+                        processed=processed_count,
+                        failed=failed_count,
+                        total=total_products,
+                        stage=f'batch_{batch_index + 1}',
+                        progress_percent=progress
+                    )
+
+                    # Save checkpoint
+                    await checkpoint_recovery_service.save_checkpoint(
+                        job_id=job_id,
+                        stage=ProcessingStage.PRODUCTS_CREATED,
+                        data={
+                            'batch_index': batch_index + 1,
+                            'processed_count': processed_count,
+                            'failed_count': failed_count
+                        }
+                    )
+
+                    logger.info(f"✅ Batch {batch_index + 1} complete: {batch_result['processed']} processed, {batch_result['failed']} failed")
+
+                # Mark job as completed
+                await self._update_job_status(
+                    job_id=job_id,
+                    status='completed',
+                    completed_at=datetime.utcnow(),
+                    processed_products=processed_count,
+                    failed_products=failed_count
                 )
 
-                # Process batch
-                batch_result = await self._process_batch(
+                # 🆕 Update background_jobs to 'completed'
+                await self._update_background_job_status(
                     job_id=job_id,
-                    workspace_id=workspace_id,
-                    products=batch,
-                    batch_index=batch_index,
-                    field_mappings=job.get('field_mappings', {})
-                )
-
-                processed_count += batch_result['processed']
-                failed_count += batch_result['failed']
-                
-                # Update progress
-                progress = int((batch_end / total_products) * 100)
-                await self._update_job_progress(
-                    job_id=job_id,
-                    processed=processed_count,
-                    failed=failed_count,
-                    total=total_products,
-                    stage=f'batch_{batch_index + 1}',
-                    progress_percent=progress
-                )
-                
-                # Save checkpoint
-                await checkpoint_recovery_service.save_checkpoint(
-                    job_id=job_id,
-                    stage=ProcessingStage.PRODUCTS_CREATED,
-                    data={
-                        'batch_index': batch_index + 1,
-                        'processed_count': processed_count,
-                        'failed_count': failed_count
+                    status='completed',
+                    completed_at=datetime.utcnow(),
+                    progress_percent=100,
+                    metadata={
+                        'total_products': total_products,
+                        'processed': processed_count,
+                        'failed': failed_count,
+                        'completion_rate': (processed_count / total_products * 100) if total_products > 0 else 0
                     }
                 )
-                
-                logger.info(f"✅ Batch {batch_index + 1} complete: {batch_result['processed']} processed, {batch_result['failed']} failed")
-            
-            # Mark job as completed
-            await self._update_job_status(
-                job_id=job_id,
-                status='completed',
-                completed_at=datetime.utcnow(),
-                processed_products=processed_count,
-                failed_products=failed_count
-            )
 
-            # 🆕 Update background_jobs to 'completed'
-            await self._update_background_job_status(
-                job_id=job_id,
-                status='completed',
-                completed_at=datetime.utcnow(),
-                progress_percent=100,
-                metadata={
+                logger.info(f"🎉 Import job {job_id} completed: {processed_count}/{total_products} products processed")
+
+                # ✅ NEW: Add completion breadcrumb
+                sentry_sdk.add_breadcrumb(
+                    category="xml_import",
+                    message=f"XML import job {job_id} completed successfully",
+                    level="info",
+                    data={
+                        "total_products": total_products,
+                        "processed": processed_count,
+                        "failed": failed_count,
+                        "completion_rate": (processed_count / total_products * 100) if total_products > 0 else 0
+                    }
+                )
+
+                # ✅ NEW: Set transaction status
+                transaction.set_status("ok")
+
+                return {
+                    'success': True,
+                    'job_id': job_id,
                     'total_products': total_products,
                     'processed': processed_count,
                     'failed': failed_count,
                     'completion_rate': (processed_count / total_products * 100) if total_products > 0 else 0
                 }
-            )
 
-            logger.info(f"🎉 Import job {job_id} completed: {processed_count}/{total_products} products processed")
-
-            # ✅ NEW: Add completion breadcrumb
-            sentry_sdk.add_breadcrumb(
-                category="xml_import",
-                message=f"XML import job {job_id} completed successfully",
-                level="info",
-                data={
-                    "total_products": total_products,
-                    "processed": processed_count,
-                    "failed": failed_count,
-                    "completion_rate": (processed_count / total_products * 100) if total_products > 0 else 0
-                }
-            )
-
-            # ✅ NEW: Set transaction status
-            transaction.set_status("ok")
-
-            return {
-                'success': True,
-                'job_id': job_id,
-                'total_products': total_products,
-                'processed': processed_count,
-                'failed': failed_count,
-                'completion_rate': (processed_count / total_products * 100) if total_products > 0 else 0
-            }
-            
             except Exception as e:
                 logger.error(f"❌ Import job {job_id} failed: {e}", exc_info=True)
 
