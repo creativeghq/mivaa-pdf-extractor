@@ -19,6 +19,7 @@ from app.services.supabase_client import get_supabase_client
 from app.services.async_queue_service import AsyncQueueService
 from app.services.checkpoint_recovery_service import checkpoint_recovery_service, ProcessingStage
 from app.services.image_download_service import ImageDownloadService
+import sentry_sdk  # ✅ NEW: Sentry integration
 
 logger = logging.getLogger(__name__)
 
@@ -37,35 +38,51 @@ class DataImportService:
     async def process_import_job(self, job_id: str, workspace_id: str) -> Dict[str, Any]:
         """
         Process an import job from start to finish.
-        
+
         Args:
             job_id: Import job ID
             workspace_id: Workspace ID
-            
+
         Returns:
             Processing result with statistics
         """
-        try:
-            logger.info(f"🚀 Starting import job processing: {job_id}")
-            
-            # Get job details
-            job = await self._get_job(job_id)
-            if not job:
-                raise ValueError(f"Job {job_id} not found")
-            
-            # Update job status to processing
-            await self._update_job_status(job_id, 'processing', started_at=datetime.utcnow())
+        # ✅ NEW: Start Sentry transaction for performance monitoring
+        with sentry_sdk.start_transaction(op="xml_import", name="process_import_job") as transaction:
+            transaction.set_tag("job_id", job_id)
+            transaction.set_tag("workspace_id", workspace_id)
 
-            # 🆕 Update background_jobs to 'processing'
-            await self._update_background_job_status(job_id, 'processing', started_at=datetime.utcnow())
-            
-            # Get products from job metadata
-            products = job.get('metadata', {}).get('products', [])
-            if not products:
-                raise ValueError(f"No products found in job {job_id}")
-            
-            total_products = len(products)
-            logger.info(f"📦 Processing {total_products} products in batches of {self.batch_size}")
+            try:
+                logger.info(f"🚀 Starting import job processing: {job_id}")
+
+                # ✅ NEW: Add breadcrumb
+                sentry_sdk.add_breadcrumb(
+                    category="xml_import",
+                    message=f"Starting XML import job {job_id}",
+                    level="info"
+                )
+
+                # Get job details
+                job = await self._get_job(job_id)
+                if not job:
+                    raise ValueError(f"Job {job_id} not found")
+
+                # Update job status to processing
+                await self._update_job_status(job_id, 'processing', started_at=datetime.utcnow())
+
+                # 🆕 Update background_jobs to 'processing'
+                await self._update_background_job_status(job_id, 'processing', started_at=datetime.utcnow())
+
+                # Get products from job metadata
+                products = job.get('metadata', {}).get('products', [])
+                if not products:
+                    raise ValueError(f"No products found in job {job_id}")
+
+                total_products = len(products)
+                logger.info(f"📦 Processing {total_products} products in batches of {self.batch_size}")
+
+                # ✅ NEW: Set transaction data
+                transaction.set_data("total_products", total_products)
+                transaction.set_data("batch_size", self.batch_size)
             
             # Check for existing checkpoint
             last_checkpoint = await checkpoint_recovery_service.get_last_checkpoint(job_id)
@@ -82,9 +99,17 @@ class DataImportService:
                 batch_start = batch_index * self.batch_size
                 batch_end = min(batch_start + self.batch_size, total_products)
                 batch = products[batch_start:batch_end]
-                
+
                 logger.info(f"🔄 Processing batch {batch_index + 1}: products {batch_start + 1}-{batch_end}")
-                
+
+                # ✅ NEW: Add breadcrumb for batch processing
+                sentry_sdk.add_breadcrumb(
+                    category="xml_import",
+                    message=f"Processing batch {batch_index + 1}: products {batch_start + 1}-{batch_end}",
+                    level="info",
+                    data={"batch_index": batch_index + 1, "batch_size": len(batch)}
+                )
+
                 # Process batch
                 batch_result = await self._process_batch(
                     job_id=job_id,
@@ -93,7 +118,7 @@ class DataImportService:
                     batch_index=batch_index,
                     field_mappings=job.get('field_mappings', {})
                 )
-                
+
                 processed_count += batch_result['processed']
                 failed_count += batch_result['failed']
                 
@@ -145,7 +170,23 @@ class DataImportService:
             )
 
             logger.info(f"🎉 Import job {job_id} completed: {processed_count}/{total_products} products processed")
-            
+
+            # ✅ NEW: Add completion breadcrumb
+            sentry_sdk.add_breadcrumb(
+                category="xml_import",
+                message=f"XML import job {job_id} completed successfully",
+                level="info",
+                data={
+                    "total_products": total_products,
+                    "processed": processed_count,
+                    "failed": failed_count,
+                    "completion_rate": (processed_count / total_products * 100) if total_products > 0 else 0
+                }
+            )
+
+            # ✅ NEW: Set transaction status
+            transaction.set_status("ok")
+
             return {
                 'success': True,
                 'job_id': job_id,
@@ -155,26 +196,32 @@ class DataImportService:
                 'completion_rate': (processed_count / total_products * 100) if total_products > 0 else 0
             }
             
-        except Exception as e:
-            logger.error(f"❌ Import job {job_id} failed: {e}", exc_info=True)
+            except Exception as e:
+                logger.error(f"❌ Import job {job_id} failed: {e}", exc_info=True)
 
-            # Mark job as failed
-            await self._update_job_status(
-                job_id=job_id,
-                status='failed',
-                error_message=str(e),
-                completed_at=datetime.utcnow()
-            )
+                # ✅ NEW: Capture exception in Sentry
+                sentry_sdk.capture_exception(e)
 
-            # 🆕 Update background_jobs to 'failed'
-            await self._update_background_job_status(
-                job_id=job_id,
-                status='failed',
-                error_message=str(e),
-                completed_at=datetime.utcnow()
-            )
+                # ✅ NEW: Set transaction status
+                transaction.set_status("internal_error")
 
-            raise
+                # Mark job as failed
+                await self._update_job_status(
+                    job_id=job_id,
+                    status='failed',
+                    error_message=str(e),
+                    completed_at=datetime.utcnow()
+                )
+
+                # 🆕 Update background_jobs to 'failed'
+                await self._update_background_job_status(
+                    job_id=job_id,
+                    status='failed',
+                    error_message=str(e),
+                    completed_at=datetime.utcnow()
+                )
+
+                raise
 
     async def _process_batch(
         self,

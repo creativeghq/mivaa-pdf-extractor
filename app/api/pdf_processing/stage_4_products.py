@@ -176,7 +176,9 @@ async def process_stage_4_products(
                 'workspace_id': workspace_id,
                 'name': product.name,
                 'description': product.description or '',
-                'metadata': metadata  # ALL product metadata stored here (now consolidated)
+                'metadata': metadata,  # ALL product metadata stored here (now consolidated)
+                'source_type': 'pdf_processing',  # ✅ NEW: Track source type
+                'source_job_id': job_id  # ✅ NEW: Track source job
             }
 
             result = supabase.client.table('products').insert(product_data).execute()

@@ -465,7 +465,8 @@ async def process_stage_3_images(
                 document_id=document_id,
                 workspace_id=workspace_id,
                 image_index=image_index - 1,
-                category=image_category  # ✅ NEW: Pass category
+                category=image_category,  # ✅ NEW: Pass category
+                job_id=job_id  # ✅ NEW: Pass job_id for source tracking
             )
 
             if not image_id:

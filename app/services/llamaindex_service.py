@@ -2041,7 +2041,9 @@ class LlamaIndexService:
                                         "workspace_id": workspace_id,
                                         "embedding": embedding_vector,
                                         "model_name": "text-embedding-3-small",
-                                        "dimensions": len(embedding_vector)
+                                        "dimensions": len(embedding_vector),
+                                        "source_type": "pdf_processing",  # ✅ NEW: Track source type
+                                        "source_job_id": metadata.get('job_id')  # ✅ NEW: Track source job
                                     }
 
                                     supabase.client.table('embeddings').insert(embedding_data).execute()
@@ -3178,6 +3180,8 @@ Summary:"""
                             'chunk_index': i,
                             'category': chunk_category,  # ✅ NEW: Add category field
                             'content_hash': content_hash,  # ✅ NEW: Store hash
+                            'source_type': 'pdf_processing',  # ✅ NEW: Track source type
+                            'source_job_id': metadata.get('job_id'),  # ✅ NEW: Track source job
                             'metadata': {
                                 'chunk_id': node.metadata.get('chunk_id', f"{document_id}_chunk_{i}"),
                                 'chunk_strategy': 'hierarchical',
@@ -3266,7 +3270,9 @@ Summary:"""
                                         'workspace_id': metadata.get('workspace_id'),
                                         'embedding': embedding_vector,
                                         'model_name': 'text-embedding-3-small',
-                                        'dimensions': 1536
+                                        'dimensions': 1536,
+                                        'source_type': 'pdf_processing',  # ✅ NEW: Track source type
+                                        'source_job_id': metadata.get('job_id')  # ✅ NEW: Track source job
                                     }
 
                                     embedding_result = supabase_client.client.table('embeddings').insert(embedding_data).execute()
@@ -3305,7 +3311,9 @@ Summary:"""
                                         'workspace_id': metadata.get('workspace_id'),
                                         'embedding': embedding_vector,
                                         'model_name': 'text-embedding-3-small',
-                                        'dimensions': 1536
+                                        'dimensions': 1536,
+                                        'source_type': 'pdf_processing',  # ✅ NEW: Track source type
+                                        'source_job_id': metadata.get('job_id')  # ✅ NEW: Track source job
                                     }
                                     embedding_result = supabase_client.client.table('embeddings').insert(embedding_data).execute()
                                     if embedding_result.data:

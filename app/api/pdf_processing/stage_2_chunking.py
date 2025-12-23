@@ -128,7 +128,8 @@ async def process_stage_2_chunking(
                 'product_pages': sorted(product_pages),
                 'chunk_size': chunk_size,
                 'chunk_overlap': chunk_overlap,
-                'workspace_id': workspace_id
+                'workspace_id': workspace_id,
+                'job_id': job_id  # ✅ NEW: Pass job_id for source tracking
             },
             catalog=catalog  # ✅ NEW: Pass catalog for category tagging
         ),

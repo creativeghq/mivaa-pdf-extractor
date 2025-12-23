@@ -227,7 +227,8 @@ class SupabaseClient:
         document_id: str,
         workspace_id: Optional[str] = None,
         image_index: int = 0,
-        category: Optional[str] = None
+        category: Optional[str] = None,
+        job_id: Optional[str] = None
     ) -> Optional[str]:
         """
         Save a single image to document_images table.
@@ -241,6 +242,7 @@ class SupabaseClient:
             workspace_id: Workspace UUID (optional)
             image_index: Index of image in processing sequence
             category: Image category (product, certificate, logo, specification, general)
+            job_id: Job ID for source tracking (optional)
 
         Returns:
             Image ID if successful, None otherwise
@@ -272,6 +274,8 @@ class SupabaseClient:
                 'confidence': 0.95,
                 'processing_status': 'completed',
                 'category': category or 'general',  # ✅ NEW: Add category field
+                'source_type': 'pdf_processing',  # ✅ NEW: Track source type
+                'source_job_id': job_id,  # ✅ NEW: Track source job
                 'metadata': {
                     'source': 'mivaa_pdf_extraction',
                     'image_index': image_index,
