@@ -232,7 +232,15 @@ Respond ONLY with valid JSON, no additional text."""
                 )
                 
                 if response.status_code != 200:
-                    self.logger.error(f"Llama API error {response.status_code}: {response.text}")
+                    # Sanitize error message to avoid logging sensitive data
+                    error_msg = f"Llama API error {response.status_code}"
+                    try:
+                        error_data = response.json()
+                        if 'error' in error_data:
+                            error_msg += f": {error_data['error']}"
+                    except:
+                        error_msg += ": Unable to parse error response"
+                    self.logger.error(error_msg)
                     return None
                 
                 result = response.json()
