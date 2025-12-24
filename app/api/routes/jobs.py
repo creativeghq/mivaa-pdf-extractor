@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, status, BackgroundTasks
 from fastapi.responses import JSONResponse
 import httpx
+import uuid
 
 from app.services.supabase_client import get_supabase_client
 from app.services.checkpoint_recovery_service import checkpoint_recovery_service, ProcessingStage
@@ -17,6 +18,36 @@ from .shared import job_storage, run_async_in_background
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Reserved keywords that should not be treated as job IDs
+RESERVED_KEYWORDS = {'health', 'status', 'metrics', 'list', 'all'}
+
+
+def validate_job_id(job_id: str) -> None:
+    """
+    Validate that job_id is a valid UUID and not a reserved keyword.
+
+    Args:
+        job_id: The job ID to validate
+
+    Raises:
+        HTTPException: If job_id is invalid or a reserved keyword
+    """
+    # Check if it's a reserved keyword
+    if job_id.lower() in RESERVED_KEYWORDS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid job ID: '{job_id}' is a reserved keyword. Use the appropriate endpoint instead."
+        )
+
+    # Validate UUID format
+    try:
+        uuid.UUID(job_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid job ID format: {job_id}. Must be a valid UUID."
+        )
 
 
 @router.get("/documents/job/{job_id}")
@@ -33,6 +64,9 @@ async def get_job_status(job_id: str):
         - Detailed metadata including AI usage, chunks, images, products
         - In-memory state comparison (if available)
     """
+    # Validate job_id format
+    validate_job_id(job_id)
+
     # ALWAYS check database FIRST - this is the source of truth
     try:
         supabase_client = get_supabase_client()
@@ -137,6 +171,9 @@ async def get_job_checkpoints(job_id: str):
         - Checkpoint count
         - Processing timeline
     """
+    # Validate job_id format
+    validate_job_id(job_id)
+
     try:
         checkpoints = await checkpoint_recovery_service.get_all_checkpoints(job_id)
 
@@ -163,6 +200,9 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
     This endpoint allows manual recovery of stuck or failed jobs.
     The job will resume from the last successful checkpoint.
     """
+    # Validate job_id format
+    validate_job_id(job_id)
+
     try:
         # Get last checkpoint
         last_checkpoint = await checkpoint_recovery_service.get_last_checkpoint(job_id)
@@ -382,6 +422,9 @@ async def resume_job(job_id: str, background_tasks: BackgroundTasks):
 
     This endpoint is the same as /jobs/{job_id}/restart but with a more intuitive name.
     """
+    # Validate job_id format
+    validate_job_id(job_id)
+
     return await restart_job_from_checkpoint(job_id, background_tasks)
 
 @router.get("/documents/jobs")
@@ -462,6 +505,9 @@ async def delete_job(job_id: str):
     Raises:
         HTTPException: If job not found or deletion fails
     """
+    # Validate job_id format
+    validate_job_id(job_id)
+
     try:
         logger.info(f"??? DELETE /documents/jobs/{job_id} - Deleting job")
 
@@ -512,6 +558,9 @@ async def get_job_ai_tracking(job_id: str):
     - Success/failure rates
     - Per-stage breakdown
     """
+    # Validate job_id format
+    validate_job_id(job_id)
+
     try:
         if job_id not in job_storage:
             raise HTTPException(
@@ -561,6 +610,9 @@ async def get_job_ai_tracking_by_stage(job_id: str, stage: str):
     Returns:
         Detailed metrics for the specified stage
     """
+    # Validate job_id format
+    validate_job_id(job_id)
+
     try:
         if job_id not in job_storage:
             raise HTTPException(
@@ -608,6 +660,9 @@ async def get_job_ai_tracking_by_model(job_id: str, model_name: str):
     Returns:
         Statistics for the specified AI model
     """
+    # Validate job_id format
+    validate_job_id(job_id)
+
     try:
         if job_id not in job_storage:
             raise HTTPException(
@@ -681,6 +736,9 @@ async def analyze_stuck_job(job_id: str):
     - Recovery options
     - Optimization recommendations
     """
+    # Validate job_id format
+    validate_job_id(job_id)
+
     try:
         analysis = await stuck_job_analyzer.analyze_stuck_job(job_id)
         return JSONResponse(content=analysis)
