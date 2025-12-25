@@ -262,8 +262,10 @@ class VecsService:
                 dimension=1152
             )
 
-            # Query collection
-            results = collection.query(
+            # Query collection - Run in thread pool for true async parallelism
+            import asyncio
+            results = await asyncio.to_thread(
+                collection.query,
                 data=query_embedding,
                 limit=limit,
                 filters=filters,
@@ -398,8 +400,11 @@ class VecsService:
             elif document_id:
                 filters = {"document_id": {"$eq": document_id}}
 
-            # Search
-            results = collection.query(
+            # Search - Run in thread pool for true async parallelism
+            # VECS collection.query() is synchronous, so we need to run it in a thread
+            import asyncio
+            results = await asyncio.to_thread(
+                collection.query,
                 data=query_embedding,
                 limit=limit,
                 filters=filters,

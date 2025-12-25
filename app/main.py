@@ -1599,7 +1599,7 @@ def custom_openapi():
     openapi_schema["info"]["x-api-features"] = {
         "api_consolidation": "Consolidated and organized endpoints with clear categorization",
         "consolidated_upload": "/api/rag/documents/upload with modes (quick/standard/deep) + categories",
-        "consolidated_search": "/api/rag/search?strategy={strategy} with 10 strategies (multi_vector recommended)",
+        "consolidated_search": "/api/rag/search with multi_vector strategy (default and only supported)",
         "multi_vector_enhanced": "🎯 ENHANCED: 6 specialized CLIP embeddings (text 20%, visual 20%, color 15%, texture 15%, style 15%, material 15%) + JSONB metadata filtering + query understanding",
         "query_understanding": "✅ ENABLED BY DEFAULT: GPT-4o-mini auto-extracts filters from natural language ($0.0001/query)",
         "consolidated_health": "/health for all services (database, storage, AI models)",
@@ -1647,7 +1647,7 @@ def custom_openapi():
         "ai_models": 13,
         "processing_stages": 14,
         "embedding_types": 6,
-        "search_strategies": 10,
+        "search_strategies": 1,
         "specialized_clip_embeddings": 6,
         "users": "5,000+",
         "uptime": "99.5%+",

@@ -234,209 +234,74 @@ async def search_documents(
     request: SearchRequest,
     strategy: Optional[str] = Query(
         "multi_vector",
-        description="Search strategy: 'multi_vector' (RECOMMENDED - default), 'semantic', 'vector', 'hybrid', 'material', 'image', 'color', 'texture', 'style', 'material_type', 'all'"
+        description="Search strategy: only 'multi_vector' is supported"
     ),
     enable_query_understanding: bool = Query(
-        True,  # ? ENABLED BY DEFAULT - Makes platform smarter with minimal cost ($0.0001/query)
-        description="?? AI query parsing to automatically extract filters from natural language (e.g., 'waterproof ceramic tiles for outdoor patio, matte finish' ? auto-extracts material_type, properties, finish, etc.). Set to false to disable."
+        True,
+        description="AI query parsing to automatically extract filters from natural language. Enabled by default."
     ),
     llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
 ):
     """
-    **?? CONSOLIDATED SEARCH ENDPOINT - Single Entry Point for All Search Strategies**
+    **Multi-Vector Search Endpoint - TRUE 6-Embedding Fusion**
 
-    This endpoint replaces:
-    - `/api/search/semantic` ? Use `strategy="semantic"`
-    - `/api/search/similarity` ? Use `strategy="vector"`
-    - `/api/unified-search` ? Use this endpoint
+    Combines ALL 6 specialized embeddings in parallel for maximum accuracy:
 
-    ## ?? Search Strategies (All Implemented ?)
+    **Embedding Weights:**
+    - text (20%) - Semantic text understanding from metadata/descriptions
+    - visual (20%) - General visual similarity (SigLIP 1152D)
+    - color (15%) - Color palette matching (specialized CLIP)
+    - texture (15%) - Texture pattern matching (specialized CLIP)
+    - style (15%) - Design style matching (specialized CLIP)
+    - material (15%) - Material type matching (specialized CLIP)
 
-    ### Multi-Vector Search (`strategy="multi_vector"`) - ? RECOMMENDED DEFAULT ?
-    - ?? **ENHANCED**: Combines 6 specialized CLIP embeddings + JSONB metadata filtering
-    - **Embeddings Combined:**
-      - text_embedding_1536 (20%) - Semantic understanding
-      - visual_clip_embedding_512 (20%) - Visual similarity
-      - color_clip_embedding_512 (15%) - Color palette matching
-      - texture_clip_embedding_512 (15%) - Texture pattern matching
-      - style_clip_embedding_512 (15%) - Design style matching
-      - material_clip_embedding_512 (15%) - Material type matching
-    - **+ JSONB Metadata Filtering**: Supports `material_filters` for property-based filtering
-    - **+ Query Understanding**: ? **ENABLED BY DEFAULT** - Auto-extracts filters from natural language (set `enable_query_understanding=false` to disable)
-    - **Performance**: Fast (~250-350ms with query understanding, ~200-300ms without), comprehensive, accurate
-    - **Best For:** ALL queries - replaces need for `strategy="all"`
-    - **Example:** "waterproof ceramic tiles for outdoor patio, matte finish"
+    **How it works:**
+    1. Generate visual embedding from query text
+    2. Search all 5 VECS collections in parallel (visual, color, texture, style, material)
+    3. Map image results to products via product_image_relationships
+    4. Combine scores with intelligent weighting
+    5. Apply metadata filters as soft boosts
 
-    ### Semantic Search (`strategy="semantic"`) ?
-    - Natural language understanding with MMR (Maximal Marginal Relevance)
-    - Context-aware matching with diversity
-    - Best for: Fast text queries, conceptual search, diverse results
+    **Features:**
+    - AI query understanding (enabled by default) - Auto-extracts filters from natural language
+    - JSONB metadata filtering via `material_filters`
+    - Metadata prototype validation scoring
+    - Performance: ~300-500ms (parallel execution)
 
-    ### Vector Search (`strategy="vector"`) ?
-    - Pure vector similarity (cosine distance)
-    - Fast and efficient, no diversity filtering
-    - Best for: Finding most similar documents, precise matching
-
-    ### Hybrid Search (`strategy="hybrid"`) ?
-    - Combines semantic (70%) + PostgreSQL full-text search (30%)
-    - Best for: Balancing semantic understanding with keyword matching
-
-    ### Material Property Search (`strategy="material"`) ?
-    - JSONB-based filtering with AND/OR logic
-    - Requires `material_filters` in request body
-    - Best for: Filtering by specific material properties
-
-    ### Image Similarity Search (`strategy="image"`) ?
-    - Visual similarity using CLIP embeddings
-    - Requires `image_url` or `image_base64` in request body
-    - Best for: Finding visually similar products
-
-    ### Specialized Visual Searches ? NEW
-    - **Color Search** (`strategy="color"`): Color palette matching using specialized CLIP embeddings
-      - Best for: "Find materials with warm tones", "similar color palette"
-    - **Texture Search** (`strategy="texture"`): Texture pattern matching using specialized CLIP embeddings
-      - Best for: "Find rough textured materials", "similar texture pattern"
-    - **Style Search** (`strategy="style"`): Design style matching using specialized CLIP embeddings
-      - Best for: "Find modern style materials", "similar design aesthetic"
-    - **Material Type Search** (`strategy="material_type"`): Material type matching using specialized CLIP embeddings
-      - Best for: "Find similar material types", "materials like this"
-
-    ### All Strategies (`strategy="all"`) ?? DEPRECATED
-    - ?? **DEPRECATED**: Use `strategy="multi_vector"` instead
-    - **Why Deprecated:**
-      - 10x slower (~800ms vs ~200ms)
-      - 10x higher cost (10 separate searches)
-      - Lower accuracy (simple averaging vs intelligent weighting)
-      - Multi-vector already includes all 6 embedding types
-    - **Parallel execution** of ALL 10 strategies using `asyncio.gather()`
-    - **Only use if:** User explicitly requests "comprehensive search" or "all strategies"
-    - **Recommendation:** Use `multi_vector` with `enable_query_understanding=true` instead
-
-    ## ?? Examples
-
-    ### Multi-Vector Search (? RECOMMENDED - Default)
+    **Example:**
     ```bash
-    curl -X POST "/api/rag/search" \\
-      -H "Content-Type: application/json" \\
-      -d '{"query": "modern minimalist furniture", "workspace_id": "xxx", "top_k": 10}'
+    curl -X POST "/api/rag/search" \
+      -H "Content-Type: application/json" \
+      -d '{"query": "waterproof ceramic tiles for outdoor patio", "workspace_id": "xxx", "top_k": 10}'
     ```
 
-    ### Semantic Search (Fast text-only)
-    ```bash
-    curl -X POST "/api/rag/search?strategy=semantic" \\
-      -H "Content-Type: application/json" \\
-      -d '{"query": "oak wood flooring", "workspace_id": "xxx", "top_k": 5}'
-    ```
-
-    ### Specialized Color Search
-    ```bash
-    curl -X POST "/api/rag/search?strategy=color" \\
-      -H "Content-Type: application/json" \\
-      -d '{"query": "warm tones", "workspace_id": "xxx", "top_k": 10}'
-    ```
-
-    ### Material Property Search
-    ```bash
-    curl -X POST "/api/rag/search?strategy=material" \\
-      -H "Content-Type: application/json" \\
-      -d '{"workspace_id": "xxx", "material_filters": {"material_type": "fabric", "color": ["red", "blue"]}, "top_k": 10}'
-    ```
-
-    ### Image Similarity Search
-    ```bash
-    curl -X POST "/api/rag/search?strategy=image" \\
-      -H "Content-Type: application/json" \\
-      -d '{"workspace_id": "xxx", "image_url": "https://example.com/image.jpg", "top_k": 10}'
-    ```
-
-    ### All Strategies (Parallel Execution - 3-4x Faster!)
-    ```bash
-    curl -X POST "/api/rag/search?strategy=all" \\
-      -H "Content-Type: application/json" \\
-      -d '{"query": "modern oak furniture", "workspace_id": "xxx", "top_k": 10}'
-    ```
-
-    ## ?? Response Example (All Strategies)
+    **Response includes individual embedding scores:**
     ```json
     {
-      "query": "modern oak furniture",
-      "enhanced_query": "modern oak furniture",
-      "results": [
-        {
-          "id": "product_uuid_1",
-          "name": "Modern Oak Dining Table",
-          "description": "Contemporary oak furniture...",
-          "score": 0.92,
-          "final_score": 0.85,
-          "strategy_count": 4,
-          "strategies": ["semantic", "vector", "multi_vector", "hybrid"]
-        }
-      ],
+      "results": [{
+        "id": "product_123",
+        "score": 0.87,
+        "text_score": 0.85,
+        "visual_score": 0.92,
+        "color_score": 0.88,
+        "texture_score": 0.81,
+        "style_score": 0.79,
+        "material_score": 0.90
+      }],
       "total_results": 10,
-      "search_type": "all",
-      "processing_time": 0.223,
-      "search_metadata": {
-        "strategies_executed": 4,
-        "strategies_successful": 4,
-        "strategies_failed": 0,
-        "strategy_breakdown": {
-          "semantic": {"count": 3, "success": true},
-          "vector": {"count": 2, "success": true},
-          "multi_vector": {"count": 4, "success": true},
-          "hybrid": {"count": 5, "success": true}
-        },
-        "parallel_execution": true,
-        "parallel_processing_time": 0.017
-      }
+      "processing_time": 0.345,
+      "embeddings_used": ["text", "visual", "color", "texture", "style", "material"]
     }
     ```
-
-    ## ? Performance Characteristics
-
-    | Strategy | Typical Time | Max Time | Notes |
-    |----------|-------------|----------|-------|
-    | semantic | 100-150ms | 300ms | Indexed, MMR diversity |
-    | vector | 50-100ms | 200ms | Fastest, pure similarity |
-    | multi_vector | 200-300ms | 500ms | 3 embeddings, sequential scan for 2048-dim |
-    | hybrid | 120-180ms | 350ms | Semantic + full-text search |
-    | material | 30-50ms | 100ms | JSONB indexed |
-    | image | 100-150ms | 300ms | CLIP indexed |
-    | **all (parallel)** | **200-300ms** | **500ms** | **3-4x faster than sequential** |
-
-    ## ?? Migration from Old Endpoints
-
-    **Old:** `POST /api/search/semantic`
-    **New:** `POST /api/rag/search?strategy=semantic`
-
-    **Old:** `POST /api/search/similarity`
-    **New:** `POST /api/rag/search?strategy=vector`
-
-    **Old:** `POST /api/unified-search`
-    **New:** `POST /api/rag/search` (same functionality, clearer naming)
-
-    ## ?? Error Codes
-
-    - **400 Bad Request**: Invalid parameters (missing query, invalid strategy, etc.)
-    - **401 Unauthorized**: Missing or invalid authentication
-    - **404 Not Found**: Workspace not found
-    - **500 Internal Server Error**: Search processing failed
-    - **503 Service Unavailable**: LlamaIndex service not available
-
-    ## ?? Rate Limits
-
-    - **60 requests/minute** per user
-    - **1000 requests/hour** per workspace
-    - Parallel execution (`strategy="all"`) counts as 1 request
     """
     start_time = datetime.utcnow()
 
     try:
-        # Validate strategy
-        valid_strategies = ['semantic', 'vector', 'multi_vector', 'hybrid', 'material', 'image', 'all']
-        if strategy not in valid_strategies:
+        # Only multi_vector strategy is supported
+        if strategy != 'multi_vector':
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid strategy '{strategy}'. Valid strategies: {', '.join(valid_strategies)}"
+                detail=f"Invalid strategy '{strategy}'. Only 'multi_vector' is supported."
             )
 
         # Initialize services
@@ -492,96 +357,16 @@ async def search_documents(
                 logger.error(f"Query understanding failed: {e}, continuing with original query")
                 # Continue with original query if parsing fails
 
-        # ?? STEP 2: Route to appropriate search method based on strategy
-        # All strategies now use the parsed query + extracted filters
-        if strategy == "semantic":
-            # Semantic search using MMR (Maximal Marginal Relevance)
-            # Balances relevance and diversity (lambda_mult=0.5)
-            results = await llamaindex_service.semantic_search_with_mmr(
-                query=query_to_use,
-                k=request.top_k,
-                lambda_mult=0.5
-            )
-
-        elif strategy == "vector":
-            # Pure vector similarity search (cosine distance)
-            # No diversity filtering (lambda_mult=1.0)
-            results = await llamaindex_service.semantic_search_with_mmr(
-                query=query_to_use,
-                k=request.top_k,
-                lambda_mult=1.0  # Pure similarity, no diversity
-            )
-
-        elif strategy == "multi_vector":
-            # ?? Enhanced multi-vector search combining 6 specialized CLIP embeddings + metadata filtering
-            # text (20%), visual (20%), color (15%), texture (15%), style (15%), material (15%)
-            material_filters = getattr(request, 'material_filters', None)
-            results = await llamaindex_service.multi_vector_search(
-                query=query_to_use,
-                workspace_id=request.workspace_id,
-                top_k=request.top_k,
-                material_filters=material_filters
-            )
-
-        elif strategy == "hybrid":
-            # Hybrid search combining semantic (70%) + full-text keyword search (30%)
-            results = await llamaindex_service.hybrid_search(
-                query=query_to_use,
-                workspace_id=request.workspace_id,
-                top_k=request.top_k
-            )
-
-        elif strategy == "material":
-            # Material property search using JSONB filtering
-            # Requires material_filters in request
-            material_filters = getattr(request, 'material_filters', {})
-            if not material_filters:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="material_filters required for material property search"
-                )
-            results = await llamaindex_service.material_property_search(
-                workspace_id=request.workspace_id,
-                material_filters=material_filters,
-                top_k=request.top_k
-            )
-
-        elif strategy == "image":
-            # Image similarity search using CLIP embeddings
-            # Requires image_url or image_base64 in request
-            image_url = getattr(request, 'image_url', None)
-            image_base64 = getattr(request, 'image_base64', None)
-            if not image_url and not image_base64:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="image_url or image_base64 required for image similarity search"
-                )
-            results = await llamaindex_service.image_similarity_search(
-                workspace_id=request.workspace_id,
-                image_url=image_url,
-                image_base64=image_base64,
-                top_k=request.top_k
-            )
-
-        elif strategy == "all":
-            # ?? DEPRECATED: Use strategy="multi_vector" instead
-            logger.warning(f"?? DEPRECATED: strategy='all' is deprecated. Use strategy='multi_vector' instead for 10x better performance and accuracy.")
-            logger.warning(f"   Current: 10 separate searches (~800ms, 10x cost, simple averaging)")
-            logger.warning(f"   Recommended: 1 intelligent search (~200ms, 1x cost, weighted scoring with 6 embeddings)")
-
-            # Run all strategies in parallel (DEPRECATED - use multi_vector instead)
-            material_filters = getattr(request, 'material_filters', None)
-            image_url = getattr(request, 'image_url', None)
-            image_base64 = getattr(request, 'image_base64', None)
-
-            results = await llamaindex_service.search_all_strategies(
-                query=query_to_use,
-                workspace_id=request.workspace_id,
-                top_k=request.top_k,
-                material_filters=material_filters,
-                image_url=image_url,
-                image_base64=image_base64
-            )
+        # Execute multi-vector search (the only supported strategy)
+        # Combines 6 specialized CLIP embeddings + metadata filtering
+        # text (20%), visual (20%), color (15%), texture (15%), style (15%), material (15%)
+        material_filters = getattr(request, 'material_filters', None)
+        results = await llamaindex_service.multi_vector_search(
+            query=query_to_use,
+            workspace_id=request.workspace_id,
+            top_k=request.top_k,
+            material_filters=material_filters
+        )
 
         # Get raw results
         raw_results = results.get('results', [])
@@ -613,19 +398,9 @@ async def search_documents(
         search_metadata = {
             'prompts_applied': prompts_applied,
             'prompts_enabled': request.use_search_prompts,
-            'related_products_included': request.include_related_products
+            'related_products_included': request.include_related_products,
+            'strategy': 'multi_vector'
         }
-
-        # Add parallel execution metadata for 'all' strategy
-        if strategy == "all":
-            search_metadata.update({
-                'strategies_executed': results.get('strategies_executed', 0),
-                'strategies_successful': results.get('strategies_successful', 0),
-                'strategies_failed': results.get('strategies_failed', 0),
-                'strategy_breakdown': results.get('strategy_breakdown', {}),
-                'parallel_execution': True,
-                'parallel_processing_time': results.get('processing_time', 0)
-            })
 
         return SearchResponse(
             query=request.query,

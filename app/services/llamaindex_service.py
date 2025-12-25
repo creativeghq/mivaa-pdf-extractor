@@ -5354,225 +5354,283 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
         workspace_id: str,
         top_k: int = 10,
         material_filters: Optional[Dict[str, Any]] = None,
-        text_weight: float = 0.60,
-        visual_weight: float = 0.40,
         similarity_threshold: float = 0.3
     ) -> Dict[str, Any]:
         """
-        🎯 Multi-vector search using VECS + Supabase client (no raw SQL).
+        🎯 TRUE Multi-vector search combining ALL 6 specialized embeddings in parallel.
+
+        Combines 6 specialized embeddings with intelligent weighting:
+        1. text_embedding_1536 (20%) - Semantic text understanding
+        2. visual_clip_embedding_512 (20%) - General visual similarity
+        3. color_clip_embedding_512 (15%) - Color palette matching
+        4. texture_clip_embedding_512 (15%) - Texture pattern matching
+        5. style_clip_embedding_512 (15%) - Design style matching
+        6. material_clip_embedding_512 (15%) - Material type matching
 
         Architecture:
-        - Text search: Products table with keyword/metadata matching
-        - Visual search: VECS image_siglip_embeddings with product relationships
-        - Results combined in Python with weighted scoring
+        - Generate query embeddings from text (using RealEmbeddingsService)
+        - Search all 6 VECS collections in parallel
+        - Map image results to products via product_image_relationships
+        - Combine scores with intelligent weighting
+        - Apply metadata filters as soft boosts
 
         Args:
             query: Search query text
             workspace_id: Workspace ID to filter results
             top_k: Number of results to return
             material_filters: Optional JSONB metadata filters
-            text_weight: Weight for text matching (default 0.60)
-            visual_weight: Weight for visual embeddings (default 0.40)
             similarity_threshold: Minimum similarity score (default 0.3)
 
         Returns:
-            Dictionary containing search results with weighted scores
+            Dictionary containing search results with weighted scores from all 6 embeddings
         """
         try:
             from .supabase_client import get_supabase_client
             from .vecs_service import get_vecs_service
-            from .search_enrichment_service import SearchEnrichmentService
+            from .real_embeddings_service import RealEmbeddingsService
             import time
+            import asyncio
 
             start_time = time.time()
             supabase_client = get_supabase_client()
+            vecs_service = get_vecs_service()
+            embeddings_service = RealEmbeddingsService()
 
-            # Step 1: ✅ OPTIMIZED Text-based search using PostgreSQL FTS
-            # Uses search_products_fts() for 10-50x faster keyword matching
-            query_lower = query.lower()
+            # ============================================================================
+            # STEP 1: Generate query embeddings from text (for visual searches)
+            # ============================================================================
+            self.logger.info(f"🔍 Multi-vector search: Generating embeddings for query: '{query[:50]}...'")
 
-            # Try using optimized FTS function first
-            text_scored_products = []
-            try:
-                fts_response = supabase_client.client.rpc(
-                    'search_products_fts',
-                    {
-                        'search_query': query,
-                        'workspace_filter': workspace_id,
-                        'result_limit': top_k * 5  # Get more for visual fusion
-                    }
-                ).execute()
+            # Generate visual embedding from text description (will be used for all 6 searches)
+            embedding_result = await embeddings_service.generate_visual_embedding(query)
 
-                if fts_response.data:
-                    for item in fts_response.data:
-                        text_scored_products.append({
-                            'product': item,
-                            'text_score': float(item.get('rank', 0.5))
-                        })
+            if not embedding_result.get("success"):
+                self.logger.warning("Failed to generate visual embedding, falling back to text-only search")
+                query_embedding = None
+            else:
+                query_embedding = embedding_result.get("embedding", [])
+                self.logger.info(f"✅ Generated {len(query_embedding)}D visual embedding from query text")
 
-            except Exception as fts_error:
-                logger.debug(f"FTS function not available, using fallback: {fts_error}")
+            # ============================================================================
+            # STEP 2: Search all 6 embedding collections in PARALLEL
+            # ============================================================================
+            embedding_scores = {}  # Maps image_id -> {embedding_type: score}
 
-                # Fallback: Fetch all products and score in Python
-                query_parts = query_lower.split()
-                stop_words = {'by', 'the', 'a', 'an', 'and', 'or', 'for', 'with', 'in', 'on', 'at', 'to', 'of'}
-                significant_query_parts = [p for p in query_parts if p not in stop_words]
+            if query_embedding:
+                # Define all 6 embedding types to search
+                embedding_types = ['visual', 'color', 'texture', 'style', 'material']
 
-                products_response = supabase_client.client.table('products')\
-                    .select('id, name, description, metadata, workspace_id, source_document_id')\
-                    .eq('workspace_id', workspace_id)\
-                    .execute()
+                # Create parallel search tasks for specialized embeddings
+                search_tasks = []
+                for emb_type in embedding_types:
+                    task = vecs_service.search_specialized_embeddings(
+                        query_embedding=query_embedding,
+                        embedding_type=emb_type,
+                        limit=top_k * 3,  # Get more candidates for fusion
+                        workspace_id=workspace_id,
+                        include_metadata=True
+                    )
+                    search_tasks.append(task)
 
-                if products_response.data:
-                    for product in products_response.data:
-                        product_name = (product.get('name') or '').lower()
-                        product_desc = (product.get('description') or '').lower()
-                        product_metadata = product.get('metadata') or {}
+                # Execute all searches in parallel
+                self.logger.info(f"🚀 Executing {len(embedding_types)} specialized embedding searches in parallel...")
+                search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
 
-                        text_score = 0.0
+                # Process results from each embedding type
+                for emb_type, results in zip(embedding_types, search_results):
+                    if isinstance(results, Exception):
+                        self.logger.warning(f"⚠️ {emb_type} search failed: {results}")
+                        continue
 
-                        # Exact full query match in name
-                        if query_lower in product_name:
-                            text_score = 1.0
-                        else:
-                            # Significant word matches
-                            name_matches = 0
-                            for part in significant_query_parts:
-                                if part in product_name:
-                                    name_matches += 1
-                                    text_score += 0.4
+                    if not results:
+                        self.logger.debug(f"No results from {emb_type} search")
+                        continue
 
-                            if significant_query_parts and name_matches == len(significant_query_parts):
-                                text_score += 0.3
+                    # Store scores for each image
+                    for item in results:
+                        image_id = item.get('image_id')
+                        similarity_score = item.get('similarity_score', 0.0)
 
-                            # Description matches
-                            for part in significant_query_parts:
-                                if part in product_desc:
-                                    text_score += 0.15
+                        if image_id not in embedding_scores:
+                            embedding_scores[image_id] = {}
 
-                            # Metadata matches
-                            for part in significant_query_parts:
-                                for meta_key, meta_value in product_metadata.items():
-                                    if isinstance(meta_value, str) and part in meta_value.lower():
-                                        text_score += 0.2
-                                        break
-                                    if isinstance(meta_value, dict):
-                                        nested_val = meta_value.get('value', '')
-                                        if isinstance(nested_val, str) and part in nested_val.lower():
-                                            text_score += 0.2
-                                            break
+                        embedding_scores[image_id][emb_type] = similarity_score
 
-                        text_score = min(text_score, 1.0)
+                    self.logger.info(f"✅ {emb_type}: {len(results)} results")
 
-                        text_scored_products.append({
-                            'product': product,
-                            'text_score': text_score
-                        })
+                self.logger.info(f"📊 Total unique images found: {len(embedding_scores)}")
 
-            # Apply material filters as SOFT BOOSTS to all products
-            if material_filters and text_scored_products:
-                for item in text_scored_products:
-                    product = item['product']
-                    product_metadata = product.get('metadata') or {}
-                    filter_boost = 0.0
+            else:
+                self.logger.warning("⚠️ No query embedding available, skipping visual searches")
 
-                    for filter_key, filter_value in material_filters.items():
-                        # Handle nested paths like "appearance.colors"
-                        if '.' in filter_key:
-                            path_parts = filter_key.split('.')
-                            product_value = product_metadata
-                            for part in path_parts:
-                                if isinstance(product_value, dict):
-                                    product_value = product_value.get(part)
-                                else:
-                                    product_value = None
-                                    break
-                        else:
-                            product_value = product_metadata.get(filter_key)
+            # ============================================================================
+            # STEP 3: Map images to products via product_image_relationships
+            # ============================================================================
+            product_scores = {}  # Maps product_id -> {embedding_type: score}
 
-                        if product_value is None:
-                            continue
+            if embedding_scores:
+                # Get all image IDs
+                image_ids = list(embedding_scores.keys())
 
-                        # Handle dict values with 'value' key
-                        if isinstance(product_value, dict) and 'value' in product_value:
-                            product_value = product_value['value']
+                # Fetch product-image relationships in batches
+                batch_size = 100
+                all_relationships = []
 
-                        # Handle list values
-                        if isinstance(product_value, list):
-                            product_value = ' '.join(str(v) for v in product_value)
-
-                        # Use contains matching
-                        product_value_str = str(product_value).lower()
-                        if isinstance(filter_value, list):
-                            matched = any(str(v).lower() in product_value_str or product_value_str in str(v).lower()
-                                        for v in filter_value)
-                            if matched:
-                                filter_boost += 0.15
-                        else:
-                            filter_value_str = str(filter_value).lower()
-                            if filter_value_str in product_value_str or product_value_str in filter_value_str:
-                                filter_boost += 0.15
-
-                    # Add filter boost to text score
-                    item['text_score'] += filter_boost
-
-            # Step 2: Visual search using VECS (if we have visual embeddings)
-            visual_scores = {}
-            try:
-                vecs_service = get_vecs_service()
-
-                # Get all images for the workspace and their product relationships
-                images_response = supabase_client.client.table('document_images')\
-                    .select('id, workspace_id')\
-                    .eq('workspace_id', workspace_id)\
-                    .execute()
-
-                if images_response.data:
-                    # Get product-image relationships
-                    image_ids = [img['id'] for img in images_response.data]
-                    relationships_response = supabase_client.client.table('product_image_relationships')\
+                for i in range(0, len(image_ids), batch_size):
+                    batch_ids = image_ids[i:i + batch_size]
+                    rel_response = supabase_client.client.table('product_image_relationships')\
                         .select('product_id, image_id, relevance_score')\
-                        .in_('image_id', image_ids)\
+                        .in_('image_id', batch_ids)\
                         .execute()
 
-                    if relationships_response.data:
-                        for rel in relationships_response.data:
-                            product_id = rel.get('product_id')
-                            relevance = rel.get('relevance_score', 0.5)
-                            # Use relevance score as visual score proxy
-                            if product_id not in visual_scores or visual_scores[product_id] < relevance:
-                                visual_scores[product_id] = relevance
+                    if rel_response.data:
+                        all_relationships.extend(rel_response.data)
 
-            except Exception as vecs_error:
-                self.logger.warning(f"VECS visual search skipped: {vecs_error}")
+                self.logger.info(f"📎 Found {len(all_relationships)} product-image relationships")
 
-            # Step 3: Combine scores with weights
+                # Map image scores to products
+                for rel in all_relationships:
+                    product_id = rel.get('product_id')
+                    image_id = rel.get('image_id')
+                    relevance = rel.get('relevance_score', 1.0)
+
+                    if image_id in embedding_scores:
+                        if product_id not in product_scores:
+                            product_scores[product_id] = {}
+
+                        # Transfer scores from image to product (weighted by relevance)
+                        for emb_type, score in embedding_scores[image_id].items():
+                            weighted_score = score * relevance
+
+                            # Keep the highest score for each embedding type
+                            if emb_type not in product_scores[product_id] or product_scores[product_id][emb_type] < weighted_score:
+                                product_scores[product_id][emb_type] = weighted_score
+
+                self.logger.info(f"🎯 Mapped scores to {len(product_scores)} products")
+
+            # ============================================================================
+            # STEP 4: Fetch product details and calculate weighted scores
+            # ============================================================================
+
+            # Define weights for each embedding type (must sum to 1.0)
+            embedding_weights = {
+                'text': 0.20,      # Text semantic understanding (from metadata/description)
+                'visual': 0.20,    # General visual similarity
+                'color': 0.15,     # Color palette matching
+                'texture': 0.15,   # Texture pattern matching
+                'style': 0.15,     # Design style matching
+                'material': 0.15   # Material type matching
+            }
+
+            # Fetch all products that have scores
             results = []
-            for product in text_scored_products:
-                product_id = product['id']
-                text_score = product.get('text_score', 0.0)
-                visual_score = visual_scores.get(product_id, 0.0)
+            if product_scores:
+                product_ids = list(product_scores.keys())
 
-                # Calculate weighted score
-                weighted_score = (text_weight * text_score) + (visual_weight * visual_score)
+                # Fetch product details in batches
+                batch_size = 100
+                all_products = []
 
-                if weighted_score >= similarity_threshold:
-                    results.append({
-                        "id": product_id,
-                        "product_name": product.get('name'),
-                        "description": product.get('description'),
-                        "metadata": product.get('metadata', {}),
-                        "workspace_id": product.get('workspace_id'),
-                        "source_document_id": product.get('source_document_id'),
-                        "score": weighted_score,
-                        "text_score": text_score,
-                        "visual_score": visual_score,
-                        "search_type": "multi_vector"
-                    })
+                for i in range(0, len(product_ids), batch_size):
+                    batch_ids = product_ids[i:i + batch_size]
+                    products_response = supabase_client.client.table('products')\
+                        .select('id, name, description, metadata, workspace_id, source_document_id')\
+                        .in_('id', batch_ids)\
+                        .execute()
 
-            # Sort by score descending and limit
-            results.sort(key=lambda x: x['score'], reverse=True)
-            results = results[:top_k]
+                    if products_response.data:
+                        all_products.extend(products_response.data)
+
+                self.logger.info(f"📦 Fetched {len(all_products)} product details")
+
+                # Calculate weighted scores for each product
+                for product in all_products:
+                    product_id = product['id']
+                    scores = product_scores.get(product_id, {})
+
+                    # Calculate text score from keyword matching
+                    text_score = self._calculate_text_score(query, product)
+                    scores['text'] = text_score
+
+                    # Calculate weighted score from all embedding types
+                    weighted_score = 0.0
+                    score_breakdown = {}
+
+                    for emb_type, weight in embedding_weights.items():
+                        emb_score = scores.get(emb_type, 0.0)
+                        weighted_score += emb_score * weight
+                        score_breakdown[f'{emb_type}_score'] = emb_score
+
+                    # Apply material filters as soft boosts
+                    filter_boost = 0.0
+                    if material_filters:
+                        product_metadata = product.get('metadata') or {}
+
+                        for filter_key, filter_value in material_filters.items():
+                            # Handle nested paths like "appearance.colors"
+                            if '.' in filter_key:
+                                path_parts = filter_key.split('.')
+                                product_value = product_metadata
+                                for part in path_parts:
+                                    if isinstance(product_value, dict):
+                                        product_value = product_value.get(part)
+                                    else:
+                                        product_value = None
+                                        break
+                            else:
+                                product_value = product_metadata.get(filter_key)
+
+                            if product_value is None:
+                                continue
+
+                            # Handle dict values with 'value' key
+                            if isinstance(product_value, dict) and 'value' in product_value:
+                                product_value = product_value['value']
+
+                            # Handle list values
+                            if isinstance(product_value, list):
+                                product_value = ' '.join(str(v) for v in product_value)
+
+                            # Use contains matching
+                            product_value_str = str(product_value).lower()
+                            if isinstance(filter_value, list):
+                                matched = any(str(v).lower() in product_value_str or product_value_str in str(v).lower()
+                                            for v in filter_value)
+                                if matched:
+                                    filter_boost += 0.15
+                            else:
+                                filter_value_str = str(filter_value).lower()
+                                if filter_value_str in product_value_str or product_value_str in filter_value_str:
+                                    filter_boost += 0.15
+
+                    # Add filter boost to weighted score
+                    final_score = weighted_score + filter_boost
+
+                    # Only include results above threshold
+                    if final_score >= similarity_threshold:
+                        results.append({
+                            "id": product_id,
+                            "product_name": product.get('name'),
+                            "description": product.get('description'),
+                            "metadata": product.get('metadata', {}),
+                            "workspace_id": product.get('workspace_id'),
+                            "source_document_id": product.get('source_document_id'),
+                            "score": final_score,
+                            **score_breakdown,  # Include individual embedding scores
+                            "filter_boost": filter_boost,
+                            "search_type": "multi_vector_6_embeddings"
+                        })
+
+                # Sort by final score (descending)
+                results.sort(key=lambda x: x['score'], reverse=True)
+
+                # Limit to top_k
+                results = results[:top_k]
+
+                self.logger.info(f"✅ Returning {len(results)} results (top {top_k})")
+
+            else:
+                self.logger.warning("⚠️ No product scores available, returning empty results")
 
             # NEW: Apply metadata prototype validation scoring (enabled by default)
             from app.services.metadata_prototype_validator import get_metadata_validator
@@ -5623,14 +5681,12 @@ Focus on identifying construction materials, tiles, flooring, wall coverings, an
                 "results": results,
                 "total_results": len(results),
                 "processing_time": time.time() - start_time,
-                "weights": {
-                    "text": text_weight,
-                    "visual": visual_weight
-                },
+                "embedding_weights": embedding_weights,
+                "embeddings_used": list(embedding_weights.keys()),
                 "material_filters_applied": material_filters if material_filters else None,
                 "metadata_validation_enabled": True,
                 "query": query,
-                "search_type": "multi_vector"
+                "search_type": "multi_vector_6_embeddings"
             }
 
         except Exception as e:
@@ -6578,3 +6634,92 @@ Respond in JSON format:
                 wait_time = 2 ** attempt  # 1s, 2s, 4s
                 self.logger.info(f"Retrying in {wait_time}s...")
                 await asyncio.sleep(wait_time)
+
+    def _calculate_text_score(self, query: str, product: Dict[str, Any]) -> float:
+        """
+        Calculate text similarity score based on keyword matching.
+
+        Args:
+            query: Search query text
+            product: Product dictionary with name, description, metadata
+
+        Returns:
+            Text similarity score (0.0 to 1.0)
+        """
+        if not query:
+            return 0.0
+
+        query_lower = query.lower()
+        query_words = set(query_lower.split())
+
+        # Collect all text from product
+        text_parts = []
+
+        # Product name (highest weight)
+        if product.get('name'):
+            text_parts.append(('name', product['name'], 3.0))
+
+        # Product description (medium weight)
+        if product.get('description'):
+            text_parts.append(('description', product['description'], 2.0))
+
+        # Metadata fields (lower weight)
+        metadata = product.get('metadata', {})
+        if metadata:
+            # Flatten metadata to text
+            metadata_text = self._flatten_metadata_to_text(metadata)
+            text_parts.append(('metadata', metadata_text, 1.0))
+
+        # Calculate weighted keyword overlap
+        total_score = 0.0
+        total_weight = 0.0
+
+        for field_name, text, weight in text_parts:
+            if not text:
+                continue
+
+            text_lower = str(text).lower()
+            text_words = set(text_lower.split())
+
+            # Calculate Jaccard similarity
+            if text_words:
+                intersection = query_words & text_words
+                union = query_words | text_words
+                jaccard = len(intersection) / len(union) if union else 0.0
+
+                # Also check for substring matches (partial matches)
+                substring_bonus = 0.0
+                for query_word in query_words:
+                    if len(query_word) > 3 and query_word in text_lower:
+                        substring_bonus += 0.1
+
+                field_score = min(1.0, jaccard + substring_bonus)
+                total_score += field_score * weight
+                total_weight += weight
+
+        # Normalize by total weight
+        final_score = total_score / total_weight if total_weight > 0 else 0.0
+        return min(1.0, final_score)
+
+    def _flatten_metadata_to_text(self, metadata: Dict[str, Any]) -> str:
+        """Flatten nested metadata dictionary to searchable text."""
+        text_parts = []
+
+        def extract_values(obj, prefix=''):
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    if isinstance(value, (dict, list)):
+                        extract_values(value, f"{prefix}{key}.")
+                    else:
+                        text_parts.append(str(value))
+            elif isinstance(obj, list):
+                for item in obj:
+                    if isinstance(item, (dict, list)):
+                        extract_values(item, prefix)
+                    else:
+                        text_parts.append(str(item))
+            else:
+                text_parts.append(str(obj))
+
+        extract_values(metadata)
+        return ' '.join(text_parts)

@@ -3123,7 +3123,7 @@ async def search_documents(
     request: SearchRequest,
     strategy: Optional[str] = Query(
         "multi_vector",
-        description="Search strategy: 'multi_vector' (RECOMMENDED - default), 'semantic', 'vector', 'hybrid', 'material', 'image', 'color', 'texture', 'style', 'material_type', 'all'"
+        description="Search strategy: 'multi_vector' (default and only supported strategy)"
     ),
     enable_query_understanding: bool = Query(
         True,  # ✅ ENABLED BY DEFAULT - Makes platform smarter with minimal cost ($0.0001/query)
