@@ -746,10 +746,14 @@ async def process_stage_3_images(
     logger.info("💾 Memory freed after Stage 3 (Image Processing)")
 
     # ✅ Stage 3.5 - Convert embeddings to text metadata
-    logger.info("🔤 Stage 3.5: Converting embeddings to text metadata...")
+    # CRITICAL FIX: Initialize variables BEFORE try block to prevent UnboundLocalError
+    # If exception occurs during import/initialization, these variables must still exist
+    # for the quality metrics calculation at line 840
     embedding_to_text_count = 0
     embedding_to_text_failed = 0
     embedding_to_text_ai_calls = 0
+
+    logger.info("🔤 Stage 3.5: Converting embeddings to text metadata...")
     try:
         from app.services.embedding_to_text_service import EmbeddingToTextService
         embedding_to_text_service = EmbeddingToTextService(workspace_id=workspace_id)
