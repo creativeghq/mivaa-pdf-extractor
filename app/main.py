@@ -896,6 +896,10 @@ Get your token from the frontend application or Supabase authentication.
             {
                 "name": "Health & Monitoring",
                 "description": "🏥 **ENHANCED v2.4.0** System Health & Monitoring - Comprehensive health checks with database connection pool monitoring, job monitor status, query performance metrics (avg/max/slow queries), circuit breaker status, and real-time system health. Includes retry logic with exponential backoff and circuit breaker pattern for resilience. Endpoints: `/health/` (basic), `/health/detailed` (full status), `/health/database`, `/health/job-monitor`, `/health/metrics`, `/health/circuit-breakers`"
+            },
+            {
+                "name": "price-monitoring",
+                "description": "💰 **NEW v2.5.0** Price Monitoring with Firecrawl - Competitor price tracking with on-demand and scheduled monitoring. Features: Multi-source scraping (5-10 competitors), price history tracking, price alerts (drop/increase/change), statistics & trends, credit-based usage (1 credit/scrape), unified AI analytics. Supports hourly/daily/weekly schedules. Factory & Store roles only."
             }
         ],
         contact={
@@ -1423,13 +1427,24 @@ async def root() -> Dict[str, Any]:
             "metadata_apply": "/api/rag/metadata/apply-to-products",
             "metadata_list": "/api/rag/metadata/list",
             "metadata_statistics": "/api/rag/metadata/statistics",
+
+            # Price Monitoring APIs (NEW - December 2025)
+            "price_monitoring_start": "/api/v1/price-monitoring/start",
+            "price_monitoring_stop": "/api/v1/price-monitoring/stop",
+            "price_monitoring_check_now": "/api/v1/price-monitoring/check-now",
+            "price_monitoring_status": "/api/v1/price-monitoring/status/{product_id}",
+            "price_monitoring_history": "/api/v1/price-monitoring/history/{product_id}",
+            "price_monitoring_statistics": "/api/v1/price-monitoring/statistics/{product_id}",
+            "price_monitoring_sources": "/api/v1/price-monitoring/sources",
+            "price_monitoring_alerts": "/api/v1/price-monitoring/alerts",
+            "price_monitoring_jobs": "/api/v1/price-monitoring/jobs/{product_id}",
         },
         "api_info": {
-            "total_endpoints": 110,
+            "total_endpoints": 123,
             "authentication": "JWT Bearer Token Required",
             "embedding_model": "text-embedding-3-small (1536 dimensions)",
-            "recent_enhancements": "Metadata Management System (November 2025)",
-            "performance_improvements": "Implicit catalog-general metadata detection, override logic"
+            "recent_enhancements": "Price Monitoring with Firecrawl (December 2025)",
+            "performance_improvements": "Competitor price scraping, alerts, scheduled monitoring"
         },
         "features": [
             "PDF to Markdown conversion",
@@ -1473,6 +1488,7 @@ from app.api.user_feedback import router as user_feedback_router
 from app.api.interior_design_routes import router as interior_design_router
 from app.api.health import router as health_router
 from app.api.chunk_quality_routes import router as chunk_quality_router
+from app.api.price_monitoring_routes import router as price_monitoring_router
 
 app.include_router(health_router)  # Health check endpoints (must be first for monitoring)
 app.include_router(search_router)
@@ -1504,6 +1520,7 @@ app.include_router(spaceformer_router)  # NEW: Spatial analysis with Claude Visi
 app.include_router(user_feedback_router)  # NEW: User feedback with AI sentiment analysis (aspect-based, trends)
 app.include_router(interior_design_router)  # NEW: Interior design generation with streaming progress
 app.include_router(chunk_quality_router)  # NEW: Chunk quality metrics and flagged content management
+app.include_router(price_monitoring_router)  # NEW: Price monitoring with Firecrawl (competitor scraping, alerts, history)
 
 
 # ============================================================================
@@ -1620,13 +1637,14 @@ def custom_openapi():
         "agentic_queries": "Factory/group filtering for certificates, logos, specifications"
     }
 
-    # Add custom paths info (UPDATED - Health monitoring endpoints added)
+    # Add custom paths info (UPDATED - Price monitoring endpoints added)
     openapi_schema["info"]["x-endpoint-categories"] = {
         "rag_routes": "/api/rag/* (25 endpoints) - Document upload, search, query, chat, embeddings, jobs, relationships",
+        "price_monitoring_routes": "/api/v1/price-monitoring/* (13 NEW endpoints) - Competitor price tracking, alerts, history, statistics",
         "utilities_routes": "/api/bulk/*, /api/data/*, /api/monitoring/*, /api/system/* (12 endpoints)",
         "admin_routes": "/admin/* (10 endpoints) - Chunk quality, extraction config, prompts management",
         "ai_services_routes": "/api/v1/ai-services/* (10 endpoints) - Classification, validation, boundary detection",
-        "health_routes": "/health/* (8 NEW endpoints) - System health, database health, job monitor, query metrics, circuit breakers",
+        "health_routes": "/health/* (8 endpoints) - System health, database health, job monitor, query metrics, circuit breakers",
         "search_routes": "/api/search/* (8 endpoints) - Semantic, image, material, multimodal search",
         "jobs_routes": "/api/jobs/* (7 endpoints) - Job progress, statistics, status tracking",
         "document_entities_routes": "/api/document-entities/* (5 endpoints) - Certificates, logos, specifications",

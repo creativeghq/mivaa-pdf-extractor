@@ -8,7 +8,9 @@ Integrates with Supabase database functions for atomic credit operations.
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
+from decimal import Decimal
 from app.services.supabase_client import get_supabase_client
+from app.config.ai_pricing import AIPricingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +157,109 @@ class CreditsIntegrationService:
             
         except Exception as e:
             self.logger.error(f"❌ Error debiting credits: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    async def debit_credits_for_firecrawl(
+        self,
+        user_id: str,
+        workspace_id: Optional[str],
+        operation_type: str,
+        credits_used: int,
+        url: Optional[str] = None,
+        pages_scraped: int = 1,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Debit credits for a Firecrawl operation and log usage.
+
+        Args:
+            user_id: User ID who initiated the operation
+            workspace_id: Workspace ID (optional)
+            operation_type: Type of operation ('scrape', 'crawl', 'extract')
+            credits_used: Number of Firecrawl credits consumed
+            url: URL that was scraped (optional)
+            pages_scraped: Number of pages scraped
+            metadata: Additional metadata to store
+
+        Returns:
+            Dict with success status, new balance, and transaction details
+        """
+        try:
+            # Calculate cost using Firecrawl pricing
+            cost_usd = AIPricingConfig.calculate_firecrawl_cost(credits_used=credits_used)
+            platform_credits = float(cost_usd * 100)
+
+            # Debit credits using database function
+            response = self.supabase.client.rpc(
+                'debit_user_credits',
+                {
+                    'p_user_id': user_id,
+                    'p_amount': platform_credits,
+                    'p_operation_type': f"firecrawl_{operation_type}",
+                    'p_description': f"Firecrawl {operation_type}: {url or 'N/A'}",
+                    'p_metadata': {
+                        **(metadata or {}),
+                        'firecrawl_credits': credits_used,
+                        'url': url,
+                        'pages_scraped': pages_scraped
+                    }
+                }
+            ).execute()
+
+            debit_result = response.data[0] if response.data else None
+
+            if not debit_result or not debit_result.get('success'):
+                error_msg = debit_result.get('error_message', 'Unknown error') if debit_result else 'No response from database'
+                self.logger.error(f"❌ Firecrawl credit debit failed for user {user_id}: {error_msg}")
+                return {
+                    'success': False,
+                    'error': error_msg,
+                    'credits_required': platform_credits
+                }
+
+            # Log Firecrawl usage
+            usage_log = {
+                'user_id': user_id,
+                'workspace_id': workspace_id,
+                'operation_type': operation_type,
+                'model_name': 'firecrawl-scrape',
+                'api_provider': 'firecrawl',
+                'input_tokens': 0,
+                'output_tokens': 0,
+                'credits_used': credits_used,
+                'input_cost_usd': 0,
+                'output_cost_usd': 0,
+                'total_cost_usd': float(cost_usd),
+                'credits_debited': platform_credits,
+                'operation_details': {
+                    'url': url,
+                    'pages_scraped': pages_scraped
+                },
+                'metadata': metadata or {},
+                'created_at': datetime.utcnow().isoformat()
+            }
+
+            self.supabase.client.table('ai_usage_logs').insert(usage_log).execute()
+
+            self.logger.info(
+                f"✅ Debited {platform_credits:.2f} platform credits ({credits_used} Firecrawl credits) "
+                f"from user {user_id} for {operation_type}. New balance: {debit_result['new_balance']:.2f}"
+            )
+
+            return {
+                'success': True,
+                'credits_debited': platform_credits,
+                'firecrawl_credits': credits_used,
+                'new_balance': debit_result['new_balance'],
+                'transaction_id': debit_result['transaction_id'],
+                'cost_usd': float(cost_usd)
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ Error debiting Firecrawl credits: {e}")
             return {
                 'success': False,
                 'error': str(e)

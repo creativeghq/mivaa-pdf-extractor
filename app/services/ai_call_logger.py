@@ -355,3 +355,101 @@ class AICallLogger:
         cost = ai_pricing.calculate_cost(model, input_tokens, output_tokens, provider="together")
         return float(cost)
 
+    async def log_firecrawl_call(
+        self,
+        user_id: str,
+        workspace_id: Optional[str],
+        operation_type: str,
+        credits_used: int,
+        latency_ms: int,
+        url: Optional[str] = None,
+        pages_scraped: int = 1,
+        success: bool = True,
+        request_data: Optional[Dict[str, Any]] = None,
+        response_data: Optional[Dict[str, Any]] = None,
+        error_message: Optional[str] = None
+    ) -> bool:
+        """
+        Log a Firecrawl API call and debit credits.
+
+        Args:
+            user_id: User ID who initiated the operation
+            workspace_id: Workspace ID (optional)
+            operation_type: Type of operation ('scrape', 'crawl', 'extract')
+            credits_used: Number of Firecrawl credits consumed
+            latency_ms: Latency in milliseconds
+            url: URL that was scraped (optional)
+            pages_scraped: Number of pages scraped
+            success: Whether the operation succeeded
+            request_data: Optional request data for debugging
+            response_data: Optional response data for debugging
+            error_message: Optional error message if call failed
+
+        Returns:
+            bool: True if logged successfully
+        """
+        try:
+            # Calculate cost using Firecrawl pricing
+            cost_usd = ai_pricing.calculate_firecrawl_cost(credits_used=credits_used)
+            platform_credits = int(cost_usd * 100)
+
+            # Prepare operation details
+            operation_details = {
+                "url": url,
+                "pages_scraped": pages_scraped,
+                "success": success,
+                "latency_ms": latency_ms
+            }
+
+            # Debit credits from user account
+            if user_id:
+                await self.credits_service.debit_credits_for_ai_operation(
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    operation_type=f"firecrawl_{operation_type}",
+                    model_name="firecrawl-scrape",
+                    input_tokens=0,  # Firecrawl doesn't use tokens
+                    output_tokens=0,
+                    metadata={
+                        'credits_used': credits_used,
+                        'operation_details': operation_details,
+                        'api_provider': 'firecrawl'
+                    }
+                )
+
+            # Log to ai_usage_logs using the database function
+            log_data = {
+                'user_id': user_id,
+                'workspace_id': workspace_id,
+                'operation_type': operation_type,
+                'model_name': 'firecrawl-scrape',
+                'api_provider': 'firecrawl',
+                'input_tokens': 0,
+                'output_tokens': 0,
+                'credits_used': credits_used,
+                'input_cost_usd': 0,
+                'output_cost_usd': 0,
+                'total_cost_usd': float(cost_usd),
+                'credits_debited': platform_credits,
+                'operation_details': operation_details,
+                'metadata': {
+                    'request': request_data,
+                    'response': response_data,
+                    'error': error_message
+                },
+                'created_at': datetime.utcnow().isoformat()
+            }
+
+            self.supabase.client.table('ai_usage_logs').insert(log_data).execute()
+
+            self.logger.info(
+                f"✅ Logged Firecrawl {operation_type}: {credits_used} credits "
+                f"(${cost_usd:.4f} = {platform_credits} platform credits) for user {user_id}"
+            )
+
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to log Firecrawl call: {e}")
+            return False
+

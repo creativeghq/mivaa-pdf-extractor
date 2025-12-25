@@ -169,19 +169,32 @@ class AIPricingConfig:
             "note": "Deprecated - replaced by Llama 4 Scout"
         }
     }
+
+    # Firecrawl Web Scraping Pricing
+    # Note: Firecrawl uses tokens (1 credit = 15 tokens)
+    # Pricing is credit-based, exact USD cost depends on plan
+    FIRECRAWL_PRICING = {
+        "firecrawl-scrape": {
+            "cost_per_credit": Decimal("0.001"),  # Estimated $0.001 per credit
+            "tokens_per_credit": 15,  # 1 Firecrawl credit = 15 tokens
+            "last_verified": "2025-12-25",
+            "source": "https://firecrawl.dev/pricing",
+            "note": "Firecrawl API - pricing varies by plan. This is an estimate for tracking."
+        }
+    }
     
     @classmethod
     def get_model_pricing(cls, model: str, provider: Optional[str] = None) -> Dict[str, Decimal]:
         """
         Get pricing for a specific model.
-        
+
         Args:
             model: Model name (e.g., 'claude-haiku-4-5', 'gpt-4o', 'llama-4-scout-17b')
-            provider: Optional provider hint ('anthropic', 'openai', 'together')
-            
+            provider: Optional provider hint ('anthropic', 'openai', 'together', 'firecrawl')
+
         Returns:
             Dict with 'input' and 'output' pricing per million tokens
-            
+
         Raises:
             ValueError: If model pricing not found
         """
@@ -191,25 +204,26 @@ class AIPricingConfig:
             **cls.GPT_PRICING,
             **cls.EMBEDDING_PRICING,
             **cls.VISION_PRICING,
-            **cls.LLAMA_PRICING
+            **cls.LLAMA_PRICING,
+            **cls.FIRECRAWL_PRICING
         }
-        
+
         if model in all_pricing:
             pricing = all_pricing[model]
             return {
-                "input": pricing["input"],
-                "output": pricing["output"]
+                "input": pricing.get("input", Decimal("0.00")),
+                "output": pricing.get("output", Decimal("0.00"))
             }
-        
+
         # Try fuzzy matching for model variants
         model_lower = model.lower()
         for key, pricing in all_pricing.items():
             if key.lower() in model_lower or model_lower in key.lower():
                 return {
-                    "input": pricing["input"],
-                    "output": pricing["output"]
+                    "input": pricing.get("input", Decimal("0.00")),
+                    "output": pricing.get("output", Decimal("0.00"))
                 }
-        
+
         # Default fallback pricing (conservative estimate)
         return {
             "input": Decimal("3.00"),
@@ -244,13 +258,34 @@ class AIPricingConfig:
         return input_cost + output_cost
     
     @classmethod
+    def calculate_firecrawl_cost(
+        cls,
+        credits_used: int = 1,
+        operation: str = "firecrawl-scrape"
+    ) -> Decimal:
+        """
+        Calculate cost for Firecrawl operations.
+
+        Args:
+            credits_used: Number of Firecrawl credits consumed
+            operation: Operation type (default: 'firecrawl-scrape')
+
+        Returns:
+            Total cost in USD as Decimal
+        """
+        pricing = cls.FIRECRAWL_PRICING.get(operation, cls.FIRECRAWL_PRICING["firecrawl-scrape"])
+        cost_per_credit = pricing.get("cost_per_credit", Decimal("0.001"))
+
+        return Decimal(credits_used) * cost_per_credit
+
+    @classmethod
     def get_pricing_info(cls, model: str) -> Optional[Dict]:
         """
         Get full pricing information including metadata.
-        
+
         Args:
             model: Model name
-            
+
         Returns:
             Full pricing dict with metadata or None if not found
         """
@@ -259,9 +294,10 @@ class AIPricingConfig:
             **cls.GPT_PRICING,
             **cls.EMBEDDING_PRICING,
             **cls.VISION_PRICING,
-            **cls.LLAMA_PRICING
+            **cls.LLAMA_PRICING,
+            **cls.FIRECRAWL_PRICING
         }
-        
+
         return all_pricing.get(model)
     
     @classmethod
