@@ -411,7 +411,21 @@ class Settings(BaseSettings):
         default=30,
         env="MATERIAL_KAI_TIMEOUT"
     )
-    
+
+    # Price Monitoring Settings
+    firecrawl_api_key: str = Field(
+        default="",
+        env="FIRECRAWL_API_KEY"
+    )
+    google_shopping_api_key: str = Field(
+        default="",
+        env="GOOGLE_SHOPPING_API_KEY"
+    )
+    google_shopping_cx: str = Field(
+        default="",
+        env="GOOGLE_SHOPPING_CX"
+    )
+
     # Development and Testing Settings
     environment: str = Field(
         default="production",

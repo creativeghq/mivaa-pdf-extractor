@@ -802,6 +802,8 @@ jobs:
           Environment=REPLICATE_API_TOKEN=${{ secrets.REPLICATE_API_TOKEN }}
           Environment=JINA_API_KEY=${{ secrets.JINA_API_KEY }}
           Environment=FIRECRAWL_API_KEY=${{ secrets.FIRECRAWL_API_KEY }}
+          Environment=GOOGLE_SHOPPING_API_KEY=${{ secrets.GOOGLE_SHOPPING_API_KEY }}
+          Environment=GOOGLE_SHOPPING_CX=${{ secrets.GOOGLE_SHOPPING_CX }}
           Environment=ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}
           Environment=MATERIAL_KAI_API_KEY=${{ secrets.MATERIAL_KAI_API_KEY }}
           Environment=MATERIAL_KAI_API_URL=${{ secrets.MATERIAL_KAI_API_URL }}
