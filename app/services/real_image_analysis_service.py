@@ -433,12 +433,23 @@ Respond ONLY with valid JSON, no additional text."""
                     try:
                         # Clean up response - remove markdown code blocks if present
                         content = content.strip()
-                        if content.startswith("```json"):
-                            content = content[7:]
-                        if content.startswith("```"):
-                            content = content[3:]
-                        if content.endswith("```"):
-                            content = content[:-3]
+
+                        # Handle case where JSON is wrapped in markdown code blocks with text before it
+                        # Example: "Here is the JSON:\n\n```json\n{...}\n```"
+                        if "```json" in content:
+                            # Extract content between ```json and ```
+                            json_start = content.find("```json") + 7
+                            json_end = content.find("```", json_start)
+                            if json_end != -1:
+                                content = content[json_start:json_end].strip()
+                        elif "```" in content:
+                            # Extract content between ``` and ```
+                            json_start = content.find("```") + 3
+                            json_end = content.find("```", json_start)
+                            if json_end != -1:
+                                content = content[json_start:json_end].strip()
+
+                        # Final cleanup
                         content = content.strip()
 
                         # Check if content is empty

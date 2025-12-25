@@ -162,7 +162,7 @@ class TimeoutConstants:
     
     # AI Model Calls
     CLAUDE_API_CALL = 120  # 2min for Claude API
-    LLAMA_VISION_CALL = 30  # 30s for Llama Vision (reduced from 90s - typical response: 5-15s)
+    LLAMA_VISION_CALL = 60  # 60s for Llama Vision (increased from 30s due to timeout issues with complex images)
     CLIP_EMBEDDING = 90  # 90s for CLIP embedding (includes 4 specialized embeddings: 4×15s + overhead)
     GPT_API_CALL = 60  # 1min for GPT API
     
@@ -292,13 +292,13 @@ class ProgressiveTimeoutStrategy:
         """
         Calculate timeout for image processing based on image count.
 
-        Base: 45s per image (CLIP + Llama Vision)
+        Base: 60s per image (CLIP 90s + Llama Vision 60s, but parallel)
         Parallel: Divide by concurrency limit
         Buffer: +20% safety margin
         Max: 30min
         """
-        # Time per image (45s for CLIP + Llama)
-        total_time = image_count * 45
+        # Time per image (60s for CLIP + Llama in parallel)
+        total_time = image_count * 60
 
         # Account for parallel processing
         parallel_time = total_time / concurrent_limit
