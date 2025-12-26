@@ -437,6 +437,29 @@ Respond ONLY with valid JSON, no additional text."""
                                 self.logger.error(f"Llama API {response.status_code} after {max_retries} attempts: {error_text}")
                                 raise RuntimeError(f"Llama API error {response.status_code} after {max_retries} attempts")
 
+                        # CRITICAL FIX (MIVAA-8B): Handle 400 Input validation errors
+                        # This happens when image is too large, corrupted, or unsupported format
+                        if response.status_code == 400:
+                            self.logger.warning(f"Llama API 400 Input validation error: {error_text[:200]}")
+                            self.logger.warning(f"Image size: {len(image_base64)} bytes (base64)")
+
+                            # Don't retry 400 errors - they won't succeed
+                            # Fall back to rule-based analysis
+                            import sentry_sdk
+                            with sentry_sdk.push_scope() as scope:
+                                scope.set_context("llama_validation_error", {
+                                    "error": error_text[:500],
+                                    "image_size_bytes": len(image_base64),
+                                    "status_code": 400
+                                })
+                                sentry_sdk.capture_message(
+                                    f"Llama API input validation error - falling back to rules",
+                                    level="warning"
+                                )
+
+                            # Return None to trigger fallback to rule-based analysis
+                            return None
+
                         # For other errors (4xx, etc.), log and raise immediately
                         self.logger.error(f"Llama API error {response.status_code}: {error_text}")
                         raise RuntimeError(f"Llama API returned error {response.status_code}: {error_text}")
@@ -567,11 +590,56 @@ Respond ONLY with valid JSON, no additional text."""
                             "success": True
                         }
                     except json.JSONDecodeError as e:
-                        # Enhanced error logging - show what we actually tried to parse
+                        # CRITICAL FIX (MIVAA-7Y, MIVAA-87): Enhanced JSON parsing with multiple fallback strategies
                         error_msg = f"Failed to parse Llama response as JSON (attempt {attempt}/{max_retries}): {e}"
                         self.logger.warning(error_msg)
                         self.logger.warning(f"Extracted JSON text (first 300 chars): {json_text[:300]}")
                         self.logger.warning(f"Original content (first 300 chars): {result['choices'][0]['message']['content'][:300]}")
+
+                        # FALLBACK STRATEGY 1: Try to fix common JSON issues
+                        try:
+                            # Fix trailing commas
+                            fixed_json = re.sub(r',\s*}', '}', json_text)
+                            fixed_json = re.sub(r',\s*]', ']', fixed_json)
+                            # Fix single quotes to double quotes
+                            fixed_json = fixed_json.replace("'", '"')
+                            # Try parsing fixed JSON
+                            analysis = json.loads(fixed_json)
+                            self.logger.info(f"✅ Llama analysis successful after JSON repair on attempt {attempt}")
+
+                            # Log AI call
+                            latency_ms = int((time.time() - start_time) * 1000)
+                            usage = result.get("usage", {})
+                            input_tokens = usage.get("prompt_tokens", 0)
+                            output_tokens = usage.get("completion_tokens", 0)
+
+                            confidence_breakdown = {
+                                "model_confidence": 0.85,
+                                "completeness": 0.80,
+                                "consistency": 0.75,
+                                "validation": 0.70
+                            }
+
+                            await self.ai_logger.log_ai_call(
+                                task="image_vision_analysis",
+                                model="llama-4-scout-17b-vision",
+                                input_tokens=input_tokens,
+                                output_tokens=output_tokens,
+                                cost=(input_tokens * 0.0000002) + (output_tokens * 0.0000006),
+                                latency_ms=latency_ms,
+                                confidence_score=0.75,
+                                confidence_breakdown=confidence_breakdown,
+                                action="use_ai_result_after_repair",
+                                job_id=job_id
+                            )
+
+                            return {
+                                "model": "llama-4-scout-17b-vision",
+                                "analysis": analysis,
+                                "success": True
+                            }
+                        except json.JSONDecodeError:
+                            pass  # Continue to retry logic
 
                         if attempt < max_retries:
                             import asyncio
@@ -582,6 +650,21 @@ Respond ONLY with valid JSON, no additional text."""
                             self.logger.error(f"JSON parsing failed after {max_retries} attempts")
                             self.logger.error(f"Extracted JSON text: {json_text}")
                             self.logger.error(f"Parse error: {e}")
+
+                            # Send to Sentry with full context
+                            import sentry_sdk
+                            with sentry_sdk.push_scope() as scope:
+                                scope.set_context("json_parsing_error", {
+                                    "extracted_json": json_text[:500],
+                                    "original_content": result['choices'][0]['message']['content'][:500],
+                                    "parse_error": str(e),
+                                    "attempts": max_retries
+                                })
+                                sentry_sdk.capture_message(
+                                    f"Llama JSON parsing failed after {max_retries} attempts: {e}",
+                                    level="error"
+                                )
+
                             raise RuntimeError(f"Llama returned invalid JSON after {max_retries} attempts: {e}")
 
                 except Exception as e:
@@ -693,12 +776,41 @@ Respond ONLY with valid JSON, no additional text."""
             content = response.content[0].text.strip()
 
             try:
-                # Handle Claude's tendency to add extra text after JSON
-                # Find the last closing brace to extract only the JSON portion
+                # CRITICAL FIX (MIVAA-87): Enhanced JSON extraction with multiple strategies
+                # Strategy 1: Find JSON between first { and last }
+                first_brace = content.find('{')
                 last_brace = content.rfind('}')
-                if last_brace != -1:
-                    json_text = content[:last_brace + 1]
-                    validation = json.loads(json_text)
+
+                if first_brace != -1 and last_brace != -1:
+                    json_text = content[first_brace:last_brace + 1]
+
+                    try:
+                        validation = json.loads(json_text)
+                    except json.JSONDecodeError as e:
+                        # Strategy 2: Try to fix common JSON issues
+                        self.logger.warning(f"Initial JSON parse failed, attempting repair: {e}")
+
+                        # Fix trailing commas
+                        fixed_json = re.sub(r',\s*}', '}', json_text)
+                        fixed_json = re.sub(r',\s*]', ']', fixed_json)
+                        # Fix single quotes to double quotes (but not in strings)
+                        fixed_json = re.sub(r"(?<!\\)'", '"', fixed_json)
+                        # Remove comments
+                        fixed_json = re.sub(r'//.*?\n', '\n', fixed_json)
+                        fixed_json = re.sub(r'/\*.*?\*/', '', fixed_json, flags=re.DOTALL)
+
+                        try:
+                            validation = json.loads(fixed_json)
+                            self.logger.info("✅ Claude JSON repaired successfully")
+                        except json.JSONDecodeError as e2:
+                            # Strategy 3: Extract JSON using regex
+                            self.logger.warning(f"JSON repair failed, trying regex extraction: {e2}")
+                            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
+                            if json_match:
+                                validation = json.loads(json_match.group(0))
+                                self.logger.info("✅ Claude JSON extracted via regex")
+                            else:
+                                raise e2
                 else:
                     # No JSON found, raise error
                     raise json.JSONDecodeError("No JSON object found", content, 0)
@@ -737,6 +849,20 @@ Respond ONLY with valid JSON, no additional text."""
             except json.JSONDecodeError as e:
                 self.logger.error(f"Failed to parse Claude response as JSON: {e}")
                 self.logger.debug(f"Raw response (first 500 chars): {content[:500]}")
+
+                # Send to Sentry with full context
+                import sentry_sdk
+                with sentry_sdk.push_scope() as scope:
+                    scope.set_context("claude_json_parsing_error", {
+                        "raw_content": content[:500],
+                        "parse_error": str(e),
+                        "error_position": f"line {e.lineno} column {e.colno}" if hasattr(e, 'lineno') else "unknown"
+                    })
+                    sentry_sdk.capture_message(
+                        f"Claude JSON parsing failed: {e}",
+                        level="error"
+                    )
+
                 raise RuntimeError(f"Claude returned invalid JSON: {e}")
 
         except Exception as e:

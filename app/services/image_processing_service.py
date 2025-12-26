@@ -36,25 +36,31 @@ class ImageProcessingService:
     async def classify_images(
         self,
         extracted_images: List[Dict[str, Any]],
-        confidence_threshold: float = 0.6,  # ✅ OPTIMIZED: Lowered from 0.7 to reduce Claude calls
-        primary_model: str = "meta-llama/Llama-4-Scout-17B-16E-Instruct",
-        validation_model: str = "claude-sonnet-4-20250514",
+        confidence_threshold: float = 0.6,  # ✅ OPTIMIZED: Lowered from 0.7 to reduce validation calls
+        primary_model: str = "Qwen/Qwen3-VL-8B-Instruct",  # ✅ NEW: Qwen3-VL-8B (fast, cost-effective)
+        validation_model: str = "Qwen/Qwen3-VL-32B-Instruct",  # ✅ NEW: Qwen3-VL-32B (high accuracy)
         batch_size: int = 15  # ✅ NEW: Process images in batches to prevent OOM
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
-        Classify images as material or non-material using Llama Vision + Claude validation.
+        Classify images as material or non-material using Qwen Vision models.
+
+        SUPPORTED MODELS:
+        - Qwen/Qwen3-VL-8B-Instruct: Fast, cost-effective ($0.10/1M tokens)
+        - Qwen/Qwen3-VL-32B-Instruct: High accuracy ($0.50/1M tokens)
+        - meta-llama/Llama-4-Scout-17B-16E-Instruct: Alternative vision model
+        - claude-sonnet-4-20250514: Claude Sonnet 4.5 (fallback)
 
         MEMORY OPTIMIZATIONS:
         - Processes images in batches (default: 15) to prevent OOM crashes
         - Explicit garbage collection after each batch
         - Cleanup of base64 strings after API calls
-        - Lower confidence threshold (0.6) to reduce expensive Claude validations
+        - Lower confidence threshold (0.6) to reduce expensive validation calls
 
         Args:
             extracted_images: List of extracted image data
-            confidence_threshold: Threshold for Claude validation (default: 0.6, lowered from 0.7)
-            primary_model: Primary classification model (default: Llama Vision)
-            validation_model: Validation model for uncertain cases (default: Claude Sonnet)
+            confidence_threshold: Threshold for validation (default: 0.6)
+            primary_model: Primary classification model (default: Qwen3-VL-8B)
+            validation_model: Validation model for uncertain cases (default: Qwen3-VL-32B)
             batch_size: Number of images to process per batch (default: 15)
 
         Returns:
@@ -65,7 +71,7 @@ class ImageProcessingService:
         logger.info(f"🤖 Starting AI-based image classification for {len(extracted_images)} images...")
         logger.info(f"   Strategy: {primary_model} (fast filter) → {validation_model} (validation for uncertain cases)")
         logger.info(f"   Batch size: {batch_size} images per batch (memory optimization)")
-        logger.info(f"   Confidence threshold: {confidence_threshold} (lower = fewer Claude calls)")
+        logger.info(f"   Confidence threshold: {confidence_threshold} (lower = fewer validation calls)")
 
         # Import AI services
         from app.services.ai_client_service import get_ai_client_service
@@ -75,8 +81,8 @@ class ImageProcessingService:
         ai_service = get_ai_client_service()
         together_api_key = os.getenv('TOGETHER_API_KEY')
 
-        async def classify_image_with_llama(image_path: str) -> Dict[str, Any]:
-            """Fast classification using Llama Vision (TogetherAI)."""
+        async def classify_image_with_vision_model(image_path: str, model: str) -> Dict[str, Any]:
+            """Fast classification using vision model (Qwen, Llama, etc via TogetherAI)."""
             image_bytes = None
             image_base64 = None
             try:
@@ -99,7 +105,7 @@ Respond ONLY with JSON:
                             "Content-Type": "application/json"
                         },
                         json={
-                            "model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+                            "model": model,
                             "messages": [{
                                 "role": "user",
                                 "content": [
@@ -115,20 +121,24 @@ Respond ONLY with JSON:
                     result_text = response.json()['choices'][0]['message']['content']
                     result = json.loads(result_text)
 
+                    # Extract model name for logging
+                    model_short = model.split('/')[-1] if '/' in model else model
+
                     return {
                         'is_material': result.get('is_material', False),
                         'confidence': result.get('confidence', 0.5),
                         'reason': result.get('reason', 'Unknown'),
-                        'model': 'llama'
+                        'model': model_short
                     }
 
             except Exception as e:
-                logger.warning(f"⚠️ Llama classification failed for {image_path}: {e}")
+                logger.warning(f"⚠️ Vision model classification failed for {image_path}: {e}")
+                model_short = model.split('/')[-1] if '/' in model else model
                 return {
                     'is_material': False,
                     'confidence': 0.0,
-                    'reason': f'Llama failed: {str(e)}',
-                    'model': 'llama_failed'
+                    'reason': f'{model_short} failed: {str(e)}',
+                    'model': f'{model_short}_failed'
                 }
             finally:
                 # ✅ NEW: Explicit cleanup to free memory
@@ -204,18 +214,22 @@ Respond ONLY with this JSON format:
             if not image_path or not os.path.exists(image_path):
                 return None
 
-            # STAGE 1: Fast Llama classification
+            # STAGE 1: Fast primary model classification
             async with llama_semaphore:
-                llama_result = await classify_image_with_llama(image_path)
+                primary_result = await classify_image_with_vision_model(image_path, primary_model)
 
-            # STAGE 2: If confidence is low (< threshold), validate with Claude
-            if llama_result['confidence'] < confidence_threshold:
-                logger.debug(f"   🔍 Low confidence ({llama_result['confidence']:.2f}) - validating with Claude: {img_data.get('filename')}")
+            # STAGE 2: If confidence is low (< threshold), validate with secondary model
+            if primary_result['confidence'] < confidence_threshold:
+                logger.debug(f"   🔍 Low confidence ({primary_result['confidence']:.2f}) - validating with {validation_model}: {img_data.get('filename')}")
                 async with claude_semaphore:
-                    claude_result = await validate_with_claude(image_path)
-                img_data['ai_classification'] = claude_result
+                    # Use Claude or Qwen-32B for validation
+                    if 'claude' in validation_model.lower():
+                        validation_result = await validate_with_claude(image_path)
+                    else:
+                        validation_result = await classify_image_with_vision_model(image_path, validation_model)
+                img_data['ai_classification'] = validation_result
             else:
-                img_data['ai_classification'] = llama_result
+                img_data['ai_classification'] = primary_result
 
             return img_data
 

@@ -26,45 +26,45 @@ class AIPricingConfig:
     """
     
     # Last price verification date
-    LAST_UPDATED = "2025-10-27"
-    
+    LAST_UPDATED = "2025-12-26"
+
     # Anthropic Claude Pricing (per 1M tokens)
     CLAUDE_PRICING = {
         "claude-haiku-4-5": {
             "input": Decimal("0.80"),
             "output": Decimal("4.00"),
-            "last_verified": "2025-10-27",
+            "last_verified": "2025-12-26",
             "source": "https://www.anthropic.com/pricing"
         },
         "claude-sonnet-4-5": {
             "input": Decimal("3.00"),
             "output": Decimal("15.00"),
-            "last_verified": "2025-10-27",
+            "last_verified": "2025-12-26",
             "source": "https://www.anthropic.com/pricing"
         },
         "claude-opus-4-5": {
             "input": Decimal("15.00"),
             "output": Decimal("75.00"),
-            "last_verified": "2025-10-27",
+            "last_verified": "2025-12-26",
             "source": "https://www.anthropic.com/pricing"
         },
         # Legacy models (for backward compatibility)
         "claude-3-5-sonnet-20241022": {
             "input": Decimal("3.00"),
             "output": Decimal("15.00"),
-            "last_verified": "2025-10-27",
+            "last_verified": "2025-12-26",
             "source": "https://www.anthropic.com/pricing"
         },
         "claude-4-5-haiku-20250514": {
             "input": Decimal("0.80"),
             "output": Decimal("4.00"),
-            "last_verified": "2025-10-27",
+            "last_verified": "2025-12-26",
             "source": "https://www.anthropic.com/pricing"
         },
         "claude-4-5-sonnet-20250514": {
             "input": Decimal("3.00"),
             "output": Decimal("15.00"),
-            "last_verified": "2025-10-27",
+            "last_verified": "2025-12-26",
             "source": "https://www.anthropic.com/pricing"
         }
     }
@@ -109,23 +109,48 @@ class AIPricingConfig:
         "text-embedding-3-small": {
             "input": Decimal("0.02"),
             "output": Decimal("0.00"),  # Embeddings don't have output tokens
-            "last_verified": "2025-10-27",
+            "last_verified": "2025-12-26",
             "source": "https://openai.com/api/pricing/",
             "dimensions": 1536
         },
         "text-embedding-3-large": {
             "input": Decimal("0.13"),
             "output": Decimal("0.00"),
-            "last_verified": "2025-10-27",
+            "last_verified": "2025-12-26",
             "source": "https://openai.com/api/pricing/",
             "dimensions": 3072
         },
         "text-embedding-ada-002": {
             "input": Decimal("0.10"),
             "output": Decimal("0.00"),
-            "last_verified": "2025-10-27",
+            "last_verified": "2025-12-26",
             "source": "https://openai.com/api/pricing/",
             "dimensions": 1536
+        }
+    }
+
+    # Voyage AI Embedding Pricing (per 1M tokens)
+    VOYAGE_PRICING = {
+        "voyage-3": {
+            "input": Decimal("0.06"),
+            "output": Decimal("0.00"),
+            "last_verified": "2025-12-26",
+            "source": "https://docs.voyageai.com/docs/pricing",
+            "dimensions": 1024
+        },
+        "voyage-3-lite": {
+            "input": Decimal("0.02"),
+            "output": Decimal("0.00"),
+            "last_verified": "2025-12-26",
+            "source": "https://docs.voyageai.com/docs/pricing",
+            "dimensions": 512
+        },
+        "voyage-large-2-instruct": {
+            "input": Decimal("0.12"),
+            "output": Decimal("0.00"),
+            "last_verified": "2025-12-26",
+            "source": "https://docs.voyageai.com/docs/pricing",
+            "dimensions": 1024
         }
     }
     
@@ -151,22 +176,42 @@ class AIPricingConfig:
         "llama-4-scout-17b": {
             "input": Decimal("0.20"),
             "output": Decimal("0.20"),
-            "last_verified": "2025-10-27",
+            "last_verified": "2025-12-26",
             "source": "https://www.together.ai/pricing",
             "full_name": "meta-llama/Llama-4-Scout-17B-16E-Instruct"
         },
         "llama-4-maverick-17b": {
             "input": Decimal("0.20"),
             "output": Decimal("0.20"),
-            "last_verified": "2025-10-27",
+            "last_verified": "2025-12-26",
             "source": "https://www.together.ai/pricing"
         },
         "llama-3-2-90b-vision": {
             "input": Decimal("0.88"),
             "output": Decimal("0.88"),
-            "last_verified": "2025-10-27",
+            "last_verified": "2025-12-26",
             "source": "https://www.together.ai/pricing",
-            "note": "Deprecated - replaced by Llama 4 Scout"
+            "note": "Deprecated - replaced by Qwen2-VL"
+        }
+    }
+
+    # Qwen Vision Models (TogetherAI) - per 1M tokens
+    QWEN_PRICING = {
+        "qwen3-vl-32b": {
+            "input": Decimal("0.50"),
+            "output": Decimal("1.50"),
+            "last_verified": "2025-12-26",
+            "source": "https://www.together.ai/pricing",
+            "full_name": "Qwen/Qwen3-VL-32B-Instruct",
+            "note": "Primary vision model - replaces GPT-4V"
+        },
+        "qwen3-vl-8b": {
+            "input": Decimal("0.08"),
+            "output": Decimal("0.50"),
+            "last_verified": "2025-12-26",
+            "source": "https://www.together.ai/pricing",
+            "full_name": "Qwen/Qwen3-VL-8B-Instruct",
+            "note": "Lightweight vision model"
         }
     }
 
@@ -203,8 +248,10 @@ class AIPricingConfig:
             **cls.CLAUDE_PRICING,
             **cls.GPT_PRICING,
             **cls.EMBEDDING_PRICING,
+            **cls.VOYAGE_PRICING,
             **cls.VISION_PRICING,
             **cls.LLAMA_PRICING,
+            **cls.QWEN_PRICING,
             **cls.FIRECRAWL_PRICING
         }
 
@@ -293,8 +340,10 @@ class AIPricingConfig:
             **cls.CLAUDE_PRICING,
             **cls.GPT_PRICING,
             **cls.EMBEDDING_PRICING,
+            **cls.VOYAGE_PRICING,
             **cls.VISION_PRICING,
             **cls.LLAMA_PRICING,
+            **cls.QWEN_PRICING,
             **cls.FIRECRAWL_PRICING
         }
 

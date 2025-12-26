@@ -166,13 +166,22 @@ class Settings(BaseSettings):
     database_max_overflow: int = Field(default=20, env="DATABASE_MAX_OVERFLOW")
     database_timeout: int = Field(default=30, env="DATABASE_TIMEOUT")
 
-    # OpenAI API Settings
+    # OpenAI API Settings (Legacy - kept for backward compatibility)
     openai_api_key: str = Field(default="", env="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-4o", env="OPENAI_MODEL")
     openai_embedding_model: str = Field(default="text-embedding-3-small", env="OPENAI_EMBEDDING_MODEL")
     openai_max_tokens: int = Field(default=4096, env="OPENAI_MAX_TOKENS")
     openai_temperature: float = Field(default=0.1, env="OPENAI_TEMPERATURE")
     openai_timeout: int = Field(default=30, env="OPENAI_TIMEOUT")
+
+    # Voyage AI Settings (Primary embedding provider)
+    # API key set via GitHub Secrets: VOYAGE_API_KEY
+    voyage_api_key: str = Field(default="", env="VOYAGE_API_KEY")
+    voyage_model: str = Field(default="voyage-3.5", env="VOYAGE_MODEL")
+    voyage_embedding_dimension: int = Field(default=1024, env="VOYAGE_EMBEDDING_DIMENSION")
+    voyage_timeout: int = Field(default=30, env="VOYAGE_TIMEOUT")
+    voyage_enabled: bool = Field(default=True, env="VOYAGE_ENABLED")
+    voyage_fallback_to_openai: bool = Field(default=True, env="VOYAGE_FALLBACK_TO_OPENAI")
 
     # LlamaIndex RAG Settings
     llamaindex_embedding_model: str = Field(
@@ -304,8 +313,12 @@ class Settings(BaseSettings):
         env="TOGETHER_BASE_URL"
     )
     together_model: str = Field(
-        default="meta-llama/Llama-4-Scout-17B-16E-Instruct",
+        default="Qwen/Qwen3-VL-8B-Instruct",
         env="TOGETHER_MODEL"
+    )
+    together_validation_model: str = Field(
+        default="Qwen/Qwen3-VL-32B-Instruct",
+        env="TOGETHER_VALIDATION_MODEL"
     )
     together_max_tokens: int = Field(
         default=4096,

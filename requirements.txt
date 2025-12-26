@@ -31,6 +31,7 @@ imageio>=2.31.0,<2.32.0
 # AI/ML API clients - exact compatible versions
 openai==1.51.0
 anthropic==0.23.1
+voyageai==0.3.7  # Voyage AI for text embeddings (primary provider)
 
 # LlamaIndex for RAG capabilities - VERIFIED compatible versions (FINAL)
 llama-index==0.10.57

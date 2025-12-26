@@ -50,15 +50,31 @@ class ClipImageRequest(BaseModel):
 
 
 class ClipTextRequest(BaseModel):
-    """Request model for CLIP text embedding generation."""
-    
+    """Request model for text embedding generation (Voyage AI / OpenAI)."""
+
     text: str = Field(
         ...,
         description="Text to generate embedding for"
     )
     model: str = Field(
-        default="clip-vit-base-patch32",
-        description="CLIP model to use"
+        default="voyage-3.5",
+        description="Embedding model to use (voyage-3.5 or text-embedding-3-small)"
+    )
+    input_type: str = Field(
+        default="document",
+        description="Type of input: 'document' for indexing, 'query' for search (Voyage AI only)"
+    )
+    dimensions: int = Field(
+        default=1024,
+        description="Embedding dimensions (256, 512, 1024, 2048 for Voyage; 512, 1536 for OpenAI)"
+    )
+    truncation: bool = Field(
+        default=True,
+        description="Whether to truncate text to fit context length (Voyage AI only)"
+    )
+    output_dtype: str = Field(
+        default="float",
+        description="Output data type: 'float', 'int8', 'uint8', 'binary', 'ubinary' (Voyage AI only)"
     )
     normalize: bool = Field(
         default=True,
@@ -188,25 +204,27 @@ async def generate_clip_text_embedding(
     embedding_service: RealEmbeddingsService = Depends(get_embedding_service)
 ) -> EmbeddingResponse:
     """
-    **📝 Text Embedding for Multimodal Search**
+    **📝 Text Embedding - Powered by Voyage AI**
 
-    Generate text embedding for text-to-image similarity search.
-    Note: This endpoint uses OpenAI text embeddings (1536D), not SigLIP.
-    For visual embeddings, use the /clip-image endpoint.
+    Generate text embedding using Voyage AI (primary) with OpenAI fallback.
+    Supports input_type optimization for better retrieval quality.
 
     ## 🎯 Use Cases
 
-    - Text-to-image search ("find images of oak furniture")
-    - Multimodal search (combine text and image queries)
-    - Cross-modal retrieval
-    - Semantic image tagging
+    - Document indexing (use input_type="document")
+    - Search queries (use input_type="query")
+    - Semantic search and retrieval
+    - Text-to-image search
+    - Multimodal search
 
     ## 📝 Request Example
 
     ```json
     {
       "text": "modern minimalist oak dining table",
-      "model": "text-embedding-3-small"
+      "model": "voyage-3.5",
+      "input_type": "document",
+      "dimensions": 1024
     }
     ```
 
@@ -215,27 +233,37 @@ async def generate_clip_text_embedding(
     ```json
     {
       "embedding": [0.234, -0.567, 0.891, ...],
-      "dimension": 1536,
-      "model": "text-embedding-3-small",
-      "processing_time_ms": 123.4
+      "dimensions": 1024,
+      "model": "voyage-3.5",
+      "success": true
     }
     ```
 
     ## 📊 Technical Details
 
-    - **Model**: OpenAI text-embedding-3-small
-    - **Dimension**: 1536
+    - **Primary Model**: Voyage AI voyage-3.5
+    - **Fallback Model**: OpenAI text-embedding-3-small
+    - **Default Dimension**: 1024 (Voyage AI)
+    - **Supported Dimensions**: 256, 512, 1024, 2048 (Voyage) or 512, 1536 (OpenAI)
+    - **Input Types**: "document" (for indexing), "query" (for search)
     - **Normalization**: L2 normalized (unit vector)
     - **Distance Metric**: Cosine similarity
     - **Processing Time**: 100-300ms
 
     ## 💡 Usage Pattern
 
-    1. Generate text embedding using this endpoint
-    2. Search for similar content using cosine similarity:
+    1. For indexing documents:
+       ```json
+       {"text": "...", "input_type": "document", "dimensions": 1024}
+       ```
+    2. For search queries:
+       ```json
+       {"text": "...", "input_type": "query", "dimensions": 1024}
+       ```
+    3. Search using cosine similarity:
        ```sql
        SELECT * FROM chunks
-       ORDER BY text_embedding_1536 <=> '[your_embedding]'
+       ORDER BY text_embedding <=> '[your_embedding]'
        LIMIT 10
        ```
 
@@ -243,19 +271,23 @@ async def generate_clip_text_embedding(
 
     - **400 Bad Request**: Empty or invalid text
     - **500 Internal Server Error**: Embedding generation failed
-    - **503 Service Unavailable**: OpenAI API not available
+    - **503 Service Unavailable**: Both Voyage AI and OpenAI unavailable
 
     ## 📏 Limits
 
-    - **Max text length**: 8191 tokens
+    - **Max text length**: 8000 tokens (Voyage AI), 8191 tokens (OpenAI)
     - **Rate limit**: 100 requests/minute
     """
     try:
-        logger.info(f"Generating text embedding with model: {request.model}")
+        logger.info(f"Generating text embedding with model: {request.model}, input_type: {request.input_type}, dimensions: {request.dimensions}")
 
-        # Generate text embedding
+        # Generate text embedding with Voyage AI (primary) or OpenAI (fallback)
         embedding = await embedding_service._generate_text_embedding(
-            text=request.text
+            text=request.text,
+            dimensions=request.dimensions,
+            input_type=request.input_type,
+            truncation=request.truncation,
+            output_dtype=request.output_dtype
         )
 
         if not embedding:
@@ -268,7 +300,7 @@ async def generate_clip_text_embedding(
             success=True,
             embedding=embedding,
             dimensions=len(embedding),
-            model="text-embedding-3-small"
+            model=request.model
         )
         
     except HTTPException:

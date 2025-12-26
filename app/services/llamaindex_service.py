@@ -2053,7 +2053,30 @@ class LlamaIndexService:
                                     self.logger.warning(f"Failed to save embedding for chunk {chunk_id}: {emb_error}")
 
                         except Exception as e:
-                            self.logger.error(f"Failed to save chunk {node_id}: {e}")
+                            error_str = str(e)
+                            # OBSOLETE: This error should no longer occur after migration to GIN indexes
+                            # The btree TSV index has been replaced with GIN indexes that have no size limit
+                            # If this error still appears, it indicates the migration wasn't applied
+                            if "54000" in error_str or "index row size" in error_str or "exceeds btree" in error_str:
+                                self.logger.error(
+                                    f"❌ CRITICAL: Btree index size error still occurring! Migration may not be applied. "
+                                    f"Chunk {node_id} (content length: {len(node.text)} chars). "
+                                    f"Error: {error_str[:200]}"
+                                )
+                                # Send to Sentry - this shouldn't happen after migration
+                                import sentry_sdk
+                                with sentry_sdk.push_scope() as scope:
+                                    scope.set_context("index_error", {
+                                        "chunk_id": node_id,
+                                        "content_length": len(node.text),
+                                        "error": error_str[:500]
+                                    })
+                                    sentry_sdk.capture_message(
+                                        "Btree index error after migration - check if migration was applied",
+                                        level="error"
+                                    )
+                            else:
+                                self.logger.error(f"Failed to save chunk {node_id}: {e}")
 
                     self.logger.info(f"✅ Saved {chunks_saved}/{total_nodes} chunks to database")
                     self.logger.info(f"✅ Saved {embeddings_saved}/{total_nodes} embeddings to database")

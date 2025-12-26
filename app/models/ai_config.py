@@ -22,20 +22,28 @@ class AIModelConfig(BaseModel):
         description="Fallback visual embedding model (CLIP)"
     )
     
-    # Text Embedding Model
+    # Text Embedding Model (Voyage AI primary, OpenAI fallback)
     text_embedding_model: str = Field(
-        default="text-embedding-3-small",
-        description="OpenAI text embedding model"
+        default="voyage-3.5",
+        description="Text embedding model (Voyage AI primary, OpenAI fallback)"
+    )
+    text_embedding_dimensions: int = Field(
+        default=1024,
+        description="Text embedding dimensions (1024 for Voyage AI, 1536 for OpenAI)"
+    )
+    text_embedding_input_type: str = Field(
+        default="document",
+        description="Input type for Voyage AI: 'document' for indexing, 'query' for search"
     )
     
-    # Image Classification Models (Llama primary, Claude validation)
+    # Image Classification Models (Qwen primary, Qwen/Claude validation)
     classification_primary_model: str = Field(
-        default="meta-llama/Llama-4-Scout-17B-16E-Instruct",
-        description="Primary image classification model (Llama Vision)"
+        default="Qwen/Qwen3-VL-8B-Instruct",
+        description="Primary image classification model (Qwen3-VL-8B, Llama Vision, etc.)"
     )
     classification_validation_model: str = Field(
-        default="claude-sonnet-4-5-20250929",
-        description="Validation model for low-confidence classifications (Claude)"
+        default="Qwen/Qwen3-VL-32B-Instruct",
+        description="Validation model for low-confidence classifications (Qwen3-VL-32B, Claude, etc.)"
     )
     classification_confidence_threshold: float = Field(
         default=0.7,
@@ -107,7 +115,9 @@ class AIModelConfig(BaseModel):
             "example": {
                 "visual_embedding_primary": "google/siglip-so400m-patch14-384",
                 "visual_embedding_fallback": "openai/clip-vit-base-patch32",
-                "text_embedding_model": "text-embedding-3-small",
+                "text_embedding_model": "voyage-3.5",
+                "text_embedding_dimensions": 1024,
+                "text_embedding_input_type": "document",
                 "classification_primary_model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
                 "classification_validation_model": "claude-sonnet-4-20250514",
                 "classification_confidence_threshold": 0.7,

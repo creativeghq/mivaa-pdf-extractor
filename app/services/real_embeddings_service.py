@@ -1,10 +1,15 @@
 """
-Real Embeddings Service - Step 4 Implementation
+Real Embeddings Service - Step 4 Implementation (Updated for Voyage AI)
 
 Generates 3 real embedding types using AI models:
-1. Text (1536D) - OpenAI text-embedding-3-small
+1. Text (1024D) - Voyage AI voyage-3.5 (primary) with OpenAI fallback
 2. Visual Embeddings (1152D) - Google SigLIP ViT-SO400M
-3. Multimodal Fusion (2688D) - Combined text+visual (1536D + 1152D = 2688D)
+3. Multimodal Fusion (2176D) - Combined text+visual (1024D + 1152D = 2176D)
+
+Text Embedding Strategy:
+- Primary: Voyage AI voyage-3.5 (1024D default, supports 256/512/1024/2048)
+- Supports input_type parameter: "document" for indexing, "query" for search
+- Fallback: OpenAI text-embedding-3-small (1536D) if Voyage fails
 
 Visual Embedding Strategy:
 - Uses Google SigLIP ViT-SO400M exclusively (1152D embeddings)
@@ -30,6 +35,7 @@ from app.services.supabase_client import SupabaseClient
 logger = logging.getLogger(__name__)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY", "")  # From GitHub Secrets / Deno.env
 TOGETHER_AI_API_KEY = os.getenv("TOGETHER_AI_API_KEY", "")
 MIVAA_GATEWAY_URL = os.getenv("MIVAA_GATEWAY_URL", "http://localhost:3000")
 
@@ -39,9 +45,14 @@ class RealEmbeddingsService:
     Generates 3 real embedding types using AI models.
 
     This service provides:
-    - Text embeddings via OpenAI (1536D)
+    - Text embeddings via Voyage AI (1024D primary) with OpenAI fallback (1536D)
     - Visual embeddings (1152D) - Google SigLIP ViT-SO400M exclusively
-    - Multimodal fusion (2688D) - combined text+visual (1536D + 1152D = 2688D)
+    - Multimodal fusion (2176D) - combined text+visual (1024D + 1152D = 2176D)
+
+    Text Embedding Strategy:
+    - Primary: Voyage AI voyage-3.5 (1024D default, supports 256/512/1024/2048)
+    - Supports input_type: "document" for indexing, "query" for search
+    - Fallback: OpenAI text-embedding-3-small (1536D) if Voyage fails
 
     Visual Embedding Strategy:
     - Uses SigLIP exclusively for all visual embeddings (1152D)
@@ -56,6 +67,7 @@ class RealEmbeddingsService:
         self.supabase = supabase_client
         self.logger = logger
         self.openai_api_key = OPENAI_API_KEY
+        self.voyage_api_key = VOYAGE_API_KEY
         self.together_api_key = TOGETHER_AI_API_KEY
         self.mivaa_gateway_url = MIVAA_GATEWAY_URL
         self.config = config
@@ -220,38 +232,168 @@ class RealEmbeddingsService:
         self,
         text: str,
         job_id: Optional[str] = None,
-        dimensions: int = 1536
+        dimensions: int = 1024,
+        input_type: str = "document",
+        truncation: bool = True,
+        output_dtype: str = "float"
     ) -> Optional[List[float]]:
-        """Generate text embedding using OpenAI with caching support.
+        """Generate text embedding using Voyage AI (primary) with OpenAI fallback.
 
         Args:
             text: Text to embed
             job_id: Optional job ID for logging
-            dimensions: Embedding dimensions (512 or 1536, default 1536)
+            dimensions: Embedding dimensions (256, 512, 1024, 2048 for Voyage; 512, 1536 for OpenAI)
+            input_type: "document" for indexing, "query" for search (Voyage AI only)
+            truncation: Whether to truncate text to fit context length (Voyage AI only, default: True)
+            output_dtype: Output data type - 'float', 'int8', 'uint8', 'binary', 'ubinary' (Voyage AI only)
+
+        Returns:
+            List of floats representing the embedding, or None if failed
         """
         start_time = time.time()
+
+        # Try Voyage AI first if enabled and API key available
+        voyage_enabled = self.config and getattr(self.config, 'voyage_enabled', True)
+        if self.voyage_api_key and voyage_enabled:
+            try:
+                # Check cache first
+                model_name = f"voyage-3.5-{dimensions}d-{input_type}"
+                if self._embedding_cache:
+                    cached_embedding = await self._embedding_cache.get(text, model_name)
+                    if cached_embedding is not None:
+                        self.logger.debug(f"✅ Cache hit for Voyage embedding ({dimensions}D, {input_type})")
+                        return cached_embedding.tolist()
+
+                # Call Voyage AI API
+                async with httpx.AsyncClient() as client:
+                    request_data = {
+                        "model": "voyage-3.5",
+                        "input": [text],  # Voyage AI handles truncation
+                        "input_type": input_type,
+                        "truncation": truncation
+                    }
+
+                    # Add optional parameters
+                    if dimensions != 1024:
+                        request_data["output_dimension"] = dimensions
+                    if output_dtype != "float":
+                        request_data["output_dtype"] = output_dtype
+
+                    response = await client.post(
+                        "https://api.voyageai.com/v1/embeddings",
+                        headers={
+                            "Authorization": f"Bearer {self.voyage_api_key}",
+                            "Content-Type": "application/json"
+                        },
+                        json=request_data,
+                        timeout=30.0
+                    )
+
+                    if response.status_code == 200:
+                        data = response.json()
+                        embedding = data["data"][0]["embedding"]
+
+                        # Cache the result
+                        if self._embedding_cache:
+                            await self._embedding_cache.set(text, model_name, np.array(embedding))
+
+                        # Log AI call with proper cost calculation
+                        latency_ms = int((time.time() - start_time) * 1000)
+                        usage = data.get("usage", {})
+                        input_tokens = usage.get("total_tokens", 0)
+
+                        # Voyage AI Pricing (as of Dec 2024)
+                        # voyage-3.5: $0.06 per 1M tokens
+                        # voyage-3-large: $0.18 per 1M tokens
+                        cost_per_million = 0.06  # voyage-3.5
+                        cost = (input_tokens / 1_000_000) * cost_per_million
+
+                        await self.ai_logger.log_ai_call(
+                            task="text_embedding_generation",
+                            model=f"voyage-3.5-{dimensions}d",
+                            input_tokens=input_tokens,
+                            output_tokens=0,
+                            cost=cost,
+                            latency_ms=latency_ms,
+                            confidence_score=0.95,
+                            confidence_breakdown={
+                                "model_confidence": 0.98,
+                                "completeness": 1.0,
+                                "consistency": 0.95,
+                                "validation": 0.90
+                            },
+                            action="use_ai_result",
+                            job_id=job_id,
+                            metadata={
+                                "input_type": input_type,
+                                "dimensions": dimensions,
+                                "truncation": truncation,
+                                "output_dtype": output_dtype,
+                                "provider": "voyage_ai"
+                            }
+                        )
+
+                        self.logger.info(f"✅ Generated Voyage AI embedding ({dimensions}D, {input_type})")
+                        return embedding
+                    else:
+                        raise Exception(f"Voyage AI API error: {response.status_code}")
+
+            except Exception as e:
+                self.logger.warning(f"Voyage AI failed, falling back to OpenAI: {e}")
+
+                # Log failed Voyage call
+                latency_ms = int((time.time() - start_time) * 1000)
+                await self.ai_logger.log_ai_call(
+                    task="text_embedding_generation",
+                    model=f"voyage-3.5-{dimensions}d",
+                    input_tokens=0,
+                    output_tokens=0,
+                    cost=0.0,
+                    latency_ms=latency_ms,
+                    confidence_score=0.0,
+                    confidence_breakdown={
+                        "model_confidence": 0.0,
+                        "completeness": 0.0,
+                        "consistency": 0.0,
+                        "validation": 0.0
+                    },
+                    action="fallback_to_openai",
+                    job_id=job_id,
+                    fallback_reason=f"Voyage AI error: {str(e)}",
+                    error_message=str(e)
+                )
+
+                # If fallback disabled, raise the error
+                if self.config and not getattr(self.config, 'voyage_fallback_to_openai', True):
+                    raise
+
+        # Fallback to OpenAI (or primary if Voyage disabled)
         try:
             if not self.openai_api_key:
                 self.logger.warning("OpenAI API key not available")
                 return None
 
-            # Check cache first (Phase 1 optimization)
-            model_name = f"text-embedding-3-small-{dimensions}d"
+            # Use 1536 for OpenAI if dimension was 1024 (Voyage default)
+            openai_dimensions = 1536 if dimensions == 1024 else dimensions
+
+            # Check cache first
+            model_name = f"text-embedding-3-small-{openai_dimensions}d"
             if self._embedding_cache:
                 cached_embedding = await self._embedding_cache.get(text, model_name)
                 if cached_embedding is not None:
-                    self.logger.debug(f"✅ Cache hit for text embedding ({dimensions}D)")
+                    self.logger.debug(f"✅ Cache hit for OpenAI embedding ({openai_dimensions}D)")
                     return cached_embedding.tolist()
 
+            # Call OpenAI API
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     "https://api.openai.com/v1/embeddings",
                     headers={"Authorization": f"Bearer {self.openai_api_key}"},
                     json={
                         "model": "text-embedding-3-small",
-                        "input": text[:8191],  # OpenAI limit
+                        "input": text[:8191],
                         "encoding_format": "float",
-                        "dimensions": dimensions  # Support custom dimensions
+                        "dimensions": openai_dimensions
                     },
                     timeout=30.0
                 )
@@ -260,7 +402,7 @@ class RealEmbeddingsService:
                     data = response.json()
                     embedding = data["data"][0]["embedding"]
 
-                    # Cache the embedding (Phase 1 optimization)
+                    # Cache the result
                     if self._embedding_cache:
                         await self._embedding_cache.set(text, model_name, np.array(embedding))
 
@@ -269,40 +411,32 @@ class RealEmbeddingsService:
                     usage = data.get("usage", {})
                     input_tokens = usage.get("prompt_tokens", 0)
 
-                    confidence_breakdown = {
-                        "model_confidence": 0.98,
-                        "completeness": 1.0,
-                        "consistency": 0.95,
-                        "validation": 0.90
-                    }
-                    confidence_score = (
-                        0.30 * confidence_breakdown["model_confidence"] +
-                        0.30 * confidence_breakdown["completeness"] +
-                        0.25 * confidence_breakdown["consistency"] +
-                        0.15 * confidence_breakdown["validation"]
-                    )
-
-                    # CRITICAL FIX: Use log_gpt_call instead of log_openai_call
                     await self.ai_logger.log_gpt_call(
                         task="text_embedding_generation",
                         model="text-embedding-3-small",
                         response=data,
                         latency_ms=latency_ms,
-                        confidence_score=confidence_score,
-                        confidence_breakdown=confidence_breakdown,
+                        confidence_score=0.95,
+                        confidence_breakdown={
+                            "model_confidence": 0.98,
+                            "completeness": 1.0,
+                            "consistency": 0.95,
+                            "validation": 0.90
+                        },
                         action="use_ai_result",
                         job_id=job_id
                     )
 
+                    self.logger.info(f"✅ Generated OpenAI embedding ({openai_dimensions}D) - fallback")
                     return embedding
                 else:
                     self.logger.warning(f"OpenAI API error: {response.status_code}")
                     return None
 
         except Exception as e:
-            self.logger.error(f"Text embedding generation failed: {e}")
+            self.logger.error(f"OpenAI embedding generation failed: {e}")
 
-            # Log failed AI call
+            # Log failed OpenAI call
             latency_ms = int((time.time() - start_time) * 1000)
             await self.ai_logger.log_ai_call(
                 task="text_embedding_generation",
@@ -318,14 +452,14 @@ class RealEmbeddingsService:
                     "consistency": 0.0,
                     "validation": 0.0
                 },
-                action="fallback_to_rules",
+                action="fallback_failed",
                 job_id=job_id,
                 fallback_reason=f"OpenAI API error: {str(e)}",
                 error_message=str(e)
             )
 
             return None
-    
+
     async def _generate_visual_embedding(
         self,
         image_url: Optional[str],

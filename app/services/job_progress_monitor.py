@@ -16,18 +16,24 @@ logger = logging.getLogger(__name__)
 
 # Stage-specific timeout thresholds (in seconds)
 # These are realistic timeouts based on actual processing times for different stages
+# Updated 2025-12-26: Increased thresholds to reduce false "stuck job" alerts (MIVAA-7W, MIVAA-7X)
 STAGE_TIMEOUTS = {
     "downloading": 120,              # 2 minutes - file download should be quick
     "extracting_text": 300,          # 5 minutes - text extraction is fast
-    "extracting_images": 1200,       # 20 minutes - image extraction can be slow for large PDFs
-    "generating_embeddings": 1500,   # 25 minutes - CLIP embeddings take time (4 specialized embeddings per image)
-    "product_discovery": 900,        # 15 minutes - Claude API calls for product analysis
-    "chunking": 600,                 # 10 minutes - text chunking and processing
-    "storing_chunks": 600,           # 10 minutes - database operations
-    "image_processing": 1200,        # 20 minutes - same as extracting_images
-    "metadata_extraction": 900,      # 15 minutes - metadata processing
-    "default": 600                   # 10 minutes - fallback for unknown stages
+    "extracting_images": 1800,       # 30 minutes - image extraction can be slow for large PDFs (was 20min)
+    "generating_embeddings": 2400,   # 40 minutes - CLIP embeddings take time (4 specialized embeddings per image) (was 25min)
+    "product_discovery": 1200,       # 20 minutes - Claude API calls for product analysis (was 15min)
+    "focused_extraction": 900,       # 15 minutes - focused text extraction for products (NEW - fixes MIVAA-7W)
+    "chunking": 900,                 # 15 minutes - text chunking and processing (was 10min)
+    "storing_chunks": 900,           # 15 minutes - database operations (was 10min)
+    "image_processing": 1800,        # 30 minutes - same as extracting_images (was 20min - fixes MIVAA-7X)
+    "metadata_extraction": 1200,     # 20 minutes - metadata processing (was 15min)
+    "default": 900                   # 15 minutes - fallback for unknown stages (was 10min)
 }
+
+# Slow stage warning threshold (in seconds)
+# Warn if a stage takes longer than this, but don't mark as stuck
+SLOW_STAGE_THRESHOLD = 300  # 5 minutes
 
 
 class JobProgressMonitor:
@@ -97,26 +103,31 @@ class JobProgressMonitor:
         self.current_stage = stage
         self.current_stage_start = datetime.utcnow()
 
-        # CRITICAL FIX: Only send to Sentry if stage took unusually long (> 5 minutes)
-        # Normal stage transitions create noise (MIVAA-39, 38, 35...)
-        if time_in_previous_stage > 300:  # 5 minutes
+        # CRITICAL FIX: Only send to Sentry if stage took unusually long
+        # Use stage-specific threshold or SLOW_STAGE_THRESHOLD (5 minutes)
+        # This reduces false alerts for legitimately slow stages (MIVAA-7W)
+        previous_stage_name = self.stage_history[-1]["stage"] if self.stage_history else "start"
+        stage_threshold = STAGE_TIMEOUTS.get(previous_stage_name, SLOW_STAGE_THRESHOLD)
+
+        if time_in_previous_stage > stage_threshold:
             with sentry_sdk.push_scope() as scope:
                 scope.set_tag("job_id", self.job_id)
                 scope.set_tag("document_id", self.document_id)
                 scope.set_tag("stage", stage)
-                scope.set_tag("previous_stage", self.stage_history[-1]["stage"] if self.stage_history else "start")
+                scope.set_tag("previous_stage", previous_stage_name)
                 scope.set_context("stage_transition", {
-                    "from": self.stage_history[-1]["stage"] if self.stage_history else "start",
+                    "from": previous_stage_name,
                     "to": stage,
                     "duration_seconds": time_in_previous_stage,
                     "duration_minutes": round(time_in_previous_stage / 60, 2),
+                    "threshold_minutes": round(stage_threshold / 60, 2),
                     "details": details or {},
                     "timestamp": datetime.utcnow().isoformat()
                 })
 
-                # Only alert on slow stage transitions
+                # Only alert on slow stage transitions that exceed threshold
                 sentry_sdk.capture_message(
-                    f"⚠️ SLOW STAGE: {self.current_stage if self.stage_history else 'start'} → {stage} took {time_in_previous_stage/60:.1f} minutes",
+                    f"⚠️ SLOW STAGE: {previous_stage_name} → {stage} took {time_in_previous_stage/60:.1f} minutes (threshold: {stage_threshold/60:.1f}min)",
                     level="warning"
                 )
         # REMOVED: Normal stage transitions no longer sent to Sentry - reduces noise
@@ -188,13 +199,20 @@ class JobProgressMonitor:
             if time_in_current_stage > stage_timeout:
                 timeout_minutes = stage_timeout / 60
                 actual_minutes = time_in_current_stage / 60
+
+                # ENHANCED LOGGING: Add detailed context to identify if job is truly stuck
                 logger.warning(
-                    f"⚠️ Job {self.job_id} stuck in {self.current_stage} for {actual_minutes:.1f} minutes "
-                    f"(threshold: {timeout_minutes:.1f} minutes)"
+                    f"⚠️ Job {self.job_id} in {self.current_stage} for {actual_minutes:.1f} minutes "
+                    f"(threshold: {timeout_minutes:.1f} minutes)\n"
+                    f"   📊 Progress: {len(self.stage_history)}/{self.total_stages} stages completed\n"
+                    f"   ⏱️  Total time: {total_time/60:.1f} minutes\n"
+                    f"   🔄 Last heartbeat: {datetime.utcnow().isoformat()}"
                 )
+
+                # Send to Sentry with enhanced context
                 sentry_sdk.capture_message(
-                    f"⚠️ STUCK JOB: {self.job_id} in {self.current_stage} for {actual_minutes:.1f} minutes "
-                    f"(threshold: {timeout_minutes:.1f}min)",
+                    f"⚠️ POTENTIAL STUCK JOB: {self.job_id} in {self.current_stage} for {actual_minutes:.1f} minutes "
+                    f"(threshold: {timeout_minutes:.1f}min) - Check if job is making progress or truly stuck",
                     level="warning"
                 )
             else:
