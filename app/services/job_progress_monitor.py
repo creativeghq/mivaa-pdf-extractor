@@ -14,6 +14,22 @@ import sentry_sdk
 logger = logging.getLogger(__name__)
 
 
+# Stage-specific timeout thresholds (in seconds)
+# These are realistic timeouts based on actual processing times for different stages
+STAGE_TIMEOUTS = {
+    "downloading": 120,              # 2 minutes - file download should be quick
+    "extracting_text": 300,          # 5 minutes - text extraction is fast
+    "extracting_images": 1200,       # 20 minutes - image extraction can be slow for large PDFs
+    "generating_embeddings": 1500,   # 25 minutes - CLIP embeddings take time (4 specialized embeddings per image)
+    "product_discovery": 900,        # 15 minutes - Claude API calls for product analysis
+    "chunking": 600,                 # 10 minutes - text chunking and processing
+    "storing_chunks": 600,           # 10 minutes - database operations
+    "image_processing": 1200,        # 20 minutes - same as extracting_images
+    "metadata_extraction": 900,      # 15 minutes - metadata processing
+    "default": 600                   # 10 minutes - fallback for unknown stages
+}
+
+
 class JobProgressMonitor:
     """
     Monitors job progress and reports detailed status every minute.
@@ -61,12 +77,9 @@ class JobProgressMonitor:
             except asyncio.CancelledError:
                 pass
 
-        # Log to both console and Sentry
+        # CRITICAL FIX: Log only, don't send to Sentry (reduces noise)
         logger.info(f"📊 Stopped progress monitoring for job {self.job_id}")
-        sentry_sdk.capture_message(
-            f"📊 Stopped progress monitoring for job {self.job_id}",
-            level="info"
-        )
+        # REMOVED: sentry_sdk.capture_message() - was creating noise in Sentry
         
     def update_stage(self, stage: str, details: Optional[Dict[str, Any]] = None):
         """Update current stage and log transition"""
@@ -84,26 +97,29 @@ class JobProgressMonitor:
         self.current_stage = stage
         self.current_stage_start = datetime.utcnow()
 
-        # Send detailed stage transition to Sentry with full context
-        with sentry_sdk.push_scope() as scope:
-            scope.set_tag("job_id", self.job_id)
-            scope.set_tag("document_id", self.document_id)
-            scope.set_tag("stage", stage)
-            scope.set_tag("previous_stage", self.stage_history[-1]["stage"] if self.stage_history else "start")
-            scope.set_context("stage_transition", {
-                "from": self.stage_history[-1]["stage"] if self.stage_history else "start",
-                "to": stage,
-                "duration_seconds": time_in_previous_stage,
-                "duration_minutes": round(time_in_previous_stage / 60, 2),
-                "details": details or {},
-                "timestamp": datetime.utcnow().isoformat()
-            })
+        # CRITICAL FIX: Only send to Sentry if stage took unusually long (> 5 minutes)
+        # Normal stage transitions create noise (MIVAA-39, 38, 35...)
+        if time_in_previous_stage > 300:  # 5 minutes
+            with sentry_sdk.push_scope() as scope:
+                scope.set_tag("job_id", self.job_id)
+                scope.set_tag("document_id", self.document_id)
+                scope.set_tag("stage", stage)
+                scope.set_tag("previous_stage", self.stage_history[-1]["stage"] if self.stage_history else "start")
+                scope.set_context("stage_transition", {
+                    "from": self.stage_history[-1]["stage"] if self.stage_history else "start",
+                    "to": stage,
+                    "duration_seconds": time_in_previous_stage,
+                    "duration_minutes": round(time_in_previous_stage / 60, 2),
+                    "details": details or {},
+                    "timestamp": datetime.utcnow().isoformat()
+                })
 
-            # Use Sentry's logger API for better integration
-            sentry_sdk.capture_message(
-                f"🔄 Stage Transition: {self.current_stage if self.stage_history else 'start'} → {stage} ({time_in_previous_stage:.1f}s)",
-                level="info"
-            )
+                # Only alert on slow stage transitions
+                sentry_sdk.capture_message(
+                    f"⚠️ SLOW STAGE: {self.current_stage if self.stage_history else 'start'} → {stage} took {time_in_previous_stage/60:.1f} minutes",
+                    level="warning"
+                )
+        # REMOVED: Normal stage transitions no longer sent to Sentry - reduces noise
     
     async def _monitor_loop(self):
         """Monitor loop that reports status every minute"""
@@ -165,17 +181,27 @@ class JobProgressMonitor:
                 "timestamp": datetime.utcnow().isoformat()
             })
 
-            # Alert if stuck in one stage for too long (10 minutes)
-            if time_in_current_stage > 600:
-                logger.warning(f"⚠️ Job {self.job_id} stuck in {self.current_stage} for {time_in_current_stage/60:.1f} minutes")
+            # CRITICAL FIX: Use stage-specific timeouts instead of global 10-minute threshold
+            # This reduces false "stuck job" alerts for legitimately slow stages
+            stage_timeout = STAGE_TIMEOUTS.get(self.current_stage, STAGE_TIMEOUTS["default"])
+
+            if time_in_current_stage > stage_timeout:
+                timeout_minutes = stage_timeout / 60
+                actual_minutes = time_in_current_stage / 60
+                logger.warning(
+                    f"⚠️ Job {self.job_id} stuck in {self.current_stage} for {actual_minutes:.1f} minutes "
+                    f"(threshold: {timeout_minutes:.1f} minutes)"
+                )
                 sentry_sdk.capture_message(
-                    f"⚠️ STUCK JOB: {self.job_id} in {self.current_stage} for {time_in_current_stage/60:.1f} minutes",
+                    f"⚠️ STUCK JOB: {self.job_id} in {self.current_stage} for {actual_minutes:.1f} minutes "
+                    f"(threshold: {timeout_minutes:.1f}min)",
                     level="warning"
                 )
             else:
-                # Regular progress update
-                sentry_sdk.capture_message(
-                    f"📊 Progress Update: Job {self.job_id} - {self.current_stage} ({len(self.stage_history)}/{self.total_stages} stages, {total_time/60:.1f}min total)",
-                    level="info"
+                # Regular progress update - LOG ONLY, don't send to Sentry (reduces noise)
+                logger.debug(
+                    f"📊 Progress Update: Job {self.job_id} - {self.current_stage} "
+                    f"({len(self.stage_history)}/{self.total_stages} stages, {total_time/60:.1f}min total)"
                 )
+                # REMOVED: sentry_sdk.capture_message() for normal progress - was creating noise
 

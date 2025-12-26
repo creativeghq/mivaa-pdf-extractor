@@ -280,8 +280,13 @@ async def process_stage_3_images(
     from asyncio import Semaphore
 
     # Semaphores for concurrency control
-    llama_semaphore = Semaphore(10)  # Max 10 concurrent Llama calls
-    claude_semaphore = Semaphore(3)  # Max 3 concurrent Claude calls
+    # CRITICAL FIX: Reduced from 10 to 3 to prevent HTTP 499 errors and API overload
+    # High concurrency (10) was causing:
+    # - HTTP 499 (Client Closed Request) when timeout guard (30s) killed slow requests
+    # - API rate limiting and 503 errors from Together.ai
+    # - Network congestion from too many parallel large image uploads
+    llama_semaphore = Semaphore(3)  # Max 3 concurrent Llama calls (reduced from 10)
+    claude_semaphore = Semaphore(2)  # Max 2 concurrent Claude calls (reduced from 3)
 
     material_images = []
     non_material_count = 0

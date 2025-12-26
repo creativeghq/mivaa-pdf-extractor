@@ -424,19 +424,20 @@ Respond ONLY with valid JSON, no additional text."""
                     if response.status_code != 200:
                         error_text = response.text
 
-                        # CRITICAL FIX: Handle 503 Service Unavailable with retry logic
-                        # Together.ai API occasionally returns 503 during high load
-                        if response.status_code == 503:
+                        # CRITICAL FIX: Handle 5xx errors with retry logic
+                        # Together.ai API occasionally returns 503/500 during high load or internal issues
+                        if response.status_code in [500, 503]:
                             if attempt < max_retries:
-                                self.logger.warning(f"Llama API 503 Service Unavailable (attempt {attempt}/{max_retries}), retrying with backoff...")
+                                error_name = "Internal Server Error" if response.status_code == 500 else "Service Unavailable"
+                                self.logger.warning(f"Llama API {response.status_code} {error_name} (attempt {attempt}/{max_retries}), retrying with backoff...")
                                 import asyncio
                                 await asyncio.sleep(2 ** attempt)  # Exponential backoff
                                 continue
                             else:
-                                self.logger.error(f"Llama API 503 after {max_retries} attempts: {error_text}")
-                                raise RuntimeError(f"Llama API service unavailable after {max_retries} attempts")
+                                self.logger.error(f"Llama API {response.status_code} after {max_retries} attempts: {error_text}")
+                                raise RuntimeError(f"Llama API error {response.status_code} after {max_retries} attempts")
 
-                        # For other errors, log and raise immediately
+                        # For other errors (4xx, etc.), log and raise immediately
                         self.logger.error(f"Llama API error {response.status_code}: {error_text}")
                         raise RuntimeError(f"Llama API returned error {response.status_code}: {error_text}")
 
@@ -535,7 +536,9 @@ Respond ONLY with valid JSON, no additional text."""
                             # CRITICAL FIX: Change from ERROR to WARNING to prevent false Sentry alerts
                             # The full response is often valid JSON but logged as error, creating noise in Sentry
                             # Only raise the RuntimeError - Sentry will capture that with proper context
-                            self.logger.warning(f"Full response after all retries: {result[:500]}...")  # Truncate to avoid huge logs
+                            # CRITICAL FIX: Convert result to string before slicing to avoid "unhashable type: 'slice'" error
+                            result_str = str(result) if not isinstance(result, str) else result
+                            self.logger.warning(f"Full response after all retries: {result_str[:500]}...")  # Truncate to avoid huge logs
                             raise RuntimeError(f"Llama returned invalid JSON after {max_retries} attempts: {e}")
 
                 except Exception as e:

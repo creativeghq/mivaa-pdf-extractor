@@ -33,11 +33,24 @@ def validate_job_id(job_id: str) -> None:
     Raises:
         HTTPException: If job_id is invalid or a reserved keyword
     """
-    # Check if it's a reserved keyword
+    # CRITICAL FIX: Better error messages for reserved keywords (fixes MIVAA-4W)
+    # Health checks were hitting /api/documents/job/health instead of /health
     if job_id.lower() in RESERVED_KEYWORDS:
+        # Provide helpful redirect information
+        endpoint_map = {
+            'health': '/health or /api/health',
+            'status': '/api/jobs/list',
+            'metrics': '/health/metrics',
+            'list': '/api/jobs/list',
+            'all': '/api/jobs/list'
+        }
+        suggested_endpoint = endpoint_map.get(job_id.lower(), 'the appropriate endpoint')
+
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid job ID: '{job_id}' is a reserved keyword. Use the appropriate endpoint instead."
+            detail=f"Invalid job ID: '{job_id}' is a reserved keyword. "
+                   f"Did you mean to use {suggested_endpoint}? "
+                   f"Job IDs must be valid UUIDs (e.g., '550e8400-e29b-41d4-a716-446655440000')."
         )
 
     # Validate UUID format
@@ -46,7 +59,7 @@ def validate_job_id(job_id: str) -> None:
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid job ID format: {job_id}. Must be a valid UUID."
+            detail=f"Invalid job ID format: '{job_id}'. Must be a valid UUID (e.g., '550e8400-e29b-41d4-a716-446655440000')."
         )
 
 

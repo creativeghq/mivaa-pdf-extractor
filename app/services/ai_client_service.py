@@ -127,14 +127,23 @@ class AIClientService:
     
     @property
     def httpx(self) -> httpx.AsyncClient:
-        """Get shared httpx async client for TogetherAI and other HTTP APIs."""
+        """Get shared httpx async client for TogetherAI and other HTTP APIs.
+
+        CRITICAL FIX: Timeout aligned with application timeout guard (30s for Llama Vision)
+        to prevent HTTP 499 (Client Closed Request) errors.
+
+        Previous: 120s timeout caused conflicts when app timeout guard (30s) killed requests.
+        Result: httpx client still waiting → connection closed → HTTP 499
+        """
         if self._httpx_client is None:
             self._httpx_client = httpx.AsyncClient(
-                timeout=httpx.Timeout(120.0),
+                # CRITICAL FIX: Reduced from 120s to 35s to align with app timeout guard (30s)
+                # This prevents HTTP 499 errors when timeout guard cancels the operation
+                timeout=httpx.Timeout(35.0),  # Slightly higher than app guard (30s) for graceful handling
                 limits=httpx.Limits(max_keepalive_connections=20, max_connections=100)
             )
-            logger.info("✅ HTTPX async client initialized")
-        
+            logger.info("✅ HTTPX async client initialized (timeout: 35s, aligned with app guards)")
+
         return self._httpx_client
     
     async def close(self):
