@@ -757,11 +757,15 @@ class Settings(BaseSettings):
     def validate_together_model(cls, v):
         """Validate TogetherAI model name."""
         valid_models = [
+            # Llama Vision Models
             "meta-llama/Llama-4-Scout-17B-16E-Instruct",
             "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
             "meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo",
             "meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo",
-            "meta-llama/Llama-Vision-Free"
+            "meta-llama/Llama-Vision-Free",
+            # Qwen Vision Models
+            "Qwen/Qwen3-VL-8B-Instruct",
+            "Qwen/Qwen3-VL-32B-Instruct"
         ]
         if v not in valid_models:
             raise ValueError(f"TogetherAI model must be one of: {valid_models}")
