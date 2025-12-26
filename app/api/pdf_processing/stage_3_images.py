@@ -152,8 +152,9 @@ async def process_stage_3_images(
     
     # Circuit breakers for API calls
     # CLIP: More lenient settings for transient memory pressure failures
+    # Llama: More lenient due to transient JSON formatting issues (now fixed, but keeping lenient for safety)
     clip_breaker = CircuitBreaker(failure_threshold=8, timeout_seconds=45, half_open_max_calls=5, name="CLIP")
-    llama_breaker = CircuitBreaker(failure_threshold=5, timeout_seconds=60, name="Llama")
+    llama_breaker = CircuitBreaker(failure_threshold=8, timeout_seconds=45, recovery_timeout=30, half_open_max_calls=3, name="Llama")
     
     # Dynamic batch size calculation - MORE CONSERVATIVE for CLIP/SigLIP models
     # CLIP/SigLIP models use ~2-3GB RAM when loaded, so we need smaller batches

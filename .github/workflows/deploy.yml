@@ -540,8 +540,13 @@ jobs:
           python -c 'import openai; print(f\"| **openai** | AI/ML | OpenAI API client | 🟢 Installed | {openai.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **openai** | AI/ML | OpenAI API client | 🔴 Missing | N/A |' >> package_status_report.txt
           python -c 'import anthropic; print(f\"| **anthropic** | AI/ML | Anthropic API client | 🟢 Installed | {anthropic.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **anthropic** | AI/ML | Anthropic API client | 🔴 Missing | N/A |' >> package_status_report.txt
           # Check llama-index with detailed error handling
+          # Note: llama-index package structure uses llama_index.core or llama_index_core
           if python -c 'import llama_index; print(f\"| **llama-index** | AI/ML | LLM framework | 🟢 Installed | {llama_index.__version__} |\")' >> package_status_report.txt 2>/dev/null; then
             echo 'llama-index status: OK'
+          elif python -c 'import llama_index.core; print(f\"| **llama-index** | AI/ML | LLM framework | 🟢 Installed | {llama_index.core.__version__} |\")' >> package_status_report.txt 2>/dev/null; then
+            echo 'llama-index status: OK (via llama_index.core)'
+          elif python -c 'import llama_index_core; print(f\"| **llama-index** | AI/ML | LLM framework | 🟢 Installed | {llama_index_core.__version__} |\")' >> package_status_report.txt 2>/dev/null; then
+            echo 'llama-index status: OK (via llama_index_core)'
           else
             echo '| **llama-index** | AI/ML | LLM framework | 🔴 Missing | N/A |' >> package_status_report.txt
             echo 'llama-index status: FAILED'
@@ -909,8 +914,9 @@ jobs:
           echo "🔍 Checking health endpoint..."
           HEALTH_URL="https://v1api.materialshub.gr/health"
 
-          # Perform health check and capture response
-          HTTP_STATUS=$(curl -s -o /tmp/health_response.json -w "%{http_code}" "$HEALTH_URL" || echo "000")
+          # Perform health check from the server itself (not from GitHub runner)
+          # This avoids SSL certificate issues and firewall restrictions
+          HTTP_STATUS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "curl -s -o /tmp/health_response.json -w '%{http_code}' '$HEALTH_URL'" || echo "000")
 
           echo "📊 Health Check Results:"
           echo "  • URL: $HEALTH_URL"
@@ -1040,22 +1046,23 @@ jobs:
           if [ "$HTTP_STATUS" = "200" ]; then
             echo "✅ Health check PASSED - Service is healthy!"
             echo "📄 Response:"
-            cat /tmp/health_response.json 2>/dev/null || echo "  (No response body)"
+            # Retrieve the health response from the server
+            ssh -o StrictHostKeyChecking=no root@104.248.68.3 "cat /tmp/health_response.json 2>/dev/null" || echo "  (No response body)"
 
             # Add success to summary
             echo "| **🏥 Health Endpoint** | ✅ HEALTHY | HTTP 200 - Service responding correctly |" >> $GITHUB_STEP_SUMMARY
             echo "| **📊 Response Time** | ✅ GOOD | < 5 seconds |" >> $GITHUB_STEP_SUMMARY
 
-            # Test additional endpoints
+            # Test additional endpoints from the server itself
             echo ""
             echo "🔍 Testing additional endpoints..."
 
             # Test API docs
-            DOCS_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://v1api.materialshub.gr/docs" || echo "000")
+            DOCS_STATUS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "curl -s -o /dev/null -w '%{http_code}' 'https://v1api.materialshub.gr/docs'" || echo "000")
             echo "  • API Docs (/docs): $DOCS_STATUS"
 
             # Test OpenAPI schema
-            OPENAPI_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://v1api.materialshub.gr/openapi.json" || echo "000")
+            OPENAPI_STATUS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "curl -s -o /dev/null -w '%{http_code}' 'https://v1api.materialshub.gr/openapi.json'" || echo "000")
             echo "  • OpenAPI Schema (/openapi.json): $OPENAPI_STATUS"
 
             # Add endpoint tests to summary
@@ -1075,7 +1082,8 @@ jobs:
             echo "❌ Health check FAILED - Service has issues!"
             echo "🚨 HTTP Status: $HTTP_STATUS"
             echo "📄 Response (if any):"
-            cat /tmp/health_response.json 2>/dev/null || echo "  (No response received)"
+            # Retrieve the health response from the server
+            ssh -o StrictHostKeyChecking=no root@104.248.68.3 "cat /tmp/health_response.json 2>/dev/null" || echo "  (No response received)"
 
             # Add failure to summary
             echo "| **🏥 Health Endpoint** | ❌ UNHEALTHY | HTTP $HTTP_STATUS - Service not responding correctly |" >> $GITHUB_STEP_SUMMARY
@@ -1166,8 +1174,8 @@ jobs:
             echo "🔄 Re-testing health endpoint after diagnostics..."
             sleep 10
 
-            # Re-test health endpoint
-            RETEST_STATUS=$(curl -s -o /tmp/health_retest.json -w "%{http_code}" "https://v1api.materialshub.gr/health" || echo "000")
+            # Re-test health endpoint from the server itself
+            RETEST_STATUS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "curl -s -o /tmp/health_retest.json -w '%{http_code}' 'https://v1api.materialshub.gr/health'" || echo "000")
             echo "🔍 Re-test Results:"
             echo "  • HTTP Status: $RETEST_STATUS"
 
@@ -1194,11 +1202,12 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # Get FINAL current status of all endpoints for accurate Service Endpoints table
+          # Run curl from the server itself to avoid SSL/firewall issues
           echo "🔍 Getting final current status of all endpoints for Service Endpoints table..."
-          FINAL_HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://v1api.materialshub.gr/health" --connect-timeout 10 --max-time 30 || echo "000")
-          FINAL_DOCS_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://v1api.materialshub.gr/docs" --connect-timeout 10 --max-time 30 || echo "000")
-          FINAL_REDOC_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://v1api.materialshub.gr/redoc" --connect-timeout 10 --max-time 30 || echo "000")
-          FINAL_OPENAPI_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://v1api.materialshub.gr/openapi.json" --connect-timeout 10 --max-time 30 || echo "000")
+          FINAL_HEALTH_STATUS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "curl -s -o /dev/null -w '%{http_code}' 'https://v1api.materialshub.gr/health' --connect-timeout 10 --max-time 30" || echo "000")
+          FINAL_DOCS_STATUS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "curl -s -o /dev/null -w '%{http_code}' 'https://v1api.materialshub.gr/docs' --connect-timeout 10 --max-time 30" || echo "000")
+          FINAL_REDOC_STATUS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "curl -s -o /dev/null -w '%{http_code}' 'https://v1api.materialshub.gr/redoc' --connect-timeout 10 --max-time 30" || echo "000")
+          FINAL_OPENAPI_STATUS=$(ssh -o StrictHostKeyChecking=no root@104.248.68.3 "curl -s -o /dev/null -w '%{http_code}' 'https://v1api.materialshub.gr/openapi.json' --connect-timeout 10 --max-time 30" || echo "000")
 
           echo "📊 Final Status Summary:"
           echo "  • Health: $FINAL_HEALTH_STATUS"

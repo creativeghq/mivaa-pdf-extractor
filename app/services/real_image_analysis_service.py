@@ -449,26 +449,55 @@ Respond ONLY with valid JSON, no additional text."""
                         # Clean up response - remove markdown code blocks if present
                         content = content.strip()
 
-                        # Handle case where JSON is wrapped in markdown code blocks with text before it
-                        # Example: "Here is the JSON:\n\n```json\n{...}\n```"
-                        if "```json" in content:
-                            # Extract content between ```json and ```
-                            json_start = content.find("```json") + 7
-                            json_end = content.find("```", json_start)
-                            if json_end != -1:
-                                content = content[json_start:json_end].strip()
-                        elif "```" in content:
-                            # Extract content between ``` and ```
-                            json_start = content.find("```") + 3
-                            json_end = content.find("```", json_start)
-                            if json_end != -1:
-                                content = content[json_start:json_end].strip()
+                        # ROBUST JSON EXTRACTION - Handle all Llama response formats
+                        # Format 1: "Here is the JSON:\n\n```json\n{...}\n```\n\nExplanation..."
+                        # Format 2: "Here is the JSON:\n\n```\n{...}\n```\n\nExplanation..."
+                        # Format 3: "```json\n{...}\n```"
+                        # Format 4: "{...}" (pure JSON)
 
-                        # Final cleanup
-                        content = content.strip()
+                        # Step 1: Extract from markdown code blocks if present
+                        if "```" in content:
+                            # Try ```json first (more specific)
+                            if "```json" in content:
+                                json_start = content.find("```json") + 7
+                                json_end = content.find("```", json_start)
+                                if json_end > json_start:
+                                    content = content[json_start:json_end].strip()
+                            else:
+                                # Try generic ``` blocks
+                                # Find first ``` and extract until next ```
+                                first_backtick = content.find("```")
+                                if first_backtick != -1:
+                                    # Skip past the ``` and any language identifier (e.g., "json\n")
+                                    json_start = first_backtick + 3
+                                    # Skip any text on the same line as ``` (like "json")
+                                    newline_after_backtick = content.find("\n", json_start)
+                                    if newline_after_backtick != -1 and newline_after_backtick - json_start < 10:
+                                        # If there's a newline within 10 chars, skip to it (handles "```json\n")
+                                        json_start = newline_after_backtick + 1
+
+                                    # Find closing ```
+                                    json_end = content.find("```", json_start)
+                                    if json_end > json_start:
+                                        content = content[json_start:json_end].strip()
+
+                        # Step 2: Find the actual JSON object boundaries
+                        # Look for the first { and last }
+                        first_brace = content.find('{')
+                        last_brace = content.rfind('}')
+
+                        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+                            # Extract only the JSON portion
+                            json_text = content[first_brace:last_brace + 1]
+                        else:
+                            # No braces found, try parsing as-is
+                            json_text = content
+
+                        # Step 3: Clean up any remaining issues
+                        json_text = json_text.strip()
 
                         # Check if content is empty
-                        if not content:
+                        if not json_text:
                             error_msg = f"Llama returned empty response (attempt {attempt}/{max_retries})"
                             self.logger.warning(error_msg)
                             if attempt < max_retries:
@@ -479,14 +508,8 @@ Respond ONLY with valid JSON, no additional text."""
                             else:
                                 raise RuntimeError(f"Llama returned empty response after {max_retries} attempts")
 
-                        # Handle extra text after JSON (similar to Claude fix)
-                        last_brace = content.rfind('}')
-                        if last_brace != -1:
-                            json_text = content[:last_brace + 1]
-                            analysis = json.loads(json_text)
-                        else:
-                            # Try parsing as-is
-                            analysis = json.loads(content)
+                        # Step 4: Parse JSON
+                        analysis = json.loads(json_text)
 
                         self.logger.info(f"✅ Llama analysis successful on attempt {attempt}")
 
@@ -526,19 +549,21 @@ Respond ONLY with valid JSON, no additional text."""
                             "success": True
                         }
                     except json.JSONDecodeError as e:
-                        error_msg = f"Failed to parse Llama response as JSON (attempt {attempt}/{max_retries}): {e}. Content: {content[:200]}"
+                        # Enhanced error logging - show what we actually tried to parse
+                        error_msg = f"Failed to parse Llama response as JSON (attempt {attempt}/{max_retries}): {e}"
                         self.logger.warning(error_msg)
+                        self.logger.warning(f"Extracted JSON text (first 300 chars): {json_text[:300]}")
+                        self.logger.warning(f"Original content (first 300 chars): {result['choices'][0]['message']['content'][:300]}")
+
                         if attempt < max_retries:
                             import asyncio
                             await asyncio.sleep(2 ** attempt)
                             continue
                         else:
-                            # CRITICAL FIX: Change from ERROR to WARNING to prevent false Sentry alerts
-                            # The full response is often valid JSON but logged as error, creating noise in Sentry
-                            # Only raise the RuntimeError - Sentry will capture that with proper context
-                            # CRITICAL FIX: Convert result to string before slicing to avoid "unhashable type: 'slice'" error
-                            result_str = str(result) if not isinstance(result, str) else result
-                            self.logger.warning(f"Full response after all retries: {result_str[:500]}...")  # Truncate to avoid huge logs
+                            # Log full details on final failure
+                            self.logger.error(f"JSON parsing failed after {max_retries} attempts")
+                            self.logger.error(f"Extracted JSON text: {json_text}")
+                            self.logger.error(f"Parse error: {e}")
                             raise RuntimeError(f"Llama returned invalid JSON after {max_retries} attempts: {e}")
 
                 except Exception as e:
