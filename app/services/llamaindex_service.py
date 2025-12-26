@@ -3197,12 +3197,14 @@ Summary:"""
                             'content_hash': content_hash,  # ✅ NEW: Store hash
                             'source_type': 'pdf_processing',  # ✅ NEW: Track source type
                             'source_job_id': metadata.get('job_id'),  # ✅ NEW: Track source job
+                            'quality_score': quality_score,  # ✅ CRITICAL FIX: Store in column, not metadata
                             'metadata': {
                                 'chunk_id': node.metadata.get('chunk_id', f"{document_id}_chunk_{i}"),
                                 'chunk_strategy': 'hierarchical',
                                 'chunk_size_actual': len(node.text),
+                                'chunk_size': metadata.get('chunk_size'),  # ✅ NEW: Store configured chunk size
+                                'chunk_overlap': metadata.get('chunk_overlap'),  # ✅ NEW: Store configured overlap
                                 'total_chunks': len(nodes),
-                                'quality_score': quality_score,  # ✅ NEW: Store quality score
                                 'has_parent': node.parent_node is not None,
                                 'has_children': len(node.child_nodes) > 0 if hasattr(node, 'child_nodes') and node.child_nodes is not None else False,
                                 'page_number': page_number,
