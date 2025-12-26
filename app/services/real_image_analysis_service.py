@@ -508,6 +508,24 @@ Respond ONLY with valid JSON, no additional text."""
                             else:
                                 raise RuntimeError(f"Llama returned empty response after {max_retries} attempts")
 
+                        # Step 3.5: Sanitize common Llama JSON mistakes
+                        # Fix: ["item1", "item2", or "item3"] -> ["item1", "item2", "item3"]
+                        # This handles cases where Llama puts unquoted words like "or" or "and" in arrays
+                        import re
+
+                        # Pattern 1: Remove unquoted "or" or "and" between array items
+                        # Matches: ", or " or ", and " (with optional extra spaces)
+                        # Example: ["vinyl", "linoleum", or " rubber"] -> ["vinyl", "linoleum", " rubber"]
+                        json_text = re.sub(r'",\s+(or|and)\s+"', '", "', json_text)
+
+                        # Pattern 2: Handle case where conjunction appears after comma without space
+                        # Matches: ",or " or ",and "
+                        json_text = re.sub(r'",(or|and)\s+"', '", "', json_text)
+
+                        # Pattern 3: Handle case with space before comma
+                        # Matches: " , or " or " , and "
+                        json_text = re.sub(r'"\s*,\s*(or|and)\s+"', '", "', json_text)
+
                         # Step 4: Parse JSON
                         analysis = json.loads(json_text)
 
