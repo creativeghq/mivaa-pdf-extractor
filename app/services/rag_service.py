@@ -193,10 +193,22 @@ class RAGService:
 
             memory_monitor = MemoryMonitor()
             CHUNK_BATCH_SIZE = 15  # Process 15 chunks at a time (proven optimal from commit 74e7a73)
+            MEMORY_THRESHOLD_PERCENT = 85.0  # Pause if memory usage exceeds 85%
             total_chunks = len(chunks)
 
             chunk_ids = []
             chunks_created = 0
+
+            # FIX #4: Log initial memory state before starting indexing
+            try:
+                initial_mem = memory_monitor.get_memory_stats()
+                self.logger.info(f"🧠 Initial memory: {initial_mem.percent_used:.1f}% ({initial_mem.used_mb:.0f}MB / {initial_mem.total_mb:.0f}MB)")
+
+                # Check if we have enough memory to proceed
+                if initial_mem.percent_used > MEMORY_THRESHOLD_PERCENT:
+                    self.logger.warning(f"⚠️ High memory usage detected ({initial_mem.percent_used:.1f}%) - proceeding with caution")
+            except Exception as mem_error:
+                self.logger.debug(f"Memory monitoring unavailable: {mem_error}")
 
             self.logger.info(f"🔄 Processing {total_chunks} chunks in batches of {CHUNK_BATCH_SIZE}")
 
@@ -206,10 +218,28 @@ class RAGService:
                 batch_num = (batch_start // CHUNK_BATCH_SIZE) + 1
                 total_batches = (total_chunks + CHUNK_BATCH_SIZE - 1) // CHUNK_BATCH_SIZE
 
-                # Log memory usage before batch
+                # Log memory usage before batch and check threshold
                 try:
                     mem_stats = memory_monitor.get_memory_stats()
                     self.logger.info(f"🧠 Memory before batch {batch_num}/{total_batches}: {mem_stats.percent_used:.1f}% ({mem_stats.used_mb:.0f}MB / {mem_stats.total_mb:.0f}MB)")
+
+                    # FIX #4: Check memory threshold and pause if needed
+                    if mem_stats.percent_used > MEMORY_THRESHOLD_PERCENT:
+                        self.logger.warning(f"⚠️ Memory usage high ({mem_stats.percent_used:.1f}%) - forcing garbage collection")
+                        gc.collect()
+
+                        # Re-check after GC
+                        mem_stats_after_gc = memory_monitor.get_memory_stats()
+                        self.logger.info(f"🧠 Memory after GC: {mem_stats_after_gc.percent_used:.1f}% ({mem_stats_after_gc.used_mb:.0f}MB / {mem_stats_after_gc.total_mb:.0f}MB)")
+
+                        if mem_stats_after_gc.percent_used > MEMORY_THRESHOLD_PERCENT:
+                            self.logger.error(f"❌ Memory usage still high after GC ({mem_stats_after_gc.percent_used:.1f}%) - aborting to prevent OOM")
+                            return {
+                                "success": False,
+                                "error": f"Memory threshold exceeded ({mem_stats_after_gc.percent_used:.1f}% > {MEMORY_THRESHOLD_PERCENT}%)",
+                                "chunks_created": chunks_created,
+                                "chunk_ids": chunk_ids
+                            }
                 except Exception as mem_error:
                     self.logger.debug(f"Memory monitoring unavailable: {mem_error}")
 
@@ -219,6 +249,7 @@ class RAGService:
                 batch_chunk_records = []
 
                 # Step 3a: Store chunks in database
+                self.logger.info(f"   📝 Storing {len(batch_chunks)} chunks in database for batch {batch_num}/{total_batches}...")
                 for chunk in batch_chunks:
                     try:
                         # Prepare chunk record for database
@@ -255,8 +286,13 @@ class RAGService:
                         self.logger.warning(f"   ⚠️ Failed to store chunk {chunk.chunk_index}: {e}")
                         continue
 
+                self.logger.info(f"   ✅ Stored {len(batch_chunk_ids)} chunks in database for batch {batch_num}/{total_batches}")
+
                 # Step 3b: Generate embeddings for ENTIRE BATCH in ONE API call
                 if batch_chunk_ids:
+                    # Initialize embedding_vectors to prevent NameError in cleanup
+                    embedding_vectors = []
+
                     try:
                         self.logger.info(f"   🔄 Generating embeddings for batch {batch_num}/{total_batches} ({len(batch_texts)} chunks)...")
 
@@ -267,29 +303,50 @@ class RAGService:
                             input_type="document"
                         )
 
-                        # Store embeddings in database
-                        embeddings_stored = 0
-                        for chunk_id, embedding in zip(batch_chunk_ids, embedding_vectors):
-                            try:
+                        # FIX #2: Batch database updates instead of individual UPDATE queries
+                        # This prevents memory accumulation from 100+ individual Supabase responses
+                        if embedding_vectors:
+                            # Prepare batch update records
+                            updates = []
+                            embeddings_stored = 0
+
+                            for chunk_id, embedding in zip(batch_chunk_ids, embedding_vectors):
                                 if embedding:
-                                    # Update chunk with embedding
-                                    self.supabase_client.client.table('chunks')\
-                                        .update({'text_embedding_1024': embedding})\
-                                        .eq('id', chunk_id)\
-                                        .execute()
+                                    updates.append({
+                                        'id': chunk_id,
+                                        'text_embedding_1024': embedding
+                                    })
                                     embeddings_stored += 1
                                 else:
                                     self.logger.warning(f"   ⚠️ No embedding generated for chunk {chunk_id}")
-                            except Exception as embedding_error:
-                                self.logger.warning(f"   ⚠️ Failed to store embedding for chunk {chunk_id}: {embedding_error}")
 
-                        self.logger.info(f"   ✅ Stored {embeddings_stored}/{len(batch_chunk_ids)} embeddings for batch {batch_num}/{total_batches}")
+                            # Perform batch upsert (single database call)
+                            if updates:
+                                try:
+                                    self.supabase_client.client.table('chunks').upsert(updates).execute()
+                                    self.logger.info(f"   ✅ Stored {embeddings_stored}/{len(batch_chunk_ids)} embeddings for batch {batch_num}/{total_batches} (batch upsert)")
+                                except Exception as batch_update_error:
+                                    self.logger.error(f"   ❌ Batch upsert failed: {batch_update_error}")
+                                    # Fallback to individual updates
+                                    self.logger.info(f"   ⚠️ Falling back to individual updates...")
+                                    embeddings_stored = 0
+                                    for update in updates:
+                                        try:
+                                            self.supabase_client.client.table('chunks')\
+                                                .update({'text_embedding_1024': update['text_embedding_1024']})\
+                                                .eq('id', update['id'])\
+                                                .execute()
+                                            embeddings_stored += 1
+                                        except Exception as individual_update_error:
+                                            self.logger.warning(f"   ⚠️ Failed to update chunk {update['id']}: {individual_update_error}")
+                                    self.logger.info(f"   ✅ Stored {embeddings_stored}/{len(updates)} embeddings (individual fallback)")
 
                     except Exception as batch_embedding_error:
-                        self.logger.error(f"   ❌ Batch embedding generation failed: {batch_embedding_error}")
+                        self.logger.error(f"   ❌ Batch embedding generation failed: {batch_embedding_error}", exc_info=True)
 
                         # Fallback to individual embedding generation
                         self.logger.info(f"   ⚠️ Falling back to individual embedding generation for batch {batch_num}...")
+                        embeddings_stored = 0
                         for chunk_id, text in zip(batch_chunk_ids, batch_texts):
                             try:
                                 embedding = await self.embeddings_service.generate_embedding(text, dimensions=1024)
@@ -298,10 +355,14 @@ class RAGService:
                                         .update({'text_embedding_1024': embedding})\
                                         .eq('id', chunk_id)\
                                         .execute()
+                                    embeddings_stored += 1
                             except Exception as individual_error:
                                 self.logger.warning(f"   ⚠️ Failed to generate individual embedding for chunk {chunk_id}: {individual_error}")
 
-                # Step 3c: Cleanup after batch
+                        if embeddings_stored > 0:
+                            self.logger.info(f"   ✅ Stored {embeddings_stored} embeddings via individual fallback")
+
+                # Step 3c: Cleanup after batch (FIX #1: embedding_vectors now always defined)
                 del batch_chunk_ids, batch_texts, batch_chunk_records, embedding_vectors
                 gc.collect()
 
