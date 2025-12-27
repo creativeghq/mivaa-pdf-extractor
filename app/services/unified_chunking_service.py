@@ -98,26 +98,33 @@ class UnifiedChunkingService:
             if not text or len(text.strip()) == 0:
                 self.logger.warning(f"Empty text provided for document {document_id}")
                 return []
-            
+
+            self.logger.info(f"🔄 Starting chunking for document {document_id} ({len(text)} chars) using {self.config.strategy} strategy")
+
             # Select chunking strategy
             if self.config.strategy == ChunkingStrategy.SEMANTIC:
+                self.logger.info(f"   Using SEMANTIC chunking...")
                 chunks = self._chunk_semantic(text, document_id, metadata)
             elif self.config.strategy == ChunkingStrategy.FIXED_SIZE:
+                self.logger.info(f"   Using FIXED_SIZE chunking...")
                 chunks = self._chunk_fixed_size(text, document_id, metadata)
             elif self.config.strategy == ChunkingStrategy.HYBRID:
+                self.logger.info(f"   Using HYBRID chunking...")
                 chunks = self._chunk_hybrid(text, document_id, metadata)
             elif self.config.strategy == ChunkingStrategy.LAYOUT_AWARE:
+                self.logger.info(f"   Using LAYOUT_AWARE chunking...")
                 chunks = self._chunk_layout_aware(text, document_id, metadata)
             else:
                 raise ValueError(f"Unknown chunking strategy: {self.config.strategy}")
-            
+
+            self.logger.info(f"   Calculating quality scores for {len(chunks)} chunks...")
             # Calculate quality scores for all chunks
             for chunk in chunks:
                 chunk.quality_score = self._calculate_chunk_quality(chunk)
-            
+
             self.logger.info(f"✅ Created {len(chunks)} chunks for document {document_id} using {self.config.strategy} strategy")
             return chunks
-            
+
         except Exception as e:
             self.logger.error(f"Error chunking text: {e}")
             raise
@@ -130,25 +137,30 @@ class UnifiedChunkingService:
     ) -> List[Chunk]:
         """
         Semantic chunking based on content meaning and boundaries.
-        
+
         Splits on paragraph boundaries first, then respects sentence boundaries.
         """
         chunks = []
         chunk_index = 0
         current_position = 0
-        
+
         # Split by paragraphs first
         import re
+        self.logger.info(f"         SEMANTIC: Splitting {len(text)} chars by paragraphs...")
         paragraphs = re.split(self.PARAGRAPH_BREAKS, text)
-        
+        self.logger.info(f"         SEMANTIC: Found {len(paragraphs)} paragraphs, processing...")
+
         current_chunk = ""
-        
-        for paragraph in paragraphs:
+
+        for para_idx, paragraph in enumerate(paragraphs):
+            if para_idx % 50 == 0 and para_idx > 0:
+                self.logger.info(f"         SEMANTIC: Processed {para_idx}/{len(paragraphs)} paragraphs, {len(chunks)} chunks so far")
+
             if not paragraph.strip():
                 continue
-            
+
             paragraph_with_break = paragraph + "\n\n"
-            
+
             # If adding this paragraph would exceed max size, finalize current chunk
             if len(current_chunk) + len(paragraph_with_break) > self.config.max_chunk_size and current_chunk:
                 chunk = self._create_chunk(
@@ -159,16 +171,16 @@ class UnifiedChunkingService:
                     metadata
                 )
                 chunks.append(chunk)
-                
+
                 # Start new chunk with overlap
                 overlap_content = self._get_overlap_content(current_chunk, self.config.overlap_size)
                 current_chunk = overlap_content + paragraph_with_break
                 chunk_index += 1
             else:
                 current_chunk += paragraph_with_break
-            
+
             current_position += len(paragraph_with_break)
-        
+
         # Add final chunk
         if current_chunk.strip():
             chunk = self._create_chunk(
@@ -179,11 +191,13 @@ class UnifiedChunkingService:
                 metadata
             )
             chunks.append(chunk)
-        
+
+        self.logger.info(f"         SEMANTIC: Updating total chunks count for {len(chunks)} chunks...")
         # Update total chunks count
         for chunk in chunks:
             chunk.total_chunks = len(chunks)
-        
+
+        self.logger.info(f"         SEMANTIC: Complete - {len(chunks)} chunks created")
         return chunks
     
     def _chunk_fixed_size(
@@ -240,14 +254,19 @@ class UnifiedChunkingService:
     ) -> List[Chunk]:
         """
         Hybrid chunking combining semantic and fixed-size approaches.
-        
+
         Starts with semantic chunking, then applies size constraints.
         """
         # Start with semantic chunks
+        self.logger.info(f"      HYBRID: Starting semantic chunking phase...")
         semantic_chunks = self._chunk_semantic(text, document_id, metadata)
+        self.logger.info(f"      HYBRID: Created {len(semantic_chunks)} semantic chunks, refining...")
         refined_chunks = []
-        
-        for chunk in semantic_chunks:
+
+        for idx, chunk in enumerate(semantic_chunks):
+            if idx % 10 == 0:
+                self.logger.info(f"      HYBRID: Processing chunk {idx+1}/{len(semantic_chunks)}")
+
             if len(chunk.content) <= self.config.max_chunk_size:
                 refined_chunks.append(chunk)
             else:
@@ -259,26 +278,28 @@ class UnifiedChunkingService:
                     min_chunk_size=self.config.min_chunk_size,
                     overlap_size=self.config.overlap_size
                 )
-                
+
                 # Temporarily switch strategy
                 original_strategy = self.config.strategy
                 self.config.strategy = ChunkingStrategy.FIXED_SIZE
-                
+
                 sub_chunks = self._chunk_fixed_size(chunk.content, document_id, metadata)
-                
+
                 # Restore original strategy
                 self.config.strategy = original_strategy
-                
+
                 # Update chunk indices
                 for i, sub_chunk in enumerate(sub_chunks):
                     sub_chunk.id = f"{chunk.id}_{i}"
                     sub_chunk.chunk_index = len(refined_chunks)
                     refined_chunks.append(sub_chunk)
-        
+
+        self.logger.info(f"      HYBRID: Updating total chunks count for {len(refined_chunks)} chunks...")
         # Update total chunks count
         for chunk in refined_chunks:
             chunk.total_chunks = len(refined_chunks)
-        
+
+        self.logger.info(f"      HYBRID: Complete - {len(refined_chunks)} refined chunks")
         return refined_chunks
     
     def _chunk_layout_aware(
