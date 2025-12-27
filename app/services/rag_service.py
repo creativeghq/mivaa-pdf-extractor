@@ -100,10 +100,11 @@ class RAGService:
 
     async def index_pdf_content(
         self,
-        pdf_content: bytes,
-        document_id: str,
+        pdf_content: bytes = None,
+        document_id: str = None,
         metadata: Optional[Dict[str, Any]] = None,
-        catalog: Optional[Any] = None
+        catalog: Optional[Any] = None,
+        pre_extracted_text: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Index PDF content by extracting text, chunking, and generating embeddings.
@@ -112,10 +113,11 @@ class RAGService:
         and embedding generation using our current services.
 
         Args:
-            pdf_content: PDF file content as bytes
+            pdf_content: PDF file content as bytes (optional if pre_extracted_text is provided)
             document_id: Unique document identifier
             metadata: Document metadata including workspace_id, filename, etc.
             catalog: Optional product catalog for category tagging
+            pre_extracted_text: Optional pre-extracted text (skips PDF extraction if provided)
 
         Returns:
             Dict containing:
@@ -130,34 +132,40 @@ class RAGService:
 
             self.logger.info(f"📝 Indexing PDF content for document {document_id}")
 
-            # Step 1: Extract text from PDF using PyMuPDF4LLM
-            try:
-                import pymupdf4llm
-                import tempfile
-                import os
-
-                # Save PDF bytes to temporary file (pymupdf4llm needs a file path)
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-                    tmp_file.write(pdf_content)
-                    tmp_path = tmp_file.name
-
+            # Step 1: Extract text from PDF (or use pre-extracted text)
+            if pre_extracted_text:
+                # Use pre-extracted text (from Stage 1 focused extraction)
+                markdown_text = pre_extracted_text
+                self.logger.info(f"   ✅ Using pre-extracted text ({len(markdown_text)} characters)")
+            else:
+                # Extract text from PDF using PyMuPDF4LLM
                 try:
-                    # Extract markdown text from PDF file
-                    markdown_text = pymupdf4llm.to_markdown(tmp_path)
-                    self.logger.info(f"   ✅ Extracted {len(markdown_text)} characters from PDF")
-                finally:
-                    # Clean up temporary file
-                    if os.path.exists(tmp_path):
-                        os.unlink(tmp_path)
+                    import pymupdf4llm
+                    import tempfile
+                    import os
 
-            except Exception as e:
-                self.logger.error(f"   ❌ PDF text extraction failed: {e}")
-                return {
-                    "success": False,
-                    "error": f"PDF extraction failed: {str(e)}",
-                    "chunks_created": 0,
-                    "chunk_ids": []
-                }
+                    # Save PDF bytes to temporary file (pymupdf4llm needs a file path)
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+                        tmp_file.write(pdf_content)
+                        tmp_path = tmp_file.name
+
+                    try:
+                        # Extract markdown text from PDF file
+                        markdown_text = pymupdf4llm.to_markdown(tmp_path)
+                        self.logger.info(f"   ✅ Extracted {len(markdown_text)} characters from PDF")
+                    finally:
+                        # Clean up temporary file
+                        if os.path.exists(tmp_path):
+                            os.unlink(tmp_path)
+
+                except Exception as e:
+                    self.logger.error(f"   ❌ PDF text extraction failed: {e}")
+                    return {
+                        "success": False,
+                        "error": f"PDF extraction failed: {str(e)}",
+                        "chunks_created": 0,
+                        "chunk_ids": []
+                    }
 
             # Step 2: Create chunks using UnifiedChunkingService
             try:

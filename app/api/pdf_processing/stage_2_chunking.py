@@ -109,21 +109,47 @@ async def process_stage_2_chunking(
     logger.info(f"✅ Created documents table record for {document_id}")
     if catalog.catalog_factory:
         logger.info(f"   🏭 Catalog factory: {catalog.catalog_factory}")
-    
+
+    # ============================================================
+    # 🚀 MEMORY OPTIMIZATION: Retrieve pre-extracted text from Stage 1
+    # ============================================================
+    # Instead of re-extracting text from PDF bytes (which causes memory bloat),
+    # retrieve the already-extracted text from processed_documents table
+    pre_extracted_text = None
+    try:
+        result = supabase.client.table('processed_documents')\
+            .select('content')\
+            .eq('id', document_id)\
+            .execute()
+
+        if result.data and len(result.data) > 0:
+            pre_extracted_text = result.data[0].get('content')
+            if pre_extracted_text:
+                logger.info(f"✅ Retrieved pre-extracted text ({len(pre_extracted_text)} chars) from Stage 1")
+            else:
+                logger.warning("⚠️ No pre-extracted text found, will extract from PDF")
+        else:
+            logger.warning("⚠️ No processed_documents record found, will extract from PDF")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to retrieve pre-extracted text: {e}, will extract from PDF")
+
     # Process chunks using RAG service (with progressive timeout)
-    logger.info(f"📝 Calling index_pdf_content with {len(file_content)} bytes, product_pages={sorted(product_pages)}")
+    if pre_extracted_text:
+        logger.info(f"📝 Calling index_pdf_content with pre-extracted text, product_pages={sorted(product_pages)}")
+    else:
+        logger.info(f"📝 Calling index_pdf_content with {len(file_content)} bytes, product_pages={sorted(product_pages)}")
     logger.info(f"📝 RAG service available: {rag_service.available}")
-    
+
     # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on page count
     chunking_timeout = ProgressiveTimeoutStrategy.calculate_chunking_timeout(
         page_count=pdf_result.page_count,
         chunk_size=chunk_size
     )
     logger.info(f"📊 Chunking: {pdf_result.page_count} pages, chunk_size={chunk_size} → timeout: {chunking_timeout:.0f}s")
-    
+
     chunk_result = await with_timeout(
         rag_service.index_pdf_content(
-            pdf_content=file_content,
+            pdf_content=file_content if not pre_extracted_text else None,  # ✅ Only pass PDF if no pre-extracted text
             document_id=document_id,
             metadata={
                 'filename': filename,
@@ -135,7 +161,8 @@ async def process_stage_2_chunking(
                 'workspace_id': workspace_id,
                 'job_id': job_id  # ✅ NEW: Pass job_id for source tracking
             },
-            catalog=catalog  # ✅ NEW: Pass catalog for category tagging
+            catalog=catalog,  # ✅ NEW: Pass catalog for category tagging
+            pre_extracted_text=pre_extracted_text  # ✅ NEW: Pass pre-extracted text to skip PDF extraction
         ),
         timeout_seconds=chunking_timeout,
         operation_name="Chunking operation"
