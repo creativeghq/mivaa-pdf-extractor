@@ -93,6 +93,9 @@ class RealEmbeddingsService:
         self.voyage_enabled = settings.voyage_enabled
         self.voyage_fallback_to_openai = settings.voyage_fallback_to_openai
 
+        # Debug logging for Voyage AI configuration
+        self.logger.info(f"🔧 Voyage AI Config: enabled={self.voyage_enabled}, api_key={'SET' if self.voyage_api_key else 'NOT SET'}, model={self.voyage_model}")
+
         # Initialize embedding cache (Phase 1 optimization)
         self._embedding_cache = None
         if config and getattr(config, 'enable_embedding_cache', False):
@@ -262,6 +265,7 @@ class RealEmbeddingsService:
 
         # Try Voyage AI first if enabled and API key available
         voyage_enabled = self.config and getattr(self.config, 'voyage_enabled', True)
+        self.logger.info(f"🔍 Voyage AI check: api_key={'SET' if self.voyage_api_key else 'NOT SET'}, config={'SET' if self.config else 'NOT SET'}, voyage_enabled={voyage_enabled}")
         if self.voyage_api_key and voyage_enabled:
             try:
                 # Check cache first
@@ -332,13 +336,6 @@ class RealEmbeddingsService:
                             },
                             action="use_ai_result",
                             job_id=job_id,
-                            metadata={
-                                "input_type": input_type,
-                                "dimensions": dimensions,
-                                "truncation": truncation,
-                                "output_dtype": output_dtype,
-                                "provider": "voyage_ai"
-                            }
                         )
 
                         self.logger.info(f"✅ Generated Voyage AI embedding ({dimensions}D, {input_type})")

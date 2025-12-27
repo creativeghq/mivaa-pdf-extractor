@@ -96,7 +96,7 @@ async def get_embedding_service() -> RealEmbeddingsService:
     """Get embedding service instance."""
     try:
         supabase_client = get_supabase_client()
-        return RealEmbeddingsService(supabase_client=supabase_client)
+        return RealEmbeddingsService(supabase_client=supabase_client, config=settings)
     except Exception as e:
         logger.error(f"Failed to initialize embedding service: {e}")
         raise HTTPException(
