@@ -70,21 +70,11 @@ def run_async_in_background(async_func):
 
 
 # ============================================================================
-# Service Dependencies (Lazy Loading)
+# Service Dependencies (Using centralized dependencies)
 # ============================================================================
-async def get_rag_service() -> 'RAGService':
-    """Get RAG service instance using lazy loading."""
-    from app.services.lazy_loader import get_component_manager
-    component_manager = get_component_manager()
-
-    try:
-        service = await component_manager.load("rag_service")
-        return service
-    except Exception as e:
-        logger.error(f"Failed to load RAG service: {e}")
-        # Return a new instance as fallback
-        from app.services.rag_service import RAGService
-        return RAGService()
+# REMOVED: Local get_rag_service - now using centralized dependency from app.dependencies
+# Import centralized dependencies instead
+from app.dependencies import get_rag_service, get_supabase_client, get_pdf_processor
 
 
 async def get_embedding_service() -> RealEmbeddingsService:

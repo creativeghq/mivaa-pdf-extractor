@@ -28,28 +28,104 @@ security = HTTPBearer()
 settings = get_settings()
 
 # ============================================================================
-# Service Dependencies
+# Service Dependencies (Using app.state for consistency)
 # ============================================================================
 
 def get_supabase_client():
-    """Dependency to get Supabase client instance."""
-    return _get_supabase_client()
+    """
+    Get Supabase client instance.
+
+    Uses the global singleton instance initialized at startup.
+
+    Returns:
+        SupabaseClient instance
+
+    Raises:
+        HTTPException: If Supabase client is not initialized
+    """
+    client = _get_supabase_client()
+
+    if not client.client:
+        raise HTTPException(
+            status_code=503,
+            detail="Database service is not available. Please check configuration."
+        )
+
+    return client
 
 
-async def get_material_kai_service():
-    """Dependency to get Material Kai service instance."""
-    return await _get_material_kai_service()
+async def get_material_kai_service(request: Request):
+    """
+    Get Material Kai service instance from app state.
+
+    Args:
+        request: FastAPI request object to access app.state
+
+    Returns:
+        MaterialKaiService instance
+
+    Raises:
+        HTTPException: If Material Kai service is not available
+    """
+    if hasattr(request.app.state, 'material_kai_service') and request.app.state.material_kai_service:
+        return request.app.state.material_kai_service
+
+    raise HTTPException(
+        status_code=503,
+        detail="Material Kai service is not available. Please check service configuration."
+    )
 
 
-async def get_rag_service() -> RAGService:
-    """Dependency to get RAG service instance."""
-    # Import here to avoid circular imports
-    from app.services.rag_service import RAGService
-    return RAGService()
+async def get_rag_service(request: Request) -> RAGService:
+    """
+    Get RAG service instance from app state (lazy-loaded).
+
+    The RAG service is initialized on first use through the component manager.
+    This ensures efficient resource usage and proper lifecycle management.
+
+    Args:
+        request: FastAPI request object to access app.state
+
+    Returns:
+        RAGService instance
+
+    Raises:
+        HTTPException: If RAG service is not available
+    """
+    # Check if RAG service is already loaded in app state
+    if hasattr(request.app.state, 'rag_service') and request.app.state.rag_service:
+        service = request.app.state.rag_service
+        if service.available:
+            return service
+
+    # Try to lazy load via component manager
+    if hasattr(request.app.state, 'component_manager') and request.app.state.component_manager:
+        try:
+            service = await request.app.state.component_manager.get("rag_service")
+            if service and service.available:
+                request.app.state.rag_service = service
+                return service
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to lazy load RAG service: {e}")
+
+    raise HTTPException(
+        status_code=503,
+        detail="RAG service is not available. Please check service configuration."
+    )
 
 
 def get_pdf_processor():
-    """Dependency to get PDF processor instance."""
+    """
+    Get PDF processor instance.
+
+    Creates a new instance for each request to avoid state sharing issues.
+    PDFProcessor is lightweight and stateless, so this is acceptable.
+
+    Returns:
+        PDFProcessor instance
+    """
     return PDFProcessor()
 
 

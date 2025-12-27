@@ -145,6 +145,51 @@ class SupabaseClient:
             logger.warning(f"Supabase health check failed: {str(e)}")
             return False
 
+    def get_connection_pool_stats(self) -> Dict[str, Any]:
+        """
+        Get current connection pool statistics.
+
+        Returns:
+            Dict containing connection pool metrics
+        """
+        try:
+            if not self._httpx_client:
+                return {
+                    "status": "not_initialized",
+                    "max_connections": 0,
+                    "max_keepalive": 0,
+                    "active_connections": 0,
+                    "idle_connections": 0,
+                    "pool_utilization_percent": 0
+                }
+
+            # Access httpx connection pool stats
+            # Note: httpx doesn't expose pool stats directly, so we track via limits
+            limits = self._httpx_client._limits
+
+            # Calculate pool utilization (estimate based on configuration)
+            max_connections = limits.max_connections or 50
+            max_keepalive = limits.max_keepalive_connections or 20
+
+            # Since httpx doesn't expose active connection count,
+            # we provide configuration info and health status
+            return {
+                "status": "healthy" if self.health_check() else "unhealthy",
+                "max_connections": max_connections,
+                "max_keepalive": max_keepalive,
+                "keepalive_expiry_seconds": 30.0,
+                "pool_timeout_seconds": 5.0,
+                "http2_enabled": True,
+                "pool_utilization_percent": 0,  # Not available in httpx
+                "note": "httpx does not expose active connection count"
+            }
+        except Exception as e:
+            logger.error(f"Failed to get connection pool stats: {e}")
+            return {
+                "status": "error",
+                "error": str(e)
+            }
+
     async def list_documents(self, limit: int = 100, status_filter: str = None) -> dict:
         """
         List documents from the documents table.

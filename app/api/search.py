@@ -57,36 +57,16 @@ from ..services.unified_search_service import (
     SearchStrategy
 )
 
+# Import centralized dependencies
+from ..dependencies import get_rag_service, get_supabase_client
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # Create router
 router = APIRouter(prefix="/api", tags=["Search", "Embeddings", "Chat"])
 
-# Initialize services
-rag_service = RAGService()
-supabase_client = SupabaseClient()
-
-
-async def get_rag_service() -> RAGService:
-    """Dependency to get RAG service instance."""
-    if not rag_service.available:
-        raise HTTPException(
-            status_code=503,
-            detail="RAG service is not available. Please check service configuration."
-        )
-    return rag_service
-
-
-async def get_supabase_client() -> SupabaseClient:
-    """Dependency to get Supabase client instance."""
-    if not supabase_client.client:
-        raise HTTPException(
-            status_code=503,
-            detail="Database service is not available. Please check configuration."
-        )
-    return supabase_client
-
+# REMOVED: Module-level service initialization - now using centralized dependencies
 # REMOVED: /documents/{document_id}/query - Use /api/rag/query instead
 
 

@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from app.services.supabase_client import SupabaseClient
 from app.services.duplicate_detection_service import DuplicateDetectionService
 from app.services.product_merge_service import ProductMergeService
+from app.dependencies import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -82,11 +83,7 @@ class UpdateDuplicateStatusRequest(BaseModel):
 # ============================================================================
 # Dependency Injection
 # ============================================================================
-
-def get_supabase_client() -> SupabaseClient:
-    """Get Supabase client instance."""
-    return SupabaseClient()
-
+# REMOVED: get_supabase_client - now using centralized dependency from app.dependencies
 
 def get_duplicate_service(
     supabase: SupabaseClient = Depends(get_supabase_client)

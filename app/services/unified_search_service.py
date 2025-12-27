@@ -930,8 +930,12 @@ class UnifiedSearchService:
 
         Cost: ~$0.0001 per query (GPT-4o-mini)
         """
+        import time
+        start_time = time.time()
+
         try:
             import json
+            from app.services.ai_call_logger import AICallLogger
 
             # Use centralized AI client service
             ai_service = get_ai_client_service()
@@ -985,6 +989,30 @@ Return ONLY valid JSON. Use null for missing fields."""
 
             # Parse response
             parsed_data = json.loads(response.choices[0].message.content)
+
+            # Log GPT-4o-mini query understanding call
+            ai_logger = AICallLogger()
+            input_tokens = response.usage.prompt_tokens if hasattr(response, 'usage') else 0
+            output_tokens = response.usage.completion_tokens if hasattr(response, 'usage') else 0
+
+            # GPT-4o-mini pricing: $0.15/1M input, $0.60/1M output
+            cost = (input_tokens / 1_000_000) * 0.15 + (output_tokens / 1_000_000) * 0.60
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            await ai_logger.log_gpt_call(
+                task="query_understanding",
+                model="gpt-4o-mini",
+                response=response,
+                latency_ms=latency_ms,
+                confidence_score=0.90,
+                confidence_breakdown={
+                    "model_confidence": 0.92,
+                    "completeness": 0.95,
+                    "consistency": 0.88,
+                    "validation": 0.85
+                },
+                action="use_ai_result"
+            )
 
             # Check if this is a product name search
             if parsed_data.get("is_product_name") or parsed_data.get("product_name"):

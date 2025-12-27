@@ -83,6 +83,10 @@ class ImageProcessingService:
 
         async def classify_image_with_vision_model(image_path: str, model: str) -> Dict[str, Any]:
             """Fast classification using vision model (Qwen via TogetherAI)."""
+            import time
+            from app.services.ai_call_logger import AICallLogger
+
+            start_time = time.time()
             image_bytes = None
             image_base64 = None
             try:
@@ -118,11 +122,42 @@ Respond ONLY with JSON:
                         }
                     )
 
-                    result_text = response.json()['choices'][0]['message']['content']
+                    response_data = response.json()
+                    result_text = response_data['choices'][0]['message']['content']
                     result = json.loads(result_text)
 
                     # Extract model name for logging
                     model_short = model.split('/')[-1] if '/' in model else model
+
+                    # Log TogetherAI call (Qwen models)
+                    ai_logger = AICallLogger()
+                    latency_ms = int((time.time() - start_time) * 1000)
+                    usage = response_data.get('usage', {})
+                    input_tokens = usage.get('prompt_tokens', 0)
+                    output_tokens = usage.get('completion_tokens', 0)
+
+                    # Qwen pricing (TogetherAI)
+                    # Qwen3-VL-8B: $0.08/1M input, $0.50/1M output
+                    # Qwen3-VL-32B: $0.50/1M input, $1.50/1M output
+                    if 'Qwen3-VL-32B' in model:
+                        cost = (input_tokens / 1_000_000) * 0.50 + (output_tokens / 1_000_000) * 1.50
+                    else:  # Qwen3-VL-8B or other Qwen models
+                        cost = (input_tokens / 1_000_000) * 0.08 + (output_tokens / 1_000_000) * 0.50
+
+                    await ai_logger.log_together_call(
+                        task="image_classification",
+                        model=model_short,
+                        response=response_data,
+                        latency_ms=latency_ms,
+                        confidence_score=result.get('confidence', 0.5),
+                        confidence_breakdown={
+                            "model_confidence": result.get('confidence', 0.5),
+                            "completeness": 1.0,
+                            "consistency": 0.95,
+                            "validation": 0.90
+                        },
+                        action="use_ai_result"
+                    )
 
                     return {
                         'is_material': result.get('is_material', False),

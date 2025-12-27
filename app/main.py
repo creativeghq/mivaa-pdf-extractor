@@ -934,7 +934,11 @@ Get your token from the frontend application or Supabase authentication.
         allow_headers=cors_config["allow_headers"],
     )
     
-    # Add JSON serialization middleware (first to catch all responses)
+    # Add comprehensive error logging middleware (first to catch all errors)
+    from app.middleware.error_logging import ErrorLoggingMiddleware
+    app.add_middleware(ErrorLoggingMiddleware, log_request_body=False, log_response_body=False)
+
+    # Add JSON serialization middleware
     from app.middleware.json_serialization import JSONSerializationMiddleware
     app.add_middleware(JSONSerializationMiddleware)
 
@@ -1490,6 +1494,7 @@ from app.api.interior_design_routes import router as interior_design_router
 from app.api.health import router as health_router
 from app.api.chunk_quality_routes import router as chunk_quality_router
 from app.api.price_monitoring_routes import router as price_monitoring_router
+from app.api.websocket_routes import router as websocket_router
 
 app.include_router(health_router)  # Health check endpoints (must be first for monitoring)
 app.include_router(search_router)
@@ -1522,6 +1527,7 @@ app.include_router(user_feedback_router)  # NEW: User feedback with AI sentiment
 app.include_router(interior_design_router)  # NEW: Interior design generation with streaming progress
 app.include_router(chunk_quality_router)  # NEW: Chunk quality metrics and flagged content management
 app.include_router(price_monitoring_router)  # NEW: Price monitoring with Firecrawl (competitor scraping, alerts, history)
+app.include_router(websocket_router)  # NEW: WebSocket endpoint for real-time updates (job progress, system health)
 
 
 # ============================================================================

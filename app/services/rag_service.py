@@ -39,22 +39,33 @@ class RAGService:
         """Initialize RAG service with configuration."""
         self.config = config or {}
         self.logger = logging.getLogger(__name__)
+        self._available = True  # Service is available after initialization
 
         # Initialize services
-        self.embeddings_service = RealEmbeddingsService()
-        self.supabase_client = get_supabase_client()
-        self.vecs_service = get_vecs_service()
-        self.ai_client_service = get_ai_client_service()
-        self.ai_logger = AICallLogger()
+        try:
+            self.embeddings_service = RealEmbeddingsService()
+            self.supabase_client = get_supabase_client()
+            self.vecs_service = get_vecs_service()
+            self.ai_client_service = get_ai_client_service()
+            self.ai_logger = AICallLogger()
 
-        # Circuit breaker for resilience
-        self.circuit_breaker = CircuitBreaker(
-            name="RAG Service",
-            failure_threshold=5,
-            timeout_seconds=60
-        )
+            # Circuit breaker for resilience
+            self.circuit_breaker = CircuitBreaker(
+                name="RAG Service",
+                failure_threshold=5,
+                timeout_seconds=60
+            )
 
-        self.logger.info("✅ RAG Service initialized")
+            self.logger.info("✅ RAG Service initialized")
+        except Exception as e:
+            self.logger.error(f"❌ RAG Service initialization failed: {e}")
+            self._available = False
+            raise
+
+    @property
+    def available(self) -> bool:
+        """Check if RAG service is available and ready to use."""
+        return self._available
 
     async def health_check(self) -> Dict[str, Any]:
         """Check health of RAG service and dependencies."""

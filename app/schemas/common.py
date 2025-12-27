@@ -3,6 +3,9 @@ Common Pydantic schemas used across all API endpoints.
 
 This module contains base response models, pagination, error handling,
 and other shared data structures.
+
+NOTE: For new endpoints, use UnifiedApiResponse from unified_response.py
+instead of BaseResponse. BaseResponse is kept for backward compatibility.
 """
 
 from datetime import datetime
@@ -12,6 +15,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+# Import unified response for convenience
+from .unified_response import (
+    UnifiedApiResponse,
+    ErrorDetail,
+    ResponseMetadata,
+    ErrorCode
+)
 
 # Generic type for paginated responses
 T = TypeVar('T')

@@ -202,7 +202,10 @@ class DatabaseHealthService:
             self.metrics.max_query_time_ms = max(self.query_times)
     
     def get_health_status(self) -> Dict[str, Any]:
-        """Get current health status"""
+        """Get current health status including connection pool stats"""
+        # Get connection pool statistics
+        pool_stats = self.supabase_client.get_connection_pool_stats()
+
         return {
             "healthy": self.metrics.is_healthy,
             "last_check": self.metrics.last_check.isoformat() if self.metrics.last_check else None,
@@ -219,6 +222,7 @@ class DatabaseHealthService:
                 "max_query_time_ms": round(self.metrics.max_query_time_ms, 2),
                 "slow_query_threshold_ms": self.slow_query_threshold
             },
+            "connection_pool": pool_stats,  # NEW: Connection pool statistics
             "status": "healthy" if self.metrics.is_healthy else "unhealthy",
             "timestamp": datetime.utcnow().isoformat()
         }

@@ -33,7 +33,15 @@ from ..services.rag_service import RAGService
 from ..services.product_creation_service import ProductCreationService
 from ..services.material_kai_service import MaterialKaiService
 from ..services.progress_tracker import get_progress_service
-from ..dependencies import get_current_user, get_workspace_context, require_admin
+from ..dependencies import (
+    get_current_user,
+    get_workspace_context,
+    require_admin,
+    get_rag_service,
+    get_supabase_client,
+    get_material_kai_service,
+    get_pdf_processor
+)
 from ..middleware.jwt_auth import WorkspaceContext, User
 
 # Configure logging
@@ -91,30 +99,7 @@ def migrate_job_data():
 # Run migration on startup
 migrate_job_data()
 
-def get_pdf_processor():
-    """Dependency to get PDF processor instance"""
-    return PDFProcessor()
-
-def get_supabase_client():
-    """Dependency to get Supabase client instance"""
-    return SupabaseClient()
-
-async def get_rag_service() -> RAGService:
-    """Get RAG service instance from app state."""
-    from fastapi import HTTPException
-    from app.main import app
-
-    if hasattr(app.state, 'rag_service') and app.state.rag_service is not None:
-        return app.state.rag_service
-    else:
-        raise HTTPException(
-            status_code=503,
-            detail="RAG service is not available"
-        )
-
-def get_material_kai_service():
-    """Dependency to get Material Kai service instance"""
-    return MaterialKaiService()
+# REMOVED: Local dependency functions - now using centralized dependencies from app.dependencies
 
 async def track_job(job_id: str, job_type: str, status: str, details: Dict[str, Any] = None):
     """Track job status and update global job tracking"""
