@@ -49,9 +49,9 @@ class RAGService:
 
         # Circuit breaker for resilience
         self.circuit_breaker = CircuitBreaker(
+            name="RAG Service",
             failure_threshold=5,
-            recovery_timeout=60,
-            expected_exception=Exception
+            timeout_seconds=60
         )
 
         self.logger.info("✅ RAG Service initialized")
