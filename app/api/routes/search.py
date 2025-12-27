@@ -4,15 +4,15 @@ Search Routes - Query, chat, and search endpoints
 
 import logging
 import time
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Depends, status, Query
 
-from app.services.llamaindex_service import LlamaIndexService
+from app.services.rag_service import RAGService, get_rag_service
 from app.services.advanced_search_service import AdvancedSearchService, QueryType, SearchOperator
 from app.services.product_relationship_service import ProductRelationshipService
 from app.services.search_prompt_service import SearchPromptService
-from .shared import get_llamaindex_service
 from .models import (
     QueryRequest, QueryResponse,
     ChatRequest, ChatResponse,
@@ -25,10 +25,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/query", response_model=QueryResponse)
+@router.post("/query", response_model=QueryResponse, deprecated=True)
 async def query_documents(
-    request: QueryRequest,
-    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
+    request: QueryRequest
 ):
     """
     **?? CONSOLIDATED QUERY ENDPOINT - Text-Based RAG Query**
@@ -75,19 +74,10 @@ async def query_documents(
     **Old:** `POST /api/documents/{id}/summarize`
     **New:** `POST /api/rag/query` with summarization prompt
     """
-    start_time = datetime.utcnow()
-
-    try:
-        # Standard text-based RAG query
-        result = await llamaindex_service.advanced_rag_query(
-            query=request.query,
-            max_results=request.top_k,
-            similarity_threshold=request.similarity_threshold,
-            enable_reranking=request.enable_reranking,
-            query_type="factual"
-        )
-
-        processing_time = (datetime.utcnow() - start_time).total_seconds()
+    raise HTTPException(
+        status_code=410,
+        detail="Endpoint deprecated. Use /api/rag/search with multi_vector strategy."
+    )
 
         return QueryResponse(
             query=request.query,
@@ -106,10 +96,9 @@ async def query_documents(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Query processing failed: {str(e)}"
         )
-@router.post("/chat", response_model=ChatResponse)
+@router.post("/chat", response_model=ChatResponse, deprecated=True)
 async def chat_with_documents(
-    request: ChatRequest,
-    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
+    request: ChatRequest
 ):
     """
     Conversational interface for document Q&A.
@@ -117,28 +106,10 @@ async def chat_with_documents(
     This endpoint maintains conversation context and provides
     contextual responses based on the document collection.
     """
-    start_time = datetime.utcnow()
-    
-    try:
-        # Generate conversation ID if not provided
-        conversation_id = request.conversation_id or str(uuid4())
-        
-        # Process chat message using advanced_rag_query
-        result = await llamaindex_service.advanced_rag_query(
-            query=request.message,
-            max_results=request.top_k,
-            query_type="conversational"
-        )
-        
-        processing_time = (datetime.utcnow() - start_time).total_seconds()
-        
-        return ChatResponse(
-            message=request.message,
-            response=result.get('response', ''),
-            conversation_id=conversation_id,
-            sources=result.get('sources', []),
-            processing_time=processing_time
-        )
+    raise HTTPException(
+        status_code=410,
+        detail="Endpoint deprecated. Use /api/rag/search with multi_vector strategy."
+    )
         
     except Exception as e:
         logger.error(f"Chat processing failed: {e}", exc_info=True)
@@ -232,6 +203,7 @@ async def _enhance_search_results(
 @router.post("/search", response_model=SearchResponse)
 async def search_documents(
     request: SearchRequest,
+    rag_service: RAGService = Depends(get_rag_service),
     strategy: Optional[str] = Query(
         "multi_vector",
         description="Search strategy: only 'multi_vector' is supported"
@@ -239,8 +211,7 @@ async def search_documents(
     enable_query_understanding: bool = Query(
         True,
         description="AI query parsing to automatically extract filters from natural language. Enabled by default."
-    ),
-    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
+    )
 ):
     """
     **Multi-Vector Search Endpoint - TRUE 6-Embedding Fusion**
@@ -361,7 +332,7 @@ async def search_documents(
         # Combines 6 specialized CLIP embeddings + metadata filtering
         # text (20%), visual (20%), color (15%), texture (15%), style (15%), material (15%)
         material_filters = getattr(request, 'material_filters', None)
-        results = await llamaindex_service.multi_vector_search(
+        results = await rag_service.multi_vector_search(
             query=query_to_use,
             workspace_id=request.workspace_id,
             top_k=request.top_k,
@@ -420,10 +391,9 @@ async def search_documents(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Search processing failed: {str(e)}"
         )
-@router.post("/search/mmr", response_model=MMRSearchResponse)
+@router.post("/search/mmr", response_model=MMRSearchResponse, deprecated=True)
 async def mmr_search(
-    request: MMRSearchRequest,
-    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
+    request: MMRSearchRequest
 ):
     """
     Perform MMR (Maximal Marginal Relevance) search for diverse results.
@@ -434,8 +404,7 @@ async def mmr_search(
     try:
         start_time = datetime.utcnow()
         
-        # Call the MMR search method from LlamaIndex service
-        results = await llamaindex_service.semantic_search_with_mmr(
+        raise HTTPException(status_code=410, detail="Endpoint deprecated. Use /api/rag/search.")
             query=request.query,
             top_k=request.top_k,
             diversity_threshold=request.diversity_threshold,
@@ -460,10 +429,9 @@ async def mmr_search(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"MMR search failed: {str(e)}"
         )
-@router.post("/search/advanced", response_model=AdvancedQueryResponse)
+@router.post("/search/advanced", response_model=AdvancedQueryResponse, deprecated=True)
 async def advanced_query_search(
-    request: AdvancedQueryRequest,
-    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
+    request: AdvancedQueryRequest
 ):
     """
     Perform advanced query search with optimization and expansion.
@@ -474,22 +442,7 @@ async def advanced_query_search(
     try:
         start_time = datetime.utcnow()
         
-        # Convert string enums to proper enum types
-        query_type = QueryType(request.query_type.upper())
-        search_operator = SearchOperator(request.search_operator.upper())
-        
-        # Call the advanced query method from LlamaIndex service
-        results = await llamaindex_service.advanced_query_with_optimization(
-            query=request.query,
-            query_type=query_type,
-            top_k=request.top_k,
-            enable_expansion=request.enable_expansion,
-            enable_rewriting=request.enable_rewriting,
-            similarity_threshold=request.similarity_threshold,
-            document_ids=request.document_ids,
-            metadata_filters=request.metadata_filters,
-            search_operator=search_operator
-        )
+        raise HTTPException(status_code=410, detail="Endpoint deprecated. Use /api/rag/search.")
 
         processing_time = (datetime.utcnow() - start_time).total_seconds()
 

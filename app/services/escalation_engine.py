@@ -54,7 +54,7 @@ class EscalationEngine:
         task_type: str,
         task_function: Callable,
         task_data: Dict[str, Any],
-        initial_model: str = "llama-4-scout-17b",
+        initial_model: str = "qwen3-vl-8b",
         job_id: Optional[str] = None,
         max_attempts: int = 3,
     ) -> Dict[str, Any]:

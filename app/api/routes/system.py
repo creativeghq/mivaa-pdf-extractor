@@ -10,9 +10,8 @@ Endpoints:
 import logging
 from fastapi import APIRouter, Depends, Query
 
-from app.services.llamaindex_service import LlamaIndexService
+
 from app.services.supabase_client import get_supabase_client
-from .shared import get_llamaindex_service
 from .models import HealthCheckResponse
 
 logger = logging.getLogger(__name__)
@@ -24,35 +23,20 @@ router = APIRouter()
 # Endpoints
 # ============================================================================
 @router.get("/health", response_model=HealthCheckResponse)
-async def rag_health_check(
-    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
-):
+async def rag_health_check():
     """
     Health check endpoint for RAG service.
-    
+
     Returns service status and availability of key components.
     """
-    try:
-        is_available = llamaindex_service.available if llamaindex_service else False
-        
-        return HealthCheckResponse(
-            status="healthy" if is_available else "degraded",
-            llamaindex_available=is_available,
-            message="RAG service is operational" if is_available else "LlamaIndex service unavailable"
-        )
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return HealthCheckResponse(
-            status="unhealthy",
-            llamaindex_available=False,
-            message=f"Health check error: {str(e)}"
-        )
+    return HealthCheckResponse(
+        status="healthy",
+        message="RAG service operational (Direct Vector DB)"
+    )
 
 
-@router.get("/stats")
-async def get_rag_statistics(
-    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
-):
+@router.get("/stats", deprecated=True)
+async def get_rag_statistics():
     """
     Get overall RAG system statistics.
     
@@ -76,18 +60,16 @@ async def get_rag_statistics(
         return {
             "total_documents": total_documents,
             "total_chunks": total_chunks,
-            "total_embeddings": total_embeddings,
-            "llamaindex_available": llamaindex_service.available if llamaindex_service else False
+            "total_embeddings": total_embeddings
         }
     except Exception as e:
         logger.error(f"Failed to get RAG statistics: {e}")
         raise
 
 
-@router.get("/workspace-stats")
+@router.get("/workspace-stats", deprecated=True)
 async def get_workspace_statistics(
-    workspace_id: str,
-    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
+    workspace_id: str
 ):
     """
     Get statistics for a specific workspace.

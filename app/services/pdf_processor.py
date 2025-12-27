@@ -55,7 +55,7 @@ async def download_image_to_base64(image_url: str) -> str:
     """
     Download image from Supabase URL and convert to base64.
 
-    Used for AI classification and Llama Vision analysis.
+    Used for AI classification and Qwen Vision analysis.
     CLIP embeddings can use URLs directly.
 
     Args:

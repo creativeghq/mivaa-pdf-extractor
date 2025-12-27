@@ -1,9 +1,9 @@
 """
 Search and RAG API Endpoints
 
-This module provides advanced search and RAG (Retrieval-Augmented Generation) 
-endpoints using LlamaIndex for semantic search, document querying, and 
-intelligent document analysis.
+This module provides advanced search and RAG (Retrieval-Augmented Generation)
+endpoints using Claude 4.5 + Direct Vector DB for semantic search, document querying,
+and intelligent document analysis.
 """
 
 import logging
@@ -41,7 +41,7 @@ from ..schemas.search import (
     # All functionality now handled by modern multi-modal schemas above
 )
 from ..schemas.common import ErrorResponse, SuccessResponse
-from ..services.llamaindex_service import LlamaIndexService
+from ..services.rag_service import RAGService
 from ..services.supabase_client import SupabaseClient
 from ..services.material_visual_search_service import (
     MaterialVisualSearchService,
@@ -64,18 +64,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["Search", "Embeddings", "Chat"])
 
 # Initialize services
-llamaindex_service = LlamaIndexService()
+rag_service = RAGService()
 supabase_client = SupabaseClient()
 
 
-async def get_llamaindex_service() -> LlamaIndexService:
-    """Dependency to get LlamaIndex service instance."""
-    if not llamaindex_service.available:
+async def get_rag_service() -> RAGService:
+    """Dependency to get RAG service instance."""
+    if not rag_service.available:
         raise HTTPException(
             status_code=503,
-            detail="LlamaIndex service is not available. Please check service configuration."
+            detail="RAG service is not available. Please check service configuration."
         )
-    return llamaindex_service
+    return rag_service
 
 
 async def get_supabase_client() -> SupabaseClient:
@@ -98,7 +98,7 @@ async def get_supabase_client() -> SupabaseClient:
 )
 async def semantic_search(
     request: SemanticSearchRequest,
-    llamaindex: LlamaIndexService = Depends(get_llamaindex_service),
+    rag: RAGService = Depends(get_rag_service),
     supabase: SupabaseClient = Depends(get_supabase_client)
 ) -> SemanticSearchResponse:
     """
@@ -134,7 +134,7 @@ async def semantic_search(
         
         # Generate embedding for the query
         try:
-            embedding_result = await llamaindex.embedding_service.generate_embedding(request.query)
+            embedding_result = await rag.embedding_service.generate_embedding(request.query)
             if not embedding_result or not embedding_result.embedding:
                 raise Exception("Failed to generate query embedding")
             query_embedding = embedding_result.embedding  # Extract the actual embedding list
@@ -249,10 +249,10 @@ async def semantic_search(
 
         except Exception as e:
             logger.error(f"Vector search error: {e}")
-            # Fallback to LlamaIndex search if vector search fails
+            # Fallback to RAG query if vector search fails
             for doc_id in document_ids:
                 try:
-                    result = await llamaindex.query_document(
+                    result = await rag.query_document(
                         document_id=doc_id,
                         query=request.query,
                         response_mode="compact"
@@ -373,7 +373,7 @@ async def semantic_search(
 )
 async def similarity_search(
     request: SimilaritySearchRequest,
-    llamaindex: LlamaIndexService = Depends(get_llamaindex_service),
+    rag: RAGService = Depends(get_rag_service),
     supabase: SupabaseClient = Depends(get_supabase_client)
 ) -> SimilaritySearchResponse:
     """
@@ -392,7 +392,7 @@ async def similarity_search(
             similarity_threshold=request.similarity_threshold
         )
         
-        semantic_result = await semantic_search(semantic_request, llamaindex, supabase)
+        semantic_result = await semantic_search(semantic_request, rag, supabase)
         
         # Transform the response format
         similar_documents = []
@@ -448,16 +448,16 @@ async def similarity_search(
     description="Check the health and availability of search and RAG services"
 )
 async def search_health_check(
-    llamaindex: LlamaIndexService = Depends(get_llamaindex_service)
+    rag: RAGService = Depends(get_rag_service)
 ) -> SuccessResponse:
     """
     Check the health of search and RAG services.
     
     This endpoint provides information about the availability and status
-    of the LlamaIndex service and its components.
+    of the RAG service and its components.
     """
     try:
-        health_status = await llamaindex.health_check()
+        health_status = await rag.health_check()
         
         return SuccessResponse(
             success=True,
@@ -485,7 +485,7 @@ async def search_health_check(
 )
 async def multimodal_search(
     request: SearchRequest,
-    llamaindex: LlamaIndexService = Depends(get_llamaindex_service),
+    rag: RAGService = Depends(get_rag_service),
     supabase: SupabaseClient = Depends(get_supabase_client)
 ) -> SearchResponse:
     """
@@ -555,8 +555,8 @@ async def multimodal_search(
         search_results = []
         for doc_id in document_ids:
             try:
-                # Use enhanced LlamaIndex service for multi-modal search
-                result = await llamaindex.multimodal_search(
+                # Use enhanced RAG service for multi-modal search
+                result = await rag.multimodal_search(
                     document_id=doc_id,
                     **search_params
                 )
@@ -673,7 +673,7 @@ async def multimodal_search(
 )
 async def multimodal_query(
     request: QueryRequest,
-    llamaindex: LlamaIndexService = Depends(get_llamaindex_service),
+    rag: RAGService = Depends(get_rag_service),
     supabase: SupabaseClient = Depends(get_supabase_client)
 ) -> QueryResponse:
     """
@@ -731,7 +731,7 @@ async def multimodal_query(
         try:
             if document_ids:
                 # Use the first document for analysis
-                result = await llamaindex.multimodal_analysis(
+                result = await rag.multimodal_analysis(
                     document_id=document_ids[0],
                     analysis_types=["text", "image", "ocr"],
                     include_text_analysis=True,
@@ -818,7 +818,7 @@ async def multimodal_query(
 )
 async def image_search(
     request: ImageSearchRequest,
-    llamaindex: LlamaIndexService = Depends(get_llamaindex_service),
+    rag: RAGService = Depends(get_rag_service),
     supabase: SupabaseClient = Depends(get_supabase_client)
 ) -> ImageSearchResponse:
     """
@@ -865,7 +865,7 @@ async def image_search(
             "mechanical_filters": request.mechanical_filters,
             "fusion_weights": request.fusion_weights,
             "enable_clip_embeddings": request.enable_clip_embeddings,
-            "enable_llama_analysis": request.enable_llama_analysis,
+            "enable_vision_analysis": request.enable_vision_analysis,
             "include_analytics": request.include_analytics
         }
         
@@ -906,7 +906,7 @@ async def image_search(
         search_results = []
         for doc_id in document_ids:
             try:
-                result = await llamaindex.image_search(
+                result = await rag.image_search(
                     document_id=doc_id,
                     **search_params
                 )
@@ -927,7 +927,7 @@ async def image_search(
                             # Enhanced material analysis fields
                             material_analysis=item.get("material_analysis", {}),
                             clip_embedding=item.get("clip_embedding", []),
-                            llama_analysis=item.get("llama_analysis", {}),
+                            vision_analysis=item.get("vision_analysis", {}),
                             material_type=item.get("material_type"),
                             material_confidence=item.get("material_confidence"),
                             spectral_properties=item.get("spectral_properties", {}),
@@ -981,7 +981,7 @@ async def image_search(
 )
 async def multimodal_analysis(
     request: MultiModalAnalysisRequest,
-    llamaindex: LlamaIndexService = Depends(get_llamaindex_service),
+    rag: RAGService = Depends(get_rag_service),
     supabase: SupabaseClient = Depends(get_supabase_client)
 ) -> MultiModalAnalysisResponse:
     """
@@ -1028,7 +1028,7 @@ async def multimodal_analysis(
         }
         
         # Perform comprehensive analysis
-        result = await llamaindex.multimodal_analysis(**analysis_params)
+        result = await rag.multimodal_analysis(**analysis_params)
         
         if not result["success"]:
             raise HTTPException(
@@ -1105,7 +1105,7 @@ async def material_visual_search(
     This endpoint provides:
     - Visual similarity search using CLIP embeddings
     - Material property filtering (spectral, chemical, mechanical, thermal)
-    - LLaMA Vision analysis for material understanding
+    - Qwen Vision analysis for material understanding
     - Multi-modal fusion with configurable weights
     - Integration with Supabase visual search infrastructure
     """
@@ -1152,7 +1152,7 @@ async def analyze_material_image(
     - Material identification and classification
     - Spectral, chemical, and mechanical property analysis
     - CLIP embedding generation
-    - LLaMA Vision material understanding
+    - Qwen Vision material understanding
     """
     try:
         image_data = request.get("image_data")
@@ -1366,7 +1366,7 @@ async def material_search_health_check(
 )
 async def search_by_color(
     request: ImageSearchRequest,
-    llamaindex: LlamaIndexService = Depends(get_llamaindex_service)
+    rag: RAGService = Depends(get_rag_service)
 ) -> ImageSearchResponse:
     """
     **🎨 Color Palette Search**
@@ -1446,7 +1446,7 @@ async def search_by_color(
 )
 async def search_by_texture(
     request: ImageSearchRequest,
-    llamaindex: LlamaIndexService = Depends(get_llamaindex_service)
+    rag: RAGService = Depends(get_rag_service)
 ) -> ImageSearchResponse:
     """
     **🔲 Texture Pattern Search**
@@ -1513,7 +1513,7 @@ async def search_by_texture(
 )
 async def search_by_style(
     request: ImageSearchRequest,
-    llamaindex: LlamaIndexService = Depends(get_llamaindex_service)
+    rag: RAGService = Depends(get_rag_service)
 ) -> ImageSearchResponse:
     """
     **✨ Design Style Search**
@@ -1580,7 +1580,7 @@ async def search_by_style(
 )
 async def search_by_material(
     request: ImageSearchRequest,
-    llamaindex: LlamaIndexService = Depends(get_llamaindex_service)
+    rag: RAGService = Depends(get_rag_service)
 ) -> ImageSearchResponse:
     """
     **🪨 Material Type Search**

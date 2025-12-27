@@ -37,7 +37,7 @@ class CleanupService:
         self.temp_dirs = [
             '/tmp/pdf_processing',
             '/tmp/image_extraction',
-            '/tmp/llama_cache',
+            '/tmp/together_cache',
             '/tmp/claude_cache'
         ]
     

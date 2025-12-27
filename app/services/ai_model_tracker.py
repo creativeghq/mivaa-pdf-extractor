@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AIModelCall:
     """Represents a single AI model call"""
-    model_name: str  # e.g., "LLAMA", "Anthropic", "CLIP", "OpenAI"
+    model_name: str  # e.g., "Qwen", "Anthropic", "CLIP", "OpenAI"
     stage: str  # e.g., "classification", "boundary_detection", "embedding"
     task: str  # e.g., "product_classification", "image_embedding"
     timestamp: str
@@ -67,7 +67,7 @@ class AIModelTracker:
         Log an AI model call.
         
         Args:
-            model_name: Name of AI model (LLAMA, Anthropic, CLIP, OpenAI)
+            model_name: Name of AI model (Qwen, Anthropic, CLIP, OpenAI)
             stage: Processing stage (classification, boundary_detection, embedding, etc.)
             task: Specific task (product_classification, image_embedding, etc.)
             latency_ms: Response time in milliseconds

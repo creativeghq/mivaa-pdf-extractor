@@ -175,15 +175,15 @@ async def classify_images(
     request: ClassifyImagesRequest
 ):
     """
-    Classify images as material or non-material using Llama Vision + Claude validation.
+    Classify images as material or non-material using Qwen Vision + Claude validation.
 
     This endpoint:
-    1. Uses Llama Vision for fast initial classification
+    1. Uses vision model for fast initial classification
     2. Validates uncertain cases (confidence < threshold) with Claude Sonnet
     3. Returns separated lists of material and non-material images
 
     AI Configuration (Optional):
-    - classification_primary_model: Primary classification model (default: Llama Vision)
+    - classification_primary_model: Primary classification model (default: Qwen3-VL-8B)
     - classification_validation_model: Validation model (default: Claude Sonnet 4.5)
     - classification_confidence_threshold: Threshold for validation (default: 0.7)
     - classification_temperature: Temperature setting (default: 0.1)
@@ -195,7 +195,7 @@ async def classify_images(
       "job_id": "abc123",
       "extracted_images": [...],
       "ai_config": {
-        "classification_primary_model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+        "classification_primary_model": "Qwen/Qwen3-VL-8B-Instruct",
         "classification_validation_model": "claude-sonnet-4-20250514",
         "classification_confidence_threshold": 0.8
       }

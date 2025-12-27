@@ -2,7 +2,7 @@
 Product Enrichment Service - Stage 5 Implementation
 
 This service enriches products with real data from:
-1. Image analysis results (Llama, Claude, CLIP embeddings)
+1. Image analysis results (Qwen, Claude, CLIP embeddings)
 2. Material properties extracted from images
 3. Product embeddings for semantic search
 4. Related product linking
@@ -162,7 +162,7 @@ class ProductEnrichmentService:
             related_images = []
             for image in images:
                 # Check if image has real analysis (not mock)
-                if image.get('llama_analysis') or image.get('claude_validation'):
+                if image.get('vision_analysis') or image.get('claude_validation'):
                     related_images.append(image)
             
             return related_images[:5]  # Limit to 5 most relevant images

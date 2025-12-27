@@ -266,7 +266,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
 
         logger.info(f"? Job {job_id} marked for restart from {resume_stage}")
 
-        # ? CRITICAL FIX: Restart the job by calling the LlamaIndex service directly
+        # ? CRITICAL FIX: Restart the job by calling the RAG service directly
         # The process_document_background function doesn't support resume_from_checkpoint
         # Instead, we need to trigger the processing through the service layer
 
@@ -397,7 +397,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
                     document_tags=doc_data.get('tags', []),
                     chunk_size=1000,
                     chunk_overlap=200,
-                    llamaindex_service=None  # Will be retrieved from app state
+                    rag_service=None  # Will be retrieved from app state
                 )
 
             logger.info(f"? Background task triggered for job {job_id} (type: {job_type})")
@@ -565,7 +565,7 @@ async def get_job_ai_tracking(job_id: str):
     Get detailed AI model tracking information for a job.
 
     Returns comprehensive metrics on:
-    - Which AI models were used (LLAMA, Anthropic, CLIP, OpenAI)
+    - Which AI models were used (QWEN, Anthropic, CLIP, OpenAI)
     - Confidence scores and results
     - Token usage and processing time
     - Success/failure rates
@@ -668,7 +668,7 @@ async def get_job_ai_tracking_by_model(job_id: str, model_name: str):
 
     Args:
         job_id: Job identifier
-        model_name: AI model name (LLAMA, Anthropic, CLIP, OpenAI)
+        model_name: AI model name (QWEN, Anthropic, CLIP, OpenAI)
 
     Returns:
         Statistics for the specified AI model

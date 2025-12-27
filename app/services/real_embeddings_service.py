@@ -80,6 +80,19 @@ class RealEmbeddingsService:
         self._siglip_model = None
         self._siglip_processor = None
 
+        # Load visual embedding model configuration from settings
+        from app.config import settings
+        self.visual_primary_model = settings.visual_embedding_primary_model
+        self.visual_fallback_model = settings.visual_embedding_fallback_model
+        self.visual_dimensions = settings.visual_embedding_dimensions
+        self.visual_enabled = settings.visual_embedding_enabled
+
+        # Voyage AI configuration
+        self.voyage_api_key = settings.voyage_api_key
+        self.voyage_model = settings.voyage_model
+        self.voyage_enabled = settings.voyage_enabled
+        self.voyage_fallback_to_openai = settings.voyage_fallback_to_openai
+
         # Initialize embedding cache (Phase 1 optimization)
         self._embedding_cache = None
         if config and getattr(config, 'enable_embedding_cache', False):
@@ -149,12 +162,8 @@ class RealEmbeddingsService:
                     image_url, image_data
                 )
                 if visual_embedding:
-                    # Store with both key names for compatibility
                     embeddings["embeddings"]["visual_1152"] = visual_embedding  # SigLIP 1152D
-                    embeddings["embeddings"]["visual_512"] = visual_embedding  # Legacy key for backward compatibility
-                    embeddings["embeddings"]["visual_clip_512"] = visual_embedding  # Legacy key
                     embeddings["metadata"]["model_versions"]["visual"] = model_used
-                    # High confidence for SigLIP
                     embeddings["metadata"]["confidence_scores"]["visual"] = 0.95
                     self.logger.info(f"✅ Visual embedding generated (1152D) using {model_used}")
 
@@ -188,10 +197,9 @@ class RealEmbeddingsService:
                     embeddings["embeddings"]["visual_1152"]
                 )
                 embeddings["embeddings"]["multimodal_2688"] = multimodal_embedding
-                embeddings["embeddings"]["multimodal_2048"] = multimodal_embedding  # Legacy key for backward compatibility
                 embeddings["metadata"]["model_versions"]["multimodal"] = "fusion-v1"
                 embeddings["metadata"]["confidence_scores"]["multimodal"] = 0.92
-                self.logger.info("✅ Multimodal fusion embedding generated (2048D)")
+                self.logger.info("✅ Multimodal fusion embedding generated (2688D)")
             
             # Removed fake embeddings (color, texture, application)
             # They were just downsampled text embeddings - redundant!
@@ -482,15 +490,15 @@ class RealEmbeddingsService:
         Returns:
             Tuple of (1152D embedding vector or None, model_name used, PIL image for reuse)
         """
-        # Use SigLIP exclusively
-        siglip_embedding, pil_image_out = await self._generate_siglip_embedding(
+        # Use configured visual embedding model (default: SigLIP)
+        visual_embedding, pil_image_out = await self._generate_siglip_embedding(
             image_url, image_data, pil_image=pil_image
         )
-        if siglip_embedding:
-            self.logger.info("✅ Using SigLIP embedding")
-            return siglip_embedding, "siglip-so400m-patch14-384", pil_image_out
+        if visual_embedding:
+            self.logger.info(f"✅ Using visual embedding from {self.visual_primary_model}")
+            return visual_embedding, self.visual_primary_model, pil_image_out
 
-        self.logger.error("❌ SigLIP embedding generation failed")
+        self.logger.error(f"❌ Visual embedding generation failed for {self.visual_primary_model}")
         return None, "none", None
 
     async def _generate_siglip_embedding(
@@ -842,30 +850,30 @@ class RealEmbeddingsService:
             from transformers import AutoModel, AutoProcessor
             import asyncio
 
-            self.logger.info("🔄 Loading SigLIP model for batch processing...")
+            self.logger.info("🔄 Loading visual embedding model for batch processing...")
 
-            # Load SigLIP model (exclusive visual embedding model)
+            # Load visual embedding model (configurable - default SigLIP)
             try:
-                self.logger.info("   Loading SigLIP model: google/siglip-so400m-patch14-384")
+                self.logger.info(f"   Loading visual model: {self.visual_primary_model}")
                 self._siglip_model = await asyncio.wait_for(
-                    asyncio.to_thread(AutoModel.from_pretrained, 'google/siglip-so400m-patch14-384'),
+                    asyncio.to_thread(AutoModel.from_pretrained, self.visual_primary_model),
                     timeout=60.0
                 )
                 self._siglip_processor = await asyncio.wait_for(
-                    asyncio.to_thread(AutoProcessor.from_pretrained, 'google/siglip-so400m-patch14-384'),
+                    asyncio.to_thread(AutoProcessor.from_pretrained, self.visual_primary_model),
                     timeout=60.0
                 )
                 self._siglip_model.eval()  # Set to evaluation mode
-                self.logger.info("   ✅ SigLIP model loaded")
+                self.logger.info(f"   ✅ Visual embedding model loaded: {self.visual_primary_model}")
             except asyncio.TimeoutError:
-                self.logger.error("   ❌ SigLIP model loading timed out after 60s")
+                self.logger.error(f"   ❌ Visual embedding model loading timed out after 60s: {self.visual_primary_model}")
                 return False
             except Exception as e:
-                self.logger.error(f"   ❌ SigLIP model loading failed: {e}")
+                self.logger.error(f"   ❌ Visual embedding model loading failed ({self.visual_primary_model}): {e}")
                 return False
 
             self._models_loaded = True
-            self.logger.info("✅ SigLIP model loaded successfully for batch processing")
+            self.logger.info(f"✅ Visual embedding model loaded successfully: {self.visual_primary_model} ({self.visual_dimensions}D)")
             return True
 
         except Exception as e:

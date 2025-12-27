@@ -66,7 +66,7 @@ class PipelineOrchestrator:
         - Handles errors with proper logging and Sentry integration
 
         Pipeline Stages:
-        1. Classify Images (50-60%) - Two-stage AI classification (Llama → Claude)
+        1. Classify Images (50-60%) - Two-stage AI classification (Qwen → Claude)
         2. Upload Images (60-65%) - Upload material images to Supabase Storage
         3. Save Images & Generate CLIP (65-75%) - DB save + 5 CLIP embeddings per image
         4. Create Chunks (75-85%) - Semantic chunking + text embeddings
@@ -90,7 +90,7 @@ class PipelineOrchestrator:
             ai_config: Optional AI model configuration dict with parameters:
                 - visual_embedding_primary: Primary visual model (default: SigLIP)
                 - visual_embedding_fallback: Fallback visual model (default: CLIP)
-                - classification_primary_model: Primary classification model (default: Llama)
+                - classification_primary_model: Primary classification model (default: Qwen)
                 - classification_validation_model: Validation model (default: Claude)
                 - classification_confidence_threshold: Confidence threshold (default: 0.7)
                 - discovery_model: Product discovery model (default: Claude)
@@ -146,7 +146,7 @@ class PipelineOrchestrator:
             logger.info("🤖 [STAGE 1/5] Image Classification - Starting...")
             logger.info(f"   Total images to classify: {len(extracted_images)}")
             logger.info(f"   Confidence threshold: {confidence_threshold}")
-            logger.info(f"   Method: Two-stage (Llama Vision → Claude validation)")
+            logger.info(f"   Method: Two-stage (Qwen Vision → Claude validation)")
 
             await tracker.update_stage(ProcessingStage.EXTRACTING_IMAGES, stage_name="image_classification")
 

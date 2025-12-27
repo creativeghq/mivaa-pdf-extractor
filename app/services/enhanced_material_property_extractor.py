@@ -6,7 +6,7 @@ material functional properties to match frontend capabilities (60+ properties
 across 9 categories), replacing basic keyword matching with semantic analysis.
 
 Key Features:
-- LLM-powered semantic understanding using TogetherAI LLaMA Vision
+- LLM-powered semantic understanding using TogetherAI Qwen Vision
 - Comprehensive property extraction across 9 functional categories
 - Structured output matching frontend filter system requirements
 - Confidence scoring based on extraction quality
@@ -119,7 +119,7 @@ class EnhancedMaterialPropertyExtractor:
     Enhanced material property extractor using sophisticated LLM-based semantic analysis.
     
     This class replaces basic keyword matching with comprehensive property extraction
-    that leverages TogetherAI's LLaMA Vision model for sophisticated document understanding.
+    that leverages TogetherAI's Qwen Vision model for sophisticated document understanding.
     """
     
     def __init__(self, together_ai_client=None, confidence_threshold: float = 0.7, workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"):
@@ -537,7 +537,7 @@ class EnhancedMaterialPropertyExtractor:
         """
         Perform LLM-based property extraction using TogetherAI.
         
-        This method leverages the LLaMA Vision model for sophisticated
+        This method leverages the Qwen Vision model for sophisticated
         semantic understanding of technical material specifications.
         """
         try:

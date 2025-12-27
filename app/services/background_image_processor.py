@@ -6,7 +6,7 @@ This service runs asynchronously to avoid blocking the main PDF processing flow.
 
 Features:
 - CLIP visual embeddings (512D)
-- Llama 4 Scout 17B Vision analysis
+- Qwen3-VL 17B Vision analysis
 - Claude Sonnet 4.5 Vision validation
 - Color embeddings (256D)
 - Texture embeddings (256D)
@@ -59,7 +59,7 @@ class BackgroundImageProcessor:
             # Query images needing analysis
             images_response = self.supabase.client.table('document_images').select('*').eq(
                 'document_id', document_id
-            ).is_('llama_analysis', 'null').limit(batch_size).execute()
+            ).is_('vision_analysis', 'null').limit(batch_size).execute()
             
             pending_images = images_response.data or []
             
@@ -157,12 +157,12 @@ class BackgroundImageProcessor:
             # Generate specialized embeddings (color, texture, application)
             embeddings_result = await embeddings_service.generate_material_embeddings(
                 image_url=image_url,
-                material_properties=analysis_result.get('llama_analysis', {})
+                material_properties=analysis_result.get('vision_analysis', {})
             )
-            
+
             # Update database with analysis results (embeddings saved separately to embeddings table + VECS)
             update_data = {
-                "llama_analysis": analysis_result.get('llama_analysis'),
+                "vision_analysis": analysis_result.get('vision_analysis'),
                 "claude_validation": analysis_result.get('claude_validation'),
                 "processing_status": "completed",
                 "updated_at": datetime.utcnow().isoformat()
@@ -202,7 +202,7 @@ class BackgroundImageProcessor:
             return {
                 "success": True,
                 "image_id": image_id,
-                "has_llama": bool(analysis_result.get('llama_analysis')),
+                "has_vision": bool(analysis_result.get('vision_analysis')),
                 "has_claude": bool(analysis_result.get('claude_validation')),
                 "has_clip": bool(analysis_result.get('clip_embedding')),
                 "has_color": bool(embeddings_result.get('color_embedding')),

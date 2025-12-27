@@ -129,7 +129,7 @@ class AIClientService:
     def httpx(self) -> httpx.AsyncClient:
         """Get shared httpx async client for TogetherAI and other HTTP APIs.
 
-        CRITICAL FIX: Timeout aligned with application timeout guard (30s for Llama Vision)
+        CRITICAL FIX: Timeout aligned with application timeout guard (30s for Qwen Vision)
         to prevent HTTP 499 (Client Closed Request) errors.
 
         Previous: 120s timeout caused conflicts when app timeout guard (30s) killed requests.

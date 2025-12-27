@@ -10,7 +10,7 @@ import asyncio
 from typing import Dict, Any
 from fastapi import Depends
 
-from app.services.llamaindex_service import LlamaIndexService
+
 from app.services.real_embeddings_service import RealEmbeddingsService
 
 logger = logging.getLogger(__name__)
@@ -72,18 +72,19 @@ def run_async_in_background(async_func):
 # ============================================================================
 # Service Dependencies (Lazy Loading)
 # ============================================================================
-async def get_llamaindex_service() -> LlamaIndexService:
-    """Get LlamaIndex service instance using lazy loading."""
+async def get_rag_service() -> 'RAGService':
+    """Get RAG service instance using lazy loading."""
     from app.services.lazy_loader import get_component_manager
     component_manager = get_component_manager()
-    
+
     try:
-        service = await component_manager.load("llamaindex_service")
+        service = await component_manager.load("rag_service")
         return service
     except Exception as e:
-        logger.error(f"Failed to load LlamaIndex service: {e}")
+        logger.error(f"Failed to load RAG service: {e}")
         # Return a new instance as fallback
-        return LlamaIndexService()
+        from app.services.rag_service import RAGService
+        return RAGService()
 
 
 async def get_embedding_service() -> RealEmbeddingsService:

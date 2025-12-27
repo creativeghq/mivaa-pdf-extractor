@@ -45,8 +45,8 @@ class SentimentAnalysisService:
             Dictionary with sentiment analysis results
         """
         try:
-            # Use Together AI for sentiment analysis (Llama model)
-            sentiment_result = await self._analyze_with_llama(feedback_text, material_name, rating)
+            # Use Together AI for sentiment analysis (Qwen model)
+            sentiment_result = await self._analyze_with_qwen(feedback_text, material_name, rating)
             
             return sentiment_result
             
@@ -55,13 +55,13 @@ class SentimentAnalysisService:
             # Return fallback result
             return self._get_fallback_sentiment(feedback_text, rating)
     
-    async def _analyze_with_llama(
+    async def _analyze_with_qwen(
         self,
         feedback_text: str,
         material_name: Optional[str],
         rating: Optional[int]
     ) -> Dict:
-        """Use Llama model for comprehensive sentiment analysis"""
+        """Use Qwen model for comprehensive sentiment analysis"""
         
         prompt = f"""Analyze the following user feedback about a material product and provide a detailed sentiment analysis.
 
@@ -97,7 +97,7 @@ Respond ONLY with valid JSON, no additional text."""
 
         try:
             response = self.together_client.chat.completions.create(
-                model="meta-llama/Llama-4-Scout-17B-16E-Instruct",
+                model="Qwen/Qwen3-VL-8B-Instruct",
                 messages=[
                     {
                         "role": "system",
@@ -119,12 +119,12 @@ Respond ONLY with valid JSON, no additional text."""
             
             # Add metadata
             result["analyzed_at"] = datetime.utcnow().isoformat()
-            result["model_used"] = "meta-llama/Llama-4-Scout-17B-16E-Instruct"
+            result["model_used"] = "Qwen/Qwen3-VL-8B-Instruct"
             
             return result
             
         except Exception as e:
-            logger.error(f"Llama sentiment analysis failed: {e}")
+            logger.error(f"Qwen sentiment analysis failed: {e}")
             return self._get_fallback_sentiment(feedback_text, rating)
     
     def _get_fallback_sentiment(self, feedback_text: str, rating: Optional[int]) -> Dict:

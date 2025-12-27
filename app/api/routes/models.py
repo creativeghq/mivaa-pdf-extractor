@@ -170,6 +170,5 @@ class AdvancedQueryResponse(BaseModel):
 class HealthCheckResponse(BaseModel):
     """Response model for health check."""
     status: str
-    llamaindex_available: bool
     message: str
 

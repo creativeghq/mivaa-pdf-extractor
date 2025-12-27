@@ -31,7 +31,7 @@ class RealQualityScoringService:
     
     # Quality score weights
     IMAGE_QUALITY_WEIGHTS = {
-        "analysis_completeness": 0.30,  # Has Llama, Claude, CLIP analysis
+        "analysis_completeness": 0.30,  # Has Qwen, Claude, CLIP analysis
         "dimensions_quality": 0.20,      # Image dimensions and format
         "material_properties": 0.25,     # Extracted material properties
         "embedding_coverage": 0.15,      # Has all embedding types
@@ -78,7 +78,7 @@ class RealQualityScoringService:
             
             # 1. Analysis Completeness (0-1)
             analysis_completeness = 0.0
-            if image_data.get('llama_analysis'):
+            if image_data.get('vision_analysis'):
                 analysis_completeness += 0.33
             if image_data.get('claude_validation'):
                 analysis_completeness += 0.33

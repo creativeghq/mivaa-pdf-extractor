@@ -1,10 +1,10 @@
 """
 Product Vision Extractor - Enhanced PDF Product Detection
 
-This service uses Llama 4 Scout Vision to extract product information from PDF images.
-Llama 4 Scout excels at:
-- OCR (# 1 open source model)
-- Table extraction (superior to Llama 3.2 90B)
+This service uses Qwen3-VL Vision to extract product information from PDF images.
+Qwen3-VL excels at:
+- OCR (#1 open source model)
+- Table extraction (superior performance)
 - Diagram understanding (69.4% MMMU benchmark)
 - Material property detection
 
@@ -43,7 +43,7 @@ class ProductVisionResult:
 
 class ProductVisionExtractor:
     """
-    Extract product information from PDF images using Llama 4 Scout Vision.
+    Extract product information from PDF images using Qwen3-VL Vision.
     
     This service integrates with the existing RealImageAnalysisService to provide
     enhanced product detection during PDF processing.
@@ -55,7 +55,12 @@ class ProductVisionExtractor:
         self.supabase = get_supabase_client()
         # Import here to avoid circular dependencies
         from .real_image_analysis_service import RealImageAnalysisService
+        from app.config import get_settings
         self.vision_service = RealImageAnalysisService()
+        # Get TogetherAI config for Qwen model
+        settings = get_settings()
+        together_config = settings.get_together_ai_config()
+        self.together_model = together_config["model"]  # Qwen/Qwen3-VL-8B-Instruct
 
     async def _load_prompt_from_database(self, stage: str, category: str) -> Optional[str]:
         """
@@ -131,7 +136,7 @@ class ProductVisionExtractor:
                     image_data = f.read()
                     image_base64 = base64.b64encode(image_data).decode('utf-8')
                 
-                # Analyze with Llama 4 Scout Vision
+                # Analyze with Qwen3-VL Vision
                 product_info = await self._analyze_product_image(
                     image_base64=image_base64,
                     page_number=image_info.get('page_number', 1),
@@ -155,7 +160,7 @@ class ProductVisionExtractor:
         context: Optional[Dict[str, Any]] = None
     ) -> Optional[ProductVisionResult]:
         """
-        Analyze a single image for product information using Llama 4 Scout Vision.
+        Analyze a single image for product information using Qwen3-VL Vision.
         
         Uses a specialized prompt optimized for product catalog extraction.
         """
@@ -229,7 +234,7 @@ IMPORTANT:
                         "Content-Type": "application/json"
                     },
                     json={
-                        "model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+                        "model": self.together_model,  # ✅ Use configured model (Qwen/Qwen3-VL-8B-Instruct)
                         "messages": [
                             {
                                 "role": "user",
@@ -255,7 +260,7 @@ IMPORTANT:
                 )
                 
                 if response.status_code != 200:
-                    self.logger.error(f"Llama API error {response.status_code}: {response.text}")
+                    self.logger.error(f"Qwen API error {response.status_code}: {response.text}")
                     return None
                 
                 result = response.json()

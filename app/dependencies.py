@@ -2,7 +2,7 @@
 Central dependency injection module for the Mivaa PDF Extractor service.
 
 This module provides centralized dependency injection functions for:
-- Service instances (Supabase, LlamaIndex, MaterialKai, PDF Processor)
+- Service instances (Supabase, RAG Service, MaterialKai, PDF Processor)
 - Authentication and authorization
 - Request context and workspace validation
 
@@ -18,7 +18,7 @@ from app.middleware.jwt_auth import JWTAuthMiddleware
 from app.schemas.auth import WorkspaceContext, User
 from app.services.supabase_client import get_supabase_client as _get_supabase_client
 from app.services.material_kai_service import get_material_kai_service as _get_material_kai_service
-from app.services.llamaindex_service import LlamaIndexService
+from app.services.rag_service import RAGService
 from app.services.pdf_processor import PDFProcessor
 
 # Initialize security scheme
@@ -41,11 +41,11 @@ async def get_material_kai_service():
     return await _get_material_kai_service()
 
 
-async def get_llamaindex_service() -> LlamaIndexService:
-    """Dependency to get LlamaIndex service instance."""
+async def get_rag_service() -> RAGService:
+    """Dependency to get RAG service instance."""
     # Import here to avoid circular imports
-    from app.services.llamaindex_service import LlamaIndexService
-    return LlamaIndexService()
+    from app.services.rag_service import RAGService
+    return RAGService()
 
 
 def get_pdf_processor():

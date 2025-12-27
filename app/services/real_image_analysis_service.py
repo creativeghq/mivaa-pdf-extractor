@@ -2,7 +2,7 @@
 Real Image Analysis Service - Stage 4 Implementation
 
 This service provides real image analysis using:
-1. Llama 4 Scout 17B Vision for detailed image analysis (superior OCR, table/diagram understanding)
+1. Configurable vision model (default: Qwen3-VL-8B) for detailed image analysis (superior OCR, table/diagram understanding)
 2. Claude 4.5 Sonnet Vision for validation
 3. CLIP embeddings for visual similarity (512D)
 4. Material property extraction
@@ -41,7 +41,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 class ImageAnalysisResult:
     """Result of real image analysis"""
     image_id: str
-    llama_analysis: Dict[str, Any]  # Llama 4 Scout 17B Vision analysis
+    vision_analysis: Dict[str, Any]  # Vision model analysis (configurable)
     claude_validation: Optional[Dict[str, Any]]  # Claude 4.5 Sonnet validation (optional, async)
     clip_embedding: List[float]  # 512D CLIP embedding
     material_properties: Dict[str, Any]  # Extracted properties
@@ -57,7 +57,7 @@ class RealImageAnalysisService:
     Provides real image analysis using vision models and CLIP embeddings.
 
     This service replaces mock data with actual AI model calls:
-    - Llama 4 Scout 17B Vision: Detailed image analysis (69.4% MMMU, #1 OCR)
+    - Configurable vision model (default: Qwen3-VL-8B): Detailed image analysis
     - Claude 4.5 Sonnet Vision: Validation and enrichment
     - CLIP: Visual embeddings for similarity search
     """
@@ -83,7 +83,7 @@ class RealImageAnalysisService:
         """Load image analysis prompts from database.
 
         Loads:
-        - Version 3: Llama Vision analysis prompt
+        - Version 3: Vision model analysis prompt
         - Version 4: Claude Vision validation prompt
         """
         try:
@@ -98,7 +98,7 @@ class RealImageAnalysisService:
                 .execute()
 
             if result.data and len(result.data) > 0:
-                self.llama_prompt = None
+                self.vision_prompt = None
                 self.claude_prompt = None
 
                 for row in result.data:
@@ -106,27 +106,27 @@ class RealImageAnalysisService:
                     prompt = row['prompt_text']
 
                     if version == 3:
-                        self.llama_prompt = prompt
-                        logger.info("✅ Using DATABASE prompt for Llama Vision analysis")
+                        self.vision_prompt = prompt
+                        logger.info("✅ Using DATABASE prompt for vision model analysis")
                     elif version == 4:
                         self.claude_prompt = prompt
                         logger.info("✅ Using DATABASE prompt for Claude Vision validation")
 
                 # Set fallbacks if not found
-                if not self.llama_prompt:
-                    logger.warning("⚠️ Llama Vision prompt not found in database, using hardcoded fallback")
-                    self.llama_prompt = None
+                if not self.vision_prompt:
+                    logger.warning("⚠️ Vision model prompt not found in database, using hardcoded fallback")
+                    self.vision_prompt = None
                 if not self.claude_prompt:
                     logger.warning("⚠️ Claude Vision prompt not found in database, using hardcoded fallback")
                     self.claude_prompt = None
             else:
                 logger.warning("⚠️ No image analysis prompts found in database, using hardcoded fallbacks")
-                self.llama_prompt = None
+                self.vision_prompt = None
                 self.claude_prompt = None
 
         except Exception as e:
             logger.error(f"❌ Failed to load prompts from database: {e}")
-            self.llama_prompt = None
+            self.vision_prompt = None
             self.claude_prompt = None
 
     async def analyze_image(
@@ -156,21 +156,21 @@ class RealImageAnalysisService:
             image_base64 = base64.b64encode(image_data).decode('utf-8')
             
             # Step 2: Run parallel analysis
-            llama_task = self._analyze_with_llama(image_base64, context)
+            vision_task = self._analyze_with_vision_model(image_base64, context)
             claude_task = self._analyze_with_claude(image_url, context)
             clip_task = self._generate_clip_embedding(image_base64)
-            
-            llama_result, claude_result, clip_embedding = await asyncio.gather(
-                llama_task,
+
+            vision_result, claude_result, clip_embedding = await asyncio.gather(
+                vision_task,
                 claude_task,
                 clip_task,
                 return_exceptions=True
             )
-            
+
             # Handle errors
-            if isinstance(llama_result, Exception):
-                self.logger.error(f"Llama analysis failed: {llama_result}")
-                llama_result = {"error": str(llama_result)}
+            if isinstance(vision_result, Exception):
+                self.logger.error(f"Vision model analysis failed: {vision_result}")
+                vision_result = {"error": str(vision_result)}
             if isinstance(claude_result, Exception):
                 self.logger.error(f"Claude analysis failed: {claude_result}")
                 claude_result = {"error": str(claude_result)}
@@ -180,30 +180,30 @@ class RealImageAnalysisService:
             
             # Step 3: Extract material properties
             material_properties = self._extract_material_properties(
-                llama_result,
+                vision_result,
                 claude_result
             )
-            
+
             # Step 4: Calculate real quality score
             quality_score = self._calculate_quality_score(
-                llama_result,
+                vision_result,
                 claude_result,
                 clip_embedding,
                 material_properties
             )
-            
+
             # Step 5: Calculate confidence
             confidence_score = self._calculate_confidence(
-                llama_result,
+                vision_result,
                 claude_result,
                 material_properties
             )
-            
+
             processing_time = (datetime.now() - start_time).total_seconds() * 1000
-            
+
             result = ImageAnalysisResult(
                 image_id=image_id,
-                llama_analysis=llama_result,
+                vision_analysis=vision_result,
                 claude_validation=claude_result,
                 clip_embedding=clip_embedding,
                 material_properties=material_properties,
@@ -229,12 +229,12 @@ class RealImageAnalysisService:
         document_id: Optional[str] = None
     ) -> ImageAnalysisResult:
         """
-        Perform LLAMA-ONLY image analysis with quality scoring.
+        Perform VISION-ONLY image analysis with quality scoring.
 
         NEW ARCHITECTURE (per user requirements):
-        - Use ONLY Llama 4 Scout Vision for sync processing
-        - Calculate quality score based on Llama confidence
-        - Queue Claude validation ONLY if Llama score < threshold (0.7)
+        - Use ONLY vision model (configurable) for sync processing
+        - Calculate quality score based on vision model confidence
+        - Queue Claude validation ONLY if vision score < threshold (0.7)
         - Keep ALL 5 CLIP embeddings
 
         This prevents OOM crashes by removing dual-model sync processing.
@@ -247,38 +247,38 @@ class RealImageAnalysisService:
             document_id: Optional document ID for queuing Claude validation
 
         Returns:
-            ImageAnalysisResult with Llama analysis + CLIP embeddings
+            ImageAnalysisResult with vision model analysis + CLIP embeddings
         """
         start_time = datetime.now()
 
         try:
-            self.logger.info(f"🖼️ [LLAMA-ONLY] Starting image analysis for {image_id}")
+            self.logger.info(f"🖼️ [VISION-ONLY] Starting image analysis for {image_id}")
 
-            # Step 1: Run Llama + CLIP in parallel (NO CLAUDE)
-            llama_task = self._analyze_with_llama(image_base64, context, job_id)
+            # Step 1: Run vision model + CLIP in parallel (NO CLAUDE)
+            vision_task = self._analyze_with_vision_model(image_base64, context, job_id)
             clip_task = self._generate_clip_embedding(image_base64)
 
-            llama_result, clip_embedding = await asyncio.gather(
-                llama_task,
+            vision_result, clip_embedding = await asyncio.gather(
+                vision_task,
                 clip_task,
                 return_exceptions=True
             )
 
             # Handle errors
-            if isinstance(llama_result, Exception):
-                self.logger.error(f"Llama analysis failed: {llama_result}")
-                llama_result = {"error": str(llama_result), "confidence": 0.0}
+            if isinstance(vision_result, Exception):
+                self.logger.error(f"Vision model analysis failed: {vision_result}")
+                vision_result = {"error": str(vision_result), "confidence": 0.0}
             if isinstance(clip_embedding, Exception):
                 self.logger.error(f"CLIP embedding failed: {clip_embedding}")
                 clip_embedding = []
 
-            # Step 2: Extract material properties from Llama ONLY
-            material_properties = self._extract_material_properties_from_llama(llama_result)
+            # Step 2: Extract material properties from vision model ONLY
+            material_properties = self._extract_material_properties_from_vision(vision_result)
 
-            # Step 3: Calculate quality score based on Llama confidence
-            llama_confidence = llama_result.get('confidence', 0.0)
-            quality_score = self._calculate_llama_quality_score(
-                llama_result,
+            # Step 3: Calculate quality score based on vision model confidence
+            vision_confidence = vision_result.get('confidence', 0.0)
+            quality_score = self._calculate_vision_quality_score(
+                vision_result,
                 clip_embedding,
                 material_properties
             )
@@ -301,7 +301,7 @@ class RealImageAnalysisService:
                         await validation_service.queue_image_for_validation(
                             image_id=image_id,
                             document_id=document_id,
-                            llama_quality_score=quality_score,
+                            vision_quality_score=quality_score,
                             priority=5
                         )
                     except Exception as e:
@@ -316,20 +316,20 @@ class RealImageAnalysisService:
 
             result = ImageAnalysisResult(
                 image_id=image_id,
-                llama_analysis=llama_result,
+                vision_analysis=vision_result,
                 claude_validation=None,  # No Claude in sync processing
                 clip_embedding=clip_embedding,
                 material_properties=material_properties,
                 quality_score=quality_score,
-                confidence_score=llama_confidence,
+                confidence_score=vision_confidence,
                 processing_time_ms=processing_time,
                 timestamp=datetime.utcnow().isoformat(),
                 needs_claude_validation=needs_claude_validation  # New field
             )
 
             self.logger.info(
-                f"✅ [LLAMA-ONLY] Image analysis complete: "
-                f"quality={quality_score:.2f}, confidence={llama_confidence:.2f}, "
+                f"✅ [VISION-ONLY] Image analysis complete: "
+                f"quality={quality_score:.2f}, confidence={vision_confidence:.2f}, "
                 f"needs_claude={needs_claude_validation}"
             )
             return result
@@ -347,24 +347,24 @@ class RealImageAnalysisService:
     
 
 
-    async def _analyze_with_llama(
+    async def _analyze_with_vision_model(
         self,
         image_base64: str,
         context: Optional[Dict[str, Any]] = None,
         job_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Analyze image with Llama 4 Scout 17B Vision (69.4% MMMU, #1 OCR)"""
+        """Analyze image with configurable vision model (default: Qwen3-VL-8B)"""
         start_time = time.time()
         try:
             if not TOGETHER_API_KEY:
-                raise ValueError("TOGETHER_API_KEY not set - cannot perform Llama vision analysis")
+                raise ValueError("TOGETHER_API_KEY not set - cannot perform vision model analysis")
 
             # Use database prompt or hardcoded fallback
-            if self.llama_prompt:
-                prompt = self.llama_prompt
-                logger.info("✅ Using DATABASE prompt for Llama Vision analysis")
+            if self.vision_prompt:
+                prompt = self.vision_prompt
+                logger.info("✅ Using DATABASE prompt for vision model analysis")
             else:
-                logger.info("⚠️ Using HARDCODED fallback prompt for Llama Vision analysis")
+                logger.info("⚠️ Using HARDCODED fallback prompt for vision model analysis")
                 prompt = """Analyze this material/product image and provide detailed analysis in JSON format:
 {
   "description": "<detailed description of what you see>",
@@ -382,7 +382,7 @@ class RealImageAnalysisService:
 
 Respond ONLY with valid JSON, no additional text."""
 
-            # ✅ FIX: Add retry logic for Llama empty responses
+            # ✅ FIX: Add retry logic for vision model empty responses
             max_retries = 3
             last_error = None
 
@@ -397,7 +397,7 @@ Respond ONLY with valid JSON, no additional text."""
                                 "Content-Type": "application/json"
                             },
                             json={
-                                "model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+                                "model": "Qwen/Qwen3-VL-8B-Instruct",  # Model name from Together AI
                                 "messages": [
                                     {
                                         "role": "user",
@@ -429,31 +429,31 @@ Respond ONLY with valid JSON, no additional text."""
                         if response.status_code in [500, 503]:
                             if attempt < max_retries:
                                 error_name = "Internal Server Error" if response.status_code == 500 else "Service Unavailable"
-                                self.logger.warning(f"Llama API {response.status_code} {error_name} (attempt {attempt}/{max_retries}), retrying with backoff...")
+                                self.logger.warning(f"Vision API {response.status_code} {error_name} (attempt {attempt}/{max_retries}), retrying with backoff...")
                                 import asyncio
                                 await asyncio.sleep(2 ** attempt)  # Exponential backoff
                                 continue
                             else:
-                                self.logger.error(f"Llama API {response.status_code} after {max_retries} attempts: {error_text}")
-                                raise RuntimeError(f"Llama API error {response.status_code} after {max_retries} attempts")
+                                self.logger.error(f"Vision API {response.status_code} after {max_retries} attempts: {error_text}")
+                                raise RuntimeError(f"Vision API error {response.status_code} after {max_retries} attempts")
 
                         # CRITICAL FIX (MIVAA-8B): Handle 400 Input validation errors
                         # This happens when image is too large, corrupted, or unsupported format
                         if response.status_code == 400:
-                            self.logger.warning(f"Llama API 400 Input validation error: {error_text[:200]}")
+                            self.logger.warning(f"Vision API 400 Input validation error: {error_text[:200]}")
                             self.logger.warning(f"Image size: {len(image_base64)} bytes (base64)")
 
                             # Don't retry 400 errors - they won't succeed
                             # Fall back to rule-based analysis
                             import sentry_sdk
                             with sentry_sdk.push_scope() as scope:
-                                scope.set_context("llama_validation_error", {
+                                scope.set_context("vision_validation_error", {
                                     "error": error_text[:500],
                                     "image_size_bytes": len(image_base64),
                                     "status_code": 400
                                 })
                                 sentry_sdk.capture_message(
-                                    f"Llama API input validation error - falling back to rules",
+                                    f"Vision API input validation error - falling back to rules",
                                     level="warning"
                                 )
 
@@ -461,8 +461,8 @@ Respond ONLY with valid JSON, no additional text."""
                             return None
 
                         # For other errors (4xx, etc.), log and raise immediately
-                        self.logger.error(f"Llama API error {response.status_code}: {error_text}")
-                        raise RuntimeError(f"Llama API returned error {response.status_code}: {error_text}")
+                        self.logger.error(f"Vision API error {response.status_code}: {error_text}")
+                        raise RuntimeError(f"Vision API returned error {response.status_code}: {error_text}")
 
                     result = response.json()
                     content = result["choices"][0]["message"]["content"]
@@ -472,7 +472,7 @@ Respond ONLY with valid JSON, no additional text."""
                         # Clean up response - remove markdown code blocks if present
                         content = content.strip()
 
-                        # ROBUST JSON EXTRACTION - Handle all Llama response formats
+                        # ROBUST JSON EXTRACTION - Handle all vision model response formats
                         # Format 1: "Here is the JSON:\n\n```json\n{...}\n```\n\nExplanation..."
                         # Format 2: "Here is the JSON:\n\n```\n{...}\n```\n\nExplanation..."
                         # Format 3: "```json\n{...}\n```"
@@ -521,7 +521,7 @@ Respond ONLY with valid JSON, no additional text."""
 
                         # Check if content is empty
                         if not json_text:
-                            error_msg = f"Llama returned empty response (attempt {attempt}/{max_retries})"
+                            error_msg = f"Vision model returned empty response (attempt {attempt}/{max_retries})"
                             self.logger.warning(error_msg)
                             if attempt < max_retries:
                                 # Exponential backoff: 2^attempt seconds
@@ -529,11 +529,11 @@ Respond ONLY with valid JSON, no additional text."""
                                 await asyncio.sleep(2 ** attempt)
                                 continue
                             else:
-                                raise RuntimeError(f"Llama returned empty response after {max_retries} attempts")
+                                raise RuntimeError(f"Vision model returned empty response after {max_retries} attempts")
 
-                        # Step 3.5: Sanitize common Llama JSON mistakes
+                        # Step 3.5: Sanitize common vision model JSON mistakes
                         # Fix: ["item1", "item2", or "item3"] -> ["item1", "item2", "item3"]
-                        # This handles cases where Llama puts unquoted words like "or" or "and" in arrays
+                        # This handles cases where model puts unquoted words like "or" or "and" in arrays
                         import re
 
                         # Pattern 1: Remove unquoted "or" or "and" between array items
@@ -552,7 +552,7 @@ Respond ONLY with valid JSON, no additional text."""
                         # Step 4: Parse JSON
                         analysis = json.loads(json_text)
 
-                        self.logger.info(f"✅ Llama analysis successful on attempt {attempt}")
+                        self.logger.info(f"✅ Vision model analysis successful on attempt {attempt}")
 
                         # Log AI call
                         latency_ms = int((time.time() - start_time) * 1000)
@@ -573,9 +573,9 @@ Respond ONLY with valid JSON, no additional text."""
                             0.15 * confidence_breakdown["validation"]
                         )
 
-                        await self.ai_logger.log_llama_call(
+                        await self.ai_logger.log_together_call(
                             task="image_vision_analysis",
-                            model="llama-4-scout-17b",
+                            model="qwen3-vl-8b",
                             response=result,
                             latency_ms=latency_ms,
                             confidence_score=confidence_score,
@@ -585,13 +585,13 @@ Respond ONLY with valid JSON, no additional text."""
                         )
 
                         return {
-                            "model": "llama-4-scout-17b-vision",
+                            "model": "qwen3-vl-8b-vision",
                             "analysis": analysis,
                             "success": True
                         }
                     except json.JSONDecodeError as e:
                         # CRITICAL FIX (MIVAA-7Y, MIVAA-87): Enhanced JSON parsing with multiple fallback strategies
-                        error_msg = f"Failed to parse Llama response as JSON (attempt {attempt}/{max_retries}): {e}"
+                        error_msg = f"Failed to parse vision model response as JSON (attempt {attempt}/{max_retries}): {e}"
                         self.logger.warning(error_msg)
                         self.logger.warning(f"Extracted JSON text (first 300 chars): {json_text[:300]}")
                         self.logger.warning(f"Original content (first 300 chars): {result['choices'][0]['message']['content'][:300]}")
@@ -605,7 +605,7 @@ Respond ONLY with valid JSON, no additional text."""
                             fixed_json = fixed_json.replace("'", '"')
                             # Try parsing fixed JSON
                             analysis = json.loads(fixed_json)
-                            self.logger.info(f"✅ Llama analysis successful after JSON repair on attempt {attempt}")
+                            self.logger.info(f"✅ Qwen analysis successful after JSON repair on attempt {attempt}")
 
                             # Log AI call
                             latency_ms = int((time.time() - start_time) * 1000)
@@ -622,7 +622,7 @@ Respond ONLY with valid JSON, no additional text."""
 
                             await self.ai_logger.log_ai_call(
                                 task="image_vision_analysis",
-                                model="llama-4-scout-17b-vision",
+                                model="qwen3-vl-8b-vision",
                                 input_tokens=input_tokens,
                                 output_tokens=output_tokens,
                                 cost=(input_tokens * 0.0000002) + (output_tokens * 0.0000006),
@@ -634,7 +634,7 @@ Respond ONLY with valid JSON, no additional text."""
                             )
 
                             return {
-                                "model": "llama-4-scout-17b-vision",
+                                "model": "qwen3-vl-8b-vision",
                                 "analysis": analysis,
                                 "success": True
                             }
@@ -661,16 +661,16 @@ Respond ONLY with valid JSON, no additional text."""
                                     "attempts": max_retries
                                 })
                                 sentry_sdk.capture_message(
-                                    f"Llama JSON parsing failed after {max_retries} attempts: {e}",
+                                    f"Vision model JSON parsing failed after {max_retries} attempts: {e}",
                                     level="error"
                                 )
 
-                            raise RuntimeError(f"Llama returned invalid JSON after {max_retries} attempts: {e}")
+                            raise RuntimeError(f"Vision model returned invalid JSON after {max_retries} attempts: {e}")
 
                 except Exception as e:
                     last_error = e
                     if attempt < max_retries:
-                        self.logger.warning(f"Llama attempt {attempt}/{max_retries} failed: {e}, retrying...")
+                        self.logger.warning(f"Vision model attempt {attempt}/{max_retries} failed: {e}, retrying...")
                         import asyncio
                         await asyncio.sleep(2 ** attempt)
                         continue
@@ -682,13 +682,13 @@ Respond ONLY with valid JSON, no additional text."""
                 raise last_error
 
         except Exception as e:
-            self.logger.error(f"Llama analysis failed: {e}")
+            self.logger.error(f"Vision model analysis failed: {e}")
 
             # Log failed AI call
             latency_ms = int((time.time() - start_time) * 1000)
             await self.ai_logger.log_ai_call(
                 task="image_vision_analysis",
-                model="llama-4-scout-17b",
+                model="qwen3-vl-8b",  # Actual Together AI model identifier
                 input_tokens=0,
                 output_tokens=0,
                 cost=0.0,
@@ -702,11 +702,11 @@ Respond ONLY with valid JSON, no additional text."""
                 },
                 action="fallback_to_rules",
                 job_id=job_id,
-                fallback_reason=f"Llama API error: {str(e)}",
+                fallback_reason=f"Vision API error: {str(e)}",
                 error_message=str(e)
             )
 
-            raise RuntimeError(f"Llama vision analysis failed: {str(e)}") from e
+            raise RuntimeError(f"Vision model analysis failed: {str(e)}") from e
     
     async def _analyze_with_claude(
         self,
@@ -1029,7 +1029,7 @@ Respond ONLY with valid JSON, no additional text."""
 
     def _extract_material_properties(
         self,
-        llama_result: Dict[str, Any],
+        vision_result: Dict[str, Any],
         claude_result: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Extract material properties from analysis results"""
@@ -1042,9 +1042,9 @@ Respond ONLY with valid JSON, no additional text."""
             "confidence": 0.0
         }
 
-        # Extract from Llama analysis
-        if llama_result.get("success") and llama_result.get("analysis"):
-            analysis = llama_result["analysis"]
+        # Extract from vision model analysis
+        if vision_result.get("success") and vision_result.get("analysis"):
+            analysis = vision_result["analysis"]
             properties["color"] = analysis.get("colors", [None])[0] if analysis.get("colors") else None
             properties["texture"] = analysis.get("textures", [None])[0] if analysis.get("textures") else None
             properties["composition"] = analysis.get("properties", {}).get("composition")
@@ -1069,14 +1069,14 @@ Respond ONLY with valid JSON, no additional text."""
 
         return properties
 
-    def _extract_material_properties_from_llama(
+    def _extract_material_properties_from_vision(
         self,
-        llama_result: Dict[str, Any]
+        vision_result: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Extract material properties from Llama analysis ONLY.
+        Extract material properties from vision model analysis ONLY.
 
-        This is the new method for Llama-only processing (no Claude).
+        This is the method for vision-only processing (no Claude).
         """
         properties = {
             "color": None,
@@ -1087,37 +1087,37 @@ Respond ONLY with valid JSON, no additional text."""
             "confidence": 0.0
         }
 
-        # Extract from Llama analysis
-        if llama_result.get("success") and llama_result.get("analysis"):
-            analysis = llama_result["analysis"]
+        # Extract from vision model analysis
+        if vision_result.get("success") and vision_result.get("analysis"):
+            analysis = vision_result["analysis"]
             properties["color"] = analysis.get("colors", [None])[0] if analysis.get("colors") else None
             properties["texture"] = analysis.get("textures", [None])[0] if analysis.get("textures") else None
             properties["composition"] = analysis.get("properties", {}).get("composition")
             properties["finish"] = analysis.get("properties", {}).get("finish")
             properties["pattern"] = analysis.get("properties", {}).get("pattern")
             properties["confidence"] = analysis.get("confidence", 0.0)
-        elif "error" not in llama_result:
-            # If Llama succeeded but no analysis field, try direct access
-            properties["color"] = llama_result.get("colors", [None])[0] if llama_result.get("colors") else None
-            properties["texture"] = llama_result.get("textures", [None])[0] if llama_result.get("textures") else None
-            properties["composition"] = llama_result.get("properties", {}).get("composition")
-            properties["finish"] = llama_result.get("properties", {}).get("finish")
-            properties["pattern"] = llama_result.get("properties", {}).get("pattern")
-            properties["confidence"] = llama_result.get("confidence", 0.0)
+        elif "error" not in vision_result:
+            # If vision model succeeded but no analysis field, try direct access
+            properties["color"] = vision_result.get("colors", [None])[0] if vision_result.get("colors") else None
+            properties["texture"] = vision_result.get("textures", [None])[0] if vision_result.get("textures") else None
+            properties["composition"] = vision_result.get("properties", {}).get("composition")
+            properties["finish"] = vision_result.get("properties", {}).get("finish")
+            properties["pattern"] = vision_result.get("properties", {}).get("pattern")
+            properties["confidence"] = vision_result.get("confidence", 0.0)
 
         return properties
 
-    def _calculate_llama_quality_score(
+    def _calculate_vision_quality_score(
         self,
-        llama_result: Dict[str, Any],
+        vision_result: Dict[str, Any],
         clip_embedding: List[float],
         material_properties: Dict[str, Any]
     ) -> float:
         """
-        Calculate quality score based on Llama analysis ONLY.
+        Calculate quality score based on vision model analysis ONLY.
 
-        NEW SCORING (Llama-only):
-        - Llama confidence: 60% weight
+        NEW SCORING (Vision-only):
+        - Vision model confidence: 60% weight
         - Material properties completeness: 30% weight
         - CLIP embedding validity: 10% weight
 
@@ -1127,19 +1127,19 @@ Respond ONLY with valid JSON, no additional text."""
         score = 0.0
         weight_count = 0
 
-        # Llama confidence (60% weight)
-        if llama_result.get("success"):
-            llama_conf = llama_result.get("analysis", {}).get("confidence", 0.0)
-            if llama_conf == 0.0:
+        # Vision model confidence (60% weight)
+        if vision_result.get("success"):
+            vision_conf = vision_result.get("analysis", {}).get("confidence", 0.0)
+            if vision_conf == 0.0:
                 # Try direct access
-                llama_conf = llama_result.get("confidence", 0.0)
-            score += llama_conf * 0.6
+                vision_conf = vision_result.get("confidence", 0.0)
+            score += vision_conf * 0.6
             weight_count += 0.6
-        elif "error" not in llama_result:
+        elif "error" not in vision_result:
             # If no explicit success field, try to get confidence directly
-            llama_conf = llama_result.get("confidence", 0.0)
-            if llama_conf > 0:
-                score += llama_conf * 0.6
+            vision_conf = vision_result.get("confidence", 0.0)
+            if vision_conf > 0:
+                score += vision_conf * 0.6
                 weight_count += 0.6
 
         # Material properties completeness (30% weight)
@@ -1165,7 +1165,7 @@ Respond ONLY with valid JSON, no additional text."""
 
     def _calculate_quality_score(
         self,
-        llama_result: Dict[str, Any],
+        vision_result: Dict[str, Any],
         claude_result: Dict[str, Any],
         clip_embedding: List[float],
         material_properties: Dict[str, Any]
@@ -1174,10 +1174,10 @@ Respond ONLY with valid JSON, no additional text."""
         score = 0.0
         weight_count = 0
 
-        # Llama confidence (40% weight)
-        if llama_result.get("success"):
-            llama_conf = llama_result.get("analysis", {}).get("confidence", 0.0)
-            score += llama_conf * 0.4
+        # Vision model confidence (40% weight)
+        if vision_result.get("success"):
+            vision_conf = vision_result.get("analysis", {}).get("confidence", 0.0)
+            score += vision_conf * 0.4
             weight_count += 0.4
 
         # Claude quality assessment (40% weight)
@@ -1202,16 +1202,16 @@ Respond ONLY with valid JSON, no additional text."""
 
     def _calculate_confidence(
         self,
-        llama_result: Dict[str, Any],
+        vision_result: Dict[str, Any],
         claude_result: Dict[str, Any],
         material_properties: Dict[str, Any]
     ) -> float:
         """Calculate confidence score based on model agreement"""
         confidences = []
 
-        # Llama confidence
-        if llama_result.get("success"):
-            confidences.append(llama_result.get("analysis", {}).get("confidence", 0.0))
+        # Vision model confidence
+        if vision_result.get("success"):
+            confidences.append(vision_result.get("analysis", {}).get("confidence", 0.0))
 
         # Claude confidence
         if claude_result.get("success"):

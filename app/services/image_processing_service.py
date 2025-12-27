@@ -3,7 +3,7 @@ Image Processing Service - Handles image extraction, classification, upload, and
 
 This service encapsulates all image-related operations in the PDF processing pipeline:
 1. Extract images from PDF
-2. Classify images (material vs non-material) using Llama/Claude
+2. Classify images (material vs non-material) using Qwen/Claude
 3. Upload material images to Supabase Storage
 4. Save images to database
 5. Generate CLIP embeddings
@@ -47,7 +47,7 @@ class ImageProcessingService:
         SUPPORTED MODELS:
         - Qwen/Qwen3-VL-8B-Instruct: Fast, cost-effective ($0.10/1M tokens)
         - Qwen/Qwen3-VL-32B-Instruct: High accuracy ($0.50/1M tokens)
-        - meta-llama/Llama-4-Scout-17B-16E-Instruct: Alternative vision model
+        - Qwen/Qwen3-VL-8B-Instruct: Alternative vision model
         - claude-sonnet-4-20250514: Claude Sonnet 4.5 (fallback)
 
         MEMORY OPTIMIZATIONS:
@@ -82,7 +82,7 @@ class ImageProcessingService:
         together_api_key = os.getenv('TOGETHER_API_KEY')
 
         async def classify_image_with_vision_model(image_path: str, model: str) -> Dict[str, Any]:
-            """Fast classification using vision model (Qwen, Llama, etc via TogetherAI)."""
+            """Fast classification using vision model (Qwen via TogetherAI)."""
             image_bytes = None
             image_base64 = None
             try:
@@ -206,7 +206,7 @@ Respond ONLY with this JSON format:
                 del image_base64
 
         # Two-stage classification with semaphores for rate limiting
-        llama_semaphore = Semaphore(5)  # 5 concurrent Llama requests
+        together_semaphore = Semaphore(5)  # 5 concurrent TogetherAI requests
         claude_semaphore = Semaphore(2)  # 2 concurrent Claude requests
 
         async def classify_with_two_stage(img_data):
@@ -215,7 +215,7 @@ Respond ONLY with this JSON format:
                 return None
 
             # STAGE 1: Fast primary model classification
-            async with llama_semaphore:
+            async with together_semaphore:
                 primary_result = await classify_image_with_vision_model(image_path, primary_model)
 
             # STAGE 2: If confidence is low (< threshold), validate with secondary model

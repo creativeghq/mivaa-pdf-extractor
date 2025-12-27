@@ -171,47 +171,47 @@ class AIPricingConfig:
         }
     }
     
-    # TogetherAI Llama Pricing (per 1M tokens)
-    LLAMA_PRICING = {
-        "llama-4-scout-17b": {
-            "input": Decimal("0.20"),
-            "output": Decimal("0.20"),
-            "last_verified": "2025-12-26",
-            "source": "https://www.together.ai/pricing",
-            "full_name": "meta-llama/Llama-4-Scout-17B-16E-Instruct"
-        },
-        "llama-4-maverick-17b": {
-            "input": Decimal("0.20"),
-            "output": Decimal("0.20"),
-            "last_verified": "2025-12-26",
-            "source": "https://www.together.ai/pricing"
-        },
-        "llama-3-2-90b-vision": {
-            "input": Decimal("0.88"),
-            "output": Decimal("0.88"),
-            "last_verified": "2025-12-26",
-            "source": "https://www.together.ai/pricing",
-            "note": "Deprecated - replaced by Qwen2-VL"
-        }
-    }
+
 
     # Qwen Vision Models (TogetherAI) - per 1M tokens
     QWEN_PRICING = {
         "qwen3-vl-32b": {
-            "input": Decimal("0.50"),
-            "output": Decimal("1.50"),
+            "input": Decimal("0.40"),
+            "output": Decimal("0.40"),
             "last_verified": "2025-12-26",
             "source": "https://www.together.ai/pricing",
             "full_name": "Qwen/Qwen3-VL-32B-Instruct",
-            "note": "Primary vision model - replaces GPT-4V"
+            "note": "Primary vision model for chunking and validation"
         },
         "qwen3-vl-8b": {
-            "input": Decimal("0.08"),
-            "output": Decimal("0.50"),
+            "input": Decimal("0.10"),
+            "output": Decimal("0.10"),
             "last_verified": "2025-12-26",
             "source": "https://www.together.ai/pricing",
             "full_name": "Qwen/Qwen3-VL-8B-Instruct",
-            "note": "Lightweight vision model"
+            "note": "Lightweight vision model for image analysis"
+        }
+    }
+
+    # Visual Embedding Models (Free - Open Source)
+    VISUAL_EMBEDDING_PRICING = {
+        "siglip-so400m": {
+            "input": Decimal("0.00"),
+            "output": Decimal("0.00"),
+            "last_verified": "2025-12-26",
+            "source": "HuggingFace Transformers (open source)",
+            "full_name": "google/siglip-so400m-patch14-384",
+            "dimensions": 1152,
+            "note": "Primary visual embedding model - free via Transformers"
+        },
+        "clip-vit-base": {
+            "input": Decimal("0.00"),
+            "output": Decimal("0.00"),
+            "last_verified": "2025-12-26",
+            "source": "OpenAI CLIP (open source)",
+            "full_name": "openai/clip-vit-base-patch32",
+            "dimensions": 512,
+            "note": "Fallback visual embedding model - free via Transformers"
         }
     }
 
@@ -234,7 +234,7 @@ class AIPricingConfig:
         Get pricing for a specific model.
 
         Args:
-            model: Model name (e.g., 'claude-haiku-4-5', 'gpt-4o', 'llama-4-scout-17b')
+            model: Model name (e.g., 'claude-haiku-4-5', 'gpt-4o', 'qwen3-vl-8b')
             provider: Optional provider hint ('anthropic', 'openai', 'together', 'firecrawl')
 
         Returns:
@@ -250,8 +250,8 @@ class AIPricingConfig:
             **cls.EMBEDDING_PRICING,
             **cls.VOYAGE_PRICING,
             **cls.VISION_PRICING,
-            **cls.LLAMA_PRICING,
             **cls.QWEN_PRICING,
+            **cls.VISUAL_EMBEDDING_PRICING,
             **cls.FIRECRAWL_PRICING
         }
 
@@ -342,7 +342,6 @@ class AIPricingConfig:
             **cls.EMBEDDING_PRICING,
             **cls.VOYAGE_PRICING,
             **cls.VISION_PRICING,
-            **cls.LLAMA_PRICING,
             **cls.QWEN_PRICING,
             **cls.FIRECRAWL_PRICING
         }

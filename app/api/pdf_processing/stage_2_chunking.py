@@ -36,8 +36,8 @@ async def process_stage_2_chunking(
 ) -> Dict[str, Any]:
     """
     Stage 2: Text Chunking
-    
-    Creates document record and processes text chunks using LlamaIndex.
+
+    Creates document record and processes text chunks for vector database.
     
     Args:
         file_content: PDF file bytes
@@ -64,12 +64,12 @@ async def process_stage_2_chunking(
         Dictionary containing:
         - chunk_result: Chunking result with chunk IDs and count
     """
-    from app.services.llamaindex_service import LlamaIndexService
-    
-    logger.info("📝 [STAGE 2] Chunking - Starting...")
+    from app.services.rag_service import RAGService
+
+    logger.info("📝 [STAGE 2] Chunking - Starting with RAG service (Qwen vision models)...")
     await tracker.update_stage(ProcessingStage.SAVING_TO_DATABASE, stage_name="chunking")
-    
-    llamaindex_service = LlamaIndexService()
+
+    rag_service = RAGService()
     
     # Create document in database
     doc_metadata = {
@@ -106,9 +106,9 @@ async def process_stage_2_chunking(
     if catalog.catalog_factory:
         logger.info(f"   🏭 Catalog factory: {catalog.catalog_factory}")
     
-    # Process chunks using LlamaIndex (with progressive timeout)
+    # Process chunks using RAG service (with progressive timeout)
     logger.info(f"📝 Calling index_pdf_content with {len(file_content)} bytes, product_pages={sorted(product_pages)}")
-    logger.info(f"📝 LlamaIndex service available: {llamaindex_service.available}")
+    logger.info(f"📝 RAG service available: {rag_service.available}")
     
     # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on page count
     chunking_timeout = ProgressiveTimeoutStrategy.calculate_chunking_timeout(
@@ -118,7 +118,7 @@ async def process_stage_2_chunking(
     logger.info(f"📊 Chunking: {pdf_result.page_count} pages, chunk_size={chunk_size} → timeout: {chunking_timeout:.0f}s")
     
     chunk_result = await with_timeout(
-        llamaindex_service.index_pdf_content(
+        rag_service.index_pdf_content(
             pdf_content=file_content,
             document_id=document_id,
             metadata={

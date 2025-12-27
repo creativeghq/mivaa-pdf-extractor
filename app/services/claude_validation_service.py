@@ -1,11 +1,11 @@
 """
 Claude Validation Service
 
-Provides async background validation for images with low Llama quality scores.
+Provides async background validation for images with low Qwen quality scores.
 This service runs AFTER product creation to enhance image analysis quality.
 
 NEW ARCHITECTURE (per user requirements):
-- Llama-only analysis during sync processing (fast, prevents OOM)
+- Qwen-only analysis during sync processing (fast, prevents OOM)
 - Claude validation queued for low-quality images (score < 0.7)
 - Runs async BEFORE product creation
 - Updates image records with enhanced analysis
@@ -29,7 +29,7 @@ class ClaudeValidationService:
     Service for async Claude validation of low-quality images.
     
     Workflow:
-    1. Images are analyzed with Llama during sync processing
+    1. Images are analyzed with Qwen during sync processing
     2. Images with quality score < 0.7 are queued for Claude validation
     3. This service processes the queue before product creation
     4. Updates image records with Claude validation results
@@ -44,16 +44,16 @@ class ClaudeValidationService:
         self,
         image_id: str,
         document_id: str,
-        llama_quality_score: float,
+        qwen_quality_score: float,
         priority: int = 5
     ) -> str:
         """
         Queue an image for Claude validation.
-        
+
         Args:
             image_id: Image ID to validate
             document_id: Parent document ID
-            llama_quality_score: Quality score from Llama analysis
+            qwen_quality_score: Quality score from Qwen analysis
             priority: Job priority (1-10, lower = higher priority)
             
         Returns:
@@ -70,7 +70,7 @@ class ClaudeValidationService:
                 'status': 'pending',
                 'priority': priority,
                 'metadata': {
-                    'llama_quality_score': llama_quality_score,
+                    'qwen_quality_score': qwen_quality_score,
                     'queued_at': datetime.utcnow().isoformat()
                 },
                 'retry_count': 0,
@@ -84,7 +84,7 @@ class ClaudeValidationService:
             
             self.logger.info(
                 f"✅ Queued image {image_id} for Claude validation "
-                f"(Llama score: {llama_quality_score:.2f})"
+                f"(Qwen score: {qwen_quality_score:.2f})"
             )
             
             return job_id

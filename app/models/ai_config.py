@@ -39,7 +39,7 @@ class AIModelConfig(BaseModel):
     # Image Classification Models (Qwen primary, Qwen/Claude validation)
     classification_primary_model: str = Field(
         default="Qwen/Qwen3-VL-8B-Instruct",
-        description="Primary image classification model (Qwen3-VL-8B, Llama Vision, etc.)"
+        description="Primary image classification model (Qwen Vision)"
     )
     classification_validation_model: str = Field(
         default="Qwen/Qwen3-VL-32B-Instruct",
@@ -118,7 +118,7 @@ class AIModelConfig(BaseModel):
                 "text_embedding_model": "voyage-3.5",
                 "text_embedding_dimensions": 1024,
                 "text_embedding_input_type": "document",
-                "classification_primary_model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+                "classification_primary_model": "Qwen/Qwen3-VL-8B-Instruct",
                 "classification_validation_model": "claude-sonnet-4-20250514",
                 "classification_confidence_threshold": 0.7,
                 "discovery_model": "claude-sonnet-4-20250514",

@@ -503,7 +503,7 @@ class ImageSearchRequest(BaseModel):
     
     # Advanced options
     enable_clip_embeddings: bool = Field(True, description="Enable CLIP embedding generation for visual similarity")
-    enable_llama_analysis: bool = Field(False, description="Enable LLaMA Vision analysis for material properties")
+    enable_vision_analysis: bool = Field(False, description="Enable vision model analysis for material properties")
     include_analytics: bool = Field(False, description="Include search analytics in response")
     
     class Config:
@@ -549,7 +549,7 @@ class ImageSearchResult(BaseModel):
     # Material analysis results
     material_analysis: Optional[Dict[str, Any]] = Field(None, description="Material property analysis results")
     clip_embedding: Optional[List[float]] = Field(None, description="CLIP embedding vector for visual similarity")
-    llama_analysis: Optional[Dict[str, Any]] = Field(None, description="LLaMA Vision material analysis")
+    vision_analysis: Optional[Dict[str, Any]] = Field(None, description="Vision model material analysis")
     
     # Material properties
     material_type: Optional[str] = Field(None, description="Identified material type")
@@ -635,7 +635,7 @@ class MultiModalAnalysisRequest(BaseModel):
     enable_material_analysis: bool = Field(False, description="Enable material property analysis")
     material_analysis_types: List[str] = Field(default_factory=list, description="Types of material analysis (spectral, chemical, mechanical, thermal)")
     enable_clip_embeddings: bool = Field(False, description="Generate CLIP embeddings for visual similarity")
-    enable_llama_vision: bool = Field(False, description="Use LLaMA Vision for material understanding")
+    enable_vision_analysis: bool = Field(False, description="Use Qwen Vision for material understanding")
     
     # Advanced material analysis
     spectral_analysis: bool = Field(False, description="Perform spectral analysis on materials")
@@ -684,7 +684,7 @@ class MultiModalAnalysisResponse(BaseResponse):
     
     # Visual embeddings and analysis
     clip_embeddings: Optional[List[List[float]]] = Field(None, description="Generated CLIP embeddings for visual similarity")
-    llama_vision_analysis: Optional[Dict[str, Any]] = Field(None, description="LLaMA Vision material understanding results")
+    vision_analysis: Optional[Dict[str, Any]] = Field(None, description="Qwen Vision material understanding results")
     
     # Combined insights
     multimodal_insights: Optional[Dict[str, Any]] = Field(None, description="Combined multi-modal insights")

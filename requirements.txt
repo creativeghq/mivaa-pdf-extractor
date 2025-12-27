@@ -33,25 +33,11 @@ openai==1.51.0
 anthropic==0.23.1
 voyageai==0.3.7  # Voyage AI for text embeddings (primary provider)
 
-# LlamaIndex for RAG capabilities - VERIFIED compatible versions (FINAL)
-llama-index==0.10.57
-llama-index-core==0.10.57
-llama-index-llms-openai==0.1.29
-llama-index-embeddings-openai==0.1.11
-llama-index-embeddings-huggingface==0.1.4
-llama-index-vector-stores-supabase==0.1.4
 # SigLIP for superior visual embeddings (+19-29% accuracy improvement over CLIP)
 # Note: Using transformers directly instead of sentence-transformers to avoid 'hidden_size' error
 # sentence-transformers>=2.3.0  # REMOVED - incompatible with SigLIP composite config
 sentencepiece>=0.1.99  # Required by SigLIP tokenizer for visual embeddings
 protobuf>=3.20.0  # Required by SigLIP tokenizer (transformers dependency)
-llama-index-multi-modal-llms-openai==0.1.9
-llama-index-multi-modal-llms-anthropic==0.1.4
-llama-index-agent-openai==0.2.9
-llama-index-program-openai==0.1.6
-llama-index-question-gen-openai==0.1.3
-llama-index-cli==0.1.13
-llama-index-readers-file==0.1.12
 
 # Supabase integration
 supabase==2.3.0

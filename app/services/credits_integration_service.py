@@ -27,7 +27,7 @@ class CreditsIntegrationService:
         'gpt-5': {'input': 5.00, 'output': 15.00},
         'gpt-4o': {'input': 2.50, 'output': 10.00},
         'gpt-4o-mini': {'input': 0.15, 'output': 0.60},
-        'meta-llama/Llama-4-Scout-17B-16E-Instruct': {'input': 0.10, 'output': 0.30},
+        'Qwen/Qwen3-VL-8B-Instruct': {'input': 0.10, 'output': 0.30},
     }
     
     def __init__(self):

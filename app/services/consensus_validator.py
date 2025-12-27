@@ -41,7 +41,7 @@ class ConsensusValidator:
     
     # Model weights (based on general performance)
     MODEL_WEIGHTS = {
-        "llama-4-scout-17b": 0.7,
+        "qwen3-vl-8b": 0.7,
         "claude-haiku-4-5": 0.85,
         "claude-sonnet-4-5": 0.95,
         "gpt-5": 1.0,
@@ -269,11 +269,11 @@ class ConsensusValidator:
             Consensus validation result
         """
         # Define extraction functions for different models
-        async def llama_extract(data):
+        async def qwen_extract(data):
             prompt = f"Extract {extraction_type} from: {data['content'][:1000]}"
             result = await self.together_ai.generate_completion(
                 prompt=prompt,
-                model="meta-llama/Llama-4-Scout-17B-16E-Instruct",
+                model="Qwen/Qwen3-VL-8B-Instruct",
                 max_tokens=200,
             )
             return {
@@ -281,7 +281,7 @@ class ConsensusValidator:
                 "extracted_value": result.get("text", ""),
                 "confidence_score": 0.7,  # Default confidence
             }
-        
+
         async def gpt5_extract(data):
             result = await self.gpt5.generate_completion(
                 prompt=f"Extract {extraction_type} from: {data['content'][:1000]}",
@@ -294,15 +294,15 @@ class ConsensusValidator:
                 "extracted_value": result.get("text", ""),
                 "confidence_score": 0.9,  # Higher confidence for GPT-5
             }
-        
+
         # Run consensus validation
         task_data = {"content": content}
-        
+
         result = await self.validate_with_consensus(
             task_type=f"{extraction_type}_extraction",
-            task_functions=[llama_extract, gpt5_extract],
+            task_functions=[qwen_extract, gpt5_extract],
             task_data=task_data,
-            model_names=["llama-4-scout-17b", "gpt-5"],
+            model_names=["qwen3-vl-8b", "gpt-5"],
             job_id=job_id,
         )
         

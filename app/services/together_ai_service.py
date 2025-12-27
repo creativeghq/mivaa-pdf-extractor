@@ -1,9 +1,9 @@
 """
-TogetherAI Service for LLaMA Vision integration with MIVAA platform.
+TogetherAI Service for Qwen Vision integration with MIVAA platform.
 
-This service provides semantic analysis capabilities using TogetherAI's LLaMA 4 Scout Vision model
-(meta-llama/Llama-4-Scout-17B-16E-Instruct) for material identification and analysis.
-Superior OCR performance (#1 open source) and 69.4% MMMU benchmark score.
+This service provides semantic analysis capabilities using TogetherAI's Qwen3-VL models
+(Qwen/Qwen3-VL-8B-Instruct and Qwen/Qwen3-VL-32B-Instruct) for material identification and analysis.
+Superior vision-language understanding with state-of-the-art performance.
 """
 
 import asyncio
@@ -46,7 +46,7 @@ class TogetherAIConfig:
     """Configuration for TogetherAI service."""
     api_key: str
     base_url: str = "https://api.together.xyz/v1/chat/completions"
-    model: str = "meta-llama/Llama-4-Scout-17B-16E-Instruct"
+    model: str = "Qwen/Qwen3-VL-8B-Instruct"
     max_tokens: int = 1024
     temperature: float = 0.1
     timeout: int = 120
@@ -91,7 +91,7 @@ class SemanticAnalysisResult:
 
 class TogetherAIService:
     """
-    Service for interfacing with TogetherAI's LLaMA Vision model.
+    Service for interfacing with TogetherAI's Qwen Vision model.
     
     Provides semantic analysis capabilities for material images with rate limiting,
     caching, and robust error handling.
@@ -324,7 +324,7 @@ Provide your response as a structured analysis with clear categorization."""
 
             # Calculate confidence score based on response quality
             confidence_breakdown = {
-                "model_confidence": 0.90,  # Llama 4 Scout is highly accurate for vision
+                "model_confidence": 0.90,  # Qwen3-VL is highly accurate for vision
                 "completeness": 0.85,  # Comprehensive material analysis
                 "consistency": 0.88,  # Consistent vision analysis
                 "validation": 0.80   # Good for material identification
@@ -337,9 +337,9 @@ Provide your response as a structured analysis with clear categorization."""
             )
 
             # Log AI call
-            await self.ai_logger.log_llama_call(
+            await self.ai_logger.log_together_call(
                 task="material_semantic_analysis",
-                model="llama-4-scout-17b",
+                model="qwen3-vl-8b",
                 response=response_data,
                 latency_ms=latency_ms,
                 confidence_score=confidence_score,
@@ -365,7 +365,7 @@ Provide your response as a structured analysis with clear categorization."""
             # Log failed call
             await self.ai_logger.log_ai_call(
                 task="material_semantic_analysis",
-                model="llama-4-scout-17b",
+                model="qwen3-vl-8b",
                 input_tokens=0,
                 output_tokens=0,
                 cost=0.0,
@@ -788,18 +788,18 @@ def _add_missing_methods():
         return {
             "available_models": [
                 {
-                    "id": "meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo",
-                    "name": "LLaMA 3.2 90B Vision Instruct Turbo",
+                    "id": "Qwen/Qwen3-VL-8B-Instruct",
+                    "name": "Qwen3-VL-8B Vision Instruct",
                     "type": "vision",
                     "capabilities": ["image_analysis", "text_generation", "material_identification"],
                     "max_tokens": 4096,
                     "supports_streaming": True
                 },
                 {
-                    "id": "meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo",
-                    "name": "LLaMA 3.2 11B Vision Instruct Turbo",
+                    "id": "Qwen/Qwen3-VL-32B-Instruct",
+                    "name": "Qwen3-VL-32B Vision Instruct",
                     "type": "vision",
-                    "capabilities": ["image_analysis", "text_generation"],
+                    "capabilities": ["image_analysis", "text_generation", "material_identification"],
                     "max_tokens": 4096,
                     "supports_streaming": True
                 }

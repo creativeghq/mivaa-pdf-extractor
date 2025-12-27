@@ -191,18 +191,18 @@ class EscalationRules:
     
     # Model escalation chain (cheapest to most expensive)
     MODEL_CHAIN = [
-        "llama-4-scout-17b",      # Cheapest, fastest
+        "qwen3-vl-8b",            # Cheapest, fastest
         "claude-haiku-4-5",       # Balanced
         "claude-sonnet-4-5",      # Powerful
         "gpt-5",                  # Most powerful (for critical tasks)
     ]
-    
-    # Cost multipliers for each model (relative to Llama)
+
+    # Cost multipliers for each model (relative to Qwen3-VL-8B)
     COST_MULTIPLIERS = {
-        "llama-4-scout-17b": 1.0,
-        "claude-haiku-4-5": 4.0,
-        "claude-sonnet-4-5": 15.0,
-        "gpt-5": 25.0,
+        "qwen3-vl-8b": 1.0,
+        "claude-haiku-4-5": 8.0,
+        "claude-sonnet-4-5": 30.0,
+        "gpt-5": 50.0,
     }
     
     # Maximum escalation attempts before giving up
@@ -277,7 +277,7 @@ class EscalationRules:
     @classmethod
     def get_cost_multiplier(cls, model: str) -> float:
         """
-        Get cost multiplier for a model relative to Llama.
+        Get cost multiplier for a model relative to Qwen3-VL-8B.
         
         Args:
             model: Model name

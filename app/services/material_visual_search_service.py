@@ -55,7 +55,7 @@ class MaterialSearchRequest(BaseModel):
     
     # Processing options
     enable_clip_embeddings: bool = Field(True, description="Generate CLIP embeddings")
-    enable_llama_analysis: bool = Field(False, description="Enable LLaMA Vision analysis")
+    enable_vision_analysis: bool = Field(False, description="Enable Qwen Vision analysis")
     
     # Context
     user_id: Optional[str] = Field(None, description="User identifier")
@@ -82,7 +82,7 @@ class MaterialSearchResult(BaseModel):
     visual_analysis: Optional[Dict[str, Any]] = Field(None, description="Visual analysis results")
     material_properties: Optional[Dict[str, Any]] = Field(None, description="Material property analysis")
     clip_embedding: Optional[List[float]] = Field(None, description="CLIP embedding vector")
-    llama_analysis: Optional[Dict[str, Any]] = Field(None, description="LLaMA Vision analysis")
+    vision_analysis: Optional[Dict[str, Any]] = Field(None, description="Vision model analysis")
     
     # Metadata
     source: str = Field(..., description="Data source")
@@ -131,7 +131,7 @@ class MaterialVisualSearchService:
             "visual_similarity": 0.4,
             "semantic_relevance": 0.3,
             "material_properties": 0.2,
-            "llama_confidence": 0.1
+            "vision_confidence": 0.1
         }
 
         # Processing configuration
@@ -300,9 +300,9 @@ class MaterialVisualSearchService:
                     combined_score=result.get("scores", {}).get("combined_score", 0.0),
                     confidence_score=result.get("scores", {}).get("confidence_score", 0.0),
                     visual_analysis=result.get("visual_analysis", {}),
-                    material_properties=result.get("visual_analysis", {}).get("llama_analysis", {}).get("material_properties", {}),
+                    material_properties=result.get("visual_analysis", {}).get("vision_analysis", {}).get("material_properties", {}),
                     clip_embedding=result.get("visual_analysis", {}).get("clip_embedding", []) if request.include_embeddings else None,
-                    llama_analysis=result.get("visual_analysis", {}).get("llama_analysis", {}) if request.enable_llama_analysis else None,
+                    vision_analysis=result.get("visual_analysis", {}).get("vision_analysis", {}) if request.enable_vision_analysis else None,
                     source=result.get("metadata", {}).get("source", ""),
                     created_at=result.get("metadata", {}).get("created_at", ""),
                     processing_method=result.get("metadata", {}).get("processing_method", ""),
@@ -450,7 +450,7 @@ class MaterialVisualSearchService:
                     }),
                     material_properties=properties,
                     clip_embedding=None,  # Would be retrieved from embeddings table
-                    llama_analysis=metadata.get('analysis', {
+                    vision_analysis=metadata.get('analysis', {
                         "material_classification": material.get('category', 'unknown'),
                         "confidence": 0.80,
                         "properties_detected": list(properties.keys()) if properties else []
@@ -517,8 +517,8 @@ class MaterialVisualSearchService:
                 query_embedding = request.query_embedding
             elif request.query_image:
                 # Generate CLIP embedding from image
-                from app.services.llamaindex_service import LlamaIndexService
-                llama_service = LlamaIndexService()
+                from app.services.rag_service import RAGService
+                rag_service = RAGService()
 
                 # Load image and generate embedding
                 import base64
@@ -533,7 +533,7 @@ class MaterialVisualSearchService:
                     image_data = base64.b64decode(request.query_image)
                     image = Image.open(BytesIO(image_data))
 
-                query_embedding = await llama_service._generate_clip_embedding(image)
+                query_embedding = await rag_service._generate_clip_embedding(image)
 
             if not query_embedding:
                 return MaterialSearchResponse(
@@ -606,7 +606,7 @@ class MaterialVisualSearchService:
                     },
                     material_properties=metadata.get('material_properties', {}),
                     clip_embedding=None if not request.include_embeddings else query_embedding,
-                    llama_analysis=metadata.get('llama_analysis'),
+                    vision_analysis=metadata.get('vision_analysis'),
                     source="vecs_search",
                     created_at=datetime.utcnow().isoformat(),
                     processing_method="vecs_hnsw",
@@ -746,7 +746,7 @@ class MaterialVisualSearchService:
 
         Args:
             image_data: Base64 encoded image or image URL
-            embedding_types: Types of embeddings to generate (clip, llama, custom)
+            embedding_types: Types of embeddings to generate (clip, custom)
 
         Returns:
             Dict containing embedding vectors
@@ -779,8 +779,6 @@ class MaterialVisualSearchService:
                         embeddings["clip"] = [0.1 + (i * 0.001) for i in range(512)]
                     if "custom" in embedding_types:
                         embeddings["custom"] = [0.2 + (i * 0.002) for i in range(256)]
-                    if "llama" in embedding_types:
-                        embeddings["llama"] = [0.05 + (i * 0.0001) for i in range(1024)]
 
                     return {
                         "success": True,
@@ -793,8 +791,7 @@ class MaterialVisualSearchService:
                             "fallback_mode": True,
                             "model_versions": {
                             "clip": "clip-vit-base-patch32-fallback",
-                            "custom": "material-encoder-v1-fallback",
-                            "llama": "llama-vision-fallback"
+                            "custom": "material-encoder-v1-fallback"
                         }
                     }
                 }
@@ -805,38 +802,6 @@ class MaterialVisualSearchService:
                 "embeddings": result.get("embeddings", {}),
                 "embedding_metadata": result.get("metadata", {})
             }
-
-            # Legacy code (kept for reference, not used)
-            # # Normal processing with actual service
-            # # Generate CLIP embeddings
-            # if "clip" in embedding_types:
-            #     clip_result = await self.material_kai_service.generate_image_embeddings(
-            #         image_data=image_data,
-            #         embedding_model="clip-vit-base-patch32"
-            #     )
-            #     if clip_result.get("success"):
-            #         embeddings["clip"] = clip_result.get("embeddings", [])
-
-            # # Generate custom material embeddings if available
-            # if "custom" in embedding_types:
-            #     custom_result = await self.material_kai_service.generate_image_embeddings(
-            #         image_data=image_data,
-            #         embedding_model="material-specific-encoder"
-            #     )
-            #     if custom_result.get("success"):
-            #         embeddings["custom"] = custom_result.get("embeddings", [])
-
-            # return {
-            #     "success": True,
-            #     "embeddings": embeddings,
-            #     "embedding_metadata": {
-            #         "embedding_types": embedding_types,
-            #         "dimensions": {k: len(v) for k, v in embeddings.items()},
-            #         "generation_timestamp": datetime.utcnow().isoformat(),
-            #         "processing_time_ms": 150,
-            #         "fallback_mode": False
-            #     }
-            # }
 
         except Exception as e:
             logger.error(f"Embedding generation failed: {e}")

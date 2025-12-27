@@ -183,34 +183,35 @@ class Settings(BaseSettings):
     voyage_enabled: bool = Field(default=True, env="VOYAGE_ENABLED")
     voyage_fallback_to_openai: bool = Field(default=True, env="VOYAGE_FALLBACK_TO_OPENAI")
 
-    # LlamaIndex RAG Settings
-    llamaindex_embedding_model: str = Field(
+    # RAG Settings (model-agnostic - works with Claude 4.5 + Direct Vector DB)
+
+    rag_embedding_model: str = Field(
         default="text-embedding-3-small",
-        env="LLAMAINDEX_EMBEDDING_MODEL"
+        env="RAG_EMBEDDING_MODEL"
     )
-    llamaindex_llm_model: str = Field(
-        default="gpt-4o",
-        env="LLAMAINDEX_LLM_MODEL"
+    rag_llm_model: str = Field(
+        default="claude-sonnet-4.5",
+        env="RAG_LLM_MODEL"
     )
-    llamaindex_chunk_size: int = Field(
+    rag_chunk_size: int = Field(
         default=1024,
-        env="LLAMAINDEX_CHUNK_SIZE"
+        env="RAG_CHUNK_SIZE"
     )
-    llamaindex_chunk_overlap: int = Field(
+    rag_chunk_overlap: int = Field(
         default=200,
-        env="LLAMAINDEX_CHUNK_OVERLAP"
+        env="RAG_CHUNK_OVERLAP"
     )
-    llamaindex_similarity_top_k: int = Field(
+    rag_similarity_top_k: int = Field(
         default=5,
-        env="LLAMAINDEX_SIMILARITY_TOP_K"
+        env="RAG_SIMILARITY_TOP_K"
     )
-    llamaindex_storage_dir: str = Field(
-        default="./data/llamaindex",
-        env="LLAMAINDEX_STORAGE_DIR"
+    rag_storage_dir: str = Field(
+        default="./data/rag",
+        env="RAG_STORAGE_DIR"
     )
-    llamaindex_enable_rag: bool = Field(
+    rag_enable: bool = Field(
         default=True,
-        env="LLAMAINDEX_ENABLE_RAG"
+        env="RAG_ENABLE"
     )
     
     # Multi-modal Processing Settings
@@ -385,6 +386,85 @@ class Settings(BaseSettings):
     anthropic_enabled: bool = Field(
         default=True,
         env="ANTHROPIC_ENABLED"
+    )
+    # NEW: Claude for RAG Queries
+    anthropic_model_rag_query: str = Field(
+        default="claude-sonnet-4-5-20250929",
+        env="ANTHROPIC_MODEL_RAG_QUERY",
+        description="Claude model for RAG question answering"
+    )
+
+    # Visual Embedding Models (SigLIP primary, CLIP fallback) - NOW CONFIGURABLE
+    visual_embedding_primary_model: str = Field(
+        default="google/siglip-so400m-patch14-384",
+        env="VISUAL_EMBEDDING_PRIMARY_MODEL",
+        description="Primary visual embedding model (SigLIP)"
+    )
+    visual_embedding_fallback_model: str = Field(
+        default="openai/clip-vit-base-patch32",
+        env="VISUAL_EMBEDDING_FALLBACK_MODEL",
+        description="Fallback visual embedding model (CLIP)"
+    )
+    visual_embedding_dimensions: int = Field(
+        default=1152,
+        env="VISUAL_EMBEDDING_DIMENSIONS",
+        description="Dimensions of visual embeddings (1152 for SigLIP, 512 for CLIP)"
+    )
+    visual_embedding_enabled: bool = Field(
+        default=True,
+        env="VISUAL_EMBEDDING_ENABLED",
+        description="Enable visual embedding generation"
+    )
+
+    # Voyage AI Settings (Text Embeddings - Primary Provider)
+    voyage_api_key: str = Field(
+        default="",
+        env="VOYAGE_API_KEY",
+        description="Voyage AI API key for text embeddings"
+    )
+    voyage_model: str = Field(
+        default="voyage-3.5",
+        env="VOYAGE_MODEL",
+        description="Voyage AI model for text embeddings"
+    )
+    voyage_embedding_dimension: int = Field(
+        default=1024,
+        env="VOYAGE_EMBEDDING_DIMENSION",
+        description="Voyage AI embedding dimensions"
+    )
+    voyage_timeout: int = Field(
+        default=30,
+        env="VOYAGE_TIMEOUT",
+        description="Voyage AI API timeout in seconds"
+    )
+    voyage_enabled: bool = Field(
+        default=True,
+        env="VOYAGE_ENABLED",
+        description="Enable Voyage AI embeddings (fallback to OpenAI if disabled)"
+    )
+    voyage_fallback_to_openai: bool = Field(
+        default=True,
+        env="VOYAGE_FALLBACK_TO_OPENAI",
+        description="Fallback to OpenAI if Voyage AI fails"
+    )
+
+    # Document Chunking Models
+    chunking_primary_model: str = Field(
+        default="Qwen/Qwen3-VL-32B-Instruct",
+        env="CHUNKING_PRIMARY_MODEL",
+        description="Primary model for vision-guided chunking"
+    )
+    chunking_quality_threshold: float = Field(
+        default=0.7,
+        env="CHUNKING_QUALITY_THRESHOLD",
+        ge=0.0,
+        le=1.0,
+        description="Quality threshold for chunk validation (0.0-1.0)"
+    )
+    chunking_enable_vision_guidance: bool = Field(
+        default=True,
+        env="CHUNKING_ENABLE_VISION_GUIDANCE",
+        description="Enable vision-guided chunking with Qwen3-VL-32B"
     )
 
     # Material Kai Vision Platform Settings (disabled by default)
@@ -646,23 +726,33 @@ class Settings(BaseSettings):
             "allow_headers": self.cors_headers,
             "allow_credentials": True,
         }
-    def get_llamaindex_config(self) -> Dict[str, Any]:
+
+    def get_rag_config(self) -> Dict[str, Any]:
         """
-        Get LlamaIndex RAG configuration.
-        
-        This provides all necessary configuration for the LlamaIndex service
-        including embedding models, LLM settings, and storage options.
+        Get RAG configuration (model-agnostic).
+
+        This provides all necessary configuration for the RAG service
+        including embedding models, LLM settings, storage options, and vision model integration.
+        Works with any vision/LLM models - just change the model names in config.
         """
         return {
-            "embedding_model": self.llamaindex_embedding_model,
-            "llm_model": self.llamaindex_llm_model,
-            "chunk_size": self.llamaindex_chunk_size,
-            "chunk_overlap": self.llamaindex_chunk_overlap,
-            "similarity_top_k": self.llamaindex_similarity_top_k,
-            "storage_dir": self.llamaindex_storage_dir,
-            "enable_rag": self.llamaindex_enable_rag,
+            "embedding_model": self.rag_embedding_model,
+            "llm_model": self.rag_llm_model,
+            "chunk_size": self.rag_chunk_size,
+            "chunk_overlap": self.rag_chunk_overlap,
+            "similarity_top_k": self.rag_similarity_top_k,
+            "storage_dir": self.rag_storage_dir,
+            "enable_rag": self.rag_enable,
+            # TogetherAI/Qwen Vision Model Configuration
+            "together_model": self.together_model,
+            "together_validation_model": self.together_validation_model,
+            "together_api_key": self.together_api_key,
+            "together_base_url": self.together_base_url,
+            "together_max_tokens": self.together_max_tokens,
+            "together_temperature": self.together_temperature,
+            "together_enabled": self.together_enabled,
         }
-    
+
     def get_material_kai_config(self) -> Dict[str, Any]:
         """
         Get Material Kai Vision Platform configuration.
@@ -755,14 +845,8 @@ class Settings(BaseSettings):
     @validator("together_model")
     @classmethod
     def validate_together_model(cls, v):
-        """Validate TogetherAI model name."""
+        """Validate TogetherAI vision model name."""
         valid_models = [
-            # Llama Vision Models
-            "meta-llama/Llama-4-Scout-17B-16E-Instruct",
-            "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
-            "meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo",
-            "meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo",
-            "meta-llama/Llama-Vision-Free",
             # Qwen Vision Models
             "Qwen/Qwen3-VL-8B-Instruct",
             "Qwen/Qwen3-VL-32B-Instruct"

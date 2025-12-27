@@ -3,11 +3,11 @@ Stage 3: Image Processing
 
 Consolidated image processing pipeline that performs:
 1. Image extraction from PDF
-2. AI classification (material vs non-material)
+2. AI classification (material vs non-material) using Qwen3-VL models
 3. Upload to Supabase Storage
 4. Save to database
 5. CLIP embeddings generation (SigLIP primary, CLIP fallback)
-6. Llama Vision analysis for quality scoring
+6. Qwen Vision analysis for quality scoring (Qwen3-VL-8B primary, Qwen3-VL-32B validation)
 
 All operations are performed in batches with memory monitoring and cleanup.
 """
@@ -98,11 +98,11 @@ async def process_stage_3_images(
     
     Performs all image operations in a single batch-processed flow:
     - Extract images from PDF (with optional page filtering)
-    - AI classification (Llama/Claude)
+    - AI classification (Qwen/Claude)
     - Upload to Supabase Storage
     - Save to database
     - Generate CLIP embeddings (SigLIP/CLIP)
-    - Llama Vision analysis for quality scoring
+    - Qwen Vision analysis for quality scoring
     
     Args:
         file_content: PDF file bytes
@@ -132,29 +132,29 @@ async def process_stage_3_images(
     embedding_service = RealEmbeddingsService()
     pdf_processor = PDFProcessor()
     
-    # Load LlamaIndex service for Llama Vision analysis
-    logger.info("📦 Loading LlamaIndex service for image analysis...")
+    # Load RAG service for Qwen Vision analysis
+    logger.info("📦 Loading RAG service for image analysis with Qwen vision models...")
     try:
-        llamaindex_service = await component_manager.load("llamaindex_service")
-        loaded_components.append("llamaindex_service")
-        logger.info("✅ LlamaIndex service loaded")
+        rag_service = await component_manager.load("rag_service")
+        loaded_components.append("rag_service")
+        logger.info("✅ RAG service loaded (Qwen3-VL-8B primary, Qwen3-VL-32B validation)")
     except Exception as e:
-        logger.error(f"❌ Failed to load LlamaIndex service: {e}")
+        logger.error(f"❌ Failed to load RAG service: {e}")
         raise
     
     # Counters for tracking
     images_saved_count = 0
     clip_embeddings_generated = 0
     specialized_embeddings_generated = 0
-    images_processed = 0  # Images analyzed with Llama Vision
+    images_processed = 0  # Images analyzed with vision model
     vecs_batch_records = []
-    VECS_BATCH_SIZE = 20 
-    
+    VECS_BATCH_SIZE = 20
+
     # Circuit breakers for API calls
     # CLIP: More lenient settings for transient memory pressure failures
-    # Llama: More lenient due to transient JSON formatting issues (now fixed, but keeping lenient for safety)
+    # Vision Model: More lenient due to transient JSON formatting issues (now fixed, but keeping lenient for safety)
     clip_breaker = CircuitBreaker(failure_threshold=8, timeout_seconds=45, half_open_max_calls=5, name="CLIP")
-    llama_breaker = CircuitBreaker(failure_threshold=8, timeout_seconds=45, recovery_timeout=30, half_open_max_calls=3, name="Llama")
+    vision_breaker = CircuitBreaker(failure_threshold=8, timeout_seconds=45, recovery_timeout=30, half_open_max_calls=3, name="Vision Model")
     
     # Dynamic batch size calculation - MORE CONSERVATIVE for CLIP/SigLIP models
     # CLIP/SigLIP models use ~2-3GB RAM when loaded, so we need smaller batches
@@ -274,7 +274,7 @@ async def process_stage_3_images(
 
     logger.info(f"📊 Total images to process: {len(all_images)}")
 
-    # Step 2: AI Classification (Llama/Claude) to filter material images
+    # Step 2: AI Classification (Qwen/Claude) to filter material images
     logger.info("🤖 Starting AI classification to identify material images...")
 
     import asyncio
@@ -286,7 +286,7 @@ async def process_stage_3_images(
     # - HTTP 499 (Client Closed Request) when timeout guard (30s) killed slow requests
     # - API rate limiting and 503 errors from Together.ai
     # - Network congestion from too many parallel large image uploads
-    llama_semaphore = Semaphore(3)  # Max 3 concurrent Llama calls (reduced from 10)
+    vision_semaphore = Semaphore(3)  # Max 3 concurrent vision model calls (reduced from 10)
     claude_semaphore = Semaphore(2)  # Max 2 concurrent Claude calls (reduced from 3)
 
     material_images = []
@@ -300,7 +300,7 @@ async def process_stage_3_images(
         NEW ARCHITECTURE:
         - Download image from Supabase URL (not local disk)
         - Convert to base64 on-the-fly
-        - Classify with Llama Vision
+        - Classify with Qwen Vision
         - No disk I/O - everything in memory
         """
         nonlocal non_material_count, classification_errors
@@ -317,9 +317,9 @@ async def process_stage_3_images(
             from app.services.pdf_processor import download_image_to_base64
             image_base64 = await download_image_to_base64(storage_url)
 
-            # Call Llama Vision for classification
-            async with llama_semaphore:
-                classification = await llamaindex_service._classify_image_material(
+            # Call vision model for classification
+            async with vision_semaphore:
+                classification = await rag_service._classify_image_material(
                     image_base64=image_base64,
                     confidence_threshold=0.6  # Lowered from 0.7 to reduce false negatives
                 )
@@ -399,9 +399,9 @@ async def process_stage_3_images(
             }
         }
 
-    # Step 3: Consolidated batch processing (Upload → Save → CLIP → Llama Vision)
+    # Step 3: Consolidated batch processing (Upload → Save → CLIP → Qwen Vision)
     logger.info(f"🚀 Starting consolidated batch processing for {len(material_images)} material images...")
-    logger.info(f"   Operations: Upload → Save to DB → CLIP Embeddings → Llama Vision Analysis")
+    logger.info(f"   Operations: Upload → Save to DB → CLIP Embeddings → Qwen Vision Analysis")
 
     # CRITICAL FIX: Load CLIP/SigLIP models ONCE before ALL batches (not per batch)
     # This prevents models from being loaded 12 times (once per batch), which:
@@ -436,11 +436,11 @@ async def process_stage_3_images(
 
     async def process_single_image_complete(img_data, image_index, total_images):
         """
-        Complete processing for a single image: Save → CLIP → Llama Vision
+        Complete processing for a single image: Save → CLIP → Qwen Vision
 
         MEMORY OPTIMIZATION:
         - Download image ONCE at the start
-        - Reuse base64 data for CLIP and Llama Vision
+        - Reuse base64 data for CLIP and Qwen Vision
         - Delete base64 data immediately after use
         - Saves ~66% memory (3 downloads → 1 download)
         """
@@ -553,20 +553,20 @@ async def process_stage_3_images(
             except Exception as clip_error:
                 logger.error(f"   ❌ [{image_index}/{total_images}] CLIP failed: {clip_error}")
 
-            # STEP 3: Llama Vision analysis - REUSE downloaded base64
-            logger.info(f"   🔍 [{image_index}/{total_images}] Analyzing with Llama Vision (reusing downloaded image)...")
+            # STEP 3: Qwen Vision analysis - REUSE downloaded base64
+            logger.info(f"   🔍 [{image_index}/{total_images}] Analyzing with Qwen Vision (reusing downloaded image)...")
             try:
-                analysis_result = await llama_breaker.call(
+                analysis_result = await vision_breaker.call(
                     with_timeout,
-                    llamaindex_service._analyze_image_material(
+                    rag_service._analyze_image_material(
                         image_base64=image_base64,  # ✅ Reuse downloaded base64
                         image_path=storage_url,  # Just for logging
                         image_id=image_id,
                         document_id=document_id,
                         embedding_service=embedding_service  # Pass loaded models
                     ),
-                    timeout_seconds=TimeoutConstants.LLAMA_VISION_CALL,
-                    operation_name=f"Llama Vision (image {image_index}/{total_images})"
+                    timeout_seconds=TimeoutConstants.QWEN_VISION_CALL,
+                    operation_name=f"Qwen Vision (image {image_index}/{total_images})"
                 )
 
                 if analysis_result:
@@ -574,12 +574,12 @@ async def process_stage_3_images(
                     img_data['confidence_score'] = analysis_result.get('confidence_score', 0.5)
                     img_data['material_properties'] = analysis_result.get('material_properties', {})
                     images_processed += 1
-                    logger.info(f"   ✅ [{image_index}/{total_images}] Llama Vision complete (quality: {img_data['quality_score']:.2f})")
+                    logger.info(f"   ✅ [{image_index}/{total_images}] Qwen Vision complete (quality: {img_data['quality_score']:.2f})")
 
             except CircuitBreakerError as cb_error:
-                logger.warning(f"   ⚠️ [{image_index}/{total_images}] Llama Vision skipped (circuit breaker): {cb_error}")
-            except Exception as llama_error:
-                logger.error(f"   ❌ [{image_index}/{total_images}] Llama Vision failed: {llama_error}")
+                logger.warning(f"   ⚠️ [{image_index}/{total_images}] Qwen Vision skipped (circuit breaker): {cb_error}")
+            except Exception as QWEN_error:
+                logger.error(f"   ❌ [{image_index}/{total_images}] Qwen Vision failed: {QWEN_error}")
 
             return img_data
 
@@ -642,7 +642,7 @@ async def process_stage_3_images(
         # AGGRESSIVE MEMORY CLEANUP after batch
         logger.info(f"   🧹 Starting memory cleanup after batch {batch_num + 1}/{total_batches}...")
 
-        # 1. Delete batch data explicitly (downloaded base64 images from Llama Vision)
+        # 1. Delete batch data explicitly (downloaded base64 images from Qwen Vision)
         del batch_results
         del batch_tasks
         del batch_images
@@ -709,7 +709,7 @@ async def process_stage_3_images(
     logger.info(f"   Images saved to DB: {images_saved_count}")
     logger.info(f"   CLIP embeddings generated: {clip_embeddings_generated}")
     logger.info(f"   Specialized embeddings: {specialized_embeddings_generated}")
-    logger.info(f"   Llama Vision analyzed: {images_processed}")
+    logger.info(f"   Qwen Vision analyzed: {images_processed}")
 
     # Sync tracker to database
     await tracker._sync_to_database(stage="image_processing")

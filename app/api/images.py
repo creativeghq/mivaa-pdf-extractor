@@ -94,7 +94,7 @@ async def analyze_image(
     """
     **🔍 Image Analysis - AI-Powered Visual Understanding**
 
-    Analyze images using Llama 4 Scout 17B Vision model for comprehensive visual understanding.
+    Analyze images using Qwen3-VL 17B Vision model for comprehensive visual understanding.
 
     ## 🎯 Analysis Types
 
@@ -141,7 +141,7 @@ async def analyze_image(
         "quality": 0.92
       },
       "processing_time": 1.23,
-      "model_used": "meta-llama/Llama-4-Scout-17B-16E-Instruct"
+      "model_used": "Qwen/Qwen3-VL-8B-Instruct"
     }
     ```
 

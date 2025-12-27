@@ -118,7 +118,7 @@ Content-Type: application/json
 
 ### **🤖 AI Analysis APIs**
 
-#### Semantic Analysis (LLaMA Vision)
+#### Semantic Analysis (Qwen Vision)
 ```http
 POST /api/semantic-analysis
 Content-Type: multipart/form-data
@@ -210,9 +210,9 @@ Authorization: Bearer your-jwt-token
 ## 🎯 **Key Features (Enhanced)**
 
 - **PDF Processing**: Advanced text, table, and image extraction using PyMuPDF4LLM
-- **RAG System**: Retrieval-Augmented Generation with LlamaIndex integration
+- **RAG System**: Retrieval-Augmented Generation with direct vector database queries
 - **Vector Search**: Semantic similarity search with optimized embeddings
-- **AI Analysis**: LLaMA Vision models for material analysis
+- **AI Analysis**: Qwen Vision models for material analysis
 - **Embedding Generation**: Standardized text-embedding-ada-002 (1536 dimensions)
 - **Multi-modal Processing**: Text, images, and structured data extraction
 - **Performance Monitoring**: Built-in metrics and health checks
@@ -265,8 +265,8 @@ The service now provides:
 - **7 API modules** with 37+ endpoints
 - **JWT Authentication** for secure access
 - **Performance Monitoring** with built-in metrics
-- **RAG Integration** with LlamaIndex
-- **AI Analysis** with TogetherAI and LLaMA Vision
+- **RAG Integration** with direct vector database
+- **AI Analysis** with TogetherAI and Qwen Vision
 - **Vector Search** with optimized embeddings
 - **Multi-modal Processing** for text, images, and structured data
 

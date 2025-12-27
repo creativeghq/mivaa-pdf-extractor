@@ -1,16 +1,16 @@
 """
 Enhanced Material Classifier - Dual-Model Validation
 
-This service combines HuggingFace ViT models with Llama 4 Scout Vision for
+This service combines HuggingFace ViT models with vision models for
 superior material classification accuracy.
 
 Strategy:
 1. Primary: HuggingFace ViT (fast, local inference)
-2. Validation: Llama 4 Scout Vision (accurate, detailed properties)
+2. Validation: Vision model (accurate, detailed properties)
 3. Combine results with weighted confidence scoring
 
 Benefits:
-- Higher accuracy (Llama 4 Scout 69.4% MMMU vs ViT ~60%)
+- Higher accuracy from advanced vision models
 - Fallback redundancy (if one model fails, use the other)
 - Detailed material properties (finish, texture, pattern)
 - Confidence scoring from two independent models
@@ -38,7 +38,7 @@ class MaterialClassificationResult:
     confidence: float
     properties: Dict[str, Any]  # finish, texture, pattern, color
     vit_result: Optional[Dict[str, Any]]  # HuggingFace ViT result
-    llama_result: Optional[Dict[str, Any]]  # Llama 4 Scout result
+    vision_result: Optional[Dict[str, Any]]  # Vision model result
     combined_confidence: float
     processing_time_ms: float
     timestamp: str
@@ -47,8 +47,8 @@ class MaterialClassificationResult:
 class EnhancedMaterialClassifier:
     """
     Enhanced material classifier using dual-model validation.
-    
-    Combines HuggingFace ViT (fast) with Llama 4 Scout Vision (accurate)
+
+    Combines HuggingFace ViT (fast) with vision models (accurate)
     for superior material classification.
     """
     
@@ -70,12 +70,12 @@ class EnhancedMaterialClassifier:
     ) -> MaterialClassificationResult:
         """
         Classify material using dual-model validation.
-        
+
         Args:
             image_base64: Base64-encoded image data
-            use_dual_validation: If True, use both ViT and Llama 4 Scout
+            use_dual_validation: If True, use both ViT and vision model
             confidence_threshold: Minimum confidence to accept classification
-            
+
         Returns:
             MaterialClassificationResult with combined analysis
         """
@@ -85,11 +85,11 @@ class EnhancedMaterialClassifier:
             if use_dual_validation:
                 # Run both models in parallel
                 vit_task = self._classify_with_vit(image_base64)
-                llama_task = self._classify_with_llama(image_base64, job_id)
+                vision_task = self._classify_with_vision(image_base64, job_id)
 
-                vit_result, llama_result = await asyncio.gather(
+                vit_result, vision_result = await asyncio.gather(
                     vit_task,
-                    llama_task,
+                    vision_task,
                     return_exceptions=True
                 )
 
@@ -97,18 +97,18 @@ class EnhancedMaterialClassifier:
                 if isinstance(vit_result, Exception):
                     self.logger.warning(f"ViT classification failed: {vit_result}")
                     vit_result = None
-                if isinstance(llama_result, Exception):
-                    self.logger.warning(f"Llama classification failed: {llama_result}")
-                    llama_result = None
+                if isinstance(vision_result, Exception):
+                    self.logger.warning(f"Vision classification failed: {vision_result}")
+                    vision_result = None
 
                 # Combine results
-                combined = self._combine_results(vit_result, llama_result)
+                combined = self._combine_results(vit_result, vision_result)
 
             else:
-                # Use only Llama 4 Scout (more accurate)
-                llama_result = await self._classify_with_llama(image_base64, job_id)
+                # Use only vision model (more accurate)
+                vision_result = await self._classify_with_vision(image_base64, job_id)
                 vit_result = None
-                combined = self._extract_from_llama(llama_result)
+                combined = self._extract_from_vision(vision_result)
             
             processing_time = (datetime.now() - start_time).total_seconds() * 1000
             
@@ -118,7 +118,7 @@ class EnhancedMaterialClassifier:
                 confidence=combined.get('confidence', 0.0),
                 properties=combined.get('properties', {}),
                 vit_result=vit_result,
-                llama_result=llama_result,
+                vision_result=vision_result,
                 combined_confidence=combined.get('combined_confidence', 0.0),
                 processing_time_ms=processing_time,
                 timestamp=datetime.utcnow().isoformat()
@@ -130,35 +130,35 @@ class EnhancedMaterialClassifier:
     
     async def _classify_with_vit(self, image_base64: str) -> Optional[Dict[str, Any]]:
         """
-        Classify material using Llama 4 Scout Vision as ViT alternative.
+        Classify material using vision model as ViT alternative.
 
-        Since ViT requires HuggingFace integration, we use Llama 4 Scout Vision
-        which provides superior material classification (69.4% MMMU accuracy).
+        Since ViT requires HuggingFace integration, we use vision models
+        which provide superior material classification.
         """
         try:
-            # Use Llama 4 Scout Vision for material classification
+            # Use vision model for material classification
             # This is more accurate than ViT for material identification
-            llama_result = await self._classify_with_llama(image_base64)
+            vision_result = await self._classify_with_vision(image_base64)
 
-            if llama_result:
-                # Transform Llama result to ViT-compatible format
+            if vision_result:
+                # Transform vision result to ViT-compatible format
                 return {
-                    "material": llama_result.get("primary_material", "unknown"),
-                    "confidence": llama_result.get("confidence", 0.0),
-                    "model": "llama-4-scout-17b-vision (ViT alternative)",
-                    "properties": llama_result.get("properties", {})
+                    "material": vision_result.get("primary_material", "unknown"),
+                    "confidence": vision_result.get("confidence", 0.0),
+                    "model": "vision-model (ViT alternative)",
+                    "properties": vision_result.get("properties", {})
                 }
             else:
-                self.logger.warning("Llama classification returned no result")
+                self.logger.warning("Vision classification returned no result")
                 return None
 
         except Exception as e:
-            self.logger.error(f"ViT alternative (Llama) classification failed: {e}")
+            self.logger.error(f"ViT alternative (vision) classification failed: {e}")
             return None
-    
-    async def _classify_with_llama(self, image_base64: str, job_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+
+    async def _classify_with_vision(self, image_base64: str, job_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
-        Classify material using Llama 4 Scout Vision.
+        Classify material using vision model.
 
         Uses the existing RealImageAnalysisService with a specialized prompt
         for material classification.
@@ -206,7 +206,7 @@ Respond ONLY with valid JSON, no additional text."""
                     "Content-Type": "application/json"
                 },
                     json={
-                        "model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+                        "model": "Qwen/Qwen3-VL-8B-Instruct",
                         "messages": [
                             {
                                 "role": "user",
@@ -233,7 +233,7 @@ Respond ONLY with valid JSON, no additional text."""
                 
                 if response.status_code != 200:
                     # Sanitize error message to avoid logging sensitive data
-                    error_msg = f"Llama API error {response.status_code}"
+                    error_msg = f"Qwen API error {response.status_code}"
                     try:
                         error_data = response.json()
                         if 'error' in error_data:
@@ -277,9 +277,9 @@ Respond ONLY with valid JSON, no additional text."""
                     0.15 * confidence_breakdown["validation"]
                 )
 
-                await self.ai_logger.log_llama_call(
+                await self.ai_logger.log_together_call(
                     task="material_classification",
-                    model="llama-4-scout-17b",
+                    model="qwen3-vl-8b",
                     response=result,
                     latency_ms=latency_ms,
                     confidence_score=confidence_score,
@@ -291,13 +291,13 @@ Respond ONLY with valid JSON, no additional text."""
                 return analysis
 
         except Exception as e:
-            self.logger.error(f"Llama classification failed: {e}")
+            self.logger.error(f"Qwen classification failed: {e}")
 
             # Log failed AI call
             latency_ms = int((time.time() - start_time) * 1000)
             await self.ai_logger.log_ai_call(
                 task="material_classification",
-                model="llama-4-scout-17b",
+                model="qwen3-vl-8b",
                 input_tokens=0,
                 output_tokens=0,
                 cost=0.0,
@@ -311,7 +311,7 @@ Respond ONLY with valid JSON, no additional text."""
                 },
                 action="fallback_to_rules",
                 job_id=job_id,
-                fallback_reason=f"Llama API error: {str(e)}",
+                fallback_reason=f"Qwen API error: {str(e)}",
                 error_message=str(e)
             )
 
@@ -320,13 +320,13 @@ Respond ONLY with valid JSON, no additional text."""
     def _combine_results(
         self,
         vit_result: Optional[Dict[str, Any]],
-        llama_result: Optional[Dict[str, Any]]
+        vision_result: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
         """
-        Combine results from ViT and Llama 4 Scout with weighted confidence.
-        
+        Combine results from ViT and vision model with weighted confidence.
+
         Weighting:
-        - Llama 4 Scout: 70% (more accurate, 69.4% MMMU)
+        - Vision model: 70% (more accurate)
         - ViT: 30% (faster, but less accurate)
         """
         combined = {
@@ -338,32 +338,32 @@ Respond ONLY with valid JSON, no additional text."""
         }
         
         # If both models agree, high confidence
-        if vit_result and llama_result:
+        if vit_result and vision_result:
             vit_material = vit_result.get("material", "").lower()
-            llama_material = llama_result.get("primary_material", "").lower()
-            
-            if vit_material == llama_material:
+            vision_material = vision_result.get("primary_material", "").lower()
+
+            if vit_material == vision_material:
                 # Agreement - high confidence
-                combined["primary_material"] = llama_material
-                combined["confidence"] = min(1.0, (vit_result.get("confidence", 0.0) + llama_result.get("confidence", 0.0)) / 2 * 1.2)
+                combined["primary_material"] = vision_material
+                combined["confidence"] = min(1.0, (vit_result.get("confidence", 0.0) + vision_result.get("confidence", 0.0)) / 2 * 1.2)
             else:
-                # Disagreement - use Llama (more accurate)
-                combined["primary_material"] = llama_material
-                combined["confidence"] = llama_result.get("confidence", 0.0) * 0.8
-            
-            # Use Llama's detailed properties
-            combined["properties"] = llama_result.get("properties", {})
-            combined["secondary_materials"] = llama_result.get("secondary_materials", [])
-            
+                # Disagreement - use vision model (more accurate)
+                combined["primary_material"] = vision_material
+                combined["confidence"] = vision_result.get("confidence", 0.0) * 0.8
+
+            # Use vision model's detailed properties
+            combined["properties"] = vision_result.get("properties", {})
+            combined["secondary_materials"] = vision_result.get("secondary_materials", [])
+
             # Weighted combined confidence
             vit_conf = vit_result.get("confidence", 0.0)
-            llama_conf = llama_result.get("confidence", 0.0)
-            combined["combined_confidence"] = (vit_conf * 0.3) + (llama_conf * 0.7)
-            
-        elif llama_result:
-            # Only Llama available
-            combined = self._extract_from_llama(llama_result)
-            combined["combined_confidence"] = llama_result.get("confidence", 0.0)
+            vision_conf = vision_result.get("confidence", 0.0)
+            combined["combined_confidence"] = (vit_conf * 0.3) + (vision_conf * 0.7)
+
+        elif vision_result:
+            # Only vision model available
+            combined = self._extract_from_vision(vision_result)
+            combined["combined_confidence"] = vision_result.get("confidence", 0.0)
             
         elif vit_result:
             # Only ViT available
@@ -373,13 +373,13 @@ Respond ONLY with valid JSON, no additional text."""
         
         return combined
     
-    def _extract_from_llama(self, llama_result: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract classification data from Llama result."""
+    def _extract_from_vision(self, vision_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract classification data from vision model result."""
         return {
-            "primary_material": llama_result.get("primary_material", "unknown"),
-            "secondary_materials": llama_result.get("secondary_materials", []),
-            "confidence": llama_result.get("confidence", 0.0),
-            "properties": llama_result.get("properties", {}),
-            "combined_confidence": llama_result.get("confidence", 0.0)
+            "primary_material": vision_result.get("primary_material", "unknown"),
+            "secondary_materials": vision_result.get("secondary_materials", []),
+            "confidence": vision_result.get("confidence", 0.0),
+            "properties": vision_result.get("properties", {}),
+            "combined_confidence": vision_result.get("confidence", 0.0)
         }
 

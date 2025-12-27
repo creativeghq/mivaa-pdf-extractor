@@ -240,33 +240,33 @@ async def lifespan(app: FastAPI):
         component_manager = get_component_manager()
         app.state.component_manager = component_manager
 
-        # Register LlamaIndex service for lazy loading
-        async def load_llamaindex():
-            from app.services.llamaindex_service import LlamaIndexService
-            llamaindex_config = settings.get_llamaindex_config()
-            service = LlamaIndexService(llamaindex_config)
-            logger.info("✅ LlamaIndex service loaded on-demand")
+        # Register RAG service (with Qwen vision models) for lazy loading
+        async def load_rag_service():
+            from app.services.rag_service import RAGService
+            rag_config = settings.get_rag_config()  # Model-agnostic config
+            service = RAGService(rag_config)
+            logger.info("✅ RAG service loaded on-demand with Qwen vision models")
             return service
 
-        def cleanup_llamaindex(service):
-            """Cleanup LlamaIndex service."""
+        def cleanup_rag_service(service):
+            """Cleanup RAG service."""
             try:
                 if hasattr(service, 'executor'):
                     service.executor.shutdown(wait=False)
-                logger.info("✅ LlamaIndex service cleaned up")
+                logger.info("✅ RAG service cleaned up")
             except Exception as e:
-                logger.warning(f"⚠️ Error cleaning up LlamaIndex: {e}")
+                logger.warning(f"⚠️ Error cleaning up RAG service: {e}")
 
-        component_manager.register("llamaindex_service", load_llamaindex, cleanup_llamaindex)
-        logger.info("✅ LlamaIndex service registered for lazy loading")
+        component_manager.register("rag_service", load_rag_service, cleanup_rag_service)
+        logger.info("✅ RAG service registered for lazy loading (Qwen3-VL-8B primary, Qwen3-VL-32B validation)")
 
-        # Set placeholder for backward compatibility
-        app.state.llamaindex_service = None
+        # Set placeholder
+        app.state.rag_service = None
 
     except Exception as e:
         logger.error(f"Failed to initialize lazy loading: {str(e)}")
         app.state.component_manager = None
-        app.state.llamaindex_service = None
+        app.state.rag_service = None
     
     # Initialize Material Kai Vision Platform service
     try:
@@ -541,15 +541,15 @@ async def perform_comprehensive_health_checks(app: FastAPI, logger):
     try:
         component_health = {}
         
-        # Validate LlamaIndex service
-        if hasattr(app.state, 'llamaindex_service') and app.state.llamaindex_service:
+        # Validate RAG service (Qwen vision models)
+        if hasattr(app.state, 'rag_service') and app.state.rag_service:
             try:
-                llama_health = await app.state.llamaindex_service.health_check()
-                component_health["llamaindex"] = llama_health
+                rag_health = await app.state.rag_service.health_check()
+                component_health["rag"] = rag_health
             except Exception as e:
-                component_health["llamaindex"] = {"status": "error", "error": str(e)}
+                component_health["rag"] = {"status": "error", "error": str(e)}
         else:
-            component_health["llamaindex"] = {"status": "not_configured"}
+            component_health["rag"] = {"status": "not_configured"}
         
         # Validate Material Kai service
         if hasattr(app.state, 'material_kai_service') and app.state.material_kai_service:
@@ -592,13 +592,13 @@ async def cleanup_resources(app: FastAPI, logger):
         logger: Logger instance
     """
     try:
-        # Close LlamaIndex service
-        if hasattr(app.state, 'llamaindex_service') and app.state.llamaindex_service:
+        # Close RAG service (Qwen vision models)
+        if hasattr(app.state, 'rag_service') and app.state.rag_service:
             try:
-                await app.state.llamaindex_service.cleanup()
-                logger.info("✅ LlamaIndex service cleaned up")
+                await app.state.rag_service.cleanup()
+                logger.info("✅ RAG service cleaned up")
             except Exception as e:
-                logger.error(f"❌ Error cleaning up LlamaIndex service: {str(e)}")
+                logger.error(f"❌ Error cleaning up RAG service: {str(e)}")
         
         # Close Material Kai service
         if hasattr(app.state, 'material_kai_service') and app.state.material_kai_service:
@@ -686,13 +686,13 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 - 🎯 **Enhanced Multi-Vector Search**: 6 specialized CLIP embeddings (text 20%, visual 20%, color 15%, texture 15%, style 15%, material 15%) + JSONB metadata filtering + query understanding
 - **Query Understanding**: GPT-4o-mini parses natural language queries to auto-extract filters (enabled by default)
 - **Knowledge Base**: Semantic chunking, quality scoring, deduplication
-- **Image Analysis**: CLIP + Llama 4 Scout Vision (69.4% MMMU, #1 OCR)
+- **Image Analysis**: CLIP + Qwen3-VL vision models (cost-effective, high accuracy)
 - **Agentic Queries**: Factory/group filtering for certificates, logos, specifications
 
 ### AI Models
 1. **OpenAI**: text-embedding-3-small (1536D embeddings), GPT-4o-mini (query understanding)
 2. **Anthropic**: Claude Haiku 4.5 (fast classification), Claude Sonnet 4.5 (deep enrichment)
-3. **Together AI**: Llama 4 Scout 17B Vision
+3. **Together AI**: Qwen3-VL-8B-Instruct (primary), Qwen3-VL-32B-Instruct (validation)
 4. **CLIP**: 6 specialized embeddings (text, visual, color, texture, style, material) - 512D each
 5. **SigLIP**: ViT-SO400M for visual embeddings
 
@@ -783,7 +783,7 @@ Get your token from the frontend application or Supabase authentication.
 - Job monitoring with real-time progress
 
 ### 🤖 AI Analysis (`/api/semantic-analysis`)
-- Llama 4 Scout Vision material analysis
+- Vision model material analysis (configurable)
 - Multi-modal text + image processing
 - Entity extraction and classification
 
@@ -858,7 +858,7 @@ Get your token from the frontend application or Supabase authentication.
             },
             {
                 "name": "AI Analysis",
-                "description": "🤖 Multi-modal AI analysis - Llama 4 Scout Vision (69.4% MMMU, #1 OCR) for material recognition, entity extraction, and semantic understanding"
+                "description": "🤖 Multi-modal AI analysis - Vision models (Qwen3-VL-8B default) for material recognition, entity extraction, and semantic understanding"
             },
             {
                 "name": "Search",
@@ -887,11 +887,11 @@ Get your token from the frontend application or Supabase authentication.
             },
             {
                 "name": "Together AI",
-                "description": "🦙 Together AI integration - Llama 4 Scout 17B Vision for advanced image analysis and material recognition"
+                "description": "🦙 Together AI integration - Vision models for advanced image analysis and material recognition"
             },
             {
                 "name": "Images",
-                "description": "🖼️ Image processing - Extract, analyze, and generate embeddings for images with CLIP and Llama Vision models"
+                "description": "🖼️ Image processing - Extract, analyze, and generate embeddings for images with CLIP and vision models"
             },
             {
                 "name": "Health & Monitoring",
@@ -1090,11 +1090,11 @@ async def health_check() -> HealthResponse:
     ### AI Models
     - Anthropic (Claude) availability
     - OpenAI (GPT) availability
-    - TogetherAI (Llama) availability
+    - TogetherAI (Qwen Vision) availability
     - CLIP embeddings service
 
     ### Services
-    - LlamaIndex service
+    - RAG service (Qwen3-VL-8B/32B vision models)
     - PDF processor
     - Embedding service
     - Image analysis service
@@ -1127,11 +1127,11 @@ async def health_check() -> HealthResponse:
         },
         "together_ai": {
           "status": "healthy",
-          "message": "Llama 4 Scout available"
+          "message": "Qwen3-VL models available"
         },
-        "llamaindex": {
+        "rag": {
           "status": "healthy",
-          "message": "Service operational"
+          "message": "RAG service operational with Qwen vision models"
         }
       }
     }
@@ -1247,13 +1247,13 @@ async def health_check() -> HealthResponse:
             "message": str(e)
         }
 
-    # TogetherAI (Llama)
+    # TogetherAI (Qwen)
     try:
         import os
         if os.getenv("TOGETHER_API_KEY"):
             services_status["together_ai"] = {
                 "status": "healthy",
-                "message": "Llama 4 Scout available"
+                "message": "Vision models available"
             }
         else:
             services_status["together_ai"] = {
@@ -1268,25 +1268,25 @@ async def health_check() -> HealthResponse:
             "message": str(e)
         }
 
-    # 4. Check LlamaIndex Service
-    # MEMORY OPTIMIZATION: Don't eagerly initialize LlamaIndex during health check
+    # 4. Check RAG Service (Qwen Vision Models)
+    # MEMORY OPTIMIZATION: Don't eagerly initialize RAG service during health check
     # This was causing the service to load CLIP (7-8GB RAM) and trigger OOM kills
     try:
         # Check if the service is registered for lazy loading instead of instantiating it
         if hasattr(app.state, 'component_manager'):
-            services_status["llamaindex"] = {
+            services_status["rag"] = {
                 "status": "healthy",
-                "message": "Service registered for lazy loading (memory optimized)"
+                "message": "RAG service registered for lazy loading with Qwen3-VL models (memory optimized)"
             }
         else:
-            services_status["llamaindex"] = {
+            services_status["rag"] = {
                 "status": "degraded",
                 "message": "Service not registered"
             }
             if overall_status == "healthy":
                 overall_status = "degraded"
     except Exception as e:
-        services_status["llamaindex"] = {
+        services_status["rag"] = {
             "status": "unhealthy",
             "message": f"Service error: {str(e)}"
         }
@@ -1450,11 +1450,12 @@ async def root() -> Dict[str, Any]:
             "PDF to Markdown conversion",
             "Table extraction",
             "Image extraction",
-            "LlamaIndex RAG integration",
+            "RAG integration with Qwen3-VL vision models",
             "Document upload and processing",
             "Semantic search and retrieval",
             "Conversational Q&A",
-            "Supabase vector storage"
+            "Supabase vector storage",
+            "Qwen3-VL-8B (primary) + Qwen3-VL-32B (validation)"
         ]
     }
 
@@ -1629,8 +1630,8 @@ def custom_openapi():
         "rag_system": "Retrieval-Augmented Generation with enhanced multi-vector search",
         "vector_search": "6 specialized CLIP embedding types (text, visual, color, texture, style, material)",
         "search_strategies": "10 strategies: multi_vector (⭐ default), semantic, vector, hybrid, material, keyword, color, texture, style, material_type",
-        "ai_models": "13 models: Claude Sonnet 4.5, Haiku 4.5, GPT-4o-mini, GPT-5, Llama 4 Scout 17B Vision, CLIP",
-        "material_recognition": "Llama 4 Scout 17B Vision (69.4% MMMU, #1 OCR)",
+        "ai_models": "13 models: Claude Sonnet 4.5, Haiku 4.5, GPT-4o-mini, GPT-5, Qwen3-VL-8B, CLIP",
+        "material_recognition": "Qwen3-VL-8B-Instruct (configurable vision model)",
         "embedding_models": "OpenAI text-embedding-3-small (1536D), SigLIP ViT-SO400M (512D) for 6 specialized embeddings",
         "performance": "95%+ product detection, 85%+ search accuracy, 250-350ms response time (with query understanding)",
         "scalability": "5,000+ users, 99.5%+ uptime",

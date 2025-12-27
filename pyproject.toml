@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pdf2markdown-microservice"
 version = "0.1.0"
-description = "Production-ready FastAPI microservice for PDF to Markdown conversion with LlamaIndex integration"
+description = "Production-ready FastAPI microservice for PDF to Markdown conversion with Claude 4.5 RAG"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
@@ -14,7 +14,7 @@ authors = [
 maintainers = [
     {name = "Development Team", email = "dev@example.com"}
 ]
-keywords = ["pdf", "markdown", "fastapi", "microservice", "llamaindex", "rag"]
+keywords = ["pdf", "markdown", "fastapi", "microservice", "claude", "rag", "vector-database"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -88,7 +88,7 @@ profile = "black"
 multi_line_output = 3
 line_length = 88
 known_first_party = ["app"]
-known_third_party = ["fastapi", "pydantic", "uvicorn", "pymupdf4llm", "llama_index", "supabase"]
+known_third_party = ["fastapi", "pydantic", "uvicorn", "pymupdf4llm", "supabase", "anthropic", "voyageai"]
 
 [tool.flake8]
 max-line-length = 88

@@ -22,9 +22,6 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
 try:
-    from llama_index.core import VectorStoreIndex, Document
-    from llama_index.core.retrievers import VectorIndexRetriever
-    from llama_index.core.schema import NodeWithScore
     from sklearn.metrics.pairwise import cosine_similarity
     from sklearn.feature_extraction.text import TfidfVectorizer
     import nltk
@@ -186,7 +183,7 @@ class AdvancedSearchService:
             retriever = VectorIndexRetriever(
                 index=index,
                 similarity_top_k=max(top_k, 20),  # Retrieve more candidates for MMR
-                filters=self._convert_filters_to_llamaindex(metadata_filters) if metadata_filters else None
+                filters=self._convert_filters(metadata_filters) if metadata_filters else None
             )
             
             initial_nodes = retriever.retrieve(optimized_query)
@@ -619,44 +616,44 @@ Variations:
             self.logger.error(f"Similarity calculation failed: {e}")
             return 0.0
     
-    def _convert_filters_to_llamaindex(self, filters: List[SearchFilter]) -> Dict[str, Any]:
+    def _convert_filters(self, filters: List[SearchFilter]) -> Dict[str, Any]:
         """
-        Convert SearchFilter objects to LlamaIndex filter format.
-        
+        Convert SearchFilter objects to filter format.
+
         Args:
             filters: List of search filters
-            
+
         Returns:
-            LlamaIndex compatible filter dictionary
+            Filter dictionary
         """
         try:
-            llamaindex_filters = {}
-            
+            converted_filters = {}
+
             for filter_obj in filters:
                 field = filter_obj.field
                 operator = filter_obj.operator
                 value = filter_obj.value
-                
-                # Convert to LlamaIndex filter format
+
+                # Convert to filter format
                 if operator == "eq":
-                    llamaindex_filters[field] = value
+                    converted_filters[field] = value
                 elif operator == "in":
-                    llamaindex_filters[field] = {"$in": value}
+                    converted_filters[field] = {"$in": value}
                 elif operator == "contains":
-                    llamaindex_filters[field] = {"$regex": f".*{value}.*"}
+                    converted_filters[field] = {"$regex": f".*{value}.*"}
                 elif operator == "gt":
-                    llamaindex_filters[field] = {"$gt": value}
+                    converted_filters[field] = {"$gt": value}
                 elif operator == "lt":
-                    llamaindex_filters[field] = {"$lt": value}
+                    converted_filters[field] = {"$lt": value}
                 elif operator == "gte":
-                    llamaindex_filters[field] = {"$gte": value}
+                    converted_filters[field] = {"$gte": value}
                 elif operator == "lte":
-                    llamaindex_filters[field] = {"$lte": value}
+                    converted_filters[field] = {"$lte": value}
                 elif operator == "ne":
-                    llamaindex_filters[field] = {"$ne": value}
-            
-            return llamaindex_filters
-            
+                    converted_filters[field] = {"$ne": value}
+
+            return converted_filters
+
         except Exception as e:
             self.logger.error(f"Filter conversion failed: {e}")
             return {}

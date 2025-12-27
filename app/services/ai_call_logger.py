@@ -65,7 +65,7 @@ class AICallLogger:
         
         Args:
             task: Type of task (document_classification, product_extraction, etc.)
-            model: AI model used (claude-sonnet-4.5, gpt-5, llama-4-scout, etc.)
+            model: AI model used (claude-sonnet-4.5, gpt-5, qwen3-vl-8b, etc.)
             input_tokens: Number of input tokens
             output_tokens: Number of output tokens
             cost: Cost in USD
@@ -276,7 +276,7 @@ class AICallLogger:
             self.logger.error(f"❌ Failed to log GPT call: {e}")
             return False
     
-    async def log_llama_call(
+    async def log_together_call(
         self,
         task: str,
         model: str,
@@ -290,11 +290,11 @@ class AICallLogger:
         request_data: Optional[Dict[str, Any]] = None
     ) -> bool:
         """
-        Log a Llama (TogetherAI) API call.
+        Log a Qwen (TogetherAI) API call.
         
         Args:
             task: Type of task
-            model: Llama model (llama-4-scout-17b, etc.)
+            model: Qwen model (qwen3-vl-8b, etc.)
             response: TogetherAI API response dict
             latency_ms: Latency in milliseconds
             confidence_score: Calculated confidence score
@@ -308,13 +308,13 @@ class AICallLogger:
             bool: True if logged successfully
         """
         try:
-            # Extract token usage from Llama response
+            # Extract token usage from TogetherAI response
             usage = response.get('usage', {})
             input_tokens = usage.get('prompt_tokens', 0)
             output_tokens = usage.get('completion_tokens', 0)
-            
+
             # Calculate cost based on model
-            cost = self._calculate_llama_cost(model, input_tokens, output_tokens)
+            cost = self._calculate_together_cost(model, input_tokens, output_tokens)
             
             # Extract response text
             choices = response.get('choices', [])
@@ -337,7 +337,7 @@ class AICallLogger:
             )
             
         except Exception as e:
-            self.logger.error(f"❌ Failed to log Llama call: {e}")
+            self.logger.error(f"❌ Failed to log TogetherAI call: {e}")
             return False
     
     def _calculate_claude_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
@@ -350,8 +350,8 @@ class AICallLogger:
         cost = ai_pricing.calculate_cost(model, input_tokens, output_tokens, provider="openai")
         return float(cost)
 
-    def _calculate_llama_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
-        """Calculate cost for Llama (TogetherAI) API call using centralized pricing"""
+    def _calculate_together_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
+        """Calculate cost for TogetherAI (Qwen) API call using centralized pricing"""
         cost = ai_pricing.calculate_cost(model, input_tokens, output_tokens, provider="together")
         return float(cost)
 

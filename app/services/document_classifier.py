@@ -5,7 +5,7 @@ Two-stage classification system for PDF content:
 1. Fast text classification (product/supporting/administrative/transitional)
 2. Deep enrichment with metadata extraction
 
-Uses Llama 4 Scout for fast classification and Claude for deep analysis.
+Uses Qwen3-VL for fast classification and Claude for deep analysis.
 """
 
 import asyncio
@@ -24,7 +24,7 @@ class DocumentClassifier:
     """
     Two-stage document classification system.
     
-    Stage 1: Fast text classification using Llama
+    Stage 1: Fast text classification using Qwen
     Stage 2: Deep enrichment using Claude (for product content)
     """
     
@@ -99,7 +99,7 @@ class DocumentClassifier:
         job_id: Optional[str],
     ) -> Dict[str, Any]:
         """
-        Stage 1: Fast classification using Llama.
+        Stage 1: Fast classification using Qwen.
         
         Args:
             content: Text content
@@ -131,10 +131,10 @@ Example: PRODUCT|0.85"""
         try:
             start_time = datetime.now()
             
-            # Call Llama for fast classification
+            # Call Qwen for fast classification
             response = await self.together_ai.generate_completion(
                 prompt=prompt,
-                model="meta-llama/Llama-4-Scout-17B-16E-Instruct",
+                model="Qwen/Qwen3-VL-8B-Instruct",
                 max_tokens=50,
                 temperature=0.1,
             )
@@ -174,7 +174,7 @@ Example: PRODUCT|0.85"""
                 await self.ai_logger.log_ai_call({
                     "job_id": job_id,
                     "task": "document_classification_stage1",
-                    "model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+                    "model": "Qwen/Qwen3-VL-8B-Instruct",
                     "input_tokens": response.get("usage", {}).get("prompt_tokens", 0),
                     "output_tokens": response.get("usage", {}).get("completion_tokens", 0),
                     "latency_ms": latency_ms,

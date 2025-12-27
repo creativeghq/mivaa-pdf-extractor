@@ -161,9 +161,9 @@ class HealthResponse(BaseResponse):
                         "status": "healthy",
                         "connection_pool": "8/10"
                     },
-                    "llamaindex": {
+                    "rag": {
                         "status": "healthy",
-                        "index_size": 1024
+                        "service_type": "Direct Vector DB"
                     }
                 },
                 "timestamp": "2024-07-26T18:00:00Z"

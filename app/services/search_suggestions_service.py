@@ -493,10 +493,39 @@ class SearchSuggestionsService:
             related = await self._get_related_concepts(query, max_related_concepts)
             related_concepts.extend(related)
 
-            # 3. If AI is enabled, use it for better expansion (placeholder for now)
+            # 3. If AI is enabled, use Claude for semantic expansion
             if use_ai:
-                # TODO: Integrate with Claude/GPT for semantic expansion
-                pass
+                try:
+                    from app.services.ai_client_service import get_ai_client_service
+                    ai_service = get_ai_client_service()
+
+                    prompt = f"""Given the search query "{query}" for a materials database, suggest:
+1. 5-10 semantically related terms
+2. 3-5 broader concepts
+3. 3-5 narrower/specific terms
+
+Focus on materials, textures, colors, patterns, and applications.
+Return as JSON: {{"related": [], "broader": [], "narrower": []}}"""
+
+                    response = await ai_service.anthropic_async.messages.create(
+                        model="claude-3-5-haiku-20241022",  # Fast, cheap model
+                        max_tokens=500,
+                        temperature=0.3,
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+
+                    import json
+                    ai_suggestions = json.loads(response.content[0].text)
+
+                    # Add AI suggestions to expanded terms
+                    expanded_terms.extend(ai_suggestions.get("related", []))
+                    expanded_terms.extend(ai_suggestions.get("narrower", []))
+                    related_concepts.extend(ai_suggestions.get("broader", []))
+
+                    logger.info(f"✅ AI semantic expansion added {len(ai_suggestions.get('related', []))} terms")
+
+                except Exception as e:
+                    logger.warning(f"AI semantic expansion failed, using fallback: {e}")
 
             return ExpandedQuery(
                 original_query=query,

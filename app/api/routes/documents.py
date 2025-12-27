@@ -13,8 +13,8 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.services.supabase_client import get_supabase_client
-from app.services.llamaindex_service import LlamaIndexService
-from .shared import job_storage, run_async_in_background, get_llamaindex_service
+
+from .shared import job_storage, run_async_in_background
 from .models import DocumentListResponse
 
 logger = logging.getLogger(__name__)
@@ -155,7 +155,7 @@ async def upload_document(
 
     **Stage 3: Image Processing (50-70%)**
     - Processes images for specified categories
-    - AI analysis (Llama Vision)
+    - AI analysis (Qwen Vision)
     - Generates image embeddings (CLIP)
 
     **Stage 4: Entity Creation (70-90%)**
@@ -539,7 +539,7 @@ async def get_document_content(
     Returns comprehensive document data including:
     - Document metadata
     - All chunks with embeddings
-    - All images with AI analysis (CLIP, Llama, Claude)
+    - All images with AI analysis (CLIP, Qwen, Claude)
     - All products created from the document
     - Complete AI model usage statistics
     """
@@ -599,7 +599,7 @@ async def get_document_content(
         # Count embeddings
         text_embeddings = sum(1 for chunk in result['chunks'] if chunk.get('embeddings'))
         clip_embeddings = sum(1 for img in result['images'] if img.get('visual_clip_embedding_512'))
-        llama_analysis = sum(1 for img in result['images'] if img.get('llama_analysis'))
+        vision_analysis = sum(1 for img in result['images'] if img.get('vision_analysis'))
         claude_validation = sum(1 for img in result['images'] if img.get('claude_validation'))
         color_embeddings = sum(1 for img in result['images'] if img.get('color_embedding_256'))
         texture_embeddings = sum(1 for img in result['images'] if img.get('texture_embedding_256'))
@@ -611,7 +611,7 @@ async def get_document_content(
             "products_count": products_count,
             "ai_usage": {
                 "openai_calls": text_embeddings,
-                "llama_calls": llama_analysis,
+                "vision_calls": vision_analysis,
                 "claude_calls": claude_validation,
                 "clip_embeddings": clip_embeddings
             },
@@ -644,7 +644,7 @@ async def list_documents(
     page_size: int = Query(20, ge=1, le=100, description="Page size"),
     search: Optional[str] = Query(None, description="Search term for filtering"),
     tags: Optional[str] = Query(None, description="Comma-separated tags for filtering"),
-    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
+    supabase: SupabaseClient = Depends(get_supabase_client)
 ):
     """
     List and filter documents in the collection.
@@ -658,8 +658,7 @@ async def list_documents(
         if tags:
             tag_filter = [tag.strip() for tag in tags.split(',')]
         
-        # Get documents using list_indexed_documents
-        result = await llamaindex_service.list_indexed_documents()
+        raise HTTPException(status_code=501, detail="Endpoint deprecated. Query documents from Supabase.")
         
         return DocumentListResponse(
             documents=result.get('documents', []),
@@ -677,17 +676,16 @@ async def list_documents(
 @router.delete("/documents/{document_id}")
 async def delete_document(
     document_id: str,
-    llamaindex_service: LlamaIndexService = Depends(get_llamaindex_service)
+    supabase: SupabaseClient = Depends(get_supabase_client)
 ):
     """
     Delete a document and its associated embeddings.
-    
+
     This endpoint removes a document from the collection and
     cleans up all associated data including embeddings and chunks.
     """
     try:
-        # Delete document
-        result = await llamaindex_service.delete_document(document_id)
+        raise HTTPException(status_code=501, detail="Endpoint deprecated. Delete documents from Supabase.")
         
         if not result.get('success', False):
             raise HTTPException(

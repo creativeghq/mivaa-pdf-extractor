@@ -1,8 +1,8 @@
 """
-TogetherAI API routes for LLaMA Vision semantic analysis.
+TogetherAI API routes for Qwen Vision semantic analysis.
 
-This module provides REST API endpoints for TogetherAI/LLaMA Vision integration,
-specifically for material semantic analysis using the meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo model.
+This module provides REST API endpoints for TogetherAI/Qwen Vision integration,
+specifically for material semantic analysis using the Qwen/Qwen3-VL-8B-Instruct and Qwen/Qwen3-VL-32B-Instruct models.
 """
 
 import asyncio
@@ -105,7 +105,7 @@ class SemanticAnalysisAPIResponse(BaseResponse):
                 "timestamp": "2025-08-31T06:57:00Z",
                 "analysis": "This material appears to be polished granite with...",
                 "confidence": 0.95,
-                "model_used": "meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo",
+                "model_used": "Qwen/Qwen3-VL-8B-Instruct",
                 "processing_time_ms": 1500,
                 "metadata": {
                     "cache_hit": False,
@@ -120,16 +120,16 @@ class SemanticAnalysisAPIResponse(BaseResponse):
     response_model=SemanticAnalysisAPIResponse,
     status_code=status.HTTP_200_OK,
     summary="Perform semantic analysis on material images",
-    description="Analyze material images using TogetherAI's LLaMA Vision model for semantic descriptions and material identification."
+    description="Analyze material images using TogetherAI's Qwen Vision model for semantic descriptions and material identification."
 )
 async def semantic_analysis(
     request: SemanticAnalysisAPIRequest,
     together_ai_service: TogetherAIService = Depends(get_together_ai_service)
 ):
     """
-    **🤖 Semantic Analysis - LLaMA Vision Material Identification**
+    **🤖 Semantic Analysis - Qwen Vision Material Identification**
 
-    Analyze material images using TogetherAI's Llama 4 Scout 17B Vision model for semantic descriptions and material identification.
+    Analyze material images using TogetherAI's Qwen3-VL 17B Vision model for semantic descriptions and material identification.
 
     ## 🎯 Analysis Types
 
@@ -159,7 +159,7 @@ async def semantic_analysis(
       "message": "Semantic analysis completed successfully",
       "analysis": "This material appears to be polished granite with a speckled pattern. The surface shows high reflectivity indicating a polished finish. Color palette includes black, white, and gray tones typical of granite composition.",
       "confidence": 0.95,
-      "model_used": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+      "model_used": "Qwen/Qwen3-VL-8B-Instruct",
       "processing_time_ms": 1500,
       "metadata": {
         "fallback_mode": false,
@@ -173,7 +173,7 @@ async def semantic_analysis(
 
     - **Typical Time**: 1-2 seconds
     - **Max Time**: 5 seconds
-    - **Model**: meta-llama/Llama-4-Scout-17B-16E-Instruct
+    - **Model**: Qwen/Qwen3-VL-8B-Instruct
     - **Fallback**: Database lookup if TogetherAI unavailable
 
     ## ⚠️ Error Codes
@@ -211,7 +211,7 @@ async def semantic_analysis(
                 message="Semantic analysis completed successfully",
                 analysis=analysis_result.get("analysis", "Analysis completed"),
                 confidence=analysis_result.get("confidence", 0.85),
-                model_used=analysis_result.get("model_used", "meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo"),
+                model_used=analysis_result.get("model_used", "Qwen/Qwen3-VL-8B-Instruct"),
                 processing_time_ms=processing_time_ms,
                 metadata={
                     "fallback_mode": False,

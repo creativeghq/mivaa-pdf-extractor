@@ -85,8 +85,7 @@ class JobProgressMonitor:
 
         # CRITICAL FIX: Log only, don't send to Sentry (reduces noise)
         logger.info(f"📊 Stopped progress monitoring for job {self.job_id}")
-        # REMOVED: sentry_sdk.capture_message() - was creating noise in Sentry
-        
+
     def update_stage(self, stage: str, details: Optional[Dict[str, Any]] = None):
         """Update current stage and log transition"""
         time_in_previous_stage = (datetime.utcnow() - self.current_stage_start).total_seconds()
@@ -130,8 +129,7 @@ class JobProgressMonitor:
                     f"⚠️ SLOW STAGE: {previous_stage_name} → {stage} took {time_in_previous_stage/60:.1f} minutes (threshold: {stage_threshold/60:.1f}min)",
                     level="warning"
                 )
-        # REMOVED: Normal stage transitions no longer sent to Sentry - reduces noise
-    
+
     async def _monitor_loop(self):
         """Monitor loop that reports status every minute"""
         while self.is_running:
@@ -221,5 +219,4 @@ class JobProgressMonitor:
                     f"📊 Progress Update: Job {self.job_id} - {self.current_stage} "
                     f"({len(self.stage_history)}/{self.total_stages} stages, {total_time/60:.1f}min total)"
                 )
-                # REMOVED: sentry_sdk.capture_message() for normal progress - was creating noise
 

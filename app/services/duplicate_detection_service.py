@@ -345,10 +345,36 @@ class DuplicateDetectionService:
         desc1: str,
         desc2: str
     ) -> float:
-        """Calculate semantic similarity between descriptions."""
-        # Use text similarity with sequence matching
-        # TODO: Use semantic embeddings for better accuracy
-        return calculate_text_similarity(desc1, desc2, method="sequence")
+        """Calculate semantic similarity between descriptions using embeddings."""
+        if not desc1 or not desc2:
+            return 0.0
+
+        try:
+            # Use semantic embeddings for better accuracy
+            from app.services.real_embeddings_service import RealEmbeddingsService
+            embeddings_service = RealEmbeddingsService()
+
+            # Generate embeddings for both descriptions
+            result1 = await embeddings_service.generate_embeddings(text=desc1)
+            result2 = await embeddings_service.generate_embeddings(text=desc2)
+
+            if result1.get("success") and result2.get("success"):
+                emb1 = result1["embeddings"].get("text_1536")
+                emb2 = result2["embeddings"].get("text_1536")
+
+                if emb1 and emb2:
+                    # Calculate cosine similarity
+                    similarity = np.dot(emb1, emb2) / (np.linalg.norm(emb1) * np.linalg.norm(emb2))
+                    return float(similarity)
+
+            # Fallback to sequence matching if embeddings fail
+            self.logger.warning("Embeddings failed, falling back to sequence matching")
+            return calculate_text_similarity(desc1, desc2, method="sequence")
+
+        except Exception as e:
+            self.logger.error(f"Error calculating semantic similarity: {e}")
+            # Fallback to sequence matching
+            return calculate_text_similarity(desc1, desc2, method="sequence")
 
     # Visual similarity REMOVED - not used for duplicate detection
     # Different materials can look similar but are NOT duplicates if from different factories
