@@ -231,13 +231,219 @@ class RealEmbeddingsService:
 
         Args:
             text: Text to embed
-            embedding_type: Type of embedding ("openai" for text-embedding-3-small)
+            embedding_type: Type of embedding ("openai" for text-embedding-3-small")
             dimensions: Embedding dimensions (default 1536)
 
         Returns:
             List of floats representing the embedding, or None if failed
         """
         return await self._generate_text_embedding(text=text, dimensions=dimensions)
+
+    async def generate_batch_embeddings(
+        self,
+        texts: List[str],
+        dimensions: int = 1024,
+        input_type: str = "document",
+        truncation: bool = True,
+        output_dtype: str = "float"
+    ) -> List[Optional[List[float]]]:
+        """
+        Generate embeddings for multiple texts in a single batch API call.
+
+        This is optimized for Voyage AI's batch embedding endpoint, which is more
+        efficient than making individual calls. Falls back to OpenAI if Voyage fails.
+
+        Args:
+            texts: List of texts to embed
+            dimensions: Embedding dimensions (256, 512, 1024, 2048 for Voyage; 512, 1536 for OpenAI)
+            input_type: "document" for indexing, "query" for search (Voyage AI only)
+            truncation: Whether to truncate text to fit context length (Voyage AI only)
+            output_dtype: Output data type (Voyage AI only)
+
+        Returns:
+            List of embedding vectors (same length as input texts)
+            Returns None for any text that failed to generate an embedding
+        """
+        if not texts:
+            return []
+
+        start_time = time.time()
+
+        # Try Voyage AI first if enabled and API key available
+        voyage_enabled = self.config and getattr(self.config, 'voyage_enabled', True)
+        if self.voyage_api_key and voyage_enabled:
+            try:
+                # Call Voyage AI batch API
+                async with httpx.AsyncClient() as client:
+                    request_data = {
+                        "model": "voyage-3.5",
+                        "input": texts,  # Voyage AI accepts list of texts
+                        "input_type": input_type,
+                        "truncation": truncation
+                    }
+
+                    # Add optional parameters
+                    if dimensions != 1024:
+                        request_data["output_dimension"] = dimensions
+                    if output_dtype != "float":
+                        request_data["output_dtype"] = output_dtype
+
+                    response = await client.post(
+                        "https://api.voyageai.com/v1/embeddings",
+                        headers={
+                            "Authorization": f"Bearer {self.voyage_api_key}",
+                            "Content-Type": "application/json"
+                        },
+                        json=request_data,
+                        timeout=60.0  # Longer timeout for batch requests
+                    )
+
+                    if response.status_code == 200:
+                        data = response.json()
+                        embeddings = [item["embedding"] for item in data["data"]]
+
+                        # Log AI call with proper cost calculation
+                        latency_ms = int((time.time() - start_time) * 1000)
+                        usage = data.get("usage", {})
+                        input_tokens = usage.get("total_tokens", 0)
+
+                        # Voyage AI Pricing (as of Dec 2024)
+                        cost_per_million = 0.06  # voyage-3.5
+                        cost = (input_tokens / 1_000_000) * cost_per_million
+
+                        await self.ai_logger.log_ai_call(
+                            task="batch_text_embedding_generation",
+                            model=f"voyage-3.5-{dimensions}d",
+                            input_tokens=input_tokens,
+                            output_tokens=0,
+                            cost=cost,
+                            latency_ms=latency_ms,
+                            confidence_score=0.95,
+                            confidence_breakdown={
+                                "model_confidence": 0.98,
+                                "completeness": 1.0,
+                                "consistency": 0.95,
+                                "validation": 0.90
+                            },
+                            action="use_ai_result",
+                            metadata={"batch_size": len(texts)}
+                        )
+
+                        self.logger.info(f"✅ Generated {len(embeddings)} Voyage AI embeddings in batch ({dimensions}D, {input_type})")
+                        return embeddings
+                    else:
+                        raise Exception(f"Voyage AI API error: {response.status_code}")
+
+            except Exception as e:
+                self.logger.warning(f"Voyage AI batch failed, falling back to OpenAI: {e}")
+
+                # Log failed Voyage call
+                latency_ms = int((time.time() - start_time) * 1000)
+                await self.ai_logger.log_ai_call(
+                    task="batch_text_embedding_generation",
+                    model=f"voyage-3.5-{dimensions}d",
+                    input_tokens=0,
+                    output_tokens=0,
+                    cost=0.0,
+                    latency_ms=latency_ms,
+                    confidence_score=0.0,
+                    confidence_breakdown={
+                        "model_confidence": 0.0,
+                        "completeness": 0.0,
+                        "consistency": 0.0,
+                        "validation": 0.0
+                    },
+                    action="fallback_to_openai",
+                    fallback_reason=f"Voyage AI batch error: {str(e)}",
+                    error_message=str(e),
+                    metadata={"batch_size": len(texts)}
+                )
+
+                # If fallback disabled, raise the error
+                if self.config and not getattr(self.config, 'voyage_fallback_to_openai', True):
+                    raise
+
+        # Fallback to OpenAI batch processing
+        try:
+            if not self.openai_api_key:
+                self.logger.warning("OpenAI API key not available")
+                return [None] * len(texts)
+
+            # OpenAI also supports batch embeddings
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    "https://api.openai.com/v1/embeddings",
+                    headers={"Authorization": f"Bearer {self.openai_api_key}"},
+                    json={
+                        "model": "text-embedding-3-small",
+                        "input": [text[:8191] for text in texts],  # OpenAI limit per text
+                        "encoding_format": "float",
+                        "dimensions": dimensions if dimensions in [512, 1536] else 1536
+                    },
+                    timeout=60.0  # Longer timeout for batch requests
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    embeddings = [item["embedding"] for item in data["data"]]
+
+                    # Log AI call
+                    latency_ms = int((time.time() - start_time) * 1000)
+                    usage = data.get("usage", {})
+                    input_tokens = usage.get("prompt_tokens", 0)
+
+                    # OpenAI Pricing: $0.02 per 1M tokens for text-embedding-3-small
+                    cost = (input_tokens / 1_000_000) * 0.02
+
+                    await self.ai_logger.log_ai_call(
+                        task="batch_text_embedding_generation",
+                        model="text-embedding-3-small",
+                        input_tokens=input_tokens,
+                        output_tokens=0,
+                        cost=cost,
+                        latency_ms=latency_ms,
+                        confidence_score=0.95,
+                        confidence_breakdown={
+                            "model_confidence": 0.98,
+                            "completeness": 1.0,
+                            "consistency": 0.95,
+                            "validation": 0.90
+                        },
+                        action="use_ai_result",
+                        metadata={"batch_size": len(texts)}
+                    )
+
+                    self.logger.info(f"✅ Generated {len(embeddings)} OpenAI embeddings in batch ({dimensions}D)")
+                    return embeddings
+                else:
+                    raise Exception(f"OpenAI API error: {response.status_code}")
+
+        except Exception as e:
+            self.logger.error(f"Batch embedding generation failed: {e}")
+
+            # Log failed AI call
+            latency_ms = int((time.time() - start_time) * 1000)
+            await self.ai_logger.log_ai_call(
+                task="batch_text_embedding_generation",
+                model="text-embedding-3-small",
+                input_tokens=0,
+                output_tokens=0,
+                cost=0.0,
+                latency_ms=latency_ms,
+                confidence_score=0.0,
+                confidence_breakdown={
+                    "model_confidence": 0.0,
+                    "completeness": 0.0,
+                    "consistency": 0.0,
+                    "validation": 0.0
+                },
+                action="fallback_to_individual",
+                fallback_reason=f"Batch API error: {str(e)}",
+                error_message=str(e),
+                metadata={"batch_size": len(texts)}
+            )
+
+            return [None] * len(texts)
 
     async def _generate_text_embedding(
         self,

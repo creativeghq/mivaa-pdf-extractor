@@ -186,46 +186,131 @@ class RAGService:
                     "chunk_ids": []
                 }
 
-            # Step 3: Store chunks and generate embeddings
+            # Step 3: Store chunks and generate embeddings with BATCH PROCESSING
+            # ✅ MEMORY OPTIMIZATION: Process chunks in batches to avoid OOM
+            import gc
+            from app.utils.memory_monitor import MemoryMonitor
+
+            memory_monitor = MemoryMonitor()
+            CHUNK_BATCH_SIZE = 15  # Process 15 chunks at a time (proven optimal from commit 74e7a73)
+            total_chunks = len(chunks)
+
             chunk_ids = []
             chunks_created = 0
 
-            for chunk in chunks:
+            self.logger.info(f"🔄 Processing {total_chunks} chunks in batches of {CHUNK_BATCH_SIZE}")
+
+            for batch_start in range(0, total_chunks, CHUNK_BATCH_SIZE):
+                batch_end = min(batch_start + CHUNK_BATCH_SIZE, total_chunks)
+                batch_chunks = chunks[batch_start:batch_end]
+                batch_num = (batch_start // CHUNK_BATCH_SIZE) + 1
+                total_batches = (total_chunks + CHUNK_BATCH_SIZE - 1) // CHUNK_BATCH_SIZE
+
+                # Log memory usage before batch
                 try:
-                    # Prepare chunk record for database
-                    chunk_record = {
-                        'document_id': document_id,
-                        'workspace_id': workspace_id,
-                        'chunk_text': chunk.content,
-                        'chunk_index': chunk.chunk_index,
-                        'metadata': {
-                            **chunk.metadata,
-                            'start_position': chunk.start_position,
-                            'end_position': chunk.end_position,
-                            'quality_score': chunk.quality_score,
-                            'total_chunks': chunk.total_chunks
+                    mem_stats = memory_monitor.get_memory_stats()
+                    self.logger.info(f"🧠 Memory before batch {batch_num}/{total_batches}: {mem_stats.percent_used:.1f}% ({mem_stats.used_mb:.0f}MB / {mem_stats.total_mb:.0f}MB)")
+                except Exception as mem_error:
+                    self.logger.debug(f"Memory monitoring unavailable: {mem_error}")
+
+                # Collect batch data
+                batch_chunk_ids = []
+                batch_texts = []
+                batch_chunk_records = []
+
+                # Step 3a: Store chunks in database
+                for chunk in batch_chunks:
+                    try:
+                        # Prepare chunk record for database
+                        chunk_record = {
+                            'document_id': document_id,
+                            'workspace_id': workspace_id,
+                            'chunk_text': chunk.content,
+                            'chunk_index': chunk.chunk_index,
+                            'metadata': {
+                                **chunk.metadata,
+                                'start_position': chunk.start_position,
+                                'end_position': chunk.end_position,
+                                'quality_score': chunk.quality_score,
+                                'total_chunks': chunk.total_chunks
+                            }
                         }
-                    }
 
-                    # Add catalog category if available
-                    if catalog and hasattr(catalog, 'catalog_factory'):
-                        chunk_record['metadata']['catalog_factory'] = catalog.catalog_factory
+                        # Add catalog category if available
+                        if catalog and hasattr(catalog, 'catalog_factory'):
+                            chunk_record['metadata']['catalog_factory'] = catalog.catalog_factory
 
-                    # Insert chunk into database
-                    result = self.supabase_client.client.table('chunks').insert(chunk_record).execute()
+                        # Insert chunk into database
+                        result = self.supabase_client.client.table('chunks').insert(chunk_record).execute()
 
-                    if result.data and len(result.data) > 0:
-                        chunk_id = result.data[0]['id']
-                        chunk_ids.append(chunk_id)
-                        chunks_created += 1
+                        if result.data and len(result.data) > 0:
+                            chunk_id = result.data[0]['id']
+                            batch_chunk_ids.append(chunk_id)
+                            batch_texts.append(chunk.content)
+                            batch_chunk_records.append(chunk_record)
+                            chunk_ids.append(chunk_id)
+                            chunks_created += 1
 
-                        # Generate text embedding asynchronously (don't wait)
-                        # The embedding will be generated in the background
-                        asyncio.create_task(self._generate_chunk_embedding(chunk_id, chunk.content))
+                    except Exception as e:
+                        self.logger.warning(f"   ⚠️ Failed to store chunk {chunk.chunk_index}: {e}")
+                        continue
 
-                except Exception as e:
-                    self.logger.warning(f"   ⚠️ Failed to store chunk {chunk.chunk_index}: {e}")
-                    continue
+                # Step 3b: Generate embeddings for ENTIRE BATCH in ONE API call
+                if batch_chunk_ids:
+                    try:
+                        self.logger.info(f"   🔄 Generating embeddings for batch {batch_num}/{total_batches} ({len(batch_texts)} chunks)...")
+
+                        # Use batch embedding generation (Voyage AI or OpenAI)
+                        embedding_vectors = await self.embeddings_service.generate_batch_embeddings(
+                            texts=batch_texts,
+                            dimensions=1024,  # Voyage AI default
+                            input_type="document"
+                        )
+
+                        # Store embeddings in database
+                        embeddings_stored = 0
+                        for chunk_id, embedding in zip(batch_chunk_ids, embedding_vectors):
+                            try:
+                                if embedding:
+                                    # Update chunk with embedding
+                                    self.supabase_client.client.table('chunks')\
+                                        .update({'text_embedding_1024': embedding})\
+                                        .eq('id', chunk_id)\
+                                        .execute()
+                                    embeddings_stored += 1
+                                else:
+                                    self.logger.warning(f"   ⚠️ No embedding generated for chunk {chunk_id}")
+                            except Exception as embedding_error:
+                                self.logger.warning(f"   ⚠️ Failed to store embedding for chunk {chunk_id}: {embedding_error}")
+
+                        self.logger.info(f"   ✅ Stored {embeddings_stored}/{len(batch_chunk_ids)} embeddings for batch {batch_num}/{total_batches}")
+
+                    except Exception as batch_embedding_error:
+                        self.logger.error(f"   ❌ Batch embedding generation failed: {batch_embedding_error}")
+
+                        # Fallback to individual embedding generation
+                        self.logger.info(f"   ⚠️ Falling back to individual embedding generation for batch {batch_num}...")
+                        for chunk_id, text in zip(batch_chunk_ids, batch_texts):
+                            try:
+                                embedding = await self.embeddings_service.generate_embedding(text, dimensions=1024)
+                                if embedding:
+                                    self.supabase_client.client.table('chunks')\
+                                        .update({'text_embedding_1024': embedding})\
+                                        .eq('id', chunk_id)\
+                                        .execute()
+                            except Exception as individual_error:
+                                self.logger.warning(f"   ⚠️ Failed to generate individual embedding for chunk {chunk_id}: {individual_error}")
+
+                # Step 3c: Cleanup after batch
+                del batch_chunk_ids, batch_texts, batch_chunk_records, embedding_vectors
+                gc.collect()
+
+                # Log memory usage after batch
+                try:
+                    mem_stats = memory_monitor.get_memory_stats()
+                    self.logger.info(f"🧠 Memory after batch {batch_num}/{total_batches}: {mem_stats.percent_used:.1f}% ({mem_stats.used_mb:.0f}MB / {mem_stats.total_mb:.0f}MB)")
+                except Exception as mem_error:
+                    self.logger.debug(f"Memory monitoring unavailable: {mem_error}")
 
             elapsed_time = time.time() - start_time
             self.logger.info(f"✅ Indexed PDF: {chunks_created} chunks created in {elapsed_time:.2f}s")
@@ -245,23 +330,6 @@ class RAGService:
                 "chunks_created": 0,
                 "chunk_ids": []
             }
-
-    async def _generate_chunk_embedding(self, chunk_id: str, chunk_text: str):
-        """Generate and store embedding for a chunk (background task)."""
-        try:
-            # Generate text embedding
-            embedding_result = await self.embeddings_service.generate_text_embedding(chunk_text)
-
-            if embedding_result and 'embedding' in embedding_result:
-                # Update chunk with embedding
-                self.supabase_client.client.table('chunks')\
-                    .update({'text_embedding_1536': embedding_result['embedding']})\
-                    .eq('id', chunk_id)\
-                    .execute()
-
-                self.logger.debug(f"   ✅ Generated embedding for chunk {chunk_id}")
-        except Exception as e:
-            self.logger.warning(f"   ⚠️ Failed to generate embedding for chunk {chunk_id}: {e}")
 
     async def multi_vector_search(
         self,
