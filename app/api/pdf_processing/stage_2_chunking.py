@@ -66,10 +66,14 @@ async def process_stage_2_chunking(
     """
     from app.services.rag_service import RAGService
 
-    logger.info("📝 [STAGE 2] Chunking - Starting with RAG service (Qwen vision models)...")
+    logger.info("📝 [STAGE 2] Chunking - Starting with RAG service...")
     await tracker.update_stage(ProcessingStage.SAVING_TO_DATABASE, stage_name="chunking")
 
-    rag_service = RAGService()
+    # Initialize RAG service with chunking configuration
+    rag_service = RAGService(config={
+        'chunk_size': chunk_size,
+        'chunk_overlap': chunk_overlap
+    })
     
     # Create document in database
     doc_metadata = {

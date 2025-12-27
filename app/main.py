@@ -1058,14 +1058,18 @@ async def general_exception_handler(request, exc: Exception):
     )
 
 
+# Cache for AI service health checks (avoid hitting APIs too frequently)
+_ai_health_cache = {}
+_ai_health_cache_ttl = 3600  # 1 hour
+
 # Health check endpoint
 @app.get(
     "/health",
     response_model=HealthResponse,
     summary="🏥 Unified Health Check - All Services",
-    description="Comprehensive health check for all system services including database, storage, and AI models"
+    description="Comprehensive health check for all system services including database, storage, and AI models. Use ?force_refresh=true to bypass cache."
 )
-async def health_check() -> HealthResponse:
+async def health_check(force_refresh: bool = False) -> HealthResponse:
     """
     **🏥 UNIFIED HEALTH CHECK ENDPOINT - Single Entry Point for All Health Checks**
 
@@ -1208,15 +1212,68 @@ async def health_check() -> HealthResponse:
         if overall_status == "healthy":
             overall_status = "degraded"
 
-    # 3. Check AI Models
+    # 3. Check AI Models - ACTUAL API HEALTH CHECKS (with caching)
     # Anthropic (Claude)
     try:
         import os
         if os.getenv("ANTHROPIC_API_KEY"):
-            services_status["anthropic"] = {
-                "status": "healthy",
-                "message": "Claude Sonnet 4.5 available"
-            }
+            # Check cache first (unless force_refresh is True)
+            cache_key = "anthropic"
+            current_time = time.time()
+
+            if not force_refresh and cache_key in _ai_health_cache and (current_time - _ai_health_cache[cache_key]["timestamp"]) < _ai_health_cache_ttl:
+                # Use cached result
+                cached_status = _ai_health_cache[cache_key]["status"].copy()
+                cached_status["last_checked"] = datetime.fromtimestamp(_ai_health_cache[cache_key]["timestamp"]).isoformat()
+                cached_status["cached"] = True
+                services_status["anthropic"] = cached_status
+            else:
+                # Actually test the API with a minimal request
+                try:
+                    from anthropic import Anthropic
+                    client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+                    start_time = time.time()
+
+                    # Minimal test: just check if we can authenticate
+                    # Using a very small request to minimize cost
+                    response = client.messages.create(
+                        model="claude-3-5-haiku-20241022",  # Cheapest model
+                        max_tokens=1,
+                        messages=[{"role": "user", "content": "hi"}]
+                    )
+                    latency_ms = int((time.time() - start_time) * 1000)
+
+                    status_result = {
+                        "status": "healthy",
+                        "message": "Claude API operational",
+                        "latency_ms": latency_ms,
+                        "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                        "cached": False
+                    }
+                    services_status["anthropic"] = status_result
+
+                    # Cache the result (without last_checked and cached fields)
+                    cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
+                    _ai_health_cache[cache_key] = {
+                        "status": cache_data,
+                        "timestamp": current_time
+                    }
+                except Exception as api_error:
+                    status_result = {
+                        "status": "unhealthy",
+                        "message": f"API error: {str(api_error)[:100]}",
+                        "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                        "cached": False
+                    }
+                    services_status["anthropic"] = status_result
+                    overall_status = "unhealthy"
+
+                    # Cache the error result too (but with shorter TTL - retry in 1 minute)
+                    cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
+                    _ai_health_cache[cache_key] = {
+                        "status": cache_data,
+                        "timestamp": current_time - _ai_health_cache_ttl + 60  # Retry in 1 minute
+                    }
         else:
             services_status["anthropic"] = {
                 "status": "degraded",
@@ -1234,10 +1291,51 @@ async def health_check() -> HealthResponse:
     try:
         import os
         if os.getenv("OPENAI_API_KEY"):
-            services_status["openai"] = {
-                "status": "healthy",
-                "message": "GPT-5 available"
-            }
+            # Check cache first (unless force_refresh is True)
+            cache_key = "openai"
+            current_time = time.time()
+
+            if not force_refresh and cache_key in _ai_health_cache and (current_time - _ai_health_cache[cache_key]["timestamp"]) < _ai_health_cache_ttl:
+                cached_status = _ai_health_cache[cache_key]["status"].copy()
+                cached_status["last_checked"] = datetime.fromtimestamp(_ai_health_cache[cache_key]["timestamp"]).isoformat()
+                cached_status["cached"] = True
+                services_status["openai"] = cached_status
+            else:
+                # Actually test the API
+                try:
+                    from openai import OpenAI
+                    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+                    start_time = time.time()
+
+                    # Minimal test with cheapest model
+                    response = client.chat.completions.create(
+                        model="gpt-4o-mini",  # Cheapest model
+                        max_tokens=1,
+                        messages=[{"role": "user", "content": "hi"}]
+                    )
+                    latency_ms = int((time.time() - start_time) * 1000)
+
+                    status_result = {
+                        "status": "healthy",
+                        "message": "OpenAI API operational",
+                        "latency_ms": latency_ms,
+                        "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                        "cached": False
+                    }
+                    services_status["openai"] = status_result
+                    cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
+                    _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time}
+                except Exception as api_error:
+                    status_result = {
+                        "status": "unhealthy",
+                        "message": f"API error: {str(api_error)[:100]}",
+                        "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                        "cached": False
+                    }
+                    services_status["openai"] = status_result
+                    overall_status = "unhealthy"
+                    cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
+                    _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time - _ai_health_cache_ttl + 60}
         else:
             services_status["openai"] = {
                 "status": "degraded",
@@ -1255,10 +1353,51 @@ async def health_check() -> HealthResponse:
     try:
         import os
         if os.getenv("TOGETHER_API_KEY"):
-            services_status["together_ai"] = {
-                "status": "healthy",
-                "message": "Vision models available"
-            }
+            # Check cache first (unless force_refresh is True)
+            cache_key = "together_ai"
+            current_time = time.time()
+
+            if not force_refresh and cache_key in _ai_health_cache and (current_time - _ai_health_cache[cache_key]["timestamp"]) < _ai_health_cache_ttl:
+                cached_status = _ai_health_cache[cache_key]["status"].copy()
+                cached_status["last_checked"] = datetime.fromtimestamp(_ai_health_cache[cache_key]["timestamp"]).isoformat()
+                cached_status["cached"] = True
+                services_status["together_ai"] = cached_status
+            else:
+                # Actually test the API
+                try:
+                    from together import Together
+                    client = Together(api_key=os.getenv("TOGETHER_API_KEY"))
+                    start_time = time.time()
+
+                    # Minimal test
+                    response = client.chat.completions.create(
+                        model="meta-llama/Llama-3.3-70B-Instruct-Turbo",
+                        max_tokens=1,
+                        messages=[{"role": "user", "content": "hi"}]
+                    )
+                    latency_ms = int((time.time() - start_time) * 1000)
+
+                    status_result = {
+                        "status": "healthy",
+                        "message": "TogetherAI API operational",
+                        "latency_ms": latency_ms,
+                        "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                        "cached": False
+                    }
+                    services_status["together_ai"] = status_result
+                    cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
+                    _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time}
+                except Exception as api_error:
+                    status_result = {
+                        "status": "unhealthy",
+                        "message": f"API error: {str(api_error)[:100]}",
+                        "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                        "cached": False
+                    }
+                    services_status["together_ai"] = status_result
+                    overall_status = "unhealthy"
+                    cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
+                    _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time - _ai_health_cache_ttl + 60}
         else:
             services_status["together_ai"] = {
                 "status": "degraded",

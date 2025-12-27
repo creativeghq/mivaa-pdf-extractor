@@ -17,6 +17,7 @@ import logging
 from typing import Dict, List, Optional, Any
 import asyncio
 import time
+import io
 
 # Import utilities
 from ..utils.circuit_breaker import CircuitBreaker, CircuitBreakerError
@@ -28,6 +29,7 @@ from .supabase_client import get_supabase_client
 from .vecs_service import get_vecs_service
 from .ai_client_service import get_ai_client_service
 from .ai_call_logger import AICallLogger
+from .unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
 
 
 class RAGService:
@@ -48,6 +50,18 @@ class RAGService:
             self.vecs_service = get_vecs_service()
             self.ai_client_service = get_ai_client_service()
             self.ai_logger = AICallLogger()
+
+            # Initialize chunking service
+            chunking_config = ChunkingConfig(
+                strategy=ChunkingStrategy.HYBRID,
+                max_chunk_size=self.config.get('chunk_size', 1000),
+                min_chunk_size=100,
+                overlap_size=self.config.get('chunk_overlap', 100),
+                preserve_structure=True,
+                split_on_sentences=True,
+                split_on_paragraphs=True
+            )
+            self.chunking_service = UnifiedChunkingService(chunking_config)
 
             # Circuit breaker for resilience
             self.circuit_breaker = CircuitBreaker(
@@ -83,6 +97,157 @@ class RAGService:
                 "error": str(e),
                 "timestamp": time.time()
             }
+
+    async def index_pdf_content(
+        self,
+        pdf_content: bytes,
+        document_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        catalog: Optional[Any] = None
+    ) -> Dict[str, Any]:
+        """
+        Index PDF content by extracting text, chunking, and generating embeddings.
+
+        This method replaces the old LlamaIndex-based indexing with direct chunking
+        and embedding generation using our current services.
+
+        Args:
+            pdf_content: PDF file content as bytes
+            document_id: Unique document identifier
+            metadata: Document metadata including workspace_id, filename, etc.
+            catalog: Optional product catalog for category tagging
+
+        Returns:
+            Dict containing:
+                - chunks_created: Number of chunks created
+                - chunk_ids: List of created chunk IDs
+                - success: Boolean indicating success
+        """
+        try:
+            start_time = time.time()
+            metadata = metadata or {}
+            workspace_id = metadata.get('workspace_id', 'default')
+
+            self.logger.info(f"📝 Indexing PDF content for document {document_id}")
+
+            # Step 1: Extract text from PDF using PyMuPDF4LLM
+            try:
+                import pymupdf4llm
+                import fitz
+
+                # Open PDF from bytes
+                pdf_doc = fitz.open(stream=pdf_content, filetype="pdf")
+
+                # Extract markdown text
+                markdown_text = pymupdf4llm.to_markdown(pdf_doc)
+                pdf_doc.close()
+
+                self.logger.info(f"   ✅ Extracted {len(markdown_text)} characters from PDF")
+
+            except Exception as e:
+                self.logger.error(f"   ❌ PDF text extraction failed: {e}")
+                return {
+                    "success": False,
+                    "error": f"PDF extraction failed: {str(e)}",
+                    "chunks_created": 0,
+                    "chunk_ids": []
+                }
+
+            # Step 2: Create chunks using UnifiedChunkingService
+            try:
+                chunks = await self.chunking_service.chunk_text(
+                    text=markdown_text,
+                    document_id=document_id,
+                    metadata=metadata
+                )
+
+                self.logger.info(f"   ✅ Created {len(chunks)} chunks")
+
+            except Exception as e:
+                self.logger.error(f"   ❌ Chunking failed: {e}")
+                return {
+                    "success": False,
+                    "error": f"Chunking failed: {str(e)}",
+                    "chunks_created": 0,
+                    "chunk_ids": []
+                }
+
+            # Step 3: Store chunks and generate embeddings
+            chunk_ids = []
+            chunks_created = 0
+
+            for chunk in chunks:
+                try:
+                    # Prepare chunk record for database
+                    chunk_record = {
+                        'document_id': document_id,
+                        'workspace_id': workspace_id,
+                        'chunk_text': chunk.content,
+                        'chunk_index': chunk.chunk_index,
+                        'metadata': {
+                            **chunk.metadata,
+                            'start_position': chunk.start_position,
+                            'end_position': chunk.end_position,
+                            'quality_score': chunk.quality_score,
+                            'total_chunks': chunk.total_chunks
+                        }
+                    }
+
+                    # Add catalog category if available
+                    if catalog and hasattr(catalog, 'catalog_factory'):
+                        chunk_record['metadata']['catalog_factory'] = catalog.catalog_factory
+
+                    # Insert chunk into database
+                    result = self.supabase_client.client.table('chunks').insert(chunk_record).execute()
+
+                    if result.data and len(result.data) > 0:
+                        chunk_id = result.data[0]['id']
+                        chunk_ids.append(chunk_id)
+                        chunks_created += 1
+
+                        # Generate text embedding asynchronously (don't wait)
+                        # The embedding will be generated in the background
+                        asyncio.create_task(self._generate_chunk_embedding(chunk_id, chunk.content))
+
+                except Exception as e:
+                    self.logger.warning(f"   ⚠️ Failed to store chunk {chunk.chunk_index}: {e}")
+                    continue
+
+            elapsed_time = time.time() - start_time
+            self.logger.info(f"✅ Indexed PDF: {chunks_created} chunks created in {elapsed_time:.2f}s")
+
+            return {
+                "success": True,
+                "chunks_created": chunks_created,
+                "chunk_ids": chunk_ids,
+                "processing_time": elapsed_time
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ PDF indexing failed: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "chunks_created": 0,
+                "chunk_ids": []
+            }
+
+    async def _generate_chunk_embedding(self, chunk_id: str, chunk_text: str):
+        """Generate and store embedding for a chunk (background task)."""
+        try:
+            # Generate text embedding
+            embedding_result = await self.embeddings_service.generate_text_embedding(chunk_text)
+
+            if embedding_result and 'embedding' in embedding_result:
+                # Update chunk with embedding
+                self.supabase_client.client.table('chunks')\
+                    .update({'text_embedding_1536': embedding_result['embedding']})\
+                    .eq('id', chunk_id)\
+                    .execute()
+
+                self.logger.debug(f"   ✅ Generated embedding for chunk {chunk_id}")
+        except Exception as e:
+            self.logger.warning(f"   ⚠️ Failed to generate embedding for chunk {chunk_id}: {e}")
 
     async def multi_vector_search(
         self,
