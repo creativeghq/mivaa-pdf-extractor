@@ -208,24 +208,24 @@ class UnifiedChunkingService:
     ) -> List[Chunk]:
         """
         Fixed-size chunking based on character count.
-        
+
         Respects sentence boundaries if configured.
         """
         chunks = []
         chunk_index = 0
         current_position = 0
-        
+
         while current_position < len(text):
             end_position = min(current_position + self.config.max_chunk_size, len(text))
             chunk_content = text[current_position:end_position]
-            
+
             # Adjust for sentence boundaries if enabled
             if self.config.split_on_sentences and end_position < len(text):
                 import re
                 adjusted_end = self._find_sentence_boundary(chunk_content)
                 if adjusted_end > self.config.min_chunk_size:
                     chunk_content = chunk_content[:adjusted_end]
-            
+
             if len(chunk_content.strip()) >= self.config.min_chunk_size:
                 chunk = self._create_chunk(
                     chunk_content.strip(),
@@ -236,14 +236,19 @@ class UnifiedChunkingService:
                 )
                 chunks.append(chunk)
                 chunk_index += 1
-            
+
             # Move to next chunk with overlap
-            current_position += len(chunk_content) - self.config.overlap_size
-        
+            # FIX: Ensure we always move forward to prevent infinite loop
+            advance = len(chunk_content) - self.config.overlap_size
+            if advance <= 0:
+                # If overlap is too large, just move forward by at least 1 char
+                advance = max(1, len(chunk_content) // 2)
+            current_position += advance
+
         # Update total chunks count
         for chunk in chunks:
             chunk.total_chunks = len(chunks)
-        
+
         return chunks
     
     def _chunk_hybrid(
