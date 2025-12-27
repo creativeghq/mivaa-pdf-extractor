@@ -133,16 +133,22 @@ class RAGService:
             # Step 1: Extract text from PDF using PyMuPDF4LLM
             try:
                 import pymupdf4llm
-                import fitz
+                import tempfile
+                import os
 
-                # Open PDF from bytes
-                pdf_doc = fitz.open(stream=pdf_content, filetype="pdf")
+                # Save PDF bytes to temporary file (pymupdf4llm needs a file path)
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+                    tmp_file.write(pdf_content)
+                    tmp_path = tmp_file.name
 
-                # Extract markdown text
-                markdown_text = pymupdf4llm.to_markdown(pdf_doc)
-                pdf_doc.close()
-
-                self.logger.info(f"   ✅ Extracted {len(markdown_text)} characters from PDF")
+                try:
+                    # Extract markdown text from PDF file
+                    markdown_text = pymupdf4llm.to_markdown(tmp_path)
+                    self.logger.info(f"   ✅ Extracted {len(markdown_text)} characters from PDF")
+                finally:
+                    # Clean up temporary file
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
 
             except Exception as e:
                 self.logger.error(f"   ❌ PDF text extraction failed: {e}")
