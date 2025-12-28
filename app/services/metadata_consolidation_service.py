@@ -33,7 +33,7 @@ class MetadataConsolidationService:
         self._load_prompt()
 
     def _load_prompt(self):
-        """Load metadata consolidation prompt from database."""
+        """Load metadata consolidation prompt from database with fallback."""
         try:
             result = self.supabase.table('prompts') \
                 .select('prompt_text') \
@@ -50,12 +50,30 @@ class MetadataConsolidationService:
                 self.prompt = result.data[0]['prompt_text']
                 logger.info("✅ Loaded metadata consolidation prompt from database")
             else:
-                logger.error("❌ No metadata consolidation prompt found in database")
-                self.prompt = None
+                logger.warning("⚠️ No metadata consolidation prompt found in database, using fallback")
+                # Fallback prompt for metadata consolidation
+                self.prompt = """You are a metadata consolidation expert. Analyze the provided metadata sources and create a consolidated, accurate metadata object.
+
+**Instructions:**
+1. Prioritize sources in this order: manual_overrides > ai_text_extraction > visual_embeddings > pattern_matching > factory_defaults
+2. Resolve conflicts by choosing the most reliable source
+3. Fill missing fields from lower-priority sources
+4. Calculate confidence scores based on source reliability
+5. Return valid JSON with consolidated_metadata, extraction_metadata, sources_used, overall_confidence, and completeness_score
+
+**Output Format:**
+{
+  "consolidated_metadata": {...},
+  "extraction_metadata": {...},
+  "sources_used": [...],
+  "overall_confidence": 0.0-1.0,
+  "completeness_score": 0.0-1.0
+}"""
 
         except Exception as e:
             logger.error(f"Error loading prompt: {e}")
-            self.prompt = None
+            # Use fallback prompt on error
+            self.prompt = """Consolidate the provided metadata sources into a single accurate metadata object. Return valid JSON."""
 
     async def consolidate_metadata(
         self,
@@ -82,8 +100,11 @@ class MetadataConsolidationService:
             Consolidated metadata with extraction tracking
         """
         if not self.prompt:
-            logger.error("No prompt available for metadata consolidation")
-            return existing_metadata or {}
+            logger.warning("No prompt available for metadata consolidation, reloading...")
+            self._load_prompt()
+            if not self.prompt:
+                logger.error("Failed to load prompt, returning existing metadata")
+                return existing_metadata or {}
 
         try:
             # Build context for AI

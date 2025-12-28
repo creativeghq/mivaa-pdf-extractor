@@ -189,9 +189,9 @@ class RAGService:
             # Step 3: Store chunks and generate embeddings with BATCH PROCESSING
             # ✅ MEMORY OPTIMIZATION: Process chunks in batches to avoid OOM
             import gc
-            from app.utils.memory_monitor import MemoryMonitor
+            from app.utils.memory_monitor import MemoryPressureMonitor
 
-            memory_monitor = MemoryMonitor()
+            memory_monitor = MemoryPressureMonitor()
             CHUNK_BATCH_SIZE = 15  # Process 15 chunks at a time (proven optimal from commit 74e7a73)
             MEMORY_THRESHOLD_PERCENT = 85.0  # Pause if memory usage exceeds 85%
             total_chunks = len(chunks)
@@ -398,25 +398,37 @@ class RAGService:
         workspace_id: str,
         top_k: int = 10,
         material_filters: Optional[Dict[str, Any]] = None,
-        similarity_threshold: float = 0.3
+        similarity_threshold: float = 0.3,
+        search_config: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        🎯 Multi-vector search combining ALL 6 specialized embeddings in parallel.
+        🎯 HYBRID MULTI-SOURCE SEARCH - Combines ALL available data sources.
 
-        Combines 6 specialized embeddings with intelligent weighting:
-        1. text_embedding_1536 (20%) - Semantic text understanding
-        2. visual_clip_embedding_512 (20%) - General visual similarity
-        3. color_clip_embedding_512 (15%) - Color palette matching
-        4. texture_clip_embedding_512 (15%) - Texture pattern matching
-        5. style_clip_embedding_512 (15%) - Design style matching
-        6. material_clip_embedding_512 (15%) - Material type matching
+        **SEARCH SOURCES (All enabled by default):**
+        1. **Visual Embeddings** (5 VECS collections) - Image-based search
+           - visual_clip_embedding_512 (general visual similarity)
+           - color_clip_embedding_512 (color palette matching)
+           - texture_clip_embedding_512 (texture pattern matching)
+           - style_clip_embedding_512 (design style matching)
+           - material_clip_embedding_512 (material type matching)
 
-        Architecture:
-        - Generate query embeddings from text (using RealEmbeddingsService)
-        - Search all 6 VECS collections in parallel
-        - Map image results to products via product_image_relationships
-        - Combine scores with intelligent weighting
-        - Apply metadata filters as soft boosts
+        2. **Text Embeddings** (document_chunks) - Semantic text search
+           - Searches chunk text_embedding (1536D OpenAI/Voyage)
+           - Maps chunks to products via chunk_product_relationships
+
+        3. **Direct Product Search** - Product-level embeddings
+           - Searches product text_embedding_1024 (if available)
+           - Direct metadata matching
+
+        4. **Keyword Matching** - Traditional text search
+           - Product name/description matching
+           - Metadata field matching
+
+        **INTELLIGENT SCORING:**
+        - Combines all sources with configurable weights
+        - Applies relevance_score from relationships
+        - Boosts based on metadata filters
+        - Configurable per use-case
 
         Args:
             query: Search query text
@@ -424,92 +436,176 @@ class RAGService:
             top_k: Number of results to return
             material_filters: Optional JSONB metadata filters
             similarity_threshold: Minimum similarity score (default 0.3)
+            search_config: Optional configuration for search behavior
+                {
+                    "enable_visual_search": True,
+                    "enable_chunk_search": True,
+                    "enable_product_search": True,
+                    "enable_keyword_search": True,
+                    "weights": {
+                        "visual": 0.25,
+                        "chunk": 0.25,
+                        "product": 0.20,
+                        "keyword": 0.15,
+                        "color": 0.05,
+                        "texture": 0.05,
+                        "style": 0.03,
+                        "material": 0.02
+                    }
+                }
 
         Returns:
-            Dictionary containing search results with weighted scores from all 6 embeddings
+            Dictionary containing search results with weighted scores from all sources
         """
         try:
             start_time = time.time()
 
             # ============================================================================
-            # STEP 1: Generate query embeddings from text (for visual searches)
+            # CONFIGURATION: Parse search config with sensible defaults
             # ============================================================================
-            self.logger.info(f"🔍 Multi-vector search: Generating embeddings for query: '{query[:50]}...'")
+            config = search_config or {}
+            enable_visual = config.get('enable_visual_search', True)
+            enable_chunk = config.get('enable_chunk_search', True)
+            enable_product = config.get('enable_product_search', True)
+            enable_keyword = config.get('enable_keyword_search', True)
 
-            # Generate visual embedding from text description (will be used for all 6 searches)
-            embedding_result = await self.embeddings_service.generate_visual_embedding(query)
-
-            if not embedding_result.get("success"):
-                self.logger.warning("Failed to generate visual embedding, falling back to text-only search")
-                query_embedding = None
-            else:
-                query_embedding = embedding_result.get("embedding", [])
-                self.logger.info(f"✅ Generated {len(query_embedding)}D visual embedding from query text")
+            # Default weights (can be overridden)
+            default_weights = {
+                'visual': 0.25,    # Visual CLIP embeddings
+                'chunk': 0.25,     # Text chunks (NEW!)
+                'product': 0.20,   # Direct product embeddings (NEW!)
+                'keyword': 0.15,   # Keyword matching
+                'color': 0.05,     # Color CLIP
+                'texture': 0.05,   # Texture CLIP
+                'style': 0.03,     # Style CLIP
+                'material': 0.02   # Material CLIP
+            }
+            embedding_weights = config.get('weights', default_weights)
 
             # ============================================================================
-            # STEP 2: Search all 6 embedding collections in PARALLEL
+            # STEP 1: Generate query embeddings (visual + text)
             # ============================================================================
-            embedding_scores = {}  # Maps image_id -> {embedding_type: score}
+            self.logger.info(f"🔍 HYBRID SEARCH: '{query[:50]}...'")
+            self.logger.info(f"   Sources: Visual={enable_visual}, Chunk={enable_chunk}, Product={enable_product}, Keyword={enable_keyword}")
 
-            if query_embedding:
-                # Define all 6 embedding types to search
+            # Generate visual embedding from text (for image searches)
+            visual_embedding = None
+            if enable_visual:
+                embedding_result = await self.embeddings_service.generate_visual_embedding(query)
+                if embedding_result.get("success"):
+                    visual_embedding = embedding_result.get("embedding", [])
+                    self.logger.info(f"✅ Visual embedding: {len(visual_embedding)}D")
+                else:
+                    self.logger.warning("⚠️ Visual embedding generation failed")
+
+            # Generate text embedding (for chunk/product searches)
+            text_embedding = None
+            if enable_chunk or enable_product:
+                text_result = await self.embeddings_service.generate_text_embedding(query)
+                if text_result.get("success"):
+                    text_embedding = text_result.get("embedding", [])
+                    self.logger.info(f"✅ Text embedding: {len(text_embedding)}D")
+                else:
+                    self.logger.warning("⚠️ Text embedding generation failed")
+
+            # ============================================================================
+            # STEP 2A: Search VISUAL embeddings (5 VECS collections)
+            # ============================================================================
+            image_scores = {}  # Maps image_id -> {embedding_type: score}
+
+            if enable_visual and visual_embedding:
                 embedding_types = ['visual', 'color', 'texture', 'style', 'material']
-
-                # Create parallel search tasks for specialized embeddings
                 search_tasks = []
+
                 for emb_type in embedding_types:
                     task = self.vecs_service.search_specialized_embeddings(
-                        query_embedding=query_embedding,
+                        query_embedding=visual_embedding,
                         embedding_type=emb_type,
-                        limit=top_k * 3,  # Get more candidates for fusion
+                        limit=top_k * 3,
                         workspace_id=workspace_id,
                         include_metadata=True
                     )
                     search_tasks.append(task)
 
-                # Execute all searches in parallel
-                self.logger.info(f"🚀 Executing {len(embedding_types)} specialized embedding searches in parallel...")
+                self.logger.info(f"🚀 Searching {len(embedding_types)} visual embeddings...")
                 search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
 
-                # Process results from each embedding type
                 for emb_type, results in zip(embedding_types, search_results):
                     if isinstance(results, Exception):
-                        self.logger.warning(f"⚠️ {emb_type} search failed: {results}")
+                        self.logger.warning(f"⚠️ {emb_type} failed: {results}")
                         continue
 
-                    if not results:
-                        self.logger.debug(f"No results from {emb_type} search")
-                        continue
+                    if results:
+                        for item in results:
+                            image_id = item.get('image_id')
+                            score = item.get('similarity_score', 0.0)
+                            if image_id not in image_scores:
+                                image_scores[image_id] = {}
+                            image_scores[image_id][emb_type] = score
 
-                    # Store scores for each image
-                    for item in results:
-                        image_id = item.get('image_id')
-                        similarity_score = item.get('similarity_score', 0.0)
+                        self.logger.info(f"✅ {emb_type}: {len(results)} images")
 
-                        if image_id not in embedding_scores:
-                            embedding_scores[image_id] = {}
-
-                        embedding_scores[image_id][emb_type] = similarity_score
-
-                    self.logger.info(f"✅ {emb_type}: {len(results)} results")
-
-                self.logger.info(f"📊 Total unique images found: {len(embedding_scores)}")
-
-            else:
-                self.logger.warning("⚠️ No query embedding available, skipping visual searches")
+                self.logger.info(f"📊 Visual search: {len(image_scores)} unique images")
 
             # ============================================================================
-            # STEP 3: Map images to products via product_image_relationships
+            # STEP 2B: Search TEXT CHUNKS (NEW!)
             # ============================================================================
-            product_scores = {}  # Maps product_id -> {embedding_type: score}
+            chunk_scores = {}  # Maps chunk_id -> score
 
-            if embedding_scores:
-                # Get all image IDs
-                image_ids = list(embedding_scores.keys())
+            if enable_chunk and text_embedding:
+                try:
+                    # Search document_chunks using text_embedding
+                    # Note: We'll need to add a function to search chunks by embedding
+                    chunk_results = await self._search_chunks_by_embedding(
+                        query_embedding=text_embedding,
+                        workspace_id=workspace_id,
+                        limit=top_k * 3
+                    )
 
-                # Fetch product-image relationships in batches
+                    for chunk in chunk_results:
+                        chunk_id = chunk.get('chunk_id')
+                        score = chunk.get('similarity_score', 0.0)
+                        chunk_scores[chunk_id] = score
+
+                    self.logger.info(f"✅ Chunk search: {len(chunk_scores)} chunks")
+
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Chunk search failed: {e}")
+
+            # ============================================================================
+            # STEP 2C: Search PRODUCTS directly (NEW!)
+            # ============================================================================
+            direct_product_scores = {}  # Maps product_id -> score
+
+            if enable_product and text_embedding:
+                try:
+                    # Search products using text_embedding_1024
+                    product_results = await self._search_products_by_embedding(
+                        query_embedding=text_embedding,
+                        workspace_id=workspace_id,
+                        limit=top_k * 2
+                    )
+
+                    for product in product_results:
+                        product_id = product.get('product_id')
+                        score = product.get('similarity_score', 0.0)
+                        direct_product_scores[product_id] = score
+
+                    self.logger.info(f"✅ Product search: {len(direct_product_scores)} products")
+
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Product search failed: {e}")
+
+            # ============================================================================
+            # STEP 3: Map all sources to products
+            # ============================================================================
+            product_scores = {}  # Maps product_id -> {source_type: score}
+
+            # 3A: Map images to products via product_image_relationships
+            if image_scores:
+                image_ids = list(image_scores.keys())
                 batch_size = 100
-                all_relationships = []
+                all_image_rels = []
 
                 for i in range(0, len(image_ids), batch_size):
                     batch_ids = image_ids[i:i + batch_size]
@@ -517,52 +613,72 @@ class RAGService:
                         .select('product_id, image_id, relevance_score')\
                         .in_('image_id', batch_ids)\
                         .execute()
-
                     if rel_response.data:
-                        all_relationships.extend(rel_response.data)
+                        all_image_rels.extend(rel_response.data)
 
-                self.logger.info(f"📎 Found {len(all_relationships)} product-image relationships")
+                self.logger.info(f"📎 Image→Product: {len(all_image_rels)} relationships")
 
-                # Map image scores to products
-                for rel in all_relationships:
+                for rel in all_image_rels:
                     product_id = rel.get('product_id')
                     image_id = rel.get('image_id')
                     relevance = rel.get('relevance_score', 1.0)
 
-                    if image_id in embedding_scores:
+                    if image_id in image_scores:
                         if product_id not in product_scores:
                             product_scores[product_id] = {}
 
-                        # Transfer scores from image to product (weighted by relevance)
-                        for emb_type, score in embedding_scores[image_id].items():
+                        for emb_type, score in image_scores[image_id].items():
                             weighted_score = score * relevance
-
-                            # Keep the highest score for each embedding type
                             if emb_type not in product_scores[product_id] or product_scores[product_id][emb_type] < weighted_score:
                                 product_scores[product_id][emb_type] = weighted_score
 
-                self.logger.info(f"🎯 Mapped scores to {len(product_scores)} products")
+            # 3B: Map chunks to products via chunk_product_relationships (NEW!)
+            if chunk_scores:
+                chunk_ids = list(chunk_scores.keys())
+                batch_size = 100
+                all_chunk_rels = []
+
+                for i in range(0, len(chunk_ids), batch_size):
+                    batch_ids = chunk_ids[i:i + batch_size]
+                    rel_response = self.supabase_client.client.table('chunk_product_relationships')\
+                        .select('product_id, chunk_id, relevance_score')\
+                        .in_('chunk_id', batch_ids)\
+                        .execute()
+                    if rel_response.data:
+                        all_chunk_rels.extend(rel_response.data)
+
+                self.logger.info(f"📎 Chunk→Product: {len(all_chunk_rels)} relationships")
+
+                for rel in all_chunk_rels:
+                    product_id = rel.get('product_id')
+                    chunk_id = rel.get('chunk_id')
+                    relevance = rel.get('relevance_score', 1.0)
+
+                    if chunk_id in chunk_scores:
+                        if product_id not in product_scores:
+                            product_scores[product_id] = {}
+
+                        weighted_score = chunk_scores[chunk_id] * relevance
+                        if 'chunk' not in product_scores[product_id] or product_scores[product_id]['chunk'] < weighted_score:
+                            product_scores[product_id]['chunk'] = weighted_score
+
+            # 3C: Add direct product scores (NEW!)
+            if direct_product_scores:
+                self.logger.info(f"📎 Direct product scores: {len(direct_product_scores)}")
+
+                for product_id, score in direct_product_scores.items():
+                    if product_id not in product_scores:
+                        product_scores[product_id] = {}
+                    product_scores[product_id]['product'] = score
+
+            self.logger.info(f"🎯 Total products with scores: {len(product_scores)}")
 
             # ============================================================================
-            # STEP 4: Fetch product details and calculate weighted scores
+            # STEP 4: Fetch product details and calculate HYBRID weighted scores
             # ============================================================================
-
-            # Define weights for each embedding type (must sum to 1.0)
-            embedding_weights = {
-                'text': 0.20,      # Text semantic understanding (from metadata/description)
-                'visual': 0.20,    # General visual similarity
-                'color': 0.15,     # Color palette matching
-                'texture': 0.15,   # Texture pattern matching
-                'style': 0.15,     # Design style matching
-                'material': 0.15   # Material type matching
-            }
-
-            # Fetch all products that have scores
             results = []
             if product_scores:
                 product_ids = list(product_scores.keys())
-
-                # Fetch product details in batches
                 batch_size = 100
                 all_products = []
 
@@ -572,29 +688,29 @@ class RAGService:
                         .select('id, name, description, metadata, workspace_id, source_document_id')\
                         .in_('id', batch_ids)\
                         .execute()
-
                     if products_response.data:
                         all_products.extend(products_response.data)
 
                 self.logger.info(f"📦 Fetched {len(all_products)} product details")
 
-                # Calculate weighted scores for each product
+                # Calculate HYBRID weighted scores
                 for product in all_products:
                     product_id = product['id']
                     scores = product_scores.get(product_id, {})
 
-                    # Calculate text score from keyword matching
-                    text_score = self._calculate_text_score(query, product)
-                    scores['text'] = text_score
+                    # Add keyword score if enabled
+                    if enable_keyword:
+                        keyword_score = self._calculate_text_score(query, product)
+                        scores['keyword'] = keyword_score
 
-                    # Calculate weighted score from all embedding types
+                    # Calculate weighted score from ALL sources
                     weighted_score = 0.0
                     score_breakdown = {}
 
-                    for emb_type, weight in embedding_weights.items():
-                        emb_score = scores.get(emb_type, 0.0)
-                        weighted_score += emb_score * weight
-                        score_breakdown[f'{emb_type}_score'] = emb_score
+                    for source_type, weight in embedding_weights.items():
+                        source_score = scores.get(source_type, 0.0)
+                        weighted_score += source_score * weight
+                        score_breakdown[f'{source_type}_score'] = source_score
 
                     # Apply material filters as soft boosts
                     filter_boost = 0.0
@@ -651,9 +767,15 @@ class RAGService:
                             "workspace_id": product.get('workspace_id'),
                             "source_document_id": product.get('source_document_id'),
                             "score": final_score,
-                            **score_breakdown,  # Include individual embedding scores
+                            **score_breakdown,  # Include scores from all sources
                             "filter_boost": filter_boost,
-                            "search_type": "multi_vector_6_embeddings"
+                            "search_type": "hybrid_multi_source",
+                            "sources_used": {
+                                "visual": enable_visual and len(image_scores) > 0,
+                                "chunk": enable_chunk and len(chunk_scores) > 0,
+                                "product": enable_product and len(direct_product_scores) > 0,
+                                "keyword": enable_keyword
+                            }
                         })
 
                 # Sort by final score (descending)
@@ -714,12 +836,24 @@ class RAGService:
                 "results": results,
                 "total_results": len(results),
                 "processing_time": time.time() - start_time,
-                "embedding_weights": embedding_weights,
-                "embeddings_used": list(embedding_weights.keys()),
+                "search_config": {
+                    "weights": embedding_weights,
+                    "sources_enabled": {
+                        "visual": enable_visual,
+                        "chunk": enable_chunk,
+                        "product": enable_product,
+                        "keyword": enable_keyword
+                    },
+                    "sources_found": {
+                        "images": len(image_scores) if enable_visual else 0,
+                        "chunks": len(chunk_scores) if enable_chunk else 0,
+                        "products": len(direct_product_scores) if enable_product else 0
+                    }
+                },
                 "material_filters_applied": material_filters if material_filters else None,
                 "metadata_validation_enabled": True,
                 "query": query,
-                "search_type": "multi_vector_6_embeddings"
+                "search_type": "hybrid_multi_source"
             }
 
         except Exception as e:
@@ -1503,4 +1637,172 @@ class RAGService:
                 "error": str(e),
                 "query_type": query_type
             }
+
+    async def _classify_image_material(
+        self,
+        image_base64: str,
+        confidence_threshold: float = 0.6
+    ) -> Dict[str, Any]:
+        """
+        Classify if an image shows material or not using Qwen Vision.
+
+        Args:
+            image_base64: Base64 encoded image
+            confidence_threshold: Minimum confidence to classify as material
+
+        Returns:
+            Dict with is_material, confidence, reason
+        """
+        try:
+            import json
+            import httpx
+            import os
+
+            together_api_key = os.getenv('TOGETHER_API_KEY')
+            if not together_api_key:
+                self.logger.warning("TOGETHER_API_KEY not set, skipping classification")
+                return {'is_material': False, 'confidence': 0.0, 'reason': 'API key missing'}
+
+            classification_prompt = """Analyze this image and classify it as:
+1. MATERIAL: Shows building/interior materials (tiles, wood, fabric, stone, metal, flooring, wallpaper, etc.) - either close-up texture or in application
+2. NOT_MATERIAL: Faces, logos, charts, diagrams, text, decorative graphics, abstract patterns
+
+Respond with JSON:
+{
+  "is_material": true/false,
+  "confidence": 0.0-1.0,
+  "reason": "brief explanation"
+}"""
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    'https://api.together.xyz/v1/chat/completions',
+                    headers={
+                        'Authorization': f'Bearer {together_api_key}',
+                        'Content-Type': 'application/json'
+                    },
+                    json={
+                        'model': 'Qwen/Qwen3-VL-8B-Instruct',
+                        'messages': [{
+                            'role': 'user',
+                            'content': [
+                                {'type': 'text', 'text': classification_prompt},
+                                {'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{image_base64}'}}
+                            ]
+                        }],
+                        'max_tokens': 200,
+                        'temperature': 0.1
+                    }
+                )
+
+                if response.status_code != 200:
+                    self.logger.warning(f"Qwen API error: {response.status_code}")
+                    return {'is_material': False, 'confidence': 0.0, 'reason': f'API error {response.status_code}'}
+
+                result_text = response.json()['choices'][0]['message']['content']
+                result = json.loads(result_text)
+
+                return {
+                    'is_material': result.get('is_material', False),
+                    'confidence': result.get('confidence', 0.5),
+                    'reason': result.get('reason', 'Unknown'),
+                    'model': 'qwen3-vl-8b'
+                }
+
+        except Exception as e:
+            self.logger.warning(f"Image classification failed: {e}")
+            return {'is_material': False, 'confidence': 0.0, 'reason': f'Error: {str(e)}'}
+
+    async def _search_chunks_by_embedding(
+        self,
+        query_embedding: List[float],
+        workspace_id: str,
+        limit: int = 30
+    ) -> List[Dict[str, Any]]:
+        """
+        Search document_chunks using text_embedding similarity.
+
+        Uses SQL function: search_chunks_by_embedding(vector, UUID, INT)
+
+        Args:
+            query_embedding: Query embedding vector (1536D)
+            workspace_id: Workspace ID to filter
+            limit: Maximum results to return
+
+        Returns:
+            List of chunks with similarity scores
+        """
+        try:
+            # Convert embedding to PostgreSQL vector format
+            embedding_str = '[' + ','.join(str(x) for x in query_embedding) + ']'
+
+            # Call SQL function
+            result = self.supabase_client.client.rpc(
+                'search_chunks_by_embedding',
+                {
+                    'query_embedding': embedding_str,
+                    'p_workspace_id': workspace_id,
+                    'p_limit': limit
+                }
+            ).execute()
+
+            if result.data and len(result.data) > 0:
+                self.logger.info(f"✅ Chunk search: {len(result.data)} results")
+                return result.data
+            else:
+                self.logger.debug("⚠️ No chunks with embeddings found")
+                return []
+
+        except Exception as e:
+            self.logger.warning(f"⚠️ Chunk search failed: {e}")
+            # Graceful degradation: return empty list
+            return []
+
+    async def _search_products_by_embedding(
+        self,
+        query_embedding: List[float],
+        workspace_id: str,
+        limit: int = 20
+    ) -> List[Dict[str, Any]]:
+        """
+        Search products directly using text_embedding_1024 similarity.
+
+        Uses SQL function: search_products_by_embedding(vector, UUID, INT)
+
+        Args:
+            query_embedding: Query embedding vector (will be truncated to 1024D)
+            workspace_id: Workspace ID to filter
+            limit: Maximum results to return
+
+        Returns:
+            List of products with similarity scores
+        """
+        try:
+            # Truncate to 1024D if needed (products use 1024D embeddings)
+            product_embedding = query_embedding[:1024] if len(query_embedding) > 1024 else query_embedding
+
+            # Convert embedding to PostgreSQL vector format
+            embedding_str = '[' + ','.join(str(x) for x in product_embedding) + ']'
+
+            # Call SQL function
+            result = self.supabase_client.client.rpc(
+                'search_products_by_embedding',
+                {
+                    'query_embedding': embedding_str,
+                    'p_workspace_id': workspace_id,
+                    'p_limit': limit
+                }
+            ).execute()
+
+            if result.data and len(result.data) > 0:
+                self.logger.info(f"✅ Product search: {len(result.data)} results")
+                return result.data
+            else:
+                self.logger.debug("⚠️ No products with embeddings found")
+                return []
+
+        except Exception as e:
+            self.logger.warning(f"⚠️ Product search failed: {e}")
+            # Graceful degradation: return empty list
+            return []
 

@@ -309,6 +309,19 @@ class SupabaseClient:
             page_num = image_info.get('page') or image_info.get('page_number') or 1
             caption = image_info.get('caption') or image_info.get('description') or f"Image from page {page_num}"
 
+            # Extract AI classification results if available
+            ai_classification = image_info.get('ai_classification', {})
+            is_material = ai_classification.get('is_material', False)
+
+            # Determine category: 'product' for material images, 'general' for non-material
+            # Priority: explicit category > ai_classification > default 'general'
+            if category:
+                final_category = category
+            elif is_material:
+                final_category = 'product'
+            else:
+                final_category = 'general'
+
             # Prepare image entry (same format as batch save)
             image_entry = {
                 'document_id': document_id,
@@ -318,7 +331,7 @@ class SupabaseClient:
                 'page_number': page_num,
                 'confidence': 0.95,
                 'processing_status': 'completed',
-                'category': category or 'general',  # ✅ NEW: Add category field
+                'category': final_category,  # ✅ FIXED: Use AI classification to set category
                 'source_type': 'pdf_processing',  # ✅ NEW: Track source type
                 'source_job_id': job_id,  # ✅ NEW: Track source job
                 'metadata': {
@@ -333,7 +346,15 @@ class SupabaseClient:
                     'format': image_info.get('format'),
                     'quality_score': image_info.get('quality_score'),
                     'file_size': image_info.get('size_bytes'),
-                    'extracted_at': datetime.utcnow().isoformat()
+                    'extracted_at': datetime.utcnow().isoformat(),
+                    # ✅ NEW: Store AI classification results
+                    'ai_classification': {
+                        'is_material': is_material,
+                        'confidence': ai_classification.get('confidence'),
+                        'reason': ai_classification.get('reason'),
+                        'model': ai_classification.get('model'),
+                        'classification': ai_classification.get('classification')
+                    } if ai_classification else None
                 }
             }
 

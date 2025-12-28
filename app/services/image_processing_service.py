@@ -435,12 +435,14 @@ Respond ONLY with this JSON format:
 
         while retry_count < max_retries:
             try:
-                # Save to database
+                # Save to database with category='product' for material images
+                # (ai_classification is already in img_data from classify_images)
                 image_id = await self.supabase_client.save_single_image(
                     image_info=img_data,
                     document_id=document_id,
                     workspace_id=workspace_id,
-                    image_index=idx
+                    image_index=idx,
+                    category='product'  # ✅ All images in this flow are material images
                 )
 
                 if not image_id:

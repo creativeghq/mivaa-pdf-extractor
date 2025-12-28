@@ -765,10 +765,11 @@ async def process_stage_3_images(
         embedding_to_text_service = EmbeddingToTextService(workspace_id=workspace_id)
 
         # Get all images with specialized embeddings
+        # NOTE: Filter by category='product' instead of is_material_image (column doesn't exist)
         images_with_embeddings = supabase.client.table('document_images') \
             .select('id') \
             .eq('document_id', document_id) \
-            .eq('is_material_image', True) \
+            .eq('category', 'product') \
             .execute()
 
         if images_with_embeddings.data:
