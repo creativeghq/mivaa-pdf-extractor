@@ -270,7 +270,8 @@ class RealEmbeddingsService:
         start_time = time.time()
 
         # Try Voyage AI first if enabled and API key available
-        voyage_enabled = self.config and getattr(self.config, 'voyage_enabled', True)
+        # ✅ CRITICAL FIX: Default to True if config is None (don't skip Voyage AI!)
+        voyage_enabled = getattr(self.config, 'voyage_enabled', True) if self.config else True
         if self.voyage_api_key and voyage_enabled:
             try:
                 # Call Voyage AI batch API
@@ -407,10 +408,10 @@ class RealEmbeddingsService:
                             "model_confidence": 0.98,
                             "completeness": 1.0,
                             "consistency": 0.95,
-                            "validation": 0.90
+                            "validation": 0.90,
+                            "batch_size": len(texts)  # ✅ FIXED: Move batch_size to confidence_breakdown
                         },
-                        action="use_ai_result",
-                        metadata={"batch_size": len(texts)}
+                        action="use_ai_result"
                     )
 
                     self.logger.info(f"✅ Generated {len(embeddings)} OpenAI embeddings in batch ({dimensions}D)")
@@ -470,7 +471,8 @@ class RealEmbeddingsService:
         start_time = time.time()
 
         # Try Voyage AI first if enabled and API key available
-        voyage_enabled = self.config and getattr(self.config, 'voyage_enabled', True)
+        # ✅ CRITICAL FIX: Default to True if config is None (don't skip Voyage AI!)
+        voyage_enabled = getattr(self.config, 'voyage_enabled', True) if self.config else True
         self.logger.info(f"🔍 Voyage AI check: api_key={'SET' if self.voyage_api_key else 'NOT SET'}, config={'SET' if self.config else 'NOT SET'}, voyage_enabled={voyage_enabled}")
         if self.voyage_api_key and voyage_enabled:
             try:
