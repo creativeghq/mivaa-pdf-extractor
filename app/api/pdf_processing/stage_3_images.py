@@ -714,6 +714,14 @@ async def process_stage_3_images(
     # Sync tracker to database
     await tracker._sync_to_database(stage="image_processing")
 
+    # ✅ CRITICAL FIX: Initialize embedding_to_text variables BEFORE checkpoint creation
+    # These variables are referenced in the checkpoint metadata below (lines 742-745)
+    # Must be initialized here to prevent UnboundLocalError
+    embedding_to_text_count = 0
+    embedding_to_text_failed = 0
+    embedding_to_text_ai_calls = 0
+    embedding_to_text_rate = 0.0
+
     # Create IMAGES_EXTRACTED checkpoint with comprehensive metadata
     await checkpoint_recovery_service.create_checkpoint(
         job_id=job_id,
@@ -752,12 +760,7 @@ async def process_stage_3_images(
     logger.info("💾 Memory freed after Stage 3 (Image Processing)")
 
     # ✅ Stage 3.5 - Convert embeddings to text metadata
-    # CRITICAL FIX: Initialize variables BEFORE try block to prevent UnboundLocalError
-    # If exception occurs during import/initialization, these variables must still exist
-    # for the quality metrics calculation at line 840
-    embedding_to_text_count = 0
-    embedding_to_text_failed = 0
-    embedding_to_text_ai_calls = 0
+    # Variables already initialized above before checkpoint creation
 
     logger.info("🔤 Stage 3.5: Converting embeddings to text metadata...")
     try:

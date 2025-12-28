@@ -466,36 +466,61 @@ class DataImportService:
             workspace_id: Workspace ID
         """
         try:
-            # Create image records in document_images table
+            # Step 1: Create image records in document_images table
             image_records = []
             for img in downloaded_images:
                 if not img.get('success'):
                     continue
 
+                # ✅ FIXED: Map to correct document_images columns
                 image_record = {
-                    "product_id": product_id,
+                    "document_id": product_id,  # Use product_id as document_id for XML imports
                     "workspace_id": workspace_id,
-                    "storage_path": img['storage_path'],
-                    "public_url": img['storage_url'],
-                    "original_url": img['original_url'],
-                    "filename": img['filename'],
-                    "content_type": img['content_type'],
-                    "size_bytes": img['size_bytes'],
+                    "image_url": img['storage_url'],  # ✅ Use image_url column
                     "source_type": "xml_import",
                     "source_job_id": job_id,
                     "metadata": {
                         "source": "xml_import",
-                        "index": img['index']
+                        "index": img['index'],
+                        "storage_path": img['storage_path'],
+                        "original_url": img['original_url'],
+                        "filename": img['filename'],
+                        "content_type": img['content_type'],
+                        "size_bytes": img['size_bytes']
                     }
                 }
                 image_records.append(image_record)
 
-            if image_records:
-                self.supabase.table('document_images').insert(image_records).execute()
-                logger.info(f"✅ Linked {len(image_records)} images to product {product_id}")
+            if not image_records:
+                logger.info(f"⏭️ No images to link for product {product_id}")
+                return
+
+            # Insert images into document_images
+            insert_response = self.supabase.table('document_images').insert(image_records).execute()
+
+            if not insert_response.data:
+                logger.warning(f"⚠️ No images were inserted for product {product_id}")
+                return
+
+            logger.info(f"✅ Inserted {len(insert_response.data)} images into document_images")
+
+            # Step 2: Create product-image relationships
+            relationship_records = []
+            for idx, image_data in enumerate(insert_response.data):
+                relationship_records.append({
+                    "product_id": product_id,
+                    "image_id": image_data['id'],
+                    "relationship_type": "depicts",
+                    "relevance_score": 1.0 - (idx * 0.05)  # First image gets highest score
+                })
+
+            if relationship_records:
+                self.supabase.table('product_image_relationships').insert(relationship_records).execute()
+                logger.info(f"✅ Created {len(relationship_records)} product-image relationships")
 
         except Exception as e:
             logger.error(f"❌ Failed to link images to product {product_id}: {e}")
+            logger.exception(e)
             # Don't raise - product is already created
 
     async def _queue_text_processing(
@@ -526,7 +551,7 @@ class DataImportService:
 
             # Create chunk record
             chunk_record = {
-                "product_id": product_id,
+                "document_id": product_id,  # ✅ FIXED: Use 'document_id' not 'product_id'
                 "workspace_id": workspace_id,
                 "content": description,
                 "chunk_index": 0,
@@ -534,6 +559,7 @@ class DataImportService:
                 "source_job_id": job_id,
                 "metadata": {
                     "source": "xml_import",
+                    "product_id": product_id,  # Store product_id in metadata for reference
                     "product_name": product_data.get('name'),
                     "auto_generated": True
                 }

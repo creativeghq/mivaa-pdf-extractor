@@ -49,6 +49,7 @@ class ProgressTracker:
     document_id: str
     total_pages: int
     job_storage: Optional[Dict[str, Any]] = None  # Reference to global job_storage dict
+    job_type: str = "pdf_processing"  # Job type for Sentry tracking
 
     # Progress state
     current_stage: ProcessingStage = ProcessingStage.INITIALIZING

@@ -256,7 +256,7 @@ class RAGService:
                         chunk_record = {
                             'document_id': document_id,
                             'workspace_id': workspace_id,
-                            'chunk_text': chunk.content,
+                            'content': chunk.content,  # ✅ FIXED: Use 'content' column, not 'chunk_text'
                             'chunk_index': chunk.chunk_index,
                             'metadata': {
                                 **chunk.metadata,
@@ -1371,7 +1371,7 @@ class RAGService:
             # Step 2: Build context from retrieved chunks
             context_parts = []
             for i, chunk in enumerate(chunks, 1):
-                chunk_text = chunk.get('chunk_text', chunk.get('text', ''))
+                chunk_text = chunk.get('content', chunk.get('text', ''))  # ✅ FIXED: Use 'content' column
                 score = chunk.get('score', 0.0)
                 context_parts.append(f"[Chunk {i}, Relevance: {score:.2f}]\n{chunk_text}\n")
 
@@ -1422,7 +1422,7 @@ class RAGService:
                 sources.append({
                     "chunk_id": chunk.get('id'),
                     "score": chunk.get('score', 0.0),
-                    "text_snippet": chunk.get('chunk_text', '')[:200] + "...",
+                    "text_snippet": chunk.get('content', '')[:200] + "...",  # ✅ FIXED: Use 'content' column
                     "metadata": chunk.get('metadata', {})
                 })
 
@@ -1518,7 +1518,7 @@ class RAGService:
             # Step 4: Build context from chunks
             context_parts = []
             for i, chunk in enumerate(filtered_chunks, 1):
-                chunk_text = chunk.get('chunk_text', chunk.get('text', ''))
+                chunk_text = chunk.get('content', chunk.get('text', ''))  # ✅ FIXED: Use 'content' column
                 score = chunk.get('score', 0.0)
                 metadata = chunk.get('metadata', {})
                 doc_id = metadata.get('document_id', 'unknown')
@@ -1601,7 +1601,7 @@ class RAGService:
                     "chunk_id": chunk.get('id'),
                     "document_id": chunk.get('metadata', {}).get('document_id'),
                     "score": chunk.get('score', 0.0),
-                    "text_snippet": chunk.get('chunk_text', '')[:200] + "...",
+                    "text_snippet": chunk.get('content', '')[:200] + "...",  # ✅ FIXED: Use 'content' column
                     "metadata": chunk.get('metadata', {})
                 })
 
@@ -1636,6 +1636,122 @@ class RAGService:
                 "query": query,
                 "error": str(e),
                 "query_type": query_type
+            }
+
+    async def _analyze_image_material(
+        self,
+        image_base64: str,
+        image_path: str = None,
+        image_id: str = None,
+        document_id: str = None,
+        embedding_service: Any = None
+    ) -> Dict[str, Any]:
+        """
+        Analyze material image using Qwen Vision to extract properties, quality, and confidence.
+
+        This is the FULL analysis method (not just classification).
+        Returns quality_score, confidence_score, and material_properties.
+
+        Args:
+            image_base64: Base64 encoded image
+            image_path: Image path/URL (for logging)
+            image_id: Image ID (for logging)
+            document_id: Document ID (for logging)
+            embedding_service: Embedding service (unused, for compatibility)
+
+        Returns:
+            Dict with quality_score, confidence_score, material_properties
+        """
+        try:
+            import json
+            import httpx
+            import os
+
+            together_api_key = os.getenv('TOGETHER_API_KEY')
+            if not together_api_key:
+                self.logger.warning("TOGETHER_API_KEY not set, skipping analysis")
+                return {
+                    'quality_score': 0.5,
+                    'confidence_score': 0.0,
+                    'material_properties': {},
+                    'error': 'API key missing'
+                }
+
+            analysis_prompt = """Analyze this building/interior material image and extract detailed properties.
+
+Respond with JSON:
+{
+  "material_type": "tile|wood|fabric|stone|metal|flooring|wallpaper|other",
+  "color": "primary color description",
+  "finish": "matte|glossy|satin|textured|other",
+  "pattern": "solid|striped|geometric|floral|abstract|other",
+  "texture": "smooth|rough|embossed|woven|other",
+  "quality_assessment": 0.0-1.0,
+  "confidence": 0.0-1.0,
+  "notes": "brief description"
+}"""
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    'https://api.together.xyz/v1/chat/completions',
+                    headers={
+                        'Authorization': f'Bearer {together_api_key}',
+                        'Content-Type': 'application/json'
+                    },
+                    json={
+                        'model': 'Qwen/Qwen3-VL-8B-Instruct',
+                        'messages': [{
+                            'role': 'user',
+                            'content': [
+                                {'type': 'text', 'text': analysis_prompt},
+                                {'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{image_base64}'}}
+                            ]
+                        }],
+                        'max_tokens': 500,
+                        'temperature': 0.1
+                    }
+                )
+
+                if response.status_code != 200:
+                    self.logger.warning(f"Qwen API error: {response.status_code}")
+                    return {
+                        'quality_score': 0.5,
+                        'confidence_score': 0.0,
+                        'material_properties': {},
+                        'error': f'API error {response.status_code}'
+                    }
+
+                result_text = response.json()['choices'][0]['message']['content']
+                result = json.loads(result_text)
+
+                # Extract material properties
+                material_properties = {
+                    'material_type': result.get('material_type', 'unknown'),
+                    'color': result.get('color'),
+                    'finish': result.get('finish'),
+                    'pattern': result.get('pattern'),
+                    'texture': result.get('texture'),
+                    'notes': result.get('notes', '')
+                }
+
+                # Use Qwen's assessments for scores
+                quality_score = result.get('quality_assessment', 0.7)
+                confidence_score = result.get('confidence', 0.7)
+
+                return {
+                    'quality_score': quality_score,
+                    'confidence_score': confidence_score,
+                    'material_properties': material_properties,
+                    'model': 'qwen3-vl-8b'
+                }
+
+        except Exception as e:
+            self.logger.warning(f"Image analysis failed: {e}")
+            return {
+                'quality_score': 0.5,
+                'confidence_score': 0.0,
+                'material_properties': {},
+                'error': f'Error: {str(e)}'
             }
 
     async def _classify_image_material(
