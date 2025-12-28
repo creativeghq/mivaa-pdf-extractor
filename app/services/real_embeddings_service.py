@@ -386,26 +386,32 @@ class RealEmbeddingsService:
         # Fallback to OpenAI batch processing
         try:
             if not self.openai_api_key:
-                self.logger.warning("OpenAI API key not available")
+                self.logger.warning("OpenAI API key not available for fallback")
                 return [None] * len(texts)
 
+            self.logger.info(f"🔄 Falling back to OpenAI for batch of {len(texts)} texts...")
+
             # OpenAI also supports batch embeddings
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
                 response = await client.post(
                     "https://api.openai.com/v1/embeddings",
-                    headers={"Authorization": f"Bearer {self.openai_api_key}"},
+                    headers={
+                        "Authorization": f"Bearer {self.openai_api_key}",
+                        "Content-Type": "application/json"
+                    },
                     json={
                         "model": "text-embedding-3-small",
                         "input": [text[:8191] for text in texts],  # OpenAI limit per text
                         "encoding_format": "float",
-                        "dimensions": dimensions if dimensions in [512, 1536] else 1536
-                    },
-                    timeout=60.0  # Longer timeout for batch requests
+                        "dimensions": 1024  # ✅ CRITICAL FIX: Always use 1024D to match Voyage AI and DB schema
+                    }
                 )
 
                 if response.status_code == 200:
                     data = response.json()
                     embeddings = [item["embedding"] for item in data["data"]]
+
+                    self.logger.info(f"✅ OpenAI fallback successful: {len(embeddings)} embeddings generated")
 
                     # Log AI call
                     latency_ms = int((time.time() - start_time) * 1000)
@@ -436,10 +442,15 @@ class RealEmbeddingsService:
                     self.logger.info(f"✅ Generated {len(embeddings)} OpenAI embeddings in batch ({dimensions}D)")
                     return embeddings
                 else:
-                    raise Exception(f"OpenAI API error: {response.status_code}")
+                    error_text = response.text[:500]  # Limit error text
+                    raise Exception(f"OpenAI API error {response.status_code}: {error_text}")
 
+        except httpx.TimeoutException as e:
+            self.logger.error(f"❌ OpenAI batch fallback timed out after 30s: {e}")
+        except httpx.ConnectError as e:
+            self.logger.error(f"❌ OpenAI batch fallback connection failed: {e}")
         except Exception as e:
-            self.logger.error(f"Batch embedding generation failed: {e}")
+            self.logger.error(f"❌ Batch embedding generation failed: {e}")
 
             # Log failed AI call
             latency_ms = int((time.time() - start_time) * 1000)
