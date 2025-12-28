@@ -2,14 +2,14 @@
 Real Embeddings Service - Step 4 Implementation (Updated for Voyage AI)
 
 Generates 3 real embedding types using AI models:
-1. Text (1024D) - Voyage AI voyage-3.5 (primary) with OpenAI fallback
+1. Text (1024D) - Voyage AI voyage-3.5 (primary) with OpenAI fallback (both 1024D)
 2. Visual Embeddings (1152D) - Google SigLIP ViT-SO400M
 3. Multimodal Fusion (2176D) - Combined text+visual (1024D + 1152D = 2176D)
 
 Text Embedding Strategy:
 - Primary: Voyage AI voyage-3.5 (1024D default, supports 256/512/1024/2048)
 - Supports input_type parameter: "document" for indexing, "query" for search
-- Fallback: OpenAI text-embedding-3-small (1536D) if Voyage fails
+- Fallback: OpenAI text-embedding-3-small (1024D) if Voyage fails - matches DB schema vector(1024)
 
 Visual Embedding Strategy:
 - Uses Google SigLIP ViT-SO400M exclusively (1152D embeddings)
@@ -45,14 +45,14 @@ class RealEmbeddingsService:
     Generates 3 real embedding types using AI models.
 
     This service provides:
-    - Text embeddings via Voyage AI (1024D primary) with OpenAI fallback (1536D)
+    - Text embeddings via Voyage AI (1024D primary) with OpenAI fallback (1024D) - matches DB schema
     - Visual embeddings (1152D) - Google SigLIP ViT-SO400M exclusively
     - Multimodal fusion (2176D) - combined text+visual (1024D + 1152D = 2176D)
 
     Text Embedding Strategy:
     - Primary: Voyage AI voyage-3.5 (1024D default, supports 256/512/1024/2048)
     - Supports input_type: "document" for indexing, "query" for search
-    - Fallback: OpenAI text-embedding-3-small (1536D) if Voyage fails
+    - Fallback: OpenAI text-embedding-3-small (1024D) if Voyage fails - matches DB vector(1024)
 
     Visual Embedding Strategy:
     - Uses SigLIP exclusively for all visual embeddings (1152D)
@@ -150,13 +150,21 @@ class RealEmbeddingsService:
                 }
             }
             
-            # 1. Generate Text Embedding (1536D) - REAL
-            text_embedding = await self._generate_text_embedding(text_content)
+            # Auto-detect input_type based on entity_type for optimal retrieval
+            # "query" → input_type="query" (optimized for searching documents)
+            # everything else → input_type="document" (optimized for being found by queries)
+            input_type = "query" if entity_type == "query" else "document"
+
+            # 1. Generate Text Embedding (1024D) - REAL with Voyage AI optimization
+            text_embedding = await self._generate_text_embedding(
+                text=text_content,
+                input_type=input_type
+            )
             if text_embedding:
                 embeddings["embeddings"]["text_1536"] = text_embedding
-                embeddings["metadata"]["model_versions"]["text"] = "text-embedding-3-small"
+                embeddings["metadata"]["model_versions"]["text"] = "voyage-3.5" if self.voyage_enabled else "text-embedding-3-small"
                 embeddings["metadata"]["confidence_scores"]["text"] = 0.95
-                self.logger.info("✅ Text embedding generated (1536D)")
+                self.logger.info(f"✅ Text embedding generated (1024D, input_type={input_type})")
             
             # 2. Visual Embedding (1152D) - REAL (SigLIP exclusive)
             pil_image_for_reuse = None  # Track PIL image for reuse
@@ -284,11 +292,12 @@ class RealEmbeddingsService:
                     request_data = {
                         "model": "voyage-3.5",
                         "input": texts,  # Voyage AI accepts list of texts
-                        "input_type": input_type,
                         "truncation": truncation
                     }
 
-                    # Add optional parameters
+                    # Add optional parameters (only if not None/default)
+                    if input_type is not None:
+                        request_data["input_type"] = input_type
                     if voyage_dimensions != 1024:
                         request_data["output_dimension"] = voyage_dimensions
                     if output_dtype != "float":
@@ -338,7 +347,10 @@ class RealEmbeddingsService:
                         self.logger.info(f"✅ Generated {len(embeddings)} Voyage AI embeddings in batch ({voyage_dimensions}D, {input_type})")
                         return embeddings
                     else:
-                        raise Exception(f"Voyage AI API error: {response.status_code}")
+                        error_body = response.text
+                        self.logger.error(f"Voyage AI batch API error {response.status_code}: {error_body}")
+                        self.logger.error(f"Request data: {request_data}")
+                        raise Exception(f"Voyage AI API error: {response.status_code} - {error_body}")
 
             except Exception as e:
                 self.logger.warning(f"Voyage AI batch failed, falling back to OpenAI: {e}")
@@ -362,7 +374,7 @@ class RealEmbeddingsService:
                         "validation": 0.0,
                         "batch_size": len(texts)  # ✅ FIXED: Move batch_size to confidence_breakdown
                     },
-                    action="retry_with_openai",  # ✅ FIXED: Changed from fallback_to_openai to retry_with_openai
+                    action="fallback_to_rules",  # ✅ FIXED: Use valid DB constraint value
                     fallback_reason=f"Voyage AI batch error: {str(e)}",
                     error_message=str(e)
                 )
@@ -446,7 +458,7 @@ class RealEmbeddingsService:
                     "validation": 0.0,
                     "batch_size": len(texts)  # ✅ FIXED: Move batch_size to confidence_breakdown
                 },
-                action="retry_individual",  # ✅ FIXED: Changed from fallback_to_individual to retry_individual
+                action="fallback_to_rules",  # ✅ FIXED: Use valid DB constraint value
                 fallback_reason=f"Batch API error: {str(e)}",
                 error_message=str(e)
             )
@@ -458,7 +470,7 @@ class RealEmbeddingsService:
         text: str,
         job_id: Optional[str] = None,
         dimensions: int = 1024,
-        input_type: str = "document",
+        input_type: Optional[str] = None,
         truncation: bool = True,
         output_dtype: str = "float"
     ) -> Optional[List[float]]:
@@ -468,7 +480,7 @@ class RealEmbeddingsService:
             text: Text to embed
             job_id: Optional job ID for logging
             dimensions: Embedding dimensions (256, 512, 1024, 2048 for Voyage; 512, 1536 for OpenAI)
-            input_type: "document" for indexing, "query" for search (Voyage AI only)
+            input_type: None (default), "document" for indexing, "query" for search (Voyage AI only)
             truncation: Whether to truncate text to fit context length (Voyage AI only, default: True)
             output_dtype: Output data type - 'float', 'int8', 'uint8', 'binary', 'ubinary' (Voyage AI only)
 
@@ -499,11 +511,12 @@ class RealEmbeddingsService:
                     request_data = {
                         "model": "voyage-3.5",
                         "input": [text],  # Voyage AI handles truncation
-                        "input_type": input_type,
                         "truncation": truncation
                     }
 
-                    # Add optional parameters
+                    # Add optional parameters (only if not None/default)
+                    if input_type is not None:
+                        request_data["input_type"] = input_type
                     if voyage_dimensions != 1024:
                         request_data["output_dimension"] = voyage_dimensions
                     if output_dtype != "float":
@@ -559,7 +572,10 @@ class RealEmbeddingsService:
                         self.logger.info(f"✅ Generated Voyage AI embedding ({voyage_dimensions}D, {input_type})")
                         return embedding
                     else:
-                        raise Exception(f"Voyage AI API error: {response.status_code}")
+                        error_body = response.text
+                        self.logger.error(f"Voyage AI API error {response.status_code}: {error_body}")
+                        self.logger.error(f"Request data: {request_data}")
+                        raise Exception(f"Voyage AI API error: {response.status_code} - {error_body}")
 
             except Exception as e:
                 self.logger.warning(f"Voyage AI failed, falling back to OpenAI: {e}")
@@ -581,7 +597,7 @@ class RealEmbeddingsService:
                         "consistency": 0.0,
                         "validation": 0.0
                     },
-                    action="retry_with_openai",  # ✅ FIXED: Changed from fallback_to_openai to retry_with_openai
+                    action="fallback_to_rules",  # ✅ FIXED: Use valid DB constraint value
                     job_id=job_id,
                     fallback_reason=f"Voyage AI error: {str(e)}",
                     error_message=str(e)
@@ -597,8 +613,10 @@ class RealEmbeddingsService:
                 self.logger.warning("OpenAI API key not available")
                 return None
 
-            # Use 1536 for OpenAI if dimension was 1024 (Voyage default)
-            openai_dimensions = 1536 if dimensions == 1024 else dimensions
+            # ✅ CRITICAL FIX: Keep same dimensions for OpenAI to match DB schema
+            # Database expects vector(1024), so OpenAI must also generate 1024D
+            # OpenAI text-embedding-3-small supports custom dimensions via 'dimensions' parameter
+            openai_dimensions = dimensions  # Use requested dimensions (1024D for chunks)
 
             # Check cache first
             model_name = f"text-embedding-3-small-{openai_dimensions}d"
