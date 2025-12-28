@@ -60,10 +60,10 @@ class RelevancyService:
         logger.info(f"🔗 Creating chunk-image relationships for document {document_id}...")
         
         # Get all chunks with embeddings
-        chunks_result = self.supabase_client.client.table('chunks')\
-            .select('id, embedding')\
+        chunks_result = self.supabase_client.client.table('document_chunks')\
+            .select('id, text_embedding')\
             .eq('document_id', document_id)\
-            .not_.is_('embedding', 'null')\
+            .not_.is_('text_embedding', 'null')\
             .execute()
         
         chunks = chunks_result.data if chunks_result.data else []

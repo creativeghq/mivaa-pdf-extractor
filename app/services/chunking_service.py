@@ -78,8 +78,8 @@ class ChunkingService:
                         'page_number': chunk_data.get('page_number', 1)
                     }
                 }
-                
-                result = self.supabase_client.client.table('chunks').insert(chunk_record).execute()
+
+                result = self.supabase_client.client.table('document_chunks').insert(chunk_record).execute()
                 
                 if result.data and len(result.data) > 0:
                     chunk_id = result.data[0]['id']
@@ -99,9 +99,9 @@ class ChunkingService:
                         text_embedding = embeddings.get('text_512')
                         
                         if text_embedding:
-                            # Save text embedding to chunks table
-                            self.supabase_client.client.table('chunks')\
-                                .update({'embedding': text_embedding})\
+                            # Save text embedding to document_chunks table
+                            self.supabase_client.client.table('document_chunks')\
+                                .update({'text_embedding': text_embedding})\
                                 .eq('id', chunk_id)\
                                 .execute()
                             

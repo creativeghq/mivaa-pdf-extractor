@@ -50,7 +50,7 @@ async def get_rag_statistics():
         total_documents = docs_response.count if docs_response.count else 0
         
         # Get chunk count
-        chunks_response = supabase.client.table('chunks').select('id', count='exact').execute()
+        chunks_response = supabase.client.table('document_chunks').select('id', count='exact').execute()
         total_chunks = chunks_response.count if chunks_response.count else 0
         
         # Get embedding count
@@ -87,14 +87,14 @@ async def get_workspace_statistics(
         total_documents = docs_response.count if docs_response.count else 0
         
         # Get chunk count
-        chunks_response = supabase.client.table('chunks')\
+        chunks_response = supabase.client.table('document_chunks')\
             .select('id', count='exact')\
             .eq('workspace_id', workspace_id)\
             .execute()
         total_chunks = chunks_response.count if chunks_response.count else 0
         
         # Get image count
-        images_response = supabase.client.table('images')\
+        images_response = supabase.client.table('document_images')\
             .select('id', count='exact')\
             .eq('workspace_id', workspace_id)\
             .execute()

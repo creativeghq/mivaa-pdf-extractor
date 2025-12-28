@@ -272,7 +272,7 @@ class RAGService:
                             chunk_record['metadata']['catalog_factory'] = catalog.catalog_factory
 
                         # Insert chunk into database
-                        result = self.supabase_client.client.table('chunks').insert(chunk_record).execute()
+                        result = self.supabase_client.client.table('document_chunks').insert(chunk_record).execute()
 
                         if result.data and len(result.data) > 0:
                             chunk_id = result.data[0]['id']
@@ -299,7 +299,7 @@ class RAGService:
                         # Use batch embedding generation (Voyage AI or OpenAI)
                         embedding_vectors = await self.embeddings_service.generate_batch_embeddings(
                             texts=batch_texts,
-                            dimensions=1024,  # Voyage AI default
+                            dimensions=1536,  # Chunks use 1536D embeddings
                             input_type="document"
                         )
 
@@ -314,7 +314,7 @@ class RAGService:
                                 if embedding:
                                     updates.append({
                                         'id': chunk_id,
-                                        'text_embedding_1024': embedding
+                                        'text_embedding': embedding
                                     })
                                     embeddings_stored += 1
                                 else:
@@ -323,7 +323,7 @@ class RAGService:
                             # Perform batch upsert (single database call)
                             if updates:
                                 try:
-                                    self.supabase_client.client.table('chunks').upsert(updates).execute()
+                                    self.supabase_client.client.table('document_chunks').upsert(updates).execute()
                                     self.logger.info(f"   ✅ Stored {embeddings_stored}/{len(batch_chunk_ids)} embeddings for batch {batch_num}/{total_batches} (batch upsert)")
                                 except Exception as batch_update_error:
                                     self.logger.error(f"   ❌ Batch upsert failed: {batch_update_error}")
@@ -332,8 +332,8 @@ class RAGService:
                                     embeddings_stored = 0
                                     for update in updates:
                                         try:
-                                            self.supabase_client.client.table('chunks')\
-                                                .update({'text_embedding_1024': update['text_embedding_1024']})\
+                                            self.supabase_client.client.table('document_chunks')\
+                                                .update({'text_embedding': update['text_embedding']})\
                                                 .eq('id', update['id'])\
                                                 .execute()
                                             embeddings_stored += 1
@@ -349,10 +349,10 @@ class RAGService:
                         embeddings_stored = 0
                         for chunk_id, text in zip(batch_chunk_ids, batch_texts):
                             try:
-                                embedding = await self.embeddings_service.generate_embedding(text, dimensions=1024)
+                                embedding = await self.embeddings_service.generate_embedding(text, dimensions=1536)
                                 if embedding:
-                                    self.supabase_client.client.table('chunks')\
-                                        .update({'text_embedding_1024': embedding})\
+                                    self.supabase_client.client.table('document_chunks')\
+                                        .update({'text_embedding': embedding})\
                                         .eq('id', chunk_id)\
                                         .execute()
                                     embeddings_stored += 1
