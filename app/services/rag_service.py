@@ -5,7 +5,7 @@ This service provides multi-vector search capabilities using direct vector datab
 
 Search Strategy:
 - Multi-Vector Search: Combines 6 specialized CLIP embeddings in parallel
-  1. text_embedding_1536 (20%) - Semantic text understanding
+  1. text_embedding (1024D, 20%) - Semantic text understanding (Voyage AI)
   2. visual_clip_embedding_512 (20%) - General visual similarity
   3. color_clip_embedding_512 (15%) - Color palette matching
   4. texture_clip_embedding_512 (15%) - Texture pattern matching
@@ -299,7 +299,7 @@ class RAGService:
                         # Use batch embedding generation (Voyage AI or OpenAI)
                         embedding_vectors = await self.embeddings_service.generate_batch_embeddings(
                             texts=batch_texts,
-                            dimensions=1536,  # Chunks use 1536D embeddings
+                            dimensions=1024,  # ✅ FIXED: Chunks use 1024D embeddings (matches DB schema: vector(1024))
                             input_type="document"
                         )
 
@@ -349,7 +349,7 @@ class RAGService:
                         embeddings_stored = 0
                         for chunk_id, text in zip(batch_chunk_ids, batch_texts):
                             try:
-                                embedding = await self.embeddings_service.generate_embedding(text, dimensions=1536)
+                                embedding = await self.embeddings_service.generate_embedding(text, dimensions=1024)  # ✅ FIXED: Use 1024D (matches DB schema)
                                 if embedding:
                                     self.supabase_client.client.table('document_chunks')\
                                         .update({'text_embedding': embedding})\
@@ -413,11 +413,11 @@ class RAGService:
            - material_clip_embedding_512 (material type matching)
 
         2. **Text Embeddings** (document_chunks) - Semantic text search
-           - Searches chunk text_embedding (1536D OpenAI/Voyage)
+           - Searches chunk text_embedding (1024D Voyage AI, stored as vector(1024))
            - Maps chunks to products via chunk_product_relationships
 
         3. **Direct Product Search** - Product-level embeddings
-           - Searches product text_embedding_1024 (if available)
+           - Searches product text_embedding_1024 (1024D, stored as vector(1024))
            - Direct metadata matching
 
         4. **Keyword Matching** - Traditional text search
@@ -1841,7 +1841,7 @@ Respond with JSON:
         Uses SQL function: search_chunks_by_embedding(vector, UUID, INT)
 
         Args:
-            query_embedding: Query embedding vector (1536D)
+            query_embedding: Query embedding vector (1024D, matches DB schema vector(1024))
             workspace_id: Workspace ID to filter
             limit: Maximum results to return
 

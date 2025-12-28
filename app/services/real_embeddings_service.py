@@ -274,6 +274,11 @@ class RealEmbeddingsService:
         voyage_enabled = getattr(self.config, 'voyage_enabled', True) if self.config else True
         if self.voyage_api_key and voyage_enabled:
             try:
+                # ✅ CRITICAL FIX: Map 1536D (OpenAI default) to 1024D (Voyage AI max)
+                # Voyage AI supports: 256, 512, 1024, 2048
+                # OpenAI supports: 512, 1536
+                voyage_dimensions = 1024 if dimensions == 1536 else dimensions
+
                 # Call Voyage AI batch API
                 async with httpx.AsyncClient() as client:
                     request_data = {
@@ -284,8 +289,8 @@ class RealEmbeddingsService:
                     }
 
                     # Add optional parameters
-                    if dimensions != 1024:
-                        request_data["output_dimension"] = dimensions
+                    if voyage_dimensions != 1024:
+                        request_data["output_dimension"] = voyage_dimensions
                     if output_dtype != "float":
                         request_data["output_dtype"] = output_dtype
 
@@ -314,7 +319,7 @@ class RealEmbeddingsService:
 
                         await self.ai_logger.log_ai_call(
                             task="batch_text_embedding_generation",
-                            model=f"voyage-3.5-{dimensions}d",
+                            model=f"voyage-3.5-{voyage_dimensions}d",
                             input_tokens=input_tokens,
                             output_tokens=0,
                             cost=cost,
@@ -324,13 +329,13 @@ class RealEmbeddingsService:
                                 "model_confidence": 0.98,
                                 "completeness": 1.0,
                                 "consistency": 0.95,
-                                "validation": 0.90
+                                "validation": 0.90,
+                                "batch_size": len(texts)  # ✅ FIXED: Move batch_size to confidence_breakdown
                             },
-                            action="use_ai_result",
-                            metadata={"batch_size": len(texts)}
+                            action="use_ai_result"
                         )
 
-                        self.logger.info(f"✅ Generated {len(embeddings)} Voyage AI embeddings in batch ({dimensions}D, {input_type})")
+                        self.logger.info(f"✅ Generated {len(embeddings)} Voyage AI embeddings in batch ({voyage_dimensions}D, {input_type})")
                         return embeddings
                     else:
                         raise Exception(f"Voyage AI API error: {response.status_code}")
@@ -340,9 +345,11 @@ class RealEmbeddingsService:
 
                 # Log failed Voyage call
                 latency_ms = int((time.time() - start_time) * 1000)
+                # Use voyage_dimensions for logging (may be different from requested dimensions)
+                voyage_dimensions = 1024 if dimensions == 1536 else dimensions
                 await self.ai_logger.log_ai_call(
                     task="batch_text_embedding_generation",
-                    model=f"voyage-3.5-{dimensions}d",
+                    model=f"voyage-3.5-{voyage_dimensions}d",
                     input_tokens=0,
                     output_tokens=0,
                     cost=0.0,
@@ -352,12 +359,12 @@ class RealEmbeddingsService:
                         "model_confidence": 0.0,
                         "completeness": 0.0,
                         "consistency": 0.0,
-                        "validation": 0.0
+                        "validation": 0.0,
+                        "batch_size": len(texts)  # ✅ FIXED: Move batch_size to confidence_breakdown
                     },
-                    action="fallback_to_openai",
+                    action="retry_with_openai",  # ✅ FIXED: Changed from fallback_to_openai to retry_with_openai
                     fallback_reason=f"Voyage AI batch error: {str(e)}",
-                    error_message=str(e),
-                    metadata={"batch_size": len(texts)}
+                    error_message=str(e)
                 )
 
                 # If fallback disabled, raise the error
@@ -436,12 +443,12 @@ class RealEmbeddingsService:
                     "model_confidence": 0.0,
                     "completeness": 0.0,
                     "consistency": 0.0,
-                    "validation": 0.0
+                    "validation": 0.0,
+                    "batch_size": len(texts)  # ✅ FIXED: Move batch_size to confidence_breakdown
                 },
-                action="fallback_to_individual",
+                action="retry_individual",  # ✅ FIXED: Changed from fallback_to_individual to retry_individual
                 fallback_reason=f"Batch API error: {str(e)}",
-                error_message=str(e),
-                metadata={"batch_size": len(texts)}
+                error_message=str(e)
             )
 
             return [None] * len(texts)
@@ -476,12 +483,15 @@ class RealEmbeddingsService:
         self.logger.info(f"🔍 Voyage AI check: api_key={'SET' if self.voyage_api_key else 'NOT SET'}, config={'SET' if self.config else 'NOT SET'}, voyage_enabled={voyage_enabled}")
         if self.voyage_api_key and voyage_enabled:
             try:
+                # ✅ CRITICAL FIX: Map 1536D (OpenAI default) to 1024D (Voyage AI max)
+                voyage_dimensions = 1024 if dimensions == 1536 else dimensions
+
                 # Check cache first
-                model_name = f"voyage-3.5-{dimensions}d-{input_type}"
+                model_name = f"voyage-3.5-{voyage_dimensions}d-{input_type}"
                 if self._embedding_cache:
                     cached_embedding = await self._embedding_cache.get(text, model_name)
                     if cached_embedding is not None:
-                        self.logger.debug(f"✅ Cache hit for Voyage embedding ({dimensions}D, {input_type})")
+                        self.logger.debug(f"✅ Cache hit for Voyage embedding ({voyage_dimensions}D, {input_type})")
                         return cached_embedding.tolist()
 
                 # Call Voyage AI API
@@ -494,8 +504,8 @@ class RealEmbeddingsService:
                     }
 
                     # Add optional parameters
-                    if dimensions != 1024:
-                        request_data["output_dimension"] = dimensions
+                    if voyage_dimensions != 1024:
+                        request_data["output_dimension"] = voyage_dimensions
                     if output_dtype != "float":
                         request_data["output_dtype"] = output_dtype
 
@@ -530,7 +540,7 @@ class RealEmbeddingsService:
 
                         await self.ai_logger.log_ai_call(
                             task="text_embedding_generation",
-                            model=f"voyage-3.5-{dimensions}d",
+                            model=f"voyage-3.5-{voyage_dimensions}d",
                             input_tokens=input_tokens,
                             output_tokens=0,
                             cost=cost,
@@ -546,7 +556,7 @@ class RealEmbeddingsService:
                             job_id=job_id,
                         )
 
-                        self.logger.info(f"✅ Generated Voyage AI embedding ({dimensions}D, {input_type})")
+                        self.logger.info(f"✅ Generated Voyage AI embedding ({voyage_dimensions}D, {input_type})")
                         return embedding
                     else:
                         raise Exception(f"Voyage AI API error: {response.status_code}")
@@ -556,9 +566,10 @@ class RealEmbeddingsService:
 
                 # Log failed Voyage call
                 latency_ms = int((time.time() - start_time) * 1000)
+                voyage_dimensions = 1024 if dimensions == 1536 else dimensions
                 await self.ai_logger.log_ai_call(
                     task="text_embedding_generation",
-                    model=f"voyage-3.5-{dimensions}d",
+                    model=f"voyage-3.5-{voyage_dimensions}d",
                     input_tokens=0,
                     output_tokens=0,
                     cost=0.0,
@@ -570,7 +581,7 @@ class RealEmbeddingsService:
                         "consistency": 0.0,
                         "validation": 0.0
                     },
-                    action="fallback_to_openai",
+                    action="retry_with_openai",  # ✅ FIXED: Changed from fallback_to_openai to retry_with_openai
                     job_id=job_id,
                     fallback_reason=f"Voyage AI error: {str(e)}",
                     error_message=str(e)
