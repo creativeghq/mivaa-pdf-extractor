@@ -169,8 +169,8 @@ async def generate_clip_image_embedding(
     try:
         logger.info(f"Generating SigLIP2 image embedding with model: {request.model}")
 
-        # Generate visual embedding
-        embedding = await embedding_service._generate_visual_embedding(
+        # Generate visual embedding (returns tuple: embedding, model_name, pil_image)
+        embedding, model_used, _ = await embedding_service._generate_visual_embedding(
             image_url=None,
             image_data=request.image_data
         )
@@ -185,7 +185,7 @@ async def generate_clip_image_embedding(
             success=True,
             embedding=embedding,
             dimensions=len(embedding),
-            model="siglip2-so400m-patch14-384"
+            model=model_used
         )
 
     except HTTPException:
