@@ -831,10 +831,13 @@ class RealEmbeddingsService:
                     # Fall through to local processing
 
             # LOCAL MODE: Use local SigLIP model
-            # Check if SigLIP model is loaded
+            # Check if SigLIP model is loaded, load if needed
             if self._siglip_model is None or self._siglip_processor is None:
-                self.logger.warning("⚠️ SigLIP model not loaded, skipping")
-                return None, None
+                self.logger.info("🔄 SigLIP model not loaded, loading now...")
+                loaded = await self.ensure_models_loaded()
+                if not loaded:
+                    self.logger.error("❌ Failed to load SigLIP model")
+                    return None, None
 
             # Use pre-decoded PIL image if provided, otherwise decode
             image_was_provided = pil_image is not None
@@ -1012,10 +1015,13 @@ class RealEmbeddingsService:
             # Text-guided embeddings require full model access (not available via HF Inference API)
             # Remote mode only supports basic visual embeddings
 
-            # Check if SigLIP model is loaded
+            # Check if SigLIP model is loaded, load if needed
             if self._siglip_model is None or self._siglip_processor is None:
-                self.logger.warning("⚠️ SigLIP model not loaded for specialized embeddings, skipping")
-                return None, None
+                self.logger.info("🔄 SigLIP model not loaded for specialized embeddings, loading now...")
+                loaded = await self.ensure_models_loaded()
+                if not loaded:
+                    self.logger.error("❌ Failed to load SigLIP model for specialized embeddings")
+                    return None, None
 
             # Use pre-decoded PIL image if provided, otherwise decode
             image_was_provided = pil_image is not None
