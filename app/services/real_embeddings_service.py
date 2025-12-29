@@ -79,6 +79,7 @@ class RealEmbeddingsService:
         self._models_loaded = False
         self._siglip_model = None
         self._siglip_processor = None
+        self._device = None  # Will be set when models are loaded
 
         # Load visual embedding model configuration from settings
         from app.config import settings
@@ -86,6 +87,21 @@ class RealEmbeddingsService:
         self.visual_fallback_model = settings.visual_embedding_fallback_model
         self.visual_dimensions = settings.visual_embedding_dimensions
         self.visual_enabled = settings.visual_embedding_enabled
+
+        # Visual embedding mode: "local" or "remote"
+        self.visual_embedding_mode = settings.visual_embedding_mode
+
+        # Hugging Face remote embeddings service
+        self._hf_service = None
+        if self.visual_embedding_mode == "remote" and settings.huggingface_api_key:
+            from app.services.huggingface_visual_embeddings import HuggingFaceVisualEmbeddingsService
+            self._hf_service = HuggingFaceVisualEmbeddingsService(
+                api_key=settings.huggingface_api_key,
+                config=config
+            )
+            self.logger.info(f"🤗 Visual embedding mode: REMOTE (Hugging Face API)")
+        else:
+            self.logger.info(f"💻 Visual embedding mode: LOCAL (SigLIP on-device)")
 
         # Voyage AI configuration
         self.voyage_api_key = settings.voyage_api_key
@@ -277,6 +293,14 @@ class RealEmbeddingsService:
 
         start_time = time.time()
 
+        # ✅ FIX: Replace empty/whitespace strings with placeholder to prevent API errors
+        processed_texts = []
+        for text in texts:
+            if not text or not text.strip():
+                processed_texts.append("no text content")
+            else:
+                processed_texts.append(text)
+
         # Try Voyage AI first if enabled and API key available
         # ✅ CRITICAL FIX: Default to True if config is None (don't skip Voyage AI!)
         voyage_enabled = getattr(self.config, 'voyage_enabled', True) if self.config else True
@@ -291,7 +315,7 @@ class RealEmbeddingsService:
                 async with httpx.AsyncClient() as client:
                     request_data = {
                         "model": "voyage-3.5",
-                        "input": texts,  # Voyage AI accepts list of texts
+                        "input": processed_texts,  # Use processed texts (no empty strings)
                         "truncation": truncation
                     }
 
@@ -499,6 +523,12 @@ class RealEmbeddingsService:
             List of floats representing the embedding, or None if failed
         """
         start_time = time.time()
+
+        # ✅ VALIDATION: Use placeholder for empty or whitespace-only text
+        # This prevents Voyage AI API errors with empty strings
+        if not text or not text.strip():
+            self.logger.debug("⏭️  Using placeholder text for empty/whitespace input")
+            text = "no text content"  # Use placeholder instead of returning None
 
         # Try Voyage AI first if enabled and API key available
         # ✅ CRITICAL FIX: Default to True if config is None (don't skip Voyage AI!)
@@ -783,6 +813,24 @@ class RealEmbeddingsService:
             import numpy as np
             import asyncio
 
+            # ✅ DUAL MODE: Use remote Hugging Face API if configured
+            if self.visual_embedding_mode == "remote" and self._hf_service:
+                self.logger.debug("🤗 Using Hugging Face remote embeddings")
+                embedding, pil_img = await self._hf_service.generate_embedding(
+                    image_data=image_data,
+                    pil_image=pil_image,
+                    job_id=job_id
+                )
+
+                if embedding is not None:
+                    latency_ms = int((time.time() - start_time) * 1000)
+                    self.logger.info(f"✅ Remote visual embedding generated (latency={latency_ms}ms)")
+                    return embedding, pil_img
+                else:
+                    self.logger.warning("⚠️ Remote embedding failed, falling back to local")
+                    # Fall through to local processing
+
+            # LOCAL MODE: Use local SigLIP model
             # Check if SigLIP model is loaded
             if self._siglip_model is None or self._siglip_processor is None:
                 self.logger.warning("⚠️ SigLIP model not loaded, skipping")
@@ -839,11 +887,17 @@ class RealEmbeddingsService:
             elif pil_image.mode != 'RGB':
                 pil_image = pil_image.convert('RGB')
 
-            # Generate embedding using SigLIP model WITH TIMEOUT
+            # Generate embedding using SigLIP model WITH TIMEOUT and GPU support
             try:
                 def _generate_embedding():
                     with torch.no_grad():
                         inputs = self._siglip_processor(images=pil_image, return_tensors="pt")
+
+                        # Move inputs to GPU if available
+                        if self._device and self._device.type == "cuda":
+                            inputs = {k: v.to(self._device) if isinstance(v, torch.Tensor) else v
+                                     for k, v in inputs.items()}
+
                         # Get image features from vision model
                         image_features = self._siglip_model.get_image_features(**inputs)
 
@@ -869,7 +923,7 @@ class RealEmbeddingsService:
                 latency_ms = int((time.time() - start_time) * 1000)
                 await self.ai_logger.log_ai_call(
                     task="visual_embedding_generation",
-                    model="google/siglip-so400m-patch14-384",
+                    model=self.visual_primary_model,  # Use configured model (SigLIP2)
                     input_tokens=0,  # Visual models don't use tokens
                     output_tokens=0,
                     cost=0.0,  # Free model
@@ -924,7 +978,7 @@ class RealEmbeddingsService:
         pil_image = None  # NEW: Accept pre-decoded PIL image
     ) -> tuple[Optional[Dict[str, List[float]]], Optional[any]]:
         """
-        Generate text-guided specialized visual embeddings using SigLIP.
+        Generate text-guided specialized visual embeddings using SigLIP2.
 
         This creates 4 unique text-guided embeddings (1152D each) for different search types:
         - Color: "focus on color palette and color relationships"
@@ -932,7 +986,7 @@ class RealEmbeddingsService:
         - Material: "focus on material type and physical properties"
         - Style: "focus on design style and aesthetic elements"
 
-        Uses SigLIP's text-image matching to create embeddings that emphasize different aspects.
+        Uses SigLIP2's text-image matching to create embeddings that emphasize different aspects.
         Each embedding is unique and optimized for its specific search type.
 
         NOTE: Models should be pre-loaded using ensure_models_loaded() before calling this.
@@ -953,6 +1007,10 @@ class RealEmbeddingsService:
             import numpy as np
             import asyncio
             import httpx
+
+            # ⚠️ NOTE: Specialized embeddings always use LOCAL mode
+            # Text-guided embeddings require full model access (not available via HF Inference API)
+            # Remote mode only supports basic visual embeddings
 
             # Check if SigLIP model is loaded
             if self._siglip_model is None or self._siglip_processor is None:
@@ -1012,7 +1070,7 @@ class RealEmbeddingsService:
 
             try:
                 def _generate_text_guided_embedding(text_prompt: str):
-                    """Generate text-guided SigLIP embedding using full model forward pass"""
+                    """Generate text-guided SigLIP2 embedding using full model forward pass"""
                     with torch.no_grad():
                         # Process image with text prompt for text-guided embedding
                         inputs = self._siglip_processor(
@@ -1021,6 +1079,11 @@ class RealEmbeddingsService:
                             return_tensors="pt",
                             padding=True
                         )
+
+                        # Move inputs to GPU if available
+                        if self._device and self._device.type == "cuda":
+                            inputs = {k: v.to(self._device) if isinstance(v, torch.Tensor) else v
+                                     for k, v in inputs.items()}
 
                         # Use full model forward pass (accepts both text and image)
                         # This computes text-image similarity and returns image embeddings
@@ -1106,7 +1169,7 @@ class RealEmbeddingsService:
 
     async def ensure_models_loaded(self):
         """
-        Ensure CLIP/SigLIP models are loaded into memory.
+        Ensure CLIP/SigLIP models are loaded into memory with GPU support.
 
         This should be called ONCE before batch processing to avoid
         loading models multiple times per batch (which causes OOM).
@@ -1120,9 +1183,18 @@ class RealEmbeddingsService:
 
         try:
             from transformers import AutoModel, AutoProcessor
+            import torch
             import asyncio
 
             self.logger.info("🔄 Loading visual embedding model for batch processing...")
+
+            # Detect device (GPU if available, otherwise CPU)
+            if torch.cuda.is_available():
+                self._device = torch.device("cuda")
+                self.logger.info(f"   🚀 GPU detected: {torch.cuda.get_device_name(0)}")
+            else:
+                self._device = torch.device("cpu")
+                self.logger.warning("   ⚠️ No GPU detected - using CPU (will be slower)")
 
             # Load visual embedding model (configurable - default SigLIP)
             try:
@@ -1135,8 +1207,12 @@ class RealEmbeddingsService:
                     asyncio.to_thread(AutoProcessor.from_pretrained, self.visual_primary_model),
                     timeout=60.0
                 )
+
+                # Move model to GPU if available
+                self._siglip_model = self._siglip_model.to(self._device)
                 self._siglip_model.eval()  # Set to evaluation mode
-                self.logger.info(f"   ✅ Visual embedding model loaded: {self.visual_primary_model}")
+
+                self.logger.info(f"   ✅ Visual embedding model loaded on {self._device}: {self.visual_primary_model}")
             except asyncio.TimeoutError:
                 self.logger.error(f"   ❌ Visual embedding model loading timed out after 60s: {self.visual_primary_model}")
                 return False
@@ -1145,7 +1221,7 @@ class RealEmbeddingsService:
                 return False
 
             self._models_loaded = True
-            self.logger.info(f"✅ Visual embedding model loaded successfully: {self.visual_primary_model} ({self.visual_dimensions}D)")
+            self.logger.info(f"✅ Visual embedding model loaded successfully: {self.visual_primary_model} ({self.visual_dimensions}D) on {self._device}")
             return True
 
         except Exception as e:

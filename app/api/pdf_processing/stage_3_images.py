@@ -483,6 +483,25 @@ async def process_stage_3_images(
             images_saved_count += 1
             logger.info(f"   ✅ [{image_index}/{total_images}] Saved to DB: {image_id}")
 
+            # ✅ Extract OCR text if available (from Stage 3 OCR processing)
+            # OCR data is added to img_data during image extraction if multimodal is enabled
+            ocr_text = ""
+            if 'ocr_result' in img_data and img_data['ocr_result']:
+                ocr_data = img_data['ocr_result']
+                if isinstance(ocr_data, dict):
+                    ocr_text = ocr_data.get('text', '').strip()
+                elif isinstance(ocr_data, str):
+                    ocr_text = ocr_data.strip()
+
+                if ocr_text:
+                    logger.debug(f"   📝 [{image_index}/{total_images}] Using OCR text: {len(ocr_text)} chars")
+
+            # Fallback: Use filename if no OCR text (better than empty string)
+            if not ocr_text:
+                ocr_text = img_data.get('filename', '').strip()
+                if ocr_text:
+                    logger.debug(f"   📄 [{image_index}/{total_images}] Using filename as text: {ocr_text}")
+
             # STEP 2: Generate CLIP embeddings - REUSE downloaded base64
             logger.info(f"   🎨 [{image_index}/{total_images}] Generating CLIP embeddings (reusing downloaded image)...")
             try:
@@ -491,7 +510,7 @@ async def process_stage_3_images(
                     embedding_service.generate_all_embeddings(
                         entity_id=image_id,
                         entity_type="image",
-                        text_content="",
+                        text_content=ocr_text,  # ✅ Use OCR text or filename (not empty!)
                         image_url=None,  # Don't download again
                         image_data=image_base64,  # ✅ Reuse downloaded base64
                         material_properties={}
@@ -754,6 +773,34 @@ async def process_stage_3_images(
             }
         }
     )
+    logger.info(f"✅ Created IMAGES_EXTRACTED checkpoint for job {job_id}")
+
+    # ✅ FIX: Create IMAGE_EMBEDDINGS_GENERATED checkpoint
+    # This checkpoint tracks CLIP/SigLIP embedding generation for images
+    total_embeddings = clip_embeddings_generated + specialized_embeddings_generated
+    expected_embeddings = images_saved_count * 5  # 5 types per image
+    await checkpoint_recovery_service.create_checkpoint(
+        job_id=job_id,
+        stage=CheckpointStage.IMAGE_EMBEDDINGS_GENERATED,
+        data={
+            "document_id": document_id,
+            "image_ids": [img.get('id') for img in material_images if img.get('id')],
+            "clip_embeddings_generated": clip_embeddings_generated,
+            "specialized_embeddings_generated": specialized_embeddings_generated,
+            "total_embeddings": total_embeddings,
+            "images_processed": images_saved_count
+        },
+        metadata={
+            "embedding_models": {
+                "visual_clip": "openai/clip-vit-base-patch32",
+                "specialized_siglip": "google/siglip-so400m-patch14-384"
+            },
+            "embedding_types": ["visual_clip_512", "color_siglip_1152", "texture_siglip_1152", "style_siglip_1152", "material_siglip_1152"],
+            "expected_embeddings": expected_embeddings,
+            "completion_rate": total_embeddings / expected_embeddings if expected_embeddings > 0 else 0
+        }
+    )
+    logger.info(f"✅ Created IMAGE_EMBEDDINGS_GENERATED checkpoint for job {job_id} ({total_embeddings} embeddings)")
 
     # Force garbage collection
     gc.collect()

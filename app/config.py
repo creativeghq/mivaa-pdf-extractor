@@ -394,11 +394,11 @@ class Settings(BaseSettings):
         description="Claude model for RAG question answering"
     )
 
-    # Visual Embedding Models (SigLIP primary, CLIP fallback) - NOW CONFIGURABLE
+    # Visual Embedding Models (SigLIP2 primary, CLIP fallback) - NOW CONFIGURABLE
     visual_embedding_primary_model: str = Field(
-        default="google/siglip-so400m-patch14-384",
+        default="google/siglip2-so400m-patch14-384",
         env="VISUAL_EMBEDDING_PRIMARY_MODEL",
-        description="Primary visual embedding model (SigLIP)"
+        description="Primary visual embedding model (SigLIP2)"
     )
     visual_embedding_fallback_model: str = Field(
         default="openai/clip-vit-base-patch32",
@@ -414,6 +414,45 @@ class Settings(BaseSettings):
         default=True,
         env="VISUAL_EMBEDDING_ENABLED",
         description="Enable visual embedding generation"
+    )
+
+    # Visual Embedding Mode: "local" or "remote"
+    visual_embedding_mode: str = Field(
+        default="local",
+        env="VISUAL_EMBEDDING_MODE",
+        description="Visual embedding mode: 'local' (run SigLIP locally) or 'remote' (use Hugging Face API)"
+    )
+
+    # Hugging Face API Settings (for remote visual embeddings)
+    huggingface_api_key: str = Field(
+        default="",
+        env="HUGGINGFACE_API_KEY",
+        description="Hugging Face API key for remote visual embeddings"
+    )
+    huggingface_api_url: str = Field(
+        default="https://api-inference.huggingface.co",
+        env="HUGGINGFACE_API_URL",
+        description="Hugging Face Inference API base URL"
+    )
+    huggingface_siglip_model: str = Field(
+        default="google/siglip2-so400m-patch14-384",
+        env="HUGGINGFACE_SIGLIP_MODEL",
+        description="SigLIP v2 model ID on Hugging Face"
+    )
+    huggingface_batch_size: int = Field(
+        default=10,
+        env="HUGGINGFACE_BATCH_SIZE",
+        description="Batch size for Hugging Face API calls (max images per request)"
+    )
+    huggingface_timeout: int = Field(
+        default=60,
+        env="HUGGINGFACE_TIMEOUT",
+        description="Timeout for Hugging Face API calls in seconds"
+    )
+    huggingface_max_retries: int = Field(
+        default=3,
+        env="HUGGINGFACE_MAX_RETRIES",
+        description="Maximum retry attempts for Hugging Face API calls"
     )
 
     # Voyage AI Settings (Text Embeddings - Primary Provider)

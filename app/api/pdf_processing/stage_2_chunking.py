@@ -207,7 +207,27 @@ async def process_stage_2_chunking(
         }
     )
     logger.info(f"✅ Created CHUNKS_CREATED checkpoint for job {job_id}")
-    
+
+    # ✅ FIX: Create TEXT_EMBEDDINGS_GENERATED checkpoint
+    # This checkpoint tracks text embedding generation for chunks
+    embeddings_generated = chunk_result.get('embeddings_generated', 0)
+    await checkpoint_recovery_service.create_checkpoint(
+        job_id=job_id,
+        stage=CheckpointStage.TEXT_EMBEDDINGS_GENERATED,
+        data={
+            "document_id": document_id,
+            "chunk_ids": chunk_result.get('chunk_ids', []),
+            "embeddings_generated": embeddings_generated,
+            "chunks_created": tracker.chunks_created
+        },
+        metadata={
+            "embedding_model": "voyage-3.5",
+            "embedding_dimensions": 1024,
+            "embedding_completion_rate": embeddings_generated / tracker.chunks_created if tracker.chunks_created > 0 else 0
+        }
+    )
+    logger.info(f"✅ Created TEXT_EMBEDDINGS_GENERATED checkpoint for job {job_id} ({embeddings_generated} embeddings)")
+
     # Force garbage collection after chunking to free memory
     import gc
     gc.collect()

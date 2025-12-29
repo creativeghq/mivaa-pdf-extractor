@@ -195,14 +195,14 @@ class AIPricingConfig:
 
     # Visual Embedding Models (Free - Open Source)
     VISUAL_EMBEDDING_PRICING = {
-        "siglip-so400m": {
+        "siglip2-so400m": {
             "input": Decimal("0.00"),
             "output": Decimal("0.00"),
-            "last_verified": "2025-12-26",
+            "last_verified": "2025-12-29",
             "source": "HuggingFace Transformers (open source)",
-            "full_name": "google/siglip-so400m-patch14-384",
+            "full_name": "google/siglip2-so400m-patch14-384",
             "dimensions": 1152,
-            "note": "Primary visual embedding model - free via Transformers"
+            "note": "Primary visual embedding model (SigLIP2) - free via Transformers"
         },
         "clip-vit-base": {
             "input": Decimal("0.00"),

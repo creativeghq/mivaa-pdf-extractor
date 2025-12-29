@@ -111,9 +111,9 @@ async def generate_clip_image_embedding(
     embedding_service: RealEmbeddingsService = Depends(get_embedding_service)
 ) -> EmbeddingResponse:
     """
-    **🖼️ Visual Image Embedding - Powered by SigLIP**
+    **🖼️ Visual Image Embedding - Powered by SigLIP2**
 
-    Generate 512-dimensional visual embedding using Google SigLIP ViT-SO400M
+    Generate 1152-dimensional visual embedding using Google SigLIP2 ViT-SO400M
     for superior material image similarity search (+19-29% accuracy improvement).
 
     ## 🎯 Use Cases
@@ -128,7 +128,7 @@ async def generate_clip_image_embedding(
     ```json
     {
       "image_data": "data:image/jpeg;base64,/9j/4AAQSkZJRg...",
-      "model": "siglip-so400m-patch14-384"
+      "model": "siglip2-so400m-patch14-384"
     }
     ```
 
@@ -167,7 +167,7 @@ async def generate_clip_image_embedding(
     - **Rate limit**: 100 requests/minute
     """
     try:
-        logger.info(f"Generating SigLIP image embedding with model: {request.model}")
+        logger.info(f"Generating SigLIP2 image embedding with model: {request.model}")
 
         # Generate visual embedding
         embedding = await embedding_service._generate_visual_embedding(
@@ -185,7 +185,7 @@ async def generate_clip_image_embedding(
             success=True,
             embedding=embedding,
             dimensions=len(embedding),
-            model="siglip-so400m-patch14-384"
+            model="siglip2-so400m-patch14-384"
         )
 
     except HTTPException:

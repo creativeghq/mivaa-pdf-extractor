@@ -1087,17 +1087,40 @@ class PDFProcessor:
 
         Returns:
             bool: True if multimodal processing is recommended
+
+        Note:
+            OCR uses 3-phase intelligent filtering (OpenCV → CLIP → EasyOCR),
+            so enabling multimodal doesn't mean all images get OCR.
+            Only images with text patterns AND technical content get full OCR.
         """
         try:
             # Criteria for multimodal processing
             has_images = len(extracted_images) > 0
             many_images = len(extracted_images) >= 3
+            very_many_images = len(extracted_images) >= 50  # Product catalogs
             low_text_content = len(markdown_content.strip()) < 500
             moderate_text_content = len(markdown_content.strip()) < 2000
+
+            # Calculate image-to-text ratio
+            text_length = len(markdown_content.strip())
+            image_count = len(extracted_images)
+            images_per_1000_chars = (image_count / max(text_length, 1)) * 1000 if text_length > 0 else image_count
 
             # Decision logic
             if not has_images:
                 return False  # No images → no multimodal needed
+
+            # ✅ NEW: Enable for image-heavy documents (product catalogs)
+            # Catalogs have many images with technical specs/labels that need OCR
+            if very_many_images:
+                self.logger.info(f"   📚 Catalog detected: {image_count} images → enabling OCR")
+                return True
+
+            # ✅ NEW: Enable if high image-to-text ratio (visual-heavy documents)
+            # Example: 100 images + 10,000 chars = 10 images per 1000 chars → likely catalog
+            if images_per_1000_chars > 5 and image_count >= 10:
+                self.logger.info(f"   📊 High image density: {images_per_1000_chars:.1f} images/1000 chars → enabling OCR")
+                return True
 
             if many_images and low_text_content:
                 return True  # Many images + little text → likely visual document
@@ -1108,7 +1131,9 @@ class PDFProcessor:
             if len(extracted_images) >= 1 and low_text_content:
                 return True  # Any images + very little text → likely needs OCR
 
-            return False  # Text-heavy document → multimodal not needed
+            # Text-heavy document with few images → multimodal not needed
+            self.logger.info(f"   📄 Text-heavy document: {text_length} chars, {image_count} images → OCR not needed")
+            return False
 
         except Exception as e:
             self.logger.warning(f"Multimodal detection failed: {e}, defaulting to False")
@@ -1949,11 +1974,11 @@ class PDFProcessor:
             import numpy as np
 
             if not hasattr(self, '_siglip_model_for_ocr'):
-                self.logger.info("🔄 Loading SigLIP model for OCR filtering: google/siglip-so400m-patch14-384")
-                self._siglip_model_for_ocr = AutoModel.from_pretrained('google/siglip-so400m-patch14-384')
-                self._siglip_processor_for_ocr = AutoProcessor.from_pretrained('google/siglip-so400m-patch14-384')
+                self.logger.info("🔄 Loading SigLIP2 model for OCR filtering: google/siglip2-so400m-patch14-384")
+                self._siglip_model_for_ocr = AutoModel.from_pretrained('google/siglip2-so400m-patch14-384')
+                self._siglip_processor_for_ocr = AutoProcessor.from_pretrained('google/siglip2-so400m-patch14-384')
                 self._siglip_model_for_ocr.eval()
-                self.logger.info("✅ Initialized SigLIP model for OCR filtering")
+                self.logger.info("✅ Initialized SigLIP2 model for OCR filtering")
 
             # Define text prompts for classification
             relevant_prompts = [
