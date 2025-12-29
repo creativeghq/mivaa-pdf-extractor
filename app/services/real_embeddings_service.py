@@ -1182,7 +1182,7 @@ class RealEmbeddingsService:
             return True
 
         try:
-            from transformers import AutoModel, AutoProcessor
+            from transformers import AutoModel, AutoImageProcessor
             import torch
             import asyncio
 
@@ -1196,15 +1196,15 @@ class RealEmbeddingsService:
                 self._device = torch.device("cpu")
                 self.logger.warning("   ⚠️ No GPU detected - using CPU (will be slower)")
 
-            # Load visual embedding model (configurable - default SigLIP)
+            # Load visual embedding model (configurable - default SigLIP2)
             try:
                 self.logger.info(f"   Loading visual model: {self.visual_primary_model}")
                 self._siglip_model = await asyncio.wait_for(
-                    asyncio.to_thread(AutoModel.from_pretrained, self.visual_primary_model),
+                    asyncio.to_thread(AutoModel.from_pretrained, self.visual_primary_model, trust_remote_code=True),
                     timeout=60.0
                 )
                 self._siglip_processor = await asyncio.wait_for(
-                    asyncio.to_thread(AutoProcessor.from_pretrained, self.visual_primary_model),
+                    asyncio.to_thread(AutoImageProcessor.from_pretrained, self.visual_primary_model, trust_remote_code=True),
                     timeout=60.0
                 )
 
