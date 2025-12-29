@@ -763,6 +763,11 @@ jobs:
           Environment=TOGETHER_API_KEY=${{ secrets.TOGETHER_API_KEY }}
           Environment=HUGGINGFACE_API_KEY=${{ secrets.HUGGINGFACE_API_KEY }}
           Environment=HUGGING_FACE_ACCESS_TOKEN=${{ secrets.HUGGING_FACE_ACCESS_TOKEN }}
+          Environment=HUGGINGFACE_API_URL=${{ secrets.HUGGINGFACE_API_URL }}
+          Environment=HUGGINGFACE_SIGLIP_MODEL=${{ secrets.HUGGINGFACE_SIGLIP_MODEL }}
+          Environment=HUGGINGFACE_BATCH_SIZE=${{ secrets.HUGGINGFACE_BATCH_SIZE }}
+          Environment=HUGGINGFACE_TIMEOUT=${{ secrets.HUGGINGFACE_TIMEOUT }}
+          Environment=HUGGINGFACE_MAX_RETRIES=${{ secrets.HUGGINGFACE_MAX_RETRIES }}
           Environment=REPLICATE_API_TOKEN=${{ secrets.REPLICATE_API_TOKEN }}
           Environment=JINA_API_KEY=${{ secrets.JINA_API_KEY }}
           Environment=FIRECRAWL_API_KEY=${{ secrets.FIRECRAWL_API_KEY }}
@@ -776,6 +781,9 @@ jobs:
           Environment=MATERIAL_KAI_CLIENT_SECRET=${{ secrets.MATERIAL_KAI_CLIENT_SECRET }}
           Environment=MATERIAL_KAI_WEBHOOK_SECRET=${{ secrets.MATERIAL_KAI_WEBHOOK_SECRET }}
           Environment=SENTRY_DSN=${{ secrets.SENTRY_DSN }}
+          Environment=VISUAL_EMBEDDING_MODE=${{ secrets.VISUAL_EMBEDDING_MODE }}
+          Environment=VISUAL_EMBEDDING_PRIMARY_MODEL=${{ secrets.VISUAL_EMBEDDING_PRIMARY_MODEL }}
+          Environment=VISUAL_EMBEDDING_DIMENSIONS=${{ secrets.VISUAL_EMBEDDING_DIMENSIONS }}
           ExecStart=/var/www/mivaa-pdf-extractor/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
           Restart=always
           RestartSec=3
