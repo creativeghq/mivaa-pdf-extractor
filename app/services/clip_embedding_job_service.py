@@ -403,21 +403,16 @@ class CLIPEmbeddingJobService:
             True if successful, False otherwise
         """
         try:
-            # Save to embeddings table instead of document_images
-            embedding_data = {
-                "entity_id": image_id,
-                "entity_type": "image",
-                "embedding_type": "visual_512",
-                "embedding": embedding,
-                "dimension": len(embedding),
-                "model": "clip-vit-base-patch32"  # Default model
+            # Save to document_images table
+            update_data = {
+                "visual_clip_embedding_512": embedding
             }
-            self.supabase.client.table('embeddings').insert(embedding_data).execute()
-            logger.debug(f"✅ Saved visual embedding to embeddings table for {image_id}")
+            self.supabase.client.table('document_images').update(update_data).eq('id', image_id).execute()
+            logger.debug(f"✅ Saved visual CLIP embedding (512D) to document_images for {image_id}")
             return True
 
         except Exception as e:
-            logger.error(f"❌ Failed to save visual embedding to embeddings table: {e}")
+            logger.error(f"❌ Failed to save visual embedding to document_images: {e}")
             return False
 
     async def _update_job_status(

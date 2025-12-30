@@ -160,41 +160,36 @@ class BackgroundImageProcessor:
                 material_properties=analysis_result.get('vision_analysis', {})
             )
 
-            # Update database with analysis results (embeddings saved separately to embeddings table + VECS)
+            # Update database with analysis results (all embeddings saved to document_images)
             update_data = {
                 "vision_analysis": analysis_result.get('vision_analysis'),
                 "claude_validation": analysis_result.get('claude_validation'),
+                "material_properties": analysis_result.get('material_properties'),  # ✅ Save extracted material properties
+                "quality_score": analysis_result.get('quality_score'),              # ✅ Save quality score
+                "confidence_score": analysis_result.get('confidence_score'),        # ✅ Save confidence score
                 "processing_status": "completed",
                 "updated_at": datetime.utcnow().isoformat()
             }
 
-            # Save CLIP embedding to embeddings table (not document_images)
+            # Add CLIP embedding to document_images (512D)
             clip_embedding = analysis_result.get('clip_embedding')
             if clip_embedding:
-                try:
-                    embedding_data = {
-                        "entity_id": image_id,
-                        "entity_type": "image",
-                        "embedding_type": "visual_512",
-                        "embedding": clip_embedding,
-                        "dimension": len(clip_embedding),
-                        "model": "clip-vit-base-patch32"
-                    }
-                    self.supabase.client.table('embeddings').insert(embedding_data).execute()
-                    self.logger.debug(f"✅ Saved CLIP embedding to embeddings table for {image_id}")
-                except Exception as emb_error:
-                    self.logger.warning(f"⚠️ Failed to save CLIP embedding: {emb_error}")
-            
+                update_data["visual_clip_embedding_512"] = clip_embedding
+                self.logger.debug(f"✅ Adding CLIP embedding (512D) to document_images for {image_id}")
+
             # Add specialized embeddings if available
             if embeddings_result and embeddings_result.get('success'):
                 if embeddings_result.get('color_embedding'):
                     update_data["color_embedding_256"] = embeddings_result['color_embedding']
+                    self.logger.debug(f"✅ Adding color embedding (256D) to document_images for {image_id}")
                 if embeddings_result.get('texture_embedding'):
                     update_data["texture_embedding_256"] = embeddings_result['texture_embedding']
+                    self.logger.debug(f"✅ Adding texture embedding (256D) to document_images for {image_id}")
                 if embeddings_result.get('application_embedding'):
                     update_data["application_embedding_512"] = embeddings_result['application_embedding']
-            
-            # Update image record
+                    self.logger.debug(f"✅ Adding application embedding (512D) to document_images for {image_id}")
+
+            # Update image record with all data
             self.supabase.client.table('document_images').update(update_data).eq('id', image_id).execute()
             
             self.logger.info(f"✅ Image {image_id} processed successfully")

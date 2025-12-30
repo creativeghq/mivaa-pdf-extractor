@@ -493,19 +493,14 @@ Respond ONLY with this JSON format:
                 if visual_embedding:
                     # Save to embeddings table for tracking
                     try:
-                        embedding_data = {
-                            "entity_id": image_id,
-                            "entity_type": "image",
-                            "embedding_type": "visual_512",
-                            "embedding": visual_embedding,
-                            "dimension": len(visual_embedding),
-                            "model": model_used,
-                            "workspace_id": workspace_id
+                        # Save visual CLIP embedding to document_images
+                        update_data = {
+                            "visual_clip_embedding_512": visual_embedding
                         }
-                        self.supabase_client.client.table('embeddings').insert(embedding_data).execute()
-                        logger.debug(f"   ✅ Saved visual embedding to embeddings table for {image_id}")
+                        self.supabase_client.client.table('document_images').update(update_data).eq('id', image_id).execute()
+                        logger.debug(f"   ✅ Saved visual CLIP embedding (512D) to document_images for {image_id}")
                     except Exception as emb_error:
-                        logger.error(f"   ❌ Failed to save visual embedding to embeddings table: {emb_error}")
+                        logger.error(f"   ❌ Failed to save visual embedding to document_images: {emb_error}")
                         last_error = f"Failed to save visual embedding: {emb_error}"
                         retry_count += 1
                         if retry_count < max_retries:
@@ -549,22 +544,30 @@ Respond ONLY with this JSON format:
                         }
                     )
 
-                    # Save to embeddings table for tracking
+                    # Save specialized embeddings to document_images
+                    update_data = {}
                     for emb_type, emb_vector in specialized_embeddings.items():
                         try:
-                            embedding_data = {
-                                "entity_id": image_id,
-                                "entity_type": "image",
-                                "embedding_type": f"{emb_type}_512",
-                                "embedding": emb_vector,
-                                "dimension": len(emb_vector),
-                                "model": model_used,
-                                "workspace_id": workspace_id
+                            # Map embedding type to column name
+                            column_map = {
+                                "color": "color_embedding_256",
+                                "texture": "texture_embedding_256",
+                                "application": "application_embedding_512"
                             }
-                            self.supabase_client.client.table('embeddings').insert(embedding_data).execute()
-                            logger.debug(f"   ✅ Saved {emb_type} embedding to embeddings table for {image_id}")
+                            column_name = column_map.get(emb_type)
+                            if column_name:
+                                update_data[column_name] = emb_vector
+                                logger.debug(f"   ✅ Adding {emb_type} embedding to document_images for {image_id}")
                         except Exception as emb_error:
-                            logger.warning(f"   ⚠️ Failed to save {emb_type} to embeddings table: {emb_error}")
+                            logger.warning(f"   ⚠️ Failed to prepare {emb_type} embedding: {emb_error}")
+
+                    # Update document_images with all specialized embeddings
+                    if update_data:
+                        try:
+                            self.supabase_client.client.table('document_images').update(update_data).eq('id', image_id).execute()
+                            logger.debug(f"   ✅ Saved {len(update_data)} specialized embeddings to document_images for {image_id}")
+                        except Exception as update_error:
+                            logger.warning(f"   ⚠️ Failed to save specialized embeddings to document_images: {update_error}")
 
                 total_embeddings = 1 + len(specialized_embeddings)
                 logger.info(f"   ✅ Generated and saved {total_embeddings} CLIP embeddings for image {image_id}")
