@@ -72,6 +72,8 @@ class ProgressTracker:
     images_stored: int = 0
     chunks_created: int = 0
     products_created: int = 0
+    clip_embeddings_generated: int = 0  # Track CLIP/SigLIP embeddings separately
+    total_images_extracted: int = 0  # Total images found in PDF (including non-material)
 
     # Error tracking
     errors: List[Dict[str, Any]] = field(default_factory=list)
@@ -158,6 +160,7 @@ class ProgressTracker:
                     'chunks_created': self.chunks_created,
                     'products_created': self.products_created,
                     'embeddings_generated': self.chunks_created + (self.images_stored * 5),  # Text embeddings + 5 image embeddings per image
+                    'clip_embeddings': self.clip_embeddings_generated,  # CLIP/SigLIP embeddings count
                     'ocr_pages_processed': self.ocr_pages_processed,
                     'total_text_extracted': self.total_text_extracted,
                     'errors_count': len(self.errors),
@@ -187,6 +190,7 @@ class ProgressTracker:
                         'chunks_created': self.chunks_created,
                         'products_created': self.products_created,
                         'embeddings_generated': self.chunks_created + (self.images_stored * 5),
+                        'clip_embeddings': self.clip_embeddings_generated,  # CLIP/SigLIP embeddings count
                         'ocr_pages_processed': self.ocr_pages_processed
                     },
                     'updated_at': datetime.utcnow().isoformat()
@@ -315,6 +319,8 @@ class ProgressTracker:
         images_stored: int = 0,
         chunks_created: int = 0,
         products_created: int = 0,
+        clip_embeddings: int = 0,
+        total_images_extracted: int = 0,
         sync_to_db: bool = True
     ):
         """
@@ -328,6 +334,9 @@ class ProgressTracker:
         self.images_stored += images_stored
         self.chunks_created += chunks_created
         self.products_created += products_created
+        self.clip_embeddings_generated += clip_embeddings
+        if total_images_extracted > 0:
+            self.total_images_extracted = total_images_extracted
 
         logger.info(f"Updated database stats for job {self.job_id}: "
                    f"records={self.database_records_created}, kb={self.knowledge_base_entries}, "

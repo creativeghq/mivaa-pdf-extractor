@@ -694,6 +694,8 @@ async def process_stage_3_images(
 
         await tracker.update_database_stats(
             images_stored=images_saved_count,
+            clip_embeddings=clip_embeddings_generated,
+            total_images_extracted=len(all_images)
         )
         await tracker.update_stage(
             CheckpointStage.IMAGES_EXTRACTED,
@@ -702,7 +704,7 @@ async def process_stage_3_images(
         )
         await tracker._sync_to_database(stage="image_processing")
 
-        logger.info(f"   📊 Progress updated: {progress_pct}% ({images_saved_count}/{len(material_images)} images processed)")
+        logger.info(f"   📊 Progress updated: {progress_pct}% ({images_saved_count}/{len(material_images)} images processed, {clip_embeddings_generated} CLIP embeddings)")
 
     # Final VECS batch upsert for remaining records
     if vecs_batch_records:
