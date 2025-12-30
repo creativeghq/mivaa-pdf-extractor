@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     
     # Application Settings
     app_name: str = Field(default="MIVAA - Material Intelligence Vision and Analysis Agent", env="APP_NAME")
-    app_version: str = Field(default="2.2.0", env="APP_VERSION")
+    app_version: str = Field(default="2.5.0", env="APP_VERSION")
     debug: bool = Field(default=False, env="DEBUG")
     
     # Server Settings
