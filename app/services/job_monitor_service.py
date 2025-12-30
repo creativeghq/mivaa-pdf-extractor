@@ -573,19 +573,19 @@ class JobMonitorService:
 
             if deleted > 0:
                 logger.info(f"🧹 Cleaned up {deleted} old checkpoints")
-            
-            # Cleanup completed jobs older than 30 days
-            cutoff = (datetime.utcnow() - timedelta(days=30)).isoformat()
+
+            # Cleanup completed jobs older than 5 days (aligned with Edge Function)
+            cutoff = (datetime.utcnow() - timedelta(days=5)).isoformat()
             result = self.supabase_client.client.table("background_jobs")\
                 .delete()\
                 .eq("status", "completed")\
                 .lt("completed_at", cutoff)\
                 .execute()
-            
+
             deleted_jobs = len(result.data) if result.data else 0
             if deleted_jobs > 0:
                 logger.info(f"🧹 Cleaned up {deleted_jobs} old completed jobs")
-                
+
         except Exception as e:
             logger.error(f"❌ Cleanup error: {e}", exc_info=True)
     

@@ -1898,6 +1898,14 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
                 "updated_at": datetime.utcnow().isoformat()
             }
 
+            # ✅ NEW: Validate and normalize category to prevent duplicates
+            try:
+                from app.services.metadata_normalizer import validate_and_normalize_product_category
+                product_data = validate_and_normalize_product_category(product_data)
+                self.logger.debug(f"Category normalized for {product_name}: {product_data.get('category')} (composition: {product_data.get('metadata', {}).get('composition')})")
+            except Exception as e:
+                self.logger.warning(f"Category normalization failed for {product_name}: {e}")
+
             return product_data
 
         except Exception as e:

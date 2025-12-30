@@ -415,33 +415,106 @@ async def get_job_status_alt(
 @router.delete("/jobs/{job_id}")
 async def cancel_job(
     job_id: str,
-
+    cleanup: bool = Query(True, description="Clean up partial data created by the job")
 ):
     """
-    Cancel a running job
-    
-    - **job_id**: Unique identifier for the job to cancel
+    Cancel a running job and optionally clean up partial data.
+
+    This endpoint will:
+    1. Mark the job as cancelled in the database
+    2. The heartbeat check will detect the cancellation and raise CancelledError
+    3. The processing function will catch CancelledError and stop immediately
+    4. If cleanup=True, delete all partial data (chunks, embeddings, images, products, files)
+
+    Args:
+        job_id: Unique identifier for the job to cancel
+        cleanup: If True, delete all partial data created by the job (default: True)
+
+    Returns:
+        Success message with cleanup statistics if cleanup was performed
     """
     try:
-        if job_id not in active_jobs:
-            raise HTTPException(status_code=404, detail=f"Active job {job_id} not found")
-        
-        job_info = active_jobs[job_id]
-        if job_info["status"] in ["completed", "failed", "cancelled"]:
-            raise HTTPException(status_code=400, detail=f"Job {job_id} is already {job_info['status']}")
-        
-        # Update job status to cancelled
-        await track_job(job_id, job_info["job_type"], "cancelled", job_info["details"])
-        
-        return BaseResponse(
-            success=True,
-            message=f"Job {job_id} cancelled successfully"
-        )
-        
+        from app.services.supabase_client import get_supabase_client
+        from app.services.cleanup_service import CleanupService
+
+        supabase_client = get_supabase_client()
+
+        # Get job from database
+        job_response = supabase_client.client.table('background_jobs')\
+            .select('*')\
+            .eq('id', job_id)\
+            .execute()
+
+        if not job_response.data or len(job_response.data) == 0:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+        job_data = job_response.data[0]
+        current_status = job_data.get('status')
+
+        # Check if job can be cancelled
+        if current_status in ["completed", "failed", "cancelled"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Job {job_id} is already {current_status} and cannot be cancelled"
+            )
+
+        # Mark job as cancelled in database
+        # The heartbeat check will detect this and raise CancelledError
+        supabase_client.client.table('background_jobs')\
+            .update({
+                'status': 'cancelled',
+                'error': 'Job cancelled by user',
+                'updated_at': datetime.utcnow().isoformat(),
+                'metadata': {
+                    **job_data.get('metadata', {}),
+                    'cancelled_at': datetime.utcnow().isoformat(),
+                    'cancelled_by': 'admin'
+                }
+            })\
+            .eq('id', job_id)\
+            .execute()
+
+        logger.info(f"🛑 Job {job_id} marked as cancelled")
+
+        # Update in-memory job storage if exists
+        if job_id in active_jobs:
+            active_jobs[job_id]["status"] = "cancelled"
+            active_jobs[job_id]["error"] = "Job cancelled by user"
+
+        cleanup_stats = None
+
+        # Perform cleanup if requested
+        if cleanup:
+            logger.info(f"🧹 Starting cleanup for cancelled job {job_id} (manual deletion - includes storage files)")
+
+            cleanup_service = CleanupService()
+
+            # Manual deletion from UI - delete everything including storage files
+            cleanup_stats = await cleanup_service.delete_job_completely(
+                job_id=job_id,
+                supabase_client=supabase_client,
+                delete_storage_files=True  # ✅ Manual deletion includes storage files
+            )
+
+            logger.info(f"✅ Cleanup completed for job {job_id}: {cleanup_stats}")
+
+        response_data = {
+            "success": True,
+            "message": f"Job {job_id} cancelled successfully",
+            "job_id": job_id,
+            "previous_status": current_status,
+            "cleanup_performed": cleanup
+        }
+
+        if cleanup_stats:
+            response_data["cleanup_stats"] = cleanup_stats
+
+        return response_data
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error cancelling job: {str(e)}")
+        logger.error(f"Error cancelling job: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to cancel job: {str(e)}")
 
 @router.post("/bulk/process")
@@ -1147,6 +1220,48 @@ async def export_system_data(
         logger.error(f"Error exporting data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to export data: {str(e)}")
 
+
+@router.post("/system/cleanup-temp-files")
+async def cleanup_temp_files(
+    max_age_hours: int = Query(24, description="Maximum age of files to keep in hours"),
+    dry_run: bool = Query(True, description="Preview what would be deleted without actually deleting")
+):
+    """
+    Clean up temporary files system-wide.
+
+    Cleans up:
+    - PDF files in /tmp (*.pdf)
+    - pdf_processor folders in /tmp
+    - Files in /var/www/mivaa-pdf-extractor/output
+    - __pycache__ folders
+    - Old files in /tmp/pdf_processing, /tmp/image_extraction, etc.
+
+    Args:
+        max_age_hours: Maximum age of files to keep (default: 24 hours)
+        dry_run: If True, only report what would be deleted without actually deleting (default: True)
+
+    Returns:
+        Cleanup statistics including files deleted and space freed
+    """
+    try:
+        from app.services.cleanup_service import CleanupService
+
+        cleanup_service = CleanupService()
+        stats = await cleanup_service.cleanup_system_temp_files(
+            max_age_hours=max_age_hours,
+            dry_run=dry_run
+        )
+
+        return {
+            "success": True,
+            "message": f"Temp file cleanup {'preview' if dry_run else 'completed'} successfully",
+            "dry_run": dry_run,
+            "stats": stats
+        }
+
+    except Exception as e:
+        logger.error(f"Error during temp file cleanup: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to cleanup temp files: {str(e)}")
 
 @router.get("/packages/status")
 async def get_package_status():

@@ -650,17 +650,59 @@ class ProgressTracker:
         import asyncio
         self._heartbeat_task = asyncio.create_task(heartbeat_loop())
 
+    async def check_if_cancelled(self) -> bool:
+        """
+        Check if the job has been cancelled by checking the database.
+
+        Returns:
+            True if job is cancelled, False otherwise
+        """
+        try:
+            if self._db_sync_enabled and self._supabase:
+                response = self._supabase.client.table('background_jobs')\
+                    .select('status')\
+                    .eq('id', self.job_id)\
+                    .execute()
+
+                if response.data and len(response.data) > 0:
+                    status = response.data[0].get('status')
+                    if status == 'cancelled':
+                        logger.warning(f"🛑 Job {self.job_id} has been cancelled")
+                        return True
+
+            return False
+
+        except Exception as e:
+            logger.error(f"❌ Failed to check cancellation status for job {self.job_id}: {e}")
+            return False
+
     async def update_heartbeat(self):
         """
         Send a heartbeat signal to the database to prove job is alive.
 
         Updates the 'last_heartbeat' timestamp in background_jobs table.
         Job monitor uses this to detect silent crashes.
+
+        Also checks if job has been cancelled.
         """
         try:
             self.last_heartbeat = datetime.utcnow()
 
             if self._db_sync_enabled and self._supabase:
+                # Check for cancellation first
+                response = self._supabase.client.table('background_jobs')\
+                    .select('status')\
+                    .eq('id', self.job_id)\
+                    .execute()
+
+                if response.data and len(response.data) > 0:
+                    status = response.data[0].get('status')
+                    if status == 'cancelled':
+                        logger.warning(f"🛑 Job {self.job_id} has been cancelled - stopping heartbeat")
+                        await self.stop_heartbeat()
+                        raise asyncio.CancelledError(f"Job {self.job_id} was cancelled")
+
+                # Update heartbeat
                 self._supabase.client.table('background_jobs')\
                     .update({
                         'last_heartbeat': self.last_heartbeat.isoformat(),
@@ -671,6 +713,8 @@ class ProgressTracker:
 
                 logger.debug(f"🫀 Heartbeat sent for job {self.job_id}")
 
+        except asyncio.CancelledError:
+            raise  # Re-raise cancellation
         except Exception as e:
             logger.error(f"❌ Failed to update heartbeat for job {self.job_id}: {e}")
 

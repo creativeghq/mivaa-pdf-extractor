@@ -1275,49 +1275,69 @@ async def list_jobs(
 @router.delete("/documents/jobs/{job_id}")
 async def delete_job(job_id: str):
     """
-    Delete a job and all its associated data.
+    Delete a job and ALL its associated data.
 
-    This endpoint:
-    1. Removes job from in-memory job_storage
-    2. Deletes job record from database
-    3. Cleans up any temporary files associated with the job
+    This endpoint performs complete cleanup including:
+    1. Job record from background_jobs table
+    2. Document record (if exists)
+    3. All chunks from document_chunks
+    4. All embeddings from vecs collections
+    5. All images from document_images
+    6. All products
+    7. Files from storage buckets
+    8. Checkpoints
+    9. Temporary files
+    10. In-memory job_storage
 
     Args:
         job_id: The unique identifier of the job to delete
 
     Returns:
-        Success message with deleted job_id
+        Success message with deletion statistics
 
     Raises:
         HTTPException: If job not found or deletion fails
     """
     try:
-        logger.info(f"🗑️ DELETE /documents/jobs/{job_id} - Deleting job")
+        logger.info(f"🗑️ DELETE /documents/jobs/{job_id} - Starting complete deletion")
 
         # Remove from in-memory storage if exists
         if job_id in job_storage:
             del job_storage[job_id]
             logger.info(f"   ✅ Removed job {job_id} from job_storage")
 
-        # Delete from database
+        # Get services
         supabase_client = get_supabase_client()
-        result = supabase_client.client.table('background_jobs').delete().eq('id', job_id).execute()
+        vecs_service = get_vecs_service()
 
-        if not result.data:
-            logger.warning(f"   ⚠️ Job {job_id} not found in database")
+        # Import cleanup service
+        from app.services.cleanup_service import CleanupService
+        cleanup_service = CleanupService()
+
+        # Perform complete deletion (manual deletion from UI - includes storage files)
+        stats = await cleanup_service.delete_job_completely(
+            job_id=job_id,
+            supabase_client=supabase_client,
+            vecs_service=vecs_service,
+            delete_storage_files=True  # ✅ Manual deletion includes storage files
+        )
+
+        # Check if job was actually deleted
+        if not stats['job_deleted']:
+            logger.warning(f"   ⚠️ Job {job_id} not found or deletion failed")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Job {job_id} not found"
+                detail=f"Job {job_id} not found or deletion failed"
             )
 
-        logger.info(f"   ✅ Deleted job {job_id} from database")
-
-        # NOTE: Temporary file cleanup moved to admin panel cron job
+        logger.info(f"   ✅ Complete deletion finished for job {job_id}")
+        logger.info(f"   📊 Stats: {stats}")
 
         return {
             "success": True,
-            "message": f"Job {job_id} deleted successfully",
-            "job_id": job_id
+            "message": f"Job {job_id} and all associated data deleted successfully",
+            "job_id": job_id,
+            "stats": stats
         }
 
     except HTTPException:

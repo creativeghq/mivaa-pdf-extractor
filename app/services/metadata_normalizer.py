@@ -161,47 +161,95 @@ def normalize_null_value(value: Any) -> Any:
 # ============================================================================
 
 # Standard material categories - normalize variations to these
+# NOTE: Material type (e.g., "Tile") is separate from composition (e.g., "ceramic", "porcelain")
 MATERIAL_CATEGORY_MAPPING = {
-    # Tiles
+    # Tiles - all tile variations map to "Tile"
     "tile": "Tile",
     "tiles": "Tile",
-    "ceramic": "Ceramic Tile",
-    "ceramic tile": "Ceramic Tile",
-    "ceramic tiles": "Ceramic Tile",
-    "porcelain": "Porcelain Tile",
-    "porcelain tile": "Porcelain Tile",
-    "porcelain tiles": "Porcelain Tile",
+    "ceramic": "Tile",  # Composition will be extracted separately
+    "ceramic tile": "Tile",
+    "ceramic tiles": "Tile",
+    "porcelain": "Tile",  # Composition will be extracted separately
+    "porcelain tile": "Tile",
+    "porcelain tiles": "Tile",
+    "stoneware": "Tile",
+    "stoneware tile": "Tile",
     # Stone
     "stone": "Natural Stone",
     "natural stone": "Natural Stone",
     "marble": "Marble",
     "granite": "Granite",
+    "limestone": "Limestone",
+    "travertine": "Travertine",
+    "slate": "Slate",
     # Wood
     "wood": "Wood",
     "hardwood": "Hardwood",
     "laminate": "Laminate",
     "mdf": "MDF",
+    "plywood": "Plywood",
+    "engineered wood": "Engineered Wood",
     # Other
     "glass": "Glass",
     "metal": "Metal",
     "composite": "Composite",
+    "concrete": "Concrete",
+    "resin": "Resin",
+}
+
+# Composition types for tiles (extracted separately from material category)
+TILE_COMPOSITION_MAPPING = {
+    "ceramic": "ceramic",
+    "porcelain": "porcelain",
+    "stoneware": "stoneware",
+    "terracotta": "terracotta",
+    "glass": "glass",
+    "cement": "cement",
 }
 
 
-def normalize_material_category(category: str) -> str:
-    """Normalize material category to standard format."""
+def normalize_material_category(category: str) -> tuple[str, str | None]:
+    """
+    Normalize material category to standard format and extract composition.
+
+    Args:
+        category: Raw category string (e.g., "ceramic tile", "porcelain", "Tile")
+
+    Returns:
+        Tuple of (normalized_category, composition)
+        - normalized_category: Standard material type (e.g., "Tile", "Wood", "Stone")
+        - composition: Material composition if applicable (e.g., "ceramic", "porcelain", None)
+
+    Examples:
+        "ceramic tile" → ("Tile", "ceramic")
+        "porcelain" → ("Tile", "porcelain")
+        "tile" → ("Tile", None)
+        "marble" → ("Marble", None)
+    """
     if not category:
-        return None
+        return (None, None)
 
     normalized = category.lower().strip()
-    return MATERIAL_CATEGORY_MAPPING.get(normalized, category.title())
+
+    # Get the base material category
+    base_category = MATERIAL_CATEGORY_MAPPING.get(normalized, category.title())
+
+    # Extract composition for tiles
+    composition = None
+    if base_category == "Tile":
+        for comp_key, comp_value in TILE_COMPOSITION_MAPPING.items():
+            if comp_key in normalized:
+                composition = comp_value
+                break
+
+    return (base_category, composition)
 
 
 # ============================================================================
 # FIELD VALUE NORMALIZATION
 # ============================================================================
 
-def normalize_field_value(value: Any, field_name: str) -> Any:
+def normalize_field_value(value: Any, field_name: str, metadata_dict: dict = None) -> Any:
     """
     Normalize field values to consistent formats.
 
@@ -210,15 +258,26 @@ def normalize_field_value(value: Any, field_name: str) -> Any:
         - Individual SKU fields → object: {"sku_white": "123"} → {"white": "123"}
         - Grout supplier object → string: {"value": "MAPEI", "product": "..."} → "MAPEI ULTRACOLOR PLUS"
         - "not found" variations → None
-        - Material category variations → Standard format
+        - Material category variations → Standard format + composition extraction
+
+    Args:
+        value: The value to normalize
+        field_name: The field name being normalized
+        metadata_dict: Optional metadata dictionary to update with extracted composition
     """
     # First, check if it's a "not found" value
     if is_not_found_value(value):
         return None
 
-    # Normalize material category
+    # Normalize material category and extract composition
     if field_name == "material_category":
-        return normalize_material_category(value) if isinstance(value, str) else value
+        if isinstance(value, str):
+            category, composition = normalize_material_category(value)
+            # If composition was extracted and we have a metadata dict, add it
+            if composition and metadata_dict is not None:
+                metadata_dict['composition'] = composition
+            return category
+        return value
 
     # Normalize factory/manufacturer names - clean up "not found" values
     if field_name in ["factory_name", "factory_group_name", "manufacturer"]:
@@ -295,8 +354,8 @@ def normalize_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
             standard_field = find_standard_field(field_name, category)
 
             if standard_field:
-                # Normalize the value
-                normalized_value = normalize_field_value(field_value, standard_field)
+                # Normalize the value (pass normalized_fields to allow composition extraction)
+                normalized_value = normalize_field_value(field_value, standard_field, normalized_fields)
 
                 # Merge if standard field already exists
                 if standard_field in normalized_fields:
@@ -424,4 +483,52 @@ def get_normalization_report(original: Dict[str, Any], normalized: Dict[str, Any
         "changes": changes
     }
 
+
+def validate_and_normalize_product_category(product_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Validate and normalize product category to prevent duplicates.
+
+    This function ensures:
+    1. Material type is normalized (e.g., "Tile" not "ceramic tile")
+    2. Composition is extracted separately (e.g., "ceramic", "porcelain")
+    3. No duplicate category variations exist
+
+    Args:
+        product_data: Product data dictionary with 'category' or 'metadata.material_category'
+
+    Returns:
+        Updated product data with normalized category and composition
+
+    Examples:
+        Input: {"category": "ceramic tile"}
+        Output: {"category": "Tile", "metadata": {"composition": "ceramic"}}
+
+        Input: {"category": "porcelain"}
+        Output: {"category": "Tile", "metadata": {"composition": "porcelain"}}
+    """
+    if not product_data:
+        return product_data
+
+    # Initialize metadata if not exists
+    if 'metadata' not in product_data:
+        product_data['metadata'] = {}
+
+    # Check category field
+    category = product_data.get('category')
+    if category and isinstance(category, str):
+        normalized_category, composition = normalize_material_category(category)
+        product_data['category'] = normalized_category
+        if composition:
+            product_data['metadata']['composition'] = composition
+
+    # Check metadata.material_category field
+    if 'material_category' in product_data.get('metadata', {}):
+        material_category = product_data['metadata']['material_category']
+        if isinstance(material_category, str):
+            normalized_category, composition = normalize_material_category(material_category)
+            product_data['metadata']['material_category'] = normalized_category
+            if composition:
+                product_data['metadata']['composition'] = composition
+
+    return product_data
 

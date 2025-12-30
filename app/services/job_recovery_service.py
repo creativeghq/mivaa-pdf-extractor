@@ -217,33 +217,33 @@ class JobRecoveryService:
             logger.error(f"Failed to get job status for {job_id}: {e}")
             return None
     
-    async def cleanup_old_jobs(self, days: int = 7) -> int:
+    async def cleanup_old_jobs(self, days: int = 5) -> int:
         """
         Clean up completed/failed jobs older than specified days.
-        
+
         Args:
-            days: Number of days to keep jobs
-            
+            days: Number of days to keep jobs (default: 5 days)
+
         Returns:
             int: Number of jobs deleted
         """
         try:
             from datetime import timedelta
-            
+
             cutoff_date = (datetime.utcnow() - timedelta(days=days)).isoformat()
-            
+
             # Delete old completed and failed jobs
             response = self.supabase.client.table(self.table_name).delete().in_(
                 "status", ["completed", "failed"]
             ).lt("updated_at", cutoff_date).execute()
-            
+
             deleted_count = len(response.data) if response.data else 0
-            
+
             if deleted_count > 0:
                 logger.info(f"🧹 Cleaned up {deleted_count} old jobs (older than {days} days)")
-            
+
             return deleted_count
-            
+
         except Exception as e:
             logger.error(f"Failed to cleanup old jobs: {e}")
             return 0

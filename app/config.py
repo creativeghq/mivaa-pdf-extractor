@@ -944,16 +944,38 @@ settings = Settings()
 def configure_logging():
     """Configure application logging using the settings."""
     import logging.config
-    
+
     logging_config = settings.get_logging_config()
     logging.config.dictConfig(logging_config)
-    
-    # Log startup information
-    logger = logging.getLogger(__name__)
-    logger.info(f"Starting {settings.app_name} v{settings.app_version}")
-    logger.info(f"Log level set to: {settings.log_level}")
-    logger.info(f"Output directory: {settings.get_output_path()}")
-    logger.info(f"Temp directory: {settings.get_temp_path()}")
+
+    # Add Supabase logging handler to root logger
+    try:
+        from app.utils.supabase_logging_handler import SupabaseLoggingHandler
+
+        root_logger = logging.getLogger()
+        supabase_handler = SupabaseLoggingHandler(
+            batch_size=10,
+            flush_interval=5.0,
+            level=logging.INFO  # Only log INFO and above to database
+        )
+        root_logger.addHandler(supabase_handler)
+
+        # Log startup information
+        logger = logging.getLogger(__name__)
+        logger.info(f"Starting {settings.app_name} v{settings.app_version}")
+        logger.info(f"Log level set to: {settings.log_level}")
+        logger.info(f"Output directory: {settings.get_output_path()}")
+        logger.info(f"Temp directory: {settings.get_temp_path()}")
+        logger.info("Supabase logging handler initialized")
+
+    except Exception as e:
+        # Don't crash if Supabase logging fails
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Failed to initialize Supabase logging handler: {e}")
+        logger.info(f"Starting {settings.app_name} v{settings.app_version}")
+        logger.info(f"Log level set to: {settings.log_level}")
+        logger.info(f"Output directory: {settings.get_output_path()}")
+        logger.info(f"Temp directory: {settings.get_temp_path()}")
 
 
 def get_settings() -> Settings:

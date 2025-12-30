@@ -181,6 +181,14 @@ async def process_stage_4_products(
                 'source_job_id': job_id  # ✅ NEW: Track source job
             }
 
+            # ✅ NEW: Validate and normalize category to prevent duplicates
+            try:
+                from app.services.metadata_normalizer import validate_and_normalize_product_category
+                product_data = validate_and_normalize_product_category(product_data)
+                logger.debug(f"   ✅ Category normalized for {product.name}: {product_data.get('category')} (composition: {product_data.get('metadata', {}).get('composition')})")
+            except Exception as e:
+                logger.warning(f"   ⚠️ Category normalization failed for {product.name}: {e}")
+
             result = supabase.client.table('products').insert(product_data).execute()
 
             if result.data and len(result.data) > 0:

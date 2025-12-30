@@ -166,13 +166,18 @@ STANDARDIZED FIELD NAMES (use EXACTLY these names):
 - inspiration: Design inspiration source
 - aesthetic_style: Aesthetic style description
 
-**Packaging:**
-- pieces_per_box: Number of pieces per box
-- boxes_per_pallet: Number of boxes per pallet
-- weight_kg: Weight per box in kilograms
-- weight_lb: Weight per box in pounds
-- coverage_m2: Coverage area per box in square meters
-- coverage_sqft: Coverage area per box in square feet
+**Packaging (look for "Packing", "Packaging", or "Iconography" sections):**
+- pieces_per_box: Number of pieces per box (often shown with icon)
+- boxes_per_pallet: Number of boxes per pallet (often shown with icon)
+- weight_kg: Weight per box in kilograms (often shown with icon)
+- weight_lb: Weight per box in pounds (often shown with icon)
+- coverage_m2: Coverage area per box in square meters (often shown with icon)
+- coverage_sqft: Coverage area per box in square feet (often shown with icon)
+- pallet_weight_kg: Total pallet weight in kilograms
+- box_dimensions: Box dimensions (e.g., "40x40x10 cm")
+
+NOTE: Packaging information is often presented in "Iconography" sections with icons/symbols.
+Look for sections titled: "Iconography", "Packing", "Packaging", "Technical Data", "Box Information"
 
 **Material Properties:**
 - finish: Surface finish type (e.g., "matt", "gloss")
@@ -189,8 +194,21 @@ STANDARDIZED FIELD NAMES (use EXACTLY these names):
 - recommended_use: Recommended use (e.g., "wall", "floor", "wall and floor")
 - installation: Installation method or type
 - traffic_level: Traffic level rating
+- care_instructions: Care and cleaning instructions (look for "Cleaning", "Care", "Maintenance" sections)
+- maintenance: Maintenance requirements and recommendations
 
-**Other categories:** performance, compliance, technical, dimensions
+**Compliance & Safety (look for "Regulation", "Certifications", "Safety" sections):**
+- certifications: Array of certifications (e.g., ["ISO 9001", "CE", "LEED"])
+- standards: Compliance standards (e.g., "EN 14411", "ASTM C373")
+- safety_rating: Safety rating or classification
+- eco_friendly: Environmental friendliness indicators
+- sustainability_rating: Sustainability rating or score
+- voc_rating: VOC (Volatile Organic Compounds) rating
+
+NOTE: Regulation, Cleaning, and Handling information may be in separate sections.
+Look for sections titled: "Regulation", "Cleaning", "Handling", "Care Instructions", "Maintenance", "Safety", "Certifications"
+
+**Other categories:** performance, technical, dimensions
 
 CRITICAL RULES:
 1. Use EXACTLY the field names listed above (e.g., "grout_mapei" NOT "recommended_grout_mapei" or "grout_product_mapei")
@@ -411,7 +429,32 @@ class DynamicMetadataExtractor:
             except Exception as prop_error:
                 self.logger.warning(f"Failed to auto-create material_properties: {prop_error}")
 
-            # Step 6: Add metadata
+            # Step 6: Log packaging/iconography extraction results
+            packaging_fields = extracted_data.get("packaging", {})
+            if packaging_fields:
+                self.logger.info(f"📦 Packaging fields extracted: {list(packaging_fields.keys())}")
+                self.logger.debug(f"   Packaging data: {packaging_fields}")
+            else:
+                self.logger.warning(f"⚠️ No packaging fields extracted (check for Iconography/Packing sections)")
+
+            # Log compliance/safety extraction results
+            compliance_fields = extracted_data.get("compliance", {})
+            application_fields = extracted_data.get("application", {})
+            care_fields = {k: v for k, v in application_fields.items() if k in ['care_instructions', 'maintenance']}
+
+            if compliance_fields:
+                self.logger.info(f"✅ Compliance/Safety fields extracted: {list(compliance_fields.keys())}")
+                self.logger.debug(f"   Compliance data: {compliance_fields}")
+            else:
+                self.logger.warning(f"⚠️ No compliance/safety fields extracted (check for Regulation/Certifications sections)")
+
+            if care_fields:
+                self.logger.info(f"🧼 Care/Maintenance fields extracted: {list(care_fields.keys())}")
+                self.logger.debug(f"   Care data: {care_fields}")
+            else:
+                self.logger.warning(f"⚠️ No care/maintenance fields extracted (check for Cleaning/Handling sections)")
+
+            # Step 7: Add metadata
             extracted_data["metadata"] = {
                 "extraction_timestamp": datetime.utcnow().isoformat(),
                 "extraction_method": f"ai_dynamic_{self.model}",
@@ -419,7 +462,10 @@ class DynamicMetadataExtractor:
                 "validation_errors": validation_result.get("errors", []),
                 "manual_overrides_applied": bool(manual_overrides),
                 "normalization_applied": normalization_report["fields_normalized"] > 0,
-                "fields_normalized": normalization_report["fields_normalized"]
+                "fields_normalized": normalization_report["fields_normalized"],
+                "packaging_fields_found": len(packaging_fields) if packaging_fields else 0,
+                "compliance_fields_found": len(compliance_fields) if compliance_fields else 0,
+                "care_fields_found": len(care_fields) if care_fields else 0
             }
 
             return extracted_data
