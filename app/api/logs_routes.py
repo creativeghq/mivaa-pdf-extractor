@@ -13,7 +13,7 @@ import uuid
 from app.services.supabase_client import get_supabase_client
 
 
-router = APIRouter(prefix="/admin/logs", tags=["admin", "logs"])
+router = APIRouter(prefix="/api/admin/logs", tags=["admin", "logs"])
 
 
 class LogEntry(BaseModel):
