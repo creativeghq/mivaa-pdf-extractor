@@ -208,7 +208,7 @@ TILE_COMPOSITION_MAPPING = {
 }
 
 
-def normalize_material_category(category: str) -> tuple[str, str | None]:
+def normalize_material_category(category: str) -> Tuple[str, Optional[str]]:
     """
     Normalize material category to standard format and extract composition.
 
