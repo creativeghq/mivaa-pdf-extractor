@@ -33,6 +33,7 @@ from ..services.rag_service import RAGService
 from ..services.product_creation_service import ProductCreationService
 from ..services.material_kai_service import MaterialKaiService
 from ..services.progress_tracker import get_progress_service
+from ..services.async_queue_service import AsyncQueueService
 from ..dependencies import (
     get_current_user,
     get_workspace_context,
@@ -43,6 +44,7 @@ from ..dependencies import (
     get_pdf_processor
 )
 from ..middleware.jwt_auth import WorkspaceContext, User
+from pydantic import BaseModel
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -1803,4 +1805,7 @@ async def reprocess_image_ocr(
     except Exception as e:
         logger.error(f"Error reprocessing image OCR: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to reprocess image: {str(e)}")
+
+
+
 

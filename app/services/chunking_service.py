@@ -33,7 +33,7 @@ class ChunkingService:
     ) -> Dict[str, Any]:
         """
         Create semantic chunks and generate text embeddings.
-        
+
         Args:
             document_id: Document ID
             workspace_id: Workspace ID
@@ -41,24 +41,50 @@ class ChunkingService:
             product_ids: Optional list of product IDs for relationships
             chunk_size: Size of each chunk in tokens
             chunk_overlap: Overlap between chunks
-            
+
         Returns:
             Dict with counts: {chunks_created, embeddings_generated, relationships_created}
         """
         logger.info(f"📝 Creating chunks for document {document_id}...")
-        
+
+        # ✅ Check if chunks already exist for this document
+        existing_chunks = self.supabase_client.client.table('document_chunks')\
+            .select('id')\
+            .eq('document_id', document_id)\
+            .limit(1)\
+            .execute()
+
+        if existing_chunks.data and len(existing_chunks.data) > 0:
+            logger.info(f"   ⏭️ Skipping - document already has {len(existing_chunks.data)} chunks")
+
+            # Count existing embeddings
+            existing_embeddings = self.supabase_client.client.table('document_chunks')\
+                .select('id')\
+                .eq('document_id', document_id)\
+                .not_('text_embedding', 'is', None)\
+                .execute()
+
+            return {
+                'chunks_created': 0,
+                'embeddings_generated': 0,
+                'relationships_created': 0,
+                'skipped': True,
+                'existing_chunks': len(existing_chunks.data),
+                'existing_embeddings': len(existing_embeddings.data) if existing_embeddings.data else 0
+            }
+
         # Import chunking utilities
         from app.services.chunking_utils import create_semantic_chunks
-        
+
         # Create semantic chunks
         chunks = create_semantic_chunks(
             text=extracted_text,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap
         )
-        
+
         logger.info(f"   Created {len(chunks)} semantic chunks")
-        
+
         chunks_created = 0
         embeddings_generated = 0
         relationships_created = 0

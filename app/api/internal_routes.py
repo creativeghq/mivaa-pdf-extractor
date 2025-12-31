@@ -10,7 +10,10 @@ Endpoints:
 - POST /api/internal/upload-images/{job_id} - Upload material images to storage
 - POST /api/internal/save-images-db/{job_id} - Save images to DB and generate CLIP embeddings
 - POST /api/internal/detect-products/{job_id} - Product discovery
-- POST /api/internal/generate-chunks/{job_id} - Text chunking
+- POST /api/internal/create-chunks/{job_id} - Text chunking with duplicate prevention
+- POST /api/internal/create-relationships/{job_id} - Create chunk-image and product-image relationships
+- POST /api/internal/extract-metadata/{job_id} - Extract product metadata using AI
+- POST /api/internal/generate-product-embeddings - Generate embeddings for products without them
 """
 
 from fastapi import APIRouter, HTTPException, Depends
@@ -21,8 +24,9 @@ import logging
 from app.services.image_processing_service import ImageProcessingService
 from app.services.chunking_service import ChunkingService
 from app.services.relevancy_service import RelevancyService
-from app.services.supabase_client import get_supabase_client
+from app.services.supabase_client import get_supabase_client, SupabaseClient
 from app.services.progress_tracker import ProgressTracker
+from app.services.async_queue_service import AsyncQueueService
 from app.models.ai_config import AIModelConfig, DEFAULT_AI_CONFIG
 
 logger = logging.getLogger(__name__)
@@ -130,6 +134,9 @@ class CreateChunksResponse(BaseModel):
     chunks_created: int
     embeddings_generated: int
     relationships_created: int
+    skipped: Optional[bool] = False
+    existing_chunks: Optional[int] = 0
+    existing_embeddings: Optional[int] = 0
 
 
 class CreateRelationshipsRequest(BaseModel):
@@ -406,6 +413,12 @@ async def create_chunks(
     1. Creates semantic chunks from extracted text
     2. Generates text embeddings for each chunk
     3. Creates chunk-to-product relationships
+    4. **Prevents duplicates** - skips if chunks already exist
+
+    **Use Cases:**
+    - Regenerate chunks after text extraction updates
+    - Create chunks for documents that failed chunking
+    - Manual chunk generation for testing
 
     Args:
         job_id: Job ID for tracking
@@ -424,7 +437,7 @@ async def create_chunks(
         # Initialize service
         chunking_service = ChunkingService()
 
-        # Create chunks and embeddings
+        # Create chunks and embeddings (with duplicate prevention)
         result = await chunking_service.create_chunks_and_embeddings(
             document_id=request.document_id,
             workspace_id=request.workspace_id,
@@ -439,20 +452,24 @@ async def create_chunks(
             "CHUNKING",
             100,
             metadata={
-                'chunks_created': result['chunks_created'],
-                'embeddings_generated': result['embeddings_generated'],
-                'relationships_created': result['relationships_created']
+                'chunks_created': result.get('chunks_created', 0),
+                'embeddings_generated': result.get('embeddings_generated', 0),
+                'relationships_created': result.get('relationships_created', 0),
+                'skipped': result.get('skipped', False)
             },
             sync_to_db=True
         )
 
-        logger.info(f"✅ [Job {job_id}] Chunking complete: {result['chunks_created']} chunks, {result['embeddings_generated']} embeddings")
+        logger.info(f"✅ [Job {job_id}] Chunking complete: {result.get('chunks_created', 0)} chunks, {result.get('embeddings_generated', 0)} embeddings")
 
         return CreateChunksResponse(
             success=True,
-            chunks_created=result['chunks_created'],
-            embeddings_generated=result['embeddings_generated'],
-            relationships_created=result['relationships_created']
+            chunks_created=result.get('chunks_created', 0),
+            embeddings_generated=result.get('embeddings_generated', 0),
+            relationships_created=result.get('relationships_created', 0),
+            skipped=result.get('skipped', False),
+            existing_chunks=result.get('existing_chunks', 0),
+            existing_embeddings=result.get('existing_embeddings', 0)
         )
 
     except Exception as e:
@@ -633,4 +650,168 @@ async def extract_metadata(
     except Exception as e:
         logger.error(f"❌ [Job {job_id}] Metadata extraction failed: {e}")
         raise HTTPException(status_code=500, detail=f"Relationship creation failed: {str(e)}")
+
+
+# ============================================================================
+# PRODUCT EMBEDDING GENERATION
+# ============================================================================
+
+class GenerateProductEmbeddingsRequest(BaseModel):
+    """Request model for generating product embeddings."""
+    document_id: Optional[str] = None
+    workspace_id: str
+    product_ids: Optional[List[str]] = None  # If None, generate for all products in document/workspace
+
+
+class GenerateProductEmbeddingsResponse(BaseModel):
+    """Response model for product embedding generation."""
+    success: bool
+    message: str
+    products_processed: int
+    chunks_created: int
+    embeddings_queued: int
+    errors: List[str] = []
+
+
+@router.post("/generate-product-embeddings", response_model=GenerateProductEmbeddingsResponse)
+async def generate_product_embeddings(
+    request: GenerateProductEmbeddingsRequest,
+    supabase: SupabaseClient = Depends(get_supabase_client)
+):
+    """
+    Generate embeddings for products that don't have them yet.
+
+    This endpoint:
+    1. Finds products without embeddings (no associated chunks)
+    2. Creates chunks from product name + description
+    3. Queues embedding generation jobs
+
+    **Use Cases:**
+    - Fix missing embeddings from old PDF processing
+    - Regenerate embeddings after product updates
+    - Bulk embedding generation for imported products
+
+    Args:
+        request: Request with workspace_id, optional document_id and product_ids
+
+    Returns:
+        GenerateProductEmbeddingsResponse with counts and errors
+    """
+    try:
+        logger.info(f"🎨 Starting product embedding generation for workspace: {request.workspace_id}")
+
+        # Build query to find products
+        query = supabase.client.table('products').select('id, name, description, metadata, source_document_id')
+
+        # Apply filters
+        query = query.eq('workspace_id', request.workspace_id)
+
+        if request.document_id:
+            query = query.eq('source_document_id', request.document_id)
+
+        if request.product_ids:
+            query = query.in_('id', request.product_ids)
+
+        products_response = query.execute()
+
+        if not products_response.data:
+            return GenerateProductEmbeddingsResponse(
+                success=True,
+                message="No products found matching criteria",
+                products_processed=0,
+                chunks_created=0,
+                embeddings_queued=0
+            )
+
+        products = products_response.data
+        logger.info(f"   Found {len(products)} products to process")
+
+        # Initialize services
+        async_queue = AsyncQueueService()
+
+        products_processed = 0
+        chunks_created = 0
+        embeddings_queued = 0
+        errors = []
+
+        for product in products:
+            try:
+                product_id = product['id']
+                product_name = product.get('name', '')
+                description = product.get('description', '')
+                document_id = product.get('source_document_id')
+
+                if not description:
+                    logger.warning(f"   ⚠️ Skipping product {product_name} - no description")
+                    continue
+
+                # Check if product already has chunks
+                existing_chunks = supabase.client.table('document_chunks').select('id').eq(
+                    'metadata->>product_id', product_id
+                ).limit(1).execute()
+
+                if existing_chunks.data and len(existing_chunks.data) > 0:
+                    logger.info(f"   ⏭️ Skipping product {product_name} - already has embeddings")
+                    continue
+
+                # Create chunk for product description
+                chunk_text = f"{product_name}. {description}"
+                metadata = product.get('metadata', {})
+                page_number = metadata.get('page_range', [1])[0] if metadata.get('page_range') else 1
+
+                chunk_record = {
+                    'document_id': document_id,
+                    'workspace_id': request.workspace_id,
+                    'chunk_text': chunk_text,
+                    'page_number': page_number,
+                    'chunk_index': 0,
+                    'metadata': {
+                        'product_id': product_id,
+                        'product_name': product_name,
+                        'source': 'product_description',
+                        'generated_by': 'admin_embedding_generation'
+                    }
+                }
+
+                chunk_response = supabase.client.table('document_chunks').insert(chunk_record).execute()
+
+                if chunk_response.data:
+                    chunk_id = chunk_response.data[0]['id']
+                    chunks_created += 1
+
+                    # Queue for embedding generation
+                    await async_queue.queue_ai_analysis_jobs(
+                        document_id=document_id,
+                        chunks=[{'id': chunk_id}],
+                        analysis_type='embedding_generation',
+                        priority=0
+                    )
+
+                    embeddings_queued += 1
+                    products_processed += 1
+                    logger.info(f"   ✅ Queued embedding for product: {product_name}")
+
+            except Exception as e:
+                error_msg = f"Failed to process product {product.get('name', product.get('id'))}: {str(e)}"
+                logger.error(f"   ❌ {error_msg}")
+                errors.append(error_msg)
+
+        message = f"Generated embeddings for {products_processed} products"
+        if errors:
+            message += f" ({len(errors)} errors)"
+
+        logger.info(f"✅ Product embedding generation complete: {products_processed} processed, {chunks_created} chunks created, {embeddings_queued} embeddings queued")
+
+        return GenerateProductEmbeddingsResponse(
+            success=True,
+            message=message,
+            products_processed=products_processed,
+            chunks_created=chunks_created,
+            embeddings_queued=embeddings_queued,
+            errors=errors
+        )
+
+    except Exception as e:
+        logger.error(f"❌ Product embedding generation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate product embeddings: {str(e)}")
 

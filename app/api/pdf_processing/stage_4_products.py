@@ -306,6 +306,62 @@ async def process_stage_4_products(
     )
     logger.info(f"✅ Created RELATIONSHIPS_CREATED checkpoint for job {job_id}")
 
+    # ✅ NEW: Generate embeddings for products
+    product_embeddings_generated = 0
+    if products_created > 0:
+        logger.info(f"🎨 Generating embeddings for {products_created} products...")
+        from app.services.async_queue_service import AsyncQueueService
+        from app.services.chunking_service import UnifiedChunkingService
+
+        async_queue = AsyncQueueService()
+        chunking_service = UnifiedChunkingService()
+
+        for product_name, product_id in product_id_map.items():
+            try:
+                # Get product data
+                product_response = supabase.client.table('products').select('*').eq('id', product_id).single().execute()
+                if not product_response.data:
+                    continue
+
+                product_data = product_response.data
+                description = product_data.get('description', '')
+
+                if description:
+                    # Create chunk for product description
+                    chunk_record = {
+                        'document_id': document_id,
+                        'workspace_id': workspace_id,
+                        'chunk_text': f"{product_name}. {description}",
+                        'page_number': product_data.get('metadata', {}).get('page_range', [1])[0] if product_data.get('metadata', {}).get('page_range') else 1,
+                        'chunk_index': 0,
+                        'metadata': {
+                            'product_id': product_id,
+                            'product_name': product_name,
+                            'source': 'product_description'
+                        }
+                    }
+
+                    chunk_response = supabase.client.table('document_chunks').insert(chunk_record).execute()
+
+                    if chunk_response.data:
+                        chunk_id = chunk_response.data[0]['id']
+
+                        # Queue for embedding generation
+                        await async_queue.queue_ai_analysis_jobs(
+                            document_id=document_id,
+                            chunks=[{'id': chunk_id}],
+                            analysis_type='embedding_generation',
+                            priority=0
+                        )
+
+                        product_embeddings_generated += 1
+                        logger.info(f"   ✅ Queued embedding generation for product: {product_name}")
+
+            except Exception as e:
+                logger.error(f"   ❌ Failed to queue embedding for product {product_name}: {e}")
+
+        logger.info(f"   ✅ Queued {product_embeddings_generated} product embeddings for generation")
+
     # ✅ NEW: Match document entities to products and generate embeddings
     entity_product_relationships = 0
     entity_embeddings_generated = 0
@@ -344,6 +400,7 @@ async def process_stage_4_products(
 
     logger.info(f"✅ [STAGE 4] Product Creation & Linking Complete")
     logger.info(f"   Products Created: {products_created}")
+    logger.info(f"   Product Embeddings Queued: {product_embeddings_generated}")
     logger.info(f"   Metadata Consolidation: {metadata_consolidation_count} successful, {metadata_consolidation_failed} failed")
     logger.info(f"   AI Calls for Consolidation: {metadata_consolidation_ai_calls}")
     logger.info(f"📊 Progress updated: 85% (Stage 4 complete - {products_created} products created)")
@@ -356,6 +413,9 @@ async def process_stage_4_products(
         "metadata_consolidation_failed": metadata_consolidation_failed,  # ✅ NEW
         "metadata_consolidation_ai_calls": metadata_consolidation_ai_calls  # ✅ NEW
     }
+
+    # Add product embedding info
+    checkpoint_metadata["product_embeddings_queued"] = product_embeddings_generated  # ✅ NEW
 
     # Add document entity info if any were created
     if entities_created > 0:
@@ -439,6 +499,7 @@ async def process_stage_4_products(
 
     return {
         "products_created": products_created,
+        "product_embeddings_queued": product_embeddings_generated,  # ✅ NEW
         "entities_created": entities_created,
         "entity_product_relationships": entity_product_relationships,
         "entity_embeddings_generated": entity_embeddings_generated,
