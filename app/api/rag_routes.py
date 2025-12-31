@@ -1527,20 +1527,12 @@ async def get_embeddings(
 
     Args:
         document_id: Document ID to filter embeddings
-        embedding_type: Type of embedding (text, visual, multimodal, color, texture, application)
+        embedding_type: Type of embedding (text, visual, clip, color, texture, application, multimodal)
         limit: Maximum number of embeddings to return
         offset: Pagination offset
 
     Returns:
-        List of embeddings with metadata including:
-        - id: Embedding ID
-        - document_id: Source document
-        - chunk_id: Associated chunk (for text embeddings)
-        - image_id: Associated image (for visual embeddings)
-        - embedding_type: Type of embedding
-        - embedding_model: Model used to generate embedding
-        - embedding_dimensions: Vector dimensions
-        - metadata: Additional metadata (quality scores, confidence, etc.)
+        List of embeddings with metadata from document_images and document_chunks
     """
     try:
         supabase_client = get_supabase_client()
@@ -1551,28 +1543,108 @@ async def get_embeddings(
                 detail="document_id is required"
             )
 
-        # Query embeddings - JOIN through chunks to get document_id
-        # embeddings table has chunk_id, not document_id
-        query = supabase_client.client.table('embeddings').select(
-            '*, document_chunks!inner(document_id)'
-        ).eq('document_chunks.document_id', document_id)
-
-        # Filter by embedding type if specified
-        if embedding_type:
-            query = query.eq('embedding_type', embedding_type)
-
-        query = query.range(offset, offset + limit - 1)
-        result = query.execute()
-
-        embeddings = result.data if result.data else []
-
-        # Enrich embeddings with summary statistics
+        embeddings = []
         embedding_stats = {}
-        for emb in embeddings:
-            emb_type = emb.get('embedding_type', 'unknown')
-            if emb_type not in embedding_stats:
-                embedding_stats[emb_type] = 0
-            embedding_stats[emb_type] += 1
+
+        # Query image embeddings from document_images
+        image_query = supabase_client.client.table('document_images').select(
+            'id, image_url, visual_clip_embedding_512, color_embedding_256, texture_embedding_256, application_embedding_512, multimodal_fusion_embedding_2688'
+        ).eq('document_id', document_id).range(offset, offset + limit - 1)
+
+        image_result = image_query.execute()
+
+        if image_result.data:
+            for img in image_result.data:
+                # Add CLIP embedding
+                if img.get('visual_clip_embedding_512'):
+                    if not embedding_type or embedding_type in ['visual', 'clip']:
+                        embeddings.append({
+                            'id': f"{img['id']}_clip",
+                            'entity_id': img['id'],
+                            'entity_type': 'image',
+                            'embedding_type': 'visual_clip_512',
+                            'dimension': 512,
+                            'model': 'clip-vit-base-patch32',
+                            'embedding': img['visual_clip_embedding_512']
+                        })
+                        embedding_stats['visual_clip_512'] = embedding_stats.get('visual_clip_512', 0) + 1
+
+                # Add color embedding
+                if img.get('color_embedding_256'):
+                    if not embedding_type or embedding_type == 'color':
+                        embeddings.append({
+                            'id': f"{img['id']}_color",
+                            'entity_id': img['id'],
+                            'entity_type': 'image',
+                            'embedding_type': 'color_256',
+                            'dimension': 256,
+                            'model': 'clip-vit-base-patch32',
+                            'embedding': img['color_embedding_256']
+                        })
+                        embedding_stats['color_256'] = embedding_stats.get('color_256', 0) + 1
+
+                # Add texture embedding
+                if img.get('texture_embedding_256'):
+                    if not embedding_type or embedding_type == 'texture':
+                        embeddings.append({
+                            'id': f"{img['id']}_texture",
+                            'entity_id': img['id'],
+                            'entity_type': 'image',
+                            'embedding_type': 'texture_256',
+                            'dimension': 256,
+                            'model': 'clip-vit-base-patch32',
+                            'embedding': img['texture_embedding_256']
+                        })
+                        embedding_stats['texture_256'] = embedding_stats.get('texture_256', 0) + 1
+
+                # Add application embedding
+                if img.get('application_embedding_512'):
+                    if not embedding_type or embedding_type == 'application':
+                        embeddings.append({
+                            'id': f"{img['id']}_application",
+                            'entity_id': img['id'],
+                            'entity_type': 'image',
+                            'embedding_type': 'application_512',
+                            'dimension': 512,
+                            'model': 'clip-vit-base-patch32',
+                            'embedding': img['application_embedding_512']
+                        })
+                        embedding_stats['application_512'] = embedding_stats.get('application_512', 0) + 1
+
+                # Add multimodal fusion embedding
+                if img.get('multimodal_fusion_embedding_2688'):
+                    if not embedding_type or embedding_type == 'multimodal':
+                        embeddings.append({
+                            'id': f"{img['id']}_multimodal",
+                            'entity_id': img['id'],
+                            'entity_type': 'image',
+                            'embedding_type': 'multimodal_fusion_2688',
+                            'dimension': 2688,
+                            'model': 'siglip-so400m-14-384',
+                            'embedding': img['multimodal_fusion_embedding_2688']
+                        })
+                        embedding_stats['multimodal_fusion_2688'] = embedding_stats.get('multimodal_fusion_2688', 0) + 1
+
+        # Query text embeddings from document_chunks
+        if not embedding_type or embedding_type == 'text':
+            chunk_query = supabase_client.client.table('document_chunks').select(
+                'id, chunk_text, text_embedding_1024'
+            ).eq('document_id', document_id).not_('text_embedding_1024', 'is', None).range(offset, offset + limit - 1)
+
+            chunk_result = chunk_query.execute()
+
+            if chunk_result.data:
+                for chunk in chunk_result.data:
+                    embeddings.append({
+                        'id': f"{chunk['id']}_text",
+                        'entity_id': chunk['id'],
+                        'entity_type': 'chunk',
+                        'embedding_type': 'text_1024',
+                        'dimension': 1024,
+                        'model': 'voyage-3',
+                        'embedding': chunk['text_embedding_1024']
+                    })
+                    embedding_stats['text_1024'] = embedding_stats.get('text_1024', 0) + 1
 
         return JSONResponse(content={
             "document_id": document_id,
