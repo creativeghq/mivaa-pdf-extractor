@@ -1635,6 +1635,7 @@ from app.api.chunk_quality_routes import router as chunk_quality_router
 from app.api.price_monitoring_routes import router as price_monitoring_router
 from app.api.websocket_routes import router as websocket_router
 from app.api.logs_routes import router as logs_router
+from app.api.admin_linking import router as admin_linking_router
 
 app.include_router(health_router)  # Health check endpoints (must be first for monitoring)
 app.include_router(search_router)
@@ -1669,6 +1670,7 @@ app.include_router(chunk_quality_router)  # NEW: Chunk quality metrics and flagg
 app.include_router(price_monitoring_router)  # NEW: Price monitoring with Firecrawl (competitor scraping, alerts, history)
 app.include_router(websocket_router)  # NEW: WebSocket endpoint for real-time updates (job progress, system health)
 app.include_router(logs_router)  # NEW: System logs API (fetch, filter, clear logs from database)
+app.include_router(admin_linking_router)  # NEW: Admin entity linking (manual chunk-product linking for debugging)
 
 
 # ============================================================================
