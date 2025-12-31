@@ -741,18 +741,31 @@ async def generate_product_embeddings(
                 description = product.get('description', '')
                 document_id = product.get('source_document_id')
 
-                if not description:
-                    logger.warning(f"   ⚠️ Skipping product {product_name} - no description")
+                # Skip if no document_id (required for chunks)
+                if not document_id:
+                    error_msg = f"Skipping product {product_name} - no source_document_id"
+                    logger.warning(f"   ⚠️ {error_msg}")
+                    errors.append(error_msg)
                     continue
 
-                # Check if product already has chunks
-                existing_chunks = supabase.client.table('document_chunks').select('id').eq(
+                if not description:
+                    error_msg = f"Skipping product {product_name} - no description"
+                    logger.warning(f"   ⚠️ {error_msg}")
+                    errors.append(error_msg)
+                    continue
+
+                # Check if product already has chunks with embeddings
+                # First check if chunks exist for this product
+                existing_chunks = supabase.client.table('document_chunks').select('id, text_embedding').eq(
                     'metadata->>product_id', product_id
-                ).limit(1).execute()
+                ).execute()
 
                 if existing_chunks.data and len(existing_chunks.data) > 0:
-                    logger.info(f"   ⏭️ Skipping product {product_name} - already has embeddings")
-                    continue
+                    # Check if any of the chunks have embeddings
+                    has_embeddings = any(chunk.get('text_embedding') is not None for chunk in existing_chunks.data)
+                    if has_embeddings:
+                        logger.info(f"   ⏭️ Skipping product {product_name} - already has embeddings")
+                        continue
 
                 # Create chunk for product description
                 chunk_text = f"{product_name}. {description}"
