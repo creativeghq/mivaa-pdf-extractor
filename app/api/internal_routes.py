@@ -775,14 +775,14 @@ async def generate_product_embeddings(
                 chunk_record = {
                     'document_id': document_id,
                     'workspace_id': request.workspace_id,
-                    'chunk_text': chunk_text,
-                    'page_number': page_number,
+                    'content': chunk_text, 
                     'chunk_index': 0,
                     'metadata': {
                         'product_id': product_id,
                         'product_name': product_name,
                         'source': 'product_description',
-                        'generated_by': 'admin_embedding_generation'
+                        'generated_by': 'admin_embedding_generation',
+                        'page_number': page_number
                     }
                 }
 
