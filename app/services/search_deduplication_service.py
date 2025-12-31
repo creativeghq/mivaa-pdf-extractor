@@ -256,7 +256,7 @@ Rules:
         
         try:
             # Get searches with same core material
-            response = self.supabase.table("saved_searches").select("*").eq(
+            response = self.supabase.client.table("saved_searches").select("*").eq(
                 "user_id", user_id
             ).eq(
                 "core_material", analysis.core_material
@@ -447,7 +447,7 @@ Rules:
 
         try:
             # Get existing search
-            response = self.supabase.table("saved_searches").select("*").eq(
+            response = self.supabase.client.table("saved_searches").select("*").eq(
                 "id", existing_id
             ).single().execute()
 
@@ -481,7 +481,7 @@ Rules:
                 "updated_at": "now()"
             }
 
-            self.supabase.table("saved_searches").update(update_data).eq(
+            self.supabase.client.table("saved_searches").update(update_data).eq(
                 "id", existing_id
             ).execute()
 
@@ -536,4 +536,5 @@ def get_deduplication_service() -> SearchDeduplicationService:
     if _deduplication_service is None:
         _deduplication_service = SearchDeduplicationService()
     return _deduplication_service
+
 

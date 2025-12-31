@@ -59,7 +59,7 @@ class ProductRelationshipService:
         """
         try:
             # Get the source product
-            product_response = self.supabase.table('products').select(
+            product_response = self.supabase.client.table('products').select(
                 'id, name, description, metadata'
             ).eq('id', product_id).eq('workspace_id', workspace_id).single().execute()
             
@@ -144,7 +144,7 @@ class ProductRelationshipService:
             if not material_type:
                 return []
             
-            response = self.supabase.table('products').select(
+            response = self.supabase.client.table('products').select(
                 'id, name, description, metadata'
             ).eq('workspace_id', workspace_id).neq('id', exclude_id).execute()
             
@@ -183,7 +183,7 @@ class ProductRelationshipService:
             if not finish and not colors:
                 return []
             
-            response = self.supabase.table('products').select(
+            response = self.supabase.client.table('products').select(
                 'id, name, description, metadata'
             ).eq('workspace_id', workspace_id).neq('id', exclude_id).execute()
             
@@ -242,7 +242,7 @@ class ProductRelationshipService:
             if not collection and not designer and not factory_name:
                 return []
 
-            response = self.supabase.table('products').select(
+            response = self.supabase.client.table('products').select(
                 'id, name, description, metadata'
             ).eq('workspace_id', workspace_id).neq('id', exclude_id).execute()
 
@@ -311,7 +311,7 @@ class ProductRelationshipService:
             if not complementary_cats:
                 return []
 
-            response = self.supabase.table('products').select(
+            response = self.supabase.client.table('products').select(
                 'id, name, description, metadata'
             ).eq('workspace_id', workspace_id).neq('id', exclude_id).execute()
 
@@ -354,7 +354,7 @@ class ProductRelationshipService:
             if not slip_resistance and not fire_rating and not dimensions:
                 return []
 
-            response = self.supabase.table('products').select(
+            response = self.supabase.client.table('products').select(
                 'id, name, description, metadata'
             ).eq('workspace_id', workspace_id).neq('id', exclude_id).execute()
 
@@ -424,4 +424,5 @@ class ProductRelationshipService:
                 seen[product_id] = product
 
         return list(seen.values())
+
 

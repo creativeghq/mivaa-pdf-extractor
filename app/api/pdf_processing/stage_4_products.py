@@ -508,3 +508,4 @@ async def process_stage_4_products(
         "metadata_consolidation_failed": metadata_consolidation_failed,  # ✅ NEW
         "metadata_consolidation_ai_calls": metadata_consolidation_ai_calls  # ✅ NEW
     }
+

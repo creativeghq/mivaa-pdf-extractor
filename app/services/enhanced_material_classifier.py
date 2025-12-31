@@ -383,3 +383,4 @@ Respond ONLY with valid JSON, no additional text."""
             "combined_confidence": vision_result.get("confidence", 0.0)
         }
 
+

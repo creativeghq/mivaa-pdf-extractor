@@ -203,3 +203,4 @@ def get_focused_product_extractor() -> FocusedProductExtractor:
     """Get singleton instance of FocusedProductExtractor."""
     return FocusedProductExtractor()
 
+

@@ -252,3 +252,4 @@ class ChunkRelationshipService:
             self.logger.error(f"❌ Failed to calculate cosine similarity: {e}")
             return 0.0
 
+

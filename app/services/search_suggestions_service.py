@@ -604,3 +604,4 @@ Return as JSON: {{"related": [], "broader": [], "narrower": []}}"""
             logger.error(f"Error tracking suggestion click: {e}")
             return False
 
+

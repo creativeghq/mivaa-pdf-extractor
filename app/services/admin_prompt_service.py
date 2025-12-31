@@ -329,3 +329,4 @@ class AdminPromptService:
             logger.error(f"Error creating audit entry: {str(e)}")
             # Don't raise - audit trail failure shouldn't block the update
 
+

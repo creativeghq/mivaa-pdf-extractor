@@ -653,3 +653,4 @@ class ChunkTypeClassificationService:
                 "error": str(error),
                 "stats": {"classified": 0, "errors": 1, "total": 0}
             }
+

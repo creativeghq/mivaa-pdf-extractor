@@ -162,3 +162,4 @@ class PDFToImagesConverter:
             logger.error(f"❌ PDF bytes to images conversion failed: {e}")
             raise
 
+

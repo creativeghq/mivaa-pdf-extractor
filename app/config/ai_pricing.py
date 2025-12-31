@@ -372,3 +372,4 @@ class AIPricingConfig:
 # Singleton instance
 ai_pricing = AIPricingConfig()
 
+

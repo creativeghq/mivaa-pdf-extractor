@@ -359,3 +359,4 @@ async def get_merge_history(
         logger.error(f"Error getting merge history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+

@@ -402,7 +402,7 @@ class MaterialVisualSearchService:
 
         try:
             # Query real materials from database
-            query = self.supabase.table('products').select(
+            query = self.supabase.client.table('products').select(
                 'id, name, category, description, metadata, created_at'
             )
 

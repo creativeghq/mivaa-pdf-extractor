@@ -801,3 +801,4 @@ progress_service = ProgressTrackingService()
 def get_progress_service() -> ProgressTrackingService:
     """Get the global progress tracking service instance."""
     return progress_service
+

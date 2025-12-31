@@ -602,7 +602,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                 return False
 
             # Query workspace membership from Supabase
-            response = self.supabase.table("workspace_members").select("*").eq(
+            response = self.supabase.client.table("workspace_members").select("*").eq(
                 "user_id", user_id
             ).eq("workspace_id", workspace_id).execute()
 

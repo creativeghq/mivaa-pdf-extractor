@@ -238,3 +238,4 @@ async def get_prompt_template_history(
         logger.error(f"Failed to get prompt template history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+

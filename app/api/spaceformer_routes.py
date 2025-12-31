@@ -201,3 +201,4 @@ async def analyze_spatial_context(
             detail=f"Spatial analysis failed: {str(e)}"
         )
 
+

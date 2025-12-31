@@ -128,17 +128,135 @@ class UnifiedChunkingService:
         except Exception as e:
             self.logger.error(f"Error chunking text: {e}")
             raise
-    
+
+    async def chunk_pages(
+        self,
+        pages: List[Dict[str, Any]],
+        document_id: str,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> List[Chunk]:
+        """
+        Chunk text from pages while preserving page information.
+
+        This is the PREFERRED method for PDF chunking as it preserves page metadata
+        from PyMuPDF4LLM's page_chunks output.
+
+        Args:
+            pages: List of page dicts from PyMuPDF4LLM with structure:
+                   [{"metadata": {"page": 0}, "text": "..."}, ...]
+            document_id: Document ID for chunk metadata
+            metadata: Additional metadata for chunks
+
+        Returns:
+            List of chunks with page_number in metadata
+        """
+        try:
+            if not pages or len(pages) == 0:
+                self.logger.warning(f"Empty pages list provided for document {document_id}")
+                return []
+
+            self.logger.info(f"🔄 Starting page-aware chunking for document {document_id} ({len(pages)} pages) using {self.config.strategy} strategy")
+
+            all_chunks = []
+            global_chunk_index = 0
+
+            # Process each page
+            for page_dict in pages:
+                page_metadata = page_dict.get('metadata', {})
+                page_number = page_metadata.get('page', 0)  # PyMuPDF4LLM uses 0-based indexing
+                page_text = page_dict.get('text', '')
+
+                if not page_text or len(page_text.strip()) == 0:
+                    self.logger.debug(f"   Skipping empty page {page_number}")
+                    continue
+
+                # Chunk this page's text
+                page_chunks = self._chunk_page_text(
+                    text=page_text,
+                    document_id=document_id,
+                    page_number=page_number + 1,  # Convert to 1-based for storage
+                    start_chunk_index=global_chunk_index,
+                    metadata=metadata
+                )
+
+                all_chunks.extend(page_chunks)
+                global_chunk_index += len(page_chunks)
+
+                if (page_number + 1) % 10 == 0:
+                    self.logger.info(f"   Processed {page_number + 1} pages, {len(all_chunks)} chunks so far")
+
+            # Calculate quality scores for all chunks
+            self.logger.info(f"   Calculating quality scores for {len(all_chunks)} chunks...")
+            for chunk in all_chunks:
+                chunk.quality_score = self._calculate_chunk_quality(chunk)
+
+            # Update total_chunks for all chunks
+            for chunk in all_chunks:
+                chunk.total_chunks = len(all_chunks)
+
+            self.logger.info(f"✅ Page-aware chunking complete: {len(all_chunks)} chunks from {len(pages)} pages")
+            return all_chunks
+
+        except Exception as e:
+            self.logger.error(f"❌ Page-aware chunking failed: {e}", exc_info=True)
+            raise
+
+    def _chunk_page_text(
+        self,
+        text: str,
+        document_id: str,
+        page_number: int,
+        start_chunk_index: int,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> List[Chunk]:
+        """
+        Chunk text from a single page using the configured strategy.
+
+        Args:
+            text: Text from the page
+            document_id: Document ID
+            page_number: Page number (1-based)
+            start_chunk_index: Starting index for chunks
+            metadata: Additional metadata
+
+        Returns:
+            List of chunks with page_number in metadata
+        """
+        # Select chunking strategy
+        if self.config.strategy == ChunkingStrategy.SEMANTIC:
+            chunks = self._chunk_semantic(text, document_id, metadata, page_number)
+        elif self.config.strategy == ChunkingStrategy.FIXED_SIZE:
+            chunks = self._chunk_fixed_size(text, document_id, metadata, page_number)
+        elif self.config.strategy == ChunkingStrategy.HYBRID:
+            chunks = self._chunk_hybrid(text, document_id, metadata, page_number)
+        elif self.config.strategy == ChunkingStrategy.LAYOUT_AWARE:
+            chunks = self._chunk_layout_aware(text, document_id, metadata, page_number)
+        else:
+            raise ValueError(f"Unknown chunking strategy: {self.config.strategy}")
+
+        # Update chunk indices to be global
+        for i, chunk in enumerate(chunks):
+            chunk.chunk_index = start_chunk_index + i
+
+        return chunks
+
     def _chunk_semantic(
         self,
         text: str,
         document_id: str,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        page_number: Optional[int] = None
     ) -> List[Chunk]:
         """
         Semantic chunking based on content meaning and boundaries.
 
         Splits on paragraph boundaries first, then respects sentence boundaries.
+
+        Args:
+            text: Text to chunk
+            document_id: Document ID
+            metadata: Additional metadata
+            page_number: Optional page number (1-based) to store in chunk metadata
         """
         chunks = []
         chunk_index = 0
@@ -168,7 +286,8 @@ class UnifiedChunkingService:
                     document_id,
                     chunk_index,
                     current_position,
-                    metadata
+                    metadata,
+                    page_number
                 )
                 chunks.append(chunk)
 
@@ -188,7 +307,8 @@ class UnifiedChunkingService:
                 document_id,
                 chunk_index,
                 current_position,
-                metadata
+                metadata,
+                page_number
             )
             chunks.append(chunk)
 
@@ -204,12 +324,19 @@ class UnifiedChunkingService:
         self,
         text: str,
         document_id: str,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        page_number: Optional[int] = None
     ) -> List[Chunk]:
         """
         Fixed-size chunking based on character count.
 
         Respects sentence boundaries if configured.
+
+        Args:
+            text: Text to chunk
+            document_id: Document ID
+            metadata: Additional metadata
+            page_number: Optional page number (1-based) to store in chunk metadata
         """
         chunks = []
         chunk_index = 0
@@ -232,7 +359,8 @@ class UnifiedChunkingService:
                     document_id,
                     chunk_index,
                     current_position,
-                    metadata
+                    metadata,
+                    page_number
                 )
                 chunks.append(chunk)
                 chunk_index += 1
@@ -255,16 +383,23 @@ class UnifiedChunkingService:
         self,
         text: str,
         document_id: str,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        page_number: Optional[int] = None
     ) -> List[Chunk]:
         """
         Hybrid chunking combining semantic and fixed-size approaches.
 
         Starts with semantic chunking, then applies size constraints.
+
+        Args:
+            text: Text to chunk
+            document_id: Document ID
+            metadata: Additional metadata
+            page_number: Optional page number (1-based) to store in chunk metadata
         """
         # Start with semantic chunks
         self.logger.info(f"      HYBRID: Starting semantic chunking phase...")
-        semantic_chunks = self._chunk_semantic(text, document_id, metadata)
+        semantic_chunks = self._chunk_semantic(text, document_id, metadata, page_number)
         self.logger.info(f"      HYBRID: Created {len(semantic_chunks)} semantic chunks, refining...")
         refined_chunks = []
 
@@ -288,7 +423,7 @@ class UnifiedChunkingService:
                 original_strategy = self.config.strategy
                 self.config.strategy = ChunkingStrategy.FIXED_SIZE
 
-                sub_chunks = self._chunk_fixed_size(chunk.content, document_id, metadata)
+                sub_chunks = self._chunk_fixed_size(chunk.content, document_id, metadata, page_number)
 
                 # Restore original strategy
                 self.config.strategy = original_strategy
@@ -311,16 +446,23 @@ class UnifiedChunkingService:
         self,
         text: str,
         document_id: str,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        page_number: Optional[int] = None
     ) -> List[Chunk]:
         """
         Layout-aware chunking that respects document structure.
-        
+
         Respects hierarchy and structure while maintaining semantic boundaries.
+
+        Args:
+            text: Text to chunk
+            document_id: Document ID
+            metadata: Additional metadata
+            page_number: Optional page number (1-based) to store in chunk metadata
         """
         # For now, use semantic chunking as base
         # In future, this can be enhanced with layout analysis
-        return self._chunk_semantic(text, document_id, metadata)
+        return self._chunk_semantic(text, document_id, metadata, page_number)
     
     def _create_chunk(
         self,
@@ -328,11 +470,33 @@ class UnifiedChunkingService:
         document_id: str,
         chunk_index: int,
         start_position: int,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        page_number: Optional[int] = None
     ) -> Chunk:
-        """Create a chunk with metadata."""
+        """
+        Create a chunk with metadata.
+
+        Args:
+            content: Chunk content
+            document_id: Document ID
+            chunk_index: Chunk index
+            start_position: Start position in document
+            metadata: Additional metadata
+            page_number: Optional page number (1-based) to store in chunk metadata
+        """
         chunk_id = f"{document_id}_chunk_{chunk_index}_{int(datetime.utcnow().timestamp() * 1000)}"
-        
+
+        chunk_metadata = {
+            **(metadata or {}),
+            "chunk_strategy": self.config.strategy.value,
+            "chunk_size_actual": len(content),
+            "created_at": datetime.utcnow().isoformat()
+        }
+
+        # Add page_number if provided
+        if page_number is not None:
+            chunk_metadata["page_number"] = page_number
+
         return Chunk(
             id=chunk_id,
             content=content,
@@ -340,12 +504,7 @@ class UnifiedChunkingService:
             total_chunks=0,  # Will be updated later
             start_position=start_position,
             end_position=start_position + len(content),
-            metadata={
-                **(metadata or {}),
-                "chunk_strategy": self.config.strategy.value,
-                "chunk_size_actual": len(content),
-                "created_at": datetime.utcnow().isoformat()
-            }
+            metadata=chunk_metadata
         )
     
     def _find_sentence_boundary(self, text: str) -> int:
@@ -386,4 +545,5 @@ class UnifiedChunkingService:
             return round(quality_score, 3)
         except:
             return 0.5
+
 

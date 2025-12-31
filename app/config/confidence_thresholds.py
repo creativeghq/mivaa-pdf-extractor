@@ -288,3 +288,4 @@ class EscalationRules:
         model_normalized = model.lower().replace("_", "-")
         return cls.COST_MULTIPLIERS.get(model_normalized, 1.0)
 
+

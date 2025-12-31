@@ -248,3 +248,4 @@ def get_prompt_template(stage: str, category: str) -> str:
     key = f"{stage}_{category}"
     return DEFAULT_PROMPTS.get(key, DEFAULT_PROMPTS.get(f"{stage}_default", "Extract content from this document."))
 
+

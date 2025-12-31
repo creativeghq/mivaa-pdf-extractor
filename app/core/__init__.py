@@ -16,3 +16,4 @@ __all__ = [
     "extract_pdf_tables",
     "extract_json_and_images"
 ]
+

@@ -172,3 +172,4 @@ def get_google_products_service() -> GoogleProductsIntegration:
         _google_products_service = GoogleProductsIntegration()
     return _google_products_service
 
+

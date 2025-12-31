@@ -747,3 +747,4 @@ class WebScrapingService:
             self.logger.error(f"Failed to update job progress: {e}")
             # Don't raise - progress updates are non-critical
 
+

@@ -129,7 +129,7 @@ async def get_document_entities(
     """
     try:
         # Build query
-        query = service.supabase.table("document_entities")\
+        query = service.supabase.client.table("document_entities")\
             .select("*")\
             .eq("workspace_id", workspace_id)
         
@@ -167,7 +167,7 @@ async def get_document_entity(
 ):
     """Get a specific document entity by ID."""
     try:
-        result = service.supabase.table("document_entities")\
+        result = service.supabase.client.table("document_entities")\
             .select("*")\
             .eq("id", entity_id)\
             .execute()
@@ -282,7 +282,7 @@ async def get_product_document_relationships(
 ):
     """Get all document entity relationships for a specific product."""
     try:
-        result = service.supabase.table("product_document_relationships")\
+        result = service.supabase.client.table("product_document_relationships")\
             .select("*")\
             .eq("product_id", product_id)\
             .execute()
@@ -298,4 +298,5 @@ async def get_product_document_relationships(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get product-document relationships: {str(e)}"
         )
+
 

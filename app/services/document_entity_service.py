@@ -158,7 +158,7 @@ class DocumentEntityService:
                 }
                 
                 # Insert into database
-                result = self.supabase.table("document_entities").insert(entity_data).execute()
+                result = self.supabase.client.table("document_entities").insert(entity_data).execute()
                 
                 if result.data and len(result.data) > 0:
                     entity_id = result.data[0]["id"]
@@ -205,7 +205,7 @@ class DocumentEntityService:
                 "created_at": datetime.now().isoformat()
             }
             
-            result = self.supabase.table("product_document_relationships").insert(relationship_data).execute()
+            result = self.supabase.client.table("product_document_relationships").insert(relationship_data).execute()
             
             if result.data and len(result.data) > 0:
                 self.logger.info(f"✅ Linked entity {entity_id} to product {product_id} ({relationship_type})")
@@ -242,7 +242,7 @@ class DocumentEntityService:
             self.logger.info(f"🔗 Matching entities to products for document {document_id}")
 
             # Fetch all entities for this document
-            entities_response = self.supabase.table('document_entities').select('*').eq(
+            entities_response = self.supabase.client.table('document_entities').select('*').eq(
                 'source_document_id', document_id
             ).eq('workspace_id', workspace_id).execute()
 
@@ -253,7 +253,7 @@ class DocumentEntityService:
             entities = entities_response.data
 
             # Fetch all products for this document
-            products_response = self.supabase.table('products').select('*').eq(
+            products_response = self.supabase.client.table('products').select('*').eq(
                 'source_document_id', document_id
             ).eq('workspace_id', workspace_id).execute()
 
@@ -381,7 +381,7 @@ class DocumentEntityService:
             self.logger.info(f"🎨 Generating embeddings for document entities in {document_id}")
 
             # Fetch all entities for this document
-            entities_response = self.supabase.table('document_entities').select('*').eq(
+            entities_response = self.supabase.client.table('document_entities').select('*').eq(
                 'source_document_id', document_id
             ).eq('workspace_id', workspace_id).execute()
 
@@ -483,7 +483,7 @@ class DocumentEntityService:
             List of document entities
         """
         try:
-            query = self.supabase.table("product_document_relationships")\
+            query = self.supabase.client.table("product_document_relationships")\
                 .select("document_entities(*)")\
                 .eq("product_id", product_id)
             
@@ -531,7 +531,7 @@ class DocumentEntityService:
             List of document entities
         """
         try:
-            query = self.supabase.table("document_entities")\
+            query = self.supabase.client.table("document_entities")\
                 .select("*")\
                 .eq("factory_name", factory_name)
             
@@ -561,4 +561,5 @@ class DocumentEntityService:
         except Exception as e:
             self.logger.error(f"❌ Error getting entities by factory: {e}")
             return []
+
 

@@ -82,7 +82,7 @@ async def log_frontend_error(log_request: FrontendLogRequest, request: Request):
         }
 
         # Insert into database
-        response = supabase.table('system_logs').insert(log_entry).execute()
+        response = supabase.client.table('system_logs').insert(log_entry).execute()
 
         return {
             "success": True,
@@ -126,7 +126,7 @@ async def get_logs(
         supabase = get_supabase_client()
         
         # Build query
-        query = supabase.table('system_logs').select('*', count='exact')
+        query = supabase.client.table('system_logs').select('*', count='exact')
         
         # Apply time filter
         if hours:
@@ -193,10 +193,10 @@ async def clear_logs(
         if hours:
             # Delete logs older than specified hours
             cutoff_time = datetime.utcnow() - timedelta(hours=hours)
-            response = supabase.table('system_logs').delete().lt('timestamp', cutoff_time.isoformat()).execute()
+            response = supabase.client.table('system_logs').delete().lt('timestamp', cutoff_time.isoformat()).execute()
         else:
             # Delete all logs
-            response = supabase.table('system_logs').delete().neq('id', '00000000-0000-0000-0000-000000000000').execute()
+            response = supabase.client.table('system_logs').delete().neq('id', '00000000-0000-0000-0000-000000000000').execute()
         
         deleted_count = len(response.data) if response.data else 0
         
@@ -228,7 +228,7 @@ async def get_log_stats(
         cutoff_time = datetime.utcnow() - timedelta(hours=hours)
         
         # Get all logs in time range
-        response = supabase.table('system_logs').select('*').gte('timestamp', cutoff_time.isoformat()).execute()
+        response = supabase.client.table('system_logs').select('*').gte('timestamp', cutoff_time.isoformat()).execute()
         logs = response.data
         
         # Calculate stats
@@ -255,4 +255,5 @@ async def get_log_stats(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get log stats: {str(e)}")
+
 

@@ -428,7 +428,7 @@ class DataImportService:
             product_record['import_batch_id'] = f"xml_{job_id}"
 
             # Insert product into database
-            insert_response = self.supabase.table('products').insert(product_record).execute()
+            insert_response = self.supabase.client.table('products').insert(product_record).execute()
 
             if not insert_response.data:
                 raise ValueError("Failed to insert product - no data returned")
@@ -496,7 +496,7 @@ class DataImportService:
                 return
 
             # Insert images into document_images
-            insert_response = self.supabase.table('document_images').insert(image_records).execute()
+            insert_response = self.supabase.client.table('document_images').insert(image_records).execute()
 
             if not insert_response.data:
                 logger.warning(f"⚠️ No images were inserted for product {product_id}")
@@ -515,7 +515,7 @@ class DataImportService:
                 })
 
             if relationship_records:
-                self.supabase.table('product_image_relationships').insert(relationship_records).execute()
+                self.supabase.client.table('product_image_relationships').insert(relationship_records).execute()
                 logger.info(f"✅ Created {len(relationship_records)} product-image relationships")
 
         except Exception as e:
@@ -565,7 +565,7 @@ class DataImportService:
                 }
             }
 
-            chunk_response = self.supabase.table('document_chunks').insert(chunk_record).execute()
+            chunk_response = self.supabase.client.table('document_chunks').insert(chunk_record).execute()
 
             if chunk_response.data:
                 chunk_id = chunk_response.data[0]['id']
@@ -586,7 +586,7 @@ class DataImportService:
     async def _get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get job details from database."""
         try:
-            response = self.supabase.table('data_import_jobs').select('*').eq('id', job_id).single().execute()
+            response = self.supabase.client.table('data_import_jobs').select('*').eq('id', job_id).single().execute()
             return response.data
         except Exception as e:
             logger.error(f"Failed to get job {job_id}: {e}")
@@ -603,7 +603,7 @@ class DataImportService:
                 if isinstance(value, datetime):
                     update_data[key] = value.isoformat()
             
-            self.supabase.table('data_import_jobs').update(update_data).eq('id', job_id).execute()
+            self.supabase.client.table('data_import_jobs').update(update_data).eq('id', job_id).execute()
             logger.info(f"✅ Updated job {job_id} status to {status}")
         except Exception as e:
             logger.error(f"Failed to update job status: {e}")
@@ -623,7 +623,7 @@ class DataImportService:
                 progress_percent = int((processed / total) * 100) if total > 0 else 0
 
             # Update data_import_jobs table
-            self.supabase.table('data_import_jobs').update({
+            self.supabase.client.table('data_import_jobs').update({
                 'processed_products': processed,
                 'failed_products': failed,
                 'metadata': {
@@ -633,12 +633,12 @@ class DataImportService:
             }).eq('id', job_id).execute()
 
             # 🆕 Get background_job_id from data_import_jobs
-            job_response = self.supabase.table('data_import_jobs').select('background_job_id').eq('id', job_id).single().execute()
+            job_response = self.supabase.client.table('data_import_jobs').select('background_job_id').eq('id', job_id).single().execute()
             background_job_id = job_response.data.get('background_job_id') if job_response.data else None
 
             if background_job_id:
                 # 🆕 Update job_progress table (upsert)
-                self.supabase.table('job_progress').upsert({
+                self.supabase.client.table('job_progress').upsert({
                     'job_id': background_job_id,
                     'stage': f'xml_import_{stage}',
                     'progress_percent': progress_percent,
@@ -652,7 +652,7 @@ class DataImportService:
                 }, on_conflict='job_id,stage').execute()
 
                 # 🆕 Update background_jobs heartbeat and progress
-                self.supabase.table('background_jobs').update({
+                self.supabase.client.table('background_jobs').update({
                     'progress_percent': progress_percent,
                     'last_heartbeat': datetime.utcnow().isoformat(),
                     'metadata': {
@@ -683,7 +683,7 @@ class DataImportService:
         """
         try:
             # Get background_job_id from data_import_jobs
-            job_response = self.supabase.table('data_import_jobs').select('background_job_id').eq('id', job_id).single().execute()
+            job_response = self.supabase.client.table('data_import_jobs').select('background_job_id').eq('id', job_id).single().execute()
             background_job_id = job_response.data.get('background_job_id') if job_response.data else None
 
             if not background_job_id:
@@ -704,7 +704,7 @@ class DataImportService:
             update_data['last_heartbeat'] = datetime.utcnow().isoformat()
 
             # Update background_jobs table
-            self.supabase.table('background_jobs').update(update_data).eq('id', background_job_id).execute()
+            self.supabase.client.table('background_jobs').update(update_data).eq('id', background_job_id).execute()
             logger.info(f"✅ Updated background_job {background_job_id} status to {status}")
 
         except Exception as e:
@@ -721,7 +721,7 @@ class DataImportService:
     ) -> None:
         """Record import history entry."""
         try:
-            self.supabase.table('data_import_history').insert({
+            self.supabase.client.table('data_import_history').insert({
                 'job_id': job_id,
                 'source_data': source_data,
                 'normalized_data': normalized_data,
@@ -731,4 +731,5 @@ class DataImportService:
             }).execute()
         except Exception as e:
             logger.error(f"Failed to record import history: {e}")
+
 

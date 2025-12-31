@@ -453,3 +453,4 @@ class AICallLogger:
             self.logger.error(f"❌ Failed to log Firecrawl call: {e}")
             return False
 
+

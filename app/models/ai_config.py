@@ -165,3 +165,4 @@ COST_OPTIMIZED_CONFIG = AIModelConfig(
     metadata_max_tokens=2048
 )
 
+

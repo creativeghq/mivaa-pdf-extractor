@@ -114,3 +114,4 @@ def add_json_serialization_middleware(app):
     """
     app.add_middleware(JSONSerializationMiddleware)
     logger.info("JSON Serialization Middleware added to application")
+

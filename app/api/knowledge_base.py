@@ -717,3 +717,4 @@ async def kb_health_check() -> Dict[str, Any]:
         }
     }
 
+

@@ -514,3 +514,4 @@ def get_vecs_service() -> VecsService:
         _vecs_service = VecsService()
     return _vecs_service
 
+

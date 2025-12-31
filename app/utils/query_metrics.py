@@ -165,7 +165,7 @@ def track_query_performance(table_name: str, operation: str = "query"):
     Example:
         @track_query_performance("background_jobs", "select")
         async def get_stuck_jobs():
-            return await supabase.table("background_jobs").select("*").execute()
+            return await supabase.client.table("background_jobs").select("*").execute()
     """
     def decorator(func: Callable):
         @wraps(func)
@@ -212,4 +212,5 @@ def track_query_performance(table_name: str, operation: str = "query"):
             return sync_wrapper
     
     return decorator
+
 

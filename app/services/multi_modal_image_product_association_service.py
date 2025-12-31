@@ -394,7 +394,7 @@ class MultiModalImageProductAssociationService:
             ]
 
             if product_image_data:
-                result = self.supabase.table('product_image_relationships').upsert(
+                result = self.supabase.client.table('product_image_relationships').upsert(
                     product_image_data,
                     on_conflict='product_id,image_id'
                 ).execute()
@@ -419,7 +419,7 @@ class MultiModalImageProductAssociationService:
             ]
 
             if association_metadata:
-                self.supabase.table('image_product_associations').upsert(
+                self.supabase.client.table('image_product_associations').upsert(
                     association_metadata,
                     on_conflict='image_id,product_id'
                 ).execute()
@@ -432,7 +432,7 @@ class MultiModalImageProductAssociationService:
     async def _get_document_images(self, document_id: str) -> List[Dict[str, Any]]:
         """Get all images for a document."""
         try:
-            result = self.supabase.table('document_images').select('*').eq(
+            result = self.supabase.client.table('document_images').select('*').eq(
                 'document_id', document_id
             ).order('page_number').execute()
 
@@ -444,7 +444,7 @@ class MultiModalImageProductAssociationService:
     async def _get_document_products(self, document_id: str) -> List[Dict[str, Any]]:
         """Get all products for a document."""
         try:
-            result = self.supabase.table('products').select('*').eq(
+            result = self.supabase.client.table('products').select('*').eq(
                 'document_id', document_id
             ).order('created_at').execute()
 
@@ -486,7 +486,7 @@ class MultiModalImageProductAssociationService:
                 }
 
             # Get associations
-            result = self.supabase.table('image_product_associations').select(
+            result = self.supabase.client.table('image_product_associations').select(
                 'overall_score, confidence'
             ).in_('image_id', image_ids).in_('product_id', product_ids).execute()
 
@@ -528,3 +528,4 @@ class MultiModalImageProductAssociationService:
         except Exception as e:
             self.logger.error(f"❌ Error getting association stats: {e}")
             raise e
+

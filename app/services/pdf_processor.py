@@ -2322,3 +2322,4 @@ class PDFProcessor:
             self.logger.error("Error in OCR processing: %s", str(e))
             return "", []
 
+

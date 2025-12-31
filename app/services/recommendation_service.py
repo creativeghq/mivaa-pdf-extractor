@@ -586,3 +586,4 @@ def get_recommendation_service() -> RecommendationService:
     """
     return recommendation_service
 
+

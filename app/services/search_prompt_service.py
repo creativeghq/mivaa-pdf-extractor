@@ -436,3 +436,4 @@ class SearchPromptService:
         """Clear the prompt cache."""
         self._prompt_cache = {}
 
+

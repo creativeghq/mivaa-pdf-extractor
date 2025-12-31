@@ -124,3 +124,4 @@ class CustomJSONResponse:
             status_code=status_code,
             headers=headers
         )
+

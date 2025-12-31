@@ -327,3 +327,4 @@ async def track_suggestion_click(
         logger.error(f"Track click error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+

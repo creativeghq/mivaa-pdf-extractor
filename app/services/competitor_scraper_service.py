@@ -288,3 +288,4 @@ def get_competitor_scraper_service() -> CompetitorScraperService:
     return _competitor_scraper_service
 
 
+

@@ -218,3 +218,4 @@ gpt_breaker = CircuitBreaker(name="GPT API", failure_threshold=3, timeout_second
 # Backward compatibility alias (deprecated - use vision_breaker)
 together_breaker = vision_breaker
 
+

@@ -170,10 +170,14 @@ class SupabaseLoggingHandler(logging.Handler):
             
         try:
             supabase = get_supabase_client()
-            supabase.table('system_logs').insert(batch).execute()
+            # Check if client is initialized before attempting to write
+            if supabase._client is None:
+                return  # Silently skip if not initialized yet
+            supabase.client.table('system_logs').insert(batch).execute()
         except Exception as e:
-            # Print to stderr so we don't lose the error
-            print(f"Failed to write logs to Supabase: {e}", file=__import__('sys').stderr)
+            # Print to stderr so we don't lose the error (but only if it's not an initialization error)
+            if "not initialized" not in str(e):
+                print(f"Failed to write logs to Supabase: {e}", file=__import__('sys').stderr)
     
     def close(self) -> None:
         """
@@ -182,4 +186,5 @@ class SupabaseLoggingHandler(logging.Handler):
         self.stop_event.set()
         self.worker_thread.join(timeout=10.0)
         super().close()
+
 

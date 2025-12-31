@@ -266,7 +266,7 @@ async def _get_database_analysis(analysis_type: str) -> str:
         supabase = get_supabase_client()
 
         # Query analysis templates from database
-        result = supabase.table('analysis_templates').select('*').eq('analysis_type', analysis_type).execute()
+        result = supabase.client.table('analysis_templates').select('*').eq('analysis_type', analysis_type).execute()
 
         if result.data:
             return result.data[0].get('template_text', 'Analysis completed using database template')

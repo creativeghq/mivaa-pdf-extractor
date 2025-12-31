@@ -197,3 +197,4 @@ def get_resource_manager() -> ResourceManager:
         _resource_manager = ResourceManager()
     return _resource_manager
 
+

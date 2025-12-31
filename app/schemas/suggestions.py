@@ -271,3 +271,4 @@ class SuggestionClickResponse(BaseModel):
     success: bool = Field(True, description="Whether tracking was successful")
     message: str = Field("Click tracked successfully", description="Response message")
 
+

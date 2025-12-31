@@ -532,3 +532,4 @@ def validate_and_normalize_product_category(product_data: Dict[str, Any]) -> Dic
 
     return product_data
 
+

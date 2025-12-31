@@ -326,3 +326,4 @@ async def update_extraction_config(
         logger.error(f"Error updating extraction config: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+

@@ -193,3 +193,4 @@ def get_search_tracker() -> SearchQueryTracker:
         _tracker_instance = SearchQueryTracker()
     return _tracker_instance
 
+

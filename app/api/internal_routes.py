@@ -578,7 +578,7 @@ async def extract_metadata(
 
         # Get products from database
         supabase = get_supabase_client()
-        products_response = supabase.table('products').select('*').in_('id', request.product_ids).execute()
+        products_response = supabase.client.table('products').select('*').in_('id', request.product_ids).execute()
         products = products_response.data
 
         total_metadata_fields = 0
@@ -610,7 +610,7 @@ async def extract_metadata(
                 }
 
                 # Update product in database
-                supabase.table('products').update({
+                supabase.client.table('products').update({
                     'metadata': enriched_metadata
                 }).eq('id', product['id']).execute()
 
@@ -827,4 +827,5 @@ async def generate_product_embeddings(
     except Exception as e:
         logger.error(f"❌ Product embedding generation failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to generate product embeddings: {str(e)}")
+
 

@@ -196,3 +196,4 @@ class MetadataFirstChunkingService:
                 'metadata': {'metadata_first_enabled': False, 'error': str(e)}
             }
 
+

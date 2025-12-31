@@ -174,3 +174,4 @@ async def get_job_details(job_id: str) -> Dict[str, Any]:
         logger.error(f"Failed to get job details: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+

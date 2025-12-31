@@ -377,14 +377,24 @@ class EntityLinkingService:
 
             for chunk in chunks_response.data:
                 chunk_metadata = chunk.get('metadata', {})
-                # ✅ FIX: Chunks use 'page_label' (string) not 'page_number'
-                page_label = chunk_metadata.get('page_label')
-                chunk_page = None
-                if page_label:
-                    try:
-                        chunk_page = int(page_label)
-                    except (ValueError, TypeError):
-                        self.logger.warning(f"⚠️ Invalid page_label '{page_label}' for chunk {chunk['id']}")
+                # Get sequential page number and document-level product_pages array
+                chunk_page_number = chunk_metadata.get('page_number')
+                product_pages_array = chunk_metadata.get('product_pages', [])
+
+                # Skip chunks without page_number
+                if chunk_page_number is None:
+                    self.logger.warning(f"⚠️ Skipping chunk {chunk['id']} - missing page_number")
+                    continue
+
+                # Map sequential page number to original PDF page number
+                # product_pages is a document-level array: [24, 25, 26, ...]
+                # page_number is 1-based sequential: 1, 2, 3, ...
+                # So: original_page = product_pages[page_number - 1]
+                if product_pages_array and chunk_page_number <= len(product_pages_array):
+                    chunk_original_page = product_pages_array[chunk_page_number - 1]
+                else:
+                    # Fallback: use sequential page number if mapping not available
+                    chunk_original_page = chunk_page_number
 
                 chunk_content = chunk.get('content', '').lower()
 
@@ -393,15 +403,16 @@ class EntityLinkingService:
                     product_page_range = product_metadata.get('page_range', [])
                     product_name = product.get('name', '').lower()
 
-                    # Calculate relevance score
+                    # Calculate relevance score using original PDF page numbers
                     relevance_score = self._calculate_chunk_product_relevance(
-                        chunk_page=chunk_page,
+                        chunk_original_page=chunk_original_page,
                         chunk_content=chunk_content,
                         product_page_range=product_page_range,
                         product_name=product_name
                     )
 
                     # Only create relationship if relevance is above threshold
+                    # Threshold is 0.3 (requires either page match OR content mention)
                     if relevance_score >= 0.3:
                         relationships.append({
                             'id': str(uuid.uuid4()),
@@ -427,7 +438,7 @@ class EntityLinkingService:
 
     def _calculate_chunk_product_relevance(
         self,
-        chunk_page: Optional[int],
+        chunk_original_page: int,
         chunk_content: str,
         product_page_range: List[int],
         product_name: str
@@ -435,40 +446,54 @@ class EntityLinkingService:
         """
         Calculate relevance score for chunk-product relationship.
 
-        Algorithm: page_proximity(40%) + embedding_similarity(30%) + mention_score(30%)
+        Page-Aware Algorithm (NO FALLBACK):
+        - Page proximity (50%) - chunks on same/adjacent pages (using ORIGINAL PDF page numbers)
+        - Content mentions (50%) - chunks mentioning product name
+
+        Threshold: 0.3 (requires either page match OR content mention)
+
+        Examples:
+        - Chunk on product page: 0.5 ✅
+        - Chunk mentioning product: 0.5 ✅
+        - Chunk with both: 1.0 ✅
+        - Random chunk: 0.0 ❌ (below threshold)
 
         Args:
-            chunk_page: Page number of the chunk
+            chunk_original_page: Original PDF page number for this chunk (mapped from page_number)
             chunk_content: Content of the chunk
-            product_page_range: List of page numbers for the product
+            product_page_range: List of original PDF page numbers for the product
             product_name: Name of the product
 
         Returns:
             Relevance score (0.0-1.0)
         """
-        # Page proximity component (40%)
-        page_proximity_score = 0.0
-        if chunk_page and product_page_range:
-            if chunk_page in product_page_range:
-                page_proximity_score = 0.4  # Same page
+        relevance_score = 0.0
+
+        # 1. Page proximity component (50%) - using ORIGINAL PDF page numbers
+        if product_page_range:
+            if chunk_original_page in product_page_range:
+                # Chunk is on a product page
+                relevance_score += 0.5
             else:
-                # Check adjacent pages
-                min_distance = min(abs(chunk_page - p) for p in product_page_range)
+                # Check for adjacent pages
+                min_distance = min(abs(chunk_original_page - p) for p in product_page_range)
                 if min_distance == 1:
-                    page_proximity_score = 0.2  # Adjacent page
+                    relevance_score += 0.25  # Adjacent page
                 elif min_distance == 2:
-                    page_proximity_score = 0.1  # 2 pages away
+                    relevance_score += 0.1  # 2 pages away
 
-        # Embedding similarity component (30%) - default medium relevance
-        embedding_similarity_score = 0.15
+        # 2. Content mention component (50%)
+        # Extract product name without designer (e.g., "MAISON" from "MAISON by ONSET")
+        if product_name:
+            # Try to extract just the product name (before " by ")
+            product_name_parts = product_name.split(' by ')
+            product_name_only = product_name_parts[0].strip() if product_name_parts else product_name
 
-        # Mention score component (30%) - check if product name is mentioned
-        mention_score = 0.0
-        if product_name and product_name in chunk_content:
-            mention_score = 0.3
+            # Check if product name (or just the main part) is mentioned
+            if product_name in chunk_content or product_name_only in chunk_content:
+                relevance_score += 0.5
 
-        total_score = page_proximity_score + embedding_similarity_score + mention_score
-        return min(1.0, max(0.0, total_score))
+        return min(1.0, max(0.0, relevance_score))
 
     async def link_all_entities(
         self,
@@ -554,4 +579,5 @@ class EntityLinkingService:
                 'image_chunk_links': 0,
                 'chunk_product_links': 0
             }
+
 

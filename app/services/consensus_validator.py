@@ -321,3 +321,4 @@ class ConsensusValidator:
         """
         return task_type.lower() in cls.CRITICAL_TASKS
 
+

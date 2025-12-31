@@ -220,3 +220,4 @@ class JobProgressMonitor:
                     f"({len(self.stage_history)}/{self.total_stages} stages, {total_time/60:.1f}min total)"
                 )
 
+

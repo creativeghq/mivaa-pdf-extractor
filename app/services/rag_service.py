@@ -132,13 +132,16 @@ class RAGService:
 
             self.logger.info(f"📝 Indexing PDF content for document {document_id}")
 
-            # Step 1: Extract text from PDF (or use pre-extracted text)
+            # Step 1: Extract text from PDF with page information
+            pages = None
             if pre_extracted_text:
                 # Use pre-extracted text (from Stage 1 focused extraction)
-                markdown_text = pre_extracted_text
-                self.logger.info(f"   ✅ Using pre-extracted text ({len(markdown_text)} characters)")
+                # Convert to page format for consistency
+                self.logger.info(f"   ✅ Using pre-extracted text ({len(pre_extracted_text)} characters)")
+                # Wrap in single page dict (no page info available from pre-extracted text)
+                pages = [{"metadata": {"page": 0}, "text": pre_extracted_text}]
             else:
-                # Extract text from PDF using PyMuPDF4LLM
+                # Extract text from PDF using PyMuPDF4LLM with page_chunks=True
                 try:
                     import pymupdf4llm
                     import tempfile
@@ -150,9 +153,13 @@ class RAGService:
                         tmp_path = tmp_file.name
 
                     try:
-                        # Extract markdown text from PDF file
-                        markdown_text = pymupdf4llm.to_markdown(tmp_path)
-                        self.logger.info(f"   ✅ Extracted {len(markdown_text)} characters from PDF")
+                        # Extract markdown with page metadata
+                        self.logger.info(f"   📄 Extracting PDF with page metadata...")
+                        pages = pymupdf4llm.to_markdown(tmp_path, page_chunks=True)
+
+                        # Calculate total characters
+                        total_chars = sum(len(page.get('text', '')) for page in pages)
+                        self.logger.info(f"   ✅ Extracted {len(pages)} pages, {total_chars} characters from PDF")
                     finally:
                         # Clean up temporary file
                         if os.path.exists(tmp_path):
@@ -167,15 +174,15 @@ class RAGService:
                         "chunk_ids": []
                     }
 
-            # Step 2: Create chunks using UnifiedChunkingService
+            # Step 2: Create chunks using UnifiedChunkingService with page awareness
             try:
-                chunks = await self.chunking_service.chunk_text(
-                    text=markdown_text,
+                chunks = await self.chunking_service.chunk_pages(
+                    pages=pages,
                     document_id=document_id,
                     metadata=metadata
                 )
 
-                self.logger.info(f"   ✅ Created {len(chunks)} chunks")
+                self.logger.info(f"   ✅ Created {len(chunks)} chunks from {len(pages)} pages")
 
             except Exception as e:
                 self.logger.error(f"   ❌ Chunking failed: {e}")
@@ -1921,4 +1928,5 @@ Respond with JSON:
             self.logger.warning(f"⚠️ Product search failed: {e}")
             # Graceful degradation: return empty list
             return []
+
 

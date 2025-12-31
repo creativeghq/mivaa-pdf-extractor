@@ -422,3 +422,4 @@ async def pdf_health():
         "service": "pdf-processor",
         "timestamp": datetime.now().isoformat()
     }
+

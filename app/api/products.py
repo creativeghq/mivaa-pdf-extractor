@@ -336,3 +336,4 @@ async def products_health_check() -> Dict[str, Any]:
             "health": "/api/products/health"
         }
     }
+

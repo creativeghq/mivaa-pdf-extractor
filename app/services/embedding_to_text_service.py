@@ -36,7 +36,7 @@ class EmbeddingToTextService:
     def _load_prompt(self):
         """Load embedding-to-text prompt from database."""
         try:
-            result = self.supabase.table('prompts') \
+            result = self.supabase.client.table('prompts') \
                 .select('prompt_text') \
                 .eq('workspace_id', self.workspace_id) \
                 .eq('prompt_type', 'extraction') \
@@ -146,4 +146,5 @@ class EmbeddingToTextService:
         input_cost = (usage.input_tokens / 1_000_000) * 3.00  # $3 per 1M input tokens
         output_cost = (usage.output_tokens / 1_000_000) * 15.00  # $15 per 1M output tokens
         return input_cost + output_cost
+
 

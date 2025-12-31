@@ -329,3 +329,4 @@ async def reset_metrics() -> Dict[str, str]:
     query_metrics.reset_metrics()
     return {"status": "metrics_reset", "message": "Query metrics have been reset"}
 
+

@@ -333,3 +333,4 @@ async def health_check():
             detail=f"Embeddings service is unavailable: {str(e)}"
         )
 
+

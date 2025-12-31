@@ -166,3 +166,4 @@ class EmbeddingCacheService:
         except Exception as e:
             self.logger.error(f"Failed to set cache: {e}")
 
+

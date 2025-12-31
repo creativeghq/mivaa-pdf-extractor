@@ -250,3 +250,4 @@ class SearchEnrichmentService:
             self.logger.error(f"❌ Failed to get related chunks for image {image_id}: {e}")
             return []
 
+

@@ -7,3 +7,4 @@ providing comprehensive PDF processing, analysis, and integration capabilities.
 
 __version__ = "0.1.0"
 __author__ = "MIVAA Development Team"
+

@@ -277,3 +277,4 @@ def get_credits_service() -> CreditsIntegrationService:
         _credits_service = CreditsIntegrationService()
     return _credits_service
 
+

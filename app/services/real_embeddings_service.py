@@ -1270,3 +1270,4 @@ class RealEmbeddingsService:
         except Exception as e:
             self.logger.warning(f"Failed to unload SigLIP model: {e}")
             return False
+

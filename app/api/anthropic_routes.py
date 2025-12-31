@@ -488,3 +488,4 @@ async def test_claude_integration(supabase: SupabaseClient = Depends(get_supabas
             "api_key_available": bool(settings.anthropic_api_key)
         }
 
+

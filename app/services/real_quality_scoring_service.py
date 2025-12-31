@@ -410,3 +410,4 @@ class RealQualityScoringService:
         except:
             return 0.5
 
+

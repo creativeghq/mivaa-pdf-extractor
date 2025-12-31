@@ -110,7 +110,7 @@ class PromptTemplateService:
                 'created_by': created_by
             }
 
-            response = supabase.table('prompt_templates').insert(data).execute()
+            response = supabase.client.table('prompt_templates').insert(data).execute()
 
             if response.data:
                 logger.info(f"✅ Created prompt template: {name} (ID: {response.data[0]['id']})")
@@ -142,7 +142,7 @@ class PromptTemplateService:
             supabase = get_supabase_client().client
 
             # Get current template for history
-            current_response = supabase.table('prompt_templates')\
+            current_response = supabase.client.table('prompt_templates')\
                 .select('prompt_template, system_prompt, version')\
                 .eq('id', template_id)\
                 .eq('workspace_id', workspace_id)\
@@ -188,7 +188,7 @@ class PromptTemplateService:
             update_data['updated_at'] = datetime.utcnow().isoformat()
 
             # Update template
-            response = supabase.table('prompt_templates')\
+            response = supabase.client.table('prompt_templates')\
                 .update(update_data)\
                 .eq('id', template_id)\
                 .eq('workspace_id', workspace_id)\
@@ -209,7 +209,7 @@ class PromptTemplateService:
                     'change_reason': change_reason
                 }
 
-                supabase.table('prompt_template_history').insert(history_data).execute()
+                supabase.client.table('prompt_template_history').insert(history_data).execute()
 
             logger.info(f"✅ Updated prompt template: {response.data[0]['name']} (version {response.data[0]['version']})")
             return response.data[0]
@@ -223,7 +223,7 @@ class PromptTemplateService:
         try:
             supabase = get_supabase_client().client
 
-            response = supabase.table('prompt_templates')\
+            response = supabase.client.table('prompt_templates')\
                 .update({'is_active': False})\
                 .eq('id', template_id)\
                 .eq('workspace_id', workspace_id)\
@@ -240,7 +240,7 @@ class PromptTemplateService:
         try:
             supabase = get_supabase_client().client
 
-            response = supabase.table('prompt_template_history')\
+            response = supabase.client.table('prompt_template_history')\
                 .select('*')\
                 .eq('template_id', template_id)\
                 .order('changed_at', desc=True)\
@@ -251,4 +251,5 @@ class PromptTemplateService:
         except Exception as e:
             logger.error(f"Failed to get template history: {str(e)}")
             return []
+
 

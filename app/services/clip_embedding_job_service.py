@@ -474,3 +474,4 @@ def get_clip_job_service() -> CLIPEmbeddingJobService:
         _clip_job_service = CLIPEmbeddingJobService()
     return _clip_job_service
 
+

@@ -427,3 +427,4 @@ async def get_job_ai_metrics(
             detail=f"Failed to get job AI metrics: {str(e)}"
         )
 
+

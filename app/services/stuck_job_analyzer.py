@@ -242,3 +242,4 @@ class StuckJobAnalyzer:
 # Global instance
 stuck_job_analyzer = StuckJobAnalyzer()
 
+

@@ -369,3 +369,4 @@ class ProductValidator:
         except Exception:
             return 0.5
 
+

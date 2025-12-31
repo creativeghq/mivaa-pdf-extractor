@@ -141,7 +141,7 @@ async def verify_user_access(user_id: str, search_id: str) -> Dict:
     """Verify user has access to the search."""
     supabase = get_supabase_client().client
 
-    response = supabase.table("saved_searches").select("*").eq(
+    response = supabase.client.table("saved_searches").select("*").eq(
         "id", search_id
     ).eq(
         "user_id", user_id
@@ -358,7 +358,7 @@ async def create_saved_search(
             "relevance_score": 1.0
         }
 
-        response = supabase.table("saved_searches").insert(search_data).execute()
+        response = supabase.client.table("saved_searches").insert(search_data).execute()
 
         if not response.data:
             raise HTTPException(status_code=500, detail="Failed to create saved search")
@@ -393,7 +393,7 @@ async def get_user_saved_searches(
         supabase = get_supabase_client().client
 
         # Build query
-        query = supabase.table("saved_searches").select("*").eq("user_id", user_id)
+        query = supabase.client.table("saved_searches").select("*").eq("user_id", user_id)
 
         if integration_context:
             query = query.eq("integration_context", integration_context)
@@ -463,7 +463,7 @@ async def update_saved_search(
         update_data["updated_at"] = datetime.utcnow().isoformat()
 
         supabase = get_supabase_client().client
-        response = supabase.table("saved_searches").update(update_data).eq(
+        response = supabase.client.table("saved_searches").update(update_data).eq(
             "id", search_id
         ).eq("user_id", user_id).execute()
 
@@ -492,7 +492,7 @@ async def delete_saved_search(
         await verify_user_access(user_id, search_id)
 
         supabase = get_supabase_client().client
-        supabase.table("saved_searches").delete().eq("id", search_id).eq(
+        supabase.client.table("saved_searches").delete().eq("id", search_id).eq(
             "user_id", user_id
         ).execute()
 
@@ -538,7 +538,7 @@ async def execute_saved_search(
         usage_frequency = (search["use_count"] + 1) / max(days_since_created, 1)
         update_data["relevance_score"] = min(usage_frequency * 10, 10.0)  # Cap at 10.0
 
-        response = supabase.table("saved_searches").update(update_data).eq(
+        response = supabase.client.table("saved_searches").update(update_data).eq(
             "id", search_id
         ).eq("user_id", request.user_id).execute()
 
@@ -552,4 +552,5 @@ async def execute_saved_search(
     except Exception as e:
         logger.error(f"Error executing saved search: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
 

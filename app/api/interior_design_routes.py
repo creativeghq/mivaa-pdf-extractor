@@ -375,3 +375,4 @@ async def create_interior_design(request: InteriorRequest):
         "message": f"Started generating {len(models_to_use)} interior design variations"
     })
 
+

@@ -483,7 +483,7 @@ class OCRService:
             if use_ai:
                 # Load prompt from database
                 supabase = get_supabase_client()
-                prompt_result = supabase.table('prompts') \
+                prompt_result = supabase.client.table('prompts') \
                     .select('prompt_text') \
                     .eq('workspace_id', workspace_id) \
                     .eq('prompt_type', 'extraction') \

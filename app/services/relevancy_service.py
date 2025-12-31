@@ -283,3 +283,4 @@ class RelevancyService:
             'product_image_relationships': product_image_count
         }
 
+

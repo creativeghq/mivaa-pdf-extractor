@@ -1087,3 +1087,4 @@ Return ONLY valid JSON. Use null for missing fields."""
             # Fallback: return original query with no filters
             return query, {}
 
+

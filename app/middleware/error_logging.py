@@ -204,3 +204,4 @@ def get_correlation_id(request: Request) -> Optional[str]:
     """
     return getattr(request.state, "correlation_id", None)
 
+

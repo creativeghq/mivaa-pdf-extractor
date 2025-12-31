@@ -397,3 +397,4 @@ class EnhancedPDFProcessor:
             "character_count": len(combined_content),
         }
 
+

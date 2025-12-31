@@ -280,3 +280,4 @@ async def start_background_image_processing(document_id: str, supabase_client):
     processor = BackgroundImageProcessor(supabase_client)
     return await processor.process_all_pending_images_for_document(document_id)
 
+

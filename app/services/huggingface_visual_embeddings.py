@@ -331,3 +331,4 @@ class HuggingFaceVisualEmbeddingsService:
         except Exception as e:
             self.logger.warning(f"Failed to log HF API call: {e}")
 
+
