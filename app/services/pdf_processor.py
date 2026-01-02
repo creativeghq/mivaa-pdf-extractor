@@ -928,6 +928,7 @@ class PDFProcessor:
                 self.logger.info(f"   success: {upload_result.get('success')}")
                 self.logger.info(f"   public_url: {upload_result.get('public_url')}")
                 self.logger.info(f"   storage_path: {upload_result.get('storage_path')}")
+                self.logger.info(f"   page_number: {upload_result.get('page_number')}")  # ✅ Log page number
                 self.logger.info(f"   error: {upload_result.get('error')}")
 
                 if not upload_result.get('success'):
@@ -967,6 +968,8 @@ class PDFProcessor:
                     'storage_url': upload_result.get('public_url'),
                     'storage_path': upload_result.get('storage_path'),
                     'storage_bucket': upload_result.get('bucket', 'pdf-tiles'),
+                        # This ensures the correct page number is saved to the database
+                    'page_number': upload_result.get('page_number'),
                     # Analysis status (deferred for async processing)
                     'analysis_pending': real_analysis_data.get('analysis_pending', False),
                     'analysis_image_url': real_analysis_data.get('image_url'),
