@@ -112,6 +112,7 @@ class JobType(str, Enum):
     BATCH_PROCESSING = "batch_processing"
     BULK_PROCESSING = "bulk_processing"
     EMBEDDING_GENERATION = "embedding_generation"
+    IMAGE_EMBEDDING_REGENERATION = "image_embedding_regeneration"  # NEW: Regenerate visual embeddings for existing images
     SEARCH_INDEXING = "search_indexing"
     DATA_EXPORT = "data_export"
     CLEANUP = "cleanup"

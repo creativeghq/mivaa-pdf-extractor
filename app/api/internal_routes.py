@@ -829,3 +829,277 @@ async def generate_product_embeddings(
         raise HTTPException(status_code=500, detail=f"Failed to generate product embeddings: {str(e)}")
 
 
+# ============================================================================
+# IMAGE EMBEDDING REGENERATION
+# ============================================================================
+
+class RegenerateImageEmbeddingsRequest(BaseModel):
+    """Request model for regenerating image embeddings."""
+    document_id: Optional[str] = None
+    workspace_id: str
+    image_ids: Optional[List[str]] = None  # If None, regenerate for all images in document/workspace
+    force_regenerate: bool = False  # If True, regenerate even if embeddings exist
+    job_id: Optional[str] = None  # Optional job ID for progress tracking
+
+
+class RegenerateImageEmbeddingsResponse(BaseModel):
+    """Response model for image embedding regeneration."""
+    success: bool
+    message: str
+    images_processed: int
+    embeddings_generated: int
+    skipped: int
+    errors: List[str] = []
+
+
+@router.post("/regenerate-image-embeddings", response_model=RegenerateImageEmbeddingsResponse)
+async def regenerate_image_embeddings(
+    request: RegenerateImageEmbeddingsRequest,
+    supabase: SupabaseClient = Depends(get_supabase_client)
+):
+    """
+    Regenerate visual embeddings for existing images in the database.
+
+    This endpoint:
+    1. Fetches existing images from document_images table
+    2. Downloads images from Supabase Storage
+    3. Generates 5 CLIP embeddings per image (visual, color, texture, style, material)
+    4. Saves embeddings to VECS collections
+
+    **Use Cases:**
+    - Fix missing embeddings from old PDF processing
+    - Regenerate embeddings after model upgrades
+    - Bulk embedding generation for imported images
+
+    **Example Request:**
+    ```json
+    {
+      "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+      "document_id": "doc-123",  // Optional: limit to specific document
+      "image_ids": ["img-1", "img-2"],  // Optional: specific images
+      "force_regenerate": false  // Optional: regenerate even if embeddings exist
+    }
+    ```
+
+    Args:
+        request: Request with workspace_id, optional document_id and image_ids
+
+    Returns:
+        RegenerateImageEmbeddingsResponse with counts and errors
+    """
+    try:
+        from app.services.real_embeddings_service import RealEmbeddingsService
+        from app.services.vecs_service import get_vecs_service
+        import base64
+        import aiohttp
+
+        logger.info(f"🎨 Starting image embedding regeneration for workspace: {request.workspace_id}")
+
+        # Build query to find images
+        query = supabase.client.table('document_images').select('id, image_url, document_id, page_number, workspace_id')
+
+        # Apply filters
+        query = query.eq('workspace_id', request.workspace_id)
+
+        if request.document_id:
+            query = query.eq('document_id', request.document_id)
+
+        if request.image_ids:
+            query = query.in_('id', request.image_ids)
+
+        images_response = query.execute()
+
+        if not images_response.data:
+            return RegenerateImageEmbeddingsResponse(
+                success=True,
+                message="No images found matching criteria",
+                images_processed=0,
+                embeddings_generated=0,
+                skipped=0
+            )
+
+        images = images_response.data
+        total_images = len(images)
+        logger.info(f"   Found {total_images} images to process")
+
+        # Initialize services
+        embeddings_service = RealEmbeddingsService()
+        vecs_service = get_vecs_service()
+
+        images_processed = 0
+        embeddings_generated = 0
+        skipped = 0
+        errors = []
+
+        # ✅ Update job status to processing (if job_id provided)
+        if request.job_id:
+            supabase.client.table('background_jobs').update({
+                'status': 'processing',
+                'progress': 0,
+                'started_at': datetime.utcnow().isoformat(),
+                'last_heartbeat': datetime.utcnow().isoformat(),
+                'metadata': {
+                    'total_images': total_images,
+                    'images_processed': 0,
+                    'embeddings_generated': 0,
+                    'skipped': 0
+                }
+            }).eq('id', request.job_id).execute()
+
+        for image in images:
+            try:
+                image_id = image['id']
+                image_url = image.get('image_url')
+
+                if not image_url:
+                    error_msg = f"Skipping image {image_id} - no image_url"
+                    logger.warning(f"   ⚠️ {error_msg}")
+                    errors.append(error_msg)
+                    skipped += 1
+                    continue
+
+                # Check if embeddings already exist (unless force_regenerate)
+                if not request.force_regenerate:
+                    try:
+                        collection = vecs_service.get_or_create_collection("image_siglip_embeddings", dimension=1152)
+                        existing = collection.fetch(ids=[image_id])
+                        if existing and len(existing) > 0:
+                            logger.info(f"   ⏭️ Skipping image {image_id} - embeddings already exist")
+                            skipped += 1
+                            continue
+                    except Exception as e:
+                        logger.debug(f"   No existing embeddings for {image_id}: {e}")
+
+                # Download image from Supabase Storage
+                logger.info(f"   📥 Downloading image {image_id}...")
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(image_url) as response:
+                        if response.status != 200:
+                            error_msg = f"Failed to download image {image_id}: HTTP {response.status}"
+                            logger.error(f"   ❌ {error_msg}")
+                            errors.append(error_msg)
+                            continue
+
+                        image_bytes = await response.read()
+                        image_base64 = f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('utf-8')}"
+
+                # Generate all embeddings (visual, color, texture, style, material)
+                logger.info(f"   🎨 Generating embeddings for image {image_id}...")
+                embedding_result = await embeddings_service.generate_all_embeddings(
+                    entity_id=image_id,
+                    entity_type="image",
+                    text_content="",
+                    image_data=image_base64,
+                    material_properties={}
+                )
+
+                if not embedding_result or not embedding_result.get('success'):
+                    error_msg = f"Failed to generate embeddings for image {image_id}"
+                    logger.error(f"   ❌ {error_msg}")
+                    errors.append(error_msg)
+                    continue
+
+                embeddings = embedding_result.get('embeddings', {})
+
+                # Save visual embedding to VECS (primary collection)
+                visual_embedding = embeddings.get('visual_siglip_1152')
+                if visual_embedding:
+                    await vecs_service.upsert_image_embedding(
+                        image_id=image_id,
+                        siglip_embedding=visual_embedding,
+                        metadata={
+                            'document_id': image.get('document_id'),
+                            'workspace_id': image.get('workspace_id'),
+                            'page_number': image.get('page_number', 1)
+                        }
+                    )
+                    embeddings_generated += 1
+
+                # Save specialized embeddings (color, texture, style, material)
+                specialized_embeddings = {}
+                for emb_type in ['color_siglip_1152', 'texture_siglip_1152', 'style_siglip_1152', 'material_siglip_1152']:
+                    if embeddings.get(emb_type):
+                        key = emb_type.replace('_siglip_1152', '')
+                        specialized_embeddings[key] = embeddings.get(emb_type)
+
+                if specialized_embeddings:
+                    await vecs_service.upsert_specialized_embeddings(
+                        image_id=image_id,
+                        embeddings=specialized_embeddings,
+                        metadata={
+                            'document_id': image.get('document_id'),
+                            'page_number': image.get('page_number', 1)
+                        }
+                    )
+                    embeddings_generated += len(specialized_embeddings)
+
+                images_processed += 1
+                logger.info(f"   ✅ Generated {1 + len(specialized_embeddings)} embeddings for image {image_id}")
+
+                # ✅ Update progress after each image (if job_id provided)
+                if request.job_id:
+                    progress = int((images_processed / total_images) * 100)
+                    supabase.client.table('background_jobs').update({
+                        'progress': progress,
+                        'last_heartbeat': datetime.utcnow().isoformat(),
+                        'updated_at': datetime.utcnow().isoformat(),
+                        'metadata': {
+                            'total_images': total_images,
+                            'images_processed': images_processed,
+                            'embeddings_generated': embeddings_generated,
+                            'skipped': skipped,
+                            'current_image': image_id
+                        }
+                    }).eq('id', request.job_id).execute()
+
+            except Exception as e:
+                error_msg = f"Failed to process image {image.get('id')}: {str(e)}"
+                logger.error(f"   ❌ {error_msg}")
+                errors.append(error_msg)
+
+        message = f"Regenerated embeddings for {images_processed} images ({embeddings_generated} total embeddings)"
+        if skipped > 0:
+            message += f", skipped {skipped} images"
+        if errors:
+            message += f" ({len(errors)} errors)"
+
+        logger.info(f"✅ Image embedding regeneration complete: {images_processed} processed, {embeddings_generated} embeddings, {skipped} skipped")
+
+        # ✅ Mark job as completed (if job_id provided)
+        if request.job_id:
+            supabase.client.table('background_jobs').update({
+                'status': 'completed',
+                'progress': 100,
+                'completed_at': datetime.utcnow().isoformat(),
+                'updated_at': datetime.utcnow().isoformat(),
+                'metadata': {
+                    'total_images': total_images,
+                    'images_processed': images_processed,
+                    'embeddings_generated': embeddings_generated,
+                    'skipped': skipped,
+                    'errors': errors
+                }
+            }).eq('id', request.job_id).execute()
+
+        return RegenerateImageEmbeddingsResponse(
+            success=True,
+            message=message,
+            images_processed=images_processed,
+            embeddings_generated=embeddings_generated,
+            skipped=skipped,
+            errors=errors
+        )
+
+    except Exception as e:
+        logger.error(f"❌ Image embedding regeneration failed: {str(e)}")
+
+        # ✅ Mark job as failed (if job_id provided)
+        if request.job_id:
+            supabase.client.table('background_jobs').update({
+                'status': 'failed',
+                'error': str(e),
+                'failed_at': datetime.utcnow().isoformat(),
+                'updated_at': datetime.utcnow().isoformat()
+            }).eq('id', request.job_id).execute()
+
+        raise HTTPException(status_code=500, detail=f"Failed to regenerate image embeddings: {str(e)}")

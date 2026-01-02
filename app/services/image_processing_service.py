@@ -511,9 +511,10 @@ Respond ONLY with this JSON format:
                     try:
                         await self.vecs_service.upsert_image_embedding(
                             image_id=image_id,
-                            clip_embedding=visual_embedding,
+                            siglip_embedding=visual_embedding,  # ✅ FIXED: Changed from clip_embedding to siglip_embedding
                             metadata={
                                 'document_id': document_id,
+                                'workspace_id': workspace_id,  # ✅ ADDED: Include workspace_id in metadata
                                 'page_number': img_data.get('page_number', 1),
                                 'quality_score': img_data.get('quality_score', 0.5)
                             }

@@ -1807,6 +1807,245 @@ async def reprocess_image_ocr(
         raise HTTPException(status_code=500, detail=f"Failed to reprocess image: {str(e)}")
 
 
+# ============================================================================
+# IMAGE EMBEDDING REGENERATION
+# ============================================================================
+
+class RegenerateImageEmbeddingsJobRequest(BaseModel):
+    """Request model for queuing image embedding regeneration job."""
+    document_id: Optional[str] = None
+    image_ids: Optional[List[str]] = None
+    force_regenerate: bool = False
+    priority: int = 0
 
 
+class RegenerateImageEmbeddingsJobResponse(BaseModel):
+    """Response model for queued image embedding regeneration job."""
+    success: bool
+    message: str
+    job_id: str
+
+
+@router.post("/regenerate-image-embeddings", response_model=RegenerateImageEmbeddingsJobResponse)
+async def queue_regenerate_image_embeddings(
+    request: RegenerateImageEmbeddingsJobRequest,
+    background_tasks: BackgroundTasks,
+    workspace_context: WorkspaceContext = Depends(get_workspace_context),
+    current_user: User = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase_client)
+):
+    """
+    Queue a background job to regenerate visual embeddings for existing images.
+
+    This endpoint queues an async job that will:
+    1. Fetch existing images from document_images table
+    2. Download images from Supabase Storage
+    3. Generate 5 CLIP embeddings per image (visual, color, texture, style, material)
+    4. Save embeddings to VECS collections
+
+    **Use Cases:**
+    - Fix missing embeddings from old PDF processing
+    - Regenerate embeddings after model upgrades
+    - Bulk embedding generation for imported images
+
+    **Example Request:**
+    ```json
+    {
+      "document_id": "doc-123",  // Optional: limit to specific document
+      "image_ids": ["img-1", "img-2"],  // Optional: specific images
+      "force_regenerate": false,  // Optional: regenerate even if embeddings exist
+      "priority": 0  // Optional: job priority (0 = normal)
+    }
+    ```
+
+    Args:
+        request: Request with optional document_id, image_ids, force_regenerate, priority
+        workspace_context: Current workspace context (auto-injected)
+        current_user: Current user (auto-injected)
+
+    Returns:
+        RegenerateImageEmbeddingsJobResponse with job_id
+    """
+    try:
+        from app.services.async_queue_service import get_async_queue_service
+
+        logger.info(f"🎨 Queuing image embedding regeneration job for workspace: {workspace_context.workspace_id}")
+
+        # Queue the async job
+        async_queue = get_async_queue_service()
+        job_id = await async_queue.queue_image_embedding_regeneration(
+            workspace_id=workspace_context.workspace_id,
+            document_id=request.document_id,
+            image_ids=request.image_ids,
+            force_regenerate=request.force_regenerate,
+            priority=request.priority
+        )
+
+        message = f"Image embedding regeneration job queued successfully"
+        if request.document_id:
+            message += f" for document {request.document_id}"
+        if request.image_ids:
+            message += f" ({len(request.image_ids)} specific images)"
+
+        logger.info(f"✅ {message} - Job ID: {job_id}")
+
+        # ✅ Start processing immediately in background (like PDF/XML jobs)
+        background_tasks.add_task(
+            process_image_embedding_regeneration_job,
+            job_id=job_id,
+            workspace_id=workspace_context.workspace_id,
+            document_id=request.document_id,
+            image_ids=request.image_ids,
+            force_regenerate=request.force_regenerate
+        )
+
+        return RegenerateImageEmbeddingsJobResponse(
+            success=True,
+            message=message,
+            job_id=job_id
+        )
+
+    except Exception as e:
+        logger.error(f"❌ Failed to queue image embedding regeneration job: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to queue job: {str(e)}")
+
+
+async def process_image_embedding_regeneration_job(
+    job_id: str,
+    workspace_id: str,
+    document_id: Optional[str] = None,
+    image_ids: Optional[List[str]] = None,
+    force_regenerate: bool = False
+):
+    """
+    Background task to process image embedding regeneration job.
+
+    This function:
+    1. Marks job as 'processing'
+    2. Calls the internal regenerate-image-embeddings endpoint
+    3. Updates progress after each image
+    4. Marks job as 'completed' or 'failed'
+
+    Args:
+        job_id: Background job ID
+        workspace_id: Workspace ID
+        document_id: Optional document ID to limit scope
+        image_ids: Optional specific image IDs
+        force_regenerate: Whether to regenerate existing embeddings
+    """
+    from app.services.supabase_client import get_supabase_client
+    from app.services.notification_service import get_notification_service
+    import httpx
+
+    supabase = get_supabase_client()
+    notification_service = get_notification_service()
+
+    # Get user ID from job
+    job_data = supabase.client.table('background_jobs').select('created_by').eq('id', job_id).single().execute()
+    user_id = job_data.data.get('created_by') if job_data.data else None
+
+    try:
+        logger.info(f"🎨 Starting image embedding regeneration job {job_id}")
+
+        # Mark job as processing
+        supabase.client.table('background_jobs').update({
+            'status': 'processing',
+            'progress': 0,
+            'started_at': datetime.utcnow().isoformat(),
+            'last_heartbeat': datetime.utcnow().isoformat(),
+            'updated_at': datetime.utcnow().isoformat()
+        }).eq('id', job_id).execute()
+
+        # 📢 Send job started notification
+        if user_id:
+            await notification_service.notify_job_started(
+                user_id=user_id,
+                job_id=job_id,
+                job_type='image_embedding_regeneration'
+            )
+
+        # Call the internal regenerate-image-embeddings endpoint
+        # We'll pass the job_id so it can update progress
+        async with httpx.AsyncClient(timeout=3600.0) as client:
+            response = await client.post(
+                "http://localhost:8000/api/internal/regenerate-image-embeddings",
+                json={
+                    "workspace_id": workspace_id,
+                    "document_id": document_id,
+                    "image_ids": image_ids,
+                    "force_regenerate": force_regenerate,
+                    "job_id": job_id  # Pass job_id for progress updates
+                }
+            )
+
+            if response.status_code != 200:
+                raise Exception(f"Internal API returned {response.status_code}: {response.text}")
+
+            result = response.json()
+
+        # Mark job as completed
+        completed_at = datetime.utcnow()
+        supabase.client.table('background_jobs').update({
+            'status': 'completed',
+            'progress': 100,
+            'completed_at': completed_at.isoformat(),
+            'updated_at': completed_at.isoformat(),
+            'metadata': {
+                'images_processed': result.get('images_processed', 0),
+                'embeddings_generated': result.get('embeddings_generated', 0),
+                'skipped': result.get('skipped', 0),
+                'errors': result.get('errors', [])
+            }
+        }).eq('id', job_id).execute()
+
+        logger.info(f"✅ Image embedding regeneration job {job_id} completed successfully")
+
+        # 📢 Send job completed notification
+        if user_id:
+            # Calculate duration
+            job_info = supabase.client.table('background_jobs').select('started_at').eq('id', job_id).single().execute()
+            started_at = job_info.data.get('started_at') if job_info.data else None
+            duration = None
+            if started_at:
+                start = datetime.fromisoformat(started_at.replace('Z', '+00:00'))
+                duration_seconds = (completed_at - start).total_seconds()
+                if duration_seconds < 60:
+                    duration = f"{int(duration_seconds)}s"
+                elif duration_seconds < 3600:
+                    duration = f"{int(duration_seconds / 60)}m {int(duration_seconds % 60)}s"
+                else:
+                    hours = int(duration_seconds / 3600)
+                    minutes = int((duration_seconds % 3600) / 60)
+                    duration = f"{hours}h {minutes}m"
+
+            await notification_service.notify_job_completed(
+                user_id=user_id,
+                job_id=job_id,
+                job_type='image_embedding_regeneration',
+                duration=duration,
+                stats={
+                    'images_processed': result.get('images_processed', 0),
+                    'embeddings_generated': result.get('embeddings_generated', 0)
+                }
+            )
+
+    except Exception as e:
+        logger.error(f"❌ Image embedding regeneration job {job_id} failed: {str(e)}")
+
+        # Mark job as failed
+        supabase.client.table('background_jobs').update({
+            'status': 'failed',
+            'error': str(e),
+            'failed_at': datetime.utcnow().isoformat(),
+            'updated_at': datetime.utcnow().isoformat()
+        }).eq('id', job_id).execute()
+
+        # 📢 Send job failed notification
+        if user_id:
+            await notification_service.notify_job_failed(
+                user_id=user_id,
+                job_id=job_id,
+                job_type='image_embedding_regeneration',
+                error=str(e)
+            )
 

@@ -14,7 +14,7 @@ import os
 import tempfile
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -123,7 +123,12 @@ from app.utils.exceptions import (
 )
 
 # Import unified chunking service (Step 6)
+
+# Import unified chunking service (Step 6)
 from app.services.unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
+
+# Import worker for process isolation
+from app.services.pdf_worker import execute_pdf_extraction_job
 
 
 @dataclass
@@ -174,10 +179,10 @@ class PDFProcessor:
         self.max_file_size = self.config.get('max_file_size_mb', 50) * 1024 * 1024  # Convert to bytes
         self.temp_dir_base = self.config.get('temp_dir', tempfile.gettempdir())
 
-        # Initialize thread pool executor for async processing
-        # REDUCED from 4 to 2 workers to prevent OOM kills (each worker processes 5 pages = 10 pages max in memory)
+        # Initialize PROCESS pool executor for process isolation (fix memory issues)
+        # Each worker runs in a separate process, ensuring 100% memory reclamation on completion
         max_workers = self.config.get('max_workers', 2)
-        self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        self.executor = ProcessPoolExecutor(max_workers=max_workers)
 
         self.logger.info("PDFProcessor initialized with config: %s (max_workers=%d for memory efficiency)", self.config, max_workers)
     
@@ -185,7 +190,8 @@ class PDFProcessor:
         """Cleanup resources when the processor is destroyed."""
         if hasattr(self, 'executor') and self.executor:
             self.executor.shutdown(wait=True)
-            self.logger.debug("ThreadPoolExecutor shutdown completed")
+            self.executor.shutdown(wait=True)
+            self.logger.debug("ProcessPoolExecutor shutdown completed")
 
     async def health_check(self) -> Dict[str, Any]:
         """
@@ -274,9 +280,20 @@ class PDFProcessor:
             # Save PDF bytes to temporary file
             temp_pdf_path = os.path.join(temp_dir, f"{document_id}.pdf")
             self.logger.info(f"💾 Saving PDF to: {temp_pdf_path}")
-            async with aiofiles.open(temp_pdf_path, 'wb') as f:
-                await f.write(pdf_bytes)
-            self.logger.info(f"✅ PDF saved successfully, file size: {os.path.getsize(temp_pdf_path)} bytes")
+            
+            # Optimization: Write to file in executor to ensure pdf_bytes scope ends and memory is freed
+            # This prevents holding the full PDF in memory while processing
+            def write_pdf_to_disk(path, data):
+                with open(path, 'wb') as f:
+                    f.write(data)
+            
+            await asyncio.get_event_loop().run_in_executor(None, write_pdf_to_disk, temp_pdf_path, pdf_bytes)
+            
+            # Explicitly release memory
+            file_size = len(pdf_bytes)
+            del pdf_bytes
+            
+            self.logger.info(f"✅ PDF saved successfully, file size: {file_size} bytes")
             
             # Process with timeout
             timeout = processing_options.get('timeout_seconds', self.default_timeout)
@@ -379,14 +396,23 @@ class PDFProcessor:
             # Set a reasonable timeout for markdown extraction (5 minutes for large PDFs)
             markdown_timeout = processing_options.get('markdown_timeout', 300)  # 5 minutes default
 
+            # Extract markdown content using isolated worker process
+            # Progress callback is limited with ProcessPool, we notify start here
+            if progress_callback:
+                try:
+                    if not inspect.iscoroutinefunction(progress_callback):
+                        progress_callback(progress=10, details={"current_step": "Starting PDF extraction in isolated process"})
+                except Exception:
+                    pass
+
             try:
+                # Execute in separate process
                 markdown_content, metadata = await asyncio.wait_for(
                     loop.run_in_executor(
-                        None,
-                        self._extract_markdown_sync,
+                        self.executor,
+                        execute_pdf_extraction_job,
                         pdf_path,
-                        processing_options,
-                        progress_callback
+                        processing_options
                     ),
                     timeout=markdown_timeout
                 )
@@ -472,610 +498,7 @@ class PDFProcessor:
             self.logger.error("Error processing PDF file %s: %s", pdf_path, str(e))
             raise PDFExtractionError(f"Failed to parse PDF content: {str(e)}") from e
     
-    def _extract_markdown_sync(
-        self,
-        pdf_path: str,
-        processing_options: Dict[str, Any],
-        progress_callback: Optional[callable] = None
-    ) -> Tuple[str, Dict[str, Any]]:
-        """
-        Enhanced markdown extraction with intelligent OCR-first approach for image-based PDFs.
 
-        Features:
-        - Smart detection of image-based vs text-based PDFs
-        - OCR-first approach for image-heavy PDFs (like WIFI MOMO lookbook)
-        - PyMuPDF4LLM fallback for text-based PDFs
-        - Advanced text processing and cleaning
-        - Metadata extraction and analysis
-        """
-        try:
-            # First, analyze the PDF to determine if it's image-based
-            import fitz
-            doc = fitz.open(pdf_path)
-            total_pages = len(doc)
-
-            # Sample pages strategically to determine PDF type
-            # Sample first 3, middle 2, and last 2 pages for better detection
-            pages_to_sample = []
-            
-            # Always sample first 3 pages
-            pages_to_sample.extend(range(min(3, total_pages)))
-            
-            # Sample middle pages if document is long enough
-            if total_pages > 5:
-                mid_page = total_pages // 2
-                pages_to_sample.extend([mid_page - 1, mid_page])
-            
-            # Sample last pages if document is long enough
-            if total_pages > 3:
-                pages_to_sample.extend([total_pages - 2, total_pages - 1])
-            
-            # Remove duplicates and sort
-            pages_to_sample = sorted(set(pages_to_sample))
-            
-            total_text_chars = 0
-            total_images = 0
-
-            for page_num in pages_to_sample:
-                page = doc[page_num]
-                text = page.get_text()
-                images = page.get_images()
-                total_text_chars += len(text.strip())
-                total_images += len(images)
-
-            doc.close()
-
-            # Enhanced PDF type detection with multiple criteria
-            avg_text_per_page = total_text_chars / len(pages_to_sample)
-            avg_images_per_page = total_images / len(pages_to_sample)
-
-            # Multiple detection criteria for better accuracy
-            criteria = {
-                'low_text': avg_text_per_page < 50,
-                'very_low_text': avg_text_per_page < 10,  # More restrictive threshold
-                'has_images': avg_images_per_page >= 1,
-                'many_images': avg_images_per_page >= 3,
-                'text_to_image_ratio': (avg_text_per_page / max(avg_images_per_page, 1)) < 30,
-                'no_images': avg_images_per_page == 0
-            }
-
-            # Smart detection logic - prioritize text-first for text-only PDFs
-            is_image_based = (
-                (criteria['very_low_text'] and criteria['has_images']) or  # Very little text + images → OCR
-                (criteria['low_text'] and criteria['many_images']) or  # Low text + many images → OCR
-                (criteria['many_images'] and criteria['text_to_image_ratio'])  # Many images + low text ratio → OCR
-            ) and not criteria['no_images']  # Never use OCR for PDFs with no images
-
-            # Enhanced logging with detection criteria
-            detection_reason = []
-            if criteria['very_low_text'] and criteria['has_images']:
-                detection_reason.append("very_low_text_with_images")
-            if criteria['low_text'] and criteria['many_images']:
-                detection_reason.append("low_text_many_images")
-            if criteria['many_images'] and criteria['text_to_image_ratio']:
-                detection_reason.append("many_images_low_ratio")
-            if criteria['no_images']:
-                detection_reason.append("text_only_pdf")
-
-            self.logger.info(f"📊 PDF Analysis: {total_pages} pages, {avg_text_per_page:.1f} chars/page, "
-                           f"{avg_images_per_page:.1f} images/page")
-            self.logger.info(f"🎯 Detection: {'OCR-first' if is_image_based else 'Text-first'} "
-                           f"(reason: {', '.join(detection_reason) if detection_reason else 'text_dominant'})")
-
-            if is_image_based:
-                # Use OCR-first approach for image-based PDFs
-                self.logger.info("Detected image-based PDF, using OCR-first extraction")
-                try:
-                    markdown_content = self._extract_text_with_ocr(pdf_path, processing_options, progress_callback)
-                    if len(markdown_content.strip()) < 100:
-                        # If OCR also fails, try PyMuPDF4LLM as fallback
-                        self.logger.info("OCR yielded minimal content, trying PyMuPDF4LLM fallback")
-                        page_number = processing_options.get('page_number')
-                        fallback_content = extract_pdf_to_markdown(pdf_path, page_number)
-                        if len(fallback_content.strip()) > len(markdown_content.strip()):
-                            markdown_content = fallback_content
-                except Exception as ocr_error:
-                    self.logger.error(f"OCR extraction failed: {ocr_error}, trying PyMuPDF4LLM fallback")
-                    page_number = processing_options.get('page_number')
-                    markdown_content = extract_pdf_to_markdown(pdf_path, page_number)
-            else:
-                # Use PyMuPDF4LLM first for text-based PDFs
-                self.logger.info("Detected text-based PDF, using PyMuPDF4LLM extraction")
-
-                # Update progress: Starting text extraction (30%)
-                if progress_callback:
-                    try:
-                        # Only call if it's not a coroutine (sync callbacks only in sync function)
-                        if not inspect.iscoroutinefunction(progress_callback):
-                            progress_callback(
-                                progress=30,
-                                details={
-                                    "current_step": "Extracting text from PDF using PyMuPDF4LLM",
-                                    "total_pages": total_pages,
-                                    "extraction_method": "pymupdf4llm"
-                                }
-                            )
-                    except Exception as callback_error:
-                        self.logger.warning(f"Progress callback failed: {callback_error}")
-
-                page_number = processing_options.get('page_number')
-
-                # Try PyMuPDF4LLM with proper error handling and batching
-                try:
-                    # If page_number is None, process entire PDF
-                    # PyMuPDF4LLM can fail with "not a textpage" for certain PDF formats
-                    markdown_content = extract_pdf_to_markdown(pdf_path, page_number)
-
-                except ValueError as e:
-                    if "not a textpage" in str(e):
-                        self.logger.warning(f"⚠️ PyMuPDF4LLM failed with 'not a textpage' error")
-                        self.logger.info("Attempting page-by-page extraction with PyMuPDF4LLM to isolate problematic pages")
-
-                        # Try processing page-by-page to find which pages work
-                        import fitz
-                        import os
-
-                        # Verify PDF file exists before processing
-                        if not os.path.exists(pdf_path):
-                            raise PDFExtractionError(f"PDF file not found: {pdf_path}")
-
-                        # Open document ONCE and keep it open during entire extraction
-                        # This prevents garbage collection issues with PyMuPDF weak references
-                        doc = fitz.open(pdf_path)
-                        total_pages = len(doc)
-
-                        self.logger.info(f"PDF has {total_pages} pages, will process page-by-page with persistent document object")
-
-                        markdown_content = ""
-                        failed_pages = []
-
-                        try:
-                            # Process in SMALLER batches of 3 pages to reduce memory and avoid OOM kills
-                            # With 2 workers × 3 pages = 6 pages max in memory (was 10 pages, originally 20)
-                            # Slower but MUCH more stable - prioritize success over speed
-                            batch_size = 3
-                            for batch_start in range(0, total_pages, batch_size):
-                                batch_end = min(batch_start + batch_size, total_pages)
-                                self.logger.info(f"Processing pages {batch_start + 1}-{batch_end} with PyMuPDF4LLM")
-
-                                # MEMORY MONITORING: Log memory before batch
-                                try:
-                                    import psutil
-                                    process = psutil.Process()
-                                    mem_mb = process.memory_info().rss / 1024 / 1024
-                                    self.logger.info(f"   💾 Memory before batch: {mem_mb:.1f} MB")
-                                except:
-                                    pass
-
-                                for page_num in range(batch_start, batch_end):
-                                    # Verify page number is valid
-                                    if page_num >= total_pages:
-                                        self.logger.warning(f"Skipping page {page_num + 1} - out of range (total: {total_pages})")
-                                        continue
-
-                                    try:
-                                        self.logger.debug(f"Extracting page {page_num + 1}/{total_pages} (0-indexed: {page_num})")
-                                        # Use document object to avoid garbage collection issues
-                                        page_content = extract_pdf_to_markdown_with_doc(doc, page_num)
-                                        markdown_content += page_content + "\n\n"
-                                    except (ValueError, RuntimeError) as page_error:
-                                        error_msg = str(page_error).lower()
-                                        if any(keyword in error_msg for keyword in ["not a textpage", "bad page number", "not in document", "page", "xref", "damaged", "corrupt"]):
-                                            self.logger.warning(f"Page {page_num + 1} failed with PyMuPDF error ({page_error}), will use OCR for this page")
-                                            failed_pages.append(page_num)
-                                        else:
-                                            self.logger.error(f"Page {page_num + 1} failed with unexpected error: {page_error}")
-                                            raise
-                                    except ReferenceError as page_error:
-                                        if "weakly-referenced object no longer exists" in str(page_error):
-                                            self.logger.warning(f"Page {page_num + 1} failed with PyMuPDF garbage collection issue, will use OCR for this page")
-                                            failed_pages.append(page_num)
-                                        else:
-                                            self.logger.error(f"Page {page_num + 1} failed with unexpected ReferenceError: {page_error}")
-                                            raise
-                                    except Exception as page_error:
-                                        self.logger.error(f"Page {page_num + 1} failed with error: {page_error}")
-                                        raise
-
-                                # MEMORY CLEANUP after each batch (single pass to avoid destroying active PyMuPDF objects)
-                                import gc
-                                gc.collect()
-
-                                # Log memory after batch
-                                try:
-                                    import psutil
-                                    process = psutil.Process()
-                                    mem_mb = process.memory_info().rss / 1024 / 1024
-                                    self.logger.info(f"   💾 Memory after batch: {mem_mb:.1f} MB (freed memory)")
-                                except:
-                                    pass
-                        finally:
-                            # Always close the document when done
-                            doc.close()
-                            self.logger.debug(f"Closed PDF document after processing {total_pages} pages")
-
-                            # Force garbage collection after each batch
-                            import gc
-                            gc.collect()
-
-                        # If we have failed pages, use OCR only for those specific pages
-                        if failed_pages:
-                            self.logger.info(f"Using OCR for {len(failed_pages)} failed pages: {failed_pages}")
-                            ocr_content = self._extract_text_with_ocr_for_pages(pdf_path, failed_pages, processing_options, progress_callback)
-                            markdown_content += ocr_content
-
-                        if len(markdown_content.strip()) < 100:
-                            raise PDFExtractionError("PyMuPDF4LLM extraction yielded minimal content")
-
-                    else:
-                        raise
-
-                # Check if we got meaningful text content
-                clean_content = markdown_content.replace('-', '').replace('\n', '').strip()
-
-                # If we only got page separators or very little content, try OCR
-                if len(clean_content) < 100:  # Less than 100 chars of actual content
-                    self.logger.info("Standard extraction yielded minimal text, attempting OCR extraction")
-                    try:
-                        ocr_content = self._extract_text_with_ocr(pdf_path, processing_options, progress_callback)
-
-                        if len(ocr_content.strip()) > len(clean_content):
-                            self.logger.info(f"OCR extraction successful: {len(ocr_content)} characters vs {len(clean_content)} from standard")
-                            markdown_content = ocr_content
-                        else:
-                            self.logger.info("OCR did not improve text extraction, using standard result")
-                    except Exception as ocr_error:
-                        self.logger.warning(f"OCR extraction failed: {ocr_error}, using standard result")
-
-            # Get basic metadata (page count, etc.)
-            import fitz  # PyMuPDF
-            doc = fitz.open(pdf_path)
-
-            # Helper function to parse PDF dates
-            def parse_pdf_date(date_str):
-                """Parse PDF date string to datetime or return None."""
-                if not date_str or date_str.strip() == '':
-                    return None
-                try:
-                    # PDF dates are often in format: D:YYYYMMDDHHmmSSOHH'mm'
-                    if date_str.startswith('D:'):
-                        date_str = date_str[2:]
-                    # Extract just the date part (YYYYMMDDHHMMSS)
-                    if len(date_str) >= 14:
-                        from datetime import datetime
-                        return datetime.strptime(date_str[:14], '%Y%m%d%H%M%S')
-                    elif len(date_str) >= 8:
-                        from datetime import datetime
-                        return datetime.strptime(date_str[:8], '%Y%m%d')
-                except:
-                    pass
-                return None
-
-            metadata = {
-                'page_count': doc.page_count,
-                'title': doc.metadata.get('title', '') or None,
-                'author': doc.metadata.get('author', '') or None,
-                'subject': doc.metadata.get('subject', '') or None,
-                'creator': doc.metadata.get('creator', '') or None,
-                'producer': doc.metadata.get('producer', '') or None,
-                'creation_date': parse_pdf_date(doc.metadata.get('creationDate', '')),
-                'modification_date': parse_pdf_date(doc.metadata.get('modDate', ''))
-            }
-            doc.close()
-
-            # Update progress: Text extraction complete (50%)
-            if progress_callback:
-                try:
-                    # Only call if it's not a coroutine (sync callbacks only in sync function)
-                    if not inspect.iscoroutinefunction(progress_callback):
-                        progress_callback(
-                            progress=50,
-                            details={
-                                "current_step": "Text extraction complete, preparing for chunking",
-                                "total_pages": total_pages,
-                                "text_length": len(markdown_content),
-                                "extraction_method": "pymupdf4llm"
-                            }
-                        )
-                except Exception as callback_error:
-                    self.logger.warning(f"Progress callback failed: {callback_error}")
-
-            # Explicit memory cleanup after extraction
-            import gc
-            gc.collect()
-
-            return markdown_content, metadata
-
-        except Exception as e:
-            # Cleanup on error
-            import gc
-            gc.collect()
-            raise PDFExtractionError(f"Markdown extraction failed: {str(e)}") from e
-
-    def _extract_text_with_ocr_for_pages(
-        self,
-        pdf_path: str,
-        page_numbers: List[int],
-        processing_options: Dict[str, Any],
-        progress_callback: Optional[callable] = None
-    ) -> str:
-        """
-        Extract text from specific PDF pages using OCR.
-
-        Args:
-            pdf_path: Path to PDF file
-            page_numbers: List of page numbers (0-indexed) to process with OCR
-            processing_options: Processing configuration
-            progress_callback: Optional progress callback
-
-        Returns:
-            Extracted text as markdown
-        """
-        try:
-            import fitz  # PyMuPDF
-            from app.services.ocr_service import get_ocr_service, OCRConfig
-            import gc
-
-            # Initialize OCR service
-            ocr_languages = processing_options.get('ocr_languages', ['en'])
-            ocr_config = OCRConfig(
-                languages=ocr_languages,
-                confidence_threshold=0.3,
-                preprocessing_enabled=True
-            )
-            ocr_service = get_ocr_service(ocr_config)
-
-            doc = fitz.open(pdf_path)
-            all_text = []
-
-            self.logger.info(f"Processing {len(page_numbers)} pages with OCR ONE AT A TIME (memory-optimized)")
-
-            # ⚠️ CRITICAL FIX: Process pages ONE AT A TIME to prevent OOM kills
-            # EasyOCR model uses ~2-3GB RAM, processing multiple pages causes memory to grow uncontrollably
-            # This is MUCH slower but prevents service crashes
-            for idx, page_num in enumerate(page_numbers):
-                self.logger.info(f"OCR Page {idx + 1}/{len(page_numbers)}: Processing page {page_num + 1}")
-
-                # Log memory before page
-                try:
-                    import psutil
-                    process = psutil.Process()
-                    mem_mb = process.memory_info().rss / 1024 / 1024
-                    self.logger.info(f"   💾 Memory before page: {mem_mb:.1f} MB")
-                except:
-                    pass
-                if page_num < len(doc):
-                    page = doc.load_page(page_num)
-
-                    # Render page as image (2.0x zoom for quality vs memory balance)
-                    mat = fitz.Matrix(2.0, 2.0)
-                    pix = page.get_pixmap(matrix=mat)
-                    img_data = pix.tobytes('png')
-
-                    # Explicitly free pixmap memory
-                    pix = None
-
-                    # Extract text with OCR
-                    try:
-                        from PIL import Image
-                        import io
-
-                        img = Image.open(io.BytesIO(img_data))
-                        ocr_results = ocr_service.extract_text_from_image(img)
-
-                        # Combine all OCR results for this page
-                        page_text = []
-                        for result in ocr_results:
-                            if result.text.strip() and result.confidence > 0.3:
-                                page_text.append(result.text.strip())
-
-                        if page_text:
-                            combined_page_text = ' '.join(page_text)
-                            all_text.append(f"## Page {page_num + 1}\n\n{combined_page_text}\n")
-                            self.logger.debug(f"Page {page_num + 1}: Extracted {len(combined_page_text)} characters via OCR")
-
-                        # Explicitly free image memory
-                        img.close()
-                        img = None
-                        img_data = None
-
-                    except Exception as page_error:
-                        self.logger.warning(f"OCR failed for page {page_num + 1}: {page_error}")
-                        continue
-
-                    # ⚠️ CRITICAL: Aggressive memory cleanup after EACH page
-                    # Force garbage collection to free EasyOCR temporary objects
-                    import gc
-                    gc.collect()
-
-                    # Log memory usage after page
-                    try:
-                        import psutil
-                        process = psutil.Process()
-                        mem_mb = process.memory_info().rss / 1024 / 1024
-                        self.logger.info(f"   💾 Memory after page {page_num + 1}: {mem_mb:.1f} MB")
-                    except:
-                        pass
-
-            doc.close()
-
-            # Final garbage collection AFTER doc.close()
-            import gc
-            gc.collect()
-
-            return '\n'.join(all_text)
-
-        except Exception as e:
-            import gc
-            gc.collect()
-            raise PDFExtractionError(f"OCR extraction failed for specific pages: {str(e)}") from e
-
-    def _extract_text_with_ocr(
-        self,
-        pdf_path: str,
-        processing_options: Dict[str, Any],
-        progress_callback: Optional[callable] = None
-    ) -> str:
-        """
-        Extract text from PDF using OCR for text-as-images PDFs.
-
-        This method renders PDF pages as images and uses OCR to extract text.
-        Useful for PDFs where text is embedded as images or paths.
-        """
-        try:
-            import fitz  # PyMuPDF
-            from app.services.ocr_service import get_ocr_service, OCRConfig
-
-            # Initialize OCR service
-            ocr_languages = processing_options.get('ocr_languages', ['en'])
-            ocr_config = OCRConfig(
-                languages=ocr_languages,
-                confidence_threshold=0.3,  # Lower threshold for better recall
-                preprocessing_enabled=True
-            )
-            ocr_service = get_ocr_service(ocr_config)
-
-            doc = fitz.open(pdf_path)
-            all_text = []
-
-            # Process specific page or all pages
-            page_number = processing_options.get('page_number')
-            if page_number is not None:
-                page_range = [page_number - 1] if page_number > 0 else [0]
-            else:
-                # Process all pages for complete extraction
-                page_range = list(range(len(doc)))
-
-            self.logger.info(f"Processing {len(page_range)} pages with OCR ONE AT A TIME (memory-optimized)")
-
-            # ⚠️ CRITICAL FIX: Process pages ONE AT A TIME to prevent OOM kills
-            # EasyOCR model uses ~2-3GB RAM, processing multiple pages causes memory to grow uncontrollably
-            # This is MUCH slower but prevents service crashes
-            for idx, page_num in enumerate(page_range):
-                self.logger.info(f"OCR Page {idx + 1}/{len(page_range)}: Processing page {page_num + 1}")
-
-                # Log memory before page
-                try:
-                    import psutil
-                    process = psutil.Process()
-                    mem_mb = process.memory_info().rss / 1024 / 1024
-                    self.logger.info(f"   💾 Memory before page: {mem_mb:.1f} MB")
-                except:
-                    pass
-                if page_num < len(doc):
-                    page = doc.load_page(page_num)
-
-                    # Render page as image (reduced zoom to save memory)
-                    mat = fitz.Matrix(2.0, 2.0)  # 2.0x zoom (reduced from 2.5x to save memory)
-                    pix = page.get_pixmap(matrix=mat)
-                    img_data = pix.tobytes('png')
-
-                    # Explicitly free pixmap memory
-                    pix = None
-
-                    # Extract text with OCR
-                    try:
-                        from PIL import Image
-                        import io
-
-                        img = Image.open(io.BytesIO(img_data))
-                        ocr_results = ocr_service.extract_text_from_image(img)
-
-                        # Combine all OCR results for this page
-                        page_text = []
-                        for result in ocr_results:
-                            if result.text.strip() and result.confidence > 0.3:
-                                page_text.append(result.text.strip())
-
-                        if page_text:
-                            combined_page_text = ' '.join(page_text)
-                            all_text.append(f"## Page {page_num + 1}\n\n{combined_page_text}\n")
-                            self.logger.debug(f"Page {page_num + 1}: Extracted {len(combined_page_text)} characters")
-
-                        # Explicitly free image memory
-                        img.close()
-                        img = None
-                        img_data = None
-
-                    except Exception as page_error:
-                        self.logger.warning(f"OCR failed for page {page_num + 1}: {page_error}")
-                        continue
-
-                    # ⚠️ CRITICAL: Aggressive memory cleanup after EACH page
-                    # Force garbage collection to free EasyOCR temporary objects
-                    import gc
-                    gc.collect()
-
-                    # Log memory usage after page
-                    try:
-                        import psutil
-                        process = psutil.Process()
-                        mem_mb = process.memory_info().rss / 1024 / 1024
-                        self.logger.info(f"   💾 Memory after page {page_num + 1}: {mem_mb:.1f} MB")
-                    except:
-                        pass
-
-                    # Log progress after each page
-                    progress = ((idx + 1) / len(page_range)) * 80  # OCR is 80% of total processing
-                    self.logger.info(f"📄 OCR Progress: {idx + 1}/{len(page_range)} pages ({progress:.1f}%)")
-
-                    # Update job progress if callback provided
-                    if progress_callback:
-                        try:
-                            # Only call if it's not a coroutine (sync callbacks only in sync function)
-                            if not inspect.iscoroutinefunction(progress_callback):
-                                progress_callback(
-                                    progress=int(progress),
-                                    details={
-                                        "current_step": f"OCR processing: {idx + 1}/{len(page_range)} pages",
-                                        "pages_processed": idx + 1,
-                                        "total_pages": len(page_range),
-                                        "ocr_stage": "extracting_text"
-                                    }
-                                )
-                        except Exception as callback_error:
-                            self.logger.warning(f"Progress callback failed: {callback_error}")
-
-            doc.close()
-
-            # Final garbage collection
-            import gc
-            gc.collect()
-
-            # Combine all extracted text
-            final_text = '\n'.join(all_text)
-            self.logger.info(f"✅ OCR extraction complete: {len(final_text)} total characters from {len(page_range)} pages")
-
-            # Update progress for chunk creation
-            if progress_callback:
-                try:
-                    # Only call if it's not a coroutine (sync callbacks only in sync function)
-                    if not inspect.iscoroutinefunction(progress_callback):
-                        progress_callback(
-                            progress=85,
-                            details={
-                                "current_step": "Creating text chunks for RAG pipeline",
-                                "pages_processed": len(page_range),
-                                "total_pages": len(page_range),
-                                "text_length": len(final_text),
-                                "ocr_stage": "creating_chunks"
-                            }
-                        )
-                except Exception as callback_error:
-                    self.logger.warning(f"Progress callback failed: {callback_error}")
-
-            # Explicit memory cleanup after OCR extraction
-            import gc
-            gc.collect()
-
-            return final_text
-
-        except Exception as e:
-            # Cleanup on error
-            import gc
-            gc.collect()
-            self.logger.error(f"OCR text extraction failed: {str(e)}")
-            raise PDFExtractionError(f"OCR text extraction failed: {str(e)}") from e
 
     def _should_use_multimodal(self, extracted_images: List[Dict], markdown_content: str) -> bool:
         """

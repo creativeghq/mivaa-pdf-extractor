@@ -237,6 +237,60 @@ class AsyncQueueService:
             logger.error(f"❌ Failed to mark job as failed: {e}")
 
 
+    async def queue_image_embedding_regeneration(
+        self,
+        workspace_id: str,
+        document_id: Optional[str] = None,
+        image_ids: Optional[List[str]] = None,
+        force_regenerate: bool = False,
+        priority: int = 0
+    ) -> str:
+        """
+        Queue a background job to regenerate image embeddings.
+
+        Args:
+            workspace_id: Workspace ID
+            document_id: Optional document ID to limit scope
+            image_ids: Optional specific image IDs to regenerate
+            force_regenerate: If True, regenerate even if embeddings exist
+            priority: Job priority (0 = normal)
+
+        Returns:
+            Job ID
+        """
+        try:
+            job_id = str(uuid.uuid4())
+
+            job_data = {
+                'id': job_id,
+                'job_type': 'image_embedding_regeneration',
+                'status': 'pending',
+                'priority': priority,
+                'workspace_id': workspace_id,
+                'metadata': {
+                    'workspace_id': workspace_id,
+                    'document_id': document_id,
+                    'image_ids': image_ids,
+                    'force_regenerate': force_regenerate,
+                    'created_at': datetime.utcnow().isoformat()
+                },
+                'created_at': datetime.utcnow().isoformat(),
+                'updated_at': datetime.utcnow().isoformat()
+            }
+
+            result = self.supabase.table('background_jobs').insert(job_data).execute()
+
+            if result.data and len(result.data) > 0:
+                logger.info(f"✅ Queued image embedding regeneration job {job_id} for workspace {workspace_id}")
+                return job_id
+            else:
+                raise Exception("Failed to create background job")
+
+        except Exception as e:
+            logger.error(f"❌ Failed to queue image embedding regeneration job: {e}")
+            raise
+
+
 # Singleton instance
 _async_queue_service: Optional[AsyncQueueService] = None
 
@@ -247,5 +301,3 @@ def get_async_queue_service() -> AsyncQueueService:
     if _async_queue_service is None:
         _async_queue_service = AsyncQueueService()
     return _async_queue_service
-
-

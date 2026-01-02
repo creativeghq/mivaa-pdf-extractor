@@ -630,7 +630,35 @@ async def upload_document(
                     detail="Only PDF files are supported"
                 )
             filename = file.filename
-            file_content = await file.read()
+            
+            # STREAMING UPLOAD: Save directly to disk without loading into RAM
+            import shutil
+            import tempfile
+            
+            # Create temp file
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
+            file_path = temp_file.name
+            
+            try:
+                 # Stream file content to temp file
+                with open(file_path, "wb") as buffer:
+                    shutil.copyfileobj(file.file, buffer)
+                
+                # Get file size
+                file_size = os.path.getsize(file_path)
+                logger.info(f"✅ Streamed upload to temp file: {file_path} ({file_size} bytes)")
+                
+                # We do NOT load file_content into memory here
+                file_content = None 
+                
+            except Exception as e:
+                # Cleanup on failure
+                if os.path.exists(file_path):
+                    os.unlink(file_path)
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to save uploaded file: {str(e)}"
+                )
 
         elif file_url:
             # Download from URL
@@ -687,12 +715,17 @@ async def upload_document(
         if tags:
             document_tags = [tag.strip() for tag in tags.split(',')]
 
-        # Save file temporarily
-        import tempfile
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
-        temp_file.write(file_content)
-        temp_file.close()
-        file_path = temp_file.name
+        # File is already saved to file_path above for 'file' case
+        # For URL case, we need to save it
+        if file_url and file_content:
+             import tempfile
+             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
+             temp_file.write(file_content)
+             temp_file.close()
+             file_path = temp_file.name
+             file_size = len(file_content)
+             # Free memory
+             file_content = None
 
         # Get Supabase client
         supabase_client = get_supabase_client()
@@ -814,7 +847,7 @@ async def upload_document(
         asyncio.create_task(process_document_with_discovery(
             job_id=job_id,
             document_id=document_id,
-            file_content=file_content,
+            file_path=file_path,  # PASS PATH, NOT CONTENT
             filename=filename,
             title=title,
             description=description,
@@ -1109,6 +1142,18 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
 
             file_content = file_response
             logger.info(f"✅ Downloaded file: {len(file_content)} bytes")
+            
+            # STREAMING REFACTOR: Save to temp file for processing
+            import tempfile
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
+            temp_file.write(file_content)
+            temp_file.close()
+            # Update file_path to point to local temp file
+            file_path = temp_file.name
+            logger.info(f"✅ Saved to temp file for processing: {file_path}")
+            
+            # Free memory
+            file_content = None
 
             # Initialize job in job_storage (CRITICAL: required by process_document_background)
             job_storage[job_id] = {
@@ -1143,7 +1188,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
                     run_async_in_background(process_document_with_discovery),
                     job_id=job_id,
                     document_id=document_id,
-                    file_content=file_content,
+                    file_path=file_path,  # Use file_path
                     filename=filename,
                     workspace_id=doc_data.get('workspace_id', 'ffafc28b-1b8b-4b0d-b226-9f9a6154004e'),
                     title=doc_data.get('title'),
@@ -1164,7 +1209,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
                     run_async_in_background(process_document_background),
                     job_id=job_id,
                     document_id=document_id,
-                    file_content=file_content,
+                    file_path=file_path, # Use file_path
                     filename=filename,
                     title=doc_data.get('title'),
                     description=doc_data.get('description'),
@@ -2022,7 +2067,7 @@ async def process_images_background(
 async def process_document_background(
     job_id: str,
     document_id: str,
-    file_content: bytes,
+    file_path: str,  # CHANGED: file_path instead of file_content
     filename: str,
     title: Optional[str],
     description: Optional[str],
@@ -2042,7 +2087,9 @@ async def process_document_background(
     logger.info(f"📋 Job ID: {job_id}")
     logger.info(f"📄 Document ID: {document_id}")
     logger.info(f"📝 Filename: {filename}")
-    logger.info(f"📦 File size: {len(file_content)} bytes")
+    file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+    logger.info(f"📦 File size: {file_size} bytes")
+    logger.info(f"📂 File path: {file_path}")
     logger.info(f"⏰ Started at: {start_time.isoformat()}")
     logger.info(f"🔧 Chunk size: {chunk_size}, Overlap: {chunk_overlap}")
     logger.info(f"📚 Title: {title}")
@@ -2538,11 +2585,19 @@ async def process_document_background(
         logger.info(f"   Total duration: {total_duration:.2f}s")
         logger.info(f"   Ended at: {end_time.isoformat()}")
 
+        # CLEANUP: Remove local temp file
+        if file_path and os.path.exists(file_path) and (file_path.startswith('/tmp/') or 'Temp' in file_path):
+            try:
+                os.unlink(file_path)
+                logger.info(f"🧹 Removed temporary file: {file_path}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to remove temporary file {file_path}: {e}")
+
 
 async def process_document_with_discovery(
     job_id: str,
     document_id: str,
-    file_content: bytes,
+    file_path: str,  # CHANGED: file_path instead of file_content
     filename: str,
     title: Optional[str],
     description: Optional[str],
@@ -2591,13 +2646,28 @@ async def process_document_with_discovery(
     logger.info(f"🎯 Focused Extraction: {'ENABLED' if focused_extraction else 'DISABLED (Full PDF)'}")
     logger.info(f"📦 Extract Categories: {', '.join(extract_categories).upper()}")
 
-    # Send job start event to Sentry
+        # Send job start event to Sentry
     with sentry_sdk.push_scope() as scope:
         scope.set_tag("job_id", job_id)
         scope.set_tag("document_id", document_id)
         scope.set_tag("discovery_model", discovery_model)
         scope.set_tag("focused_extraction", focused_extraction)
         scope.set_context("job_config", {
+            "extract_categories": extract_categories,
+            "chunk_size": chunk_size
+        })
+
+        try:
+            # Read file content ONLY when needed
+            logger.info(f"📖 Reading file from disk: {file_path}")
+            if not os.path.exists(file_path):
+                 raise FileNotFoundError(f"File not found at {file_path}")
+                 
+            with open(file_path, 'rb') as f:
+                file_content = f.read()
+            
+            file_size = len(file_content)
+
             "filename": filename,
             "discovery_model": discovery_model,
             "focused_extraction": focused_extraction,
@@ -2940,6 +3010,18 @@ async def process_document_with_discovery(
             await tracker.fail_job(error=e)
         else:
             # Fallback if tracker wasn't initialized
+            pass
+            
+    finally:
+        # CLEANUP: Remove local temp file
+        if 'file_path' in locals() and file_path and os.path.exists(file_path):
+            # Only delete if it's a temp file we created (basic safety check)
+            if file_path.startswith('/tmp/') or 'Temp' in file_path or 'tmp' in file_path:
+                try:
+                    os.unlink(file_path)
+                    logger.info(f"🧹 Removed temporary file: {file_path}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to remove temporary file {file_path}: {e}")
             job_storage[job_id]["status"] = "failed"
             job_storage[job_id]["error"] = str(e)
             job_storage[job_id]["progress"] = 100
