@@ -63,19 +63,23 @@ class ErrorLoggingMiddleware(BaseHTTPMiddleware):
         # Generate correlation ID
         correlation_id = str(uuid.uuid4())
         request.state.correlation_id = correlation_id
-        
+
         # Capture request start time
         start_time = time.time()
-        
+
         # Build request context
         request_context = self._build_request_context(request, correlation_id)
-        
+
+        # Skip logging for system_logs table requests to avoid recursive logging
+        is_system_logs_request = '/rest/v1/system_logs' in str(request.url.path)
+
         try:
-            # Log request
-            logger.info(
-                f"[{correlation_id}] Incoming request: {request.method} {request.url.path}",
-                extra={"correlation_id": correlation_id, "request": request_context}
-            )
+            # Log request (skip for system_logs to avoid recursion)
+            if not is_system_logs_request:
+                logger.info(
+                    f"[{correlation_id}] Incoming request: {request.method} {request.url.path}",
+                    extra={"correlation_id": correlation_id, "request": request_context}
+                )
             
             # Process request
             response = await call_next(request)
@@ -83,29 +87,30 @@ class ErrorLoggingMiddleware(BaseHTTPMiddleware):
             # Calculate processing time
             processing_time = (time.time() - start_time) * 1000
             
-            # Log response
-            response_context = self._build_response_context(response, processing_time)
-            
-            if response.status_code >= 400:
-                logger.warning(
-                    f"[{correlation_id}] Request failed: {request.method} {request.url.path} "
-                    f"- Status: {response.status_code} - Time: {processing_time:.2f}ms",
-                    extra={
-                        "correlation_id": correlation_id,
-                        "request": request_context,
-                        "response": response_context
-                    }
-                )
-            else:
-                logger.info(
-                    f"[{correlation_id}] Request completed: {request.method} {request.url.path} "
-                    f"- Status: {response.status_code} - Time: {processing_time:.2f}ms",
-                    extra={
-                        "correlation_id": correlation_id,
-                        "request": request_context,
-                        "response": response_context
-                    }
-                )
+            # Log response (skip for system_logs to avoid recursion)
+            if not is_system_logs_request:
+                response_context = self._build_response_context(response, processing_time)
+
+                if response.status_code >= 400:
+                    logger.warning(
+                        f"[{correlation_id}] Request failed: {request.method} {request.url.path} "
+                        f"- Status: {response.status_code} - Time: {processing_time:.2f}ms",
+                        extra={
+                            "correlation_id": correlation_id,
+                            "request": request_context,
+                            "response": response_context
+                        }
+                    )
+                else:
+                    logger.info(
+                        f"[{correlation_id}] Request completed: {request.method} {request.url.path} "
+                        f"- Status: {response.status_code} - Time: {processing_time:.2f}ms",
+                        extra={
+                            "correlation_id": correlation_id,
+                            "request": request_context,
+                            "response": response_context
+                        }
+                    )
             
             # Add correlation ID to response headers
             response.headers["X-Correlation-ID"] = correlation_id
