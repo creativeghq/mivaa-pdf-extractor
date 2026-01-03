@@ -317,7 +317,7 @@ async def process_stage_4_products(
     if products_created > 0:
         logger.info(f"🎨 Generating embeddings for {products_created} products...")
         from app.services.async_queue_service import AsyncQueueService
-        from app.services.chunking_service import UnifiedChunkingService
+        from app.services.unified_chunking_service import UnifiedChunkingService
 
         async_queue = AsyncQueueService()
         chunking_service = UnifiedChunkingService()
