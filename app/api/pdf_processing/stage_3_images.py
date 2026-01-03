@@ -166,6 +166,9 @@ async def process_stage_3_images(
     vecs_batch_records = []
     VECS_BATCH_SIZE = 20
 
+    # ✅ Initialize extraction_stats at function scope for checkpoint tracking
+    extraction_stats = {'vision_guided_count': 0, 'pymupdf_count': 0, 'failed_count': 0, 'total_pages': 0}
+
     # Circuit breakers for API calls
     # CLIP: More lenient settings for transient memory pressure failures
     # Vision Model: More lenient due to transient JSON formatting issues (now fixed, but keeping lenient for safety)
@@ -233,12 +236,14 @@ async def process_stage_3_images(
         )
         logger.info(f"📊 Image extraction: ~{estimated_images} estimated images → timeout: {image_extraction_timeout:.0f}s")
 
-        # Build processing options
+        # Build processing options with job tracking integration
         processing_options = {
             'extract_images': True,
-            'extract_tables': False
-            # NOTE: Images are now ALWAYS uploaded to Supabase immediately
-            # Non-material images are deleted from Supabase after AI classification
+            'extract_tables': False,
+            # ✅ Job tracking integration for vision extraction
+            'job_id': job_id,
+            'checkpoint_recovery_service': checkpoint_recovery_service,
+            'progress_tracker': tracker
         }
 
         # Add page_list for focused extraction
@@ -257,12 +262,20 @@ async def process_stage_3_images(
                 timeout_seconds=image_extraction_timeout,
                 operation_name="Image extraction from PDF"
             )
-            logger.info(f"✅ Image extraction complete: {len(pdf_result_with_images.extracted_images)} images extracted")
+
+            # ✅ Get extraction stats for tracking
+            extraction_stats = pdf_result_with_images.metadata.get('extraction_stats', {})
+            logger.info(
+                f"✅ Image extraction complete: {len(pdf_result_with_images.extracted_images)} images extracted "
+                f"(vision: {extraction_stats.get('vision_guided_count', 0)}, "
+                f"pymupdf: {extraction_stats.get('pymupdf_count', 0)})"
+            )
         except Exception as e:
             logger.error(f"❌ Image extraction failed: {e}")
             raise
     else:
         logger.info(f"✅ Using pre-extracted images: {len(pdf_result_with_images.extracted_images)} images")
+        extraction_stats = pdf_result_with_images.metadata.get('extraction_stats', {})
 
     # ============================================================
     # VISION-GUIDED EXTRACTION PATH (NEW)
@@ -835,7 +848,7 @@ async def process_stage_3_images(
     embedding_to_text_rate = 0.0
 
     # Create IMAGES_EXTRACTED checkpoint with comprehensive metadata
-    # ✅ NEW: Include vision-guided extraction metadata
+    # ✅ NEW: Include vision-guided extraction metadata and PDF processor extraction_stats
     await checkpoint_recovery_service.create_checkpoint(
         job_id=job_id,
         stage=CheckpointStage.IMAGES_EXTRACTED,
@@ -847,13 +860,22 @@ async def process_stage_3_images(
             "images_analyzed": images_processed,
             # ✅ NEW: Track extraction method used
             "extraction_method": vision_result.get('extraction_method', 'pymupdf') if vision_result else 'pymupdf',
-            "vision_guided_used": bool(vision_result and vision_result.get('success'))
+            "vision_guided_used": bool(vision_result and vision_result.get('success')),
+            # ✅ NEW: Include PDF processor extraction stats
+            "pdf_extraction_stats": extraction_stats
         },
         metadata={
             "total_images_extracted": len(all_images),
             "material_images": len(material_images),
             "non_material_images": non_material_count,
             "classification_errors": classification_errors,
+            # ✅ NEW: PDF processor extraction method breakdown
+            "extraction_method_breakdown": {
+                "vision_guided_count": extraction_stats.get('vision_guided_count', 0),
+                "pymupdf_count": extraction_stats.get('pymupdf_count', 0),
+                "failed_count": extraction_stats.get('failed_count', 0),
+                "total_pages": extraction_stats.get('total_pages', 0)
+            },
             # ✅ NEW: Vision-guided extraction stats
             "vision_guided": {
                 "enabled": use_vision_guided,
