@@ -1830,7 +1830,22 @@ Respond with JSON:
                     return {'is_material': False, 'confidence': 0.0, 'reason': f'API error {response.status_code}'}
 
                 result_text = response.json()['choices'][0]['message']['content']
-                result = json.loads(result_text)
+
+                # Try to parse JSON, with fallback for malformed responses
+                try:
+                    result = json.loads(result_text)
+                except json.JSONDecodeError as json_err:
+                    self.logger.warning(f"Qwen returned non-JSON response: '{result_text[:200]}' - Error: {json_err}")
+                    # Try to extract JSON from markdown code blocks
+                    if '```json' in result_text:
+                        json_match = result_text.split('```json')[1].split('```')[0].strip()
+                        result = json.loads(json_match)
+                    elif '```' in result_text:
+                        json_match = result_text.split('```')[1].split('```')[0].strip()
+                        result = json.loads(json_match)
+                    else:
+                        # Default to non-material if we can't parse
+                        return {'is_material': False, 'confidence': 0.0, 'reason': f'Invalid JSON response'}
 
                 return {
                     'is_material': result.get('is_material', False),
