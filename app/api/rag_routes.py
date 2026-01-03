@@ -726,6 +726,10 @@ async def upload_document(
              file_size = len(file_content)
              # Free memory
              file_content = None
+        else:
+             # For file upload case, get file size from file_path
+             import os
+             file_size = os.path.getsize(file_path)
 
         # Get Supabase client
         supabase_client = get_supabase_client()
@@ -752,7 +756,7 @@ async def upload_document(
                 "workspace_id": workspace_id,
                 "filename": filename,
                 "content_type": "application/pdf",
-                "file_size": len(file_content),
+                "file_size": file_size,
                 "file_path": file_path,
                 "processing_status": "processing",
                 "metadata": {
