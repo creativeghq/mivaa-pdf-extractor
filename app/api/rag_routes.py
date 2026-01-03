@@ -2672,16 +2672,15 @@ async def process_document_with_discovery(
             level="info"
         )
 
-    try:
-        # Read file content ONLY when needed
-        logger.info(f"📖 Reading file from disk: {file_path}")
-        if not os.path.exists(file_path):
-             raise FileNotFoundError(f"File not found at {file_path}")
+    # Read file content ONLY when needed
+    logger.info(f"📖 Reading file from disk: {file_path}")
+    if not os.path.exists(file_path):
+         raise FileNotFoundError(f"File not found at {file_path}")
 
-        with open(file_path, 'rb') as f:
-            file_content = f.read()
+    with open(file_path, 'rb') as f:
+        file_content = f.read()
 
-        file_size = len(file_content)
+    file_size = len(file_content)
     logger.info("=" * 80)
 
     # Get AI model configuration
