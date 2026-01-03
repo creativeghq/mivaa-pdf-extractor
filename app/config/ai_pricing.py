@@ -52,6 +52,10 @@ class AIPricingConfig:
         "claude-3-5-sonnet-20241022": {
             "input": Decimal("3.00"),
             "output": Decimal("15.00"),
+        },
+        "claude-sonnet-4-5-20250929": {
+            "input": Decimal("3.00"),
+            "output": Decimal("15.00"),
             "last_verified": "2025-12-26",
             "source": "https://www.anthropic.com/pricing"
         },

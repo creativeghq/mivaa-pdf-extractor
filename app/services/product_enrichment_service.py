@@ -258,9 +258,9 @@ Generate a professional, engaging product description that:
 5. Uses professional language suitable for a design catalog
 
 RESPOND WITH ONLY THE DESCRIPTION, NO ADDITIONAL TEXT."""
-            
+
             response = self.anthropic_client.messages.create(
-                model="claude-3-5-sonnet-20241022",
+                model="claude-sonnet-4-5-20250929",
                 max_tokens=500,
                 messages=[{"role": "user", "content": prompt}]
             )

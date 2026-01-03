@@ -120,7 +120,7 @@ class MetadataConsolidationService:
             # Call AI
             client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
             response = client.messages.create(
-                model="claude-3-5-sonnet-20241022",
+                model="claude-sonnet-4-5-20250929",
                 max_tokens=4096,
                 messages=[{"role": "user", "content": full_prompt}]
             )
@@ -128,7 +128,7 @@ class MetadataConsolidationService:
             # Log AI call
             await self.ai_logger.log_ai_call(
                 workspace_id=self.workspace_id,
-                model="claude-3-5-sonnet-20241022",
+                model="claude-sonnet-4-5-20250929",
                 prompt_tokens=response.usage.input_tokens,
                 completion_tokens=response.usage.output_tokens,
                 total_tokens=response.usage.input_tokens + response.usage.output_tokens,

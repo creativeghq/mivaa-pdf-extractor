@@ -146,7 +146,7 @@ async def validate_image_with_claude(
     - **Max image size**: 10MB
     - **Timeout**: 30 seconds
     - **Rate limit**: 60 requests/minute
-    - **Model**: claude-3-5-sonnet-20241022
+    - **Model**: claude-sonnet-4-5-20250929
     """
     try:
         import time
@@ -233,7 +233,7 @@ Respond in JSON format:
             "metadata": {
                 "content_description": analysis_result.get("content_description"),
                 "materials_identified": analysis_result.get("materials_identified"),
-                "model_used": "claude-3-5-sonnet-20241022",
+                "model_used": "claude-sonnet-4-5-20250929",
             },
         }
 
@@ -345,7 +345,7 @@ Focus on:
             "metadata": {
                 "key_features": enrichment_data.get("key_features"),
                 "use_cases": enrichment_data.get("use_cases"),
-                "model_used": "claude-3-5-sonnet-20241022",
+                "model_used": "claude-sonnet-4-5-20250929",
             },
         }
 
@@ -464,7 +464,7 @@ async def test_claude_integration(supabase: SupabaseClient = Depends(get_supabas
         latency_ms = int((time.time() - start_time) * 1000)
         await ai_logger.log_ai_call(
             task="test_vision_integration",
-            model="claude-3-5-sonnet-20241022",
+            model="claude-sonnet-4-5-20250929",
             input_tokens=0,
             output_tokens=0,
             cost=0.0,

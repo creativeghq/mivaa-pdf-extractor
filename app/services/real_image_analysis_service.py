@@ -751,7 +751,7 @@ Respond ONLY with valid JSON, no additional text."""
 
             # Call Claude Vision API
             response = client.messages.create(
-                model="claude-3-5-sonnet-20241022",
+                model="claude-sonnet-4-5-20250929",
                 max_tokens=1024,
                 messages=[
                     {
@@ -832,7 +832,7 @@ Respond ONLY with valid JSON, no additional text."""
 
                 await self.ai_logger.log_claude_call(
                     task="image_vision_validation",
-                    model="claude-3-5-sonnet-20241022",
+                    model="claude-sonnet-4-5-20250929",
                     response=response,
                     latency_ms=latency_ms,
                     confidence_score=confidence_score,
@@ -842,7 +842,7 @@ Respond ONLY with valid JSON, no additional text."""
                 )
 
                 return {
-                    "model": "claude-3-5-sonnet-20241022",
+                    "model": "claude-sonnet-4-5-20250929",
                     "validation": validation,
                     "success": True
                 }
@@ -872,7 +872,7 @@ Respond ONLY with valid JSON, no additional text."""
             latency_ms = int((time.time() - start_time) * 1000)
             await self.ai_logger.log_ai_call(
                 task="image_vision_validation",
-                model="claude-3-5-sonnet-20241022",
+                model="claude-sonnet-4-5-20250929",
                 input_tokens=0,
                 output_tokens=0,
                 cost=0.0,
@@ -933,7 +933,7 @@ Respond ONLY with valid JSON, no additional text."""
 
             # Call Claude Vision API with base64 image
             response = client.messages.create(
-                model="claude-3-5-sonnet-20241022",
+                model="claude-sonnet-4-5-20250929",
                 max_tokens=1024,
                 messages=[
                     {
@@ -970,7 +970,7 @@ Respond ONLY with valid JSON, no additional text."""
                     raise json.JSONDecodeError("No JSON object found", content, 0)
 
                 return {
-                    "model": "claude-3-5-sonnet-20241022",
+                    "model": "claude-sonnet-4-5-20250929",
                     "validation": validation,
                     "success": True
                 }

@@ -137,7 +137,7 @@ class AIMetricsResponse(BaseModel):
       },
       "model_usage": [
         {
-          "model": "claude-3-5-sonnet-20241022",
+          "model": "claude-sonnet-4-5-20250929",
           "call_count": 500,
           "total_cost": 8.50,
           "total_tokens": 300000,
