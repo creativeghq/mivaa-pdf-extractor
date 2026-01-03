@@ -116,15 +116,23 @@ async def process_stage_2_chunking(
     # Instead of re-extracting text from PDF bytes (which causes memory bloat),
     # retrieve the already-extracted text from processed_documents table
     pre_extracted_text = None
+    page_chunks = None  # ✅ NEW: Page-aware text data
     try:
         result = supabase.client.table('processed_documents')\
-            .select('content')\
+            .select('content, metadata')\
             .eq('id', document_id)\
             .execute()
 
         if result.data and len(result.data) > 0:
             pre_extracted_text = result.data[0].get('content')
-            if pre_extracted_text:
+            metadata = result.data[0].get('metadata', {})
+
+            # ✅ NEW: Retrieve page_chunks if available
+            page_chunks = metadata.get('page_chunks')
+
+            if page_chunks:
+                logger.info(f"✅ Retrieved {len(page_chunks)} page chunks with metadata from Stage 1")
+            elif pre_extracted_text:
                 logger.info(f"✅ Retrieved pre-extracted text ({len(pre_extracted_text)} chars) from Stage 1")
             else:
                 logger.warning("⚠️ No pre-extracted text found, will extract from PDF")
@@ -134,7 +142,9 @@ async def process_stage_2_chunking(
         logger.warning(f"⚠️ Failed to retrieve pre-extracted text: {e}, will extract from PDF")
 
     # Process chunks using RAG service (with progressive timeout)
-    if pre_extracted_text:
+    if page_chunks:
+        logger.info(f"📝 Calling index_pdf_content with {len(page_chunks)} page chunks, product_pages={sorted(product_pages)}")
+    elif pre_extracted_text:
         logger.info(f"📝 Calling index_pdf_content with pre-extracted text, product_pages={sorted(product_pages)}")
     else:
         logger.info(f"📝 Calling index_pdf_content with {len(file_content)} bytes, product_pages={sorted(product_pages)}")
@@ -149,7 +159,7 @@ async def process_stage_2_chunking(
 
     chunk_result = await with_timeout(
         rag_service.index_pdf_content(
-            pdf_content=file_content if not pre_extracted_text else None,  # ✅ Only pass PDF if no pre-extracted text
+            pdf_content=file_content if not (pre_extracted_text or page_chunks) else None,  # ✅ Only pass PDF if no pre-extracted data
             document_id=document_id,
             metadata={
                 'filename': filename,
@@ -162,7 +172,8 @@ async def process_stage_2_chunking(
                 'job_id': job_id  # ✅ NEW: Pass job_id for source tracking
             },
             catalog=catalog,  # ✅ NEW: Pass catalog for category tagging
-            pre_extracted_text=pre_extracted_text  # ✅ NEW: Pass pre-extracted text to skip PDF extraction
+            pre_extracted_text=pre_extracted_text,  # ✅ Pass pre-extracted text to skip PDF extraction
+            page_chunks=page_chunks  # ✅ NEW: Pass page-aware data for proper page tracking
         ),
         timeout_seconds=chunking_timeout,
         operation_name="Chunking operation"

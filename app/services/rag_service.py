@@ -104,7 +104,8 @@ class RAGService:
         document_id: str = None,
         metadata: Optional[Dict[str, Any]] = None,
         catalog: Optional[Any] = None,
-        pre_extracted_text: Optional[str] = None
+        pre_extracted_text: Optional[str] = None,
+        page_chunks: Optional[List[Dict[str, Any]]] = None  # ✅ NEW: Page-aware text data
     ) -> Dict[str, Any]:
         """
         Index PDF content by extracting text, chunking, and generating embeddings.
@@ -113,11 +114,12 @@ class RAGService:
         and embedding generation using our current services.
 
         Args:
-            pdf_content: PDF file content as bytes (optional if pre_extracted_text is provided)
+            pdf_content: PDF file content as bytes (optional if pre_extracted_text or page_chunks is provided)
             document_id: Unique document identifier
             metadata: Document metadata including workspace_id, filename, etc.
             catalog: Optional product catalog for category tagging
             pre_extracted_text: Optional pre-extracted text (skips PDF extraction if provided)
+            page_chunks: Optional page-aware text data from PyMuPDF4LLM (preserves page numbers)
 
         Returns:
             Dict containing:
@@ -134,7 +136,11 @@ class RAGService:
 
             # Step 1: Extract text from PDF with page information
             pages = None
-            if pre_extracted_text:
+            if page_chunks:
+                # ✅ NEW: Use page-aware data from Stage 1 (preserves page numbers)
+                self.logger.info(f"   ✅ Using page-aware data ({len(page_chunks)} pages)")
+                pages = page_chunks
+            elif pre_extracted_text:
                 # Use pre-extracted text (from Stage 1 focused extraction)
                 # Convert to page format for consistency
                 self.logger.info(f"   ✅ Using pre-extracted text ({len(pre_extracted_text)} characters)")

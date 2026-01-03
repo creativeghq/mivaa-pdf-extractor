@@ -802,7 +802,30 @@ Respond ONLY with this JSON format:
 
                         if result['success'] and result['detections']:
                             # Process each detection
-                            for detection in result['detections']:
+                            for detection_idx, detection in enumerate(result['detections'], 1):
+                                # ✅ FIX: Crop the image using bounding box
+                                import tempfile
+                                temp_dir = tempfile.gettempdir()
+                                cropped_image_filename = f"vision_crop_{document_id}_p{page_num}_d{detection_idx}.jpg"
+                                cropped_image_path = os.path.join(temp_dir, cropped_image_filename)
+
+                                try:
+                                    # Crop and save the image
+                                    crop_result = await self.vision_extractor.crop_and_save_image(
+                                        pdf_path=pdf_path,
+                                        page_num=page_num - 1,  # Convert to 0-indexed
+                                        bbox=detection['bbox'],
+                                        output_path=cropped_image_path
+                                    )
+
+                                    if not crop_result.get('success'):
+                                        logger.warning(f"      ⚠️ Failed to crop image for detection {detection_idx}")
+                                        continue
+
+                                except Exception as crop_error:
+                                    logger.error(f"      ❌ Image cropping failed: {crop_error}")
+                                    continue
+
                                 # Create image data structure
                                 image_data = {
                                     'product_name': product.name,
@@ -812,7 +835,7 @@ Respond ONLY with this JSON format:
                                     'extraction_method': 'vision_guided',
                                     'description': detection.get('description', ''),
                                     'product_metadata': product.metadata,
-                                    'cropped_image_path': detection.get('cropped_image_path')
+                                    'cropped_image_path': cropped_image_path  # ✅ NOW HAS ACTUAL PATH
                                 }
 
                                 extracted_images.append(image_data)
@@ -820,7 +843,7 @@ Respond ONLY with this JSON format:
                                 all_confidences.append(detection['confidence'])
 
                                 logger.info(
-                                    f"      ✅ Detected: {detection['product_name']} "
+                                    f"      ✅ Detected & Cropped: {detection['product_name']} "
                                     f"(confidence: {detection['confidence']:.2f})"
                                 )
                         else:

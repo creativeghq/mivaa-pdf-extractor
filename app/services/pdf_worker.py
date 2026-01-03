@@ -26,19 +26,22 @@ from app.utils.exceptions import PDFExtractionError
 logger = logging.getLogger(__name__)
 
 def execute_pdf_extraction_job(
-    pdf_path: str, 
+    pdf_path: str,
     processing_options: Dict[str, Any]
-) -> Tuple[str, Dict[str, Any]]:
+) -> Tuple[str, Dict[str, Any], Optional[List[Dict[str, Any]]]]:  # ✅ NEW: Return page_chunks
     """
     Standalone function to execute PDF extraction in a separate process.
     Matches logic of PDFProcessor._extract_markdown_sync but designed for ProcessPoolExecutor.
-    
+
     Args:
         pdf_path: Absolute path to the PDF file
         processing_options: Configuration dictionary
-        
+
     Returns:
-        Tuple of (markdown_content, metadata)
+        Tuple of (markdown_content, metadata, page_chunks)
+        - markdown_content: Combined markdown string (for backward compatibility)
+        - metadata: Extraction metadata
+        - page_chunks: Optional list of page dicts with metadata (when page_list is provided)
     """
     try:
         # Re-configure logging for worker process if needed
@@ -96,52 +99,74 @@ def execute_pdf_extraction_job(
         logger.info(f"Worker PDF Analysis: {total_pages} pages. Image-based: {is_image_based}")
 
         markdown_content = ""
+        page_chunks = None  # ✅ NEW: Will store page-aware data if page_list is provided
 
-        if is_image_based:
-            logger.info("Worker: Using OCR-first extraction")
+        # ✅ NEW: Check if page_list is provided for focused extraction
+        page_list = processing_options.get('page_list')
+        if page_list:
+            # Use page_chunks=True to preserve page metadata
+            logger.info(f"Worker: Using page-aware extraction for {len(page_list)} pages")
             try:
-                markdown_content = extract_text_with_ocr_standalone(pdf_path, processing_options)
-                if len(markdown_content.strip()) < 100:
-                    logger.info("Worker: OCR minimal, trying PyMuPDF fallback")
-                    page_number = processing_options.get('page_number')
-                    fallback_content = extract_pdf_to_markdown(pdf_path, page_number)
-                    if len(fallback_content.strip()) > len(markdown_content.strip()):
-                        markdown_content = fallback_content
-            except Exception as ocr_error:
-                logger.error(f"Worker OCR failed: {ocr_error}")
-                page_number = processing_options.get('page_number')
-                markdown_content = extract_pdf_to_markdown(pdf_path, page_number)
-        else:
-            logger.info("Worker: Using PyMuPDF extraction")
-            page_number = processing_options.get('page_number')
-            try:
-                markdown_content = extract_pdf_to_markdown(pdf_path, page_number)
-            except ValueError as e:
-                # Fallback to page-by-page if "not a textpage" error
-                if "not a textpage" in str(e):
-                    logger.warning("Worker: PyMuPDF batch failed, switching to page-by-page")
-                    markdown_content = _extract_page_by_page_safe(pdf_path, processing_options)
-                else:
-                    raise
+                import pymupdf4llm
+                # Convert 1-indexed to 0-indexed for PyMuPDF4LLM
+                page_indices = [p - 1 if p > 0 else 0 for p in page_list]
+                page_chunks = pymupdf4llm.to_markdown(pdf_path, pages=page_indices, page_chunks=True)
 
-            # Content verification
-            clean_content = markdown_content.replace('-', '').replace('\n', '').strip()
-            if len(clean_content) < 100:
-                logger.info("Worker: Text extract minimal, attempting OCR")
+                # Also create combined markdown for backward compatibility
+                markdown_content = "\n\n-----\n\n".join([page.get('text', '') for page in page_chunks])
+                logger.info(f"Worker: Extracted {len(page_chunks)} pages with metadata, {len(markdown_content)} chars total")
+            except Exception as e:
+                logger.warning(f"Worker: Page-aware extraction failed: {e}, falling back to standard extraction")
+                page_chunks = None
+                # Fall through to standard extraction
+
+        # Standard extraction (if page_list not provided or page-aware extraction failed)
+        if not page_chunks:
+            if is_image_based:
+                logger.info("Worker: Using OCR-first extraction")
                 try:
-                    ocr_content = extract_text_with_ocr_standalone(pdf_path, processing_options)
-                    if len(ocr_content.strip()) > len(clean_content):
-                        markdown_content = ocr_content
-                except Exception as e:
-                    logger.warning(f"Worker OCR fallback failed: {e}")
+                    markdown_content = extract_text_with_ocr_standalone(pdf_path, processing_options)
+                    if len(markdown_content.strip()) < 100:
+                        logger.info("Worker: OCR minimal, trying PyMuPDF fallback")
+                        page_number = processing_options.get('page_number')
+                        fallback_content = extract_pdf_to_markdown(pdf_path, page_number)
+                        if len(fallback_content.strip()) > len(markdown_content.strip()):
+                            markdown_content = fallback_content
+                except Exception as ocr_error:
+                    logger.error(f"Worker OCR failed: {ocr_error}")
+                    page_number = processing_options.get('page_number')
+                    markdown_content = extract_pdf_to_markdown(pdf_path, page_number)
+            else:
+                logger.info("Worker: Using PyMuPDF extraction")
+                page_number = processing_options.get('page_number')
+                try:
+                    markdown_content = extract_pdf_to_markdown(pdf_path, page_number)
+                except ValueError as e:
+                    # Fallback to page-by-page if "not a textpage" error
+                    if "not a textpage" in str(e):
+                        logger.warning("Worker: PyMuPDF batch failed, switching to page-by-page")
+                        markdown_content = _extract_page_by_page_safe(pdf_path, processing_options)
+                    else:
+                        raise
+
+                # Content verification
+                clean_content = markdown_content.replace('-', '').replace('\n', '').strip()
+                if len(clean_content) < 100:
+                    logger.info("Worker: Text extract minimal, attempting OCR")
+                    try:
+                        ocr_content = extract_text_with_ocr_standalone(pdf_path, processing_options)
+                        if len(ocr_content.strip()) > len(clean_content):
+                            markdown_content = ocr_content
+                    except Exception as e:
+                        logger.warning(f"Worker OCR fallback failed: {e}")
 
         # Extract metadata
         metadata = _extract_metadata_standalone(pdf_path, len(markdown_content))
-        
+
         # Explicit GC before returning
         gc.collect()
-        
-        return markdown_content, metadata
+
+        return markdown_content, metadata, page_chunks  # ✅ NEW: Return page_chunks
 
     except Exception as e:
         logger.error(f"Worker process failed: {e}")

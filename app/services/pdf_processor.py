@@ -146,6 +146,7 @@ class PDFProcessingResult:
     character_count: int
     multimodal_enabled: bool = False
     temp_dir: Optional[str] = None  # Temp directory to cleanup when job completes
+    page_chunks: Optional[List[Dict[str, Any]]] = None  # ✅ NEW: Page-aware text data from PyMuPDF4LLM
 
 
 class PDFProcessor:
@@ -407,7 +408,8 @@ class PDFProcessor:
 
             try:
                 # Execute in separate process
-                markdown_content, metadata = await asyncio.wait_for(
+                # ✅ NEW: Worker now returns (markdown_content, metadata, page_chunks)
+                markdown_content, metadata, page_chunks = await asyncio.wait_for(
                     loop.run_in_executor(
                         self.executor,
                         execute_pdf_extraction_job,
@@ -491,7 +493,8 @@ class PDFProcessor:
                 page_count=metadata.get('page_count', 0),
                 word_count=content_metrics['word_count'],
                 character_count=content_metrics['character_count'],
-                multimodal_enabled=multimodal_enabled
+                multimodal_enabled=multimodal_enabled,
+                page_chunks=page_chunks  # ✅ NEW: Include page-aware data
             )
             
         except Exception as e:

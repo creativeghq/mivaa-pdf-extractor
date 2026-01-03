@@ -127,7 +127,8 @@ async def process_stage_1_focused_extraction(
     # Update processed_documents with extracted content
     supabase = get_supabase_client()
     try:
-        supabase.client.table('processed_documents').update({
+        # ✅ NEW: Store page_chunks if available for proper page tracking in chunking
+        update_data = {
             "content": pdf_result.markdown_content or "",
             "metadata": {
                 "filename": document_id,  # Will be updated with actual filename later
@@ -137,7 +138,14 @@ async def process_stage_1_focused_extraction(
                 "text_length": text_length,
                 "extraction_rate": extraction_rate
             }
-        }).eq('id', document_id).execute()
+        }
+
+        # ✅ NEW: Store page_chunks for page-aware chunking in Stage 2
+        if pdf_result.page_chunks:
+            update_data["metadata"]["page_chunks"] = pdf_result.page_chunks
+            logger.info(f"✅ Stored {len(pdf_result.page_chunks)} page chunks with metadata")
+
+        supabase.client.table('processed_documents').update(update_data).eq('id', document_id).execute()
         logger.info(f"✅ Updated processed_documents with extracted content")
     except Exception as e:
         logger.warning(f"⚠️ Failed to update processed_documents content: {e}")
