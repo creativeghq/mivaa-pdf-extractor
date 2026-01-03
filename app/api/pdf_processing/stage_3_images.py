@@ -278,11 +278,15 @@ async def process_stage_3_images(
             checkpoint_data = await checkpoint_recovery_service.get_checkpoint(job_id)
             if checkpoint_data and 'pdf_path' in checkpoint_data:
                 pdf_path = checkpoint_data['pdf_path']
+                logger.info(f"   ✅ PDF path found in checkpoint: {pdf_path}")
+            else:
+                logger.warning(f"   ⚠️ PDF path NOT found in checkpoint (checkpoint_data keys: {list(checkpoint_data.keys()) if checkpoint_data else 'None'})")
         except Exception as e:
             logger.warning(f"   ⚠️ Could not get PDF path from checkpoint: {e}")
 
         if pdf_path and os.path.exists(pdf_path):
-            logger.info(f"   📄 PDF path: {pdf_path}")
+            logger.info(f"   📄 PDF path exists on disk: {pdf_path}")
+            logger.info(f"   🚀 USING VISION-GUIDED EXTRACTION (Claude Vision)")
 
             try:
                 # Call vision-guided extraction
@@ -324,7 +328,11 @@ async def process_stage_3_images(
             except Exception as e:
                 logger.error(f"❌ Vision-guided extraction error: {e}. Falling back to traditional extraction.")
         else:
-            logger.warning(f"⚠️ PDF path not available. Falling back to traditional extraction.")
+            if not pdf_path:
+                logger.warning(f"⚠️ PDF path not found in checkpoint. Falling back to PyMuPDF extraction.")
+            elif not os.path.exists(pdf_path):
+                logger.warning(f"⚠️ PDF path does not exist: {pdf_path}. Falling back to PyMuPDF extraction.")
+            logger.info(f"   🔄 USING PYMUPDF EXTRACTION (fallback)")
 
     # ============================================================
     # TRADITIONAL PYMUPDF EXTRACTION PATH (FALLBACK)

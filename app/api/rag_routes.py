@@ -2192,7 +2192,8 @@ async def process_document_background(
                 data={
                     "document_id": document_id,
                     "filename": filename,
-                    "file_size": len(file_content)
+                    "file_size": len(file_content),
+                    "pdf_path": file_path  # ✅ FIX: Add pdf_path for vision-guided extraction
                 },
                 metadata={
                     "title": title or filename,
@@ -2201,6 +2202,7 @@ async def process_document_background(
                 }
             )
             logger.info(f"✅ Created INITIALIZED checkpoint for job {job_id}")
+            logger.info(f"   📄 PDF path saved: {file_path}")
 
         # Update status (in-memory)
         job_storage[job_id]["status"] = "processing"
@@ -2727,7 +2729,8 @@ async def process_document_with_discovery(
             data={
                 "document_id": document_id,
                 "filename": filename,
-                "file_size": len(file_content)
+                "file_size": len(file_content),
+                "pdf_path": file_path  # ✅ FIX: Add pdf_path for vision-guided extraction
             },
             metadata={
                 "title": title or filename,
@@ -2738,6 +2741,7 @@ async def process_document_with_discovery(
             }
         )
         logger.info(f"✅ Created INITIALIZED checkpoint for job {job_id}")
+        logger.info(f"   📄 PDF path saved: {file_path}")
 
         # ============================================================================
         # STAGE 0: PRODUCT DISCOVERY (MODULAR)
