@@ -9,6 +9,7 @@ import logging
 import os
 import json
 import re
+from datetime import datetime
 from typing import Dict, List, Any, Optional
 import anthropic
 
@@ -118,6 +119,7 @@ class MetadataConsolidationService:
             full_prompt = f"{self.prompt}\n\n**Metadata Sources:**\n\n```json\n{json.dumps(consolidation_context, indent=2)}\n```\n\nConsolidate all metadata sources intelligently. Return ONLY valid JSON."
 
             # Call AI
+            start_time = datetime.now()
             client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
             response = client.messages.create(
                 model="claude-sonnet-4-5-20250929",
@@ -126,15 +128,22 @@ class MetadataConsolidationService:
             )
 
             # Log AI call
-            await self.ai_logger.log_ai_call(
-                workspace_id=self.workspace_id,
+            latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+            await self.ai_logger.log_claude_call(
+                task="metadata_consolidation",
                 model="claude-sonnet-4-5-20250929",
-                prompt_tokens=response.usage.input_tokens,
-                completion_tokens=response.usage.output_tokens,
-                total_tokens=response.usage.input_tokens + response.usage.output_tokens,
-                cost=self._calculate_cost(response.usage),
-                purpose="metadata_consolidation",
-                metadata={"product_id": product_id}
+                response=response,
+                latency_ms=latency_ms,
+                confidence_score=0.9,
+                confidence_breakdown={
+                    "model_confidence": 0.95,
+                    "completeness": 0.90,
+                    "consistency": 0.85,
+                    "validation": 0.90
+                },
+                action="use_ai_result",
+                job_id=None,
+                request_data={"product_id": product_id}
             )
 
             # Parse response

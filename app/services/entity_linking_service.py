@@ -97,6 +97,11 @@ class EntityLinkingService:
             for product in products_response.data:
                 metadata = product.get('metadata', {})
                 page_range = metadata.get('page_range', [])
+                # Ensure page_range is a list
+                if isinstance(page_range, int):
+                    page_range = [page_range]
+                elif not isinstance(page_range, list):
+                    page_range = []
                 product_page_ranges[product['id']] = page_range
 
             linked_count = 0

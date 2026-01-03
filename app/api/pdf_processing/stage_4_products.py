@@ -337,7 +337,7 @@ async def process_stage_4_products(
                     chunk_record = {
                         'document_id': document_id,
                         'workspace_id': workspace_id,
-                        'chunk_text': f"{product_name}. {description}",
+                        'content': f"{product_name}. {description}",
                         'page_number': product_data.get('metadata', {}).get('page_range', [1])[0] if product_data.get('metadata', {}).get('page_range') else 1,
                         'chunk_index': 0,
                         'metadata': {
