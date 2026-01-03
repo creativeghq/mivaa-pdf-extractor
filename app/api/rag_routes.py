@@ -1435,14 +1435,14 @@ async def get_chunks(
         chunks = result.data if result.data else []
 
         # Add embeddings to each chunk if requested
+        # Note: embeddings are stored directly in document_chunks.text_embedding_1024
         if include_embeddings and chunks:
             for chunk in chunks:
-                embeddings_response = supabase_client.client.table('embeddings').select('*').eq('chunk_id', chunk['id']).execute()
-                embeddings = embeddings_response.data or []
-                # Add embedding field for backward compatibility
-                chunk['embedding'] = embeddings[0]['embedding'] if embeddings else None
-                chunk['embeddings'] = embeddings
-                chunk['has_embedding'] = len(embeddings) > 0
+                # Embeddings are stored directly in the chunk record
+                text_embedding = chunk.get('text_embedding_1024')
+                chunk['embedding'] = text_embedding
+                chunk['embeddings'] = [{'embedding': text_embedding, 'type': 'text_1024'}] if text_embedding else []
+                chunk['has_embedding'] = text_embedding is not None
 
         return JSONResponse(content={
             "document_id": document_id,
@@ -3623,10 +3623,10 @@ async def get_document_content(
             chunks_response = supabase_client.client.table('document_chunks').select('*').eq('document_id', document_id).execute()
             chunks = chunks_response.data or []
 
-            # Get embeddings for each chunk
+            # Embeddings are stored directly in document_chunks.text_embedding_1024
             for chunk in chunks:
-                embeddings_response = supabase_client.client.table('embeddings').select('*').eq('chunk_id', chunk['id']).execute()
-                chunk['embeddings'] = embeddings_response.data or []
+                text_embedding = chunk.get('text_embedding_1024')
+                chunk['embeddings'] = [{'embedding': text_embedding, 'type': 'text_1024'}] if text_embedding else []
 
             result['chunks'] = chunks
             logger.info(f"✅ Fetched {len(chunks)} chunks")
@@ -3835,7 +3835,15 @@ async def get_workspace_statistics(
         products_response = supabase.client.table('products').select('id', count='exact').eq('workspace_id', workspace_id).execute()
         chunks_response = supabase.client.table('document_chunks').select('id', count='exact').eq('workspace_id', workspace_id).execute()
         images_response = supabase.client.table('document_images').select('id', count='exact').eq('workspace_id', workspace_id).execute()
-        text_embeddings_response = supabase.client.table('embeddings').select('id', count='exact').eq('workspace_id', workspace_id).execute()
+
+        # Count text embeddings from document_chunks table (chunks with text_embedding_1024 not null)
+        # Note: embeddings are stored directly in document_chunks.text_embedding_1024, not in a separate table
+        try:
+            text_embeddings_response = supabase.client.table('document_chunks').select('id', count='exact').eq('workspace_id', workspace_id).not_.is_('text_embedding_1024', 'null').execute()
+            text_embeddings_count = text_embeddings_response.count or 0
+        except Exception as text_emb_error:
+            logger.warning(f"⚠️ Text embeddings count failed: {text_emb_error}")
+            text_embeddings_count = 0
 
         # Get VECS image embeddings count using SQL function (bypasses VECS connection issues)
         try:
@@ -3849,7 +3857,6 @@ async def get_workspace_statistics(
         products_count = products_response.count or 0
         chunks_count = chunks_response.count or 0
         images_count = images_response.count or 0
-        text_embeddings_count = text_embeddings_response.count or 0
         total_embeddings = text_embeddings_count + image_embeddings_count
 
         stats = {

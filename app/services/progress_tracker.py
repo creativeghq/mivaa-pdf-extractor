@@ -431,10 +431,11 @@ class ProgressTracker:
                 .execute()
             actual_products = products_result.count if products_result.count is not None else 0
 
-            # 4. Count embeddings
-            embeddings_result = self._supabase.client.table('embeddings')\
+            # 4. Count embeddings (stored directly in document_chunks.text_embedding_1024)
+            embeddings_result = self._supabase.client.table('document_chunks')\
                 .select('id', count='exact')\
-                .eq('chunk_id.document_id', self.document_id)\
+                .eq('document_id', self.document_id)\
+                .not_.is_('text_embedding_1024', 'null')\
                 .execute()
             actual_embeddings = embeddings_result.count if embeddings_result.count is not None else 0
 

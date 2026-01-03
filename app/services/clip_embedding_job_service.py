@@ -223,17 +223,9 @@ class CLIPEmbeddingJobService:
             all_images = images_result.data
 
             # Get image IDs that already have visual embeddings
-            embeddings_result = self.supabase.client.table('embeddings')\
-                .select('entity_id')\
-                .eq('entity_type', 'image')\
-                .eq('embedding_type', 'visual_512')\
-                .in_('entity_id', [img['id'] for img in all_images])\
-                .execute()
-
-            images_with_embeddings = {emb['entity_id'] for emb in (embeddings_result.data or [])}
-
-            # Filter to images without embeddings
-            images_without_clip = [img for img in all_images if img['id'] not in images_with_embeddings]
+            # Note: Visual embeddings are stored in document_images.visual_clip_embedding_512
+            # Filter to images without CLIP embeddings (where visual_clip_embedding_512 is null)
+            images_without_clip = [img for img in all_images if not img.get('visual_clip_embedding_512')]
 
             logger.info(f"Found {len(images_without_clip)}/{len(all_images)} images without CLIP embeddings")
             return images_without_clip
