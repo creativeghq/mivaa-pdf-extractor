@@ -328,9 +328,10 @@ class RAGService:
                                     self.logger.warning(f"   ⚠️ No embedding generated for chunk {chunk_id}")
 
                             # Perform batch upsert (single database call)
+                            # Use on_conflict to UPDATE existing records instead of INSERT
                             if updates:
                                 try:
-                                    self.supabase_client.client.table('document_chunks').upsert(updates).execute()
+                                    self.supabase_client.client.table('document_chunks').upsert(updates, on_conflict='id').execute()
                                     self.logger.info(f"   ✅ Stored {embeddings_stored}/{len(batch_chunk_ids)} embeddings for batch {batch_num}/{total_batches} (batch upsert)")
                                 except Exception as batch_update_error:
                                     self.logger.error(f"   ❌ Batch upsert failed: {batch_update_error}")

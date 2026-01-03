@@ -274,18 +274,23 @@ class ProgressiveTimeoutStrategy:
         """
         Calculate timeout for chunking based on document size.
 
-        Base: 30s
-        Scaling: +10s per 10 pages
-        Max: 5min
-        """
-        base_timeout = 30
+        Base: 60s (increased from 30s to account for embedding API calls)
+        Scaling: +15s per 10 pages (increased from 10s for batch embedding generation)
+        Max: 10min (increased from 5min for large documents)
 
-        # Add time per 10 pages
-        page_time = (page_count / 10) * 10
+        Note: Chunking includes:
+        - Text chunking (fast)
+        - Batch embedding generation via Voyage AI (slow, network-dependent)
+        - Database upserts (can be slow with fallback to individual updates)
+        """
+        base_timeout = 60  # Increased from 30s
+
+        # Add time per 10 pages (increased rate for embedding generation)
+        page_time = (page_count / 10) * 15  # Increased from 10s to 15s
         base_timeout += page_time
 
-        # Cap at 5 minutes
-        return min(base_timeout, 300)
+        # Cap at 10 minutes (increased from 5min)
+        return min(base_timeout, 600)
 
     @staticmethod
     def calculate_image_processing_timeout(image_count: int, concurrent_limit: int = 5) -> float:
