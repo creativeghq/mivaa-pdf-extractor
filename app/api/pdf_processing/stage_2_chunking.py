@@ -157,6 +157,16 @@ async def process_stage_2_chunking(
     )
     logger.info(f"📊 Chunking: {pdf_result.page_count} pages, chunk_size={chunk_size} → timeout: {chunking_timeout:.0f}s")
 
+    # Create progress callback for detailed UI updates
+    async def chunking_progress_callback(current: int, total: int, step_name: str):
+        """Report chunking progress to tracker for UI display."""
+        await tracker.update_detailed_progress(
+            current_step=step_name,
+            progress_current=current,
+            progress_total=total,
+            sync_to_db=True
+        )
+
     chunk_result = await with_timeout(
         rag_service.index_pdf_content(
             pdf_content=file_content if not (pre_extracted_text or page_chunks) else None,  # ✅ Only pass PDF if no pre-extracted data
@@ -173,7 +183,8 @@ async def process_stage_2_chunking(
             },
             catalog=catalog,  # ✅ NEW: Pass catalog for category tagging
             pre_extracted_text=pre_extracted_text,  # ✅ Pass pre-extracted text to skip PDF extraction
-            page_chunks=page_chunks  # ✅ NEW: Pass page-aware data for proper page tracking
+            page_chunks=page_chunks,  # ✅ NEW: Pass page-aware data for proper page tracking
+            progress_callback=chunking_progress_callback  # ✅ NEW: Progress callback for UI
         ),
         timeout_seconds=chunking_timeout,
         operation_name="Chunking operation"
@@ -182,10 +193,16 @@ async def process_stage_2_chunking(
     logger.info(f"📝 index_pdf_content returned: {chunk_result}")
 
     tracker.chunks_created = chunk_result.get('chunks_created', 0)
+    embeddings_generated = chunk_result.get('embeddings_generated', 0)
+
+    # Update tracker with text embeddings count
+    tracker.text_embeddings_generated = embeddings_generated
+
     # NOTE: Don't pass chunks_created to update_database_stats because it increments!
     # We already set tracker.chunks_created directly above.
     await tracker.update_database_stats(
         kb_entries=tracker.chunks_created,
+        text_embeddings=embeddings_generated,  # ✅ FIX: Pass text embeddings count
         sync_to_db=True
     )
 
@@ -221,7 +238,7 @@ async def process_stage_2_chunking(
 
     # ✅ FIX: Create TEXT_EMBEDDINGS_GENERATED checkpoint
     # This checkpoint tracks text embedding generation for chunks
-    embeddings_generated = chunk_result.get('embeddings_generated', 0)
+    # Note: embeddings_generated already defined above
     await checkpoint_recovery_service.create_checkpoint(
         job_id=job_id,
         stage=CheckpointStage.TEXT_EMBEDDINGS_GENERATED,

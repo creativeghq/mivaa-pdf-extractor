@@ -292,12 +292,28 @@ async def process_stage_3_images(
         pdf_path = None
         try:
             # Try to get PDF path from checkpoint service
-            checkpoint_data = await checkpoint_recovery_service.get_last_checkpoint(job_id)
-            if checkpoint_data and 'pdf_path' in checkpoint_data:
-                pdf_path = checkpoint_data['pdf_path']
-                logger.info(f"   ✅ PDF path found in checkpoint: {pdf_path}")
+            # Note: get_last_checkpoint returns the full checkpoint row,
+            # the actual data is in the 'checkpoint_data' field
+            checkpoint_row = await checkpoint_recovery_service.get_last_checkpoint(job_id)
+            if checkpoint_row:
+                # Extract the nested checkpoint_data field
+                checkpoint_data = checkpoint_row.get('checkpoint_data', {})
+                if checkpoint_data and 'pdf_path' in checkpoint_data:
+                    pdf_path = checkpoint_data['pdf_path']
+                    logger.info(f"   ✅ PDF path found in checkpoint: {pdf_path}")
+                else:
+                    # Also check if pdf_path is in the INITIALIZED checkpoint
+                    all_checkpoints = await checkpoint_recovery_service.get_all_checkpoints(job_id)
+                    for cp in all_checkpoints:
+                        cp_data = cp.get('checkpoint_data', {})
+                        if 'pdf_path' in cp_data:
+                            pdf_path = cp_data['pdf_path']
+                            logger.info(f"   ✅ PDF path found in {cp.get('stage')} checkpoint: {pdf_path}")
+                            break
+                    if not pdf_path:
+                        logger.warning(f"   ⚠️ PDF path NOT found in any checkpoint")
             else:
-                logger.warning(f"   ⚠️ PDF path NOT found in checkpoint (checkpoint_data keys: {list(checkpoint_data.keys()) if checkpoint_data else 'None'})")
+                logger.warning(f"   ⚠️ No checkpoint found for job {job_id}")
         except Exception as e:
             logger.warning(f"   ⚠️ Could not get PDF path from checkpoint: {e}")
 

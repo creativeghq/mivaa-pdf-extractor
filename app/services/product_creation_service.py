@@ -746,16 +746,26 @@ class ProductCreationService:
         """
         ✅ NEW: Find document chunks associated with a product candidate.
         Uses page number and bounding box information to find relevant chunks.
+
+        Note: page_number is stored in metadata JSONB, not as a direct column.
         """
         try:
             page_number = candidate.get('pageNumber', 1)
 
-            # Get chunks from the same page
-            chunks_response = self.supabase.client.table('document_chunks').select('*').eq('document_id', document_id).eq('page_number', page_number).execute()
+            # Get chunks from the same page using metadata->>'page_number'
+            # page_number is stored in metadata JSONB column, not as a direct column
+            chunks_response = self.supabase.client.table('document_chunks') \
+                .select('*') \
+                .eq('document_id', document_id) \
+                .eq('metadata->>page_number', str(page_number)) \
+                .execute()
 
             if not chunks_response.data:
-                # Fallback: get chunks from nearby pages
-                chunks_response = self.supabase.client.table('document_chunks').select('*').eq('document_id', document_id).execute()
+                # Fallback: get all chunks for this document
+                chunks_response = self.supabase.client.table('document_chunks') \
+                    .select('*') \
+                    .eq('document_id', document_id) \
+                    .execute()
 
             chunks = chunks_response.data or []
 

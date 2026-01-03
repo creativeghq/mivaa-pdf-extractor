@@ -18,12 +18,12 @@ logger = logging.getLogger(__name__)
 class PDFToImagesConverter:
     """Convert PDF pages to images for vision model analysis."""
     
-    def __init__(self, dpi: int = 150, max_dimension: int = 1800):
+    def __init__(self, dpi: int = 250, max_dimension: int = 1800):
         """
         Initialize converter.
 
         Args:
-            dpi: Resolution for rendering (150 is good balance of speed/quality)
+            dpi: Resolution for rendering (250 optimized for material detail extraction)
             max_dimension: Maximum width/height (Claude Vision limit: 2000px for multi-image, using 1800 to be safe)
         """
         self.dpi = dpi

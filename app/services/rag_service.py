@@ -105,7 +105,8 @@ class RAGService:
         metadata: Optional[Dict[str, Any]] = None,
         catalog: Optional[Any] = None,
         pre_extracted_text: Optional[str] = None,
-        page_chunks: Optional[List[Dict[str, Any]]] = None  # ✅ NEW: Page-aware text data
+        page_chunks: Optional[List[Dict[str, Any]]] = None,  
+        progress_callback: Optional[callable] = None  
     ) -> Dict[str, Any]:
         """
         Index PDF content by extracting text, chunking, and generating embeddings.
@@ -120,6 +121,7 @@ class RAGService:
             catalog: Optional product catalog for category tagging
             pre_extracted_text: Optional pre-extracted text (skips PDF extraction if provided)
             page_chunks: Optional page-aware text data from PyMuPDF4LLM (preserves page numbers)
+            progress_callback: Optional async callback for progress updates (current, total, step_name)
 
         Returns:
             Dict containing:
@@ -211,6 +213,7 @@ class RAGService:
 
             chunk_ids = []
             chunks_created = 0
+            total_embeddings_stored = 0  # Track total embeddings across all batches
 
             # FIX #4: Log initial memory state before starting indexing
             try:
@@ -230,6 +233,17 @@ class RAGService:
                 batch_chunks = chunks[batch_start:batch_end]
                 batch_num = (batch_start // CHUNK_BATCH_SIZE) + 1
                 total_batches = (total_chunks + CHUNK_BATCH_SIZE - 1) // CHUNK_BATCH_SIZE
+
+                # Report progress via callback for UI updates
+                if progress_callback:
+                    try:
+                        await progress_callback(
+                            current=batch_start,
+                            total=total_chunks,
+                            step_name=f"Processing chunks (batch {batch_num}/{total_batches})"
+                        )
+                    except Exception as callback_error:
+                        self.logger.debug(f"Progress callback failed: {callback_error}")
 
                 # Log memory usage before batch and check threshold
                 try:
@@ -338,6 +352,7 @@ class RAGService:
                             if updates:
                                 try:
                                     self.supabase_client.client.table('document_chunks').upsert(updates, on_conflict='id').execute()
+                                    total_embeddings_stored += embeddings_stored  # Accumulate total
                                     self.logger.info(f"   ✅ Stored {embeddings_stored}/{len(batch_chunk_ids)} embeddings for batch {batch_num}/{total_batches} (batch upsert)")
                                 except Exception as batch_update_error:
                                     self.logger.error(f"   ❌ Batch upsert failed: {batch_update_error}")
@@ -353,6 +368,7 @@ class RAGService:
                                             embeddings_stored += 1
                                         except Exception as individual_update_error:
                                             self.logger.warning(f"   ⚠️ Failed to update chunk {update['id']}: {individual_update_error}")
+                                    total_embeddings_stored += embeddings_stored  # Accumulate total
                                     self.logger.info(f"   ✅ Stored {embeddings_stored}/{len(updates)} embeddings (individual fallback)")
 
                     except Exception as batch_embedding_error:
@@ -374,6 +390,7 @@ class RAGService:
                                 self.logger.warning(f"   ⚠️ Failed to generate individual embedding for chunk {chunk_id}: {individual_error}")
 
                         if embeddings_stored > 0:
+                            total_embeddings_stored += embeddings_stored  # Accumulate total
                             self.logger.info(f"   ✅ Stored {embeddings_stored} embeddings via individual fallback")
 
                 # Step 3c: Cleanup after batch (FIX #1: embedding_vectors now always defined)
@@ -388,13 +405,14 @@ class RAGService:
                     self.logger.debug(f"Memory monitoring unavailable: {mem_error}")
 
             elapsed_time = time.time() - start_time
-            self.logger.info(f"✅ Indexed PDF: {chunks_created} chunks created in {elapsed_time:.2f}s")
+            self.logger.info(f"✅ Indexed PDF: {chunks_created} chunks created, {total_embeddings_stored} embeddings in {elapsed_time:.2f}s")
 
             return {
                 "success": True,
                 "chunks_created": chunks_created,
                 "chunk_ids": chunk_ids,
-                "processing_time": elapsed_time
+                "processing_time": elapsed_time,
+                "embeddings_generated": total_embeddings_stored  # Actual count of embeddings stored
             }
 
         except Exception as e:

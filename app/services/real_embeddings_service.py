@@ -1076,32 +1076,59 @@ class RealEmbeddingsService:
 
             try:
                 def _generate_text_guided_embedding(text_prompt: str):
-                    """Generate text-guided SigLIP2 embedding using full model forward pass"""
+                    """Generate text-guided SigLIP embedding using separate image/text features.
+
+                    Note: SigLIP's forward() expects different inputs than CLIP.
+                    We use get_image_features() and get_text_features() separately,
+                    then combine them for text-guided visual embeddings.
+                    """
                     with torch.no_grad():
-                        # Process image with text prompt for text-guided embedding
-                        inputs = self._siglip_processor(
-                            text=[text_prompt],
+                        # Process image and text separately to avoid input_ids conflict
+                        image_inputs = self._siglip_processor(
                             images=pil_image,
+                            return_tensors="pt"
+                        )
+                        text_inputs = self._siglip_processor(
+                            text=[text_prompt],
                             return_tensors="pt",
                             padding=True
                         )
 
                         # Move inputs to GPU if available
                         if self._device and self._device.type == "cuda":
-                            inputs = {k: v.to(self._device) if isinstance(v, torch.Tensor) else v
-                                     for k, v in inputs.items()}
+                            image_inputs = {k: v.to(self._device) if isinstance(v, torch.Tensor) else v
+                                           for k, v in image_inputs.items()}
+                            text_inputs = {k: v.to(self._device) if isinstance(v, torch.Tensor) else v
+                                          for k, v in text_inputs.items()}
 
-                        # Use full model forward pass (accepts both text and image)
-                        # This computes text-image similarity and returns image embeddings
-                        outputs = self._siglip_model(**inputs)
-                        image_features = outputs.image_embeds  # Get image embeddings guided by text
+                        # Get image features using the correct method
+                        image_features = self._siglip_model.get_image_features(**image_inputs)
+
+                        # Get text features for guidance
+                        text_features = self._siglip_model.get_text_features(**text_inputs)
+
+                        # Compute text-guided embedding by combining image and text features
+                        # Use weighted combination: image features biased by text similarity
+                        image_norm = image_features / image_features.norm(dim=-1, keepdim=True)
+                        text_norm = text_features / text_features.norm(dim=-1, keepdim=True)
+
+                        # Compute similarity weight
+                        similarity = (image_norm @ text_norm.T).squeeze()
+
+                        # Create text-guided embedding: blend image features with text guidance
+                        # Higher similarity = more weight on original image features
+                        # This creates unique embeddings for each text prompt
+                        blend_weight = 0.7  # 70% image, 30% text guidance
+                        guided_embedding = (blend_weight * image_features +
+                                          (1 - blend_weight) * text_features * similarity)
 
                         # Normalize to unit vector
-                        embedding = image_features / image_features.norm(dim=-1, keepdim=True)
+                        embedding = guided_embedding / guided_embedding.norm(dim=-1, keepdim=True)
                         result = embedding.squeeze().cpu().numpy()
 
                         # Explicit memory cleanup
-                        del inputs, outputs, image_features, embedding
+                        del image_inputs, text_inputs, image_features, text_features
+                        del image_norm, text_norm, similarity, guided_embedding, embedding
                         if torch.cuda.is_available():
                             torch.cuda.empty_cache()
 

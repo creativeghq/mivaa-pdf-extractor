@@ -14,7 +14,7 @@ import os
 import tempfile
 import time
 import uuid
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -180,19 +180,19 @@ class PDFProcessor:
         self.max_file_size = self.config.get('max_file_size_mb', 50) * 1024 * 1024  # Convert to bytes
         self.temp_dir_base = self.config.get('temp_dir', tempfile.gettempdir())
 
-        # Initialize PROCESS pool executor for process isolation (fix memory issues)
-        # Each worker runs in a separate process, ensuring 100% memory reclamation on completion
+        # Initialize THREAD pool executor for async processing
+        # NOTE: Using ThreadPoolExecutor instead of ProcessPoolExecutor to avoid pickle issues
+        # with pydantic Settings and other non-picklable objects
         max_workers = self.config.get('max_workers', 2)
-        self.executor = ProcessPoolExecutor(max_workers=max_workers)
+        self.executor = ThreadPoolExecutor(max_workers=max_workers)
 
         self.logger.info("PDFProcessor initialized with config: %s (max_workers=%d for memory efficiency)", self.config, max_workers)
-    
+
     def __del__(self):
         """Cleanup resources when the processor is destroyed."""
         if hasattr(self, 'executor') and self.executor:
             self.executor.shutdown(wait=True)
-            self.executor.shutdown(wait=True)
-            self.logger.debug("ProcessPoolExecutor shutdown completed")
+            self.logger.debug("ThreadPoolExecutor shutdown completed")
 
     async def health_check(self) -> Dict[str, Any]:
         """
@@ -407,11 +407,10 @@ class PDFProcessor:
                     pass
 
             try:
-                # Execute in separate process
+                # Execute in thread pool
                 # ✅ NEW: Worker now returns (markdown_content, metadata, page_chunks)
-                # ✅ CRITICAL FIX: Filter out non-picklable objects before passing to ProcessPoolExecutor
-                # Services like checkpoint_recovery_service and progress_tracker cannot be pickled
-                picklable_options = {
+                # Filter out non-serializable objects (services, trackers) before passing to worker
+                filtered_options = {
                     k: v for k, v in processing_options.items()
                     if k not in ('checkpoint_recovery_service', 'progress_tracker', 'job_id')
                 }
@@ -420,7 +419,7 @@ class PDFProcessor:
                         self.executor,
                         execute_pdf_extraction_job,
                         pdf_path,
-                        picklable_options
+                        filtered_options
                     ),
                     timeout=markdown_timeout
                 )

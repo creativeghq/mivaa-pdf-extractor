@@ -95,14 +95,16 @@ class ImageDownloadService:
     ) -> Dict[str, Any]:
         """
         Download a single image with retry logic.
-        
+
+        Handles HTTP 429 (rate limiting) with longer backoff delays.
+
         Args:
             url: Image URL
             job_id: Import job ID
             workspace_id: Workspace ID
             semaphore: Semaphore for concurrency control
             index: Image index
-            
+
         Returns:
             Image reference with storage URL
         """
@@ -112,36 +114,57 @@ class ImageDownloadService:
                     # Validate URL
                     if not await self.validate_image_url(url):
                         raise ValueError(f"Invalid image URL: {url}")
-                    
+
                     # Download image
                     async with aiohttp.ClientSession() as session:
                         async with session.get(url, timeout=aiohttp.ClientTimeout(total=self.timeout)) as response:
+                            # Handle HTTP 429 rate limiting with longer backoff
+                            if response.status == 429:
+                                # Get Retry-After header if available
+                                retry_after = response.headers.get('Retry-After')
+                                if retry_after:
+                                    try:
+                                        wait_time = int(retry_after)
+                                    except ValueError:
+                                        # Retry-After might be a date string, use default
+                                        wait_time = 30 + (attempt * 30)  # 30s, 60s, 90s...
+                                else:
+                                    # No Retry-After header, use longer exponential backoff
+                                    wait_time = 30 + (attempt * 30)  # 30s, 60s, 90s...
+
+                                logger.warning(
+                                    f"⏳ Rate limited (429) for {url[:80]}... "
+                                    f"Waiting {wait_time}s before retry {attempt + 1}/{self.max_retries}"
+                                )
+                                await asyncio.sleep(wait_time)
+                                raise ValueError(f"HTTP 429 Rate Limited: {url}")
+
                             if response.status != 200:
                                 raise ValueError(f"HTTP {response.status}: {url}")
-                            
+
                             # Check content type
                             content_type = response.headers.get('Content-Type', '')
                             if not content_type.startswith('image/'):
                                 raise ValueError(f"Invalid content type: {content_type}")
-                            
+
                             # Check file size
                             content_length = response.headers.get('Content-Length')
                             if content_length and int(content_length) > self.max_file_size:
                                 raise ValueError(f"File too large: {content_length} bytes")
-                            
+
                             # Read image data
                             image_data = await response.read()
-                            
+
                             # Validate image data
                             if len(image_data) == 0:
                                 raise ValueError("Empty image data")
-                            
+
                             if len(image_data) > self.max_file_size:
                                 raise ValueError(f"File too large: {len(image_data)} bytes")
-                    
+
                     # Generate filename
                     filename = self._generate_filename(url, index)
-                    
+
                     # Store in Supabase Storage
                     storage_result = await self.store_image_in_storage(
                         image_data=image_data,
@@ -150,12 +173,12 @@ class ImageDownloadService:
                         workspace_id=workspace_id,
                         content_type=content_type
                     )
-                    
+
                     if not storage_result.get('success'):
                         raise ValueError(f"Storage upload failed: {storage_result.get('error')}")
-                    
+
                     logger.info(f"✅ Downloaded image {index + 1}: {url[:100]}")
-                    
+
                     return {
                         'success': True,
                         'original_url': url,
@@ -166,11 +189,23 @@ class ImageDownloadService:
                         'size_bytes': len(image_data),
                         'index': index
                     }
-                    
+
                 except Exception as e:
+                    error_str = str(e)
+                    is_rate_limit = "429" in error_str or "rate limit" in error_str.lower()
+
                     if attempt < self.max_retries - 1:
-                        logger.warning(f"⚠️ Retry {attempt + 1}/{self.max_retries} for {url}: {e}")
-                        await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                        # Use longer backoff for rate limiting
+                        if is_rate_limit:
+                            backoff_time = 30 + (attempt * 30)  # 30s, 60s, 90s for rate limits
+                        else:
+                            backoff_time = 2 ** attempt  # 1s, 2s, 4s for other errors
+
+                        logger.warning(
+                            f"⚠️ Retry {attempt + 1}/{self.max_retries} for {url[:80]}... "
+                            f"Error: {e}. Waiting {backoff_time}s"
+                        )
+                        await asyncio.sleep(backoff_time)
                     else:
                         logger.error(f"❌ Failed to download {url} after {self.max_retries} attempts: {e}")
                         return {

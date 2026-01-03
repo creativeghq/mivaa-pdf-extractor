@@ -54,8 +54,8 @@ class ProcessingOptions(BaseModel):
         description="Format for extracted images"
     )
     image_dpi: int = Field(
-        150, 
-        description="DPI for image extraction",
+        250,
+        description="DPI for image extraction (250 optimized for material detail)",
         ge=72,
         le=600
     )

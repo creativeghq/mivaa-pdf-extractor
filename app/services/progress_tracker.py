@@ -59,6 +59,11 @@ class ProgressTracker:
     current_page: Optional[int] = None
     manual_progress_override: Optional[int] = None  # Manual progress percentage (0-100)
 
+    # Detailed progress tracking for UI
+    current_step: Optional[str] = None  # e.g., "Processing chunks", "Generating embeddings"
+    progress_current: int = 0  # Current item being processed
+    progress_total: int = 0  # Total items to process
+
     # Page-level tracking
     page_statuses: Dict[int, PageProcessingStatus] = field(default_factory=dict)
 
@@ -151,6 +156,10 @@ class ProgressTracker:
                 'progress': int(progress_pct),
                 'metadata': {
                     'current_stage': self.current_stage.value,
+                    'stage': self.current_stage.value,  # Alias for UI compatibility
+                    'current_step': self.current_step,  # Detailed step description for UI
+                    'progress_current': self.progress_current,  # Current item number for UI
+                    'progress_total': self.progress_total,  # Total items for UI
                     'total_pages': self.total_pages,
                     'pages_completed': self.pages_completed,
                     'pages_failed': self.pages_failed,
@@ -257,6 +266,32 @@ class ProgressTracker:
 
         # Sync to database
         await self._sync_to_database(stage=stage_name)
+
+    async def update_detailed_progress(
+        self,
+        current_step: str,
+        progress_current: int,
+        progress_total: int,
+        sync_to_db: bool = True
+    ):
+        """
+        Update detailed progress for UI display (e.g., "Processing chunks 10/100").
+
+        Args:
+            current_step: Description of current step (e.g., "Processing chunks", "Generating embeddings")
+            progress_current: Current item being processed
+            progress_total: Total items to process
+            sync_to_db: Whether to sync to database
+        """
+        self.current_step = current_step
+        self.progress_current = progress_current
+        self.progress_total = progress_total
+
+        logger.debug(f"Job {self.job_id}: {current_step} ({progress_current}/{progress_total})")
+
+        # Sync to database (with debouncing)
+        if sync_to_db:
+            await self._sync_to_database()
 
     async def complete_page_processing(self, page_number: int,
                                text_extracted: bool = False,
