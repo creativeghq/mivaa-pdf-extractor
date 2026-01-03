@@ -45,6 +45,8 @@ import io
 from app.services.ai_call_logger import AICallLogger
 from app.services.dynamic_metadata_extractor import DynamicMetadataExtractor
 from app.services.ai_client_service import get_ai_client_service
+from app.services.vision_guided_extractor import VisionGuidedExtractor
+from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -239,18 +241,37 @@ class ProductDiscoveryService:
     """
     Analyzes PDF to discover products BEFORE processing.
     Uses Claude Sonnet 4.5 or GPT-5 for intelligent product identification.
+
+    NEW: Supports vision-guided extraction for precise image cropping.
     """
-    
-    def __init__(self, model: str = "claude"):
+
+    def __init__(self, model: str = "claude", use_vision_guided: bool = None):
         """
         Initialize service.
 
         Args:
             model: AI model to use - supports "claude", "claude-vision", "claude-haiku-vision", "gpt", "gpt-vision"
+            use_vision_guided: Enable vision-guided extraction (defaults to settings)
         """
         self.logger = logger
         self.model = model
         self.ai_logger = AICallLogger()
+        self.settings = get_settings()
+
+        # Vision-guided extraction configuration
+        self.use_vision_guided = (
+            use_vision_guided
+            if use_vision_guided is not None
+            else self.settings.vision_guided_enabled
+        )
+        self.vision_extractor = None
+        if self.use_vision_guided:
+            self.vision_extractor = VisionGuidedExtractor()
+            self.logger.info(
+                f"✅ Vision-guided extraction ENABLED "
+                f"(provider: {self.settings.vision_guided_provider}, "
+                f"model: {self.settings.vision_guided_model})"
+            )
 
         # Check API keys based on model family (claude/gpt)
         if "claude" in model.lower() and not ANTHROPIC_API_KEY:
@@ -2288,5 +2309,135 @@ IMPORTANT:
         except Exception as e:
             self.logger.error(f"❌ GPT Vision API error: {e}")
             raise
+
+    async def extract_with_vision_guidance(
+        self,
+        pdf_path: str,
+        catalog: ProductCatalog,
+        job_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Extract product images using vision-guided extraction.
+
+        This method integrates VisionGuidedExtractor with the product discovery pipeline:
+        1. Uses Stage 0 LLM text analysis for product discovery (already done in catalog)
+        2. Uses vision-guided extraction for precise image cropping with bounding boxes
+        3. Returns atomically linked product-image pairs (no guesswork)
+
+        Args:
+            pdf_path: Path to PDF file
+            catalog: ProductCatalog from Stage 0 discovery (with product names and page ranges)
+            job_id: Optional job ID for tracking
+
+        Returns:
+            Dict containing:
+            - success: bool
+            - extracted_images: List[Dict] with vision-guided metadata
+            - extraction_method: 'vision_guided'
+            - stats: extraction statistics
+        """
+        if not self.use_vision_guided or not self.vision_extractor:
+            raise ValueError("Vision-guided extraction not enabled")
+
+        start_time = datetime.now()
+        extracted_images = []
+        stats = {
+            'total_products': len(catalog.products),
+            'total_pages_processed': 0,
+            'total_detections': 0,
+            'vision_guided_count': 0,
+            'failed_pages': 0,
+            'average_confidence': 0.0
+        }
+
+        try:
+            self.logger.info(
+                f"🎯 Starting vision-guided extraction for {len(catalog.products)} products..."
+            )
+
+            # Process each product's pages
+            all_confidences = []
+
+            for product_idx, product in enumerate(catalog.products, 1):
+                self.logger.info(
+                    f"   📦 [{product_idx}/{len(catalog.products)}] {product.name} "
+                    f"(pages: {product.page_range})"
+                )
+
+                # Extract images from each page in product's range
+                for page_num in product.page_range:
+                    stats['total_pages_processed'] += 1
+
+                    try:
+                        # Call vision-guided extractor
+                        result = await self.vision_extractor.extract_products_from_page(
+                            pdf_path=pdf_path,
+                            page_num=page_num - 1,  # Convert to 0-indexed
+                            product_names=[product.name],  # Provide expected product name
+                            job_id=job_id
+                        )
+
+                        if result['success'] and result['detections']:
+                            # Process each detection
+                            for detection in result['detections']:
+                                extracted_images.append({
+                                    'product_name': product.name,
+                                    'page_number': page_num,
+                                    'bbox': detection['bbox'],
+                                    'confidence': detection['confidence'],
+                                    'extraction_method': 'vision_guided',
+                                    'description': detection.get('description', ''),
+                                    'product_metadata': product.metadata
+                                })
+
+                                stats['total_detections'] += 1
+                                stats['vision_guided_count'] += 1
+                                all_confidences.append(detection['confidence'])
+
+                                self.logger.info(
+                                    f"      ✅ Detected: {detection['product_name']} "
+                                    f"(confidence: {detection['confidence']:.2f})"
+                                )
+                        else:
+                            self.logger.warning(
+                                f"      ⚠️ No detections on page {page_num}"
+                            )
+
+                    except Exception as e:
+                        self.logger.error(
+                            f"      ❌ Vision extraction failed for page {page_num}: {e}"
+                        )
+                        stats['failed_pages'] += 1
+
+            # Calculate average confidence
+            if all_confidences:
+                stats['average_confidence'] = sum(all_confidences) / len(all_confidences)
+
+            processing_time_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+
+            self.logger.info(
+                f"✅ Vision-guided extraction complete in {processing_time_ms}ms:"
+            )
+            self.logger.info(f"   Total detections: {stats['total_detections']}")
+            self.logger.info(f"   Average confidence: {stats['average_confidence']:.2f}")
+            self.logger.info(f"   Failed pages: {stats['failed_pages']}")
+
+            return {
+                'success': True,
+                'extracted_images': extracted_images,
+                'extraction_method': 'vision_guided',
+                'stats': stats,
+                'processing_time_ms': processing_time_ms
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ Vision-guided extraction failed: {e}")
+            return {
+                'success': False,
+                'extracted_images': [],
+                'extraction_method': 'vision_guided',
+                'error': str(e),
+                'stats': stats
+            }
 
 

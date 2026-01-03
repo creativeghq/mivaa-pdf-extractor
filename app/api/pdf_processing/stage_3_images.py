@@ -22,10 +22,12 @@ from app.services.supabase_client import get_supabase_client
 from app.services.vecs_service import VecsService
 from app.services.real_embeddings_service import RealEmbeddingsService
 from app.services.pdf_processor import PDFProcessor
+from app.services.image_processing_service import ImageProcessingService
 from app.utils.timeout_guard import with_timeout, TimeoutConstants, ProgressiveTimeoutStrategy
 from app.utils.circuit_breaker import CircuitBreaker, CircuitBreakerError
 from app.utils.memory_monitor import global_memory_monitor as memory_monitor
 from app.services.checkpoint_recovery_service import ProcessingStage as CheckpointStage
+from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -125,12 +127,26 @@ async def process_stage_3_images(
     """
     logger.info("🖼️ [STAGE 3] Image Processing - Starting...")
     await tracker.update_stage(CheckpointStage.IMAGES_EXTRACTED, stage_name="image_processing")
-    
+
     # Initialize services
     supabase_client = get_supabase_client()
     vecs_service = VecsService()
     embedding_service = RealEmbeddingsService()
     pdf_processor = PDFProcessor()
+    settings = get_settings()
+
+    # Check if vision-guided extraction is enabled
+    use_vision_guided = settings.vision_guided_enabled and catalog is not None
+    if use_vision_guided:
+        logger.info(
+            f"✅ Vision-guided extraction ENABLED "
+            f"(provider: {settings.vision_guided_provider}, "
+            f"model: {settings.vision_guided_model})"
+        )
+        image_processing_service = ImageProcessingService(use_vision_guided=True)
+    else:
+        logger.info("📋 Using traditional PyMuPDF image extraction")
+        image_processing_service = ImageProcessingService(use_vision_guided=False)
     
     # Load RAG service for Qwen Vision analysis
     logger.info("📦 Loading RAG service for image analysis with Qwen vision models...")
@@ -247,6 +263,73 @@ async def process_stage_3_images(
             raise
     else:
         logger.info(f"✅ Using pre-extracted images: {len(pdf_result_with_images.extracted_images)} images")
+
+    # ============================================================
+    # VISION-GUIDED EXTRACTION PATH (NEW)
+    # ============================================================
+    if use_vision_guided and catalog and hasattr(catalog, 'products') and catalog.products:
+        logger.info("🎯 Using VISION-GUIDED extraction path...")
+        logger.info(f"   Products in catalog: {len(catalog.products)}")
+
+        # Get PDF path from checkpoint service
+        pdf_path = None
+        try:
+            # Try to get PDF path from checkpoint service
+            checkpoint_data = await checkpoint_recovery_service.get_checkpoint(job_id)
+            if checkpoint_data and 'pdf_path' in checkpoint_data:
+                pdf_path = checkpoint_data['pdf_path']
+        except Exception as e:
+            logger.warning(f"   ⚠️ Could not get PDF path from checkpoint: {e}")
+
+        if pdf_path and os.path.exists(pdf_path):
+            logger.info(f"   📄 PDF path: {pdf_path}")
+
+            try:
+                # Call vision-guided extraction
+                vision_result = await image_processing_service.extract_images_with_vision_guidance(
+                    pdf_path=pdf_path,
+                    catalog=catalog,
+                    document_id=document_id,
+                    workspace_id=workspace_id,
+                    job_id=job_id,
+                    batch_size=BATCH_SIZE
+                )
+
+                if vision_result['success']:
+                    logger.info(
+                        f"✅ Vision-guided extraction complete: "
+                        f"{vision_result['images_extracted']} images extracted, "
+                        f"{vision_result['images_saved']} saved, "
+                        f"{vision_result['clip_embeddings_generated']} CLIP embeddings"
+                    )
+
+                    # Return early with vision-guided results
+                    return {
+                        "status": "success",
+                        "extraction_method": "vision_guided",
+                        "images_extracted": vision_result['images_extracted'],
+                        "images_saved": vision_result['images_saved'],
+                        "clip_embeddings_generated": vision_result['clip_embeddings_generated'],
+                        "stats": vision_result['stats'],
+                        "pdf_result_with_images": pdf_result_with_images,
+                        "material_images": [],  # Already processed
+                        "images_processed": vision_result['images_extracted']
+                    }
+                else:
+                    logger.warning(
+                        f"⚠️ Vision-guided extraction failed: {vision_result.get('error')}. "
+                        f"Falling back to traditional extraction."
+                    )
+
+            except Exception as e:
+                logger.error(f"❌ Vision-guided extraction error: {e}. Falling back to traditional extraction.")
+        else:
+            logger.warning(f"⚠️ PDF path not available. Falling back to traditional extraction.")
+
+    # ============================================================
+    # TRADITIONAL PYMUPDF EXTRACTION PATH (FALLBACK)
+    # ============================================================
+    logger.info("📋 Using TRADITIONAL PyMuPDF extraction path...")
 
     # Get extracted images
     all_images = pdf_result_with_images.extracted_images
@@ -744,6 +827,7 @@ async def process_stage_3_images(
     embedding_to_text_rate = 0.0
 
     # Create IMAGES_EXTRACTED checkpoint with comprehensive metadata
+    # ✅ NEW: Include vision-guided extraction metadata
     await checkpoint_recovery_service.create_checkpoint(
         job_id=job_id,
         stage=CheckpointStage.IMAGES_EXTRACTED,
@@ -752,13 +836,25 @@ async def process_stage_3_images(
             "images_saved": images_saved_count,
             "clip_embeddings": clip_embeddings_generated,
             "specialized_embeddings": specialized_embeddings_generated,
-            "images_analyzed": images_processed
+            "images_analyzed": images_processed,
+            # ✅ NEW: Track extraction method used
+            "extraction_method": vision_result.get('extraction_method', 'pymupdf') if vision_result else 'pymupdf',
+            "vision_guided_used": bool(vision_result and vision_result.get('success'))
         },
         metadata={
             "total_images_extracted": len(all_images),
             "material_images": len(material_images),
             "non_material_images": non_material_count,
             "classification_errors": classification_errors,
+            # ✅ NEW: Vision-guided extraction stats
+            "vision_guided": {
+                "enabled": use_vision_guided,
+                "success": vision_result.get('success', False) if vision_result else False,
+                "images_extracted": vision_result.get('images_extracted', 0) if vision_result else 0,
+                "images_saved": vision_result.get('images_saved', 0) if vision_result else 0,
+                "extraction_method": vision_result.get('extraction_method', 'pymupdf') if vision_result else 'pymupdf',
+                "stats": vision_result.get('stats', {}) if vision_result else {}
+            } if use_vision_guided else None,
             "clip_embeddings": {
                 "visual_clip_512": images_saved_count,  # 1 per image
                 "color_siglip_1152": specialized_embeddings_generated // 4 if specialized_embeddings_generated > 0 else 0,

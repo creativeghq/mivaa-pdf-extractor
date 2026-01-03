@@ -290,6 +290,7 @@ async def process_stage_4_products(
     logger.info(f"     - Image-to-chunk links: {linking_results['image_chunk_links']}")
 
     # ✅ FIX: Create RELATIONSHIPS_CREATED checkpoint
+    # ✅ NEW: Include vision-guided linking stats
     await checkpoint_recovery_service.create_checkpoint(
         job_id=job_id,
         stage=CheckpointStage.RELATIONSHIPS_CREATED,
@@ -297,11 +298,16 @@ async def process_stage_4_products(
             "document_id": document_id,
             "image_product_links": linking_results['image_product_links'],
             "image_chunk_links": linking_results['image_chunk_links'],
-            "chunk_product_links": linking_results.get('chunk_product_links', 0)
+            "chunk_product_links": linking_results.get('chunk_product_links', 0),
+            # ✅ NEW: Track vision-guided vs fallback linking
+            "vision_guided_links": linking_results.get('vision_guided_links', 0),
+            "fallback_links": linking_results.get('fallback_links', 0)
         },
         metadata={
             "products_created": products_created,
-            "linking_method": "entity_linking_service"
+            "linking_method": "entity_linking_service",
+            # ✅ NEW: Vision-guided linking stats
+            "vision_guided_stats": linking_results.get('vision_guided_stats', {})
         }
     )
     logger.info(f"✅ Created RELATIONSHIPS_CREATED checkpoint for job {job_id}")

@@ -394,6 +394,47 @@ class Settings(BaseSettings):
         description="Claude model for RAG question answering"
     )
 
+    # Vision-Guided Extraction Settings (Model-Agnostic)
+    vision_guided_enabled: bool = Field(
+        default=True,
+        env="VISION_GUIDED_ENABLED",
+        description="Enable vision-guided product extraction"
+    )
+    vision_guided_provider: str = Field(
+        default="anthropic",
+        env="VISION_GUIDED_PROVIDER",
+        description="Vision model provider: 'anthropic' (Claude), 'openai' (GPT-4o), 'together' (Qwen)"
+    )
+    vision_guided_model: str = Field(
+        default="claude-sonnet-4-5-20250929",
+        env="VISION_GUIDED_MODEL",
+        description="Vision model to use (provider-specific model name)"
+    )
+    vision_guided_confidence_threshold: float = Field(
+        default=0.8,
+        ge=0.0,
+        le=1.0,
+        env="VISION_GUIDED_CONFIDENCE_THRESHOLD",
+        description="Minimum confidence threshold for vision-guided extraction"
+    )
+    vision_guided_fallback_to_pymupdf: bool = Field(
+        default=True,
+        env="VISION_GUIDED_FALLBACK_TO_PYMUPDF",
+        description="Fallback to PyMuPDF if vision extraction fails or confidence is low"
+    )
+    vision_guided_max_tokens: int = Field(
+        default=4096,
+        env="VISION_GUIDED_MAX_TOKENS",
+        description="Max tokens for vision model response"
+    )
+    vision_guided_temperature: float = Field(
+        default=0.1,
+        ge=0.0,
+        le=2.0,
+        env="VISION_GUIDED_TEMPERATURE",
+        description="Temperature for vision model"
+    )
+
     # Visual Embedding Models (SigLIP2 primary, CLIP fallback) - NOW CONFIGURABLE
     visual_embedding_primary_model: str = Field(
         default="google/siglip2-so400m-patch14-384",

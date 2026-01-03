@@ -273,7 +273,13 @@ class SupabaseClient:
         workspace_id: Optional[str] = None,
         image_index: int = 0,
         category: Optional[str] = None,
-        job_id: Optional[str] = None
+        job_id: Optional[str] = None,
+        extraction_method: str = 'pymupdf',
+        bbox: Optional[list] = None,
+        detection_confidence: Optional[float] = None,
+        vision_provider: Optional[str] = None,
+        vision_model: Optional[str] = None,
+        product_name: Optional[str] = None
     ) -> Optional[str]:
         """
         Save a single image to document_images table.
@@ -288,6 +294,12 @@ class SupabaseClient:
             image_index: Index of image in processing sequence
             category: Image category (product, certificate, logo, specification, general)
             job_id: Job ID for source tracking (optional)
+            extraction_method: Extraction method (pymupdf, vision_guided, manual)
+            bbox: Bounding box coordinates [x, y, width, height] normalized to 0-1
+            detection_confidence: Confidence score from vision model (0.0-1.0)
+            vision_provider: Vision AI provider (anthropic, openai, together)
+            vision_model: Specific vision model used
+            product_name: Product name detected by vision model
 
         Returns:
             Image ID if successful, None otherwise
@@ -334,10 +346,17 @@ class SupabaseClient:
                 'category': final_category,  # ✅ FIXED: Use AI classification to set category
                 'source_type': 'pdf_processing',  # ✅ NEW: Track source type
                 'source_job_id': job_id,  # ✅ NEW: Track source job
+                # ✅ NEW: Vision-guided extraction metadata
+                'extraction_method': extraction_method,
+                'bbox': bbox,
+                'detection_confidence': detection_confidence,
+                'vision_provider': vision_provider,
+                'vision_model': vision_model,
+                'product_name': product_name,
                 'metadata': {
                     'source': 'mivaa_pdf_extraction',
                     'image_index': image_index,
-                    'extraction_method': 'pymupdf4llm',
+                    'extraction_method': extraction_method,  # Also store in metadata for backward compatibility
                     'storage_uploaded': image_info.get('storage_uploaded', False),
                     'storage_bucket': image_info.get('storage_bucket', 'material-images'),
                     'storage_path': image_info.get('storage_path'),
@@ -354,7 +373,15 @@ class SupabaseClient:
                         'reason': ai_classification.get('reason'),
                         'model': ai_classification.get('model'),
                         'classification': ai_classification.get('classification')
-                    } if ai_classification else None
+                    } if ai_classification else None,
+                    # ✅ NEW: Store vision-guided metadata
+                    'vision_guided': {
+                        'bbox': bbox,
+                        'confidence': detection_confidence,
+                        'provider': vision_provider,
+                        'model': vision_model,
+                        'product_name': product_name
+                    } if extraction_method == 'vision_guided' else None
                 }
             }
 

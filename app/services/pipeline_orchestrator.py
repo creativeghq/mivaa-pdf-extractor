@@ -179,7 +179,7 @@ class PipelineOrchestrator:
                 'classification_accuracy': f"{len(material_images) / len(extracted_images) * 100:.1f}%" if extracted_images else "0%"
             }
 
-            # Create checkpoint
+            # Create checkpoint with vision-guided metadata
             await checkpoint_recovery_service.create_checkpoint(
                 job_id=job_id,
                 stage=CheckpointStage.IMAGES_EXTRACTED,
@@ -187,18 +187,28 @@ class PipelineOrchestrator:
                     "document_id": document_id,
                     "material_images_count": len(material_images),
                     "non_material_images_count": len(non_material_images),
-                    "total_images": len(extracted_images)
+                    "total_images": len(extracted_images),
+                    "vision_guided_count": vision_guided_count,
+                    "ai_classified_count": ai_classified_count
                 },
                 metadata={
                     "confidence_threshold": confidence_threshold,
-                    "focused_extraction": focused_extraction
+                    "focused_extraction": focused_extraction,
+                    "extraction_method": "vision_guided" if vision_guided_count > 0 else "pymupdf"
                 }
             )
+
+            # Log vision-guided extraction statistics
+            vision_guided_count = classify_result.get('vision_guided_count', 0)
+            ai_classified_count = classify_result.get('ai_classified_count', 0)
 
             logger.info(f"✅ [STAGE 1/5] Classification Complete:")
             logger.info(f"   Material images: {len(material_images)}")
             logger.info(f"   Non-material images: {len(non_material_images)}")
             logger.info(f"   Classification accuracy: {len(material_images) / len(extracted_images) * 100:.1f}%")
+            if vision_guided_count > 0:
+                logger.info(f"   Vision-guided (pre-classified): {vision_guided_count}")
+                logger.info(f"   AI-classified: {ai_classified_count}")
 
             # ========================================
             # STAGE 2: Upload Images (60-65%)
@@ -279,24 +289,37 @@ class PipelineOrchestrator:
                     'embeddings_per_image': 5
                 }
 
-                # Create checkpoint
+                # Create checkpoint with vision-guided metadata
                 await checkpoint_recovery_service.create_checkpoint(
                     job_id=job_id,
                     stage=CheckpointStage.IMAGE_EMBEDDINGS_GENERATED,
                     data={
                         "document_id": document_id,
                         "images_saved": images_saved,
-                        "clip_embeddings_generated": clip_embeddings
+                        "clip_embeddings_generated": clip_embeddings,
+                        "vision_guided_count": vision_guided_count,
+                        "pymupdf_fallback_count": pymupdf_fallback_count
                     },
                     metadata={
                         "embeddings_per_image": 5,
-                        "embedding_types": ["visual", "color", "texture", "application", "material"]
+                        "embedding_types": ["visual", "color", "texture", "application", "material"],
+                        "average_vision_confidence": avg_vision_confidence,
+                        "extraction_method": "vision_guided" if vision_guided_count > 0 else "pymupdf"
                     }
                 )
+
+                # Log vision-guided extraction statistics
+                vision_guided_count = save_result.get('vision_guided_count', 0)
+                pymupdf_fallback_count = save_result.get('pymupdf_fallback_count', 0)
+                avg_vision_confidence = save_result.get('average_vision_confidence')
 
                 logger.info(f"✅ [STAGE 3/5] Save & CLIP Complete:")
                 logger.info(f"   Images saved: {images_saved}")
                 logger.info(f"   CLIP embeddings: {clip_embeddings} (5 per image)")
+                if vision_guided_count > 0:
+                    logger.info(f"   Vision-guided: {vision_guided_count}, PyMuPDF fallback: {pymupdf_fallback_count}")
+                    if avg_vision_confidence:
+                        logger.info(f"   Average vision confidence: {avg_vision_confidence:.2f}")
 
             else:
                 logger.info("⚠️ [STAGES 2-3] No material images to upload/save, skipping...")

@@ -20,19 +20,45 @@ from app.services.supabase_client import get_supabase_client
 from app.services.vecs_service import VecsService
 from app.services.real_embeddings_service import RealEmbeddingsService
 from app.services.pdf_processor import PDFProcessor
+from app.services.vision_guided_extractor import VisionGuidedExtractor
+from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
 
 class ImageProcessingService:
-    """Service for handling all image processing operations."""
-    
-    def __init__(self):
+    """Service for handling all image processing operations.
+
+    NEW: Supports vision-guided extraction for precise image cropping.
+    """
+
+    def __init__(self, use_vision_guided: bool = None):
+        """
+        Initialize service.
+
+        Args:
+            use_vision_guided: Enable vision-guided extraction (defaults to settings)
+        """
         self.supabase_client = get_supabase_client()
         self.vecs_service = VecsService()
         self.embedding_service = RealEmbeddingsService()
         self.pdf_processor = PDFProcessor()
-    
+        self.settings = get_settings()
+
+        # Vision-guided extraction configuration
+        self.use_vision_guided = (
+            use_vision_guided
+            if use_vision_guided is not None
+            else self.settings.vision_guided_enabled
+        )
+        self.vision_extractor = None
+        if self.use_vision_guided:
+            self.vision_extractor = VisionGuidedExtractor()
+            logger.info(
+                f"✅ Vision-guided extraction ENABLED in ImageProcessingService "
+                f"(provider: {self.settings.vision_guided_provider})"
+            )
+
     async def classify_images(
         self,
         extracted_images: List[Dict[str, Any]],
@@ -437,12 +463,19 @@ Respond ONLY with this JSON format:
             try:
                 # Save to database with category='product' for material images
                 # (ai_classification is already in img_data from classify_images)
+                # ✅ NEW: Pass vision-guided metadata if available
                 image_id = await self.supabase_client.save_single_image(
                     image_info=img_data,
                     document_id=document_id,
                     workspace_id=workspace_id,
                     image_index=idx,
-                    category='product'  # ✅ All images in this flow are material images
+                    category='product',  # ✅ All images in this flow are material images
+                    extraction_method=img_data.get('extraction_method', 'pymupdf'),
+                    bbox=img_data.get('bbox'),
+                    detection_confidence=img_data.get('detection_confidence'),
+                    vision_provider=img_data.get('vision_provider'),
+                    vision_model=img_data.get('vision_model'),
+                    product_name=img_data.get('product_name')
                 )
 
                 if not image_id:
@@ -691,6 +724,171 @@ Respond ONLY with this JSON format:
             'clip_embeddings_generated': clip_embeddings_count + checkpoint_index,
             'failed_images': failed_images
         }
+
+    async def extract_images_with_vision_guidance(
+        self,
+        pdf_path: str,
+        catalog: Any,
+        document_id: str,
+        workspace_id: str,
+        job_id: Optional[str] = None,
+        batch_size: int = 20
+    ) -> Dict[str, Any]:
+        """
+        Extract images using vision-guided extraction with precise bounding boxes.
+
+        This method integrates VisionGuidedExtractor into the image processing pipeline:
+        1. Uses product catalog from Stage 0 discovery
+        2. Extracts images with precise bounding boxes using vision AI
+        3. Uploads to Supabase Storage
+        4. Saves to database with vision metadata
+        5. Generates CLIP embeddings
+
+        Args:
+            pdf_path: Path to PDF file
+            catalog: ProductCatalog from Stage 0 discovery
+            document_id: Document ID
+            workspace_id: Workspace ID
+            job_id: Optional job ID for tracking
+            batch_size: Number of images to process per batch
+
+        Returns:
+            Dict containing:
+            - success: bool
+            - images_extracted: int
+            - images_saved: int
+            - clip_embeddings_generated: int
+            - extraction_method: 'vision_guided'
+            - stats: extraction statistics
+        """
+        if not self.use_vision_guided or not self.vision_extractor:
+            raise ValueError("Vision-guided extraction not enabled")
+
+        logger.info(f"🎯 Starting vision-guided image extraction for {len(catalog.products)} products...")
+
+        extracted_images = []
+        stats = {
+            'total_products': len(catalog.products),
+            'total_pages_processed': 0,
+            'total_detections': 0,
+            'images_saved': 0,
+            'clip_embeddings_generated': 0,
+            'failed_pages': 0,
+            'average_confidence': 0.0
+        }
+
+        try:
+            # Process each product's pages
+            all_confidences = []
+
+            for product_idx, product in enumerate(catalog.products, 1):
+                logger.info(
+                    f"   📦 [{product_idx}/{len(catalog.products)}] {product.name} "
+                    f"(pages: {product.page_range})"
+                )
+
+                # Extract images from each page in product's range
+                for page_num in product.page_range:
+                    stats['total_pages_processed'] += 1
+
+                    try:
+                        # Call vision-guided extractor
+                        result = await self.vision_extractor.extract_products_from_page(
+                            pdf_path=pdf_path,
+                            page_num=page_num - 1,  # Convert to 0-indexed
+                            product_names=[product.name],
+                            job_id=job_id
+                        )
+
+                        if result['success'] and result['detections']:
+                            # Process each detection
+                            for detection in result['detections']:
+                                # Create image data structure
+                                image_data = {
+                                    'product_name': product.name,
+                                    'page_number': page_num,
+                                    'bbox': detection['bbox'],
+                                    'confidence': detection['confidence'],
+                                    'extraction_method': 'vision_guided',
+                                    'description': detection.get('description', ''),
+                                    'product_metadata': product.metadata,
+                                    'cropped_image_path': detection.get('cropped_image_path')
+                                }
+
+                                extracted_images.append(image_data)
+                                stats['total_detections'] += 1
+                                all_confidences.append(detection['confidence'])
+
+                                logger.info(
+                                    f"      ✅ Detected: {detection['product_name']} "
+                                    f"(confidence: {detection['confidence']:.2f})"
+                                )
+                        else:
+                            logger.warning(f"      ⚠️ No detections on page {page_num}")
+
+                    except Exception as e:
+                        logger.error(f"      ❌ Vision extraction failed for page {page_num}: {e}")
+                        stats['failed_pages'] += 1
+
+            # Calculate average confidence
+            if all_confidences:
+                stats['average_confidence'] = sum(all_confidences) / len(all_confidences)
+
+            logger.info(f"✅ Vision-guided extraction complete: {stats['total_detections']} images detected")
+
+            # Upload images to storage and save to database
+            if extracted_images:
+                logger.info(f"📤 Uploading {len(extracted_images)} images to storage...")
+
+                # Convert to format expected by save_images_and_generate_clips
+                material_images = []
+                for img_data in extracted_images:
+                    if img_data.get('cropped_image_path'):
+                        material_images.append({
+                            'path': img_data['cropped_image_path'],
+                            'page_number': img_data['page_number'],
+                            'filename': f"vision_guided_{img_data['product_name']}_p{img_data['page_number']}.jpg",
+                            'extraction_method': 'vision_guided',
+                            'bbox': img_data['bbox'],
+                            'confidence': img_data['confidence'],
+                            'detection_confidence': img_data['confidence'],  # For database
+                            'product_name': img_data['product_name'],
+                            'vision_provider': self.settings.vision_guided_provider,
+                            'vision_model': self.settings.vision_guided_model
+                        })
+
+                # Save images and generate CLIP embeddings
+                save_result = await self.save_images_and_generate_clips(
+                    material_images=material_images,
+                    document_id=document_id,
+                    workspace_id=workspace_id,
+                    batch_size=batch_size
+                )
+
+                stats['images_saved'] = save_result['images_saved']
+                stats['clip_embeddings_generated'] = save_result['clip_embeddings_generated']
+
+            return {
+                'success': True,
+                'images_extracted': stats['total_detections'],
+                'images_saved': stats['images_saved'],
+                'clip_embeddings_generated': stats['clip_embeddings_generated'],
+                'extraction_method': 'vision_guided',
+                'stats': stats
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Vision-guided image extraction failed: {e}")
+            return {
+                'success': False,
+                'images_extracted': 0,
+                'images_saved': 0,
+                'clip_embeddings_generated': 0,
+                'extraction_method': 'vision_guided',
+                'error': str(e),
+                'stats': stats
+            }
+
 
 
 

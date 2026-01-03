@@ -453,4 +453,112 @@ class AICallLogger:
             self.logger.error(f"❌ Failed to log Firecrawl call: {e}")
             return False
 
+    async def log_vision_guided_extraction(
+        self,
+        page_num: int,
+        model: str,
+        detections: int,
+        confidence: float,
+        latency_ms: int,
+        cost: float,
+        job_id: Optional[str] = None,
+        document_id: Optional[str] = None,
+        extraction_method: str = "vision_guided",
+        success: bool = True,
+        error_message: Optional[str] = None,
+        user_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+        request_data: Optional[Dict[str, Any]] = None,
+        response_data: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """
+        Log a vision-guided extraction call.
+
+        Tracks vision model calls for product image extraction with:
+        - Page number and detections count
+        - Model used and confidence scores
+        - Latency and cost
+        - Success/failure status
+
+        Args:
+            page_num: PDF page number processed
+            model: Vision model used (claude-sonnet-4-5, gpt-4o-vision, etc.)
+            detections: Number of products detected on page
+            confidence: Average detection confidence (0.0-1.0)
+            latency_ms: Latency in milliseconds
+            cost: Cost in USD
+            job_id: Optional job ID for tracking
+            document_id: Optional document ID
+            extraction_method: Extraction method used (vision_guided, pymupdf)
+            success: Whether extraction succeeded
+            error_message: Optional error message if failed
+            user_id: Optional user ID for credit debit
+            workspace_id: Optional workspace ID for credit debit
+            request_data: Optional request data for debugging
+            response_data: Optional response data for debugging
+
+        Returns:
+            bool: True if logged successfully
+        """
+        try:
+            # Debit credits if user_id provided
+            if user_id and success:
+                await self.credits_service.debit_credits_for_ai_operation(
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    operation_type="vision_guided_extraction",
+                    model_name=model,
+                    input_tokens=0,  # Vision models don't report tokens the same way
+                    output_tokens=0,
+                    metadata={
+                        'job_id': job_id,
+                        'document_id': document_id,
+                        'page_num': page_num,
+                        'detections': detections,
+                        'confidence': confidence,
+                        'extraction_method': extraction_method
+                    }
+                )
+
+            # Log to ai_call_logs
+            log_entry = {
+                "timestamp": datetime.utcnow().isoformat(),
+                "job_id": job_id,
+                "task": "vision_guided_extraction",
+                "model": model,
+                "input_tokens": 0,  # Vision models don't report tokens
+                "output_tokens": 0,
+                "cost": float(cost),
+                "latency_ms": latency_ms,
+                "confidence_score": round(confidence, 2),
+                "confidence_breakdown": json_dumps({
+                    "detection_confidence": confidence,
+                    "detections_count": detections,
+                    "page_num": page_num
+                }),
+                "action": "use_ai_result" if success else "fallback_to_pymupdf",
+                "fallback_reason": error_message if not success else None,
+                "request_data": json_dumps(request_data) if request_data else None,
+                "response_data": json_dumps(response_data) if response_data else None,
+                "error_message": error_message
+            }
+
+            # Insert into database
+            result = self.supabase.client.table("ai_call_logs").insert(log_entry).execute()
+
+            if result.data:
+                self.logger.info(
+                    f"✅ Vision extraction logged: page={page_num} | {model} | "
+                    f"detections={detections} | confidence={confidence:.2f} | "
+                    f"cost=${cost:.4f} | latency={latency_ms}ms"
+                )
+                return True
+            else:
+                self.logger.error(f"❌ Failed to log vision extraction: No data returned")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to log vision extraction: {e}")
+            return False
+
 
