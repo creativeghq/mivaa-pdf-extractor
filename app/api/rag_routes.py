@@ -1677,7 +1677,7 @@ async def get_embeddings(
         # Query text embeddings from document_chunks
         if not embedding_type or embedding_type == 'text':
             chunk_query = supabase_client.client.table('document_chunks').select(
-                'id, chunk_text, text_embedding_1024'
+                'id, content, text_embedding_1024'
             ).eq('document_id', document_id).not_('text_embedding_1024', 'is', None).range(offset, offset + limit - 1)
 
             chunk_result = chunk_query.execute()
