@@ -275,7 +275,7 @@ async def process_stage_3_images(
         pdf_path = None
         try:
             # Try to get PDF path from checkpoint service
-            checkpoint_data = await checkpoint_recovery_service.get_checkpoint(job_id)
+            checkpoint_data = await checkpoint_recovery_service.get_last_checkpoint(job_id)
             if checkpoint_data and 'pdf_path' in checkpoint_data:
                 pdf_path = checkpoint_data['pdf_path']
                 logger.info(f"   ✅ PDF path found in checkpoint: {pdf_path}")
