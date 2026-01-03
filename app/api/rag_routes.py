@@ -2657,17 +2657,7 @@ async def process_document_with_discovery(
             "chunk_size": chunk_size
         })
 
-        try:
-            # Read file content ONLY when needed
-            logger.info(f"📖 Reading file from disk: {file_path}")
-            if not os.path.exists(file_path):
-                 raise FileNotFoundError(f"File not found at {file_path}")
-                 
-            with open(file_path, 'rb') as f:
-                file_content = f.read()
-            
-            file_size = len(file_content)
-
+        scope.set_context("job_details", {
             "filename": filename,
             "discovery_model": discovery_model,
             "focused_extraction": focused_extraction,
@@ -2681,6 +2671,17 @@ async def process_document_with_discovery(
             f"🚀 PDF Processing Started: {filename} (Job: {job_id})",
             level="info"
         )
+
+    try:
+        # Read file content ONLY when needed
+        logger.info(f"📖 Reading file from disk: {file_path}")
+        if not os.path.exists(file_path):
+             raise FileNotFoundError(f"File not found at {file_path}")
+
+        with open(file_path, 'rb') as f:
+            file_content = f.read()
+
+        file_size = len(file_content)
     logger.info("=" * 80)
 
     # Get AI model configuration
