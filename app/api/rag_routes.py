@@ -3030,9 +3030,11 @@ async def process_document_with_discovery(
                     logger.info(f"🧹 Removed temporary file: {file_path}")
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to remove temporary file {file_path}: {e}")
-            job_storage[job_id]["status"] = "failed"
-            job_storage[job_id]["error"] = str(e)
-            job_storage[job_id]["progress"] = 100
+            # Only update job_storage if the job exists
+            if job_id in job_storage:
+                job_storage[job_id]["status"] = "failed"
+                job_storage[job_id]["error"] = str(e)
+                job_storage[job_id]["progress"] = 100
 
 
 @router.post("/query", response_model=QueryResponse)
