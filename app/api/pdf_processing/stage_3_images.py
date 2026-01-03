@@ -169,6 +169,10 @@ async def process_stage_3_images(
     # ✅ Initialize extraction_stats at function scope for checkpoint tracking
     extraction_stats = {'vision_guided_count': 0, 'pymupdf_count': 0, 'failed_count': 0, 'total_pages': 0}
 
+    # ✅ CRITICAL FIX: Initialize vision_result at function scope to prevent NameError
+    # This will be updated if vision-guided extraction is used
+    vision_result = None
+
     # Circuit breakers for API calls
     # CLIP: More lenient settings for transient memory pressure failures
     # Vision Model: More lenient due to transient JSON formatting issues (now fixed, but keeping lenient for safety)

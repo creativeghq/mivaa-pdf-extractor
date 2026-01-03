@@ -409,12 +409,18 @@ class PDFProcessor:
             try:
                 # Execute in separate process
                 # ✅ NEW: Worker now returns (markdown_content, metadata, page_chunks)
+                # ✅ CRITICAL FIX: Filter out non-picklable objects before passing to ProcessPoolExecutor
+                # Services like checkpoint_recovery_service and progress_tracker cannot be pickled
+                picklable_options = {
+                    k: v for k, v in processing_options.items()
+                    if k not in ('checkpoint_recovery_service', 'progress_tracker', 'job_id')
+                }
                 markdown_content, metadata, page_chunks = await asyncio.wait_for(
                     loop.run_in_executor(
                         self.executor,
                         execute_pdf_extraction_job,
                         pdf_path,
-                        processing_options
+                        picklable_options
                     ),
                     timeout=markdown_timeout
                 )
