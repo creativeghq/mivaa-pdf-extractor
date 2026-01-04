@@ -252,7 +252,7 @@ Return JSON in this exact format:
 }}
 
 PDF Content:
-{pdf_text[:4000]}
+{pdf_text[:100000]}
 
 Extract all metadata now:"""
 
@@ -375,7 +375,9 @@ class DynamicMetadataExtractor:
             if db_prompt_template:
                 # Use database prompt - replace placeholders
                 category_context = f"\nMaterial Category Hint: This appears to be a {category_hint} product." if category_hint else ""
-                prompt = db_prompt_template.replace("{category_context}", category_context).replace("{pdf_text}", pdf_text[:4000])
+                # ✅ FIX: Increased from 4000 to 100000 chars to include end-of-document sections
+                # (packaging, compliance, care/maintenance info is typically at the end)
+                prompt = db_prompt_template.replace("{category_context}", category_context).replace("{pdf_text}", pdf_text[:100000])
                 self.logger.info("✅ Using DATABASE prompt for metadata extraction")
             else:
                 # Fallback to hardcoded prompt
@@ -722,10 +724,24 @@ class DynamicMetadataExtractor:
                         'updated_at': datetime.utcnow().isoformat()
                     })
 
-            # Batch insert new properties
+            # Batch insert new properties with upsert to handle duplicates
             if new_properties:
-                supabase.client.table('material_properties').insert(new_properties).execute()
-                self.logger.info(f"Auto-created {len(new_properties)} new material_properties entries")
+                try:
+                    # Use upsert to avoid duplicate key violations
+                    supabase.client.table('material_properties')\
+                        .upsert(new_properties, on_conflict='property_key')\
+                        .execute()
+                    self.logger.info(f"Auto-created/updated {len(new_properties)} material_properties entries")
+                except Exception as insert_error:
+                    # If upsert fails, try inserting one by one to identify problematic entries
+                    self.logger.warning(f"Batch upsert failed: {insert_error}, trying individual inserts")
+                    for prop in new_properties:
+                        try:
+                            supabase.client.table('material_properties')\
+                                .upsert(prop, on_conflict='property_key')\
+                                .execute()
+                        except Exception as single_error:
+                            self.logger.debug(f"Skipped property {prop['property_key']}: {single_error}")
 
         except Exception as e:
             # Don't fail extraction if property creation fails
@@ -1015,10 +1031,24 @@ Analyze now:"""
                         'updated_at': datetime.utcnow().isoformat()
                     })
 
-            # Batch insert new properties
+            # Batch insert new properties with upsert to handle duplicates
             if new_properties:
-                supabase.client.table('material_properties').insert(new_properties).execute()
-                self.logger.info(f"Auto-created {len(new_properties)} new material_properties entries")
+                try:
+                    # Use upsert to avoid duplicate key violations
+                    supabase.client.table('material_properties')\
+                        .upsert(new_properties, on_conflict='property_key')\
+                        .execute()
+                    self.logger.info(f"Auto-created/updated {len(new_properties)} material_properties entries")
+                except Exception as insert_error:
+                    # If upsert fails, try inserting one by one to identify problematic entries
+                    self.logger.warning(f"Batch upsert failed: {insert_error}, trying individual inserts")
+                    for prop in new_properties:
+                        try:
+                            supabase.client.table('material_properties')\
+                                .upsert(prop, on_conflict='property_key')\
+                                .execute()
+                        except Exception as single_error:
+                            self.logger.debug(f"Skipped property {prop['property_key']}: {single_error}")
 
         except Exception as e:
             # Don't fail extraction if property creation fails

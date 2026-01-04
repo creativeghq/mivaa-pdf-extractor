@@ -2909,6 +2909,15 @@ async def process_document_with_discovery(
         images_saved_count = total_images_processed
         linking_results = {"relationships_created": total_relationships_created}
 
+        # In product-centric pipeline, each product has its own page_range
+        # We need to collect all pages that were processed across all products
+        product_pages = set()
+        for product in catalog.products:
+            if hasattr(product, 'page_range') and product.page_range:
+                product_pages.update(product.page_range)
+
+        logger.info(f"📄 Aggregated {len(product_pages)} unique pages from {len(catalog.products)} products")
+
         # ============================================================================
         # STAGE 5: QUALITY ENHANCEMENT (MODULAR)
         # ============================================================================

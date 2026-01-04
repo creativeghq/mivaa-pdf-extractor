@@ -43,9 +43,9 @@ class EntityLinkingService:
     - Chunk → Product: page_proximity(40%) + embedding_similarity(30%) + mention_score(30%)
     """
 
-    def __init__(self):
+    def __init__(self, supabase=None):
         self.logger = logger
-        self.supabase = get_supabase_client()
+        self.supabase = supabase if supabase is not None else get_supabase_client()
     
     async def link_images_to_products(
         self,
@@ -686,6 +686,119 @@ class EntityLinkingService:
                 'image_product_links': 0,
                 'image_chunk_links': 0,
                 'chunk_product_links': 0
+            }
+
+    async def link_product_entities(
+        self,
+        product_id: str,
+        product_name: str,
+        document_id: str,
+        product_pages: Set[int],
+        logger: logging.Logger
+    ) -> Dict[str, int]:
+        """
+        Link entities for a single product (product-centric pipeline).
+
+        Creates relationships for:
+        1. Product → Images (on product pages)
+        2. Product → Chunks (on product pages or mentioning product)
+
+        Args:
+            product_id: Database ID of the product
+            product_name: Name of the product
+            document_id: Document ID
+            product_pages: Set of page numbers for this product
+            logger: Logger instance
+
+        Returns:
+            Statistics of relationships created
+        """
+        try:
+            logger.info(f"🔗 Linking entities for product: {product_name}")
+
+            stats = {
+                'image_product_links': 0,
+                'chunk_product_links': 0,
+                'relationships_created': 0
+            }
+
+            # 1. Link images to this product (images on product pages)
+            images_response = self.supabase.client.table('document_images')\
+                .select('id, page_number')\
+                .eq('document_id', document_id)\
+                .execute()
+
+            image_relationships = []
+            for img in images_response.data:
+                if img['page_number'] in product_pages:
+                    # Image is on a product page - high relevance
+                    relevance = 0.8
+                    image_relationships.append({
+                        'id': str(uuid.uuid4()),
+                        'product_id': product_id,
+                        'image_id': img['id'],
+                        'relevance_score': relevance,
+                        'created_at': datetime.utcnow().isoformat()
+                    })
+
+            if image_relationships:
+                self.supabase.client.table('product_image_relationships')\
+                    .upsert(image_relationships, on_conflict='product_id,image_id')\
+                    .execute()
+                stats['image_product_links'] = len(image_relationships)
+                logger.info(f"   ✅ Linked {len(image_relationships)} images to product")
+
+            # 2. Link chunks to this product (chunks on product pages or mentioning product)
+            chunks_response = self.supabase.client.table('document_chunks')\
+                .select('id, content, metadata')\
+                .eq('document_id', document_id)\
+                .execute()
+
+            chunk_relationships = []
+            for chunk in chunks_response.data:
+                # Get chunk page number from metadata
+                chunk_page = chunk.get('metadata', {}).get('page_number')
+                if chunk_page is None:
+                    continue
+
+                # Calculate relevance using existing algorithm
+                relevance = self._calculate_chunk_product_relevance(
+                    chunk_original_page=chunk_page,
+                    chunk_content=chunk.get('content', ''),
+                    product_page_range=list(product_pages),
+                    product_name=product_name
+                )
+
+                # Only create relationship if relevance is above threshold
+                if relevance >= 0.3:
+                    chunk_relationships.append({
+                        'id': str(uuid.uuid4()),
+                        'chunk_id': chunk['id'],
+                        'product_id': product_id,
+                        'relevance_score': relevance,
+                        'created_at': datetime.utcnow().isoformat()
+                    })
+
+            if chunk_relationships:
+                self.supabase.client.table('chunk_product_relationships')\
+                    .upsert(chunk_relationships, on_conflict='chunk_id,product_id')\
+                    .execute()
+                stats['chunk_product_links'] = len(chunk_relationships)
+                logger.info(f"   ✅ Linked {len(chunk_relationships)} chunks to product")
+
+            stats['relationships_created'] = stats['image_product_links'] + stats['chunk_product_links']
+            logger.info(f"   ✅ Total relationships created: {stats['relationships_created']}")
+
+            return stats
+
+        except Exception as e:
+            logger.error(f"❌ Failed to link product entities: {e}")
+            import traceback
+            logger.error(f"   Traceback: {traceback.format_exc()}")
+            return {
+                'image_product_links': 0,
+                'chunk_product_links': 0,
+                'relationships_created': 0
             }
 
 

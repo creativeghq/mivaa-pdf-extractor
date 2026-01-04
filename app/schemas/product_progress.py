@@ -135,22 +135,25 @@ class ProductProcessingResult(BaseModel):
     product_name: str
     product_index: int
     success: bool
-    
+
     # Results
     product_db_id: Optional[str] = Field(default=None, description="Database ID of created product")
     chunks_created: int = Field(default=0)
     images_processed: int = Field(default=0)
     relationships_created: int = Field(default=0)
-    
+
     # Error info
     error: Optional[str] = Field(default=None)
     error_stage: Optional[ProductStage] = Field(default=None)
-    
+
     # Timing
     processing_time_ms: Optional[int] = Field(default=None)
-    
+
     # Memory stats
     memory_freed_mb: Optional[float] = Field(default=None, description="Memory freed after cleanup")
+
+    # Metrics (added to fix AttributeError)
+    metrics: Optional[ProductMetrics] = Field(default=None, description="Processing metrics for this product")
     
     class Config:
         json_schema_extra = {

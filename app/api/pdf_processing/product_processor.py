@@ -81,22 +81,23 @@ async def process_single_product(
         }
     )
     
+    # Use direct attributes instead of nested metrics object
     result = ProductProcessingResult(
         product_id=product_id,
         product_name=product.name,
         product_index=product_index,
         success=False
     )
-    
+
     try:
         # ========================================================================
         # STAGE 1: Extract Product Pages
         # ========================================================================
         await product_tracker.update_product_stage(product_id, ProductStage.EXTRACTION)
         logger_instance.info(f"📄 [STAGE 1/{product_index}] Extracting pages for {product.name}...")
-        
+
         from app.api.pdf_processing.stage_1_focused_extraction import extract_product_pages
-        
+
         product_pages = await extract_product_pages(
             file_content=file_content,
             product=product,
@@ -104,14 +105,14 @@ async def process_single_product(
             job_id=job_id,
             logger=logger_instance
         )
-        
+
         await product_tracker.mark_stage_complete(
             product_id,
             ProductStage.EXTRACTION,
             {"pages_extracted": len(product_pages)}
         )
-        result.metrics.pages_extracted = len(product_pages)
-        logger_instance.info(f"✅ Extracted {len(product_pages)} pages for {product.name}")
+        pages_extracted = len(product_pages)
+        logger_instance.info(f"✅ Extracted {pages_extracted} pages for {product.name}")
         
         # ========================================================================
         # STAGE 2: Create Text Chunks
@@ -313,6 +314,9 @@ async def cleanup_product_memory(logger_instance: logging.Logger) -> None:
         logger_instance: Logger for tracking cleanup
     """
     logger_instance.debug("🧹 Starting smart product memory cleanup...")
+
+    # Import memory_monitor from the module (fix NameError)
+    from app.utils.memory_monitor import memory_monitor
 
     # Get memory before cleanup
     mem_before = memory_monitor.get_memory_stats()

@@ -2029,7 +2029,9 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
         # For now, return full PDF text
         # TODO: Implement page-specific text extraction if needed
         # This would require storing page boundaries during PDF extraction
-        return pdf_text[:10000]  # Limit to first 10k chars to avoid token limits
+        # ✅ FIX: Increased from 10000 to 100000 chars to include end-of-document sections
+        # (packaging, compliance, care/maintenance info is typically at the end)
+        return pdf_text[:100000]
 
     async def _vision_based_discovery(
         self,
