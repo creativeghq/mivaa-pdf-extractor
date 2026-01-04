@@ -165,7 +165,7 @@ class RealQualityScoringService:
             metrics['metadata_richness'] = metadata_richness
 
             # 5. Embedding Coverage (0-1)
-            embedding_coverage = 1.0 if chunk_data.get('text_embedding_1024') else 0.0
+            embedding_coverage = 1.0 if chunk_data.get('text_embedding') else 0.0
             metrics['embedding_coverage'] = embedding_coverage
             
             # Calculate weighted quality score
@@ -359,7 +359,7 @@ class RealQualityScoringService:
         coverage = 0.0
         total = 6
 
-        if product_data.get('text_embedding_1024'):
+        if product_data.get('text_embedding'):
             coverage += 1
         if product_data.get('visual_clip_embedding_512'):
             coverage += 1

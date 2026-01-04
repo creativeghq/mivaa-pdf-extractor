@@ -1435,13 +1435,13 @@ async def get_chunks(
         chunks = result.data if result.data else []
 
         # Add embeddings to each chunk if requested
-        # Note: embeddings are stored directly in document_chunks.text_embedding_1024
+        # Note: embeddings are stored directly in document_chunks.text_embedding
         if include_embeddings and chunks:
             for chunk in chunks:
                 # Embeddings are stored directly in the chunk record
-                text_embedding = chunk.get('text_embedding_1024')
+                text_embedding = chunk.get('text_embedding')
                 chunk['embedding'] = text_embedding
-                chunk['embeddings'] = [{'embedding': text_embedding, 'type': 'text_1024'}] if text_embedding else []
+                chunk['embeddings'] = [{'embedding': text_embedding, 'type': 'text'}] if text_embedding else []
                 chunk['has_embedding'] = text_embedding is not None
 
         return JSONResponse(content={
@@ -1677,23 +1677,24 @@ async def get_embeddings(
         # Query text embeddings from document_chunks
         if not embedding_type or embedding_type == 'text':
             chunk_query = supabase_client.client.table('document_chunks').select(
-                'id, content, text_embedding_1024'
-            ).eq('document_id', document_id).not_('text_embedding_1024', 'is', None).range(offset, offset + limit - 1)
+                'id, content, text_embedding, embedding_dimension'
+            ).eq('document_id', document_id).not_('text_embedding', 'is', None).range(offset, offset + limit - 1)
 
             chunk_result = chunk_query.execute()
 
             if chunk_result.data:
                 for chunk in chunk_result.data:
+                    dimension = chunk.get('embedding_dimension', 1024)  # Default to 1024 if not specified
                     embeddings.append({
                         'id': f"{chunk['id']}_text",
                         'entity_id': chunk['id'],
                         'entity_type': 'chunk',
-                        'embedding_type': 'text_1024',
-                        'dimension': 1024,
+                        'embedding_type': f'text_{dimension}',
+                        'dimension': dimension,
                         'model': 'voyage-3',
-                        'embedding': chunk['text_embedding_1024']
+                        'embedding': chunk['text_embedding']
                     })
-                    embedding_stats['text_1024'] = embedding_stats.get('text_1024', 0) + 1
+                    embedding_stats[f'text_{dimension}'] = embedding_stats.get(f'text_{dimension}', 0) + 1
 
         return JSONResponse(content={
             "document_id": document_id,
@@ -3665,10 +3666,11 @@ async def get_document_content(
             chunks_response = supabase_client.client.table('document_chunks').select('*').eq('document_id', document_id).execute()
             chunks = chunks_response.data or []
 
-            # Embeddings are stored directly in document_chunks.text_embedding_1024
+            # Embeddings are stored directly in document_chunks.text_embedding
             for chunk in chunks:
-                text_embedding = chunk.get('text_embedding_1024')
-                chunk['embeddings'] = [{'embedding': text_embedding, 'type': 'text_1024'}] if text_embedding else []
+                text_embedding = chunk.get('text_embedding')
+                dimension = chunk.get('embedding_dimension', 1024)
+                chunk['embeddings'] = [{'embedding': text_embedding, 'type': f'text_{dimension}'}] if text_embedding else []
 
             result['chunks'] = chunks
             logger.info(f"✅ Fetched {len(chunks)} chunks")
@@ -3847,18 +3849,20 @@ async def get_workspace_statistics(
         chunks_response = supabase.client.table('document_chunks').select('id', count='exact').eq('workspace_id', workspace_id).execute()
         images_response = supabase.client.table('document_images').select('id', count='exact').eq('workspace_id', workspace_id).execute()
 
-        # Count text embeddings from document_chunks table (chunks with text_embedding_1024 not null)
-        # Note: embeddings are stored directly in document_chunks.text_embedding_1024, not in a separate table
+        # Count text embeddings from document_chunks table (chunks with text_embedding not null)
+        # Note: embeddings are stored directly in document_chunks.text_embedding, not in a separate table
         try:
-            text_embeddings_response = supabase.client.table('document_chunks').select('id', count='exact').eq('workspace_id', workspace_id).not_.is_('text_embedding_1024', 'null').execute()
+            text_embeddings_response = supabase.client.table('document_chunks').select('id', count='exact').eq('workspace_id', workspace_id).not_.is_('text_embedding', 'null').execute()
             text_embeddings_count = text_embeddings_response.count or 0
         except Exception as text_emb_error:
             logger.warning(f"⚠️ Text embeddings count failed: {text_emb_error}")
             text_embeddings_count = 0
 
         # Get VECS image embeddings count using SQL function (bypasses VECS connection issues)
+        # FIX: Cast workspace_id to UUID to avoid function overloading ambiguity
         try:
-            vecs_count_result = supabase.client.rpc('count_vecs_embeddings', {'p_workspace_id': workspace_id}).execute()
+            # Use the UUID version of the function by casting the parameter
+            vecs_count_result = supabase.client.rpc('count_vecs_embeddings', {'p_workspace_id': str(workspace_id)}).execute()
             image_embeddings_count = vecs_count_result.data if isinstance(vecs_count_result.data, int) else 0
         except Exception as vecs_error:
             logger.warning(f"⚠️ VECS count failed: {vecs_error}")

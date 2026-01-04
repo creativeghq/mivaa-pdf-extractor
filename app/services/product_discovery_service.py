@@ -732,11 +732,12 @@ This information typically appears on:
    - Look for: product name continuity, related images, variant displays, technical specs across multiple pages
    - A product's page range ends when a new product begins or when content becomes unrelated
 3. **CRITICAL: For image_pages, you MUST identify which pages contain PRODUCT IMAGES (photos/renders):**
-   - image_pages is a REQUIRED field - you MUST include it for every product
+   - ⚠️ MANDATORY FIELD: image_pages is REQUIRED for EVERY product - DO NOT OMIT THIS FIELD
    - List ALL pages that show product images/photos/renders (not text-only pages)
    - Example: If pages 22-27 show the product, but only pages 22, 23, 25 have images, return "image_pages": [22, 23, 25]
    - If a page has ONLY text/specs with NO images, do NOT include it in image_pages
    - If ALL pages in page_range have images, image_pages should equal page_range
+   - If you're unsure, default to including the page in image_pages (better to over-include than miss images)
 4. Classify each page as: "product", "certificate", "logo", "specification", "marketing", "admin", or "transitional"
 5. Provide confidence scores (0.0-1.0) for each item
 
@@ -751,7 +752,7 @@ This information typically appears on:
       "name": "NOVA",
       "description": "Modern ceramic tile collection",
       "page_range": [12, 13, 14],
-      "image_pages": [12, 13],
+      "image_pages": [12, 13],  // ⚠️ REQUIRED - DO NOT OMIT
       "confidence": 0.95,
       "metadata": {{
         "designer": "SG NY",
@@ -1114,7 +1115,7 @@ This PDF has {total_pages} pages (numbered 1 to {total_pages}). It may be an EXC
       "name": "NOVA",
       "description": "Modern ceramic tile collection",
       "page_range": [12, 13, 14],
-      "image_pages": [12, 13],
+      "image_pages": [12, 13],  // ⚠️ REQUIRED - DO NOT OMIT
       "confidence": 0.95,
       "metadata": {{
         "designer": "SG NY",
