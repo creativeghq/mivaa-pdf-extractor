@@ -33,9 +33,9 @@ class ProductProgressTracker:
     - Get job summary
     """
     
-    def __init__(self, job_id: str):
+    def __init__(self, job_id: str, supabase=None):
         self.job_id = job_id
-        self.supabase = get_supabase_client()
+        self.supabase = supabase if supabase is not None else get_supabase_client()
         self.table = "product_processing_status"
         logger.info(f"ProductProgressTracker initialized for job {job_id}")
     
@@ -403,4 +403,56 @@ class ProductProgressTracker:
         except Exception as e:
             logger.error(f"❌ Failed to update metrics: {e}")
             raise
+
+    async def get_all_products(self) -> List[Dict[str, Any]]:
+        """
+        Get all products for this job with their current status and metrics.
+
+        Returns:
+            List of product dictionaries with status, metrics, and progress
+        """
+        try:
+            result = self.supabase.client.table(self.table)\
+                .select("*")\
+                .eq("job_id", self.job_id)\
+                .order("product_index")\
+                .execute()
+
+            if not result.data:
+                logger.info(f"No products found for job {self.job_id}")
+                return []
+
+            # Transform database records to match frontend ProductProgress interface
+            products = []
+            for record in result.data:
+                product = {
+                    "id": record.get("id"),
+                    "job_id": record.get("job_id"),
+                    "product_id": record.get("product_id"),
+                    "product_name": record.get("product_name"),
+                    "product_index": record.get("product_index"),
+                    "status": record.get("status"),
+                    "current_stage": record.get("current_stage"),
+                    "stages_completed": record.get("stages_completed", []),
+                    "error_message": record.get("error_message"),
+                    "metrics": record.get("metrics", {
+                        "chunks_created": 0,
+                        "images_processed": 0,
+                        "relationships_created": 0,
+                        "pages_extracted": 0
+                    }),
+                    "created_at": record.get("created_at"),
+                    "updated_at": record.get("updated_at"),
+                    "completed_at": record.get("completed_at")
+                }
+                products.append(product)
+
+            logger.info(f"Retrieved {len(products)} products for job {self.job_id}")
+            return products
+
+        except Exception as e:
+            logger.error(f"❌ Failed to get products for job {self.job_id}: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return []
 

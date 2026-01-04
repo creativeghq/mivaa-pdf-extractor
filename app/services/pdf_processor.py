@@ -897,6 +897,8 @@ class PDFProcessor:
 
         Uses PyMuPDF directly to extract images with minimal memory footprint.
 
+        NEW: If no embedded images found, renders entire page as image (for scanned PDFs).
+
         Returns:
             Number of images extracted
         """
@@ -918,34 +920,123 @@ class PDFProcessor:
                     f"   📄 [Job: {job_id}] PyMuPDF: Page {page_idx + 1} has {len(image_list)} embedded images"
                 )
 
-                for img_idx, img in enumerate(image_list):
+                # ============================================================
+                # CASE 1: Extract embedded images (normal PDFs)
+                # ============================================================
+                if len(image_list) > 0:
+                    for img_idx, img in enumerate(image_list):
+                        try:
+                            xref = img[0]
+                            base_image = doc.extract_image(xref)
+                            image_bytes = base_image["image"]
+                            image_ext = base_image["ext"]
+
+                            # Save image to disk
+                            image_filename = f"page_{page_idx + 1}_image_{img_idx}.{image_ext}"
+                            image_path = os.path.join(image_dir, image_filename)
+
+                            with open(image_path, "wb") as img_file:
+                                img_file.write(image_bytes)
+
+                            # Immediately free memory
+                            del image_bytes, base_image
+                            extracted_count += 1
+
+                            self.logger.debug(
+                                f"   ✅ [Job: {job_id}] Extracted PyMuPDF image: {image_filename}"
+                            )
+
+                        except Exception as e:
+                            self.logger.error(
+                                f"   ❌ [Job: {job_id}] Failed to extract image {img_idx} "
+                                f"from page {page_idx + 1}: {e}"
+                            )
+                            continue
+
+                # ============================================================
+                # CASE 2: No embedded images - use OCR to extract text from scanned page
+                # (Common for scanned PDFs where each page IS an image)
+                # ============================================================
+                else:
                     try:
-                        xref = img[0]
-                        base_image = doc.extract_image(xref)
-                        image_bytes = base_image["image"]
-                        image_ext = base_image["ext"]
-
-                        # Save image to disk
-                        image_filename = f"page_{page_idx + 1}_image_{img_idx}.{image_ext}"
-                        image_path = os.path.join(image_dir, image_filename)
-
-                        with open(image_path, "wb") as img_file:
-                            img_file.write(image_bytes)
-
-                        # Immediately free memory
-                        del image_bytes, base_image
-                        extracted_count += 1
-
-                        self.logger.debug(
-                            f"   ✅ [Job: {job_id}] Extracted PyMuPDF image: {image_filename}"
+                        self.logger.info(
+                            f"   📸 [Job: {job_id}] No embedded images on page {page_idx + 1} - "
+                            f"using OCR to extract text from scanned page"
                         )
+
+                        # Render page to high-res image for OCR
+                        zoom = 2.0  # 144 DPI (72 * 2)
+                        mat = fitz.Matrix(zoom, zoom)
+                        pix = page.get_pixmap(matrix=mat, alpha=False)
+
+                        # Convert pixmap to PIL Image for OCR
+                        from PIL import Image
+                        import io
+                        img_data = pix.tobytes('png')
+                        pil_image = Image.open(io.BytesIO(img_data))
+
+                        # Free pixmap memory immediately
+                        pix = None
+
+                        # Use OCR service to extract text
+                        try:
+                            from app.services.ocr_service import OCRService
+                            ocr_service = OCRService()
+
+                            # Extract text with bounding boxes
+                            ocr_results = ocr_service.extract_text_from_image(
+                                pil_image,
+                                use_preprocessing=True
+                            )
+
+                            # Combine all text
+                            page_text = " ".join([
+                                r.text.strip()
+                                for r in ocr_results
+                                if r.text.strip() and r.confidence > 0.3
+                            ])
+
+                            if page_text:
+                                # Save OCR text to a text file alongside images
+                                text_filename = f"page_{page_idx + 1}_ocr.txt"
+                                text_path = os.path.join(image_dir, text_filename)
+                                with open(text_path, 'w', encoding='utf-8') as f:
+                                    f.write(page_text)
+
+                                self.logger.info(
+                                    f"   ✅ [Job: {job_id}] OCR extracted {len(page_text)} characters "
+                                    f"from page {page_idx + 1}"
+                                )
+                            else:
+                                self.logger.warning(
+                                    f"   ⚠️ [Job: {job_id}] OCR found no text on page {page_idx + 1}"
+                                )
+
+                            # Also save the full page image for reference
+                            image_filename = f"page_{page_idx + 1}_fullpage.png"
+                            image_path = os.path.join(image_dir, image_filename)
+                            pil_image.save(image_path, 'PNG')
+                            extracted_count += 1
+
+                        except Exception as ocr_error:
+                            self.logger.warning(
+                                f"   ⚠️ [Job: {job_id}] OCR failed for page {page_idx + 1}: {ocr_error}. "
+                                f"Saving page as image only."
+                            )
+                            # Fallback: just save the image without OCR
+                            image_filename = f"page_{page_idx + 1}_fullpage.png"
+                            image_path = os.path.join(image_dir, image_filename)
+                            pil_image.save(image_path, 'PNG')
+                            extracted_count += 1
+
+                        # Free PIL image memory
+                        pil_image.close()
+                        pil_image = None
 
                     except Exception as e:
                         self.logger.error(
-                            f"   ❌ [Job: {job_id}] Failed to extract image {img_idx} "
-                            f"from page {page_idx + 1}: {e}"
+                            f"   ❌ [Job: {job_id}] Failed to process scanned page {page_idx + 1}: {e}"
                         )
-                        continue
 
                 # Free page memory
                 page = None

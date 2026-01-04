@@ -728,9 +728,14 @@ class EntityLinkingService:
                 .eq('document_id', document_id)\
                 .execute()
 
+            logger.info(f"   📸 Found {len(images_response.data) if images_response.data else 0} total images in document")
+            logger.info(f"   📄 Product pages: {sorted(product_pages)}")
+
             image_relationships = []
             for img in images_response.data:
-                if img['page_number'] in product_pages:
+                img_page = img.get('page_number')
+                logger.debug(f"   🔍 Checking image {img['id'][:8]}... on page {img_page}")
+                if img_page in product_pages:
                     # Image is on a product page - high relevance
                     relevance = 0.8
                     image_relationships.append({
@@ -740,6 +745,7 @@ class EntityLinkingService:
                         'relevance_score': relevance,
                         'created_at': datetime.utcnow().isoformat()
                     })
+                    logger.debug(f"   ✅ Image {img['id'][:8]}... on page {img_page} → Product (relevance: {relevance})")
 
             if image_relationships:
                 self.supabase.client.table('product_image_relationships')\
@@ -747,6 +753,8 @@ class EntityLinkingService:
                     .execute()
                 stats['image_product_links'] = len(image_relationships)
                 logger.info(f"   ✅ Linked {len(image_relationships)} images to product")
+            else:
+                logger.warning(f"   ⚠️ No images found on product pages {sorted(product_pages)}")
 
             # 2. Link chunks to this product (chunks on product pages or mentioning product)
             chunks_response = self.supabase.client.table('document_chunks')\
@@ -754,19 +762,48 @@ class EntityLinkingService:
                 .eq('document_id', document_id)\
                 .execute()
 
+            logger.info(f"   📝 Found {len(chunks_response.data) if chunks_response.data else 0} total chunks in document")
+
             chunk_relationships = []
             for chunk in chunks_response.data:
-                # Get chunk page number from metadata
-                chunk_page = chunk.get('metadata', {}).get('page_number')
-                if chunk_page is None:
+                # Get chunk metadata
+                chunk_metadata = chunk.get('metadata', {})
+                if not isinstance(chunk_metadata, dict):
+                    logger.warning(f"⚠️ Skipping chunk {chunk['id']} - metadata is not a dict")
                     continue
+
+                # Get sequential page number and product_pages array
+                chunk_page_number = chunk_metadata.get('page_number')
+                product_pages_array = chunk_metadata.get('product_pages', [])
+
+                if chunk_page_number is None:
+                    logger.warning(f"⚠️ Skipping chunk {chunk['id']} - missing page_number")
+                    continue
+
+                # Ensure page_number is an integer
+                if not isinstance(chunk_page_number, int):
+                    try:
+                        chunk_page_number = int(chunk_page_number)
+                    except (ValueError, TypeError):
+                        logger.warning(f"⚠️ Skipping chunk {chunk['id']} - invalid page_number: {chunk_page_number}")
+                        continue
+
+                # Map sequential page number to original PDF page number
+                # product_pages is a document-level array: [24, 25, 26, ...]
+                # page_number is 1-based sequential: 1, 2, 3, ...
+                # So: original_page = product_pages[page_number - 1]
+                if product_pages_array and isinstance(product_pages_array, list) and chunk_page_number <= len(product_pages_array):
+                    chunk_original_page = product_pages_array[chunk_page_number - 1]
+                else:
+                    # Fallback: use sequential page number if mapping not available
+                    chunk_original_page = chunk_page_number
 
                 # Calculate relevance using existing algorithm
                 relevance = self._calculate_chunk_product_relevance(
-                    chunk_original_page=chunk_page,
-                    chunk_content=chunk.get('content', ''),
+                    chunk_original_page=chunk_original_page,
+                    chunk_content=chunk.get('content', '').lower(),
                     product_page_range=list(product_pages),
-                    product_name=product_name
+                    product_name=product_name.lower()
                 )
 
                 # Only create relationship if relevance is above threshold
@@ -778,6 +815,7 @@ class EntityLinkingService:
                         'relevance_score': relevance,
                         'created_at': datetime.utcnow().isoformat()
                     })
+                    logger.debug(f"   ✅ Chunk {chunk['id'][:8]}... → Product (page {chunk_original_page}, relevance: {relevance:.2f})")
 
             if chunk_relationships:
                 self.supabase.client.table('chunk_product_relationships')\
@@ -785,6 +823,8 @@ class EntityLinkingService:
                     .execute()
                 stats['chunk_product_links'] = len(chunk_relationships)
                 logger.info(f"   ✅ Linked {len(chunk_relationships)} chunks to product")
+            else:
+                logger.warning(f"   ⚠️ No chunks found matching product '{product_name}' on pages {sorted(product_pages)}")
 
             stats['relationships_created'] = stats['image_product_links'] + stats['chunk_product_links']
             logger.info(f"   ✅ Total relationships created: {stats['relationships_created']}")

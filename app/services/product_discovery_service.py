@@ -1329,6 +1329,7 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
 
         # Parse products
         products = []
+        products_missing_pages = []
         for p in result.get("products", []):
             # Extract metadata (new architecture - products + metadata inseparable)
             metadata = p.get("metadata", {})
@@ -1354,9 +1355,10 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                 for page_str, page_type in page_types_raw.items():
                     page_types[int(page_str)] = page_type
 
+            page_range = p.get("page_range", [])
             product = ProductInfo(
                 name=p.get("name", "Unknown"),
-                page_range=p.get("page_range", []),
+                page_range=page_range,
                 description=p.get("description", ""),
                 metadata=metadata,
                 # Use image_pages if provided, otherwise fallback to page_range
@@ -1367,9 +1369,21 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
             )
             products.append(product)
 
+            # Track products with missing page ranges for fallback processing
+            if not page_range or len(page_range) == 0:
+                products_missing_pages.append(product.name)
+
             # Log if image_pages was missing (helps debug Claude Vision behavior)
             if not p.get("image_pages"):
                 self.logger.warning(f"   ⚠️ Product '{product.name}' missing image_pages - using page_range as fallback")
+
+        # Log products that need fallback page detection
+        if products_missing_pages:
+            self.logger.warning(
+                f"   ⚠️ {len(products_missing_pages)} products missing page ranges - will need fallback detection: "
+                f"{', '.join(products_missing_pages[:5])}"
+                f"{' and ' + str(len(products_missing_pages) - 5) + ' more' if len(products_missing_pages) > 5 else ''}"
+            )
 
         # Parse certificates
         certificates = []
@@ -1533,10 +1547,22 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
             doc.close()
             self.logger.info(f"   📄 PDF has {pdf_page_count} pages ({pdf_page_count * pages_per_sheet} catalog pages)")
 
+            # Track products that need vision-based page detection
+            products_needing_vision = []
+
             for i, product in enumerate(catalog.products):
                 # Convert catalog pages to PDF pages and validate
                 page_indices = []
                 invalid_pages = []
+
+                # ✅ CHECK: If product has empty page_range, mark for vision-based detection
+                if not product.page_range or len(product.page_range) == 0:
+                    self.logger.warning(
+                        f"   ⚠️ Product '{product.name}' has EMPTY page_range - "
+                        f"will use vision-based detection to find pages"
+                    )
+                    products_needing_vision.append((i, product))
+                    continue  # Skip normal page mapping for now
 
                 for catalog_page in product.page_range:
                     if catalog_page > 0:
@@ -1561,6 +1587,52 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                 if page_indices:
                     all_product_pages.update(page_indices)
                     product_page_mapping[i] = page_indices
+
+            # ============================================================
+            # VISION-BASED PAGE DETECTION FOR PRODUCTS WITH EMPTY PAGE_RANGE
+            # ============================================================
+            if products_needing_vision:
+                self.logger.info(
+                    f"🔍 VISION-BASED PAGE DETECTION: {len(products_needing_vision)} products need page detection"
+                )
+
+                # Use vision-guided extractor to find pages for each product
+                from app.services.vision_guided_extractor import VisionGuidedExtractor
+                vision_extractor = VisionGuidedExtractor()
+
+                for i, product in products_needing_vision:
+                    try:
+                        self.logger.info(f"   🔍 Detecting pages for: {product.name}")
+
+                        # Search through PDF pages to find where this product appears
+                        detected_pages = await self._detect_product_pages_with_vision(
+                            pdf_path=pdf_path,
+                            product_name=product.name,
+                            pdf_page_count=pdf_page_count,
+                            vision_extractor=vision_extractor,
+                            job_id=job_id
+                        )
+
+                        if detected_pages:
+                            self.logger.info(
+                                f"   ✅ Found {len(detected_pages)} pages for '{product.name}': {detected_pages}"
+                            )
+                            # Update product's page_range
+                            product.page_range = detected_pages
+                            # Add to page mapping
+                            page_indices = [p - 1 for p in detected_pages]  # Convert to 0-based
+                            all_product_pages.update(page_indices)
+                            product_page_mapping[i] = page_indices
+                        else:
+                            self.logger.error(
+                                f"   ❌ Could not detect pages for '{product.name}' - "
+                                f"product will be processed without pages"
+                            )
+                    except Exception as e:
+                        self.logger.error(
+                            f"   ❌ Vision-based detection failed for '{product.name}': {e}"
+                        )
+                        continue
 
             # ============================================================
             # INTELLIGENT PAGE EXTRACTION BASED ON PAGE TYPES
@@ -2482,4 +2554,66 @@ IMPORTANT:
                 'stats': stats
             }
 
+    async def _detect_product_pages_with_vision(
+        self,
+        pdf_path: str,
+        product_name: str,
+        pdf_page_count: int,
+        vision_extractor: Any,
+        job_id: Optional[str] = None
+    ) -> List[int]:
+        """
+        Use vision-based analysis to detect which pages contain a specific product.
+
+        This is a fallback mechanism for when the AI model doesn't assign page ranges.
+        It scans through the PDF page-by-page looking for the product name.
+
+        Args:
+            pdf_path: Path to PDF file
+            product_name: Name of product to search for
+            pdf_page_count: Total number of pages in PDF
+            vision_extractor: VisionGuidedExtractor instance
+            job_id: Optional job ID for logging
+
+        Returns:
+            List of page numbers (1-based) where product was found
+        """
+        detected_pages = []
+
+        # Limit search to avoid excessive API calls (max 20 pages)
+        max_pages_to_scan = min(pdf_page_count, 20)
+
+        self.logger.info(
+            f"      Scanning up to {max_pages_to_scan} pages for '{product_name}'..."
+        )
+
+        for page_idx in range(max_pages_to_scan):
+            try:
+                # Call vision API to check if product appears on this page
+                result = await vision_extractor.extract_products_from_page(
+                    pdf_path=pdf_path,
+                    page_num=page_idx,
+                    product_names=[product_name],
+                    job_id=job_id
+                )
+
+                if result['success'] and result['detections']:
+                    # Check if any detection matches our product
+                    for detection in result['detections']:
+                        if detection['product_name'].lower() == product_name.lower():
+                            page_num = page_idx + 1  # Convert to 1-based
+                            detected_pages.append(page_num)
+                            self.logger.info(
+                                f"      ✅ Found '{product_name}' on page {page_num} "
+                                f"(confidence: {detection['confidence']:.2f})"
+                            )
+                            break  # Found on this page, move to next
+
+            except Exception as e:
+                self.logger.warning(
+                    f"      ⚠️ Vision detection failed for page {page_idx + 1}: {e}"
+                )
+                continue
+
+        return detected_pages
 
