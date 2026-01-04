@@ -288,37 +288,56 @@ async def process_stage_3_images(
         logger.info("🎯 Using VISION-GUIDED extraction path...")
         logger.info(f"   Products in catalog: {len(catalog.products)}")
 
-        # Get PDF path from checkpoint service
+        # Priority: 1) Checkpoint path (if exists), 2) Create temp file from file_content
         pdf_path = None
+        temp_pdf_created = False
+
         try:
-            # Try to get PDF path from checkpoint service
-            # Note: get_last_checkpoint returns the full checkpoint row,
-            # the actual data is in the 'checkpoint_data' field
+            # Try to get PDF path from checkpoint service first
             checkpoint_row = await checkpoint_recovery_service.get_last_checkpoint(job_id)
             if checkpoint_row:
-                # Extract the nested checkpoint_data field
                 checkpoint_data = checkpoint_row.get('checkpoint_data', {})
                 if checkpoint_data and 'pdf_path' in checkpoint_data:
                     pdf_path = checkpoint_data['pdf_path']
-                    logger.info(f"   ✅ PDF path found in checkpoint: {pdf_path}")
+                    logger.info(f"   📋 PDF path from checkpoint: {pdf_path}")
                 else:
-                    # Also check if pdf_path is in the INITIALIZED checkpoint
+                    # Check all checkpoints for pdf_path
                     all_checkpoints = await checkpoint_recovery_service.get_all_checkpoints(job_id)
                     for cp in all_checkpoints:
                         cp_data = cp.get('checkpoint_data', {})
                         if 'pdf_path' in cp_data:
                             pdf_path = cp_data['pdf_path']
-                            logger.info(f"   ✅ PDF path found in {cp.get('stage')} checkpoint: {pdf_path}")
+                            logger.info(f"   📋 PDF path from {cp.get('stage')} checkpoint: {pdf_path}")
                             break
-                    if not pdf_path:
-                        logger.warning(f"   ⚠️ PDF path NOT found in any checkpoint")
-            else:
-                logger.warning(f"   ⚠️ No checkpoint found for job {job_id}")
         except Exception as e:
             logger.warning(f"   ⚠️ Could not get PDF path from checkpoint: {e}")
 
+        # ✅ CRITICAL FIX: If pdf_path doesn't exist on disk, create temp file from file_content
+        if not pdf_path or not os.path.exists(pdf_path):
+            if not pdf_path:
+                logger.info(f"   ℹ️ No PDF path in checkpoint - creating temp file from file_content")
+            else:
+                logger.info(f"   ℹ️ PDF path {pdf_path} no longer exists - creating temp file from file_content")
+
+            # Create temp file from file_content (which is always available in Stage 3)
+            import tempfile
+            import aiofiles
+
+            try:
+                temp_fd, pdf_path = tempfile.mkstemp(suffix='.pdf', prefix=f'vision_extract_{document_id}_')
+                os.close(temp_fd)
+
+                async with aiofiles.open(pdf_path, 'wb') as f:
+                    await f.write(file_content)
+
+                temp_pdf_created = True
+                logger.info(f"   ✅ Created temp PDF for vision extraction: {pdf_path}")
+            except Exception as e:
+                logger.error(f"   ❌ Failed to create temp PDF: {e}")
+                pdf_path = None
+
         if pdf_path and os.path.exists(pdf_path):
-            logger.info(f"   📄 PDF path exists on disk: {pdf_path}")
+            logger.info(f"   📄 PDF path ready for extraction: {pdf_path}")
             logger.info(f"   🚀 USING VISION-GUIDED EXTRACTION (Claude Vision)")
 
             try:
@@ -332,6 +351,14 @@ async def process_stage_3_images(
                     batch_size=BATCH_SIZE
                 )
 
+                # ✅ Cleanup temp file if we created it
+                if temp_pdf_created and pdf_path and os.path.exists(pdf_path):
+                    try:
+                        os.unlink(pdf_path)
+                        logger.info(f"   🧹 Cleaned up temp PDF: {pdf_path}")
+                    except Exception as cleanup_error:
+                        logger.warning(f"   ⚠️ Failed to cleanup temp PDF: {cleanup_error}")
+
                 if vision_result['success']:
                     logger.info(
                         f"✅ Vision-guided extraction complete: "
@@ -339,6 +366,24 @@ async def process_stage_3_images(
                         f"{vision_result['images_saved']} saved, "
                         f"{vision_result['clip_embeddings_generated']} CLIP embeddings"
                     )
+
+                    # Create checkpoint for vision-guided extraction
+                    await checkpoint_recovery_service.create_checkpoint(
+                        job_id=job_id,
+                        stage=CheckpointStage.IMAGES_EXTRACTED,
+                        data={
+                            "document_id": document_id,
+                            "images_saved": vision_result['images_saved'],
+                            "clip_embeddings": vision_result['clip_embeddings_generated'],
+                            "extraction_method": "vision_guided",
+                            "images_analyzed": vision_result['images_extracted']
+                        },
+                        metadata={
+                            "extraction_stats": vision_result.get('stats', {}),
+                            "vision_guided_used": True
+                        }
+                    )
+                    logger.info(f"✅ Created IMAGES_EXTRACTED checkpoint (vision-guided)")
 
                     # Return early with vision-guided results
                     return {
@@ -360,11 +405,14 @@ async def process_stage_3_images(
 
             except Exception as e:
                 logger.error(f"❌ Vision-guided extraction error: {e}. Falling back to traditional extraction.")
+                # Cleanup on error
+                if temp_pdf_created and pdf_path and os.path.exists(pdf_path):
+                    try:
+                        os.unlink(pdf_path)
+                    except Exception:
+                        pass
         else:
-            if not pdf_path:
-                logger.warning(f"⚠️ PDF path not found in checkpoint. Falling back to PyMuPDF extraction.")
-            elif not os.path.exists(pdf_path):
-                logger.warning(f"⚠️ PDF path does not exist: {pdf_path}. Falling back to PyMuPDF extraction.")
+            logger.warning(f"⚠️ Could not prepare PDF for vision extraction. Falling back to PyMuPDF.")
             logger.info(f"   🔄 USING PYMUPDF EXTRACTION (fallback)")
 
     # ============================================================
@@ -376,6 +424,27 @@ async def process_stage_3_images(
     all_images = pdf_result_with_images.extracted_images
     if not all_images:
         logger.warning("⚠️ No images extracted from PDF")
+
+        # This prevents stages 6-9 from showing as "skipped" in the frontend
+        await checkpoint_recovery_service.create_checkpoint(
+            job_id=job_id,
+            stage=CheckpointStage.IMAGES_EXTRACTED,
+            data={
+                "document_id": document_id,
+                "images_saved": 0,
+                "clip_embeddings": 0,
+                "specialized_embeddings": 0,
+                "images_analyzed": 0,
+                "reason": "no_images_in_pdf"
+            },
+            metadata={
+                "extraction_stats": extraction_stats,
+                "vision_guided_used": use_vision_guided,
+                "note": "No images found in PDF document"
+            }
+        )
+        logger.info(f"✅ Created IMAGES_EXTRACTED checkpoint (0 images)")
+
         return {
             "status": "completed",
             "pdf_result_with_images": pdf_result_with_images,
