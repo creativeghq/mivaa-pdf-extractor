@@ -5,7 +5,7 @@ This module handles page extraction for individual products in the product-centr
 """
 
 import logging
-from typing import Set, Any
+from typing import Set, Any, Optional
 
 
 async def extract_product_pages(
@@ -13,7 +13,8 @@ async def extract_product_pages(
     product: Any,
     document_id: str,
     job_id: str,
-    logger: logging.Logger
+    logger: logging.Logger,
+    total_pages: Optional[int] = None
 ) -> Set[int]:
     """
     Extract pages for a single product (product-centric pipeline).
@@ -27,6 +28,7 @@ async def extract_product_pages(
         document_id: Document identifier (not used, kept for API consistency)
         job_id: Job identifier (not used, kept for API consistency)
         logger: Logger instance
+        total_pages: Optional total pages in PDF for validation
 
     Returns:
         Set of page numbers for this product
@@ -35,9 +37,14 @@ async def extract_product_pages(
     logger.info(f"   Page range: {product.page_range}")
 
     # Validate page numbers (in case AI hallucinated invalid pages)
-    # We don't have page_count here, so we'll trust the product's page_range
-    # The actual PDF extraction will fail if pages don't exist
-    product_pages = set(product.page_range)
+    product_pages = set()
+    if product.page_range:
+        for p in product.page_range:
+            if p > 0:
+                if total_pages and p > total_pages:
+                    logger.warning(f"   ⚠️ Skipping hallucinated page {p} (PDF has only {total_pages} pages)")
+                    continue
+                product_pages.add(p)
 
     logger.info(f"   ✅ Product pages: {sorted(product_pages)} ({len(product_pages)} pages)")
 

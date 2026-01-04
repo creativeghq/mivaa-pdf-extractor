@@ -515,8 +515,9 @@ class ProductDiscoveryService:
                 catalog = await self._enrich_products_with_focused_extraction(
                     catalog,
                     pdf_path,
-                    job_id,
-                    tracker
+                    pdf_text=pdf_text,
+                    job_id=job_id,
+                    tracker=tracker
                 )
             elif "products" in categories and catalog.products:
                 # Fallback: Use full PDF text if pdf_path not provided
@@ -1000,6 +1001,8 @@ This PDF may be an EXCERPT from a larger catalog. The index/TOC might reference 
 - Designer names (e.g., "by SG NY", "by ESTUDI{{H}}AC", "by DSIGNIO")
 - Section headers indicating product categories
 
+**⚠️ IMPORTANT**: Only include products that you can accurately map to page numbers within the range 1-{total_pages}. If a product is mentioned but its page is outside this range or cannot be determined, SKIP it.
+
 **OUTPUT FORMAT** (JSON only):
 ```json
 {{
@@ -1463,6 +1466,7 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
         self,
         catalog: ProductCatalog,
         pdf_path: str,
+        pdf_text: Optional[str] = None,
         job_id: Optional[str] = None,
         tracker: Optional[Any] = None
     ) -> ProductCatalog:
@@ -1584,6 +1588,10 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                         self.logger.warning(f"   ⚠️ Product '{product.name}' has invalid catalog pages {invalid_pages} (PDF has {pdf_page_count} pages = {pdf_page_count * 2} catalog pages) - skipping these pages")
                     else:
                         self.logger.warning(f"   ⚠️ Product '{product.name}' has invalid pages {invalid_pages} (PDF has {pdf_page_count} pages) - skipping these pages")
+                    
+                    # ✅ SANITIZATION: Remove invalid pages from the product's page_range
+                    # This prevents downstream services from trying to process non-existent pages
+                    product.page_range = [p for p in product.page_range if p not in invalid_pages]
 
                 if page_indices:
                     all_product_pages.update(page_indices)
@@ -1616,22 +1624,44 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
 
                         if detected_pages:
                             self.logger.info(
-                                f"   ✅ Found {len(detected_pages)} pages for '{product.name}': {detected_pages}"
+                                f"   ✅ Found {len(detected_pages)} pages for '{product.name}' via Vision: {detected_pages}"
                             )
-                            # Update product's page_range
+                        else:
+                            # 🧩 FALLBACK 1: Text-based detection
+                            self.logger.info(f"   🔍 Vision failed, trying text-based detection for: {product.name}")
+                            
+                            # Ensure we have pdf_text
+                            if not pdf_text:
+                                self.logger.info("      Extracting temporary text for page detection...")
+                                import pymupdf4llm
+                                pdf_text = pymupdf4llm.to_markdown(pdf_path)
+                            
+                            detected_pages = await self._detect_product_pages_with_text(
+                                pdf_text=pdf_text,
+                                product_name=product.name,
+                                total_pages=pdf_page_count
+                            )
+                            
+                            if detected_pages:
+                                self.logger.info(
+                                    f"   ✅ Found {len(detected_pages)} pages for '{product.name}' via Text: {detected_pages}"
+                                )
+                            else:
+                                self.logger.error(
+                                    f"   ❌ Could not detect pages for '{product.name}' via Vision or Text - "
+                                    f"product will be SKIPPED to prevent hallucinated data"
+                                )
+
+                        # Update product and mapping
+                        if detected_pages:
                             product.page_range = detected_pages
-                            # Add to page mapping
                             page_indices = [p - 1 for p in detected_pages]  # Convert to 0-based
                             all_product_pages.update(page_indices)
                             product_page_mapping[i] = page_indices
-                        else:
-                            self.logger.error(
-                                f"   ❌ Could not detect pages for '{product.name}' - "
-                                f"product will be processed without pages"
-                            )
+                            
                     except Exception as e:
                         self.logger.error(
-                            f"   ❌ Vision-based detection failed for '{product.name}': {e}"
+                            f"   ❌ Detection failed for '{product.name}': {e}"
                         )
                         continue
 
@@ -2617,4 +2647,76 @@ IMPORTANT:
                 continue
 
         return detected_pages
+
+    async def _detect_product_pages_with_text(
+        self,
+        pdf_text: str,
+        product_name: str,
+        total_pages: int
+    ) -> List[int]:
+        """
+        Use text-based analysis to detect which pages contain a specific product.
+
+        This is a fallback mechanism for when both AI discovery and vision-based
+        detection fail to assign page ranges.
+
+        Args:
+            pdf_text: Full PDF markdown text with page markers
+            product_name: Name of product to search for
+            total_pages: Total number of pages in PDF
+
+        Returns:
+            List of page numbers (1-based) where product was found
+        """
+        if not pdf_text or not product_name:
+            return []
+
+        import re
+        detected_pages = set()
+        clean_name = product_name.lower().strip()
+
+        # 1. Try exact match first
+        # 2. Try partial match if no exact match found
+        
+        # Split text into pages using PyMuPDF4LLM markers
+        # Pattern: -----\n# Page N\n (matches _split_markdown_by_pages)
+        markers = list(re.finditer(r'-{3,}\s*(?:#\s*Page\s*(\d+))?', pdf_text))
+        
+        pages_content = []
+        if not markers:
+            # Fallback: Treat whole text as Page 1 if no markers
+            pages_content.append((1, pdf_text))
+        else:
+            # Add text before first marker to Page 1
+            first_text = pdf_text[:markers[0].start()].strip()
+            if first_text:
+                pages_content.append((1, first_text))
+            
+            for i in range(len(markers)):
+                start = markers[i].end()
+                end = markers[i+1].start() if i+1 < len(markers) else len(pdf_text)
+                
+                page_num_str = markers[i].group(1)
+                # If no page number in marker, use sequence
+                page_num = int(page_num_str) if page_num_str else (i + 1)
+                
+                content = pdf_text[start:end].strip()
+                if content:
+                    pages_content.append((page_num, content))
+
+        # Search for product name in each page
+        for page_num, content in pages_content:
+            if page_num > total_pages:
+                continue
+                
+            content_lower = content.lower()
+            
+            # Use word boundaries for better accuracy
+            if re.search(r'\b' + re.escape(clean_name) + r'\b', content_lower):
+                detected_pages.add(page_num)
+            # Fallback to simple containment if no word boundary match
+            elif clean_name in content_lower:
+                detected_pages.add(page_num)
+
+        return sorted(list(detected_pages))
 

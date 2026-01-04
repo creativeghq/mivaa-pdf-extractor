@@ -109,8 +109,20 @@ def execute_pdf_extraction_job(
             try:
                 import pymupdf4llm
                 # Convert 1-indexed to 0-indexed for PyMuPDF4LLM
-                page_indices = [p - 1 if p > 0 else 0 for p in page_list]
-                page_chunks = pymupdf4llm.to_markdown(pdf_path, pages=page_indices, page_chunks=True)
+                page_indices = [p - 1 for p in page_list if p > 0]
+                
+                # ✅ VALIDATION: Filter out-of-bounds pages
+                valid_indices = [p for p in page_indices if p < total_pages]
+                if len(valid_indices) < len(page_indices):
+                    dropped = [p + 1 for p in page_indices if p >= total_pages]
+                    logger.warning(f"Worker: Dropping {len(page_indices) - len(valid_indices)} out-of-bounds pages: {dropped} (Total pages in PDF: {total_pages})")
+                    page_indices = valid_indices
+
+                if not page_indices:
+                    logger.warning("Worker: No valid pages to extract, skipping page-aware extraction")
+                    page_chunks = None
+                else:
+                    page_chunks = pymupdf4llm.to_markdown(pdf_path, pages=page_indices, page_chunks=True)
 
                 # Also create combined markdown for backward compatibility
                 markdown_content = "\n\n-----\n\n".join([page.get('text', '') for page in page_chunks])

@@ -4,6 +4,7 @@ Stage 3: Image Processing
 This module handles image processing for individual products in the product-centric pipeline.
 """
 
+import os
 import logging
 from typing import Dict, Any, Set
 
@@ -66,15 +67,35 @@ async def process_product_images(
 
     logger.info(f"   Extracted {total_images} images from product pages")
 
+    # ✅ FIX 8: Log image paths before classification to verify they exist
+    logger.info(f"   Verifying extracted image files...")
+    missing_files = []
+    for i, img in enumerate(pdf_result.extracted_images[:5]):  # Check first 5
+        img_path = img.get('path', '')
+        exists = os.path.exists(img_path) if img_path else False
+        logger.debug(f"     Image {i+1}: {img.get('filename')} - exists: {exists}")
+        if not exists:
+            missing_files.append(img.get('filename'))
+
+    if missing_files:
+        logger.error(f"   ❌ WARNING: {len(missing_files)} image files are missing before classification!")
+        logger.error(f"      Missing files: {missing_files[:3]}")
+
     # Use batch classification instead of individual classification
     image_service = ImageProcessingService()
-    material_images, non_material_images = await image_service.classify_images(
-        extracted_images=pdf_result.extracted_images,
-        confidence_threshold=0.6,
-        primary_model="Qwen/Qwen3-VL-8B-Instruct",
-        validation_model="Qwen/Qwen3-VL-32B-Instruct",
-        batch_size=15
-    )
+
+    try:
+        material_images, non_material_images = await image_service.classify_images(
+            extracted_images=pdf_result.extracted_images,
+            confidence_threshold=0.6,
+            primary_model="Qwen/Qwen3-VL-8B-Instruct",
+            validation_model="Qwen/Qwen3-VL-32B-Instruct",
+            batch_size=15
+        )
+    except Exception as e:
+        logger.error(f"   ❌ Image classification failed completely: {type(e).__name__}: {str(e)}")
+        logger.error(f"      This is a critical error - no images will be processed")
+        raise
     non_material_count = len(non_material_images)
 
     logger.info(f"   Material: {len(material_images)}, Non-material: {non_material_count}")

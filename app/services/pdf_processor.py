@@ -637,7 +637,14 @@ class PDFProcessor:
             # Determine which pages to process
             if page_list:
                 # Convert 1-indexed to 0-indexed
-                pages_to_process = [p - 1 if p > 0 else 0 for p in page_list]
+                pages_to_process = [p - 1 for p in page_list if p > 0]
+                
+                # ✅ VALIDATION: Filter out-of-bounds pages
+                valid_pages = [p for p in pages_to_process if p < total_pages]
+                if len(valid_pages) < len(pages_to_process):
+                    dropped = [p + 1 for p in pages_to_process if p >= total_pages]
+                    self.logger.warning(f"⚠️ Dropping {len(pages_to_process) - len(valid_pages)} out-of-bounds pages: {dropped} (Total pages in PDF: {total_pages})")
+                    pages_to_process = valid_pages
             else:
                 pages_to_process = list(range(total_pages))
 

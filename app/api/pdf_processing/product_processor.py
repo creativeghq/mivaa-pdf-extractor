@@ -37,7 +37,8 @@ async def process_single_product(
     checkpoint_recovery_service: Any,
     supabase: Any,
     config: Dict[str, Any],
-    logger_instance: logging.Logger
+    logger_instance: logging.Logger,
+    total_pages: Optional[int] = None
 ) -> ProductProcessingResult:
     """
     Process a single product through all stages.
@@ -107,7 +108,8 @@ async def process_single_product(
             product=product,
             document_id=document_id,
             job_id=job_id,
-            logger=logger_instance
+            logger=logger_instance,
+            total_pages=total_pages
         )
 
         await product_tracker.mark_stage_complete(

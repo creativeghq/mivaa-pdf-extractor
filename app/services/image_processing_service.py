@@ -101,11 +101,21 @@ class ImageProcessingService:
             Tuple of (material_images, non_material_images)
         """
         import gc  # ✅ NEW: For explicit garbage collection
+        import time
+        import traceback
+
+        classification_start_time = time.time()
 
         logger.info(f"🤖 Starting AI-based image classification for {len(extracted_images)} images...")
         logger.info(f"   Strategy: {primary_model} (fast filter) → {validation_model} (validation for uncertain cases)")
         logger.info(f"   Batch size: {batch_size} images per batch (memory optimization)")
         logger.info(f"   Confidence threshold: {confidence_threshold} (lower = fewer validation calls)")
+
+        # ✅ FIX 1: Verify Together.AI API key is set
+        if not together_api_key:
+            logger.error("❌ CRITICAL: TOGETHER_API_KEY environment variable not set!")
+            logger.error("   Image classification will fail. Please set TOGETHER_API_KEY.")
+            raise ValueError("TOGETHER_API_KEY not configured")
 
         # Import AI services
         from app.services.ai_client_service import get_ai_client_service
@@ -201,18 +211,32 @@ Respond ONLY with JSON:
                     }
 
             except Exception as e:
-                logger.warning(f"⚠️ Vision model classification failed for {image_path}: {e}")
+                # ✅ FIX 2: Enhanced error logging with full details
                 model_short = model.split('/')[-1] if '/' in model else model
+                logger.error(f"❌ CLASSIFICATION FAILED for {image_path}")
+                logger.error(f"   Model: {model}")
+                logger.error(f"   Error Type: {type(e).__name__}")
+                logger.error(f"   Error Message: {str(e)}")
+                logger.error(f"   Stack Trace:\n{traceback.format_exc()}")
+
+                # Check if it's an API error
+                if hasattr(e, 'response'):
+                    logger.error(f"   API Response Status: {getattr(e.response, 'status_code', 'N/A')}")
+                    logger.error(f"   API Response Body: {getattr(e.response, 'text', 'N/A')[:500]}")
+
                 return {
                     'is_material': False,
                     'confidence': 0.0,
                     'reason': f'{model_short} failed: {str(e)}',
-                    'model': f'{model_short}_failed'
+                    'model': f'{model_short}_failed',
+                    'error': str(e)
                 }
             finally:
                 # ✅ NEW: Explicit cleanup to free memory
-                del image_bytes
-                del image_base64
+                if image_bytes is not None:
+                    del image_bytes
+                if image_base64 is not None:
+                    del image_base64
 
         async def validate_with_claude(image_path: str) -> Dict[str, Any]:
             """Validate uncertain cases with Claude Sonnet."""
@@ -280,7 +304,18 @@ Respond ONLY with this JSON format:
 
         async def classify_with_two_stage(img_data):
             image_path = img_data.get('path')
-            if not image_path or not os.path.exists(image_path):
+            filename = img_data.get('filename', 'unknown')
+
+            # ✅ FIX 3: Detailed path validation logging
+            if not image_path:
+                logger.error(f"❌ Image path is None for {filename}")
+                return None
+
+            if not os.path.exists(image_path):
+                logger.error(f"❌ Image file does not exist: {image_path}")
+                logger.error(f"   Filename: {filename}")
+                logger.error(f"   Current working directory: {os.getcwd()}")
+                logger.error(f"   File exists check: {os.path.exists(image_path)}")
                 return None
 
             # STAGE 1: Fast primary model classification
@@ -316,36 +351,100 @@ Respond ONLY with this JSON format:
             logger.info(f"📦 Processing batch {batch_num}/{total_batches} ({len(batch_images)} images)")
 
             # Classify batch
+            batch_start_time = time.time()
             classification_tasks = [classify_with_two_stage(img_data) for img_data in batch_images]
             classified_batch = await asyncio.gather(*classification_tasks, return_exceptions=True)
+            batch_duration = time.time() - batch_start_time
+
+            # ✅ FIX 4: Detect suspiciously fast classification
+            expected_min_time = len(batch_images) * 0.5  # At least 0.5 seconds per image
+            if batch_duration < expected_min_time:
+                logger.warning(f"⚠️ SUSPICIOUS: Batch {batch_num} completed in {batch_duration:.2f}s for {len(batch_images)} images")
+                logger.warning(f"   Expected minimum: {expected_min_time:.2f}s ({len(batch_images)} images × 0.5s)")
+                logger.warning(f"   This may indicate API failures or skipped classifications")
 
             # Filter batch results
+            failed_count = 0
             for img_data in classified_batch:
-                if img_data is None or isinstance(img_data, Exception):
-                    logger.debug(f"   ⚠️ Skipping image due to classification failure")
+                if img_data is None:
+                    failed_count += 1
+                    logger.warning(f"   ⚠️ Skipping image: returned None (path validation failed)")
+                    continue
+
+                if isinstance(img_data, Exception):
+                    failed_count += 1
+                    logger.error(f"   ❌ Classification exception: {type(img_data).__name__}: {str(img_data)}")
                     continue
 
                 classification = img_data.get('ai_classification', {})
+
+                # ✅ FIX 5: Log classification details for debugging
+                if not classification:
+                    logger.warning(f"   ⚠️ No classification data for {img_data.get('filename')}")
+                    failed_count += 1
+                    continue
+
+                # Check if classification failed
+                if 'error' in classification or '_failed' in classification.get('model', ''):
+                    logger.error(f"   ❌ Classification failed for {img_data.get('filename')}: {classification.get('reason')}")
+                    failed_count += 1
+                    continue
+
                 if classification.get('is_material', False):
                     material_images.append(img_data)
+                    logger.debug(f"   ✅ Material: {img_data.get('filename')} - confidence: {classification.get('confidence', 0):.2f}")
                 else:
                     non_material_images.append(img_data)
-                    logger.debug(f"   🚫 Filtered out: {img_data.get('filename')} - {classification.get('classification')} ({classification.get('reason')})")
+                    logger.debug(f"   🚫 Filtered out: {img_data.get('filename')} - {classification.get('reason')} (confidence: {classification.get('confidence', 0):.2f})")
 
             # ✅ NEW: Explicit garbage collection after each batch
             del classification_tasks
             del classified_batch
             gc.collect()
 
-            logger.info(f"   ✅ Batch {batch_num}/{total_batches} complete: {len(material_images)} material, {len(non_material_images)} filtered")
+            logger.info(f"   ✅ Batch {batch_num}/{total_batches} complete: {len(material_images)} material, {len(non_material_images)} filtered, {failed_count} failed")
+
+        classification_duration = time.time() - classification_start_time
 
         logger.info(f"✅ AI classification complete:")
+        logger.info(f"   Total time: {classification_duration:.2f}s")
         logger.info(f"   Material images: {len(material_images)}")
         logger.info(f"   Non-material images filtered out: {len(non_material_images)}")
 
         total_classified = len(material_images) + len(non_material_images)
+        total_input = len(extracted_images)
+
         if total_classified > 0:
             logger.info(f"   Classification accuracy: {len(material_images) / total_classified * 100:.1f}% kept")
+
+        # ✅ FIX 6: Critical validation - detect complete classification failure
+        if total_classified == 0 and total_input > 0:
+            logger.error("❌ CRITICAL FAILURE: ALL images failed classification!")
+            logger.error(f"   Input images: {total_input}")
+            logger.error(f"   Successfully classified: 0")
+            logger.error(f"   This indicates a systemic issue with the AI classification service")
+            logger.error(f"   Possible causes:")
+            logger.error(f"   1. Together.AI API key invalid or expired")
+            logger.error(f"   2. Together.AI service unavailable")
+            logger.error(f"   3. Image files deleted before classification")
+            logger.error(f"   4. Network connectivity issues")
+            logger.error(f"   5. Model name incorrect or model unavailable")
+
+            # Log first few image paths for debugging
+            logger.error(f"   Sample image paths:")
+            for i, img in enumerate(extracted_images[:3]):
+                logger.error(f"     {i+1}. {img.get('path')} (exists: {os.path.exists(img.get('path', ''))})")
+
+            raise Exception(
+                f"Image classification completely failed: 0/{total_input} images classified. "
+                f"Check Together.AI API key and service availability."
+            )
+
+        # ✅ FIX 7: Warning if classification rate is suspiciously low
+        if total_classified < total_input * 0.5:
+            logger.warning(f"⚠️ WARNING: Low classification success rate")
+            logger.warning(f"   Successfully classified: {total_classified}/{total_input} ({total_classified/total_input*100:.1f}%)")
+            logger.warning(f"   Failed: {total_input - total_classified}")
 
         return material_images, non_material_images
 

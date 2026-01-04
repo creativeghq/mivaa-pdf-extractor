@@ -2864,7 +2864,8 @@ async def process_document_with_discovery(
                     checkpoint_recovery_service=checkpoint_recovery_service,
                     supabase=supabase,  # SHARED: Database client
                     config=processing_config,  # SHARED: Configuration
-                    logger_instance=logger
+                    logger_instance=logger,
+                    total_pages=page_count
                 )
 
                 # Accumulate metrics
