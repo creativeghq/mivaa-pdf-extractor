@@ -65,6 +65,9 @@ class CheckpointRecoveryService:
         """
         Create a checkpoint for a job at a specific stage.
 
+        ⚠️ VALIDATION: If checkpoint has 0 results, marks job as FAILED instead of creating checkpoint.
+        This prevents "successful" jobs that actually produced nothing.
+
         Args:
             job_id: Job identifier
             stage: Processing stage
@@ -75,6 +78,46 @@ class CheckpointRecoveryService:
             bool: True if checkpoint created successfully
         """
         try:
+            # ✅ VALIDATION: Check if checkpoint has meaningful results
+            # If all key metrics are 0, this is a failed job, not a successful one
+            should_fail = False
+            failure_reason = None
+
+            if stage == ProcessingStage.CHUNKS_CREATED:
+                chunks_created = data.get('chunks_created', 0)
+                if chunks_created == 0:
+                    should_fail = True
+                    failure_reason = "Chunking completed but created 0 chunks - no content to process"
+
+            elif stage == ProcessingStage.PRODUCTS_CREATED:
+                products_created = data.get('products_created', 0)
+                if products_created == 0:
+                    should_fail = True
+                    failure_reason = "Product creation completed but created 0 products - no products found"
+
+            elif stage == ProcessingStage.IMAGES_EXTRACTED:
+                images_extracted = data.get('images_extracted', 0)
+                images_processed = data.get('images_processed', 0)
+                if images_extracted == 0 and images_processed == 0:
+                    should_fail = True
+                    failure_reason = "Image extraction completed but extracted 0 images - no images found"
+
+            elif stage == ProcessingStage.COMPLETED:
+                products_created = data.get('products_created', 0)
+                chunks_created = data.get('chunks_created', 0)
+                images_processed = data.get('images_processed', 0)
+
+                # Job is failed if ALL metrics are 0
+                if products_created == 0 and chunks_created == 0 and images_processed == 0:
+                    should_fail = True
+                    failure_reason = "Processing completed but produced 0 products, 0 chunks, and 0 images - nothing was extracted"
+
+            # If validation failed, mark job as failed instead of creating checkpoint
+            if should_fail:
+                logger.error(f"❌ Checkpoint validation failed: {failure_reason}")
+                await self._mark_job_failed(job_id, failure_reason)
+                return False
+
             checkpoint_data = {
                 "job_id": job_id,
                 "stage": stage.value,

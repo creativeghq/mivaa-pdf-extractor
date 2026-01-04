@@ -180,19 +180,14 @@ class EntityLinkingService:
                         )
 
                     # Create relationship entry
+                    # NOTE: metadata column removed - table doesn't have it
                     relationships.append({
                         'id': str(uuid.uuid4()),
                         'image_id': image_id,
                         'product_id': product_id,
                         'relevance_score': relevance_score,
                         'relationship_type': 'product_image',
-                        'created_at': datetime.utcnow().isoformat(),
-                        # ✅ NEW: Store linking method in metadata
-                        'metadata': {
-                            'linking_method': linking_method,
-                            'extraction_method': extraction_method,
-                            'vision_confidence': vision_confidence if extraction_method == 'vision_guided' else None
-                        }
+                        'created_at': datetime.utcnow().isoformat()
                     })
 
                     linked_count += 1

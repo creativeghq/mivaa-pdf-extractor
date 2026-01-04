@@ -1215,7 +1215,7 @@ class RealEmbeddingsService:
             return True
 
         try:
-            from transformers import AutoModel, AutoImageProcessor
+            from transformers import AutoModel, AutoProcessor
             import torch
             import asyncio
 
@@ -1236,8 +1236,10 @@ class RealEmbeddingsService:
                     asyncio.to_thread(AutoModel.from_pretrained, self.visual_primary_model, trust_remote_code=True),
                     timeout=60.0
                 )
+                # ✅ CRITICAL FIX: Use AutoProcessor (not AutoImageProcessor) for text-guided embeddings
+                # AutoProcessor supports both images AND text, required for specialized embeddings
                 self._siglip_processor = await asyncio.wait_for(
-                    asyncio.to_thread(AutoImageProcessor.from_pretrained, self.visual_primary_model, trust_remote_code=True),
+                    asyncio.to_thread(AutoProcessor.from_pretrained, self.visual_primary_model, trust_remote_code=True),
                     timeout=60.0
                 )
 

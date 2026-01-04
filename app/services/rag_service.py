@@ -1844,25 +1844,53 @@ Respond with JSON:
                 )
 
                 if response.status_code != 200:
-                    self.logger.warning(f"Qwen API error: {response.status_code}")
+                    error_body = response.text[:500] if hasattr(response, 'text') else 'No response body'
+                    self.logger.error(f"❌ Qwen API error {response.status_code}: {error_body}")
                     return {'is_material': False, 'confidence': 0.0, 'reason': f'API error {response.status_code}'}
 
                 result_text = response.json()['choices'][0]['message']['content']
 
+                # ✅ COMPREHENSIVE LOGGING: Log FULL raw response for debugging
+                self.logger.info(f"📝 Qwen RAW Response (length: {len(result_text)} chars):")
+                self.logger.info(f"   First 500 chars: {result_text[:500]}")
+                if len(result_text) > 500:
+                    self.logger.info(f"   Last 200 chars: ...{result_text[-200:]}")
+
                 # Try to parse JSON, with fallback for malformed responses
                 try:
                     result = json.loads(result_text)
+                    self.logger.info(f"✅ Qwen JSON parsed successfully: {result}")
                 except json.JSONDecodeError as json_err:
-                    self.logger.warning(f"Qwen returned non-JSON response: '{result_text[:200]}' - Error: {json_err}")
+                    # ✅ ENHANCED ERROR LOGGING: Show exact error location and context
+                    self.logger.error(f"❌ Qwen JSON Parse Error: {json_err}")
+                    self.logger.error(f"   Error at line {json_err.lineno}, column {json_err.colno}")
+                    self.logger.error(f"   Full response text ({len(result_text)} chars):")
+                    self.logger.error(f"   {result_text}")
+
                     # Try to extract JSON from markdown code blocks
                     if '```json' in result_text:
-                        json_match = result_text.split('```json')[1].split('```')[0].strip()
-                        result = json.loads(json_match)
+                        self.logger.info("   Attempting to extract JSON from ```json block...")
+                        try:
+                            json_match = result_text.split('```json')[1].split('```')[0].strip()
+                            result = json.loads(json_match)
+                            self.logger.info(f"   ✅ Successfully extracted JSON from markdown: {result}")
+                        except Exception as extract_err:
+                            self.logger.error(f"   ❌ Failed to extract from ```json block: {extract_err}")
+                            return {'is_material': False, 'confidence': 0.0, 'reason': f'Invalid JSON in markdown block'}
                     elif '```' in result_text:
-                        json_match = result_text.split('```')[1].split('```')[0].strip()
-                        result = json.loads(json_match)
+                        self.logger.info("   Attempting to extract JSON from ``` block...")
+                        try:
+                            json_match = result_text.split('```')[1].split('```')[0].strip()
+                            result = json.loads(json_match)
+                            self.logger.info(f"   ✅ Successfully extracted JSON from code block: {result}")
+                        except Exception as extract_err:
+                            self.logger.error(f"   ❌ Failed to extract from ``` block: {extract_err}")
+                            return {'is_material': False, 'confidence': 0.0, 'reason': f'Invalid JSON in code block'}
                     else:
-                        # Default to non-material if we can't parse
+                        # ✅ LOG FULL RESPONSE when no JSON found
+                        self.logger.error(f"   ❌ No JSON or markdown blocks found in response")
+                        self.logger.error(f"   Response type: {type(result_text)}")
+                        self.logger.error(f"   Response repr: {repr(result_text[:1000])}")
                         return {'is_material': False, 'confidence': 0.0, 'reason': f'Invalid JSON response'}
 
                 return {
