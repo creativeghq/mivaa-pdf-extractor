@@ -552,50 +552,6 @@ class JobStatusResponse(BaseResponse):
         }
 
 
-class BulkProcessingRequest(BaseModel):
-    """Request model for bulk document processing."""
-
-    urls: List[str] = Field(..., min_items=1, max_items=100, description="List of document URLs to process")
-    batch_size: int = Field(5, ge=1, le=20, description="Number of documents to process concurrently")
-    options: Optional[Dict[str, Any]] = Field(None, description="Processing options")
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "urls": [
-                    "https://example.com/doc1.pdf",
-                    "https://example.com/doc2.pdf"
-                ],
-                "batch_size": 5,
-                "options": {
-                    "extract_images": True,
-                    "generate_summary": True,
-                    "extract_text": True
-                }
-            }
-        }
-
-
-class BulkProcessingResponse(BaseResponse):
-    """Response model for bulk processing operations."""
-
-    data: Dict[str, Any] = Field(..., description="Bulk processing details")
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "success": True,
-                "message": "Bulk processing started successfully",
-                "data": {
-                    "job_id": "bulk_20240726_180000",
-                    "total_documents": 10,
-                    "estimated_completion_time": "2024-07-26T18:20:00Z"
-                },
-                "timestamp": "2024-07-26T18:00:00Z"
-            }
-        }
-
-
 class JobStatistics(BaseModel):
     """Model for job statistics and metrics."""
 
