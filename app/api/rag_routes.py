@@ -2620,13 +2620,23 @@ async def process_document_with_discovery(
     """
     Background task to process document with intelligent product discovery.
 
-    NEW ARCHITECTURE:
-    Stage 0: Product Discovery (0-15%) - Analyze PDF with Claude/GPT, classify content by category
-    Stage 1: Focused Extraction (15-30%) - Extract pages based on extract_categories
-    Stage 2: Chunking (30-50%) - Create chunks for extracted content
-    Stage 3: Image Processing (50-70%) - Extract images from specified categories only
-    Stage 4: Product Creation (70-90%) - Create products from discovery
-    Stage 5: Quality Enhancement (90-100%) - Claude validation (async)
+    PRODUCT-CENTRIC ARCHITECTURE (v2):
+    Stage 0: Product Discovery (0-15%) - Analyze PDF with Claude/GPT, discover all products
+
+    Then FOR EACH PRODUCT (15-85%):
+      Stage 1: Extract product pages
+      Stage 2: Create text chunks for product
+      Stage 3: Process product images
+      Stage 4: Create product in database
+      Stage 5: Create relationships
+
+    Stage 6: Quality Enhancement (85-100%) - Final validation
+
+    Benefits:
+    - Lower memory usage (process one product at a time)
+    - Better progress tracking (per-product granularity)
+    - Easier error recovery (failed products don't block others)
+    - Clearer checkpointing (per-product state)
 
     Args:
         focused_extraction: If True (default), only process pages/images from extract_categories.
@@ -2772,109 +2782,132 @@ async def process_document_with_discovery(
         temp_pdf_path = stage_0_result["temp_pdf_path"]
 
         # ============================================================================
-        # STAGE 1: FOCUSED EXTRACTION (MODULAR)
+        # PRODUCT-CENTRIC PIPELINE: Process each product individually
         # ============================================================================
-        progress_monitor.update_stage("focused_extraction", {"products_found": len(catalog.products) if hasattr(catalog, 'products') else 0})
-        from app.api.pdf_processing.stage_1_focused_extraction import process_stage_1_focused_extraction
+        logger.info(f"\n{'='*80}")
+        logger.info(f"🏭 PRODUCT-CENTRIC PIPELINE: Processing {len(catalog.products)} products")
+        logger.info(f"{'='*80}\n")
 
-        stage_1_result = await process_stage_1_focused_extraction(
-            file_content=file_content,
-            document_id=document_id,
-            catalog=catalog,
-            page_count=page_count,
-            file_size_mb=file_size_mb,
-            focused_extraction=focused_extraction,
-            tracker=tracker,
-            checkpoint_recovery_service=checkpoint_recovery_service,
-            job_id=job_id
-        )
+        # Initialize product progress tracker
+        from app.services.product_progress_tracker import ProductProgressTracker
+        from app.api.pdf_processing.product_processor import process_single_product
 
-        product_pages = stage_1_result["product_pages"]
-        pdf_result = stage_1_result["pdf_result"]
-
-        # ============================================================================
-        # STAGE 2: CHUNKING (MODULAR)
-        # ============================================================================
-        progress_monitor.update_stage("chunking", {"product_pages": len(product_pages)})
-        from app.api.pdf_processing.stage_2_chunking import process_stage_2_chunking
-
+        product_tracker = ProductProgressTracker(job_id=job_id)
         supabase = get_supabase_client()
 
-        stage_2_result = await process_stage_2_chunking(
-            file_content=file_content,
-            document_id=document_id,
-            workspace_id=workspace_id,
-            job_id=job_id,
-            filename=filename,
-            title=title,
-            description=description,
-            document_tags=document_tags,
-            catalog=catalog,
-            pdf_result=pdf_result,
-            product_pages=product_pages,
-            focused_extraction=focused_extraction,
-            discovery_model=discovery_model,
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            tracker=tracker,
-            checkpoint_recovery_service=checkpoint_recovery_service,
-            supabase=supabase,
-            logger=logger
-        )
+        # ========================================================================
+        # SHARED RESOURCES (preserved across all products)
+        # ========================================================================
+        # These objects are reused for ALL products to minimize memory:
+        # - file_content: Original PDF bytes (read once, used for all products)
+        # - catalog: Product discovery results (contains all products)
+        # - temp_pdf_path: Temporary PDF file on disk (from stage 0)
+        # - tracker: Main job progress tracker
+        # - product_tracker: Per-product progress tracker
+        # - supabase: Database client (connection pooling)
+        # - processing_config: Configuration settings
+        # ========================================================================
 
-        chunk_result = stage_2_result["chunk_result"]
-        chunks_created = tracker.chunks_created
+        # Processing configuration
+        processing_config = {
+            'chunk_size': chunk_size,
+            'chunk_overlap': chunk_overlap,
+            'image_analysis_model': image_analysis_model,
+            'discovery_model': discovery_model,
+            'focused_extraction': focused_extraction,
+            'extract_categories': extract_categories
+        }
 
-        # ============================================================================
-        # STAGE 3: IMAGE PROCESSING (MODULAR)
-        # ============================================================================
-        progress_monitor.update_stage("image_processing", {"chunks_created": chunks_created})
-        from app.api.pdf_processing.stage_3_images import process_stage_3_images
+        # Track overall metrics
+        total_products = len(catalog.products)
+        total_chunks_created = 0
+        total_images_processed = 0
+        total_relationships_created = 0
+        products_completed = 0
+        products_failed = 0
 
-        stage_3_result = await process_stage_3_images(
-            file_content=file_content,
-            document_id=document_id,
-            workspace_id=workspace_id,
-            job_id=job_id,
-            page_count=page_count,
-            product_pages=product_pages,
-            focused_extraction=focused_extraction,
-            extract_categories=extract_categories,
-            image_analysis_model=image_analysis_model,
-            component_manager=component_manager,
-            loaded_components=loaded_components,
-            tracker=tracker,
-            checkpoint_recovery_service=checkpoint_recovery_service,
-            logger=logger,
-            catalog=catalog  # ✅ NEW: Pass catalog for category tagging
-        )
+        # ========================================================================
+        # PRODUCT LOOP: Process each product individually
+        # ========================================================================
+        # Each iteration:
+        # 1. Extracts ONLY this product's pages from file_content
+        # 2. Creates chunks ONLY for this product
+        # 3. Processes images ONLY from this product's pages
+        # 4. Creates this product in database
+        # 5. Links chunks/images to this product
+        # 6. CLEANS UP product-specific data (pages, chunks, images)
+        # 7. Preserves shared resources for next product
+        # ========================================================================
 
-        pdf_result_with_images = stage_3_result["pdf_result_with_images"]
-        material_images = stage_3_result["material_images"]
-        images_saved_count = stage_3_result.get("images_extracted", 0)
-        clip_embeddings_count = stage_3_result.get("clip_embeddings_generated", 0)
+        for product_index, product in enumerate(catalog.products, start=1):
+            try:
+                logger.info(f"\n{'─'*80}")
+                logger.info(f"Processing product {product_index}/{total_products}: {product.name}")
+                logger.info(f"{'─'*80}")
 
-        # ============================================================================
-        # STAGE 4: PRODUCT CREATION (MODULAR)
-        # ============================================================================
-        progress_monitor.update_stage("product_creation", {"images_extracted": images_saved_count})
-        from app.api.pdf_processing.stage_4_products import process_stage_4_products
+                # Process single product through all stages
+                # NOTE: pdf_result=None means each product extracts its own pages
+                # This keeps memory low by not holding ALL pages in memory
+                result = await process_single_product(
+                    product=product,
+                    product_index=product_index,
+                    total_products=total_products,
+                    file_content=file_content,  # SHARED: Reused for all products
+                    document_id=document_id,
+                    workspace_id=workspace_id,
+                    job_id=job_id,
+                    catalog=catalog,  # SHARED: Contains all products
+                    pdf_result=None,  # PRODUCT-SPECIFIC: Will extract per product
+                    tracker=tracker,  # SHARED: Main job tracker
+                    product_tracker=product_tracker,  # SHARED: Product progress tracker
+                    checkpoint_recovery_service=checkpoint_recovery_service,
+                    supabase=supabase,  # SHARED: Database client
+                    config=processing_config,  # SHARED: Configuration
+                    logger_instance=logger
+                )
 
-        stage_4_result = await process_stage_4_products(
-            document_id=document_id,
-            workspace_id=workspace_id,
-            job_id=job_id,
-            catalog=catalog,
-            extract_categories=extract_categories,
-            product_creation_model=product_creation_model,
-            tracker=tracker,
-            checkpoint_recovery_service=checkpoint_recovery_service,
-            supabase=supabase,
-            logger=logger
-        )
+                # Accumulate metrics
+                if result.success:
+                    products_completed += 1
+                    total_chunks_created += result.chunks_created
+                    total_images_processed += result.images_processed
+                    total_relationships_created += result.relationships_created
 
-        products_created = stage_4_result["products_created"]
-        linking_results = stage_4_result["linking_results"]
+                    logger.info(f"✅ Product {product_index}/{total_products} completed successfully")
+                else:
+                    products_failed += 1
+                    logger.error(f"❌ Product {product_index}/{total_products} failed: {result.error}")
+
+                # Update overall progress
+                overall_progress = int((product_index / total_products) * 70) + 15  # 15-85%
+                await tracker.update_progress(overall_progress, {
+                    "current_step": f"Processed {product_index}/{total_products} products",
+                    "products_completed": products_completed,
+                    "products_failed": products_failed
+                })
+
+            except Exception as e:
+                products_failed += 1
+                logger.error(f"❌ Failed to process product {product.name}: {e}", exc_info=True)
+                # Continue with next product
+                continue
+
+        # Summary
+        logger.info(f"\n{'='*80}")
+        logger.info(f"🏭 PRODUCT-CENTRIC PIPELINE COMPLETE")
+        logger.info(f"{'='*80}")
+        logger.info(f"✅ Products completed: {products_completed}/{total_products}")
+        logger.info(f"❌ Products failed: {products_failed}/{total_products}")
+        logger.info(f"📝 Total chunks created: {total_chunks_created}")
+        logger.info(f"🖼️  Total images processed: {total_images_processed}")
+        logger.info(f"🔗 Total relationships created: {total_relationships_created}")
+        logger.info(f"{'='*80}\n")
+
+        # Update tracker with final counts
+        tracker.chunks_created = total_chunks_created
+        products_created = products_completed
+        images_saved_count = total_images_processed
+        linking_results = {"relationships_created": total_relationships_created}
 
         # ============================================================================
         # STAGE 5: QUALITY ENHANCEMENT (MODULAR)

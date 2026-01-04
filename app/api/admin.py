@@ -1466,6 +1466,97 @@ async def get_all_active_progress():
         )
 
 
+@router.get("/jobs/{job_id}/products")
+async def get_job_product_progress(job_id: str, supabase: SupabaseClient = Depends(get_supabase_client)):
+    """
+    Get product-level progress for a PDF processing job.
+
+    Returns detailed progress for each product including:
+    - Product name and index
+    - Current status (pending, processing, completed, failed)
+    - Current processing stage
+    - Completed stages list
+    - Metrics (chunks, images, relationships)
+    - Error messages if failed
+    - Processing time
+    """
+    try:
+        # Query product_processing_status table
+        response = supabase.client.table("product_processing_status")\
+            .select("*")\
+            .eq("job_id", job_id)\
+            .order("product_index")\
+            .execute()
+
+        if not response.data:
+            # Return empty list if no products found (job might not have started product processing yet)
+            return {
+                "success": True,
+                "job_id": job_id,
+                "products": [],
+                "total_products": 0,
+                "completed_products": 0,
+                "failed_products": 0,
+                "processing_products": 0,
+                "pending_products": 0
+            }
+
+        products = response.data
+
+        # Calculate summary statistics
+        total_products = len(products)
+        completed_products = sum(1 for p in products if p.get("status") == "completed")
+        failed_products = sum(1 for p in products if p.get("status") == "failed")
+        processing_products = sum(1 for p in products if p.get("status") == "processing")
+        pending_products = sum(1 for p in products if p.get("status") == "pending")
+
+        # Format products for frontend
+        formatted_products = []
+        for product in products:
+            formatted_products.append({
+                "id": product.get("product_id"),
+                "product_name": product.get("product_name"),
+                "product_index": product.get("product_index"),
+                "status": product.get("status"),
+                "current_stage": product.get("current_stage"),
+                "stages_completed": product.get("stages_completed", []),
+                "error_message": product.get("error_message"),
+                "metrics": {
+                    "chunks_created": product.get("chunks_created", 0),
+                    "images_processed": product.get("images_processed", 0),
+                    "images_material": product.get("images_material", 0),
+                    "images_non_material": product.get("images_non_material", 0),
+                    "relationships_created": product.get("relationships_created", 0),
+                    "clip_embeddings_generated": product.get("clip_embeddings_generated", 0),
+                    "pages_extracted": product.get("pages_extracted", 0),
+                    "processing_time_ms": product.get("processing_time_ms")
+                },
+                "started_at": product.get("started_at"),
+                "completed_at": product.get("completed_at"),
+                "created_at": product.get("created_at"),
+                "updated_at": product.get("updated_at")
+            })
+
+        return {
+            "success": True,
+            "job_id": job_id,
+            "products": formatted_products,
+            "total_products": total_products,
+            "completed_products": completed_products,
+            "failed_products": failed_products,
+            "processing_products": processing_products,
+            "pending_products": pending_products,
+            "completion_percentage": round((completed_products / total_products * 100), 1) if total_products > 0 else 0
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting product progress for job {job_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get product progress: {str(e)}"
+        )
+
+
 @router.get("/jobs/{job_id}/progress/pages")
 async def get_job_page_progress(job_id: str):
     """
