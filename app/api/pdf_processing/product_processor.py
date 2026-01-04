@@ -16,7 +16,7 @@ from app.schemas.product_progress import (
     ProductMetrics
 )
 from app.services.product_progress_tracker import ProductProgressTracker
-from app.utils.memory_monitor import MemoryMonitor
+from app.utils.memory_monitor import MemoryPressureMonitor
 
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,7 @@ async def process_single_product(
         ProductProcessingResult with success/failure and metrics
     """
     start_time = datetime.utcnow()
-    memory_monitor = MemoryMonitor()
+    memory_monitor = MemoryPressureMonitor()
     product_id = f"product_{product_index}_{product.name.replace(' ', '_')}"
     
     logger_instance.info(f"\n{'='*80}")
