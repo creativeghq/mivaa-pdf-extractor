@@ -223,8 +223,12 @@ class VisionGuidedExtractor:
             mat = fitz.Matrix(zoom, zoom)
             pix = page.get_pixmap(matrix=mat, alpha=False)
 
+            # Store dimensions before cleanup
+            pix_width = pix.width
+            pix_height = pix.height
+
             # Convert to PIL Image
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            img = Image.frombytes("RGB", [pix_width, pix_height], pix.samples)
 
             # Convert to JPEG base64
             buffer = io.BytesIO()
@@ -235,7 +239,7 @@ class VisionGuidedExtractor:
             pix = None
             doc.close()
 
-            logger.debug(f"   📸 Rendered page {page_num + 1} ({pix.width}x{pix.height})")
+            logger.debug(f"   📸 Rendered page {page_num + 1} ({pix_width}x{pix_height})")
             return img_base64
 
         except Exception as e:

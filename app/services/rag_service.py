@@ -279,11 +279,16 @@ class RAGService:
                 self.logger.info(f"   📝 Storing {len(batch_chunks)} chunks in database for batch {batch_num}/{total_batches}...")
                 for chunk in batch_chunks:
                     try:
+                        # ✅ CRITICAL FIX: Skip chunks with null/empty content
+                        if not chunk.content or not chunk.content.strip():
+                            self.logger.warning(f"   ⚠️ Skipping chunk {chunk.chunk_index} - empty content")
+                            continue
+
                         # Prepare chunk record for database
                         chunk_record = {
                             'document_id': document_id,
                             'workspace_id': workspace_id,
-                            'content': chunk.content,  # ✅ FIXED: Use 'content' column, not 'chunk_text'
+                            'content': chunk.content.strip(),  # ✅ FIXED: Use 'content' column, not 'chunk_text', and strip whitespace
                             'chunk_index': chunk.chunk_index,
                             'metadata': {
                                 **chunk.metadata,
@@ -347,29 +352,23 @@ class RAGService:
                                 else:
                                     self.logger.warning(f"   ⚠️ No embedding generated for chunk {chunk_id}")
 
-                            # Perform batch upsert (single database call)
-                            # Use on_conflict to UPDATE existing records instead of INSERT
+                            # ✅ CRITICAL FIX: Use individual UPDATE instead of UPSERT to avoid null content errors
+                            # UPSERT tries to INSERT if ID doesn't exist, which fails on NOT NULL content constraint
+                            # UPDATE only modifies existing rows, which is what we want here
                             if updates:
-                                try:
-                                    self.supabase_client.client.table('document_chunks').upsert(updates, on_conflict='id').execute()
-                                    total_embeddings_stored += embeddings_stored  # Accumulate total
-                                    self.logger.info(f"   ✅ Stored {embeddings_stored}/{len(batch_chunk_ids)} embeddings for batch {batch_num}/{total_batches} (batch upsert)")
-                                except Exception as batch_update_error:
-                                    self.logger.error(f"   ❌ Batch upsert failed: {batch_update_error}")
-                                    # Fallback to individual updates
-                                    self.logger.info(f"   ⚠️ Falling back to individual updates...")
-                                    embeddings_stored = 0
-                                    for update in updates:
-                                        try:
-                                            self.supabase_client.client.table('document_chunks')\
-                                                .update({'text_embedding': update['text_embedding']})\
-                                                .eq('id', update['id'])\
-                                                .execute()
-                                            embeddings_stored += 1
-                                        except Exception as individual_update_error:
-                                            self.logger.warning(f"   ⚠️ Failed to update chunk {update['id']}: {individual_update_error}")
-                                    total_embeddings_stored += embeddings_stored  # Accumulate total
-                                    self.logger.info(f"   ✅ Stored {embeddings_stored}/{len(updates)} embeddings (individual fallback)")
+                                embeddings_stored = 0
+                                for update in updates:
+                                    try:
+                                        self.supabase_client.client.table('document_chunks')\
+                                            .update({'text_embedding': update['text_embedding']})\
+                                            .eq('id', update['id'])\
+                                            .execute()
+                                        embeddings_stored += 1
+                                    except Exception as individual_update_error:
+                                        self.logger.warning(f"   ⚠️ Failed to update chunk {update['id']}: {individual_update_error}")
+
+                                total_embeddings_stored += embeddings_stored  # Accumulate total
+                                self.logger.info(f"   ✅ Stored {embeddings_stored}/{len(updates)} embeddings")
 
                     except Exception as batch_embedding_error:
                         self.logger.error(f"   ❌ Batch embedding generation failed: {batch_embedding_error}", exc_info=True)

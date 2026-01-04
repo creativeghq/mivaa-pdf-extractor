@@ -215,7 +215,4 @@ vision_breaker = CircuitBreaker(name="Vision Model", failure_threshold=8, timeou
 clip_breaker = CircuitBreaker(name="CLIP Embeddings", failure_threshold=5, timeout_seconds=60)
 gpt_breaker = CircuitBreaker(name="GPT API", failure_threshold=3, timeout_seconds=120)
 
-# Backward compatibility alias (deprecated - use vision_breaker)
-together_breaker = vision_breaker
-
 

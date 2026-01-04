@@ -3735,38 +3735,7 @@ async def get_document_content(
         raise HTTPException(status_code=500, detail=f"Error fetching document content: {str(e)}")
 
 
-@router.get("/documents", response_model=DocumentListResponse, deprecated=True)
-async def list_documents(
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(20, ge=1, le=100, description="Page size"),
-    search: Optional[str] = Query(None, description="Search term for filtering"),
-    tags: Optional[str] = Query(None, description="Comma-separated tags for filtering")
-):
-    """
-    DEPRECATED: This endpoint has been removed.
 
-    Documents are stored directly in the vector database.
-    Use the Supabase `documents` table to query documents directly.
-    """
-    raise HTTPException(
-        status_code=status.HTTP_410_GONE,
-        detail="This endpoint is deprecated. Query documents directly from Supabase."
-    )
-
-@router.delete("/documents/{document_id}", deprecated=True)
-async def delete_document(
-    document_id: str
-):
-    """
-    DEPRECATED: This endpoint has been removed.
-
-    Documents are stored directly in the vector database.
-    Use Supabase to delete documents directly.
-    """
-    raise HTTPException(
-        status_code=status.HTTP_410_GONE,
-        detail="This endpoint is deprecated. Delete documents directly from Supabase."
-    )
 
 @router.get("/health", response_model=HealthCheckResponse)
 async def rag_health_check(

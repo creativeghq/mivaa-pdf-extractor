@@ -267,6 +267,35 @@ class ProgressTracker:
         # Sync to database
         await self._sync_to_database(stage=stage_name)
 
+    async def update_progress(
+        self,
+        progress_percentage: int,
+        details: Optional[Dict[str, Any]] = None,
+        sync_to_db: bool = True
+    ):
+        """
+        Update progress with a manual percentage override and optional details.
+
+        Args:
+            progress_percentage: Progress percentage (0-100)
+            details: Optional dictionary with progress details (e.g., current_step, products_completed)
+            sync_to_db: Whether to sync to database
+        """
+        self.manual_progress_override = progress_percentage
+
+        # Update detailed progress fields if provided
+        if details:
+            if "current_step" in details:
+                self.current_step = details["current_step"]
+            if "products_completed" in details:
+                self.products_created = details.get("products_completed", 0)
+
+        logger.debug(f"Job {self.job_id}: Progress {progress_percentage}% - {details}")
+
+        # Sync to database
+        if sync_to_db:
+            await self._sync_to_database()
+
     async def update_detailed_progress(
         self,
         current_step: str,

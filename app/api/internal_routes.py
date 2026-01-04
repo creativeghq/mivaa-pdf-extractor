@@ -22,7 +22,8 @@ from typing import List, Dict, Any, Optional
 import logging
 
 from app.services.image_processing_service import ImageProcessingService
-from app.services.chunking_service import ChunkingService
+from app.services.unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
+from app.services.real_embeddings_service import RealEmbeddingsService
 from app.services.relevancy_service import RelevancyService
 from app.services.supabase_client import get_supabase_client, SupabaseClient
 from app.services.progress_tracker import ProgressTracker
@@ -497,16 +498,18 @@ async def save_images_to_db(
 @router.post("/create-chunks/{job_id}", response_model=CreateChunksResponse)
 async def create_chunks(
     job_id: str,
-    request: CreateChunksRequest
+    request: CreateChunksRequest,
+    supabase_client: SupabaseClient = Depends(get_supabase_client)
 ):
     """
     Create semantic chunks and generate text embeddings.
 
     This endpoint:
     1. Creates semantic chunks from extracted text
-    2. Generates text embeddings for each chunk
-    3. Creates chunk-to-product relationships
-    4. **Prevents duplicates** - skips if chunks already exist
+    2. Saves chunks to database
+    3. Generates text embeddings for each chunk
+    4. Creates chunk-to-product relationships
+    5. **Prevents duplicates** - skips if chunks already exist
 
     **Use Cases:**
     - Regenerate chunks after text extraction updates
@@ -516,6 +519,7 @@ async def create_chunks(
     Args:
         job_id: Job ID for tracking
         request: Chunking request with extracted text
+        supabase_client: Supabase client for database operations
 
     Returns:
         CreateChunksResponse with counts
@@ -527,42 +531,128 @@ async def create_chunks(
         tracker = JobTracker(job_id)
         await tracker.update_stage("CHUNKING", 0, sync_to_db=True)
 
-        # Initialize service
-        chunking_service = ChunkingService()
+        # ✅ Check if chunks already exist for this document (duplicate prevention)
+        existing_chunks = supabase_client.client.table('document_chunks')\
+            .select('id')\
+            .eq('document_id', request.document_id)\
+            .limit(1)\
+            .execute()
 
-        # Create chunks and embeddings (with duplicate prevention)
-        result = await chunking_service.create_chunks_and_embeddings(
-            document_id=request.document_id,
-            workspace_id=request.workspace_id,
-            extracted_text=request.extracted_text,
-            product_ids=request.product_ids,
-            chunk_size=request.chunk_size,
-            chunk_overlap=request.chunk_overlap
+        if existing_chunks.data and len(existing_chunks.data) > 0:
+            logger.info(f"   ⏭️ [Job {job_id}] Skipping - document already has chunks")
+
+            # Count existing embeddings
+            existing_embeddings = supabase_client.client.table('document_chunks')\
+                .select('id')\
+                .eq('document_id', request.document_id)\
+                .not_('text_embedding', 'is', None)\
+                .execute()
+
+            return CreateChunksResponse(
+                success=True,
+                chunks_created=0,
+                embeddings_generated=0,
+                relationships_created=0,
+                skipped=True,
+                existing_chunks=len(existing_chunks.data),
+                existing_embeddings=len(existing_embeddings.data) if existing_embeddings.data else 0
+            )
+
+        # Initialize chunking service with hybrid strategy
+        chunking_config = ChunkingConfig(
+            strategy=ChunkingStrategy.HYBRID,
+            max_chunk_size=request.chunk_size,
+            overlap_size=request.chunk_overlap
         )
+        chunking_service = UnifiedChunkingService(chunking_config)
+
+        # Create chunks
+        chunks = await chunking_service.chunk_text(
+            text=request.extracted_text,
+            document_id=request.document_id,
+            metadata={
+                'workspace_id': request.workspace_id,
+                'product_ids': request.product_ids
+            }
+        )
+
+        logger.info(f"   Created {len(chunks)} chunks")
+
+        # Initialize embedding service
+        embedding_service = RealEmbeddingsService()
+
+        chunks_created = 0
+        embeddings_generated = 0
+        relationships_created = 0
+
+        # Save chunks to database and generate embeddings
+        for chunk in chunks:
+            try:
+                # Save chunk to database
+                chunk_record = {
+                    'document_id': request.document_id,
+                    'workspace_id': request.workspace_id,
+                    'content': chunk.content,
+                    'chunk_index': chunk.chunk_index,
+                    'metadata': chunk.metadata,
+                    'quality_score': chunk.quality_score
+                }
+
+                result = supabase_client.client.table('document_chunks').insert(chunk_record).execute()
+
+                if result.data and len(result.data) > 0:
+                    chunks_created += 1
+                    chunk_id = result.data[0]['id']
+
+                    # Generate text embedding
+                    embedding = await embedding_service.generate_text_embedding(chunk.content)
+
+                    if embedding:
+                        # Update chunk with embedding
+                        supabase_client.client.table('document_chunks')\
+                            .update({'text_embedding': embedding})\
+                            .eq('id', chunk_id)\
+                            .execute()
+                        embeddings_generated += 1
+
+                    # Create chunk-to-product relationships if product_ids provided
+                    if request.product_ids:
+                        for product_id in request.product_ids:
+                            relationship = {
+                                'chunk_id': chunk_id,
+                                'product_id': product_id,
+                                'workspace_id': request.workspace_id
+                            }
+                            supabase_client.client.table('chunk_product_relationships').insert(relationship).execute()
+                            relationships_created += 1
+
+            except Exception as e:
+                logger.error(f"   Error processing chunk {chunk.chunk_index}: {e}")
+                continue
 
         # Update tracker
         await tracker.update_stage(
             "CHUNKING",
             100,
             metadata={
-                'chunks_created': result.get('chunks_created', 0),
-                'embeddings_generated': result.get('embeddings_generated', 0),
-                'relationships_created': result.get('relationships_created', 0),
-                'skipped': result.get('skipped', False)
+                'chunks_created': chunks_created,
+                'embeddings_generated': embeddings_generated,
+                'relationships_created': relationships_created,
+                'skipped': False
             },
             sync_to_db=True
         )
 
-        logger.info(f"✅ [Job {job_id}] Chunking complete: {result.get('chunks_created', 0)} chunks, {result.get('embeddings_generated', 0)} embeddings")
+        logger.info(f"✅ [Job {job_id}] Chunking complete: {chunks_created} chunks, {embeddings_generated} embeddings")
 
         return CreateChunksResponse(
             success=True,
-            chunks_created=result.get('chunks_created', 0),
-            embeddings_generated=result.get('embeddings_generated', 0),
-            relationships_created=result.get('relationships_created', 0),
-            skipped=result.get('skipped', False),
-            existing_chunks=result.get('existing_chunks', 0),
-            existing_embeddings=result.get('existing_embeddings', 0)
+            chunks_created=chunks_created,
+            embeddings_generated=embeddings_generated,
+            relationships_created=relationships_created,
+            skipped=False,
+            existing_chunks=0,
+            existing_embeddings=0
         )
 
     except Exception as e:

@@ -62,16 +62,16 @@ async def process_product_images(
     if total_images == 0:
         return {'images_processed': 0, 'images_material': 0, 'images_non_material': 0}
 
+    # Use batch classification instead of individual classification
     image_service = ImageProcessingService()
-    material_images = []
-    non_material_count = 0
-
-    for img_data in pdf_result.extracted_images:
-        is_material = await image_service.classify_material_image(img_data)
-        if is_material:
-            material_images.append(img_data)
-        else:
-            non_material_count += 1
+    material_images, non_material_images = await image_service.classify_images(
+        extracted_images=pdf_result.extracted_images,
+        confidence_threshold=0.6,
+        primary_model="Qwen/Qwen3-VL-8B-Instruct",
+        validation_model="Qwen/Qwen3-VL-32B-Instruct",
+        batch_size=15
+    )
+    non_material_count = len(non_material_images)
 
     logger.info(f"   Material: {len(material_images)}, Non-material: {non_material_count}")
 

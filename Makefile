@@ -38,46 +38,41 @@ help:
 	@echo "  build             Build the application"
 
 # Testing Commands
-test: test-unit
+# NOTE: Test infrastructure is not yet implemented (tests/ directory is empty)
+# Uncomment and use these targets once tests are written
 
-test-unit:
-	@echo "🧪 Running Unit Tests..."
-	python scripts/run_tests.py unit -v
+# test: test-unit
+#
+# test-unit:
+# 	@echo "🧪 Running Unit Tests..."
+# 	python -m pytest tests/unit/ -v
+#
+# test-integration:
+# 	@echo "🔗 Running Integration Tests..."
+# 	python -m pytest tests/integration/ -v
+#
+# test-e2e:
+# 	@echo "🌐 Running End-to-End Tests..."
+# 	python -m pytest tests/e2e/ -v
+#
+# test-all:
+# 	@echo "🚀 Running All Tests..."
+# 	python -m pytest tests/ -v
+#
+# # Coverage Commands
+# coverage:
+# 	@echo "📊 Generating Coverage Report..."
+# 	python -m pytest tests/unit/ --cov=app --cov-report=term-missing
+#
+# coverage-report:
+# 	@echo "📋 Generating Detailed Coverage Report..."
+# 	python -m pytest tests/unit/ --cov=app --cov-report=term-missing --cov-report=xml
+# 	@echo "Coverage report generated: coverage.xml"
 
-test-integration:
-	@echo "🔗 Running Integration Tests..."
-	python scripts/run_tests.py integration -v
-
-test-e2e:
-	@echo "🌐 Running End-to-End Tests..."
-	python scripts/run_tests.py e2e -v
-
-test-performance:
-	@echo "⚡ Running Performance Tests..."
-	python scripts/run_tests.py performance -v
-
-test-security:
-	@echo "🔒 Running Security Tests..."
-	python scripts/run_tests.py security -v
-
-test-all:
-	@echo "🚀 Running All Tests..."
-	python scripts/run_tests.py all -v
-
-# Coverage Commands
-coverage:
-	@echo "📊 Generating Coverage Report..."
-	python -m pytest tests/unit/ --cov=app --cov-report=term-missing --cov-config=.coveragerc
-
-coverage-report:
-	@echo "📋 Generating Detailed Coverage Report..."
-	python -m pytest tests/unit/ --cov=app --cov-report=term-missing --cov-report=xml --cov-config=.coveragerc
-	@echo "Coverage report generated: coverage.xml"
-
-coverage-html:
-	@echo "🌐 Generating HTML Coverage Report..."
-	python -m pytest tests/unit/ --cov=app --cov-report=html --cov-config=.coveragerc
-	@echo "HTML coverage report generated: htmlcov/index.html"
+# coverage-html:
+# 	@echo "🌐 Generating HTML Coverage Report..."
+# 	python -m pytest tests/unit/ --cov=app --cov-report=html
+# 	@echo "HTML coverage report generated: htmlcov/index.html"
 
 # Development Commands
 install:
@@ -111,7 +106,6 @@ check: lint
 # Maintenance Commands
 clean:
 	@echo "🧹 Cleaning Up..."
-	python scripts/run_tests.py unit --clean
 	rm -rf __pycache__/
 	rm -rf .pytest_cache/
 	rm -rf .mypy_cache/
@@ -137,30 +131,20 @@ build:
 	@echo "🏗️ Building Application..."
 	@echo "Build process not yet implemented"
 
-# Quick test commands for development
-quick-test:
-	@echo "⚡ Running Quick Unit Tests..."
-	python -m pytest tests/unit/ -x -v --tb=short
-
-watch-test:
-	@echo "👀 Running Tests in Watch Mode..."
-	python -m pytest tests/unit/ -f
-
-# Parallel testing
-test-parallel:
-	@echo "🚀 Running Tests in Parallel..."
-	python scripts/run_tests.py unit -v --parallel
-
-# Coverage with threshold check
-test-coverage-check:
-	@echo "📊 Running Tests with Coverage Validation..."
-	python scripts/run_tests.py unit -v --coverage-threshold 90
-
-# Full quality check
-quality-check: lint test-coverage-check
-	@echo "✅ Full Quality Check Complete!"
-
-# CI/CD simulation
-ci-test:
-	@echo "🤖 Running CI/CD Test Pipeline..."
-	python scripts/run_tests.py all -v --coverage-threshold 90
+# Quick test commands for development (commented out until tests are implemented)
+# quick-test:
+# 	@echo "⚡ Running Quick Unit Tests..."
+# 	python -m pytest tests/unit/ -x -v --tb=short
+#
+# watch-test:
+# 	@echo "👀 Running Tests in Watch Mode..."
+# 	python -m pytest tests/unit/ -f
+#
+# # Parallel testing
+# test-parallel:
+# 	@echo "🚀 Running Tests in Parallel..."
+# 	python -m pytest tests/ -n auto
+#
+# # Full quality check
+# quality-check: lint
+# 	@echo "✅ Code Quality Check Complete!"
