@@ -823,11 +823,23 @@ class PDFProcessor:
 
                 # Check confidence threshold
                 confidence = result.get('confidence_score', 0.0)
+                detections_count = len(result.get('detections', []))
+
+                # ✅ FIX: Only warn if page has content but low confidence
+                # Don't warn for empty pages (confidence = 0.0, detections = 0)
                 if confidence < settings.vision_guided_confidence_threshold:
-                    self.logger.warning(
-                        f"   ⚠️ [Job: {job_id}] Page {page_idx + 1}: confidence {confidence:.2f} "
-                        f"below threshold {settings.vision_guided_confidence_threshold:.2f}"
-                    )
+                    if detections_count == 0:
+                        # Empty page - this is normal, not an error
+                        self.logger.debug(
+                            f"   📄 [Job: {job_id}] Page {page_idx + 1}: No products detected (empty page)"
+                        )
+                    else:
+                        # Has detections but low confidence - this is concerning
+                        self.logger.warning(
+                            f"   ⚠️ [Job: {job_id}] Page {page_idx + 1}: confidence {confidence:.2f} "
+                            f"below threshold {settings.vision_guided_confidence_threshold:.2f} "
+                            f"({detections_count} detections with low confidence)"
+                        )
                     continue
 
                 # Extract detected product images with bounding boxes
@@ -916,9 +928,15 @@ class PDFProcessor:
                 page = doc[page_idx]
                 image_list = page.get_images(full=True)
 
-                self.logger.info(
-                    f"   📄 [Job: {job_id}] PyMuPDF: Page {page_idx + 1} has {len(image_list)} embedded images"
-                )
+                # ✅ IMPROVED LOGGING: Differentiate between pages with/without images
+                if len(image_list) > 0:
+                    self.logger.info(
+                        f"   📄 [Job: {job_id}] PyMuPDF: Page {page_idx + 1} has {len(image_list)} embedded images"
+                    )
+                else:
+                    self.logger.debug(
+                        f"   📄 [Job: {job_id}] PyMuPDF: Page {page_idx + 1} has no embedded images (text-only or scanned page)"
+                    )
 
                 # ============================================================
                 # CASE 1: Extract embedded images (normal PDFs)

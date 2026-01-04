@@ -1522,11 +1522,6 @@ async def root() -> Dict[str, Any]:
             "redoc": "/redoc",  # Always enabled
             "openapi": "/openapi.json",
 
-            # PDF Processing APIs
-            "pdf_markdown": "/api/v1/extract/markdown",
-            "pdf_tables": "/api/v1/extract/tables",
-            "pdf_images": "/api/v1/extract/images",
-
             # RAG System APIs
             "rag_upload": "/api/v1/rag/documents/upload",
             "rag_query": "/api/v1/rag/query",

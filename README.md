@@ -53,44 +53,9 @@ Launch swagger APIs:
 
 The MIVAA PDF Extractor now provides comprehensive APIs for PDF processing, RAG operations, AI analysis, and more.
 
-### **📄 PDF Processing APIs**
-
-#### Extract Markdown
-```http
-POST /api/v1/extract/markdown
-Content-Type: multipart/form-data
-```
-**Parameters:**
-- `file` (required): PDF file to process
-- `page_number` (optional): Specific page to extract
-
-**Response:**
-```json
-{
-  "success": true,
-  "markdown": "# Document Title\n\nContent...",
-  "metadata": {
-    "pages": 10,
-    "processing_time": 2.5
-  }
-}
-```
-
-#### Extract Tables
-```http
-POST /api/v1/extract/tables
-Content-Type: multipart/form-data
-```
-**Returns:** ZIP file containing CSV files of extracted tables
-
-#### Extract Images
-```http
-POST /api/v1/extract/images
-Content-Type: multipart/form-data
-```
-**Returns:** ZIP file containing extracted images and metadata
-
 ### **🧠 RAG System APIs**
+
+> **Note:** PDF extraction endpoints (`/api/v1/extract/*`) have been removed. Use `/api/rag/documents/upload` with `processing_mode="quick"` for PDF extraction.
 
 #### Upload Documents
 ```http
@@ -217,23 +182,6 @@ Authorization: Bearer your-jwt-token
 - **Multi-modal Processing**: Text, images, and structured data extraction
 - **Performance Monitoring**: Built-in metrics and health checks
 - **Scalable Architecture**: Production-ready with JWT authentication
-
-## 📚 **Legacy APIs (Still Supported)**
-
-#### Extract Markdown (Legacy)
-```http
-POST /extract/markdown
-```
-
-#### Extract Tables (Legacy)
-```http
-POST /extract/tables
-```
-
-#### Extract Images (Legacy)
-```http
-POST /extract/images
-```
 
 ## 🔧 **Recent Enhancements (January 2025)**
 

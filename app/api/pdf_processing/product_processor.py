@@ -41,7 +41,7 @@ async def process_single_product(
 ) -> ProductProcessingResult:
     """
     Process a single product through all stages.
-    
+
     Args:
         product: Product object from catalog
         product_index: 1-based index of product
@@ -58,18 +58,18 @@ async def process_single_product(
         supabase: Supabase client
         config: Processing configuration
         logger_instance: Logger instance
-        
+
     Returns:
         ProductProcessingResult with success/failure and metrics
     """
     start_time = datetime.utcnow()
     memory_monitor = MemoryPressureMonitor()
     product_id = f"product_{product_index}_{product.name.replace(' ', '_')}"
-    
+
     logger_instance.info(f"\n{'='*80}")
     logger_instance.info(f"🏭 PRODUCT {product_index}/{total_products}: {product.name}")
     logger_instance.info(f"{'='*80}")
-    
+
     # Initialize product tracking
     await product_tracker.initialize_product(
         product_id=product_id,
@@ -80,7 +80,7 @@ async def process_single_product(
             "confidence": product.confidence
         }
     )
-    
+
     # Use direct attributes instead of nested metrics object
     result = ProductProcessingResult(
         product_id=product_id,
@@ -89,10 +89,14 @@ async def process_single_product(
         success=False
     )
 
+    # Track current stage for accurate error reporting
+    current_stage = ProductStage.EXTRACTION
+
     try:
         # ========================================================================
         # STAGE 1: Extract Product Pages
         # ========================================================================
+        current_stage = ProductStage.EXTRACTION
         await product_tracker.update_product_stage(product_id, ProductStage.EXTRACTION)
         logger_instance.info(f"📄 [STAGE 1/{product_index}] Extracting pages for {product.name}...")
 
@@ -113,15 +117,16 @@ async def process_single_product(
         )
         pages_extracted = len(product_pages)
         logger_instance.info(f"✅ Extracted {pages_extracted} pages for {product.name}")
-        
+
         # ========================================================================
         # STAGE 2: Create Text Chunks
         # ========================================================================
+        current_stage = ProductStage.CHUNKING
         await product_tracker.update_product_stage(product_id, ProductStage.CHUNKING)
         logger_instance.info(f"📝 [STAGE 2/{product_index}] Creating chunks for {product.name}...")
-        
+
         from app.api.pdf_processing.stage_2_chunking import process_product_chunking
-        
+
         chunk_result = await process_product_chunking(
             file_content=file_content,
             document_id=document_id,
@@ -135,7 +140,7 @@ async def process_single_product(
             supabase=supabase,
             logger=logger_instance
         )
-        
+
         chunks_created = chunk_result.get('chunks_created', 0)
         await product_tracker.mark_stage_complete(
             product_id,
@@ -144,15 +149,16 @@ async def process_single_product(
         )
         result.chunks_created = chunks_created
         logger_instance.info(f"✅ Created {chunks_created} chunks for {product.name}")
-        
+
         # ========================================================================
         # STAGE 3: Process Images
         # ========================================================================
+        current_stage = ProductStage.IMAGES
         await product_tracker.update_product_stage(product_id, ProductStage.IMAGES)
         logger_instance.info(f"🖼️  [STAGE 3/{product_index}] Processing images for {product.name}...")
-        
+
         from app.api.pdf_processing.stage_3_images import process_product_images
-        
+
         image_result = await process_product_images(
             file_content=file_content,
             document_id=document_id,
@@ -164,7 +170,7 @@ async def process_single_product(
             config=config,
             logger=logger_instance
         )
-        
+
         images_processed = image_result.get('images_processed', 0)
         await product_tracker.mark_stage_complete(
             product_id,
@@ -181,6 +187,7 @@ async def process_single_product(
         # ========================================================================
         # STAGE 4: Create Product in Database
         # ========================================================================
+        current_stage = ProductStage.CREATION
         await product_tracker.update_product_stage(product_id, ProductStage.CREATION)
         logger_instance.info(f"🏭 [STAGE 4/{product_index}] Creating product in database...")
 
@@ -208,6 +215,7 @@ async def process_single_product(
         # ========================================================================
         # STAGE 5: Create Relationships (Link chunks/images to product)
         # ========================================================================
+        current_stage = ProductStage.RELATIONSHIPS
         await product_tracker.update_product_stage(product_id, ProductStage.RELATIONSHIPS)
         logger_instance.info(f"🔗 [STAGE 5/{product_index}] Creating relationships...")
 
@@ -261,19 +269,13 @@ async def process_single_product(
         # ========================================================================
         logger_instance.error(f"❌ Product {product_index}/{total_products} FAILED: {product.name}")
         logger_instance.error(f"   Error: {str(e)}")
+        logger_instance.error(f"   Failed at stage: {current_stage.value}")
 
         import traceback
         logger_instance.error(f"   Traceback: {traceback.format_exc()}")
 
-        # Determine which stage failed
-        current_stage = ProductStage.EXTRACTION
-        if result.chunks_created > 0:
-            current_stage = ProductStage.CHUNKING
-        if result.images_processed > 0:
-            current_stage = ProductStage.IMAGES
-        if result.product_db_id:
-            current_stage = ProductStage.CREATION
-
+        # Use the tracked current_stage (set before each stage execution)
+        # This is accurate because we update it right before each stage starts
         result.error = str(e)
         result.error_stage = current_stage
 

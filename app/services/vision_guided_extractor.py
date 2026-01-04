@@ -154,10 +154,16 @@ class VisionGuidedExtractor:
                     success=True
                 )
 
-            logger.info(
-                f"✅ [Vision] Found {len(detections)} products "
-                f"(avg confidence: {avg_confidence:.2f})"
-            )
+            # ✅ IMPROVED LOGGING: Differentiate between empty pages and detection failures
+            if len(detections) == 0:
+                logger.info(
+                    f"📄 [Vision] Page {page_num + 1}: No products detected (empty page or no matching products)"
+                )
+            else:
+                logger.info(
+                    f"✅ [Vision] Found {len(detections)} products on page {page_num + 1} "
+                    f"(avg confidence: {avg_confidence:.2f})"
+                )
 
             return {
                 'success': True,
@@ -585,20 +591,34 @@ Your task: Detect ALL product images on this page and return their exact boundin
 
         # Check required keys
         if not all(key in detection for key in required_keys):
+            logger.warning(f"Detection missing required keys. Has: {list(detection.keys())}, needs: {required_keys}")
             return False
 
         # Validate bbox format
         bbox = detection['bbox']
         if not isinstance(bbox, list) or len(bbox) != 4:
+            logger.warning(f"Invalid bbox format: {bbox} (expected list of 4 numbers)")
             return False
 
-        # Validate bbox values (normalized 0-1)
-        if not all(isinstance(v, (int, float)) and 0 <= v <= 1 for v in bbox):
+        # ✅ FIX: Clamp bbox values to 0-1 range instead of rejecting
+        # AI models sometimes return slightly out-of-range values (e.g., 1.05, -0.01)
+        # This is common and should be corrected, not rejected
+        try:
+            clamped_bbox = [max(0.0, min(1.0, float(v))) for v in bbox]
+
+            # Check if clamping was needed (log for monitoring)
+            if clamped_bbox != bbox:
+                logger.info(f"   🔧 Clamped bbox from {bbox} to {clamped_bbox}")
+                detection['bbox'] = clamped_bbox  # Update detection with clamped values
+
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Invalid bbox values (not numeric): {bbox} - {e}")
             return False
 
         # Validate confidence
         confidence = detection['confidence']
         if not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+            logger.warning(f"Invalid confidence: {confidence} (expected 0-1)")
             return False
 
         return True

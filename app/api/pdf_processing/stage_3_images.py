@@ -57,10 +57,14 @@ async def process_product_images(
     )
 
     total_images = len(pdf_result.extracted_images) if pdf_result.extracted_images else 0
-    logger.info(f"   Extracted {total_images} images from product pages")
 
+    # ✅ FIX: Provide more context when no images are extracted
     if total_images == 0:
+        logger.info(f"   📄 No images extracted from product pages {sorted(product_pages)}")
+        logger.debug(f"      This is normal for text-only pages or pages without embedded images")
         return {'images_processed': 0, 'images_material': 0, 'images_non_material': 0}
+
+    logger.info(f"   Extracted {total_images} images from product pages")
 
     # Use batch classification instead of individual classification
     image_service = ImageProcessingService()
