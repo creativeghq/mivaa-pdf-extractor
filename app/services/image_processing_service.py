@@ -53,11 +53,19 @@ class ImageProcessingService:
         )
         self.vision_extractor = None
         if self.use_vision_guided:
-            self.vision_extractor = VisionGuidedExtractor()
-            logger.info(
-                f"✅ Vision-guided extraction ENABLED in ImageProcessingService "
-                f"(provider: {self.settings.vision_guided_provider})"
-            )
+            try:
+                self.vision_extractor = VisionGuidedExtractor()
+                logger.info(
+                    f"✅ Vision-guided extraction ENABLED in ImageProcessingService "
+                    f"(provider: {self.settings.vision_guided_provider})"
+                )
+            except Exception as e:
+                logger.error(
+                    f"❌ Failed to initialize VisionGuidedExtractor: {e}. "
+                    f"Vision-guided extraction will be disabled."
+                )
+                self.use_vision_guided = False
+                self.vision_extractor = None
 
     async def classify_images(
         self,
@@ -766,6 +774,59 @@ Respond ONLY with this JSON format:
 
         logger.info(f"🎯 Starting vision-guided image extraction for {len(catalog.products)} products...")
 
+        import fitz
+        try:
+            doc = fitz.open(pdf_path)
+            pdf_page_count = len(doc)
+
+            # 📐 AUTO-DETECT 2-PAGE SPREADS: Check if PDF uses 2 pages per sheet layout
+            # This happens when catalog pages are displayed side-by-side (e.g., pages 1-2 on one PDF page)
+            pages_per_sheet = 1  # Default: 1 catalog page = 1 PDF page
+
+            if pdf_page_count > 0:
+                # Check MULTIPLE pages to detect dominant layout (not just first page)
+                # Many PDFs have portrait cover page but landscape content pages
+                pages_to_check = min(5, pdf_page_count)  # Check first 5 pages
+                spread_count = 0
+                standard_count = 0
+
+                for page_idx in range(pages_to_check):
+                    page = doc[page_idx]
+                    rect = page.rect
+                    aspect_ratio = rect.width / rect.height if rect.height > 0 else 1.0
+
+                    # Landscape pages with aspect ratio > 1.4 are likely 2-page spreads
+                    if aspect_ratio > 1.4:
+                        spread_count += 1
+                        if page_idx == 0:
+                            logger.info(f"   📐 Page {page_idx + 1}: 2-page spread (aspect: {aspect_ratio:.2f})")
+                    else:
+                        standard_count += 1
+                        if page_idx == 0:
+                            logger.info(f"   📐 Page {page_idx + 1}: Standard layout (aspect: {aspect_ratio:.2f})")
+
+                # Use majority vote: if most pages are spreads, treat entire PDF as spreads
+                if spread_count > standard_count:
+                    pages_per_sheet = 2
+                    logger.info(f"   ✅ DOMINANT LAYOUT: 2-page spreads ({spread_count}/{pages_to_check} pages)")
+                    logger.info(f"      → Catalog pages 1-{pdf_page_count * 2} mapped to PDF pages 1-{pdf_page_count}")
+                else:
+                    logger.info(f"   ✅ DOMINANT LAYOUT: Standard ({standard_count}/{pages_to_check} pages)")
+
+            doc.close()
+            logger.info(f"   📄 PDF has {pdf_page_count} pages ({pdf_page_count * pages_per_sheet} catalog pages)")
+        except Exception as e:
+            logger.error(f"❌ Failed to open PDF for page count: {e}")
+            return {
+                'success': False,
+                'images_extracted': 0,
+                'images_saved': 0,
+                'clip_embeddings_generated': 0,
+                'extraction_method': 'vision_guided',
+                'stats': {},
+                'error': str(e)
+            }
+
         extracted_images = []
         stats = {
             'total_products': len(catalog.products),
@@ -774,6 +835,7 @@ Respond ONLY with this JSON format:
             'images_saved': 0,
             'clip_embeddings_generated': 0,
             'failed_pages': 0,
+            'skipped_invalid_pages': 0,
             'average_confidence': 0.0
         }
 
@@ -782,20 +844,61 @@ Respond ONLY with this JSON format:
             all_confidences = []
 
             for product_idx, product in enumerate(catalog.products, 1):
+                # 📐 CONVERT CATALOG PAGES TO PDF PAGES
+                # Catalog pages may be different from PDF pages (e.g., 2-page spreads)
+                # For 2-page spreads: catalog page 74 → PDF page 37
+                # For standard layout: catalog page 74 → PDF page 74
+                valid_catalog_pages = []
+                invalid_catalog_pages = []
+
+                for catalog_page in product.page_range:
+                    if catalog_page > 0:
+                        # Convert catalog page to PDF page using same formula as product_discovery_service.py
+                        pdf_page = (catalog_page + pages_per_sheet - 1) // pages_per_sheet
+
+                        # Validate against actual PDF page count
+                        if 1 <= pdf_page <= pdf_page_count:
+                            valid_catalog_pages.append(catalog_page)
+                        else:
+                            invalid_catalog_pages.append(catalog_page)
+
+                if invalid_catalog_pages:
+                    if pages_per_sheet == 2:
+                        logger.warning(
+                            f"   ⚠️ [{product_idx}/{len(catalog.products)}] {product.name} "
+                            f"has invalid catalog pages {invalid_catalog_pages} (PDF has {pdf_page_count} pages = {pdf_page_count * 2} catalog pages) - skipping these"
+                        )
+                    else:
+                        logger.warning(
+                            f"   ⚠️ [{product_idx}/{len(catalog.products)}] {product.name} "
+                            f"has invalid pages {invalid_catalog_pages} (PDF has {pdf_page_count} pages) - skipping these"
+                        )
+                    stats['skipped_invalid_pages'] += len(invalid_catalog_pages)
+
+                if not valid_catalog_pages:
+                    logger.warning(f"   ⚠️ [{product_idx}/{len(catalog.products)}] {product.name} has NO valid pages - skipping")
+                    continue
+
                 logger.info(
                     f"   📦 [{product_idx}/{len(catalog.products)}] {product.name} "
-                    f"(pages: {product.page_range})"
+                    f"(catalog pages: {valid_catalog_pages})"
                 )
 
-                # Extract images from each page in product's range
-                for page_num in product.page_range:
+                # Extract images from each VALID catalog page in product's range
+                for catalog_page in valid_catalog_pages:
                     stats['total_pages_processed'] += 1
 
                     try:
+                        # 📐 CONVERT CATALOG PAGE TO PDF PAGE INDEX (0-based)
+                        # For 2-page spreads: catalog page 74 → PDF page 37 → page_idx 36
+                        # For standard layout: catalog page 74 → PDF page 74 → page_idx 73
+                        pdf_page = (catalog_page + pages_per_sheet - 1) // pages_per_sheet
+                        page_idx = pdf_page - 1  # Convert to 0-indexed
+
                         # Call vision-guided extractor
                         result = await self.vision_extractor.extract_products_from_page(
                             pdf_path=pdf_path,
-                            page_num=page_num - 1,  # Convert to 0-indexed
+                            page_num=page_idx,  # ✅ NOW CORRECTLY CONVERTED
                             product_names=[product.name],
                             job_id=job_id
                         )
@@ -806,14 +909,14 @@ Respond ONLY with this JSON format:
                                 # ✅ FIX: Crop the image using bounding box
                                 import tempfile
                                 temp_dir = tempfile.gettempdir()
-                                cropped_image_filename = f"vision_crop_{document_id}_p{page_num}_d{detection_idx}.jpg"
+                                cropped_image_filename = f"vision_crop_{document_id}_p{catalog_page}_d{detection_idx}.jpg"
                                 cropped_image_path = os.path.join(temp_dir, cropped_image_filename)
 
                                 try:
                                     # Crop and save the image
                                     crop_result = await self.vision_extractor.crop_and_save_image(
                                         pdf_path=pdf_path,
-                                        page_num=page_num - 1,  # Convert to 0-indexed
+                                        page_num=page_idx,  # ✅ ALREADY 0-indexed
                                         bbox=detection['bbox'],
                                         output_path=cropped_image_path
                                     )
@@ -829,7 +932,7 @@ Respond ONLY with this JSON format:
                                 # Create image data structure
                                 image_data = {
                                     'product_name': product.name,
-                                    'page_number': page_num,
+                                    'page_number': catalog_page,  # ✅ Store catalog page number
                                     'bbox': detection['bbox'],
                                     'confidence': detection['confidence'],
                                     'extraction_method': 'vision_guided',

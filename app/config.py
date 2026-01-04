@@ -395,10 +395,13 @@ class Settings(BaseSettings):
     )
 
     # Vision-Guided Extraction Settings (Model-Agnostic)
+    # ✅ CRITICAL FIX: Disabled by default to prevent 0-image extraction failures
+    # Vision-guided extraction requires proper API key configuration and can fail silently
+    # Enable only when you have confirmed API keys are working
     vision_guided_enabled: bool = Field(
-        default=True,
+        default=False,  # Changed from True to False
         env="VISION_GUIDED_ENABLED",
-        description="Enable vision-guided product extraction"
+        description="Enable vision-guided product extraction (requires API keys)"
     )
     vision_guided_provider: str = Field(
         default="anthropic",

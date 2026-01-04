@@ -360,43 +360,51 @@ async def process_stage_3_images(
                         logger.warning(f"   ⚠️ Failed to cleanup temp PDF: {cleanup_error}")
 
                 if vision_result['success']:
-                    logger.info(
-                        f"✅ Vision-guided extraction complete: "
-                        f"{vision_result['images_extracted']} images extracted, "
-                        f"{vision_result['images_saved']} saved, "
-                        f"{vision_result['clip_embeddings_generated']} CLIP embeddings"
-                    )
+                    # ✅ CRITICAL FIX: Check if vision extraction actually found images
+                    # If 0 images were extracted, fall back to PyMuPDF instead of returning early
+                    if vision_result['images_extracted'] > 0:
+                        logger.info(
+                            f"✅ Vision-guided extraction complete: "
+                            f"{vision_result['images_extracted']} images extracted, "
+                            f"{vision_result['images_saved']} saved, "
+                            f"{vision_result['clip_embeddings_generated']} CLIP embeddings"
+                        )
 
-                    # Create checkpoint for vision-guided extraction
-                    await checkpoint_recovery_service.create_checkpoint(
-                        job_id=job_id,
-                        stage=CheckpointStage.IMAGES_EXTRACTED,
-                        data={
-                            "document_id": document_id,
-                            "images_saved": vision_result['images_saved'],
-                            "clip_embeddings": vision_result['clip_embeddings_generated'],
+                        # Create checkpoint for vision-guided extraction
+                        await checkpoint_recovery_service.create_checkpoint(
+                            job_id=job_id,
+                            stage=CheckpointStage.IMAGES_EXTRACTED,
+                            data={
+                                "document_id": document_id,
+                                "images_saved": vision_result['images_saved'],
+                                "clip_embeddings": vision_result['clip_embeddings_generated'],
+                                "extraction_method": "vision_guided",
+                                "images_analyzed": vision_result['images_extracted']
+                            },
+                            metadata={
+                                "extraction_stats": vision_result.get('stats', {}),
+                                "vision_guided_used": True
+                            }
+                        )
+                        logger.info(f"✅ Created IMAGES_EXTRACTED checkpoint (vision-guided)")
+
+                        # Return early with vision-guided results
+                        return {
+                            "status": "success",
                             "extraction_method": "vision_guided",
-                            "images_analyzed": vision_result['images_extracted']
-                        },
-                        metadata={
-                            "extraction_stats": vision_result.get('stats', {}),
-                            "vision_guided_used": True
+                            "images_extracted": vision_result['images_extracted'],
+                            "images_saved": vision_result['images_saved'],
+                            "clip_embeddings_generated": vision_result['clip_embeddings_generated'],
+                            "stats": vision_result['stats'],
+                            "pdf_result_with_images": pdf_result_with_images,
+                            "material_images": [],  # Already processed
+                            "images_processed": vision_result['images_extracted']
                         }
-                    )
-                    logger.info(f"✅ Created IMAGES_EXTRACTED checkpoint (vision-guided)")
-
-                    # Return early with vision-guided results
-                    return {
-                        "status": "success",
-                        "extraction_method": "vision_guided",
-                        "images_extracted": vision_result['images_extracted'],
-                        "images_saved": vision_result['images_saved'],
-                        "clip_embeddings_generated": vision_result['clip_embeddings_generated'],
-                        "stats": vision_result['stats'],
-                        "pdf_result_with_images": pdf_result_with_images,
-                        "material_images": [],  # Already processed
-                        "images_processed": vision_result['images_extracted']
-                    }
+                    else:
+                        logger.warning(
+                            f"⚠️ Vision-guided extraction returned 0 images. "
+                            f"Falling back to traditional PyMuPDF extraction."
+                        )
                 else:
                     logger.warning(
                         f"⚠️ Vision-guided extraction failed: {vision_result.get('error')}. "

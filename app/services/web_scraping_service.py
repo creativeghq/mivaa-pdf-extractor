@@ -562,7 +562,7 @@ class WebScrapingService:
 
             # Create chunk record
             chunk_record = {
-                "product_id": product_id,
+                "document_id": product_id,  # ✅ FIXED: Use 'document_id' not 'product_id'
                 "workspace_id": workspace_id,
                 "content": description,
                 "chunk_index": 0,
@@ -570,6 +570,7 @@ class WebScrapingService:
                 "source_job_id": job_id,
                 "metadata": {
                     "source": "web_scraping",
+                    "product_id": product_id,  # Store product_id in metadata for reference
                     "product_name": product_name,
                     "auto_generated": True
                 }

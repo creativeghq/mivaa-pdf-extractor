@@ -536,7 +536,7 @@ class AICallLogger:
                     "detections_count": detections,
                     "page_num": page_num
                 }),
-                "action": "use_ai_result" if success else "fallback_to_pymupdf",
+                "action": "use_ai_result" if success else "fallback_to_rules",
                 "fallback_reason": error_message if not success else None,
                 "request_data": json_dumps(request_data) if request_data else None,
                 "response_data": json_dumps(response_data) if response_data else None,

@@ -457,20 +457,37 @@ class EntityLinkingService:
 
             for chunk in chunks_response.data:
                 chunk_metadata = chunk.get('metadata', {})
+               
+                if not isinstance(chunk_metadata, dict):
+                    self.logger.warning(f"⚠️ Skipping chunk {chunk['id']} - metadata is not a dict: {type(chunk_metadata)}")
+                    continue
+
                 # Get sequential page number and document-level product_pages array
                 chunk_page_number = chunk_metadata.get('page_number')
                 product_pages_array = chunk_metadata.get('product_pages', [])
+
+                if isinstance(product_pages_array, int):
+                    product_pages_array = [product_pages_array]
+                elif not isinstance(product_pages_array, list):
+                    product_pages_array = []
 
                 # Skip chunks without page_number
                 if chunk_page_number is None:
                     self.logger.warning(f"⚠️ Skipping chunk {chunk['id']} - missing page_number")
                     continue
 
+                if not isinstance(chunk_page_number, int):
+                    try:
+                        chunk_page_number = int(chunk_page_number)
+                    except (ValueError, TypeError):
+                        self.logger.warning(f"⚠️ Skipping chunk {chunk['id']} - invalid page_number: {chunk_page_number}")
+                        continue
+
                 # Map sequential page number to original PDF page number
                 # product_pages is a document-level array: [24, 25, 26, ...]
                 # page_number is 1-based sequential: 1, 2, 3, ...
                 # So: original_page = product_pages[page_number - 1]
-                if product_pages_array and chunk_page_number <= len(product_pages_array):
+                if product_pages_array and isinstance(product_pages_array, list) and chunk_page_number <= len(product_pages_array):
                     chunk_original_page = product_pages_array[chunk_page_number - 1]
                 else:
                     # Fallback: use sequential page number if mapping not available

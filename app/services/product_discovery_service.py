@@ -2355,24 +2355,64 @@ IMPORTANT:
                 f"🎯 Starting vision-guided extraction for {len(catalog.products)} products..."
             )
 
+            # AUTO-DETECT 2-PAGE SPREADS: Check if PDF uses 2 pages per sheet layout
+            import fitz
+            doc = fitz.open(pdf_path)
+            pdf_page_count = len(doc)
+            pages_per_sheet = 1  # Default: 1 catalog page = 1 PDF page
+
+            if pdf_page_count > 0:
+                # Check MULTIPLE pages to detect dominant layout
+                pages_to_check = min(5, pdf_page_count)
+                spread_count = 0
+                standard_count = 0
+
+                for page_idx in range(pages_to_check):
+                    page = doc[page_idx]
+                    rect = page.rect
+                    aspect_ratio = rect.width / rect.height if rect.height > 0 else 1.0
+
+                    # Landscape pages with aspect ratio > 1.4 are likely 2-page spreads
+                    if aspect_ratio > 1.4:
+                        spread_count += 1
+                    else:
+                        standard_count += 1
+
+                # Use majority vote
+                if spread_count > standard_count:
+                    pages_per_sheet = 2
+                    self.logger.info(f"   ✅ DOMINANT LAYOUT: 2-page spreads ({spread_count}/{pages_to_check} pages)")
+                    self.logger.info(f"      → Catalog pages 1-{pdf_page_count * 2} mapped to PDF pages 1-{pdf_page_count}")
+                else:
+                    self.logger.info(f"   ✅ DOMINANT LAYOUT: Standard ({standard_count}/{pages_to_check} pages)")
+
+            doc.close()
+            self.logger.info(f"   📄 PDF has {pdf_page_count} pages ({pdf_page_count * pages_per_sheet} catalog pages)")
+
             # Process each product's pages
             all_confidences = []
 
             for product_idx, product in enumerate(catalog.products, 1):
                 self.logger.info(
                     f"   📦 [{product_idx}/{len(catalog.products)}] {product.name} "
-                    f"(pages: {product.page_range})"
+                    f"(catalog pages: {product.page_range})"
                 )
 
-                # Extract images from each page in product's range
-                for page_num in product.page_range:
+                # Extract images from each catalog page in product's range
+                for catalog_page in product.page_range:
                     stats['total_pages_processed'] += 1
 
                     try:
+                        # 📐 CONVERT CATALOG PAGE TO PDF PAGE INDEX (0-based)
+                        # For 2-page spreads: catalog page 74 → PDF page 37 → page_idx 36
+                        # For standard layout: catalog page 74 → PDF page 74 → page_idx 73
+                        pdf_page = (catalog_page + pages_per_sheet - 1) // pages_per_sheet
+                        page_idx = pdf_page - 1  # Convert to 0-indexed
+
                         # Call vision-guided extractor
                         result = await self.vision_extractor.extract_products_from_page(
                             pdf_path=pdf_path,
-                            page_num=page_num - 1,  # Convert to 0-indexed
+                            page_num=page_idx,  # ✅ NOW CORRECTLY CONVERTED
                             product_names=[product.name],  # Provide expected product name
                             job_id=job_id
                         )
@@ -2382,7 +2422,7 @@ IMPORTANT:
                             for detection in result['detections']:
                                 extracted_images.append({
                                     'product_name': product.name,
-                                    'page_number': page_num,
+                                    'page_number': catalog_page,  # ✅ Store catalog page number
                                     'bbox': detection['bbox'],
                                     'confidence': detection['confidence'],
                                     'extraction_method': 'vision_guided',
@@ -2400,12 +2440,12 @@ IMPORTANT:
                                 )
                         else:
                             self.logger.warning(
-                                f"      ⚠️ No detections on page {page_num}"
+                                f"      ⚠️ No detections on catalog page {catalog_page}"
                             )
 
                     except Exception as e:
                         self.logger.error(
-                            f"      ❌ Vision extraction failed for page {page_num}: {e}"
+                            f"      ❌ Vision extraction failed for catalog page {catalog_page}: {e}"
                         )
                         stats['failed_pages'] += 1
 
