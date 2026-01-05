@@ -19,7 +19,7 @@ from ..schemas.suggestions import (
     ExpandedQuery,
     PopularSearch
 )
-from ..utils.text_similarity import calculate_string_similarity
+from app.utils.text_similarity import calculate_string_similarity
 
 logger = logging.getLogger(__name__)
 

@@ -20,14 +20,14 @@ import time
 import io
 
 # Import utilities
-from ..utils.circuit_breaker import CircuitBreaker, CircuitBreakerError
-from ..utils.memory_monitor import memory_monitor
+from app.utils.circuit_breaker import CircuitBreaker, CircuitBreakerError
+from app.utils.memory_monitor import memory_monitor
 
 # Import services
-from .real_embeddings_service import RealEmbeddingsService
-from .supabase_client import get_supabase_client
-from .vecs_service import get_vecs_service
-from .ai_client_service import get_ai_client_service
+from ..embeddings.real_embeddings_service import RealEmbeddingsService
+from ..core.supabase_client import get_supabase_client
+from ..core.vecs_service import get_vecs_service
+from ..core.ai_client_service import get_ai_client_service
 from .ai_call_logger import AICallLogger
 from .unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
 
