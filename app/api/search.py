@@ -41,9 +41,9 @@ from ..schemas.search import (
     # All functionality now handled by modern multi-modal schemas above
 )
 from ..schemas.common import ErrorResponse, SuccessResponse
-from ..services.rag_service import RAGService
+from ..services.search.rag_service import RAGService
 from ..services.core.supabase_client import SupabaseClient
-from ..services.material_visual_search_service import (
+from ..services.search.material_visual_search_service import (
     MaterialVisualSearchService,
     MaterialSearchRequest,
     MaterialSearchResponse,
@@ -51,7 +51,7 @@ from ..services.material_visual_search_service import (
 )
 
 # Import unified search service (Step 7)
-from ..services.unified_search_service import (
+from ..services.search.unified_search_service import (
     UnifiedSearchService,
     SearchConfig,
     SearchStrategy

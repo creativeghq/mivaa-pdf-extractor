@@ -21,7 +21,7 @@ except ImportError:
     from pydantic import BaseModel, Field, validator
 
 from ..schemas.common import BaseResponse, ErrorResponse
-from ..services.together_ai_service import (
+from ..services.core.together_ai_service import (
     TogetherAIService,
     SemanticAnalysisRequest,
     SemanticAnalysisResult,

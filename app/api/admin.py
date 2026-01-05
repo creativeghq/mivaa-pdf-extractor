@@ -28,10 +28,10 @@ from ..schemas.jobs import (
 from ..schemas.common import BaseResponse, PaginationParams
 from ..services.pdf_processor import PDFProcessor
 from ..services.core.supabase_client import SupabaseClient
-from ..services.rag_service import RAGService
-from ..services.product_creation_service import ProductCreationService
-from ..services.material_kai_service import MaterialKaiService
-from ..services.async_queue_service import AsyncQueueService
+from ..services.search.rag_service import RAGService
+from ..services.products.product_creation_service import ProductCreationService
+from ..services.integrations.material_kai_service import MaterialKaiService
+from ..services.core.async_queue_service import AsyncQueueService
 from ..dependencies import (
     get_current_user,
     get_workspace_context,
@@ -1201,8 +1201,8 @@ async def reprocess_image_ocr(
         Comprehensive results of the reprocessing operation
     """
     try:
-        from ..services.ocr_service import get_ocr_service, OCRConfig
-        from ..services.real_embeddings_service import get_embeddings_service
+        from ..services.pdf.ocr_service import get_ocr_service, OCRConfig
+        from ..services.embeddings.real_embeddings_service import get_embeddings_service
         
         logger.info(f"🔄 Admin OCR reprocessing requested for image: {image_id}")
         

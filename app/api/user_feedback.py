@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from ..services.core.supabase_client import get_supabase_client, SupabaseClient
-from ..services.sentiment_analysis_service import SentimentAnalysisService
+from ..services.integrations.sentiment_analysis_service import SentimentAnalysisService
 from ..config import get_settings
 
 logger = logging.getLogger(__name__)
