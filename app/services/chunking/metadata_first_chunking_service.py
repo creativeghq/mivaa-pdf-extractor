@@ -42,56 +42,62 @@ class MetadataFirstChunkingService:
     
     async def get_pages_to_exclude(
         self,
-        products: List[Dict[str, Any]],
+        products: List[Any],  # Can be Dict or ProductInfo dataclass
         document_id: str
     ) -> Set[int]:
         """
         Get set of page numbers to exclude from chunking.
-        
+
         These are pages that contain product metadata and should not
         be chunked to avoid duplication.
-        
+
         Args:
-            products: List of products with page_range metadata
+            products: List of products (Dict or ProductInfo dataclass) with page_range metadata
             document_id: Document ID for logging
-            
+
         Returns:
             Set of page numbers to exclude from chunking
         """
         if not self.enabled:
             return set()  # Don't exclude any pages if disabled
-        
+
         try:
             excluded_pages = set()
-            
+
             for product in products:
-                # Get page range for this product
-                page_range = product.get('page_range', [])
-                
+                # Handle both dict and dataclass (ProductInfo)
+                if isinstance(product, dict):
+                    page_range = product.get('page_range', [])
+                    product_name = product.get('name', 'Unknown')
+                else:
+                    # Assume it's a dataclass with attributes
+                    page_range = getattr(product, 'page_range', [])
+                    product_name = getattr(product, 'name', 'Unknown')
+
                 if not page_range or len(page_range) < 2:
                     continue
-                
+
                 # Add all pages in the product's range to exclusion set
                 start_page = page_range[0]
                 end_page = page_range[1]
-                
+
                 for page_num in range(start_page, end_page + 1):
                     excluded_pages.add(page_num)
-                
+
                 self.logger.debug(
-                    f"   📄 Product '{product.get('name')}': "
+                    f"   📄 Product '{product_name}': "
                     f"excluding pages {start_page}-{end_page}"
                 )
-            
+
             if excluded_pages:
                 self.logger.info(
                     f"🚫 Metadata-First: Excluding {len(excluded_pages)} pages "
                     f"from chunking (product metadata pages)"
                 )
                 self.logger.info(f"   Pages to exclude: {sorted(excluded_pages)}")
-            
+
             return excluded_pages
-            
+
         except Exception as e:
             self.logger.error(f"❌ Failed to get pages to exclude: {e}")
             return set()  # Fallback: don't exclude any pages

@@ -21,7 +21,9 @@ from app.services.embeddings.vecs_service import VecsService
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 from app.services.pdf.pdf_processor import PDFProcessor
 from app.services.discovery.vision_guided_extractor import VisionGuidedExtractor
+from app.utils.page_converter import PageConverter, PageNumber  # ✅ NEW: Centralized page management
 from app.config import get_settings
+
 
 logger = logging.getLogger(__name__)
 
@@ -943,46 +945,19 @@ Respond ONLY with this JSON format:
         logger.info(f"🎯 Starting vision-guided image extraction for {len(catalog.products)} products...")
 
         import fitz
+        from app.utils.page_converter import PageConverter # Assuming this import is needed
         try:
-            doc = fitz.open(pdf_path)
-            pdf_page_count = len(doc)
+            # ✅ NEW: Use PageConverter for centralized page number management
+            converter = PageConverter.from_pdf_path(pdf_path)
+            
+            logger.info(
+                f"   📐 Detected PDF layout: {converter.pages_per_sheet} page(s) per sheet"
+            )
+            logger.info(
+                f"   Physical pages: {converter.total_pdf_pages}, "
+                f"Catalog pages: {converter.total_catalog_pages}"
+            )
 
-            # 📐 AUTO-DETECT 2-PAGE SPREADS: Check if PDF uses 2 pages per sheet layout
-            # This happens when catalog pages are displayed side-by-side (e.g., pages 1-2 on one PDF page)
-            pages_per_sheet = 1  # Default: 1 catalog page = 1 PDF page
-
-            if pdf_page_count > 0:
-                # Check MULTIPLE pages to detect dominant layout (not just first page)
-                # Many PDFs have portrait cover page but landscape content pages
-                pages_to_check = min(5, pdf_page_count)  # Check first 5 pages
-                spread_count = 0
-                standard_count = 0
-
-                for page_idx in range(pages_to_check):
-                    page = doc[page_idx]
-                    rect = page.rect
-                    aspect_ratio = rect.width / rect.height if rect.height > 0 else 1.0
-
-                    # Landscape pages with aspect ratio > 1.4 are likely 2-page spreads
-                    if aspect_ratio > 1.4:
-                        spread_count += 1
-                        if page_idx == 0:
-                            logger.info(f"   📐 Page {page_idx + 1}: 2-page spread (aspect: {aspect_ratio:.2f})")
-                    else:
-                        standard_count += 1
-                        if page_idx == 0:
-                            logger.info(f"   📐 Page {page_idx + 1}: Standard layout (aspect: {aspect_ratio:.2f})")
-
-                # Use majority vote: if most pages are spreads, treat entire PDF as spreads
-                if spread_count > standard_count:
-                    pages_per_sheet = 2
-                    logger.info(f"   ✅ DOMINANT LAYOUT: 2-page spreads ({spread_count}/{pages_to_check} pages)")
-                    logger.info(f"      → Catalog pages 1-{pdf_page_count * 2} mapped to PDF pages 1-{pdf_page_count}")
-                else:
-                    logger.info(f"   ✅ DOMINANT LAYOUT: Standard ({standard_count}/{pages_to_check} pages)")
-
-            doc.close()
-            logger.info(f"   📄 PDF has {pdf_page_count} pages ({pdf_page_count * pages_per_sheet} catalog pages)")
         except Exception as e:
             logger.error(f"❌ Failed to open PDF for page count: {e}")
             return {
@@ -1016,32 +991,17 @@ Respond ONLY with this JSON format:
                 # Catalog pages may be different from PDF pages (e.g., 2-page spreads)
                 # For 2-page spreads: catalog page 74 → PDF page 37
                 # For standard layout: catalog page 74 → PDF page 74
-                valid_catalog_pages = []
-                invalid_catalog_pages = []
+                
+                # ✅ NEW: Validate page range against PDF bounds
+                valid_catalog_pages = converter.validate_page_range(product.page_range)
+                invalid_pages = [p for p in product.page_range if p not in valid_catalog_pages]
 
-                for catalog_page in product.page_range:
-                    if catalog_page > 0:
-                        # Convert catalog page to PDF page using same formula as product_discovery_service.py
-                        pdf_page = (catalog_page + pages_per_sheet - 1) // pages_per_sheet
-
-                        # Validate against actual PDF page count
-                        if 1 <= pdf_page <= pdf_page_count:
-                            valid_catalog_pages.append(catalog_page)
-                        else:
-                            invalid_catalog_pages.append(catalog_page)
-
-                if invalid_catalog_pages:
-                    if pages_per_sheet == 2:
-                        logger.warning(
-                            f"   ⚠️ [{product_idx}/{len(catalog.products)}] {product.name} "
-                            f"has invalid catalog pages {invalid_catalog_pages} (PDF has {pdf_page_count} pages = {pdf_page_count * 2} catalog pages) - skipping these"
-                        )
-                    else:
-                        logger.warning(
-                            f"   ⚠️ [{product_idx}/{len(catalog.products)}] {product.name} "
-                            f"has invalid pages {invalid_catalog_pages} (PDF has {pdf_page_count} pages) - skipping these"
-                        )
-                    stats['skipped_invalid_pages'] += len(invalid_catalog_pages)
+                if invalid_pages:
+                    logger.warning(
+                        f"   ⚠️ [{product_idx}/{len(catalog.products)}] {product.name} "
+                        f"has invalid catalog pages {invalid_pages} - skipping these"
+                    )
+                    stats['skipped_invalid_pages'] += len(invalid_pages)
 
                 if not valid_catalog_pages:
                     logger.warning(f"   ⚠️ [{product_idx}/{len(catalog.products)}] {product.name} has NO valid pages - skipping")
@@ -1057,16 +1017,14 @@ Respond ONLY with this JSON format:
                     stats['total_pages_processed'] += 1
 
                     try:
-                        # 📐 CONVERT CATALOG PAGE TO PDF PAGE INDEX (0-based)
-                        # For 2-page spreads: catalog page 74 → PDF page 37 → page_idx 36
-                        # For standard layout: catalog page 74 → PDF page 74 → page_idx 73
-                        pdf_page = (catalog_page + pages_per_sheet - 1) // pages_per_sheet
-                        page_idx = pdf_page - 1  # Convert to 0-indexed
+                        # ✅ NEW: Use PageConverter for type-safe page conversion
+                        page = converter.from_catalog_page(catalog_page)
 
                         # Call vision-guided extractor
                         result = await self.vision_extractor.extract_products_from_page(
                             pdf_path=pdf_path,
-                            page_num=page_idx,  # ✅ NOW CORRECTLY CONVERTED
+                            page_num=page.array_index,  # ✅ Type-safe PyMuPDF index
+                            catalog_page=page.catalog_page,  # ✅ NEW: Pass catalog page
                             product_names=[product.name],
                             job_id=job_id
                         )

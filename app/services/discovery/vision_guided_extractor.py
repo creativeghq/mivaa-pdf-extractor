@@ -96,17 +96,19 @@ class VisionGuidedExtractor:
         page_num: int,
         product_names: Optional[List[str]] = None,
         job_id: Optional[str] = None,
-        vision_context: str = "extraction"  # 🆕 "discovery" or "extraction"
+        vision_context: str = "extraction",  # 🆕 "discovery" or "extraction"
+        catalog_page: Optional[int] = None  # ✅ NEW: Catalog page for logging/metadata
     ) -> Dict[str, Any]:
         """
         Extract product images from a single PDF page using Claude Vision.
 
         Args:
             pdf_path: Path to PDF file
-            page_num: Page number (0-indexed)
+            page_num: Page number (0-indexed, PyMuPDF array index)
             product_names: Optional list of expected product names for guidance
             job_id: Optional job ID for tracking
             vision_context: Context of Vision processing - "discovery" or "extraction"
+            catalog_page: Optional catalog page number (1-indexed) for logging/metadata
 
         Returns:
             Dict containing:
@@ -115,6 +117,7 @@ class VisionGuidedExtractor:
             - page_image_base64: str (for debugging)
             - extraction_method: 'vision_guided'
             - confidence_score: float (average)
+            - catalog_page: int (if provided)
         """
         start_time = datetime.now()
 
@@ -127,7 +130,9 @@ class VisionGuidedExtractor:
             vision_type = "Vision Processing"
 
         try:
-            logger.info(f"🔍 [{vision_type}] Processing page {page_num + 1}")
+            # Use catalog_page in logs if provided, otherwise fallback to page_num + 1
+            page_display = catalog_page if catalog_page else page_num + 1
+            logger.info(f"🔍 [{vision_type}] Processing catalog page {page_display}")
             
             # Step 1: Render PDF page to image
             page_image_base64 = await self._render_page_to_image(pdf_path, page_num)
@@ -167,11 +172,11 @@ class VisionGuidedExtractor:
             # ✅ IMPROVED LOGGING: Differentiate between empty pages and detection failures
             if len(detections) == 0:
                 logger.info(
-                    f"📄 [Vision] Page {page_num + 1}: No products detected (empty page or no matching products)"
+                    f"📄 [Vision] Catalog page {page_display}: No products detected (empty page or no matching products)"
                 )
             else:
                 logger.info(
-                    f"✅ [Vision] Found {len(detections)} products on page {page_num + 1} "
+                    f"✅ [Vision] Found {len(detections)} products on catalog page {page_display} "
                     f"(avg confidence: {avg_confidence:.2f})"
                 )
 
@@ -181,7 +186,8 @@ class VisionGuidedExtractor:
                 'page_image_base64': page_image_base64,
                 'extraction_method': 'vision_guided',
                 'confidence_score': avg_confidence,
-                'page_num': page_num,
+                'page_num': page_num,  # PyMuPDF index
+                'catalog_page': catalog_page,  # ✅ NEW: Include catalog page if provided
                 'processing_time_ms': latency_ms
             }
             

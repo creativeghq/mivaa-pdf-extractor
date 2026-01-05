@@ -130,6 +130,9 @@ from app.services.chunking.unified_chunking_service import UnifiedChunkingServic
 # Import worker for process isolation
 from app.services.pdf.pdf_worker import execute_pdf_extraction_job
 
+# Import PageConverter for centralized page number management
+from app.utils.page_converter import PageConverter, PageNumber
+
 
 @dataclass
 class PDFProcessingResult:
@@ -634,19 +637,35 @@ class PDFProcessor:
             total_pages = len(doc)
             doc.close()
 
+            # ✅ NEW: Use PageConverter for centralized page number management
+            converter = PageConverter.from_pdf_path(pdf_path)
+            
+            self.logger.info(
+                f"📐 Detected PDF layout: {converter.pages_per_sheet} page(s) per sheet"
+            )
+            self.logger.info(
+                f"   Physical pages: {converter.total_pdf_pages}, "
+                f"Catalog pages: {converter.total_catalog_pages}"
+            )
+
             # Determine which pages to process
             if page_list:
-                # Convert 1-indexed to 0-indexed
-                pages_to_process = [p - 1 for p in page_list if p > 0]
+                # page_list contains catalog pages (1-indexed)
+                # Validate and convert to array indices
+                valid_catalog_pages = converter.validate_page_range(page_list)
+                pages_to_process = [
+                    converter.from_catalog_page(catalog_page).array_index
+                    for catalog_page in valid_catalog_pages
+                ]
                 
-                # ✅ VALIDATION: Filter out-of-bounds pages
-                valid_pages = [p for p in pages_to_process if p < total_pages]
-                if len(valid_pages) < len(pages_to_process):
-                    dropped = [p + 1 for p in pages_to_process if p >= total_pages]
-                    self.logger.warning(f"⚠️ Dropping {len(pages_to_process) - len(valid_pages)} out-of-bounds pages: {dropped} (Total pages in PDF: {total_pages})")
-                    pages_to_process = valid_pages
+                if len(valid_catalog_pages) < len(page_list):
+                    self.logger.info(
+                        f"   Filtered {len(page_list) - len(valid_catalog_pages)} "
+                        f"out-of-bounds catalog pages"
+                    )
             else:
                 pages_to_process = list(range(total_pages))
+
 
             self.logger.info(f"🔄 STREAMING IMAGE EXTRACTION: {len(pages_to_process)} pages in batches of {batch_size}")
 
@@ -676,7 +695,8 @@ class PDFProcessor:
                     image_dir,
                     batch_pages,
                     job_id,
-                    document_id
+                    document_id,
+                    converter  # ✅ NEW: Pass PageConverter for page number validation
                 )
 
                 # Update extraction stats based on extracted images
@@ -722,7 +742,8 @@ class PDFProcessor:
         image_dir: str,
         batch_pages: List[int],
         job_id: Optional[str] = None,
-        document_id: Optional[str] = None
+        document_id: Optional[str] = None,
+        converter: Optional[PageConverter] = None  # ✅ NEW: PageConverter for validation
     ) -> List[Dict[str, Any]]:
         """
         Extract images from a specific batch of pages with vision-guided extraction + PyMuPDF fallback.
@@ -732,6 +753,14 @@ class PDFProcessor:
         Architecture:
         1. Try vision-guided extraction first
         2. Fall back to PyMuPDF if vision fails or returns nothing
+        
+        Args:
+            pdf_path: Path to PDF file
+            image_dir: Directory to save extracted images
+            batch_pages: List of page indices (0-based) to process
+            job_id: Optional job ID for tracking
+            document_id: Optional document ID
+            converter: Optional PageConverter for page number validation
 
         Returns:
             List of extracted image data dictionaries
@@ -747,7 +776,7 @@ class PDFProcessor:
             try:
                 self.logger.info(f"   🔍 [Job: {job_id}] Attempting vision-guided extraction for pages {batch_pages}")
                 vision_images = self._extract_batch_images_with_vision(
-                    pdf_path, image_dir, batch_pages, job_id, document_id
+                    pdf_path, image_dir, batch_pages, job_id, document_id, converter  # ✅ Pass converter
                 )
                 if vision_images:
                     self.logger.info(
@@ -772,12 +801,17 @@ class PDFProcessor:
         image_dir: str,
         batch_pages: List[int],
         job_id: Optional[str] = None,
-        document_id: Optional[str] = None
+        document_id: Optional[str] = None,
+        converter: Optional[PageConverter] = None  # ✅ NEW: PageConverter
     ) -> List[Dict[str, Any]]:
         """
         Extract images using VisionGuidedExtractor with bounding boxes.
 
         ✅ INTEGRATED with job tracking and error logging
+
+        Args:
+            batch_pages: List of page indices (0-based) to process
+            converter: PageConverter for page number validation and conversion
 
         Returns list of extracted images with vision metadata (bounding boxes, confidence).
         Raises exception if vision extraction fails.
@@ -794,15 +828,27 @@ class PDFProcessor:
         # Process each page with vision extraction
         for page_idx in batch_pages:
             try:
+                # ✅ NEW: Convert array index to all page number formats
+                if converter:
+                    page = converter.from_array_index(page_idx)
+                    catalog_page = page.catalog_page
+                    pdf_page = page.pdf_page
+                else:
+                    # Fallback if converter not available
+                    catalog_page = page_idx + 1
+                    pdf_page = page_idx + 1
+
                 self.logger.info(
-                    f"   🔍 [Job: {job_id}] Vision extraction for page {page_idx + 1}"
+                    f"   🔍 [Job: {job_id}] Vision extraction for catalog page {catalog_page} "
+                    f"(PDF page {pdf_page}, index {page_idx})"
                 )
 
                 # Run async vision extraction in sync context
                 result = asyncio.run(
                     extractor.extract_products_from_page(
                         pdf_path=pdf_path,
-                        page_num=page_idx
+                        page_num=page_idx,  # PyMuPDF array index
+                        catalog_page=catalog_page  # ✅ NEW: Pass catalog page for metadata
                     )
                 )
 
@@ -850,49 +896,48 @@ class PDFProcessor:
                             page_num=page_idx,
                             bbox=bbox,
                             output_path=image_path,
-                            zoom=3.0  # Set to 3.0 for 216 DPI (Premium Quality)
+                            zoom=3.0  # 216 DPI for premium quality
                         ))
 
-                        if crop_result.get('success'):
-                            extracted_images.append({
-                                'path': image_path,
-                                'filename': image_filename,
-                                'page_number': page_idx + 1,
-                                'extraction_method': 'vision_guided',
-                                'detection_confidence': detection.get('confidence', 0.0),
-                                'product_name': detection.get('product_name', ''),
-                                'bbox': bbox,
-                                'width': crop_result.get('width'),
-                                'height': crop_result.get('height'),
-                                'vision_provider': settings.vision_guided_provider,
-                                'vision_model': settings.vision_guided_model,
-                                'vision_metadata': {
-                                    'provider': settings.vision_guided_provider,
-                                    'model': settings.vision_guided_model,
-                                    'confidence': confidence,
-                                    'bbox': bbox,
-                                    'zoom': 3.0
-                                }
-                            })
+                        if not crop_result.get('success'):
+                            self.logger.warning(f"   ⚠️ Failed to crop image for detection {detection_idx}")
+                            continue
 
-                            self.logger.debug(
-                                f"   ✅ [Job: {job_id}] Extracted vision image (cropped): {image_filename}"
-                            )
-                        else:
-                            self.logger.warning(
-                                f"   ⚠️ [Job: {job_id}] Failed to crop vision image: {crop_result.get('error')}"
-                            )
-                    except Exception as e:
-                        self.logger.error(
-                            f"   ❌ [Job: {job_id}] Failed to process detection {detection_idx} "
-                            f"on page {page_idx + 1}: {e}"
+                        # ✅ NEW: Include complete page number metadata
+                        img_meta = {
+                            'filename': image_filename,
+                            'path': image_path,
+                            'page_number': page_idx + 1,  # 1-indexed for legacy compatibility
+                            'catalog_page_number': catalog_page,  # ✅ NEW
+                            'pdf_page_number': pdf_page,  # ✅ NEW
+                            'array_index': page_idx,  # ✅ NEW
+                            'bbox': bbox,
+                            'confidence': detection.get('confidence', 0.0),
+                            'detection_confidence': detection.get('confidence', 0.0),
+                            'product_name': detection.get('product_name', 'Unknown'),
+                            'description': detection.get('description', ''),
+                            'detection_method': 'vision_guided',
+                            'extraction_method': 'vision_guided',
+                            'vision_provider': settings.vision_guided_provider,
+                            'vision_model': settings.vision_guided_model,
+                            'width': crop_result.get('width', 0),
+                            'height': crop_result.get('height', 0),
+                            'size_bytes': os.path.getsize(image_path) if os.path.exists(image_path) else 0
+                        }
+
+                        extracted_images.append(img_meta)
+
+                        self.logger.debug(
+                            f"   ✅ Extracted: {detection.get('product_name')} "
+                            f"(confidence: {detection.get('confidence'):.2f})"
                         )
+
+                    except Exception as detection_error:
+                        self.logger.error(f"   ❌ Failed to process detection {detection_idx}: {detection_error}")
                         continue
 
-            except Exception as e:
-                self.logger.error(
-                    f"   ❌ [Job: {job_id}] Vision extraction error for page {page_idx + 1}: {e}"
-                )
+            except Exception as page_error:
+                self.logger.error(f"   ❌ Vision extraction failed for page {page_idx + 1}: {page_error}")
                 continue
 
         return extracted_images
@@ -1089,6 +1134,7 @@ class PDFProcessor:
         self,
         image_dir: str,
         document_id: str,
+        extracted_images: List[Dict[str, Any]],
         processing_options: Dict[str, Any],
         progress_callback: Optional[callable],
         batch_num: int,

@@ -46,7 +46,9 @@ from app.services.core.ai_call_logger import AICallLogger
 from app.services.metadata.dynamic_metadata_extractor import DynamicMetadataExtractor
 from app.services.core.ai_client_service import get_ai_client_service
 from app.services.discovery.vision_guided_extractor import VisionGuidedExtractor
+from app.utils.page_converter import PageConverter, PageNumber  # ✅ NEW: Centralized page management
 from app.config import get_settings
+
 
 logger = logging.getLogger(__name__)
 
@@ -2454,39 +2456,16 @@ IMPORTANT:
                 f"🎯 Starting vision-guided extraction for {len(catalog.products)} products..."
             )
 
-            # AUTO-DETECT 2-PAGE SPREADS: Check if PDF uses 2 pages per sheet layout
-            import fitz
-            doc = fitz.open(pdf_path)
-            pdf_page_count = len(doc)
-            pages_per_sheet = 1  # Default: 1 catalog page = 1 PDF page
-
-            if pdf_page_count > 0:
-                # Check MULTIPLE pages to detect dominant layout
-                pages_to_check = min(5, pdf_page_count)
-                spread_count = 0
-                standard_count = 0
-
-                for page_idx in range(pages_to_check):
-                    page = doc[page_idx]
-                    rect = page.rect
-                    aspect_ratio = rect.width / rect.height if rect.height > 0 else 1.0
-
-                    # Landscape pages with aspect ratio > 1.4 are likely 2-page spreads
-                    if aspect_ratio > 1.4:
-                        spread_count += 1
-                    else:
-                        standard_count += 1
-
-                # Use majority vote
-                if spread_count > standard_count:
-                    pages_per_sheet = 2
-                    self.logger.info(f"   ✅ DOMINANT LAYOUT: 2-page spreads ({spread_count}/{pages_to_check} pages)")
-                    self.logger.info(f"      → Catalog pages 1-{pdf_page_count * 2} mapped to PDF pages 1-{pdf_page_count}")
-                else:
-                    self.logger.info(f"   ✅ DOMINANT LAYOUT: Standard ({standard_count}/{pages_to_check} pages)")
-
-            doc.close()
-            self.logger.info(f"   📄 PDF has {pdf_page_count} pages ({pdf_page_count * pages_per_sheet} catalog pages)")
+            # ✅ NEW: Use PageConverter for centralized page number management
+            converter = PageConverter.from_pdf_path(pdf_path)
+            
+            self.logger.info(
+                f"   📐 Detected PDF layout: {converter.pages_per_sheet} page(s) per sheet"
+            )
+            self.logger.info(
+                f"   Physical pages: {converter.total_pdf_pages}, "
+                f"Catalog pages: {converter.total_catalog_pages}"
+            )
 
             # Process each product's pages
             all_confidences = []
@@ -2497,24 +2476,31 @@ IMPORTANT:
                     f"(catalog pages: {product.page_range})"
                 )
 
-                # Extract images from each catalog page in product's range
-                for catalog_page in product.page_range:
+                # ✅ NEW: Validate page range against PDF bounds
+                valid_catalog_pages = converter.validate_page_range(product.page_range)
+                
+                if len(valid_catalog_pages) < len(product.page_range):
+                    self.logger.warning(
+                        f"   ⚠️ Filtered {len(product.page_range) - len(valid_catalog_pages)} "
+                        f"out-of-bounds catalog pages for {product.name}"
+                    )
+
+                # Extract images from each VALID catalog page in product's range
+                for catalog_page in valid_catalog_pages:
                     stats['total_pages_processed'] += 1
 
                     try:
-                        # 📐 CONVERT CATALOG PAGE TO PDF PAGE INDEX (0-based)
-                        # For 2-page spreads: catalog page 74 → PDF page 37 → page_idx 36
-                        # For standard layout: catalog page 74 → PDF page 74 → page_idx 73
-                        pdf_page = (catalog_page + pages_per_sheet - 1) // pages_per_sheet
-                        page_idx = pdf_page - 1  # Convert to 0-indexed
+                        # ✅ NEW: Use PageConverter for type-safe page conversion
+                        page = converter.from_catalog_page(catalog_page)
 
                         # Call vision-guided extractor for EXTRACTION (not discovery)
                         result = await self.vision_extractor.extract_products_from_page(
                             pdf_path=pdf_path,
-                            page_num=page_idx,  # ✅ NOW CORRECTLY CONVERTED
+                            page_num=page.array_index,  # ✅ Type-safe PyMuPDF index
+                            catalog_page=page.catalog_page,  # ✅ NEW: Pass catalog page
                             product_names=[product.name],  # Provide expected product name
                             job_id=job_id,
-                            vision_context="extraction"  # 🆕 This is product extraction, not discovery
+                            vision_context="extraction"  # This is product extraction, not discovery
                         )
 
                         # This ensures the database shows current status during long-running Vision API calls
