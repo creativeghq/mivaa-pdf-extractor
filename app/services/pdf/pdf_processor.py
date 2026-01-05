@@ -845,13 +845,13 @@ class PDFProcessor:
                         image_path = os.path.join(image_dir, image_filename)
 
                         # ✅ FIX: Use precise cropping with PREMIUM quality (3.0x zoom)
-                        crop_result = await extractor.crop_and_save_image(
+                        crop_result = asyncio.run(extractor.crop_and_save_image(
                             pdf_path=pdf_path,
                             page_num=page_idx,
                             bbox=bbox,
                             output_path=image_path,
                             zoom=3.0  # Set to 3.0 for 216 DPI (Premium Quality)
-                        )
+                        ))
 
                         if crop_result.get('success'):
                             extracted_images.append({
