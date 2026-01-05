@@ -29,7 +29,7 @@ from ..core.supabase_client import get_supabase_client
 from ..embeddings.vecs_service import get_vecs_service
 from ..core.ai_client_service import get_ai_client_service
 from ..core.ai_call_logger import AICallLogger
-from .unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
+from ..chunking.unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
 
 
 class RAGService:
