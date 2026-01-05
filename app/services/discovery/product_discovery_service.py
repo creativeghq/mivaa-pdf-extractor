@@ -2508,13 +2508,35 @@ IMPORTANT:
                         pdf_page = (catalog_page + pages_per_sheet - 1) // pages_per_sheet
                         page_idx = pdf_page - 1  # Convert to 0-indexed
 
-                        # Call vision-guided extractor
+                        # Call vision-guided extractor for EXTRACTION (not discovery)
                         result = await self.vision_extractor.extract_products_from_page(
                             pdf_path=pdf_path,
                             page_num=page_idx,  # ✅ NOW CORRECTLY CONVERTED
                             product_names=[product.name],  # Provide expected product name
-                            job_id=job_id
+                            job_id=job_id,
+                            vision_context="extraction"  # 🆕 This is product extraction, not discovery
                         )
+
+                        # This ensures the database shows current status during long-running Vision API calls
+                        if tracker:
+                            # Calculate progress: 0-10% for discovery phase
+                            # Distribute progress across all pages being processed
+                            total_pages_to_process = sum(len(p.page_range) for p in catalog.products)
+                            progress_pct = min(10, int((stats['total_pages_processed'] / max(total_pages_to_process, 1)) * 10))
+
+                            tracker.current_step = f"Vision processing page {page_idx + 1} for {product.name}"
+                            tracker.progress_current = stats['total_pages_processed']
+                            tracker.progress_total = total_pages_to_process
+
+                            # Force sync to database every 5 pages to show progress
+                            if stats['total_pages_processed'] % 5 == 0:
+                                await tracker.update_stage(
+                                    ProcessingStage.INITIALIZING,
+                                    stage_name="product_discovery",
+                                    progress_percentage=progress_pct
+                                )
+                                await tracker._sync_to_database(stage="product_discovery", force=True)
+                                self.logger.info(f"📊 Progress updated: {progress_pct}% ({stats['total_pages_processed']}/{total_pages_to_process} pages)")
 
                         if result['success'] and result['detections']:
                             # Process each detection
@@ -2614,13 +2636,18 @@ IMPORTANT:
 
         for page_idx in range(max_pages_to_scan):
             try:
-                # Call vision API to check if product appears on this page
+                # Call vision API to check if product appears on this page (DISCOVERY phase)
                 result = await vision_extractor.extract_products_from_page(
                     pdf_path=pdf_path,
                     page_num=page_idx,
                     product_names=[product_name],
-                    job_id=job_id
+                    job_id=job_id,
+                    vision_context="discovery"  # 🆕 This is product discovery, not extraction
                 )
+
+                # 🆕 Log progress every 10 pages during page detection
+                if (page_idx + 1) % 10 == 0:
+                    self.logger.info(f"      📊 Scanned {page_idx + 1}/{max_pages_to_scan} pages for '{product_name}'")
 
                 if result['success'] and result['detections']:
                     # Check if any detection matches our product

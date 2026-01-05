@@ -95,17 +95,19 @@ class VisionGuidedExtractor:
         pdf_path: str,
         page_num: int,
         product_names: Optional[List[str]] = None,
-        job_id: Optional[str] = None
+        job_id: Optional[str] = None,
+        vision_context: str = "extraction"  # 🆕 "discovery" or "extraction"
     ) -> Dict[str, Any]:
         """
         Extract product images from a single PDF page using Claude Vision.
-        
+
         Args:
             pdf_path: Path to PDF file
             page_num: Page number (0-indexed)
             product_names: Optional list of expected product names for guidance
             job_id: Optional job ID for tracking
-            
+            vision_context: Context of Vision processing - "discovery" or "extraction"
+
         Returns:
             Dict containing:
             - success: bool
@@ -115,9 +117,17 @@ class VisionGuidedExtractor:
             - confidence_score: float (average)
         """
         start_time = datetime.now()
-        
+
+        # 🆕 Determine Vision process type for logging
+        if vision_context == "discovery":
+            vision_type = "Vision Product Discovery"
+        elif vision_context == "extraction":
+            vision_type = "Vision Product Extraction"
+        else:
+            vision_type = "Vision Processing"
+
         try:
-            logger.info(f"🔍 [Vision] Extracting products from page {page_num + 1}")
+            logger.info(f"🔍 [{vision_type}] Processing page {page_num + 1}")
             
             # Step 1: Render PDF page to image
             page_image_base64 = await self._render_page_to_image(pdf_path, page_num)
