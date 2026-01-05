@@ -26,8 +26,8 @@ from tenacity import (
     before_sleep_log,
 )
 
-from ..config import get_settings
-from ..utils.exceptions import ServiceError, ExternalServiceError, PDFConfigurationError
+from app.config import get_settings
+from app.utils.exceptions import ServiceError, ExternalServiceError, PDFConfigurationError
 from .ai_call_logger import AICallLogger
 
 # Import enhanced material property extraction capabilities

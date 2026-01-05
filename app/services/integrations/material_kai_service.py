@@ -21,8 +21,8 @@ from functools import wraps
 import time
 import random
 
-from ..config import get_settings
-from ..utils.exceptions import MaterialKaiIntegrationError
+from app.config import get_settings
+from app.utils.exceptions import MaterialKaiIntegrationError
 
 logger = logging.getLogger(__name__)
 

@@ -14,8 +14,8 @@ from typing import Dict, List, Optional, Any, Union
 from datetime import datetime
 from pydantic import BaseModel, Field
 
-from ..config import get_settings
-from ..utils.exceptions import MaterialKaiIntegrationError
+from app.config import get_settings
+from app.utils.exceptions import MaterialKaiIntegrationError
 from .material_kai_service import MaterialKaiService
 
 logger = logging.getLogger(__name__)

@@ -20,7 +20,7 @@ import httpx
 if TYPE_CHECKING:
     from openai import OpenAI, AsyncOpenAI
 
-from ..config import get_settings
+from app.config import get_settings
 from .ai_call_logger import AICallLogger
 
 logger = logging.getLogger(__name__)
