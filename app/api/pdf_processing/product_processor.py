@@ -109,7 +109,8 @@ async def process_single_product(
             document_id=document_id,
             job_id=job_id,
             logger=logger_instance,
-            total_pages=total_pages
+            total_pages=total_pages,
+            pages_per_sheet=getattr(catalog, 'pages_per_sheet', 1)
         )
 
         await product_tracker.mark_stage_complete(

@@ -100,16 +100,23 @@ async def process_product_images(
 
     logger.info(f"   Material: {len(material_images)}, Non-material: {non_material_count}")
 
-    images_processed = 0
-    for img_data in material_images:
-        try:
-            await image_service.upload_image(img_data, workspace_id, document_id)
-            await image_service.save_image_to_db(img_data, document_id, workspace_id, job_id)
-            await image_service.generate_clip_embedding(img_data)
-            images_processed += 1
-        except Exception as e:
-            logger.error(f"   Failed to process image: {e}")
+    # ✅ NEW: Use batch processing methods for Better Reliability & Metadata Preservation
+    # 1. Upload images to storage
+    logger.info(f"   📤 Uploading {len(material_images)} material images to cloud storage...")
+    uploaded_images = await image_service.upload_images_to_storage(
+        material_images=material_images,
+        document_id=document_id
+    )
 
+    # 2. Save to DB and Generate CLIP embeddings
+    logger.info(f"   💾 Saving metadata and generating CLIP embeddings...")
+    save_result = await image_service.save_images_and_generate_clips(
+        material_images=uploaded_images,
+        document_id=document_id,
+        workspace_id=workspace_id
+    )
+
+    images_processed = save_result.get('images_saved', 0)
     logger.info(f"   ✅ Processed {images_processed} material images for {product.name}")
 
     return {

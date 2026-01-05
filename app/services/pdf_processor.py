@@ -668,8 +668,8 @@ class PDFProcessor:
 
                 self.logger.info(f"   📦 Batch {batch_num + 1}: Processing pages {batch_pages}")
 
-                # Extract images for THIS BATCH ONLY with tracking
-                batch_stats = await loop.run_in_executor(
+                # Extract images for THIS BATCH
+                batch_extracted_images = await loop.run_in_executor(
                     None,
                     self._extract_batch_images,
                     pdf_path,
@@ -679,16 +679,19 @@ class PDFProcessor:
                     document_id
                 )
 
-                # Update extraction stats
-                if batch_stats:
-                    extraction_stats['vision_guided_count'] += batch_stats.get('vision_guided_count', 0)
-                    extraction_stats['pymupdf_count'] += batch_stats.get('pymupdf_count', 0)
-                    extraction_stats['failed_count'] += batch_stats.get('failed_count', 0)
+                # Update extraction stats based on extracted images
+                for img in batch_extracted_images:
+                    method = img.get('detection_method', 'pymupdf')
+                    if method == 'vision_guided':
+                        extraction_stats['vision_guided_count'] += 1
+                    else:
+                        extraction_stats['pymupdf_count'] += 1
 
                 # Process extracted images IMMEDIATELY (don't accumulate)
                 batch_images = await self._process_batch_images(
                     image_dir,
                     document_id,
+                    batch_extracted_images,
                     processing_options,
                     progress_callback,
                     batch_num,
@@ -720,39 +723,24 @@ class PDFProcessor:
         batch_pages: List[int],
         job_id: Optional[str] = None,
         document_id: Optional[str] = None
-    ) -> Dict[str, int]:
+    ) -> List[Dict[str, Any]]:
         """
         Extract images from a specific batch of pages with vision-guided extraction + PyMuPDF fallback.
 
-        ✅ FULLY INTEGRATED with:
-        - Job tracking (job_id)
-        - Document tracking (document_id)
-        - Extraction method metrics (vision vs pymupdf)
-        - Error logging
+        ✅ FULLY INTEGRATED with metadata propagation
 
         Architecture:
-        1. Try vision-guided extraction (if enabled and confidence >= threshold)
-        2. Fall back to PyMuPDF if vision fails or confidence is low
-        3. Always extract with PyMuPDF as final fallback
+        1. Try vision-guided extraction first
+        2. Fall back to PyMuPDF if vision fails or returns nothing
 
         Returns:
-            Dict with extraction stats:
-            - vision_guided_count: Number of images extracted via vision
-            - pymupdf_count: Number of images extracted via PyMuPDF
-            - failed_count: Number of failed extractions
+            List of extracted image data dictionaries
         """
         import fitz
         import gc
         from app.config import get_settings
 
         settings = get_settings()
-
-        # Track extraction method
-        stats = {
-            'vision_guided_count': 0,
-            'pymupdf_count': 0,
-            'failed_count': 0
-        }
 
         # Try vision-guided extraction first (if enabled)
         if settings.vision_guided_enabled:
@@ -762,12 +750,11 @@ class PDFProcessor:
                     pdf_path, image_dir, batch_pages, job_id, document_id
                 )
                 if vision_images:
-                    stats['vision_guided_count'] = len(vision_images)
                     self.logger.info(
                         f"   ✅ [Job: {job_id}] Vision-guided extraction successful: "
                         f"{len(vision_images)} images extracted"
                     )
-                    return stats
+                    return vision_images
             except Exception as e:
                 self.logger.warning(
                     f"   ⚠️ [Job: {job_id}] Vision-guided extraction failed: {e}. Falling back to PyMuPDF..."
@@ -775,12 +762,9 @@ class PDFProcessor:
 
         # Fall back to PyMuPDF extraction
         self.logger.info(f"   📄 [Job: {job_id}] Using PyMuPDF extraction for pages {batch_pages}")
-        pymupdf_count = self._extract_batch_images_with_pymupdf(
+        return self._extract_batch_images_with_pymupdf(
             pdf_path, image_dir, batch_pages, job_id, document_id
         )
-        stats['pymupdf_count'] = pymupdf_count
-
-        return stats
 
     def _extract_batch_images_with_vision(
         self,
@@ -854,37 +838,49 @@ class PDFProcessor:
                 for detection_idx, detection in enumerate(detections):
                     try:
                         # Get bounding box coordinates
-                        bbox = detection.get('bbox', {})
+                        bbox = detection.get('bbox', [])
 
-                        # Save image with vision metadata
+                        # Save image with vision metadata using precise cropping
                         image_filename = f"page_{page_idx + 1}_vision_detection_{detection_idx}.jpg"
                         image_path = os.path.join(image_dir, image_filename)
 
-                        # Decode base64 image from page_image_base64 (for now, we'll use the page image)
-                        # In production, you'd crop the image using bbox coordinates
-                        page_image_base64 = result.get('page_image_base64', '')
-                        if page_image_base64:
-                            import base64
-                            image_bytes = base64.b64decode(page_image_base64)
-                            with open(image_path, 'wb') as f:
-                                f.write(image_bytes)
+                        # ✅ FIX: Use precise cropping with PREMIUM quality (3.0x zoom)
+                        crop_result = await extractor.crop_and_save_image(
+                            pdf_path=pdf_path,
+                            page_num=page_idx,
+                            bbox=bbox,
+                            output_path=image_path,
+                            zoom=3.0  # Set to 3.0 for 216 DPI (Premium Quality)
+                        )
 
+                        if crop_result.get('success'):
                             extracted_images.append({
                                 'path': image_path,
+                                'filename': image_filename,
                                 'page_number': page_idx + 1,
-                                'detection_method': 'vision_guided',
-                                'confidence': detection.get('confidence', 0.0),
+                                'extraction_method': 'vision_guided',
+                                'detection_confidence': detection.get('confidence', 0.0),
                                 'product_name': detection.get('product_name', ''),
                                 'bbox': bbox,
+                                'width': crop_result.get('width'),
+                                'height': crop_result.get('height'),
+                                'vision_provider': settings.vision_guided_provider,
+                                'vision_model': settings.vision_guided_model,
                                 'vision_metadata': {
                                     'provider': settings.vision_guided_provider,
                                     'model': settings.vision_guided_model,
-                                    'confidence': confidence
+                                    'confidence': confidence,
+                                    'bbox': bbox,
+                                    'zoom': 3.0
                                 }
                             })
 
                             self.logger.debug(
-                                f"   ✅ [Job: {job_id}] Extracted vision image: {image_filename}"
+                                f"   ✅ [Job: {job_id}] Extracted vision image (cropped): {image_filename}"
+                            )
+                        else:
+                            self.logger.warning(
+                                f"   ⚠️ [Job: {job_id}] Failed to crop vision image: {crop_result.get('error')}"
                             )
                     except Exception as e:
                         self.logger.error(
@@ -908,7 +904,7 @@ class PDFProcessor:
         batch_pages: List[int],
         job_id: Optional[str] = None,
         document_id: Optional[str] = None
-    ) -> int:
+    ) -> List[Dict[str, Any]]:
         """
         Extract images using PyMuPDF (fallback method).
 
@@ -919,13 +915,14 @@ class PDFProcessor:
         NEW: If no embedded images found, renders entire page as image (for scanned PDFs).
 
         Returns:
-            Number of images extracted
+            List of extracted image data
         """
         import fitz
         import gc
+        import os
 
         doc = fitz.open(pdf_path)
-        extracted_count = 0
+        extracted_images = []
 
         try:
             for page_idx in batch_pages:
@@ -963,9 +960,20 @@ class PDFProcessor:
                             with open(image_path, "wb") as img_file:
                                 img_file.write(image_bytes)
 
+                            # Populate image metadata
+                            extracted_images.append({
+                                'path': image_path,
+                                'filename': image_filename,
+                                'page_number': page_idx + 1,
+                                'extraction_method': 'pymupdf',
+                                'format': image_ext,
+                                'size_bytes': len(image_bytes),
+                                'width': base_image.get('width'),
+                                'height': base_image.get('height')
+                            })
+
                             # Immediately free memory
                             del image_bytes, base_image
-                            extracted_count += 1
 
                             self.logger.debug(
                                 f"   ✅ [Job: {job_id}] Extracted PyMuPDF image: {image_filename}"
@@ -1038,25 +1046,25 @@ class PDFProcessor:
                                 )
 
                             # Also save the full page image for reference
-                            image_filename = f"page_{page_idx + 1}_fullpage.png"
-                            image_path = os.path.join(image_dir, image_filename)
-                            pil_image.save(image_path, 'PNG')
-                            extracted_count += 1
+                            full_page_filename = f"page_{page_idx + 1}_scanned.jpg"
+                            full_page_path = os.path.join(image_dir, full_page_filename)
+                            pil_image.save(full_page_path, "JPEG", quality=85)
+
+                            extracted_images.append({
+                                'path': full_page_path,
+                                'filename': full_page_filename,
+                                'page_number': page_idx + 1,
+                                'extraction_method': 'pymupdf_scanned_page',
+                                'format': 'jpg',
+                                'size_bytes': os.path.getsize(full_page_path),
+                                'width': pil_image.width,
+                                'height': pil_image.height
+                            })
 
                         except Exception as ocr_error:
-                            self.logger.warning(
-                                f"   ⚠️ [Job: {job_id}] OCR failed for page {page_idx + 1}: {ocr_error}. "
-                                f"Saving page as image only."
-                            )
-                            # Fallback: just save the image without OCR
-                            image_filename = f"page_{page_idx + 1}_fullpage.png"
-                            image_path = os.path.join(image_dir, image_filename)
-                            pil_image.save(image_path, 'PNG')
-                            extracted_count += 1
-
-                        # Free PIL image memory
-                        pil_image.close()
-                        pil_image = None
+                            self.logger.error(f"   ❌ [Job: {job_id}] OCR Service failure: {ocr_error}")
+                        finally:
+                            pil_image = None
 
                     except Exception as e:
                         self.logger.error(
@@ -1068,14 +1076,14 @@ class PDFProcessor:
                 gc.collect()
 
             self.logger.info(
-                f"   ✅ [Job: {job_id}] PyMuPDF extraction complete: {extracted_count} images extracted"
+                f"   ✅ [Job: {job_id}] PyMuPDF extraction complete: {len(extracted_images)} images extracted"
             )
 
         finally:
             doc.close()
             gc.collect()
 
-        return extracted_count
+        return extracted_images
 
     async def _process_batch_images(
         self,
@@ -1087,41 +1095,55 @@ class PDFProcessor:
         total_batches: int
     ) -> List[Dict[str, Any]]:
         """
-        Process images from a batch directory, upload to Supabase, and delete local files.
+        Process and upload images for a single batch.
 
-        NEW ARCHITECTURE:
-        - ALWAYS upload to Supabase immediately (no skip_upload)
-        - Delete local files immediately after upload
-        - Return image data with storage_url for subsequent processing
-        - Prevents cumulative reprocessing bug
+        ✅ INTEGRATED with metadata preservation:
+        - Takes the actual image objects (with bboxes, labels)
+        - Merges extraction metadata with processing results
+
+        Args:
+            image_dir: Directory containing images
+            document_id: Document ID
+            extracted_images: List of images from extraction stage
+            processing_options: Processing configuration
+            progress_callback: Callback for progress updates
+            batch_num: Current batch number
+            total_batches: Total number of batches
+
+        Returns:
+            List of processed and uploaded image data
         """
         import gc
-
         batch_images = []
 
-        if not os.path.exists(image_dir):
+        if not extracted_images:
             return batch_images
 
-        image_files = [f for f in os.listdir(image_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'))]
+        self.logger.info(f"   📸 Processing {len(extracted_images)} images from batch {batch_num + 1}/{total_batches}")
 
-        self.logger.info(f"   📸 Processing {len(image_files)} images from batch {batch_num + 1}/{total_batches}")
+        for idx, img_info in enumerate(extracted_images):
+            image_path = img_info.get('path')
+            filename = img_info.get('filename')
 
-        for idx, filename in enumerate(image_files):
-            image_path = os.path.join(image_dir, filename)
+            if not image_path or not os.path.exists(image_path):
+                self.logger.warning(f"   ⚠️ Image file not found: {image_path}")
+                continue
 
             try:
                 # Process and upload image (ALWAYS uploads to Supabase)
-                processed_image_info = await self._process_extracted_image(
+                processed_info = await self._process_extracted_image(
                     image_path,
                     document_id,
                     processing_options
                 )
 
-                if processed_image_info:
-                    batch_images.append(processed_image_info)
+                if processed_info:
+                    # ✅ MERGE metadata: Combine extraction metadata with processing info
+                    # Extraction info (confidence, bbox, product_name) is preserved
+                    merged_info = {**img_info, **processed_info}
+                    batch_images.append(merged_info)
 
                 # ALWAYS delete local file immediately after upload
-                # This prevents cumulative reprocessing in subsequent batches
                 try:
                     os.remove(image_path)
                     self.logger.debug(f"   🗑️ Deleted local file: {filename}")
@@ -1129,7 +1151,6 @@ class PDFProcessor:
                     self.logger.warning(f"Failed to delete {image_path}: {e}")
 
                 # Free memory after each image
-                del processed_image_info
                 gc.collect()
 
             except Exception as e:

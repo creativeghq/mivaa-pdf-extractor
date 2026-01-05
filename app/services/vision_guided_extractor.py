@@ -628,16 +628,21 @@ Your task: Detect ALL product images on this page and return their exact boundin
         pdf_path: str,
         page_num: int,
         bbox: List[float],
-        output_path: str
+        output_path: str,
+        zoom: float = 3.0
     ) -> Dict[str, Any]:
         """
         Crop product image from PDF page using bounding box coordinates.
+
+        PREMIUM RENDERING: Uses high-resolution zoom (default 3.0x / 216 DPI)
+        to ensure sharp, professional-grade material images.
 
         Args:
             pdf_path: Path to PDF file
             page_num: Page number (0-indexed)
             bbox: Bounding box [x1, y1, x2, y2] in normalized coordinates
             output_path: Path to save cropped image
+            zoom: Zoom factor for high-resolution rendering (default: 3.0)
 
         Returns:
             Dict with success status and image metadata
@@ -661,26 +666,29 @@ Your task: Detect ALL product images on this page and return their exact boundin
             # Create crop rectangle
             crop_rect = fitz.Rect(x1, y1, x2, y2)
 
-            # Render cropped region at 2x zoom
-            mat = fitz.Matrix(2.0, 2.0)
+            # Render cropped region at specified zoom (e.g. 3.0x for 216 DPI)
+            mat = fitz.Matrix(zoom, zoom)
             pix = page.get_pixmap(matrix=mat, clip=crop_rect, alpha=False)
 
             # Convert to PIL Image and save
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            
+            # Premium quality save: 90% quality with optimization
             img.save(output_path, format="JPEG", quality=90, optimize=True)
 
             # Cleanup
             pix = None
             doc.close()
 
-            logger.debug(f"   ✂️ Cropped image saved: {output_path} ({img.width}x{img.height})")
+            logger.debug(f"   ✂️ Cropped image saved: {output_path} ({img.width}x{img.height} @ {zoom}x)")
 
             return {
                 'success': True,
                 'output_path': output_path,
                 'width': img.width,
                 'height': img.height,
-                'bbox': bbox
+                'bbox': bbox,
+                'zoom': zoom
             }
 
         except Exception as e:

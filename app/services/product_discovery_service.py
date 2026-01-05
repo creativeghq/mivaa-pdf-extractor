@@ -213,7 +213,8 @@ class ProductCatalog:
     # Catalog-level factory info (inherited by products without factory info)
     catalog_factory: Optional[str] = None  # e.g., "HARMONY"
     catalog_factory_group: Optional[str] = None  # e.g., "Peronda Group"
-    catalog_manufacturer: Optional[str] = None  # e.g., "Peronda Group"
+    catalog_manufacturer: Optional[str] = None  # e.g., "Harmony Materials"
+    pages_per_sheet: int = 1  # 1 for standard, 2 for 2-page spreads
 
     # Metadata
     total_pages: int = 0
@@ -726,21 +727,10 @@ This information typically appears on:
 {agent_context}
 
 **GENERAL INSTRUCTIONS:**
-1. Be comprehensive - identify EVERY instance in each category
-2. **CRITICAL: For page_range, you MUST identify the COMPLETE page range for each product:**
-   - Include ALL consecutive pages where the product appears (not just 2 representative pages)
-   - Example: If a product spans pages 22-27, return [22, 23, 24, 25, 26, 27], NOT just [22, 23]
-   - Look for: product name continuity, related images, variant displays, technical specs across multiple pages
-   - A product's page range ends when a new product begins or when content becomes unrelated
-3. **CRITICAL: For image_pages, you MUST identify which pages contain PRODUCT IMAGES (photos/renders):**
-   - ⚠️ MANDATORY FIELD: image_pages is REQUIRED for EVERY product - DO NOT OMIT THIS FIELD
-   - List ALL pages that show product images/photos/renders (not text-only pages)
-   - Example: If pages 22-27 show the product, but only pages 22, 23, 25 have images, return "image_pages": [22, 23, 25]
-   - If a page has ONLY text/specs with NO images, do NOT include it in image_pages
-   - If ALL pages in page_range have images, image_pages should equal page_range
-   - If you're unsure, default to including the page in image_pages (better to over-include than miss images)
-4. Classify each page as: "product", "certificate", "logo", "specification", "marketing", "admin", or "transitional"
-5. Provide confidence scores (0.0-1.0) for each item
+1. Be comprehensive - identify EVERY product name in the catalog
+2. **DO NOT include page numbers** - we will detect pages automatically using vision/text search
+3. Focus on extracting product names and metadata accurately
+4. Provide confidence scores (0.0-1.0) for each item
 
 **OUTPUT FORMAT (JSON):**
 ```json
@@ -752,8 +742,6 @@ This information typically appears on:
     {{
       "name": "NOVA",
       "description": "Modern ceramic tile collection",
-      "page_range": [12, 13, 14],
-      "image_pages": [12, 13],  // ⚠️ REQUIRED - DO NOT OMIT
       "confidence": 0.95,
       "metadata": {{
         "designer": "SG NY",
@@ -1117,8 +1105,6 @@ This PDF has {total_pages} pages (numbered 1 to {total_pages}). It may be an EXC
     {{
       "name": "NOVA",
       "description": "Modern ceramic tile collection",
-      "page_range": [12, 13, 14],
-      "image_pages": [12, 13],  // ⚠️ REQUIRED - DO NOT OMIT
       "confidence": 0.95,
       "metadata": {{
         "designer": "SG NY",
@@ -1359,15 +1345,15 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                 for page_str, page_type in page_types_raw.items():
                     page_types[int(page_str)] = page_type
 
+            # Page range is now optional - will be detected later using vision/text search
             page_range = p.get("page_range", [])
             product = ProductInfo(
                 name=p.get("name", "Unknown"),
-                page_range=page_range,
+                page_range=page_range,  # Can be empty - will be filled by vision detection
                 description=p.get("description", ""),
                 metadata=metadata,
-                # Use image_pages if provided, otherwise fallback to page_range
-                # (Claude Vision sometimes doesn't return image_pages despite prompt)
-                image_indices=p.get("image_pages") or p.get("page_range", []),
+                # Image indices will be detected later if not provided
+                image_indices=p.get("image_pages", []),
                 page_types=page_types if page_types else None,
                 confidence=p.get("confidence", 0.8)
             )
@@ -1453,6 +1439,7 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
             catalog_factory_group=catalog_factory_group,
             catalog_manufacturer=catalog_manufacturer,
             total_pages=total_pages,
+            pages_per_sheet=pages_per_sheet, # ✅ PERSIST LAYOUT
             total_images=0,  # Will be updated later
             content_classification=page_classification,
             processing_time_ms=0,  # Will be set by caller
@@ -1584,11 +1571,31 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                             invalid_pages.append(catalog_page)
 
                 if invalid_pages:
+                    # Log each invalid page individually for clarity
+                    for invalid_page in invalid_pages:
+                        if pages_per_sheet == 2:
+                            self.logger.warning(
+                                f"   ⚠️ Skipping hallucinated page {invalid_page} "
+                                f"(PDF has only {pdf_page_count * 2} catalog pages = {pdf_page_count} PDF pages)"
+                            )
+                        else:
+                            self.logger.warning(
+                                f"   ⚠️ Skipping hallucinated page {invalid_page} "
+                                f"(PDF has only {pdf_page_count} pages)"
+                            )
+
+                    # Summary log
                     if pages_per_sheet == 2:
-                        self.logger.warning(f"   ⚠️ Product '{product.name}' has invalid catalog pages {invalid_pages} (PDF has {pdf_page_count} pages = {pdf_page_count * 2} catalog pages) - skipping these pages")
+                        self.logger.warning(
+                            f"   ⚠️ Product '{product.name}' has {len(invalid_pages)} invalid catalog pages "
+                            f"(PDF has {pdf_page_count} pages = {pdf_page_count * 2} catalog pages) - skipping these pages"
+                        )
                     else:
-                        self.logger.warning(f"   ⚠️ Product '{product.name}' has invalid pages {invalid_pages} (PDF has {pdf_page_count} pages) - skipping these pages")
-                    
+                        self.logger.warning(
+                            f"   ⚠️ Product '{product.name}' has {len(invalid_pages)} invalid pages "
+                            f"(PDF has {pdf_page_count} pages) - skipping these pages"
+                        )
+
                     # ✅ SANITIZATION: Remove invalid pages from the product's page_range
                     # This prevents downstream services from trying to process non-existent pages
                     product.page_range = [p for p in product.page_range if p not in invalid_pages]
@@ -2217,7 +2224,8 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
         categories: List[str],
         agent_prompt: Optional[str],
         workspace_id: str,
-        enable_prompt_enhancement: bool
+        enable_prompt_enhancement: bool,
+        total_pages: int = None
     ) -> str:
         """Build prompt for vision-based discovery."""
 
@@ -2237,23 +2245,9 @@ This information typically appears on:
 
 **THEN: For each product found, provide:**
 1. Product name
-2. Page numbers where it appears (as a range, e.g., [5, 6, 7])
-3. Brief description
-4. **PAGE TYPE CLASSIFICATION** for each page in the product's page_range
+2. Brief description
 
-**PAGE TYPE CLASSIFICATION:**
-For EACH page in the product's page_range, classify it as:
-- **"TEXT"**: Page has embedded text layer (readable text, not image-based)
-- **"IMAGE"**: Page is image-based with text as part of the image (no text layer)
-- **"MIXED"**: Page has both embedded text AND significant image content
-- **"EMPTY"**: Page is blank or has no meaningful content
-
-**HOW TO DETERMINE PAGE TYPE:**
-- Look at the page visually
-- If text appears crisp and selectable → "TEXT"
-- If text is part of a photograph/scan → "IMAGE"
-- If page has both readable text and images → "MIXED"
-- If page is blank → "EMPTY"
+**DO NOT include page numbers** - we will detect pages automatically using vision-based detection.
 
 Return results in JSON format:
 {{
@@ -2263,24 +2257,16 @@ Return results in JSON format:
   "products": [
     {{
       "name": "Product Name",
-      "page_range": [5, 6, 7],
-      "description": "Brief description",
-      "page_types": {{
-        "5": "IMAGE",
-        "6": "MIXED",
-        "7": "TEXT"
-      }}
+      "description": "Brief description"
     }}
   ]
 }}
 
 IMPORTANT:
 - **ALWAYS extract catalog_factory from cover/intro pages** - this is the brand that makes ALL products in this catalog
-- Look at product names, images, and layouts
+- Focus on identifying product names accurately
 - Exclude index pages, table of contents, and cross-references
-- Only include actual product pages with detailed information
-- Be precise with page numbers
-- **MUST include page_types for ALL pages in page_range**
+- Only include actual products with detailed information
 """
 
         if agent_prompt:
@@ -2373,8 +2359,13 @@ IMPORTANT:
             # Build content array with images
             content = [{"type": "text", "text": prompt}]
 
-            # Add all page images
+            # Add all page images with labels
             for page_num, image_base64 in page_images:
+                # Add text label before each image to identify the page number
+                content.append({
+                    "type": "text",
+                    "text": f"--- PAGE {page_num} ---"
+                })
                 content.append({
                     "type": "image_url",
                     "image_url": {

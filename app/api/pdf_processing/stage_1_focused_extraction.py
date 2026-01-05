@@ -14,13 +14,15 @@ async def extract_product_pages(
     document_id: str,
     job_id: str,
     logger: logging.Logger,
-    total_pages: Optional[int] = None
+    total_pages: Optional[int] = None,
+    pages_per_sheet: int = 1
 ) -> Set[int]:
     """
     Extract pages for a single product (product-centric pipeline).
 
     This function identifies which pages belong to a specific product
-    based on the product's page_range from discovery.
+    based on the product's page_range from discovery, mapping catalog
+    pages to physical PDF pages (e.g., for 2-page spreads).
 
     Args:
         file_content: PDF file bytes (not used, kept for API consistency)
@@ -29,24 +31,35 @@ async def extract_product_pages(
         job_id: Job identifier (not used, kept for API consistency)
         logger: Logger instance
         total_pages: Optional total pages in PDF for validation
+        pages_per_sheet: Number of catalog pages per PDF sheet (default: 1)
 
     Returns:
-        Set of page numbers for this product
+        Set of physical PDF page indices (0-based) for this product
     """
-    logger.info(f"📄 Extracting pages for product: {product.name}")
-    logger.info(f"   Page range: {product.page_range}")
+    logger.info(f"📄 Mapping pages for product: {product.name} (layout: {pages_per_sheet} pages/sheet)")
+    logger.info(f"   Catalog page range: {product.page_range}")
 
-    # Validate page numbers (in case AI hallucinated invalid pages)
+    # Validate and map page numbers
     product_pages = set()
     if product.page_range:
         for p in product.page_range:
             if p > 0:
-                if total_pages and p > total_pages:
-                    logger.warning(f"   ⚠️ Skipping hallucinated page {p} (PDF has only {total_pages} pages)")
-                    continue
-                product_pages.add(p)
+                # 📐 CONVERT CATALOG PAGE TO PDF PAGE
+                # For 2-page spreads: catalog page 84 -> PDF page 42
+                # For standard layout: catalog page 84 -> PDF page 84
+                pdf_page = (p + pages_per_sheet - 1) // pages_per_sheet
+                page_idx = pdf_page - 1  # Convert to 0-based
 
-    logger.info(f"   ✅ Product pages: {sorted(product_pages)} ({len(product_pages)} pages)")
+                # Validate against actual PDF page count
+                if total_pages and page_idx >= total_pages:
+                    logger.warning(
+                        f"   ⚠️ Skipping out-of-bounds page: Catalog {p} -> "
+                        f"PDF index {page_idx} (PDF has {total_pages} pages)"
+                    )
+                    continue
+
+                product_pages.add(page_idx)
+
+    logger.info(f"   ✅ Mapped to PDF indices: {sorted(product_pages)} ({len(product_pages)} pages)")
 
     return product_pages
-
