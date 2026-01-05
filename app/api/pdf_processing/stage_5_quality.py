@@ -8,7 +8,7 @@ import logging
 from typing import Dict, Any
 from datetime import datetime
 from app.schemas.jobs import ProcessingStage
-from app.services.checkpoint_recovery_service import ProcessingStage as CheckpointStage
+from app.services.tracking.checkpoint_recovery_service import ProcessingStage as CheckpointStage
 from app.utils.circuit_breaker import CircuitBreakerError
 
 logger = logging.getLogger(__name__)
@@ -59,7 +59,7 @@ async def process_stage_5_quality(
         - result: Final processing result
         - validation_results: Claude validation results
     """
-    from app.services.claude_validation_service import ClaudeValidationService
+    from app.services.ai_validation.claude_validation_service import ClaudeValidationService
     
     logger.info("⚡ [STAGE 5] Quality Enhancement - Starting (Async)...")
 

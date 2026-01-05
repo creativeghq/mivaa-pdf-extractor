@@ -9,7 +9,7 @@ from typing import Optional, List
 from fastapi import APIRouter, HTTPException, Depends, Body
 from pydantic import BaseModel, Field
 
-from app.services.admin_prompt_service import AdminPromptService
+from app.services.utilities.admin_prompt_service import AdminPromptService
 from app.dependencies import get_current_user
 
 logger = logging.getLogger(__name__)

@@ -43,7 +43,7 @@ async def process_product_chunking(
     Returns:
         Dictionary with chunks_created count
     """
-    from app.services.rag_service import RAGService
+    from app.services.search.rag_service import RAGService
 
     logger.info(f"📝 Creating chunks for product: {product.name}")
     logger.info(f"   Pages: {sorted(product_pages)}")

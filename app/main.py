@@ -28,7 +28,7 @@ import urllib3
 from app.config import get_settings, configure_logging
 from app.utils.logging import PDFProcessingLogger, LoggingMiddleware
 from app.utils.json_encoder import CustomJSONEncoder
-from app.services.supabase_client import initialize_supabase, get_supabase_client
+from app.services.core.supabase_client import initialize_supabase, get_supabase_client
 from app.monitoring import global_performance_monitor
 
 # Initialize Sentry for error tracking and monitoring
@@ -235,14 +235,14 @@ async def lifespan(app: FastAPI):
     
     # Initialize Lazy Loading for AI Components
     try:
-        from app.services.lazy_loader import get_component_manager
+        from app.services.utilities.lazy_loader import get_component_manager
 
         component_manager = get_component_manager()
         app.state.component_manager = component_manager
 
         # Register RAG service (with Qwen vision models) for lazy loading
         async def load_rag_service():
-            from app.services.rag_service import RAGService
+            from app.services.search.rag_service import RAGService
             rag_config = settings.get_rag_config()  # Model-agnostic config
             service = RAGService(rag_config)
             logger.info("✅ RAG service loaded on-demand with Qwen vision models")
@@ -270,7 +270,7 @@ async def lifespan(app: FastAPI):
     
     # Initialize Material Kai Vision Platform service
     try:
-        from app.services.material_kai_service import MaterialKaiService
+        from app.services.integrations.material_kai_service import MaterialKaiService
         
         material_kai_config = settings.get_material_kai_config()
         
@@ -292,7 +292,7 @@ async def lifespan(app: FastAPI):
     
     # Validate PDF processing capabilities
     try:
-        from app.services.pdf_processor import PDFProcessor
+        from app.services.pdf.pdf_processor import PDFProcessor
         
         # Test PDF processor initialization
         test_processor = PDFProcessor()
@@ -318,7 +318,7 @@ async def lifespan(app: FastAPI):
 
     # Initialize and start database health monitoring
     try:
-        from app.services.database_health_service import database_health_service
+        from app.services.core.database_health_service import database_health_service
         asyncio.create_task(database_health_service.start())
         logger.info("✅ Database health monitoring started")
     except Exception as e:
@@ -326,7 +326,7 @@ async def lifespan(app: FastAPI):
 
     # Initialize and start job monitor service
     try:
-        from app.services.job_monitor_service import job_monitor_service
+        from app.services.tracking.job_monitor_service import job_monitor_service
         # Start job monitor in background
         asyncio.create_task(job_monitor_service.start())
         logger.info("✅ Job monitor service started - monitoring every 60 seconds")
@@ -343,7 +343,7 @@ async def lifespan(app: FastAPI):
 
     # Stop job monitor service
     try:
-        from app.services.job_monitor_service import job_monitor_service
+        from app.services.tracking.job_monitor_service import job_monitor_service
         await job_monitor_service.stop()
         logger.info("✅ Job monitor service stopped")
     except Exception as e:
@@ -965,7 +965,7 @@ app = create_app()
 
 # Add MaterialKaiIntegrationError handler
 try:
-    from app.services.material_kai_service import MaterialKaiIntegrationError
+    from app.services.integrations.material_kai_service import MaterialKaiIntegrationError
 
     @app.exception_handler(MaterialKaiIntegrationError)
     async def material_kai_exception_handler(request, exc: MaterialKaiIntegrationError):
@@ -1175,7 +1175,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
 
     # 1. Check Database (Supabase)
     try:
-        from app.services.supabase_client import get_supabase_client
+        from app.services.core.supabase_client import get_supabase_client
         import time
 
         start_time = time.time()

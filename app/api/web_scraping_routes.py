@@ -13,9 +13,9 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks, Path
 from pydantic import BaseModel, Field
 from datetime import datetime
 
-from app.services.web_scraping_service import WebScrapingService
-from app.services.supabase_client import get_supabase_client
-from app.services.async_queue_service import AsyncQueueService
+from app.services.integrations.web_scraping_service import WebScrapingService
+from app.services.core.supabase_client import get_supabase_client
+from app.services.core.async_queue_service import AsyncQueueService
 
 logger = logging.getLogger(__name__)
 

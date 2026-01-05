@@ -15,7 +15,7 @@ from app.schemas.product_progress import (
     ProductProcessingResult,
     ProductMetrics
 )
-from app.services.product_progress_tracker import ProductProgressTracker
+from app.services.tracking.product_progress_tracker import ProductProgressTracker
 from app.utils.memory_monitor import MemoryPressureMonitor
 
 
@@ -222,7 +222,7 @@ async def process_single_product(
         await product_tracker.update_product_stage(product_id, ProductStage.RELATIONSHIPS)
         logger_instance.info(f"🔗 [STAGE 5/{product_index}] Creating relationships...")
 
-        from app.services.entity_linking_service import EntityLinkingService
+        from app.services.discovery.entity_linking_service import EntityLinkingService
 
         entity_linking_service = EntityLinkingService(supabase)
         linking_result = await entity_linking_service.link_product_entities(

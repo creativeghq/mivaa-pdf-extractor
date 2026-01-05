@@ -10,8 +10,8 @@ from typing import Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from app.services.entity_linking_service import EntityLinkingService
-from app.services.supabase_client import get_supabase_client
+from app.services.discovery.entity_linking_service import EntityLinkingService
+from app.services.core.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/linking", tags=["admin-linking"])

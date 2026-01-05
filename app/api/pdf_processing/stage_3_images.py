@@ -37,8 +37,8 @@ async def process_product_images(
     Returns:
         Dictionary with images_processed, images_material, images_non_material counts
     """
-    from app.services.pdf_processor import PDFProcessor
-    from app.services.image_processing_service import ImageProcessingService
+    from app.services.pdf.pdf_processor import PDFProcessor
+    from app.services.images.image_processing_service import ImageProcessingService
 
     logger.info(f"🖼️  Processing images for product: {product.name}")
     logger.info(f"   Pages: {sorted(product_pages)}")

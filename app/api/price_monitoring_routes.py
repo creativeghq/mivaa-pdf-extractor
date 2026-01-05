@@ -15,8 +15,8 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends, status, Query
 from pydantic import BaseModel, Field
 
-from app.services.price_monitoring_service import get_price_monitoring_service
-from app.services.supabase_client import get_supabase_client
+from app.services.integrations.price_monitoring_service import get_price_monitoring_service
+from app.services.core.supabase_client import get_supabase_client
 from app.dependencies import get_current_user, get_workspace_context
 from app.middleware.jwt_auth import User, WorkspaceContext
 

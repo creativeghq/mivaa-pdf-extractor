@@ -16,10 +16,10 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.config import get_settings
 from app.middleware.jwt_auth import JWTAuthMiddleware
 from app.schemas.auth import WorkspaceContext, User
-from app.services.supabase_client import get_supabase_client as _get_supabase_client
-from app.services.material_kai_service import get_material_kai_service as _get_material_kai_service
-from app.services.rag_service import RAGService
-from app.services.pdf_processor import PDFProcessor
+from app.services.core.supabase_client import get_supabase_client as _get_supabase_client
+from app.services.integrations.material_kai_service import get_material_kai_service as _get_material_kai_service
+from app.services.search.rag_service import RAGService
+from app.services.pdf.pdf_processor import PDFProcessor
 
 # Initialize security scheme
 security = HTTPBearer()

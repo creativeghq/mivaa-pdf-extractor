@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from pydantic import BaseModel
 import uuid
 
-from app.services.supabase_client import get_supabase_client
+from app.services.core.supabase_client import get_supabase_client
 
 
 router = APIRouter(prefix="/api/admin/logs", tags=["admin", "logs"])

@@ -10,8 +10,8 @@ from typing import Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Depends, status
 from pydantic import BaseModel, Field
 
-from app.services.product_creation_service import ProductCreationService
-from app.services.supabase_client import SupabaseClient
+from app.services.products.product_creation_service import ProductCreationService
+from app.services.core.supabase_client import SupabaseClient
 
 logger = logging.getLogger(__name__)
 

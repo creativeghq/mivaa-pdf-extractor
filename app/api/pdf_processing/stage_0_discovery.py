@@ -19,7 +19,7 @@ from app.utils.timeout_guard import with_timeout, ProgressiveTimeoutStrategy
 from app.utils.circuit_breaker import CircuitBreaker, CircuitBreakerError
 from app.utils.memory_monitor import memory_monitor
 from app.schemas.jobs import ProcessingStage, PageProcessingStatus
-from app.services.checkpoint_recovery_service import ProcessingStage as CheckpointStage
+from app.services.tracking.checkpoint_recovery_service import ProcessingStage as CheckpointStage
 
 module_logger = logging.getLogger(__name__)
 
@@ -68,9 +68,9 @@ async def process_stage_0_discovery(
         - product_pages: Set of page numbers containing products
         - temp_pdf_path: Path to temporary PDF file
     """
-    from app.services.product_discovery_service import ProductDiscoveryService
-    from app.services.pdf_processor import PDFProcessor
-    from app.services.supabase_client import get_supabase_client
+    from app.services.discovery.product_discovery_service import ProductDiscoveryService
+    from app.services.pdf.pdf_processor import PDFProcessor
+    from app.services.core.supabase_client import get_supabase_client
 
     logger.info("🔍 [STAGE 0] Product Discovery - Starting...")
     await tracker.update_stage(ProcessingStage.INITIALIZING, stage_name="product_discovery")
@@ -315,7 +315,7 @@ async def process_stage_0_discovery(
     entity_ids = []
     if any(cat in extract_categories for cat in ["certificates", "logos", "specifications"]):
         try:
-            from app.services.document_entity_service import DocumentEntityService, DocumentEntity
+            from app.services.discovery.document_entity_service import DocumentEntityService, DocumentEntity
             from app.database import get_supabase_client
 
             supabase_client = get_supabase_client()

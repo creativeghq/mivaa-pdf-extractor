@@ -12,8 +12,8 @@ from datetime import datetime
 import logging
 from openai import AsyncOpenAI
 
-from app.services.supabase_client import get_supabase_client
-from app.services.ai_client_service import get_ai_client_service
+from app.services.core.supabase_client import get_supabase_client
+from app.services.core.ai_client_service import get_ai_client_service
 from app.config import Settings
 
 logger = logging.getLogger(__name__)

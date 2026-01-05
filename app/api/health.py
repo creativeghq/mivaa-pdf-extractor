@@ -14,8 +14,8 @@ from typing import Dict, Any, Literal
 from pydantic import BaseModel, Field
 import logging
 
-from app.services.database_health_service import database_health_service
-from app.services.job_monitor_service import job_monitor_service
+from app.services.core.database_health_service import database_health_service
+from app.services.tracking.job_monitor_service import job_monitor_service
 from app.utils.query_metrics import query_metrics
 
 logger = logging.getLogger(__name__)

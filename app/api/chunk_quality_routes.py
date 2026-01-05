@@ -10,7 +10,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from app.services.supabase_client import get_supabase_client, SupabaseClient
+from app.services.core.supabase_client import get_supabase_client, SupabaseClient
 
 logger = logging.getLogger(__name__)
 

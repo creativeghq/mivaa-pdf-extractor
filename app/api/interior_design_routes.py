@@ -14,7 +14,7 @@ import httpx
 from datetime import datetime
 import uuid
 import io
-from app.services.supabase_client import get_supabase_client
+from app.services.core.supabase_client import get_supabase_client
 
 router = APIRouter(prefix="/api", tags=["interior-design"])
 

@@ -11,8 +11,8 @@ from fastapi import APIRouter, HTTPException, Depends, status, UploadFile, File
 from pydantic import BaseModel, Field
 from datetime import datetime
 
-from app.services.supabase_client import SupabaseClient
-from app.services.real_embeddings_service import RealEmbeddingsService
+from app.services.core.supabase_client import SupabaseClient
+from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 
 logger = logging.getLogger(__name__)
 

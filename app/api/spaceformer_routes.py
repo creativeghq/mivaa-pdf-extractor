@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, validator
 from typing import List, Dict, Any, Optional
 import logging
 
-from app.services.spaceformer_service import SpaceformerService, get_spaceformer_service
+from app.services.integrations.spaceformer_service import SpaceformerService, get_spaceformer_service
 from app.dependencies import get_current_user, get_workspace_context
 from app.schemas.auth import WorkspaceContext, User
 from app.schemas.common import BaseResponse, ErrorResponse

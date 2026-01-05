@@ -1203,7 +1203,7 @@ async def generate_material_embeddings(
             )
 
         # Use RealEmbeddingsService to generate real embeddings (Step 4)
-        from app.services.real_embeddings_service import RealEmbeddingsService
+        from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 
         embeddings_service = RealEmbeddingsService()
 
@@ -1369,8 +1369,8 @@ async def search_by_color(
     ```
     """
     try:
-        from app.services.vecs_service import get_vecs_service
-        from app.services.real_embeddings_service import RealEmbeddingsService
+        from app.services.embeddings.vecs_service import get_vecs_service
+        from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 
         # Generate color embedding from query image
         embeddings_service = RealEmbeddingsService()
@@ -1439,8 +1439,8 @@ async def search_by_texture(
     - Discover materials with specific tactile properties
     """
     try:
-        from app.services.vecs_service import get_vecs_service
-        from app.services.real_embeddings_service import RealEmbeddingsService
+        from app.services.embeddings.vecs_service import get_vecs_service
+        from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 
         embeddings_service = RealEmbeddingsService()
         result = await embeddings_service._generate_specialized_clip_embeddings(
@@ -1506,8 +1506,8 @@ async def search_by_style(
     - Discover products with similar design language
     """
     try:
-        from app.services.vecs_service import get_vecs_service
-        from app.services.real_embeddings_service import RealEmbeddingsService
+        from app.services.embeddings.vecs_service import get_vecs_service
+        from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 
         embeddings_service = RealEmbeddingsService()
         result = await embeddings_service._generate_specialized_clip_embeddings(
@@ -1573,8 +1573,8 @@ async def search_by_material(
     - Discover similar material compositions
     """
     try:
-        from app.services.vecs_service import get_vecs_service
-        from app.services.real_embeddings_service import RealEmbeddingsService
+        from app.services.embeddings.vecs_service import get_vecs_service
+        from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 
         embeddings_service = RealEmbeddingsService()
         result = await embeddings_service._generate_specialized_clip_embeddings(

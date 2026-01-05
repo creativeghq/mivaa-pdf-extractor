@@ -14,12 +14,12 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 import logging
 
-from app.services.document_classifier import DocumentClassifier
-from app.services.boundary_detector import BoundaryDetector
-from app.services.product_validator import ProductValidator
-from app.services.consensus_validator import ConsensusValidator
-from app.services.escalation_engine import EscalationEngine
-from app.services.enhanced_pdf_processor import EnhancedPDFProcessor
+from app.services.ai_validation.document_classifier import DocumentClassifier
+from app.services.ai_validation.boundary_detector import BoundaryDetector
+from app.services.products.product_validator import ProductValidator
+from app.services.ai_validation.consensus_validator import ConsensusValidator
+from app.services.ai_validation.escalation_engine import EscalationEngine
+from app.services.pdf.enhanced_pdf_processor import EnhancedPDFProcessor
 
 logger = logging.getLogger(__name__)
 

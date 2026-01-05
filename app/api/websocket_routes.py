@@ -16,7 +16,7 @@ from datetime import datetime
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from fastapi.websockets import WebSocketState
 
-from app.services.supabase_client import get_supabase_client
+from app.services.core.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 

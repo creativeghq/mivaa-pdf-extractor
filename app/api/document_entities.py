@@ -17,8 +17,8 @@ from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, HTTPException, Depends, status, Query
 from pydantic import BaseModel, Field
 
-from app.services.document_entity_service import DocumentEntityService, DocumentEntity
-from app.services.supabase_client import SupabaseClient
+from app.services.discovery.document_entity_service import DocumentEntityService, DocumentEntity
+from app.services.core.supabase_client import SupabaseClient
 
 logger = logging.getLogger(__name__)
 

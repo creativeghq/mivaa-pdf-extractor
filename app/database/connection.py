@@ -52,7 +52,7 @@ async def check_supabase_health() -> Dict[str, Any]:
         Dict[str, Any]: Supabase-specific health information
     """
     try:
-        from app.services.supabase_client import get_supabase_client
+        from app.services.core.supabase_client import get_supabase_client
         
         supabase_wrapper = get_supabase_client()
         if not supabase_wrapper:

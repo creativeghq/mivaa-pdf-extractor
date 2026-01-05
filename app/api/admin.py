@@ -324,7 +324,7 @@ async def get_job_status(
 
             # If not found in memory, check database
             if not job_info:
-                from app.services.supabase_client import get_supabase_client
+                from app.services.core.supabase_client import get_supabase_client
                 supabase_client = get_supabase_client()
                 response = supabase_client.client.table('background_jobs').select('*').eq('id', job_id).execute()
 
@@ -377,7 +377,7 @@ async def get_job_status_alt(
 
             # If not found in memory, check database
             if not job_info:
-                from app.services.supabase_client import get_supabase_client
+                from app.services.core.supabase_client import get_supabase_client
                 supabase_client = get_supabase_client()
                 response = supabase_client.client.table('background_jobs').select('*').eq('id', job_id).execute()
 
@@ -434,8 +434,8 @@ async def cancel_job(
         Success message with cleanup statistics if cleanup was performed
     """
     try:
-        from app.services.supabase_client import get_supabase_client
-        from app.services.cleanup_service import CleanupService
+        from app.services.core.supabase_client import get_supabase_client
+        from app.services.utilities.cleanup_service import CleanupService
 
         supabase_client = get_supabase_client()
 
@@ -848,7 +848,7 @@ async def cleanup_temp_files(
         Cleanup statistics including files deleted and space freed
     """
     try:
-        from app.services.cleanup_service import CleanupService
+        from app.services.utilities.cleanup_service import CleanupService
 
         cleanup_service = CleanupService()
         stats = await cleanup_service.cleanup_system_temp_files(
@@ -1095,8 +1095,8 @@ async def get_job_products(job_id: str):
         List of products with their processing status and metrics
     """
     try:
-        from app.services.product_progress_tracker import ProductProgressTracker
-        from app.services.supabase_client import get_supabase_client
+        from app.services.tracking.product_progress_tracker import ProductProgressTracker
+        from app.services.core.supabase_client import get_supabase_client
 
         supabase = get_supabase_client()
 
@@ -1410,7 +1410,7 @@ async def queue_regenerate_image_embeddings(
         RegenerateImageEmbeddingsJobResponse with job_id
     """
     try:
-        from app.services.async_queue_service import get_async_queue_service
+        from app.services.core.async_queue_service import get_async_queue_service
 
         logger.info(f"🎨 Queuing image embedding regeneration job for workspace: {workspace_context.workspace_id}")
 
@@ -1476,8 +1476,8 @@ async def process_image_embedding_regeneration_job(
         image_ids: Optional specific image IDs
         force_regenerate: Whether to regenerate existing embeddings
     """
-    from app.services.supabase_client import get_supabase_client
-    from app.services.notification_service import get_notification_service
+    from app.services.core.supabase_client import get_supabase_client
+    from app.services.utilities.notification_service import get_notification_service
     import httpx
 
     supabase = get_supabase_client()

@@ -21,13 +21,13 @@ from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 import logging
 
-from app.services.image_processing_service import ImageProcessingService
-from app.services.unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
-from app.services.real_embeddings_service import RealEmbeddingsService
-from app.services.relevancy_service import RelevancyService
-from app.services.supabase_client import get_supabase_client, SupabaseClient
-from app.services.progress_tracker import ProgressTracker
-from app.services.async_queue_service import AsyncQueueService
+from app.services.images.image_processing_service import ImageProcessingService
+from app.services.chunking.unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
+from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+from app.services.search.relevancy_service import RelevancyService
+from app.services.core.supabase_client import get_supabase_client, SupabaseClient
+from app.services.tracking.progress_tracker import ProgressTracker
+from app.services.core.async_queue_service import AsyncQueueService
 from app.models.ai_config import AIModelConfig, DEFAULT_AI_CONFIG
 
 logger = logging.getLogger(__name__)
@@ -753,7 +753,7 @@ async def extract_metadata(
         await tracker.update_stage("METADATA_EXTRACTION", 0, sync_to_db=True)
 
         # Initialize metadata extractor
-        from app.services.dynamic_metadata_extractor import DynamicMetadataExtractor
+        from app.services.metadata.dynamic_metadata_extractor import DynamicMetadataExtractor
         metadata_extractor = DynamicMetadataExtractor(
             model=ai_config.metadata_extraction_model,
             job_id=job_id
@@ -1071,8 +1071,8 @@ async def regenerate_image_embeddings(
         RegenerateImageEmbeddingsResponse with counts and errors
     """
     try:
-        from app.services.real_embeddings_service import RealEmbeddingsService
-        from app.services.vecs_service import get_vecs_service
+        from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+        from app.services.embeddings.vecs_service import get_vecs_service
         import base64
         import aiohttp
 

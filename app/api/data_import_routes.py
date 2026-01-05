@@ -13,8 +13,8 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
 from pydantic import BaseModel, Field
 from datetime import datetime
 
-from app.services.data_import_service import DataImportService
-from app.services.supabase_client import get_supabase_client
+from app.services.integrations.data_import_service import DataImportService
+from app.services.core.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 

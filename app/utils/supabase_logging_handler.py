@@ -14,7 +14,7 @@ from queue import Queue
 from threading import Thread, Event
 import time
 
-from app.services.supabase_client import get_supabase_client
+from app.services.core.supabase_client import get_supabase_client
 
 
 class SupabaseLoggingHandler(logging.Handler):

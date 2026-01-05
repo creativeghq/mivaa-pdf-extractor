@@ -10,9 +10,9 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 
-from app.services.supabase_client import SupabaseClient
-from app.services.duplicate_detection_service import DuplicateDetectionService
-from app.services.product_merge_service import ProductMergeService
+from app.services.core.supabase_client import SupabaseClient
+from app.services.search.duplicate_detection_service import DuplicateDetectionService
+from app.services.products.product_merge_service import ProductMergeService
 from app.dependencies import get_supabase_client
 
 logger = logging.getLogger(__name__)

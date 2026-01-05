@@ -24,19 +24,19 @@ except ImportError:
     from pydantic import BaseModel, Field, validator
 
 from app.config import get_settings
-from app.services.rag_service import RAGService
-from app.services.real_embeddings_service import RealEmbeddingsService
-from app.services.product_creation_service import ProductCreationService
-from app.services.job_recovery_service import JobRecoveryService
-from app.services.checkpoint_recovery_service import checkpoint_recovery_service, ProcessingStage
-from app.services.supabase_client import get_supabase_client, SupabaseClient
-from app.services.ai_model_tracker import AIModelTracker
-from app.services.focused_product_extractor import get_focused_product_extractor
-from app.services.product_relationship_service import ProductRelationshipService
-from app.services.search_prompt_service import SearchPromptService
-from app.services.stuck_job_analyzer import stuck_job_analyzer
-from app.services.vecs_service import get_vecs_service
-from app.services.ai_client_service import get_ai_client_service
+from app.services.search.rag_service import RAGService
+from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+from app.services.products.product_creation_service import ProductCreationService
+from app.services.tracking.job_recovery_service import JobRecoveryService
+from app.services.tracking.checkpoint_recovery_service import checkpoint_recovery_service, ProcessingStage
+from app.services.core.supabase_client import get_supabase_client, SupabaseClient
+from app.services.core.ai_model_tracker import AIModelTracker
+from app.services.discovery.focused_product_extractor import get_focused_product_extractor
+from app.services.products.product_relationship_service import ProductRelationshipService
+from app.services.search.search_prompt_service import SearchPromptService
+from app.services.tracking.stuck_job_analyzer import stuck_job_analyzer
+from app.services.embeddings.vecs_service import get_vecs_service
+from app.services.core.ai_client_service import get_ai_client_service
 from app.utils.logging import PDFProcessingLogger
 from app.utils.timeout_guard import with_timeout, TimeoutConstants, TimeoutError, ProgressiveTimeoutStrategy
 from app.utils.circuit_breaker import claude_breaker, vision_breaker, clip_breaker, CircuitBreakerError
@@ -1360,7 +1360,7 @@ async def delete_job(job_id: str):
         vecs_service = get_vecs_service()
 
         # Import cleanup service
-        from app.services.cleanup_service import CleanupService
+        from app.services.utilities.cleanup_service import CleanupService
         cleanup_service = CleanupService()
 
         # Perform complete deletion (manual deletion from UI - includes storage files)
@@ -2001,7 +2001,7 @@ async def process_images_background(
             logger.warning(f"⚠️ Failed to create sub-job: {e}")
 
         # Run background image processing
-        from app.services.background_image_processor import start_background_image_processing
+        from app.services.images.background_image_processor import start_background_image_processing
         result = await start_background_image_processing(
             document_id=document_id,
             supabase_client=supabase_client
@@ -2648,7 +2648,7 @@ async def process_document_with_discovery(
     start_time = datetime.utcnow()
 
     # Initialize lazy loading for this job
-    from app.services.lazy_loader import get_component_manager
+    from app.services.utilities.lazy_loader import get_component_manager
     component_manager = get_component_manager()
 
     # Track which components are loaded for cleanup
@@ -2712,10 +2712,10 @@ async def process_document_with_discovery(
 
     try:
         # Initialize Progress Tracker
-        from app.services.progress_tracker import ProgressTracker
+        from app.services.tracking.progress_tracker import ProgressTracker
         from app.schemas.jobs import ProcessingStage
-        from app.services.checkpoint_recovery_service import checkpoint_recovery_service, ProcessingStage as CheckpointStage
-        from app.services.job_progress_monitor import JobProgressMonitor
+        from app.services.tracking.checkpoint_recovery_service import checkpoint_recovery_service, ProcessingStage as CheckpointStage
+        from app.services.tracking.job_progress_monitor import JobProgressMonitor
 
         tracker = ProgressTracker(
             job_id=job_id,
@@ -2790,7 +2790,7 @@ async def process_document_with_discovery(
         logger.info(f"{'='*80}\n")
 
         # Initialize product progress tracker
-        from app.services.product_progress_tracker import ProductProgressTracker
+        from app.services.tracking.product_progress_tracker import ProductProgressTracker
         from app.api.pdf_processing.product_processor import process_single_product
 
         product_tracker = ProductProgressTracker(job_id=job_id)
@@ -3483,7 +3483,7 @@ async def search_documents(
         parsed_filters = {}
         if enable_query_understanding:
             try:
-                from app.services.unified_search_service import UnifiedSearchService
+                from app.services.search.unified_search_service import UnifiedSearchService
 
                 # Create temporary service instance for query parsing
                 unified_service = UnifiedSearchService()
@@ -3843,7 +3843,7 @@ async def get_workspace_statistics(
     - Total embeddings (text + image)
     """
     try:
-        from app.services.vecs_service import get_vecs_service
+        from app.services.embeddings.vecs_service import get_vecs_service
 
         # Query Supabase tables for counts
         products_response = supabase.client.table('products').select('id', count='exact').eq('workspace_id', workspace_id).execute()
