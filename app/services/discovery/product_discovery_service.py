@@ -1424,6 +1424,9 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
         catalog_factory_group = result.get("catalog_factory_group")
         catalog_manufacturer = result.get("catalog_manufacturer")
 
+        # Extract pages_per_sheet (layout info)
+        pages_per_sheet = result.get("pages_per_sheet", 1)  # Default to 1 if not provided
+
         # Log if catalog-level factory info was found
         if catalog_factory:
             self.logger.info(f"   🏭 Catalog factory: {catalog_factory}")
