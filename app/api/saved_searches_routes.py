@@ -20,7 +20,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from ..services.search_deduplication_service import (
+from ..services.search.search_deduplication_service import (
     get_deduplication_service,
     SearchDeduplicationService
 )
