@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 from app.config import get_settings
 from app.utils.exceptions import MaterialKaiIntegrationError
-from .material_kai_service import MaterialKaiService
+from ..integrations.material_kai_service import MaterialKaiService
 
 logger = logging.getLogger(__name__)
 
