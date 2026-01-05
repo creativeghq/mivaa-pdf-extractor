@@ -60,22 +60,25 @@ check_health() {
 # Function to upload PDF from URL
 upload_pdf() {
     print_status "Uploading PDF from URL: $PDF_URL"
-    
-    response=$(curl -s -X POST "$API_URL/api/upload-from-url" \
-        -H "Content-Type: application/json" \
-        -d "{\"url\": \"$PDF_URL\", \"filename\": \"$PDF_NAME\"}" \
+
+    response=$(curl -s -X POST "$API_URL/api/rag/documents/upload" \
+        -F "file_url=$PDF_URL" \
+        -F "title=$PDF_NAME" \
+        -F "processing_mode=standard" \
+        -F "categories=all" \
+        -F "discovery_model=claude-vision" \
         2>&1)
-    
+
     echo "$response" > /tmp/upload_response.json
-    
+
     job_id=$(echo "$response" | jq -r '.job_id' 2>/dev/null || echo "")
-    
+
     if [ -z "$job_id" ] || [ "$job_id" = "null" ]; then
         print_error "Failed to upload PDF"
         echo "$response" | jq '.' 2>/dev/null || echo "$response"
         return 1
     fi
-    
+
     print_success "PDF uploaded successfully. Job ID: $job_id"
     echo "$job_id"
 }
@@ -83,16 +86,16 @@ upload_pdf() {
 # Function to check job status
 check_job_status() {
     local job_id=$1
-    
-    response=$(curl -s "$API_URL/api/jobs/$job_id" 2>&1)
+
+    response=$(curl -s "$API_URL/api/rag/documents/job/$job_id" 2>&1)
     echo "$response"
 }
 
 # Function to get job details with error info
 get_job_details() {
     local job_id=$1
-    
-    response=$(curl -s "$API_URL/api/jobs/$job_id" 2>&1)
+
+    response=$(curl -s "$API_URL/api/rag/documents/job/$job_id" 2>&1)
     echo "$response" > "/tmp/job_${job_id}_status.json"
     echo "$response"
 }
