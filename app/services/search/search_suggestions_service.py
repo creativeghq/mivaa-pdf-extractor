@@ -12,7 +12,7 @@ import re
 from collections import defaultdict
 
 from ..core.supabase_client import SupabaseClient
-from ..schemas.suggestions import (
+from app.schemas.suggestions import (
     SearchSuggestion,
     TrendingSearch,
     QueryCorrection,
