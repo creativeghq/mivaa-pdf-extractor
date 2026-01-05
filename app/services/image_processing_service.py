@@ -126,18 +126,20 @@ class ImageProcessingService:
             logger.error("   Image classification will fail. Please set TOGETHER_API_KEY.")
             raise ValueError("TOGETHER_API_KEY not configured")
 
-        async def classify_image_with_vision_model(image_path: str, model: str) -> Dict[str, Any]:
+        async def classify_image_with_vision_model(image_path: str, model: str, base64_data: str = None) -> Dict[str, Any]:
             """Fast classification using vision model (Qwen via TogetherAI)."""
             import time
             from app.services.ai_call_logger import AICallLogger
 
             start_time = time.time()
-            image_bytes = None
-            image_base64 = None
+            # If base64_data is provided, we use it directly. Otherwise, we read from disk.
+            image_base64 = base64_data
             try:
-                with open(image_path, 'rb') as f:
-                    image_bytes = f.read()
-                    image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+                if not image_base64:
+                    with open(image_path, 'rb') as f:
+                        image_bytes = f.read()
+                        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+                        del image_bytes
 
                 classification_prompt = """Analyze this image and classify it as:
 1. MATERIAL: Shows building/interior materials (tiles, wood, fabric, stone, metal, flooring, wallpaper, etc.) - either close-up texture or in application
@@ -234,19 +236,18 @@ Respond ONLY with JSON:
                 }
             finally:
                 # ✅ NEW: Explicit cleanup to free memory
-                if image_bytes is not None:
-                    del image_bytes
-                if image_base64 is not None:
+                if not base64_data and image_base64 is not None:
                     del image_base64
 
-        async def validate_with_claude(image_path: str) -> Dict[str, Any]:
+        async def validate_with_claude(image_path: str, base64_data: str = None) -> Dict[str, Any]:
             """Validate uncertain cases with Claude Sonnet."""
-            image_bytes = None
-            image_base64 = None
+            image_base64 = base64_data
             try:
-                with open(image_path, 'rb') as f:
-                    image_bytes = f.read()
-                    image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+                if not image_base64:
+                    with open(image_path, 'rb') as f:
+                        image_bytes = f.read()
+                        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+                        del image_bytes
 
                 classification_prompt = """Analyze this image and classify it into ONE of these categories:
 
@@ -296,8 +297,8 @@ Respond ONLY with this JSON format:
                 }
             finally:
                 # ✅ NEW: Explicit cleanup to free memory
-                del image_bytes
-                del image_base64
+                if not base64_data and image_base64 is not None:
+                    del image_base64
 
         # Two-stage classification with semaphores for rate limiting
         together_semaphore = Semaphore(5)  # 5 concurrent TogetherAI requests
@@ -306,35 +307,54 @@ Respond ONLY with this JSON format:
         async def classify_with_two_stage(img_data):
             image_path = img_data.get('path')
             filename = img_data.get('filename', 'unknown')
+            image_base64 = None
 
-            # ✅ FIX 3: Detailed path validation logging
+            # ✅ FIX 3: Detailed path validation with Supabase fallback
             if not image_path:
                 logger.error(f"❌ Image path is None for {filename}")
                 return None
 
             if not os.path.exists(image_path):
-                logger.error(f"❌ Image file does not exist: {image_path}")
-                logger.error(f"   Filename: {filename}")
-                logger.error(f"   Current working directory: {os.getcwd()}")
-                logger.error(f"   File exists check: {os.path.exists(image_path)}")
-                return None
+                # Try fallback: Download from Supabase if URL is available
+                storage_url = img_data.get('storage_url') or img_data.get('url') or img_data.get('public_url')
+                if storage_url:
+                    logger.info(f"   📥 Image missing locally ({filename}), downloading from storage for classification...")
+                    try:
+                        async with httpx.AsyncClient(timeout=30.0) as client:
+                            resp = await client.get(storage_url)
+                            if resp.status_code == 200:
+                                image_base64 = base64.b64encode(resp.content).decode('utf-8')
+                                logger.info(f"   ✅ Downloaded {len(resp.content)} bytes from storage")
+                            else:
+                                logger.error(f"   ❌ Storage download failed: HTTP {resp.status_code}")
+                    except Exception as e:
+                        logger.error(f"   ❌ Error downloading from storage: {e}")
+
+                if not image_base64:
+                    logger.error(f"❌ Image file does not exist locally and could not be downloaded: {image_path}")
+                    logger.error(f"   Filename: {filename}")
+                    return None
 
             # STAGE 1: Fast primary model classification
             async with together_semaphore:
-                primary_result = await classify_image_with_vision_model(image_path, primary_model)
+                primary_result = await classify_image_with_vision_model(image_path, primary_model, base64_data=image_base64)
 
             # STAGE 2: If confidence is low (< threshold), validate with secondary model
             if primary_result['confidence'] < confidence_threshold:
-                logger.debug(f"   🔍 Low confidence ({primary_result['confidence']:.2f}) - validating with {validation_model}: {img_data.get('filename')}")
+                logger.debug(f"   🔍 Low confidence ({primary_result['confidence']:.2f}) - validating with {validation_model}: {filename}")
                 async with claude_semaphore:
                     # Use Claude or Qwen-32B for validation
                     if 'claude' in validation_model.lower():
-                        validation_result = await validate_with_claude(image_path)
+                        validation_result = await validate_with_claude(image_path, base64_data=image_base64)
                     else:
-                        validation_result = await classify_image_with_vision_model(image_path, validation_model)
+                        validation_result = await classify_image_with_vision_model(image_path, validation_model, base64_data=image_base64)
                 img_data['ai_classification'] = validation_result
             else:
                 img_data['ai_classification'] = primary_result
+
+            # ✅ NEW: Explicitly clear the base64 string to free memory
+            if image_base64:
+                del image_base64
 
             return img_data
 
