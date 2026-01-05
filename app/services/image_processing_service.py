@@ -111,19 +111,20 @@ class ImageProcessingService:
         logger.info(f"   Batch size: {batch_size} images per batch (memory optimization)")
         logger.info(f"   Confidence threshold: {confidence_threshold} (lower = fewer validation calls)")
 
-        # ✅ FIX 1: Verify Together.AI API key is set
-        if not together_api_key:
-            logger.error("❌ CRITICAL: TOGETHER_API_KEY environment variable not set!")
-            logger.error("   Image classification will fail. Please set TOGETHER_API_KEY.")
-            raise ValueError("TOGETHER_API_KEY not configured")
-
         # Import AI services
         from app.services.ai_client_service import get_ai_client_service
         import httpx
         import json
 
         ai_service = get_ai_client_service()
+
+        # ✅ FIX 1: Get API key FIRST, then verify it's set
         together_api_key = os.getenv('TOGETHER_API_KEY')
+
+        if not together_api_key:
+            logger.error("❌ CRITICAL: TOGETHER_API_KEY environment variable not set!")
+            logger.error("   Image classification will fail. Please set TOGETHER_API_KEY.")
+            raise ValueError("TOGETHER_API_KEY not configured")
 
         async def classify_image_with_vision_model(image_path: str, model: str) -> Dict[str, Any]:
             """Fast classification using vision model (Qwen via TogetherAI)."""

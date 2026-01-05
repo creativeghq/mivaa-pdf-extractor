@@ -1369,9 +1369,9 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                     client = Together(api_key=os.getenv("TOGETHER_API_KEY"))
                     start_time = time.time()
 
-                    # Minimal test
+                    # Minimal test using actual vision model we use in production
                     response = client.chat.completions.create(
-                        model="meta-llama/Llama-3.3-70B-Instruct-Turbo",
+                        model="Qwen/Qwen3-VL-8B-Instruct",
                         max_tokens=1,
                         messages=[{"role": "user", "content": "hi"}]
                     )
