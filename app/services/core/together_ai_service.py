@@ -31,7 +31,7 @@ from app.utils.exceptions import ServiceError, ExternalServiceError, PDFConfigur
 from .ai_call_logger import AICallLogger
 
 # Import enhanced material property extraction capabilities
-from .enhanced_material_property_extractor import (
+from ..products.enhanced_material_property_extractor import (
     EnhancedMaterialPropertyExtractor,
     PropertyExtractionResult,
     convert_to_legacy_format,
