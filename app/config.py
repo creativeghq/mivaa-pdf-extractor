@@ -1033,5 +1033,6 @@ def reload_settings():
     return settings
 
 
-# Initialize logging on module import
-configure_logging()
+# NOTE: Logging is initialized in main.py after all imports are complete
+# Do NOT call configure_logging() here - it will fail because Supabase client
+# is not initialized yet at module import time
