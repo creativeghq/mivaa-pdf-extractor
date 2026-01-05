@@ -15,7 +15,7 @@ from .connection import (
 )
 
 # Import Supabase client functions for convenience
-from ..services.supabase_client import get_supabase_client, initialize_supabase
+from ..services.core.supabase_client import get_supabase_client, initialize_supabase
 
 __all__ = [
     "get_database_health",

@@ -30,7 +30,7 @@ from ..schemas.suggestions import (
     PopularSearch
 )
 from ..services.search_suggestions_service import SearchSuggestionsService
-from ..services.supabase_client import SupabaseClient
+from ..services.core.supabase_client import SupabaseClient
 
 logger = logging.getLogger(__name__)
 

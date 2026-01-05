@@ -41,7 +41,7 @@ from ..schemas.images import (
 )
 from ..schemas.common import BaseResponse, ProcessingStatus
 from ..services.material_kai_service import MaterialKaiService, get_material_kai_service
-from ..services.supabase_client import get_supabase_client
+from ..services.core.supabase_client import get_supabase_client
 from ..dependencies import get_current_user, get_workspace_context, require_image_read, require_image_write
 from ..middleware.jwt_auth import WorkspaceContext, User
 from ..config import get_settings

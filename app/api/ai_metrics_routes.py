@@ -17,7 +17,7 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from ..services.supabase_client import get_supabase_client, SupabaseClient
+from ..services.core.supabase_client import get_supabase_client, SupabaseClient
 
 # Configure logging
 logger = logging.getLogger(__name__)

@@ -24,7 +24,7 @@ from ..services.search_deduplication_service import (
     get_deduplication_service,
     SearchDeduplicationService
 )
-from ..services.supabase_client import get_supabase_client
+from ..services.core.supabase_client import get_supabase_client
 from ..utils.timestamp_utils import normalize_timestamp
 
 # Configure logging

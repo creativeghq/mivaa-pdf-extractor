@@ -17,8 +17,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from ..services.supabase_client import get_supabase_client, SupabaseClient
-from ..services.ai_call_logger import AICallLogger
+from ..services.core.supabase_client import get_supabase_client, SupabaseClient
+from ..services.core.ai_call_logger import AICallLogger
 from ..config import get_settings
 import anthropic
 

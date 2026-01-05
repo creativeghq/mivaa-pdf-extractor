@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from ..services.real_embeddings_service import RealEmbeddingsService
-from ..services.supabase_client import get_supabase_client
+from ..services.core.supabase_client import get_supabase_client
 from ..config import get_settings
 
 # Configure logging

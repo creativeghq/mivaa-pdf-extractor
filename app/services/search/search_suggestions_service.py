@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import re
 from collections import defaultdict
 
-from ..services.supabase_client import SupabaseClient
+from ..core.supabase_client import SupabaseClient
 from ..schemas.suggestions import (
     SearchSuggestion,
     TrendingSearch,

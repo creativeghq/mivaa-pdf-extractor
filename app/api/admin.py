@@ -27,7 +27,7 @@ from ..schemas.jobs import (
 )
 from ..schemas.common import BaseResponse, PaginationParams
 from ..services.pdf_processor import PDFProcessor
-from ..services.supabase_client import SupabaseClient
+from ..services.core.supabase_client import SupabaseClient
 from ..services.rag_service import RAGService
 from ..services.product_creation_service import ProductCreationService
 from ..services.material_kai_service import MaterialKaiService

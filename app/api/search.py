@@ -42,7 +42,7 @@ from ..schemas.search import (
 )
 from ..schemas.common import ErrorResponse, SuccessResponse
 from ..services.rag_service import RAGService
-from ..services.supabase_client import SupabaseClient
+from ..services.core.supabase_client import SupabaseClient
 from ..services.material_visual_search_service import (
     MaterialVisualSearchService,
     MaterialSearchRequest,
@@ -155,7 +155,7 @@ async def semantic_search(
 
             # Execute the query directly
             import asyncio
-            from ..services.supabase_client import SupabaseClient
+            from ..services.core.supabase_client import SupabaseClient
 
             # Use the existing supabase client from dependencies
             # supabase_client is already available from the function parameter
