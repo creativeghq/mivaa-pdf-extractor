@@ -26,7 +26,7 @@ from ..schemas.jobs import (
     JobStatistics, SystemMetrics
 )
 from ..schemas.common import BaseResponse, PaginationParams
-from ..services.pdf_processor import PDFProcessor
+from ..services.pdf.pdf_processor import PDFProcessor
 from ..services.core.supabase_client import SupabaseClient
 from ..services.search.rag_service import RAGService
 from ..services.products.product_creation_service import ProductCreationService

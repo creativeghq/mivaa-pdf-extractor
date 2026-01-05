@@ -875,7 +875,7 @@ async def reclassify_image(
     """
     try:
         from ..services.search.rag_service import RAGService
-        from ..services.pdf_processor import download_image_to_base64
+        from ..services.pdf.pdf_processor import download_image_to_base64
 
         logger.info(f"🔄 Starting re-classification for image {image_id}")
 
