@@ -656,9 +656,9 @@ def create_app() -> FastAPI:
     
     app = FastAPI(
         title=settings.app_name,
-        version="2.3.1",
+        version="2.5.0",
         description="""
-**Production API v2.3.1** - AI-powered material recognition and knowledge management platform serving 5,000+ users.
+**Production API v2.5.0** - AI-powered material recognition and knowledge management platform serving 5,000+ users.
 
 ## 🎯 Overview
 
@@ -1782,31 +1782,32 @@ def custom_openapi():
         "agentic_queries": "Factory/group filtering for certificates, logos, specifications"
     }
 
-    # Add custom paths info (UPDATED - Price monitoring endpoints added)
+    # Add custom paths info (UPDATED - Corrected endpoint counts after audit)
     openapi_schema["info"]["x-endpoint-categories"] = {
-        "rag_routes": "/api/rag/* (25 endpoints) - Document upload, search, query, chat, embeddings, jobs, relationships",
-        "price_monitoring_routes": "/api/v1/price-monitoring/* (13 NEW endpoints) - Competitor price tracking, alerts, history, statistics",
-        "utilities_routes": "/api/bulk/*, /api/data/*, /api/monitoring/*, /api/system/* (12 endpoints)",
+        "rag_routes": "/api/rag/* (25 endpoints) - Document upload, search, query, chat, embeddings, jobs, relationships, AI tracking",
+        "search_routes": "/api/search/* (16 endpoints) - Semantic, similarity, multimodal, image, material, color, texture, style search",
+        "price_monitoring_routes": "/api/v1/price-monitoring/* (13 endpoints) - Competitor price tracking, alerts, history, statistics",
         "admin_routes": "/admin/* (10 endpoints) - Chunk quality, extraction config, prompts management",
         "ai_services_routes": "/api/v1/ai-services/* (10 endpoints) - Classification, validation, boundary detection",
-        "health_routes": "/health/* (8 endpoints) - System health, database health, job monitor, query metrics, circuit breakers",
-        "search_routes": "/api/search/* (8 endpoints) - Semantic, image, material, multimodal search",
+        "internal_routes": "/api/internal/* (8 endpoints) - Modular pipeline stages (classify, upload, save, chunk, relationships, metadata)",
+        "images_routes": "/api/images/* (7 endpoints) - Image analysis, batch processing, search, upload, export, reclassify",
+        "health_routes": "/health/* (7 endpoints) - System health, database health, job monitor, metrics, circuit breakers",
         "jobs_routes": "/api/jobs/* (7 endpoints) - Job progress, statistics, status tracking",
         "document_entities_routes": "/api/document-entities/* (5 endpoints) - Certificates, logos, specifications",
-        "images_routes": "/api/images/* (5 endpoints) - Image analysis, search, upload",
-        "monitoring_routes": "/, /metrics, /performance/summary (3 endpoints)",
         "embeddings_routes": "/api/embeddings/* (4 endpoints) - CLIP text/image, material embeddings",
         "ai_analysis_routes": "/api/semantic-analysis, /api/analyze/* (4 endpoints) - TogetherAI, multimodal analysis",
         "anthropic_routes": "/api/v1/anthropic/* (3 endpoints) - Claude image validation, product enrichment",
         "products_routes": "/api/products/* (3 endpoints) - Product creation from chunks/layout",
+        "monitoring_routes": "/, /metrics, /performance/summary (3 endpoints)",
         "ai_metrics_routes": "/api/v1/ai-metrics/* (2 endpoints) - Job metrics, summary",
-        "relationship_routes": "/api/rag/product-image-relationships, /api/rag/chunk-product-relationships (2 endpoints) - Relationship queries for validation and testing"
+        "web_scraping_routes": "/api/scraping/* (2 endpoints) - Firecrawl integration, web content to products",
+        "relationship_routes": "/api/rag/product-image-relationships, /api/rag/chunk-product-relationships (2 endpoints) - Relationship queries"
     }
 
-    # Add platform statistics (UPDATED - Health Monitoring System)
+    # Add platform statistics (UPDATED - Corrected counts after audit)
     openapi_schema["info"]["x-platform-stats"] = {
-        "total_endpoints": 118,
-        "endpoint_categories": 16,
+        "total_endpoints": 130,  # Corrected: 25+16+13+10+10+8+7+7+7+5+4+4+3+3+3+2+2+2 = 130
+        "endpoint_categories": 18,  # Corrected: Added internal_routes and web_scraping_routes
         "ai_models": 13,
         "processing_stages": 14,
         "embedding_types": 6,

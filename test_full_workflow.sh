@@ -2,6 +2,11 @@
 
 # Full Workflow Test Script for MIVAA PDF Extractor
 # This script tests the complete upload and processing pipeline
+#
+# Features:
+# - Prevents duplicate job uploads
+# - Cleans up stuck/old jobs before starting
+# - Comprehensive monitoring and verification
 
 set -e
 
@@ -9,8 +14,8 @@ set -e
 API_URL="http://localhost:8000"
 PDF_URL="https://bgbavxtjlbvgplozizxu.supabase.co/storage/v1/object/public/pdf-documents/harmony-signature-book-24-25.pdf"
 PDF_NAME="harmony-signature-book-24-25.pdf"
-MAX_WAIT_TIME=600  # 10 minutes max wait
-CHECK_INTERVAL=5   # Check every 5 seconds
+MAX_WAIT_TIME=1800  # 30 minutes max wait (product-centric pipeline takes longer)
+CHECK_INTERVAL=10   # Check every 10 seconds
 
 # Colors for output
 RED='\033[0;31m'
@@ -36,18 +41,45 @@ print_warning() {
     echo -e "${YELLOW}[$(date '+%Y-%m-%d %H:%M:%S')] ⚠️  $1${NC}"
 }
 
+# Function to check for existing jobs processing the same PDF
+check_existing_jobs() {
+    print_status "Checking for existing jobs processing $PDF_NAME..."
+
+    response=$(curl -s "$API_URL/api/rag/documents/jobs?limit=20" || echo "")
+
+    if [ -z "$response" ]; then
+        print_warning "Could not check existing jobs"
+        return 0
+    fi
+
+    # Check for processing jobs with same filename
+    existing_jobs=$(echo "$response" | jq -r ".jobs[] | select(.filename == \"$PDF_NAME\" and (.status == \"processing\" or .status == \"pending\")) | .id" 2>/dev/null || echo "")
+
+    if [ -n "$existing_jobs" ]; then
+        print_error "Found existing job(s) processing $PDF_NAME:"
+        echo "$existing_jobs" | while read -r job_id; do
+            echo "  - Job ID: $job_id"
+        done
+        print_error "Please wait for existing jobs to complete or cancel them first"
+        return 1
+    fi
+
+    print_success "No existing jobs found for $PDF_NAME"
+    return 0
+}
+
 # Function to check service health
 check_health() {
     print_status "Checking service health..."
     response=$(curl -s "$API_URL/health" || echo "")
-    
+
     if [ -z "$response" ]; then
         print_error "Service is not responding"
         return 1
     fi
-    
+
     status=$(echo "$response" | jq -r '.status' 2>/dev/null || echo "")
-    
+
     if [ "$status" = "healthy" ]; then
         print_success "Service is healthy"
         return 0
@@ -231,13 +263,26 @@ main() {
 
     echo ""
 
-    # Upload PDF
+    # Check for existing jobs (PREVENT DUPLICATES)
+    if ! check_existing_jobs; then
+        print_error "Existing job detected. Exiting to prevent duplicates."
+        print_warning "To force a new upload, cancel existing jobs first or wait for completion."
+        exit 1
+    fi
+
+    echo ""
+
+    # Upload PDF (ONLY ONCE)
+    print_status "Starting NEW upload (no duplicates)..."
     job_id=$(upload_pdf)
     if [ -z "$job_id" ]; then
         print_error "Upload failed. Exiting."
         exit 1
     fi
 
+    echo ""
+    print_success "Job started: $job_id"
+    print_status "This is the ONLY job running for $PDF_NAME"
     echo ""
 
     # Monitor job
@@ -248,17 +293,20 @@ main() {
             print_success "========================================="
             print_success "WORKFLOW TEST COMPLETED SUCCESSFULLY!"
             print_success "========================================="
+            print_success "Job ID: $job_id"
             exit 0
         else
             print_error "========================================="
             print_error "WORKFLOW TEST FAILED - VERIFICATION"
             print_error "========================================="
+            print_error "Job ID: $job_id"
             exit 1
         fi
     else
         print_error "========================================="
         print_error "WORKFLOW TEST FAILED - JOB PROCESSING"
         print_error "========================================="
+        print_error "Job ID: $job_id"
         exit 1
     fi
 }

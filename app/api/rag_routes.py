@@ -916,15 +916,41 @@ async def get_job_status(job_id: str):
             logger.info(f"✅ [DB QUERY] Found job in database: {job['id']}, status={job['status']}, progress={job.get('progress', 0)}%")
 
             # Build response from DATABASE data (source of truth)
+            # UPDATED: Now includes ALL database columns for complete job information
             job_response = {
+                # Core identifiers
                 "job_id": job['id'],
-                "status": job['status'],
                 "document_id": job.get('document_id'),
+                "filename": job.get('filename'),
+                "job_type": job.get('job_type', 'pdf_processing'),
+                "workspace_id": job.get('workspace_id'),
+
+                # Status and progress
+                "status": job['status'],
                 "progress": job.get('progress', 0),
                 "error": job.get('error'),
-                "metadata": job.get('metadata', {}),
+
+                # Timestamps
                 "created_at": job.get('created_at'),
                 "updated_at": job.get('updated_at'),
+                "started_at": job.get('started_at'),
+                "completed_at": job.get('completed_at'),
+                "failed_at": job.get('failed_at'),
+                "interrupted_at": job.get('interrupted_at'),
+
+                # Recovery and monitoring
+                "last_heartbeat": job.get('last_heartbeat'),
+                "recovery_attempts": job.get('recovery_attempts', 0),
+                "last_recovery_at": job.get('last_recovery_at'),
+
+                # Relationships
+                "parent_job_id": job.get('parent_job_id'),
+
+                # Data
+                "metadata": job.get('metadata', {}),
+                "last_checkpoint": job.get('last_checkpoint'),
+
+                # Debug info
                 "source": "database"  # Indicate this came from DB
             }
 
