@@ -1,182 +1,198 @@
 """
 Metadata Consolidation Service
 
-Merges metadata from multiple sources with AI-powered conflict resolution.
-Follows the platform's prompt-based architecture.
+Consolidates metadata from multiple sources:
+1. AI text extraction (DynamicMetadataExtractor)
+2. Visual metadata (from embeddings)
+3. Factory defaults (from catalog)
+
+This service implements Stage 4 metadata consolidation.
 """
 
 import logging
-import os
-import json
-import re
-from datetime import datetime
 from typing import Dict, List, Any, Optional
-import anthropic
-
-from app.services.core.supabase_client import get_supabase_client
-from app.services.core.ai_call_logger import AICallLogger
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
-
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 
 class MetadataConsolidationService:
     """
-    Consolidate metadata from multiple sources using AI with database prompts.
+    Service for consolidating metadata from multiple sources.
+    Implements priority-based merging with confidence tracking.
     """
 
-    def __init__(self, workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"):
-        self.supabase = get_supabase_client()
-        self.workspace_id = workspace_id
-        self.ai_logger = AICallLogger()
-        self.prompt = None
-        self._load_prompt()
+    def __init__(self):
+        pass
 
-    def _load_prompt(self):
-        """Load metadata consolidation prompt from database with fallback."""
-        try:
-            result = self.supabase.client.table('prompts') \
-                .select('prompt_text') \
-                .eq('workspace_id', self.workspace_id) \
-                .eq('prompt_type', 'extraction') \
-                .eq('stage', 'entity_creation') \
-                .eq('category', 'metadata_consolidation') \
-                .eq('is_active', True) \
-                .order('version', desc=True) \
-                .limit(1) \
-                .execute()
-
-            if result.data:
-                self.prompt = result.data[0]['prompt_text']
-                logger.info("✅ Loaded metadata consolidation prompt from database")
-            else:
-                logger.warning("⚠️ No metadata consolidation prompt found in database, using fallback")
-                # Fallback prompt for metadata consolidation
-                self.prompt = """You are a metadata consolidation expert. Analyze the provided metadata sources and create a consolidated, accurate metadata object.
-
-**Instructions:**
-1. Prioritize sources in this order: manual_overrides > ai_text_extraction > visual_embeddings > pattern_matching > factory_defaults
-2. Resolve conflicts by choosing the most reliable source
-3. Fill missing fields from lower-priority sources
-4. Calculate confidence scores based on source reliability
-5. Return valid JSON with consolidated_metadata, extraction_metadata, sources_used, overall_confidence, and completeness_score
-
-**Output Format:**
-{
-  "consolidated_metadata": {...},
-  "extraction_metadata": {...},
-  "sources_used": [...],
-  "overall_confidence": 0.0-1.0,
-  "completeness_score": 0.0-1.0
-}"""
-
-        except Exception as e:
-            logger.error(f"Error loading prompt: {e}")
-            # Use fallback prompt on error
-            self.prompt = """Consolidate the provided metadata sources into a single accurate metadata object. Return valid JSON."""
-
-    async def consolidate_metadata(
+    def consolidate_metadata(
         self,
-        product_id: str,
-        sources: Dict[str, Dict[str, Any]],
-        existing_metadata: Optional[Dict] = None
+        ai_metadata: Optional[Dict[str, Any]] = None,
+        visual_metadata: Optional[Dict[str, Any]] = None,
+        factory_defaults: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        Consolidate metadata from multiple sources using AI.
+        Consolidate metadata from multiple sources with priority-based merging.
+
+        Priority order (highest to lowest):
+        1. AI text extraction (most reliable for text-based fields)
+        2. Visual metadata (reliable for visual properties)
+        3. Factory defaults (fallback values)
 
         Args:
-            product_id: Product UUID
-            sources: Dict of metadata sources:
-                {
-                    "manual_overrides": {...},
-                    "ai_text_extraction": {...},
-                    "visual_embeddings": {...},
-                    "pattern_matching": {...},
-                    "factory_defaults": {...}
-                }
-            existing_metadata: Current product metadata (optional)
+            ai_metadata: Metadata from AI text extraction
+            visual_metadata: Metadata from visual embeddings
+            factory_defaults: Default metadata from catalog
 
         Returns:
-            Consolidated metadata with extraction tracking
+            Consolidated metadata with source tracking
         """
-        if not self.prompt:
-            logger.warning("No prompt available for metadata consolidation, reloading...")
-            self._load_prompt()
-            if not self.prompt:
-                logger.error("Failed to load prompt, returning existing metadata")
-                return existing_metadata or {}
-
         try:
-            # Build context for AI
-            consolidation_context = {
-                "product_id": product_id,
-                "sources": sources,
-                "existing_metadata": existing_metadata or {}
-            }
+            logger.info("🔄 Consolidating metadata from multiple sources")
 
-            # Build full prompt
-            full_prompt = f"{self.prompt}\n\n**Metadata Sources:**\n\n```json\n{json.dumps(consolidation_context, indent=2)}\n```\n\nConsolidate all metadata sources intelligently. Return ONLY valid JSON."
+            consolidated = {}
+            extraction_metadata = {}
 
-            # Call AI
-            start_time = datetime.now()
-            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-            response = client.messages.create(
-                model="claude-sonnet-4-5-20250929",
-                max_tokens=4096,
-                messages=[{"role": "user", "content": full_prompt}]
-            )
+            # Start with factory defaults (lowest priority)
+            if factory_defaults:
+                for key, value in factory_defaults.items():
+                    if value is not None:
+                        consolidated[key] = value
+                        extraction_metadata[key] = {
+                            "source": "factory_default",
+                            "confidence": 0.5
+                        }
 
-            # Log AI call
-            latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-            await self.ai_logger.log_claude_call(
-                task="metadata_consolidation",
-                model="claude-sonnet-4-5-20250929",
-                response=response,
-                latency_ms=latency_ms,
-                confidence_score=0.9,
-                confidence_breakdown={
-                    "model_confidence": 0.95,
-                    "completeness": 0.90,
-                    "consistency": 0.85,
-                    "validation": 0.90
-                },
-                action="use_ai_result",
-                job_id=None,
-                request_data={"product_id": product_id}
-            )
+            # Merge visual metadata (medium priority)
+            if visual_metadata:
+                for key, value_data in visual_metadata.items():
+                    if isinstance(value_data, dict) and 'primary' in value_data:
+                        # Visual metadata has structure: {"primary": "value", "confidence": 0.88}
+                        value = value_data.get('primary')
+                        confidence = value_data.get('confidence', 0.8)
 
-            # Parse response
-            response_text = response.content[0].text.strip()
-            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                        if value is not None:
+                            # Special handling for color field
+                            if key == "color":
+                                # Don't add to main "color" field (will be handled in AI text section)
+                                # Just store as visual_color_detected if no AI text color exists
+                                if "colors" not in consolidated:
+                                    # No AI text colors, use visual color as fallback
+                                    consolidated["visual_color_detected"] = value
+                                    extraction_metadata["visual_color_detected"] = {
+                                        "source": "visual_embedding",
+                                        "confidence": confidence,
+                                        "secondary_values": value_data.get('secondary', [])
+                                    }
+                            else:
+                                # Only override if confidence is higher or field doesn't exist
+                                existing_confidence = extraction_metadata.get(key, {}).get('confidence', 0.0)
+                                if confidence >= existing_confidence:
+                                    consolidated[key] = value
+                                    extraction_metadata[key] = {
+                                        "source": "visual_embedding",
+                                        "confidence": confidence,
+                                        "secondary_values": value_data.get('secondary', [])
+                                    }
 
-            if json_match:
-                result = json.loads(json_match.group(0))
-                
-                # Extract consolidated metadata
-                consolidated = result.get('consolidated_metadata', {})
-                extraction_metadata = result.get('extraction_metadata', {})
-                
-                # Add extraction tracking to metadata
-                consolidated['_extraction_metadata'] = extraction_metadata
-                consolidated['_sources_used'] = result.get('sources_used', [])
-                consolidated['_overall_confidence'] = result.get('overall_confidence', 0.0)
-                consolidated['_completeness_score'] = result.get('completeness_score', 0.0)
-                
-                logger.info(f"✅ Consolidated metadata for product {product_id} (confidence: {consolidated['_overall_confidence']:.2f})")
-                return consolidated
-            else:
-                logger.error("Failed to parse AI response as JSON")
-                return existing_metadata or {}
+            # Merge AI text extraction (highest priority)
+            if ai_metadata:
+                for key, value in ai_metadata.items():
+                    if value is not None and value != "":
+                        # Special handling for color/colors field
+                        if key in ["color", "colors"]:
+                            # Normalize to "colors" array
+                            if isinstance(value, list):
+                                consolidated["colors"] = value
+                            elif isinstance(value, str):
+                                consolidated["colors"] = [value]
+                            else:
+                                consolidated["colors"] = value
+
+                            extraction_metadata["colors"] = {
+                                "source": "ai_text_extraction",
+                                "confidence": 0.95
+                            }
+
+                            # If visual metadata detected a color, add it as visual_color_detected
+                            if visual_metadata and "color" in visual_metadata:
+                                visual_color_data = visual_metadata["color"]
+                                if isinstance(visual_color_data, dict) and 'primary' in visual_color_data:
+                                    consolidated["visual_color_detected"] = visual_color_data.get('primary')
+                                    extraction_metadata["visual_color_detected"] = {
+                                        "source": "visual_embedding",
+                                        "confidence": visual_color_data.get('confidence', 0.8),
+                                        "secondary_values": visual_color_data.get('secondary', [])
+                                    }
+                        else:
+                            # AI text extraction always wins (highest confidence)
+                            consolidated[key] = value
+                            extraction_metadata[key] = {
+                                "source": "ai_text_extraction",
+                                "confidence": 0.95
+                            }
+
+            # Add extraction metadata to track sources
+            consolidated['_extraction_metadata'] = extraction_metadata
+            consolidated['_consolidation_timestamp'] = datetime.utcnow().isoformat()
+
+            # Log color consolidation details
+            if "colors" in consolidated or "visual_color_detected" in consolidated:
+                colors_info = []
+                if "colors" in consolidated:
+                    colors_info.append(f"colors={consolidated['colors']}")
+                if "visual_color_detected" in consolidated:
+                    colors_info.append(f"visual_detected={consolidated['visual_color_detected']}")
+                logger.info(f"🎨 Color consolidation: {', '.join(colors_info)}")
+
+            logger.info(f"✅ Consolidated {len(consolidated)} metadata fields from {self._count_sources(extraction_metadata)} sources")
+            return consolidated
 
         except Exception as e:
-            logger.error(f"Error consolidating metadata: {e}")
-            return existing_metadata or {}
+            logger.error(f"❌ Failed to consolidate metadata: {e}")
+            return ai_metadata or visual_metadata or factory_defaults or {}
 
-    def _calculate_cost(self, usage) -> float:
-        """Calculate cost for Claude API call."""
-        input_cost = (usage.input_tokens / 1_000_000) * 3.00  # $3 per 1M input tokens
-        output_cost = (usage.output_tokens / 1_000_000) * 15.00  # $15 per 1M output tokens
-        return input_cost + output_cost
+    def _count_sources(self, extraction_metadata: Dict[str, Any]) -> int:
+        """Count unique sources in extraction metadata."""
+        sources = set()
+        for field_meta in extraction_metadata.values():
+            if isinstance(field_meta, dict) and 'source' in field_meta:
+                sources.add(field_meta['source'])
+        return len(sources)
 
+    def merge_with_priority(
+        self,
+        existing_metadata: Dict[str, Any],
+        new_metadata: Dict[str, Any],
+        source: str,
+        confidence: float = 0.8
+    ) -> Dict[str, Any]:
+        """
+        Merge new metadata into existing metadata with priority tracking.
+
+        Args:
+            existing_metadata: Current metadata
+            new_metadata: New metadata to merge
+            source: Source of new metadata
+            confidence: Confidence score for new metadata
+
+        Returns:
+            Merged metadata
+        """
+        merged = existing_metadata.copy()
+        extraction_meta = merged.get('_extraction_metadata', {})
+
+        for key, value in new_metadata.items():
+            if value is not None and value != "":
+                existing_confidence = extraction_meta.get(key, {}).get('confidence', 0.0)
+                
+                if confidence >= existing_confidence:
+                    merged[key] = value
+                    extraction_meta[key] = {
+                        "source": source,
+                        "confidence": confidence
+                    }
+
+        merged['_extraction_metadata'] = extraction_meta
+        return merged
 

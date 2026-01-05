@@ -684,16 +684,30 @@ Respond ONLY with this JSON format:
                     except Exception as vecs_error:
                         logger.warning(f"   ⚠️ Failed to save to VECS: {vecs_error}")
 
-                # Save specialized embeddings
+                # Save specialized embeddings (support both old 512D and new 1152D SigLIP)
                 specialized_embeddings = {}
-                if embeddings.get('color_512'):
+
+                # Check for new SigLIP embeddings (1152D) first
+                if embeddings.get('color_siglip_1152'):
+                    specialized_embeddings['color'] = embeddings.get('color_siglip_1152')
+                elif embeddings.get('color_512'):
                     specialized_embeddings['color'] = embeddings.get('color_512')
-                if embeddings.get('texture_512'):
+
+                if embeddings.get('texture_siglip_1152'):
+                    specialized_embeddings['texture'] = embeddings.get('texture_siglip_1152')
+                elif embeddings.get('texture_512'):
                     specialized_embeddings['texture'] = embeddings.get('texture_512')
+
+                if embeddings.get('style_siglip_1152'):
+                    specialized_embeddings['style'] = embeddings.get('style_siglip_1152')
+
+                if embeddings.get('material_siglip_1152'):
+                    specialized_embeddings['material'] = embeddings.get('material_siglip_1152')
+                elif embeddings.get('material_512'):
+                    specialized_embeddings['material'] = embeddings.get('material_512')
+
                 if embeddings.get('application_512'):
                     specialized_embeddings['application'] = embeddings.get('application_512')
-                if embeddings.get('material_512'):
-                    specialized_embeddings['material'] = embeddings.get('material_512')
 
                 if specialized_embeddings:
                     # Save to VECS collections
@@ -730,6 +744,40 @@ Respond ONLY with this JSON format:
                             logger.debug(f"   ✅ Saved {len(update_data)} specialized embeddings to document_images for {image_id}")
                         except Exception as update_error:
                             logger.warning(f"   ⚠️ Failed to save specialized embeddings to document_images: {update_error}")
+
+                    # ✨ NEW: Stage 3.5 - Convert visual embeddings to text metadata
+                    try:
+                        from app.services.metadata.visual_metadata_service import VisualMetadataService
+
+                        logger.info(f"   🎨 Stage 3.5: Converting visual embeddings to text metadata for {image_id}")
+                        visual_metadata_service = VisualMetadataService(workspace_id=workspace_id)
+
+                        # Prepare embeddings for conversion (use SigLIP 1152D embeddings)
+                        embeddings_for_conversion = {}
+                        if embeddings.get('color_siglip_1152'):
+                            embeddings_for_conversion['color_siglip_1152'] = embeddings.get('color_siglip_1152')
+                        if embeddings.get('texture_siglip_1152'):
+                            embeddings_for_conversion['texture_siglip_1152'] = embeddings.get('texture_siglip_1152')
+                        if embeddings.get('material_siglip_1152'):
+                            embeddings_for_conversion['material_siglip_1152'] = embeddings.get('material_siglip_1152')
+                        if embeddings.get('style_siglip_1152'):
+                            embeddings_for_conversion['style_siglip_1152'] = embeddings.get('style_siglip_1152')
+
+                        if embeddings_for_conversion:
+                            visual_metadata_result = await visual_metadata_service.process_image_visual_metadata(
+                                image_id=image_id,
+                                embeddings=embeddings_for_conversion
+                            )
+
+                            if visual_metadata_result.get('success'):
+                                logger.info(f"   ✅ Visual metadata extracted and saved for {image_id}")
+                            else:
+                                logger.warning(f"   ⚠️ Visual metadata extraction failed: {visual_metadata_result.get('error')}")
+                        else:
+                            logger.debug(f"   ℹ️ No SigLIP embeddings available for visual metadata extraction")
+
+                    except Exception as visual_meta_error:
+                        logger.warning(f"   ⚠️ Visual metadata extraction failed (non-critical): {visual_meta_error}")
 
                 total_embeddings = 1 + len(specialized_embeddings)
                 logger.info(f"   ✅ Generated and saved {total_embeddings} CLIP embeddings for image {image_id}")

@@ -566,9 +566,11 @@ async def create_chunks(
         )
         chunking_service = UnifiedChunkingService(chunking_config)
 
-        # Create chunks
-        chunks = await chunking_service.chunk_text(
-            text=request.extracted_text,
+        # Create chunks using chunk_pages() (preferred method for page metadata)
+        # Convert text to pages format for consistency
+        pages = [{'metadata': {'page': 0}, 'text': request.extracted_text}]
+        chunks = await chunking_service.chunk_pages(
+            pages=pages,
             document_id=request.document_id,
             metadata={
                 'workspace_id': request.workspace_id,

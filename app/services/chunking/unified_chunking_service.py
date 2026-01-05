@@ -101,21 +101,9 @@ class UnifiedChunkingService:
 
             self.logger.info(f"🔄 Starting chunking for document {document_id} ({len(text)} chars) using {self.config.strategy} strategy")
 
-            # Select chunking strategy
-            if self.config.strategy == ChunkingStrategy.SEMANTIC:
-                self.logger.info(f"   Using SEMANTIC chunking...")
-                chunks = self._chunk_semantic(text, document_id, metadata)
-            elif self.config.strategy == ChunkingStrategy.FIXED_SIZE:
-                self.logger.info(f"   Using FIXED_SIZE chunking...")
-                chunks = self._chunk_fixed_size(text, document_id, metadata)
-            elif self.config.strategy == ChunkingStrategy.HYBRID:
-                self.logger.info(f"   Using HYBRID chunking...")
-                chunks = self._chunk_hybrid(text, document_id, metadata)
-            elif self.config.strategy == ChunkingStrategy.LAYOUT_AWARE:
-                self.logger.info(f"   Using LAYOUT_AWARE chunking...")
-                chunks = self._chunk_layout_aware(text, document_id, metadata)
-            else:
-                raise ValueError(f"Unknown chunking strategy: {self.config.strategy}")
+            # Select and execute chunking strategy
+            self.logger.info(f"   Using {self.config.strategy.value} chunking...")
+            chunks = self._select_chunking_strategy(text, document_id, metadata)
 
             self.logger.info(f"   Calculating quality scores for {len(chunks)} chunks...")
             # Calculate quality scores for all chunks
@@ -201,6 +189,38 @@ class UnifiedChunkingService:
             self.logger.error(f"❌ Page-aware chunking failed: {e}", exc_info=True)
             raise
 
+    def _select_chunking_strategy(
+        self,
+        text: str,
+        document_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        page_number: Optional[int] = None
+    ) -> List[Chunk]:
+        """
+        Select and execute chunking strategy based on configuration.
+
+        This is the single source of truth for strategy selection.
+
+        Args:
+            text: Text to chunk
+            document_id: Document ID for chunk metadata
+            metadata: Additional metadata for chunks
+            page_number: Optional page number for page-aware chunking
+
+        Returns:
+            List of chunks
+        """
+        if self.config.strategy == ChunkingStrategy.SEMANTIC:
+            return self._chunk_semantic(text, document_id, metadata, page_number)
+        elif self.config.strategy == ChunkingStrategy.FIXED_SIZE:
+            return self._chunk_fixed_size(text, document_id, metadata, page_number)
+        elif self.config.strategy == ChunkingStrategy.HYBRID:
+            return self._chunk_hybrid(text, document_id, metadata, page_number)
+        elif self.config.strategy == ChunkingStrategy.LAYOUT_AWARE:
+            return self._chunk_layout_aware(text, document_id, metadata, page_number)
+        else:
+            raise ValueError(f"Unknown chunking strategy: {self.config.strategy}")
+
     def _chunk_page_text(
         self,
         text: str,
@@ -222,17 +242,8 @@ class UnifiedChunkingService:
         Returns:
             List of chunks with page_number in metadata
         """
-        # Select chunking strategy
-        if self.config.strategy == ChunkingStrategy.SEMANTIC:
-            chunks = self._chunk_semantic(text, document_id, metadata, page_number)
-        elif self.config.strategy == ChunkingStrategy.FIXED_SIZE:
-            chunks = self._chunk_fixed_size(text, document_id, metadata, page_number)
-        elif self.config.strategy == ChunkingStrategy.HYBRID:
-            chunks = self._chunk_hybrid(text, document_id, metadata, page_number)
-        elif self.config.strategy == ChunkingStrategy.LAYOUT_AWARE:
-            chunks = self._chunk_layout_aware(text, document_id, metadata, page_number)
-        else:
-            raise ValueError(f"Unknown chunking strategy: {self.config.strategy}")
+        # Select and execute chunking strategy
+        chunks = self._select_chunking_strategy(text, document_id, metadata, page_number)
 
         # Update chunk indices to be global
         for i, chunk in enumerate(chunks):
