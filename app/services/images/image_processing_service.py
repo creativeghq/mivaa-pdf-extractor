@@ -20,7 +20,7 @@ from app.services.core.supabase_client import get_supabase_client
 from app.services.embeddings.vecs_service import VecsService
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 from app.services.pdf.pdf_processor import PDFProcessor
-from app.utils.page_converter import PageConverter, PageNumber  # ✅ NEW: Centralized page management
+from app.utils.page_converter import PageConverter, PageNumber  
 from app.config import get_settings
 
 
@@ -41,10 +41,10 @@ class ImageProcessingService:
     async def classify_images(
         self,
         extracted_images: List[Dict[str, Any]],
-        confidence_threshold: float = 0.6,  # ✅ OPTIMIZED: Lowered from 0.7 to reduce validation calls
-        primary_model: str = "Qwen/Qwen3-VL-8B-Instruct",  # ✅ NEW: Qwen3-VL-8B (fast, cost-effective)
-        validation_model: str = "Qwen/Qwen3-VL-32B-Instruct",  # ✅ NEW: Qwen3-VL-32B (high accuracy)
-        batch_size: int = 15  # ✅ NEW: Process images in batches to prevent OOM
+        confidence_threshold: float = 0.6,  # OPTIMIZED: Lowered from 0.7 to reduce validation calls
+        primary_model: str = "Qwen/Qwen3-VL-8B-Instruct",  # NEW: Qwen3-VL-8B (fast, cost-effective)
+        validation_model: str = "Qwen/Qwen3-VL-32B-Instruct",  # NEW: Qwen3-VL-32B (high accuracy)
+        batch_size: int = 15  # NEW: Process images in batches to prevent OOM
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Classify images as material or non-material using Qwen Vision models.
@@ -131,8 +131,10 @@ Respond ONLY with JSON:
                             "messages": [{
                                 "role": "user",
                                 "content": [
-                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}},
-                                    {"type": "text", "text": classification_prompt}
+                                    # ✅ CRITICAL FIX: Text must come BEFORE image for Qwen models
+                                    # This matches Together AI documentation format
+                                    {"type": "text", "text": classification_prompt},
+                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
                                 ]
                             }],
                             "max_tokens": 512,
@@ -142,6 +144,43 @@ Respond ONLY with JSON:
 
                     response_data = response.json()
                     result_text = response_data['choices'][0]['message']['content']
+
+                    # ✅ FIX: Handle empty/invalid responses from Together AI
+                    # Qwen sometimes returns whitespace or single characters instead of JSON
+                    result_text_stripped = result_text.strip() if result_text else ""
+
+                    if not result_text_stripped or len(result_text_stripped) < 10:
+                        logger.warning(f"⚠️ Invalid response from {model} for {image_path}")
+                        logger.warning(f"   Content length: {len(result_text) if result_text else 0}, Stripped: {len(result_text_stripped)}")
+                        logger.warning(f"   Content preview: {repr(result_text[:100]) if result_text else 'None'}")
+                        return {
+                            'is_material': False,
+                            'confidence': 0.0,
+                            'reason': f'Invalid response from vision model (length: {len(result_text_stripped)})',
+                            'model': f'{model.split("/")[-1]}_invalid_response'
+                        }
+
+                    # Clean up response text (remove markdown code blocks if present)
+                    result_text = result_text_stripped
+                    if result_text.startswith("```json"):
+                        result_text = result_text[7:]
+                    if result_text.startswith("```"):
+                        result_text = result_text[3:]
+                    if result_text.endswith("```"):
+                        result_text = result_text[:-3]
+                    result_text = result_text.strip()
+
+                    # Final validation before JSON parsing
+                    if not result_text.startswith('{'):
+                        logger.warning(f"⚠️ Response doesn't start with '{{' for {image_path}")
+                        logger.warning(f"   Content: {repr(result_text[:100])}")
+                        return {
+                            'is_material': False,
+                            'confidence': 0.0,
+                            'reason': f'Response not JSON format: {result_text[:50]}',
+                            'model': f'{model.split("/")[-1]}_not_json'
+                        }
+
                     result = json.loads(result_text)
 
                     # Extract model name for logging
@@ -191,6 +230,18 @@ Respond ONLY with JSON:
                 logger.error(f"   Model: {model}")
                 logger.error(f"   Error Type: {type(e).__name__}")
                 logger.error(f"   Error Message: {str(e)}")
+
+                # ✅ NEW: Log response_data if available (for debugging empty responses)
+                try:
+                    if 'response_data' in locals():
+                        logger.error(f"   Response Data: {json.dumps(response_data, indent=2)[:500]}")
+                        if 'choices' in response_data and len(response_data['choices']) > 0:
+                            content = response_data['choices'][0].get('message', {}).get('content', '')
+                            logger.error(f"   Content Length: {len(content)} chars")
+                            logger.error(f"   Content Preview: {content[:200]}")
+                except Exception as log_err:
+                    logger.error(f"   Could not log response data: {log_err}")
+
                 logger.error(f"   Stack Trace:\n{traceback.format_exc()}")
 
                 # Check if it's an API error
@@ -310,15 +361,34 @@ Respond ONLY with this JSON format:
             async with together_semaphore:
                 primary_result = await classify_image_with_vision_model(image_path, primary_model, base64_data=image_base64)
 
-            # STAGE 2: If confidence is low (< threshold), validate with secondary model
-            if primary_result['confidence'] < confidence_threshold:
-                logger.debug(f"   🔍 Low confidence ({primary_result['confidence']:.2f}) - validating with {validation_model}: {filename}")
+            # ✅ NEW: Check if primary model failed (invalid response)
+            primary_failed = ('_invalid_response' in primary_result.get('model', '') or
+                            '_not_json' in primary_result.get('model', '') or
+                            '_empty_response' in primary_result.get('model', ''))
+
+            # STAGE 2: If confidence is low OR primary failed, validate with secondary model
+            if primary_result['confidence'] < confidence_threshold or primary_failed:
+                if primary_failed:
+                    logger.warning(f"   🔄 Primary model failed for {filename}, using fallback: {validation_model}")
+                else:
+                    logger.debug(f"   🔍 Low confidence ({primary_result['confidence']:.2f}) - validating with {validation_model}: {filename}")
+
                 async with claude_semaphore:
                     # Use Claude or Qwen-32B for validation
                     if 'claude' in validation_model.lower():
                         validation_result = await validate_with_claude(image_path, base64_data=image_base64)
                     else:
                         validation_result = await classify_image_with_vision_model(image_path, validation_model, base64_data=image_base64)
+
+                    # ✅ NEW: If validation also failed, use Claude as final fallback
+                    validation_failed = ('_invalid_response' in validation_result.get('model', '') or
+                                       '_not_json' in validation_result.get('model', '') or
+                                       '_empty_response' in validation_result.get('model', ''))
+
+                    if validation_failed and 'claude' not in validation_model.lower():
+                        logger.warning(f"   🔄 Validation model also failed for {filename}, using Claude as final fallback")
+                        validation_result = await validate_with_claude(image_path, base64_data=image_base64)
+
                 img_data['ai_classification'] = validation_result
             else:
                 img_data['ai_classification'] = primary_result
@@ -376,9 +446,21 @@ Respond ONLY with this JSON format:
                     failed_count += 1
                     continue
 
-                # Check if classification failed
-                if 'error' in classification or '_failed' in classification.get('model', ''):
-                    logger.error(f"   ❌ Classification failed for {img_data.get('filename')}: {classification.get('reason')}")
+                # ✅ FIX: Handle classification failures more gracefully
+                # If classification failed or returned empty, assume it's material (safer approach)
+                # This ensures we don't miss material images due to API issues
+                if 'error' in classification or '_failed' in classification.get('model', '') or '_empty_response' in classification.get('model', ''):
+                    logger.warning(f"   ⚠️ Classification uncertain for {img_data.get('filename')}: {classification.get('reason')}")
+                    logger.warning(f"   → Treating as MATERIAL (safe default) to ensure CLIP embeddings are generated")
+                    # Override classification to treat as material with low confidence
+                    img_data['ai_classification'] = {
+                        'is_material': True,
+                        'confidence': 0.3,  # Low confidence to indicate uncertainty
+                        'reason': f"Fallback: {classification.get('reason', 'Classification failed')}",
+                        'model': 'fallback_material',
+                        'original_error': classification.get('reason', 'Unknown')
+                    }
+                    material_images.append(img_data)
                     failed_count += 1
                     continue
 

@@ -6,6 +6,7 @@ This module handles page extraction for individual products in the product-centr
 
 import logging
 from typing import Set, Any, Optional
+from app.utils.page_converter import PageConverter
 
 
 async def extract_product_pages(
@@ -39,26 +40,24 @@ async def extract_product_pages(
     logger.info(f"📄 Mapping pages for product: {product.name} (layout: {pages_per_sheet} pages/sheet)")
     logger.info(f"   Catalog page range: {product.page_range}")
 
+    # ✅ USE PAGE CONVERTER: Type-safe conversion
+    converter = PageConverter(pages_per_sheet=pages_per_sheet, total_pdf_pages=total_pages)
+
     # Validate and map page numbers
     product_pages = set()
     if product.page_range:
         for p in product.page_range:
             if p > 0:
-                # 📐 CONVERT CATALOG PAGE TO PDF PAGE
-                # For 2-page spreads: catalog page 84 -> PDF page 42
-                # For standard layout: catalog page 84 -> PDF page 84
-                pdf_page = (p + pages_per_sheet - 1) // pages_per_sheet
-                page_idx = pdf_page - 1  # Convert to 0-based
-
-                # Validate against actual PDF page count
-                if total_pages and page_idx >= total_pages:
+                try:
+                    # Convert catalog page to PDF page index using PageConverter
+                    page = converter.from_catalog_page(p)
+                    product_pages.add(page.array_index)
+                except ValueError as e:
+                    # Page is out of bounds
                     logger.warning(
-                        f"   ⚠️ Skipping out-of-bounds page: Catalog {p} -> "
-                        f"PDF index {page_idx} (PDF has {total_pages} pages)"
+                        f"   ⚠️ Skipping out-of-bounds page: Catalog {p} -> {e}"
                     )
                     continue
-
-                product_pages.add(page_idx)
 
     logger.info(f"   ✅ Mapped to PDF indices: {sorted(product_pages)} ({len(product_pages)} pages)")
 

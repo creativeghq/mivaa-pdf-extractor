@@ -1446,54 +1446,20 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
             all_product_pages = set()
             product_page_mapping = {}  # Map product index to its pages
 
-            # 🔍 VALIDATION: Get PDF page count and detect 2-page spread layout
-            import fitz
-            doc = fitz.open(pdf_path)
-            pdf_page_count = doc.page_count
+            # 🔍 VALIDATION: Get PDF page count and detect layout using PageConverter
+            from app.utils.page_converter import PageConverter
 
-            # 📐 AUTO-DETECT 2-PAGE SPREADS: Check if PDF uses 2 pages per sheet layout
-            # This happens when catalog pages are displayed side-by-side (e.g., pages 1-2 on one PDF page)
-            pages_per_sheet = 1  # Default: 1 catalog page = 1 PDF page
+            converter = PageConverter.from_pdf_path(pdf_path)
+            pdf_page_count = converter.total_pdf_pages
+            pages_per_sheet = converter.pages_per_sheet
 
-            if pdf_page_count > 0:
-                # ✅ FIX: Check MULTIPLE pages to detect dominant layout (not just first page)
-                # Many PDFs have portrait cover page but landscape content pages
-                pages_to_check = min(5, pdf_page_count)  # Check first 5 pages
-                spread_count = 0
-                standard_count = 0
+            if pages_per_sheet == 2:
+                self.logger.info(f"   ✅ DOMINANT LAYOUT: 2-page spreads")
+                self.logger.info(f"      → Catalog pages 1-{converter.total_catalog_pages} mapped to PDF pages 1-{pdf_page_count}")
+            else:
+                self.logger.info(f"   ✅ DOMINANT LAYOUT: Standard")
 
-                for page_idx in range(pages_to_check):
-                    page = doc[page_idx]
-                    rect = page.rect
-                    width = rect.width
-                    height = rect.height
-                    aspect_ratio = width / height if height > 0 else 1.0
-
-                    # Detect 2-page spread layout:
-                    # - Landscape orientation (width > height)
-                    # - Aspect ratio close to 2:1 (between 1.4 and 2.3 to account for margins)
-                    # Note: Lowered from 1.7 to 1.4 to catch spreads with wider margins
-                    if width > height and 1.4 <= aspect_ratio <= 2.3:
-                        spread_count += 1
-                        if page_idx == 0:
-                            self.logger.info(f"   📐 Page {page_idx + 1}: 2-page spread (aspect: {aspect_ratio:.2f})")
-                        elif page_idx == 1:
-                            self.logger.info(f"   📐 Page {page_idx + 1}: 2-page spread (aspect: {aspect_ratio:.2f})")
-                    else:
-                        standard_count += 1
-                        if page_idx == 0:
-                            self.logger.info(f"   📐 Page {page_idx + 1}: Standard layout (aspect: {aspect_ratio:.2f})")
-
-                # Use majority vote: if most pages are spreads, treat entire PDF as spreads
-                if spread_count > standard_count:
-                    pages_per_sheet = 2
-                    self.logger.info(f"   ✅ DOMINANT LAYOUT: 2-page spreads ({spread_count}/{pages_to_check} pages)")
-                    self.logger.info(f"      → Catalog pages 1-{pdf_page_count * 2} mapped to PDF pages 1-{pdf_page_count}")
-                else:
-                    self.logger.info(f"   ✅ DOMINANT LAYOUT: Standard ({standard_count}/{pages_to_check} pages)")
-
-            doc.close()
-            self.logger.info(f"   📄 PDF has {pdf_page_count} pages ({pdf_page_count * pages_per_sheet} catalog pages)")
+            self.logger.info(f"   📄 PDF has {pdf_page_count} pages ({converter.total_catalog_pages} catalog pages)")
 
             # Track products that need vision-based page detection
             products_needing_vision = []
@@ -1514,16 +1480,12 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
 
                 for catalog_page in product.page_range:
                     if catalog_page > 0:
-                        # 📐 CONVERT CATALOG PAGE TO PDF PAGE
-                        # For 2-page spreads: catalog page 84 → PDF page 42
-                        # For standard layout: catalog page 84 → PDF page 84
-                        pdf_page = (catalog_page + pages_per_sheet - 1) // pages_per_sheet
-                        page_idx = pdf_page - 1  # Convert to 0-based
-
-                        # Validate against actual PDF page count
-                        if page_idx < pdf_page_count:
-                            page_indices.append(page_idx)
-                        else:
+                        try:
+                            # ✅ USE PAGE CONVERTER: Type-safe conversion
+                            page = converter.from_catalog_page(catalog_page)
+                            page_indices.append(page.array_index)
+                        except ValueError as e:
+                            # Page is out of bounds
                             invalid_pages.append(catalog_page)
 
                 if invalid_pages:
