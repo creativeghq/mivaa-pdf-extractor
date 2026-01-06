@@ -146,7 +146,16 @@ class Settings(BaseSettings):
 
     # Security Settings
     max_requests_per_minute: int = Field(default=60, env="MAX_REQUESTS_PER_MINUTE")
-    
+
+    # TogetherAI Rate Limiting Settings
+    # Tier is determined by total spend: Tier 1 ($5), Tier 2 ($50), Tier 3 ($100), Tier 4 ($250), Tier 5 ($1000)
+    # See app/config/rate_limits.py for full tier details
+    together_ai_tier: int = Field(
+        default=1,
+        env="TOGETHER_AI_TIER",
+        description="TogetherAI build tier (1-5) based on total spend. Default: Tier 1 ($5 spent)"
+    )
+
     # JWT Authentication Settings
     jwt_secret_key: str = Field(default="", env="JWT_SECRET_KEY")
     jwt_algorithm: str = Field(default="HS256", env="JWT_ALGORITHM")
