@@ -761,6 +761,7 @@ jobs:
           Environment=OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
           Environment=VOYAGE_API_KEY=${{ secrets.VOYAGE_API_KEY }}
           Environment=TOGETHER_API_KEY=${{ secrets.TOGETHER_API_KEY }}
+          Environment=TOGETHER_AI_TIER=${{ secrets.TOGETHER_AI_TIER || '1' }}
           Environment=HUGGINGFACE_API_KEY=${{ secrets.HUGGINGFACE_API_KEY }}
           Environment=HUGGING_FACE_ACCESS_TOKEN=${{ secrets.HUGGING_FACE_ACCESS_TOKEN }}
           Environment=HUGGINGFACE_API_URL=${{ secrets.HUGGINGFACE_API_URL }}
