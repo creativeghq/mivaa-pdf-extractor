@@ -45,7 +45,6 @@ import io
 from app.services.core.ai_call_logger import AICallLogger
 from app.services.metadata.dynamic_metadata_extractor import DynamicMetadataExtractor
 from app.services.core.ai_client_service import get_ai_client_service
-from app.services.discovery.vision_guided_extractor import VisionGuidedExtractor
 from app.utils.page_converter import PageConverter, PageNumber  # ✅ NEW: Centralized page management
 from app.config import get_settings
 
@@ -248,33 +247,17 @@ class ProductDiscoveryService:
     NEW: Supports vision-guided extraction for precise image cropping.
     """
 
-    def __init__(self, model: str = "claude", use_vision_guided: bool = None):
+    def __init__(self, model: str = "claude"):
         """
         Initialize service.
 
         Args:
-            model: AI model to use - supports "claude", "claude-vision", "claude-haiku-vision", "gpt", "gpt-vision"
-            use_vision_guided: Enable vision-guided extraction (defaults to settings)
+            model: AI model to use - supports "claude", "gpt"
         """
         self.logger = logger
         self.model = model
         self.ai_logger = AICallLogger()
         self.settings = get_settings()
-
-        # Vision-guided extraction configuration
-        self.use_vision_guided = (
-            use_vision_guided
-            if use_vision_guided is not None
-            else self.settings.vision_guided_enabled
-        )
-        self.vision_extractor = None
-        if self.use_vision_guided:
-            self.vision_extractor = VisionGuidedExtractor()
-            self.logger.info(
-                f"✅ Vision-guided extraction ENABLED "
-                f"(provider: {self.settings.vision_guided_provider}, "
-                f"model: {self.settings.vision_guided_model})"
-            )
 
         # Check API keys based on model family (claude/gpt)
         if "claude" in model.lower() and not ANTHROPIC_API_KEY:
@@ -439,10 +422,7 @@ class ProductDiscoveryService:
             categories = ["products"]
 
         try:
-            # Check if using vision model
-            is_vision_model = self.model.endswith('-vision')
-
-            self.logger.info(f"🔍 Starting {'VISION-BASED' if is_vision_model else 'TEXT-BASED'} discovery for {total_pages} pages using {self.model.upper()}")
+            self.logger.info(f"🔍 Starting TEXT-BASED discovery for {total_pages} pages using {self.model.upper()}")
             self.logger.info(f"   Categories: {', '.join(categories)}")
             if agent_prompt:
                 self.logger.info(f"   Agent Prompt: '{agent_prompt}'")
@@ -450,60 +430,31 @@ class ProductDiscoveryService:
                 self.logger.info(f"   Prompt Enhancement: ENABLED")
 
             # ============================================================
-            # VISION-BASED DISCOVERY (10x FASTER)
+            # TEXT-BASED DISCOVERY
             # ============================================================
-            if is_vision_model:
-                self.logger.info(f"🖼️  VISION MODE: Converting PDF pages to images...")
+            self.logger.info(f"📋 TEXT MODE: Iterative batch discovery with early stopping...")
 
+            # Extract text from PDF if not provided
+            if pdf_text is None:
                 if pdf_path is None:
-                    raise ValueError("pdf_path is required for vision-based discovery")
+                    raise ValueError("Either pdf_text or pdf_path must be provided for text-based discovery")
 
-                # Convert ALL pages to images (fast: ~1 minute for 71 pages)
-                # Note: Claude Vision limit is 2000px for multi-image requests
-                from app.utils.pdf_to_images import PDFToImagesConverter
-                converter = PDFToImagesConverter(dpi=250, max_dimension=1800)
-                page_images = converter.convert_pdf_to_images(pdf_path, max_pages=None)
+                self.logger.info(f"   Extracting full PDF text for iterative discovery...")
+                import pymupdf4llm
 
-                self.logger.info(f"   ✅ Converted {len(page_images)} pages to images")
+                # Extract ALL pages (SLOW: 10+ minutes for 71 pages)
+                pdf_text = pymupdf4llm.to_markdown(pdf_path)
+                self.logger.info(f"   Extracted {len(pdf_text)} characters from {total_pages} pages")
 
-                # Vision-based discovery
-                catalog = await self._vision_based_discovery(
-                    page_images,
-                    total_pages,
-                    categories,
-                    agent_prompt,
-                    workspace_id,
-                    enable_prompt_enhancement,
-                    job_id
-                )
-
-            # ============================================================
-            # TEXT-BASED DISCOVERY (LEGACY - SLOW)
-            # ============================================================
-            else:
-                self.logger.info(f"📋 TEXT MODE: Iterative batch discovery with early stopping...")
-
-                # Extract text from PDF if not provided
-                if pdf_text is None:
-                    if pdf_path is None:
-                        raise ValueError("Either pdf_text or pdf_path must be provided for text-based discovery")
-
-                    self.logger.info(f"   Extracting full PDF text for iterative discovery...")
-                    import pymupdf4llm
-
-                    # Extract ALL pages (SLOW: 10+ minutes for 71 pages)
-                    pdf_text = pymupdf4llm.to_markdown(pdf_path)
-                    self.logger.info(f"   Extracted {len(pdf_text)} characters from {total_pages} pages")
-
-                # Iterative batch discovery
-                catalog = await self._iterative_batch_discovery(
-                    pdf_text,
-                    total_pages,
-                    categories,
-                    agent_prompt,
-                    workspace_id,
-                    enable_prompt_enhancement,
-                    job_id
+            # Iterative batch discovery
+            catalog = await self._iterative_batch_discovery(
+                pdf_text,
+                total_pages,
+                categories,
+                agent_prompt,
+                workspace_id,
+                enable_prompt_enhancement,
+                job_id
                 )
 
             self.logger.info(f"✅ STAGE 0A complete: Found {len(catalog.products)} products")
@@ -1610,59 +1561,38 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                     product_page_mapping[i] = page_indices
 
             # ============================================================
-            # VISION-BASED PAGE DETECTION FOR PRODUCTS WITH EMPTY PAGE_RANGE
+            # TEXT-BASED PAGE DETECTION FOR PRODUCTS WITH EMPTY PAGE_RANGE
             # ============================================================
             if products_needing_vision:
                 self.logger.info(
-                    f"🔍 VISION-BASED PAGE DETECTION: {len(products_needing_vision)} products need page detection"
+                    f"🔍 TEXT-BASED PAGE DETECTION: {len(products_needing_vision)} products need page detection"
                 )
 
-                # Use vision-guided extractor to find pages for each product
-                from app.services.discovery.vision_guided_extractor import VisionGuidedExtractor
-                vision_extractor = VisionGuidedExtractor()
+                # Ensure we have pdf_text
+                if not pdf_text:
+                    self.logger.info("   Extracting text for page detection...")
+                    import pymupdf4llm
+                    pdf_text = pymupdf4llm.to_markdown(pdf_path)
 
                 for i, product in products_needing_vision:
                     try:
                         self.logger.info(f"   🔍 Detecting pages for: {product.name}")
 
-                        # Search through PDF pages to find where this product appears
-                        detected_pages = await self._detect_product_pages_with_vision(
-                            pdf_path=pdf_path,
+                        detected_pages = await self._detect_product_pages_with_text(
+                            pdf_text=pdf_text,
                             product_name=product.name,
-                            pdf_page_count=pdf_page_count,
-                            vision_extractor=vision_extractor,
-                            job_id=job_id
+                            total_pages=pdf_page_count
                         )
 
                         if detected_pages:
                             self.logger.info(
-                                f"   ✅ Found {len(detected_pages)} pages for '{product.name}' via Vision: {detected_pages}"
+                                f"   ✅ Found {len(detected_pages)} pages for '{product.name}': {detected_pages}"
                             )
                         else:
-                            # 🧩 FALLBACK 1: Text-based detection
-                            self.logger.info(f"   🔍 Vision failed, trying text-based detection for: {product.name}")
-                            
-                            # Ensure we have pdf_text
-                            if not pdf_text:
-                                self.logger.info("      Extracting temporary text for page detection...")
-                                import pymupdf4llm
-                                pdf_text = pymupdf4llm.to_markdown(pdf_path)
-                            
-                            detected_pages = await self._detect_product_pages_with_text(
-                                pdf_text=pdf_text,
-                                product_name=product.name,
-                                total_pages=pdf_page_count
+                            self.logger.error(
+                                f"   ❌ Could not detect pages for '{product.name}' - "
+                                f"product will be SKIPPED to prevent hallucinated data"
                             )
-                            
-                            if detected_pages:
-                                self.logger.info(
-                                    f"   ✅ Found {len(detected_pages)} pages for '{product.name}' via Text: {detected_pages}"
-                                )
-                            else:
-                                self.logger.error(
-                                    f"   ❌ Could not detect pages for '{product.name}' via Vision or Text - "
-                                    f"product will be SKIPPED to prevent hallucinated data"
-                                )
 
                         # Update product and mapping
                         if detected_pages:
@@ -1670,7 +1600,7 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                             page_indices = [p - 1 for p in detected_pages]  # Convert to 0-based
                             all_product_pages.update(page_indices)
                             product_page_mapping[i] = page_indices
-                            
+
                     except Exception as e:
                         self.logger.error(
                             f"   ❌ Detection failed for '{product.name}': {e}"
@@ -2148,512 +2078,6 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
         # (packaging, compliance, care/maintenance info is typically at the end)
         return pdf_text[:100000]
 
-    async def _vision_based_discovery(
-        self,
-        page_images: List[Tuple[int, str]],
-        total_pages: int,
-        categories: List[str],
-        agent_prompt: str,
-        workspace_id: str,
-        enable_prompt_enhancement: bool,
-        job_id: Optional[str] = None
-    ) -> ProductCatalog:
-        """
-        Vision-based discovery using Claude Vision or GPT Vision.
-
-        Sends PDF page images directly to vision model for product identification.
-        This is 10x FASTER than text extraction + text-based discovery.
-
-        Args:
-            page_images: List of (page_number, base64_image) tuples
-            total_pages: Total pages in PDF
-            categories: Categories to extract
-            agent_prompt: Custom prompt
-            workspace_id: Workspace ID
-            enable_prompt_enhancement: Whether to enhance prompts
-            job_id: Job ID for logging
-
-        Returns:
-            ProductCatalog with all discovered products
-        """
-        self.logger.info(f"🖼️  Starting vision-based discovery with {len(page_images)} page images")
-
-        # Build vision prompt
-        vision_prompt = await self._build_vision_discovery_prompt(
-            categories,
-            agent_prompt,
-            workspace_id,
-            enable_prompt_enhancement
-        )
-
-        # Prepare images for vision model (send all pages at once)
-        self.logger.info(f"   📤 Sending {len(page_images)} images to {self.model}...")
-
-        # Call vision model based on model family
-        if "claude" in self.model.lower():
-            result_str = await self._discover_with_claude_vision(vision_prompt, page_images, job_id)
-        elif "gpt" in self.model.lower():
-            result_str = await self._discover_with_gpt_vision(vision_prompt, page_images, job_id)
-        else:
-            raise ValueError(f"Unknown vision model: {self.model}")
-
-        # Parse JSON string to dict
-        import json
-        import re
-
-        # Strip markdown code blocks if present (Claude often wraps JSON in ```json ... ```)
-        result_str_clean = result_str.strip()
-        if result_str_clean.startswith("```"):
-            # Remove opening ```json or ``` and closing ```
-            result_str_clean = re.sub(r'^```(?:json)?\s*\n', '', result_str_clean)
-            result_str_clean = re.sub(r'\n```\s*$', '', result_str_clean)
-
-        try:
-            result = json.loads(result_str_clean)
-        except json.JSONDecodeError as e:
-            self.logger.error(f"❌ Failed to parse vision model response as JSON: {e}")
-            self.logger.error(f"   Response: {result_str_clean[:500]}...")
-            raise ValueError(f"Vision model returned invalid JSON: {e}")
-
-        # Parse results
-        catalog = self._parse_discovery_results(result, total_pages, categories)
-
-        self.logger.info(f"✅ Vision discovery complete: Found {len(catalog.products)} products")
-        for product in catalog.products:
-            self.logger.info(f"   📦 {product.name}: pages {product.page_range}")
-
-        return catalog
-
-    async def _build_vision_discovery_prompt(
-        self,
-        categories: List[str],
-        agent_prompt: Optional[str],
-        workspace_id: str,
-        enable_prompt_enhancement: bool,
-        total_pages: int = None
-    ) -> str:
-        """Build prompt for vision-based discovery."""
-
-        prompt = f"""Analyze these PDF pages and identify all {', '.join(categories)}.
-
-**FIRST: EXTRACT DOCUMENT-LEVEL INFORMATION**
-Look at the cover page, intro pages, and headers/footers to identify:
-1. **catalog_factory**: The main factory/brand name for this catalog (e.g., "HARMONY", "Porcelanosa")
-2. **catalog_factory_group**: The parent company or group (e.g., "Peronda Group", "Porcelanosa Group")
-3. **catalog_manufacturer**: The manufacturer if different from factory
-
-This information typically appears on:
-- Cover page (large logo/brand name)
-- Footer/header of pages
-- "About Us" or intro sections
-- Copyright notices
-
-**THEN: For each product found, provide:**
-1. Product name
-2. Brief description
-
-**DO NOT include page numbers** - we will detect pages automatically using vision-based detection.
-
-Return results in JSON format:
-{{
-  "catalog_factory": "HARMONY",
-  "catalog_factory_group": "Peronda Group",
-  "catalog_manufacturer": "Peronda Group",
-  "products": [
-    {{
-      "name": "Product Name",
-      "description": "Brief description"
-    }}
-  ]
-}}
-
-IMPORTANT:
-- **ALWAYS extract catalog_factory from cover/intro pages** - this is the brand that makes ALL products in this catalog
-- Focus on identifying product names accurately
-- Exclude index pages, table of contents, and cross-references
-- Only include actual products with detailed information
-"""
-
-        if agent_prompt:
-            prompt += f"\n\nAdditional instructions: {agent_prompt}"
-
-        return prompt
-
-    async def _discover_with_claude_vision(
-        self,
-        prompt: str,
-        page_images: List[Tuple[int, str]],
-        job_id: Optional[str] = None
-    ) -> str:
-        """Call Claude Vision API with page images."""
-        start_time = datetime.now()
-
-        try:
-            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-
-            # Build content array with images
-            content = []
-
-            # Add prompt first
-            content.append({
-                "type": "text",
-                "text": prompt
-            })
-
-            # Add all page images
-            for page_num, image_base64 in page_images:
-                content.append({
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "image/jpeg",
-                        "data": image_base64
-                    }
-                })
-
-            self.logger.info(f"   🤖 Calling Claude Vision with {len(page_images)} images...")
-
-            # Determine model version
-            model_version = "claude-sonnet-4-5-20250929"  # Claude Sonnet 4.5
-            if "haiku" in self.model:
-                model_version = "claude-haiku-4-5-20251001"  # Claude Haiku 4.5
-
-            response = client.messages.create(
-                model=model_version,
-                max_tokens=4096,
-                messages=[{
-                    "role": "user",
-                    "content": content
-                }]
-            )
-
-            result = response.content[0].text
-
-            # Log AI call
-            latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-            await self.ai_logger.log_claude_call(
-                task="vision_product_discovery",
-                model=model_version,
-                response=response,
-                latency_ms=latency_ms,
-                confidence_score=0.9,
-                confidence_breakdown={},
-                action="use_ai_result",
-                job_id=job_id
-            )
-
-            self.logger.info(f"   ✅ Claude Vision response: {len(result)} characters")
-            return result
-
-        except Exception as e:
-            self.logger.error(f"❌ Claude Vision API error: {e}")
-            raise
-
-    async def _discover_with_gpt_vision(
-        self,
-        prompt: str,
-        page_images: List[Tuple[int, str]],
-        job_id: Optional[str] = None
-    ) -> str:
-        """Call GPT Vision API with page images."""
-        start_time = datetime.now()
-
-        try:
-            client = openai.OpenAI(api_key=OPENAI_API_KEY)
-
-            # Build content array with images
-            content = [{"type": "text", "text": prompt}]
-
-            # Add all page images with labels
-            for page_num, image_base64 in page_images:
-                # Add text label before each image to identify the page number
-                content.append({
-                    "type": "text",
-                    "text": f"--- PAGE {page_num} ---"
-                })
-                content.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{image_base64}"
-                    }
-                })
-
-            self.logger.info(f"   🤖 Calling GPT Vision with {len(page_images)} images...")
-
-            response = client.chat.completions.create(
-                model="gpt-4o",
-                max_tokens=4096,
-                messages=[{
-                    "role": "user",
-                    "content": content
-                }]
-            )
-
-            result = response.choices[0].message.content
-
-            # Log AI call
-            latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-            await self.ai_logger.log_gpt_call(
-                task="vision_product_discovery",
-                model="gpt-4o",
-                response=response,
-                latency_ms=latency_ms,
-                confidence_score=0.9,
-                confidence_breakdown={},
-                action="use_ai_result",
-                job_id=job_id
-            )
-
-            self.logger.info(f"   ✅ GPT Vision response: {len(result)} characters")
-            return result
-
-        except Exception as e:
-            self.logger.error(f"❌ GPT Vision API error: {e}")
-            raise
-
-    async def extract_with_vision_guidance(
-        self,
-        pdf_path: str,
-        catalog: ProductCatalog,
-        job_id: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        Extract product images using vision-guided extraction.
-
-        This method integrates VisionGuidedExtractor with the product discovery pipeline:
-        1. Uses Stage 0 LLM text analysis for product discovery (already done in catalog)
-        2. Uses vision-guided extraction for precise image cropping with bounding boxes
-        3. Returns atomically linked product-image pairs (no guesswork)
-
-        Args:
-            pdf_path: Path to PDF file
-            catalog: ProductCatalog from Stage 0 discovery (with product names and page ranges)
-            job_id: Optional job ID for tracking
-
-        Returns:
-            Dict containing:
-            - success: bool
-            - extracted_images: List[Dict] with vision-guided metadata
-            - extraction_method: 'vision_guided'
-            - stats: extraction statistics
-        """
-        if not self.use_vision_guided or not self.vision_extractor:
-            raise ValueError("Vision-guided extraction not enabled")
-
-        start_time = datetime.now()
-        extracted_images = []
-        stats = {
-            'total_products': len(catalog.products),
-            'total_pages_processed': 0,
-            'total_detections': 0,
-            'vision_guided_count': 0,
-            'failed_pages': 0,
-            'average_confidence': 0.0
-        }
-
-        try:
-            self.logger.info(
-                f"🎯 Starting vision-guided extraction for {len(catalog.products)} products..."
-            )
-
-            # ✅ NEW: Use PageConverter for centralized page number management
-            converter = PageConverter.from_pdf_path(pdf_path)
-            
-            self.logger.info(
-                f"   📐 Detected PDF layout: {converter.pages_per_sheet} page(s) per sheet"
-            )
-            self.logger.info(
-                f"   Physical pages: {converter.total_pdf_pages}, "
-                f"Catalog pages: {converter.total_catalog_pages}"
-            )
-
-            # Process each product's pages
-            all_confidences = []
-
-            for product_idx, product in enumerate(catalog.products, 1):
-                self.logger.info(
-                    f"   📦 [{product_idx}/{len(catalog.products)}] {product.name} "
-                    f"(catalog pages: {product.page_range})"
-                )
-
-                # ✅ NEW: Validate page range against PDF bounds
-                valid_catalog_pages = converter.validate_page_range(product.page_range)
-                
-                if len(valid_catalog_pages) < len(product.page_range):
-                    self.logger.warning(
-                        f"   ⚠️ Filtered {len(product.page_range) - len(valid_catalog_pages)} "
-                        f"out-of-bounds catalog pages for {product.name}"
-                    )
-
-                # Extract images from each VALID catalog page in product's range
-                for catalog_page in valid_catalog_pages:
-                    stats['total_pages_processed'] += 1
-
-                    try:
-                        # ✅ NEW: Use PageConverter for type-safe page conversion
-                        page = converter.from_catalog_page(catalog_page)
-
-                        # Call vision-guided extractor for EXTRACTION (not discovery)
-                        result = await self.vision_extractor.extract_products_from_page(
-                            pdf_path=pdf_path,
-                            page_num=page.array_index,  # ✅ Type-safe PyMuPDF index
-                            catalog_page=page.catalog_page,  # ✅ NEW: Pass catalog page
-                            product_names=[product.name],  # Provide expected product name
-                            job_id=job_id,
-                            vision_context="extraction"  # This is product extraction, not discovery
-                        )
-
-                        # This ensures the database shows current status during long-running Vision API calls
-                        if tracker:
-                            # Calculate progress: 0-10% for discovery phase
-                            # Distribute progress across all pages being processed
-                            total_pages_to_process = sum(len(p.page_range) for p in catalog.products)
-                            progress_pct = min(10, int((stats['total_pages_processed'] / max(total_pages_to_process, 1)) * 10))
-
-                            tracker.current_step = f"Vision processing page {page_idx + 1} for {product.name}"
-                            tracker.progress_current = stats['total_pages_processed']
-                            tracker.progress_total = total_pages_to_process
-
-                            # Force sync to database every 5 pages to show progress
-                            if stats['total_pages_processed'] % 5 == 0:
-                                await tracker.update_stage(
-                                    ProcessingStage.INITIALIZING,
-                                    stage_name="product_discovery",
-                                    progress_percentage=progress_pct
-                                )
-                                await tracker._sync_to_database(stage="product_discovery", force=True)
-                                self.logger.info(f"📊 Progress updated: {progress_pct}% ({stats['total_pages_processed']}/{total_pages_to_process} pages)")
-
-                        if result['success'] and result['detections']:
-                            # Process each detection
-                            for detection in result['detections']:
-                                extracted_images.append({
-                                    'product_name': product.name,
-                                    'page_number': catalog_page,  # ✅ Store catalog page number
-                                    'bbox': detection['bbox'],
-                                    'confidence': detection['confidence'],
-                                    'extraction_method': 'vision_guided',
-                                    'description': detection.get('description', ''),
-                                    'product_metadata': product.metadata
-                                })
-
-                                stats['total_detections'] += 1
-                                stats['vision_guided_count'] += 1
-                                all_confidences.append(detection['confidence'])
-
-                                self.logger.info(
-                                    f"      ✅ Detected: {detection['product_name']} "
-                                    f"(confidence: {detection['confidence']:.2f})"
-                                )
-                        else:
-                            self.logger.warning(
-                                f"      ⚠️ No detections on catalog page {catalog_page}"
-                            )
-
-                    except Exception as e:
-                        self.logger.error(
-                            f"      ❌ Vision extraction failed for catalog page {catalog_page}: {e}"
-                        )
-                        stats['failed_pages'] += 1
-
-            # Calculate average confidence
-            if all_confidences:
-                stats['average_confidence'] = sum(all_confidences) / len(all_confidences)
-
-            processing_time_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-
-            self.logger.info(
-                f"✅ Vision-guided extraction complete in {processing_time_ms}ms:"
-            )
-            self.logger.info(f"   Total detections: {stats['total_detections']}")
-            self.logger.info(f"   Average confidence: {stats['average_confidence']:.2f}")
-            self.logger.info(f"   Failed pages: {stats['failed_pages']}")
-
-            return {
-                'success': True,
-                'extracted_images': extracted_images,
-                'extraction_method': 'vision_guided',
-                'stats': stats,
-                'processing_time_ms': processing_time_ms
-            }
-
-        except Exception as e:
-            self.logger.error(f"❌ Vision-guided extraction failed: {e}")
-            return {
-                'success': False,
-                'extracted_images': [],
-                'extraction_method': 'vision_guided',
-                'error': str(e),
-                'stats': stats
-            }
-
-    async def _detect_product_pages_with_vision(
-        self,
-        pdf_path: str,
-        product_name: str,
-        pdf_page_count: int,
-        vision_extractor: Any,
-        job_id: Optional[str] = None
-    ) -> List[int]:
-        """
-        Use vision-based analysis to detect which pages contain a specific product.
-
-        This is a fallback mechanism for when the AI model doesn't assign page ranges.
-        It scans through the PDF page-by-page looking for the product name.
-
-        Args:
-            pdf_path: Path to PDF file
-            product_name: Name of product to search for
-            pdf_page_count: Total number of pages in PDF
-            vision_extractor: VisionGuidedExtractor instance
-            job_id: Optional job ID for logging
-
-        Returns:
-            List of page numbers (1-based) where product was found
-        """
-        detected_pages = []
-
-        # Limit search to avoid excessive API calls (max 20 pages)
-        max_pages_to_scan = min(pdf_page_count, 20)
-
-        self.logger.info(
-            f"      Scanning up to {max_pages_to_scan} pages for '{product_name}'..."
-        )
-
-        for page_idx in range(max_pages_to_scan):
-            try:
-                # Call vision API to check if product appears on this page (DISCOVERY phase)
-                result = await vision_extractor.extract_products_from_page(
-                    pdf_path=pdf_path,
-                    page_num=page_idx,
-                    product_names=[product_name],
-                    job_id=job_id,
-                    vision_context="discovery"  # 🆕 This is product discovery, not extraction
-                )
-
-                # 🆕 Log progress every 10 pages during page detection
-                if (page_idx + 1) % 10 == 0:
-                    self.logger.info(f"      📊 Scanned {page_idx + 1}/{max_pages_to_scan} pages for '{product_name}'")
-
-                if result['success'] and result['detections']:
-                    # Check if any detection matches our product
-                    for detection in result['detections']:
-                        if detection['product_name'].lower() == product_name.lower():
-                            page_num = page_idx + 1  # Convert to 1-based
-                            detected_pages.append(page_num)
-                            self.logger.info(
-                                f"      ✅ Found '{product_name}' on page {page_num} "
-                                f"(confidence: {detection['confidence']:.2f})"
-                            )
-                            break  # Found on this page, move to next
-
-            except Exception as e:
-                self.logger.warning(
-                    f"      ⚠️ Vision detection failed for page {page_idx + 1}: {e}"
-                )
-                continue
-
-        return detected_pages
 
     async def _detect_product_pages_with_text(
         self,

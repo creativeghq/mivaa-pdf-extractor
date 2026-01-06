@@ -70,33 +70,20 @@ def _extract_product_text(full_text: str, page_range: List[int]) -> str:
 # ============================================================================
 
 class ClassifyImagesRequest(BaseModel):
-    """
-    Request model for image classification.
-
-    Supports vision-guided pre-classified images:
-    - If image has 'extraction_method' == 'vision_guided', skip AI classification
-    - Vision-guided images are already classified as material during extraction
-    - Only PyMuPDF images need AI classification
-    """
+    """Request model for image classification."""
     job_id: str
-    extracted_images: List[Dict[str, Any]]  # Can include pre-classified vision-guided images
+    extracted_images: List[Dict[str, Any]]
     ai_config: Optional[AIModelConfig] = None  # Uses DEFAULT_AI_CONFIG if not provided
 
 
 class ClassifyImagesResponse(BaseModel):
-    """
-    Response model for image classification.
-
-    Includes vision-guided extraction statistics.
-    """
+    """Response model for image classification."""
     success: bool
     material_images: List[Dict[str, Any]]
     non_material_images: List[Dict[str, Any]]
     total_classified: int
     material_count: int
     non_material_count: int
-    vision_guided_count: Optional[int] = 0  # Number of pre-classified vision-guided images
-    ai_classified_count: Optional[int] = 0  # Number of images classified by AI
 
 
 class UploadImagesRequest(BaseModel):
@@ -115,36 +102,19 @@ class UploadImagesResponse(BaseModel):
 
 
 class SaveImagesRequest(BaseModel):
-    """
-    Request model for saving images to DB and generating visual embeddings.
-
-    Supports vision-guided extraction metadata:
-    - extraction_method: 'vision_guided' or 'pymupdf'
-    - bbox: Bounding box coordinates [x, y, width, height]
-    - detection_confidence: Vision model confidence (0.0-1.0)
-    - vision_provider: 'anthropic', 'openai', or 'together'
-    - vision_model: Model used for detection
-    - product_name: Atomically linked product name (vision-guided only)
-    """
+    """Request model for saving images to DB and generating visual embeddings."""
     job_id: str
-    material_images: List[Dict[str, Any]]  # Each image can have: extraction_method, bbox, detection_confidence, vision_provider, vision_model, product_name
+    material_images: List[Dict[str, Any]]
     document_id: str
     workspace_id: str
     ai_config: Optional[AIModelConfig] = None  # Uses DEFAULT_AI_CONFIG if not provided
 
 
 class SaveImagesResponse(BaseModel):
-    """
-    Response model for saving images.
-
-    Includes vision-guided extraction statistics.
-    """
+    """Response model for saving images."""
     success: bool
     images_saved: int
     clip_embeddings_generated: int
-    vision_guided_count: Optional[int] = 0  # Number of images extracted with vision guidance
-    pymupdf_fallback_count: Optional[int] = 0  # Number of images extracted with PyMuPDF fallback
-    average_vision_confidence: Optional[float] = None  # Average confidence for vision-guided images
 
 
 class CreateChunksRequest(BaseModel):
@@ -251,21 +221,8 @@ async def classify_images(
         # Use provided AI config or default
         ai_config = request.ai_config or DEFAULT_AI_CONFIG
 
-        # Separate pre-classified vision-guided images from images needing AI classification
-        vision_guided_images = [
-            img for img in request.extracted_images
-            if img.get('extraction_method') == 'vision_guided'
-        ]
-        images_needing_classification = [
-            img for img in request.extracted_images
-            if img.get('extraction_method') != 'vision_guided'
-        ]
-
         logger.info(f"🤖 [Job {job_id}] Starting image classification for {len(request.extracted_images)} images")
-        logger.info(f"   Vision-guided (pre-classified): {len(vision_guided_images)}")
-        logger.info(f"   Needing AI classification: {len(images_needing_classification)}")
-        if images_needing_classification:
-            logger.info(f"   AI Config: Primary={ai_config.classification_primary_model}, Validation={ai_config.classification_validation_model}, Threshold={ai_config.classification_confidence_threshold}")
+        logger.info(f"   AI Config: Primary={ai_config.classification_primary_model}, Validation={ai_config.classification_validation_model}, Threshold={ai_config.classification_confidence_threshold}")
 
         # Initialize tracker
         tracker = JobTracker(job_id)
@@ -274,48 +231,31 @@ async def classify_images(
         # Initialize service
         image_service = ImageProcessingService()
 
-        # Classify only images that need AI classification (PyMuPDF images)
-        ai_material_images = []
-        ai_non_material_images = []
-
-        if images_needing_classification:
-            ai_material_images, ai_non_material_images = await image_service.classify_images(
-                extracted_images=images_needing_classification,
-                confidence_threshold=ai_config.classification_confidence_threshold,
-                primary_model=ai_config.classification_primary_model,
-                validation_model=ai_config.classification_validation_model
-            )
-
-        # Combine vision-guided images (all material) with AI-classified material images
-        material_images = vision_guided_images + ai_material_images
-        non_material_images = ai_non_material_images
+        # Classify images with AI config
+        material_images, non_material_images = await image_service.classify_images(
+            extracted_images=request.extracted_images,
+            confidence_threshold=ai_config.classification_confidence_threshold,
+            primary_model=ai_config.classification_primary_model,
+            validation_model=ai_config.classification_validation_model
+        )
 
         # Update tracker
         await tracker.update_stage(
             "IMAGE_CLASSIFICATION",
             100,
-            metadata={
-                'material_count': len(material_images),
-                'non_material_count': len(non_material_images),
-                'vision_guided_count': len(vision_guided_images),
-                'ai_classified_count': len(images_needing_classification)
-            },
+            metadata={'material_count': len(material_images), 'non_material_count': len(non_material_images)},
             sync_to_db=True
         )
 
-        logger.info(f"✅ [Job {job_id}] Classification complete:")
-        logger.info(f"   Material: {len(material_images)} ({len(vision_guided_images)} vision-guided + {len(ai_material_images)} AI-classified)")
-        logger.info(f"   Non-material: {len(non_material_images)}")
-        
+        logger.info(f"✅ [Job {job_id}] Classification complete: {len(material_images)} material, {len(non_material_images)} non-material")
+
         return ClassifyImagesResponse(
             success=True,
             material_images=material_images,
             non_material_images=non_material_images,
             total_classified=len(material_images) + len(non_material_images),
             material_count=len(material_images),
-            non_material_count=len(non_material_images),
-            vision_guided_count=len(vision_guided_images),
-            ai_classified_count=len(images_needing_classification)
+            non_material_count=len(non_material_images)
         )
     
     except Exception as e:
@@ -438,56 +378,23 @@ async def save_images_to_db(
             workspace_id=request.workspace_id
         )
 
-        # Calculate vision-guided extraction statistics
-        vision_guided_images = [
-            img for img in request.material_images
-            if img.get('extraction_method') == 'vision_guided'
-        ]
-        pymupdf_images = [
-            img for img in request.material_images
-            if img.get('extraction_method') != 'vision_guided'
-        ]
-
-        vision_guided_count = len(vision_guided_images)
-        pymupdf_fallback_count = len(pymupdf_images)
-
-        # Calculate average vision confidence
-        avg_vision_confidence = None
-        if vision_guided_images:
-            confidences = [
-                img.get('detection_confidence', 0.0)
-                for img in vision_guided_images
-                if img.get('detection_confidence') is not None
-            ]
-            if confidences:
-                avg_vision_confidence = sum(confidences) / len(confidences)
-
         # Update tracker
         await tracker.update_stage(
             "IMAGE_SAVE_AND_CLIP",
             100,
             metadata={
                 'images_saved': result['images_saved'],
-                'clip_embeddings_generated': result['clip_embeddings_generated'],
-                'vision_guided_count': vision_guided_count,
-                'pymupdf_fallback_count': pymupdf_fallback_count,
-                'average_vision_confidence': avg_vision_confidence
+                'clip_embeddings_generated': result['clip_embeddings_generated']
             },
             sync_to_db=True
         )
 
         logger.info(f"✅ [Job {job_id}] DB save complete: {result['images_saved']} saved, {result['clip_embeddings_generated']} CLIP embeddings")
-        logger.info(f"   Vision-guided: {vision_guided_count}, PyMuPDF fallback: {pymupdf_fallback_count}")
-        if avg_vision_confidence:
-            logger.info(f"   Average vision confidence: {avg_vision_confidence:.2f}")
 
         return SaveImagesResponse(
             success=True,
             images_saved=result['images_saved'],
-            clip_embeddings_generated=result['clip_embeddings_generated'],
-            vision_guided_count=vision_guided_count,
-            pymupdf_fallback_count=pymupdf_fallback_count,
-            average_vision_confidence=avg_vision_confidence
+            clip_embeddings_generated=result['clip_embeddings_generated']
         )
 
     except Exception as e:

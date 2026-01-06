@@ -1,7 +1,7 @@
 """
 PDF Extraction Engine Orchestrator
 
-Manages multiple PDF extraction engines (PyMuPDF, Vision AI, Marker) with fallback support.
+Manages multiple PDF extraction engines (PyMuPDF, Marker) with fallback support.
 """
 
 import logging
@@ -14,7 +14,6 @@ logger = logging.getLogger(__name__)
 class ExtractionEngine(str, Enum):
     """Available PDF extraction engines."""
     PYMUPDF = "pymupdf"
-    VISION = "vision"
     MARKER = "marker"
 
 
@@ -83,20 +82,18 @@ async def extract_with_engine(
     
     Args:
         pdf_path: Path to PDF file
-        engine: Engine to use ('pymupdf', 'vision', 'marker')
+        engine: Engine to use ('pymupdf', 'marker')
         processing_options: Processing configuration
-        
+
     Returns:
         ExtractionResult with content and metadata
     """
     import time
     start_time = time.time()
-    
+
     try:
         if engine == ExtractionEngine.PYMUPDF:
             result = await _extract_with_pymupdf(pdf_path, processing_options)
-        elif engine == ExtractionEngine.VISION:
-            result = await _extract_with_vision(pdf_path, processing_options)
         elif engine == ExtractionEngine.MARKER:
             result = await _extract_with_marker(pdf_path, processing_options)
         else:
@@ -131,201 +128,6 @@ async def _extract_with_pymupdf(
         page_chunks=page_chunks,
         engine_used="pymupdf"
     )
-
-
-async def _extract_with_vision(
-    pdf_path: str,
-    processing_options: Dict[str, Any]
-) -> ExtractionResult:
-    """
-    Extract PDF text using Vision AI (Claude/GPT/Together).
-
-    Renders each page as image and uses vision model to extract text.
-    More accurate for scanned documents and complex layouts.
-    """
-    import fitz  # PyMuPDF for rendering
-    from app.services.core.ai_client_service import AIClientService
-    from app.config import get_settings
-
-    settings = get_settings()
-    ai_client = AIClientService()
-
-    # Get vision provider from settings
-    provider = settings.vision_guided_provider  # "anthropic", "openai", or "together"
-    model = settings.vision_guided_model
-
-    logger.info(f"Using Vision AI extraction with {provider}/{model}")
-
-    try:
-        doc = fitz.open(pdf_path)
-        total_pages = len(doc)
-
-        # Get page list or process all pages
-        page_list = processing_options.get('page_list')
-        if page_list:
-            pages_to_process = [p - 1 for p in page_list if 0 < p <= total_pages]  # Convert to 0-indexed
-        else:
-            pages_to_process = list(range(total_pages))
-
-        logger.info(f"Processing {len(pages_to_process)} pages with Vision AI")
-
-        all_page_texts = []
-        page_chunks = []
-
-        for page_idx in pages_to_process:
-            try:
-                # Render page to image
-                page = doc.load_page(page_idx)
-                mat = fitz.Matrix(2.0, 2.0)  # 2x zoom for better quality
-                pix = page.get_pixmap(matrix=mat)
-                img_data = pix.tobytes('jpeg')
-
-                # Convert to base64
-                import base64
-                img_base64 = base64.b64encode(img_data).decode('utf-8')
-
-                # Extract text using vision model
-                page_text = await _call_vision_for_text(
-                    img_base64,
-                    page_idx + 1,
-                    provider,
-                    model,
-                    ai_client
-                )
-
-                all_page_texts.append(page_text)
-
-                # Create page chunk
-                page_chunks.append({
-                    'page': page_idx,
-                    'text': page_text,
-                    'metadata': {
-                        'extraction_method': 'vision_ai',
-                        'provider': provider,
-                        'model': model
-                    }
-                })
-
-                logger.info(f"✅ Page {page_idx + 1}/{total_pages}: {len(page_text)} chars extracted")
-
-            except Exception as page_error:
-                logger.error(f"❌ Failed to process page {page_idx + 1}: {page_error}")
-                all_page_texts.append(f"[Error extracting page {page_idx + 1}]")
-
-        doc.close()
-
-        # Combine all pages
-        markdown_content = "\n\n-----\n\n".join(all_page_texts)
-
-        metadata = {
-            'total_pages': len(pages_to_process),
-            'extraction_method': 'vision_ai',
-            'provider': provider,
-            'model': model,
-            'content_length': len(markdown_content)
-        }
-
-        return ExtractionResult(
-            markdown_content=markdown_content,
-            metadata=metadata,
-            page_chunks=page_chunks,
-            engine_used="vision"
-        )
-
-    except Exception as e:
-        logger.error(f"Vision AI extraction failed: {e}")
-        raise
-
-
-async def _call_vision_for_text(
-    img_base64: str,
-    page_num: int,
-    provider: str,
-    model: str,
-    ai_client: 'AIClientService'
-) -> str:
-    """
-    Call vision API to extract text from page image.
-
-    Args:
-        img_base64: Base64-encoded page image
-        page_num: Page number for logging
-        provider: "anthropic", "openai", or "together"
-        model: Model name
-        ai_client: AI client service
-
-    Returns:
-        Extracted text in markdown format
-    """
-    prompt = """Extract ALL text from this PDF page image.
-
-Requirements:
-- Preserve the original layout and structure
-- Use markdown formatting (headers, lists, tables, etc.)
-- Include ALL text, even small print
-- Maintain reading order (top to bottom, left to right)
-- For tables, use markdown table format
-- For multi-column layouts, process left column first, then right
-
-Return ONLY the extracted text in markdown format, no explanations."""
-
-    try:
-        if provider == "anthropic":
-            client = ai_client.anthropic
-            response = client.messages.create(
-                model=model,
-                max_tokens=4096,
-                temperature=0,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/jpeg",
-                                "data": img_base64
-                            }
-                        },
-                        {
-                            "type": "text",
-                            "text": prompt
-                        }
-                    ]
-                }]
-            )
-            return response.content[0].text.strip()
-
-        elif provider == "openai":
-            client = ai_client.openai
-            response = client.chat.completions.create(
-                model=model,
-                max_tokens=4096,
-                temperature=0,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": prompt
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{img_base64}"
-                            }
-                        }
-                    ]
-                }]
-            )
-            return response.choices[0].message.content.strip()
-
-        else:
-            raise ValueError(f"Unsupported vision provider: {provider}")
-
-    except Exception as e:
-        logger.error(f"Vision API call failed for page {page_num}: {e}")
-        raise
 
 
 async def _extract_with_marker(

@@ -432,7 +432,7 @@ class PDFProcessor:
             
             # Extract images if requested
             extracted_images = []
-            extraction_stats = {'vision_guided_count': 0, 'pymupdf_count': 0, 'failed_count': 0, 'total_pages': 0}
+            extraction_stats = {'pymupdf_count': 0, 'failed_count': 0, 'total_pages': 0}
 
             if processing_options.get('extract_images', True):
                 # ✅ NEW: Pass job_id and checkpoint_recovery_service if available in processing_options
@@ -609,12 +609,11 @@ class PDFProcessor:
         - Upload to Supabase Storage instead of local storage
         - Quality assessment and duplicate detection
         - ✅ NEW: Full checkpoint and progress tracking integration
-        - ✅ NEW: Vision-guided extraction with fallback logging
 
         Returns:
             Tuple of (images_list, extraction_stats)
             - images_list: List of image dictionaries
-            - extraction_stats: Dict with vision_guided_count, pymupdf_count, failed_count, total_pages
+            - extraction_stats: Dict with pymupdf_count, failed_count, total_pages
         """
         try:
             import fitz
@@ -675,7 +674,6 @@ class PDFProcessor:
 
             # Track extraction method for metrics
             extraction_stats = {
-                'vision_guided_count': 0,
                 'pymupdf_count': 0,
                 'failed_count': 0,
                 'total_pages': len(pages_to_process)
@@ -701,11 +699,7 @@ class PDFProcessor:
 
                 # Update extraction stats based on extracted images
                 for img in batch_extracted_images:
-                    method = img.get('detection_method', 'pymupdf')
-                    if method == 'vision_guided':
-                        extraction_stats['vision_guided_count'] += 1
-                    else:
-                        extraction_stats['pymupdf_count'] += 1
+                    extraction_stats['pymupdf_count'] += 1
 
                 # Process extracted images IMMEDIATELY (don't accumulate)
                 batch_images = await self._process_batch_images(
@@ -727,8 +721,7 @@ class PDFProcessor:
 
             self.logger.info(
                 f"✅ STREAMING EXTRACTION COMPLETE: {len(all_images)} total images "
-                f"(vision: {extraction_stats['vision_guided_count']}, "
-                f"pymupdf: {extraction_stats['pymupdf_count']})"
+                f"(pymupdf: {extraction_stats['pymupdf_count']})"
             )
 
             return all_images, extraction_stats
@@ -746,14 +739,10 @@ class PDFProcessor:
         converter: Optional[PageConverter] = None  # ✅ NEW: PageConverter for validation
     ) -> List[Dict[str, Any]]:
         """
-        Extract images from a specific batch of pages with vision-guided extraction + PyMuPDF fallback.
+        Extract images from a specific batch of pages using PyMuPDF.
 
         ✅ FULLY INTEGRATED with metadata propagation
 
-        Architecture:
-        1. Try vision-guided extraction first
-        2. Fall back to PyMuPDF if vision fails or returns nothing
-        
         Args:
             pdf_path: Path to PDF file
             image_dir: Directory to save extracted images
@@ -765,182 +754,10 @@ class PDFProcessor:
         Returns:
             List of extracted image data dictionaries
         """
-        import fitz
-        import gc
-        from app.config import get_settings
-
-        settings = get_settings()
-
-        # Try vision-guided extraction first (if enabled)
-        if settings.vision_guided_enabled:
-            try:
-                self.logger.info(f"   🔍 [Job: {job_id}] Attempting vision-guided extraction for pages {batch_pages}")
-                vision_images = self._extract_batch_images_with_vision(
-                    pdf_path, image_dir, batch_pages, job_id, document_id, converter  # ✅ Pass converter
-                )
-                if vision_images:
-                    self.logger.info(
-                        f"   ✅ [Job: {job_id}] Vision-guided extraction successful: "
-                        f"{len(vision_images)} images extracted"
-                    )
-                    return vision_images
-            except Exception as e:
-                self.logger.warning(
-                    f"   ⚠️ [Job: {job_id}] Vision-guided extraction failed: {e}. Falling back to PyMuPDF..."
-                )
-
-        # Fall back to PyMuPDF extraction
         self.logger.info(f"   📄 [Job: {job_id}] Using PyMuPDF extraction for pages {batch_pages}")
         return self._extract_batch_images_with_pymupdf(
             pdf_path, image_dir, batch_pages, job_id, document_id
         )
-
-    def _extract_batch_images_with_vision(
-        self,
-        pdf_path: str,
-        image_dir: str,
-        batch_pages: List[int],
-        job_id: Optional[str] = None,
-        document_id: Optional[str] = None,
-        converter: Optional[PageConverter] = None  # ✅ NEW: PageConverter
-    ) -> List[Dict[str, Any]]:
-        """
-        Extract images using VisionGuidedExtractor with bounding boxes.
-
-        ✅ INTEGRATED with job tracking and error logging
-
-        Args:
-            batch_pages: List of page indices (0-based) to process
-            converter: PageConverter for page number validation and conversion
-
-        Returns list of extracted images with vision metadata (bounding boxes, confidence).
-        Raises exception if vision extraction fails.
-        """
-        from app.services.discovery.vision_guided_extractor import VisionGuidedExtractor
-        from app.config import get_settings
-        import asyncio
-
-        settings = get_settings()
-        extractor = VisionGuidedExtractor()
-
-        extracted_images = []
-
-        # Process each page with vision extraction
-        for page_idx in batch_pages:
-            try:
-                # ✅ NEW: Convert array index to all page number formats
-                if converter:
-                    page = converter.from_array_index(page_idx)
-                    catalog_page = page.catalog_page
-                    pdf_page = page.pdf_page
-                else:
-                    # Fallback if converter not available
-                    catalog_page = page_idx + 1
-                    pdf_page = page_idx + 1
-
-                self.logger.info(
-                    f"   🔍 [Job: {job_id}] Vision extraction for catalog page {catalog_page} "
-                    f"(PDF page {pdf_page}, index {page_idx})"
-                )
-
-                # Run async vision extraction in sync context
-                result = asyncio.run(
-                    extractor.extract_products_from_page(
-                        pdf_path=pdf_path,
-                        page_num=page_idx,  # PyMuPDF array index
-                        catalog_page=catalog_page  # ✅ NEW: Pass catalog page for metadata
-                    )
-                )
-
-                if not result.get('success', False):
-                    self.logger.warning(
-                        f"   ❌ [Job: {job_id}] Vision extraction failed for page {page_idx + 1}"
-                    )
-                    continue
-
-                # Check confidence threshold
-                confidence = result.get('confidence_score', 0.0)
-                detections_count = len(result.get('detections', []))
-
-                # ✅ FIX: Only warn if page has content but low confidence
-                # Don't warn for empty pages (confidence = 0.0, detections = 0)
-                if confidence < settings.vision_guided_confidence_threshold:
-                    if detections_count == 0:
-                        # Empty page - this is normal, not an error
-                        self.logger.debug(
-                            f"   📄 [Job: {job_id}] Page {page_idx + 1}: No products detected (empty page)"
-                        )
-                    else:
-                        # Has detections but low confidence - this is concerning
-                        self.logger.warning(
-                            f"   ⚠️ [Job: {job_id}] Page {page_idx + 1}: confidence {confidence:.2f} "
-                            f"below threshold {settings.vision_guided_confidence_threshold:.2f} "
-                            f"({detections_count} detections with low confidence)"
-                        )
-                    continue
-
-                # Extract detected product images with bounding boxes
-                detections = result.get('detections', [])
-                for detection_idx, detection in enumerate(detections):
-                    try:
-                        # Get bounding box coordinates
-                        bbox = detection.get('bbox', [])
-
-                        # Save image with vision metadata using precise cropping
-                        image_filename = f"page_{page_idx + 1}_vision_detection_{detection_idx}.jpg"
-                        image_path = os.path.join(image_dir, image_filename)
-
-                        # ✅ FIX: Use precise cropping with PREMIUM quality (3.0x zoom)
-                        crop_result = asyncio.run(extractor.crop_and_save_image(
-                            pdf_path=pdf_path,
-                            page_num=page_idx,
-                            bbox=bbox,
-                            output_path=image_path,
-                            zoom=3.0  # 216 DPI for premium quality
-                        ))
-
-                        if not crop_result.get('success'):
-                            self.logger.warning(f"   ⚠️ Failed to crop image for detection {detection_idx}")
-                            continue
-
-                        # ✅ NEW: Include complete page number metadata
-                        img_meta = {
-                            'filename': image_filename,
-                            'path': image_path,
-                            'page_number': page_idx + 1,  # 1-indexed for legacy compatibility
-                            'catalog_page_number': catalog_page,  # ✅ NEW
-                            'pdf_page_number': pdf_page,  # ✅ NEW
-                            'array_index': page_idx,  # ✅ NEW
-                            'bbox': bbox,
-                            'confidence': detection.get('confidence', 0.0),
-                            'detection_confidence': detection.get('confidence', 0.0),
-                            'product_name': detection.get('product_name', 'Unknown'),
-                            'description': detection.get('description', ''),
-                            'detection_method': 'vision_guided',
-                            'extraction_method': 'vision_guided',
-                            'vision_provider': settings.vision_guided_provider,
-                            'vision_model': settings.vision_guided_model,
-                            'width': crop_result.get('width', 0),
-                            'height': crop_result.get('height', 0),
-                            'size_bytes': os.path.getsize(image_path) if os.path.exists(image_path) else 0
-                        }
-
-                        extracted_images.append(img_meta)
-
-                        self.logger.debug(
-                            f"   ✅ Extracted: {detection.get('product_name')} "
-                            f"(confidence: {detection.get('confidence'):.2f})"
-                        )
-
-                    except Exception as detection_error:
-                        self.logger.error(f"   ❌ Failed to process detection {detection_idx}: {detection_error}")
-                        continue
-
-            except Exception as page_error:
-                self.logger.error(f"   ❌ Vision extraction failed for page {page_idx + 1}: {page_error}")
-                continue
-
-        return extracted_images
 
     def _extract_batch_images_with_pymupdf(
         self,

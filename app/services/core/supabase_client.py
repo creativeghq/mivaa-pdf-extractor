@@ -277,8 +277,6 @@ class SupabaseClient:
         extraction_method: str = 'pymupdf',
         bbox: Optional[list] = None,
         detection_confidence: Optional[float] = None,
-        vision_provider: Optional[str] = None,
-        vision_model: Optional[str] = None,
         product_name: Optional[str] = None
     ) -> Optional[str]:
         """
@@ -294,12 +292,10 @@ class SupabaseClient:
             image_index: Index of image in processing sequence
             category: Image category (product, certificate, logo, specification, general)
             job_id: Job ID for source tracking (optional)
-            extraction_method: Extraction method (pymupdf, vision_guided, manual)
+            extraction_method: Extraction method (pymupdf, manual)
             bbox: Bounding box coordinates [x, y, width, height] normalized to 0-1
-            detection_confidence: Confidence score from vision model (0.0-1.0)
-            vision_provider: Vision AI provider (anthropic, openai, together)
-            vision_model: Specific vision model used
-            product_name: Product name detected by vision model
+            detection_confidence: Confidence score (0.0-1.0)
+            product_name: Product name
 
         Returns:
             Image ID if successful, None otherwise
@@ -346,12 +342,10 @@ class SupabaseClient:
                 'category': final_category,  # ✅ FIXED: Use AI classification to set category
                 'source_type': 'pdf_processing',  # ✅ NEW: Track source type
                 'source_job_id': job_id,  # ✅ NEW: Track source job
-                # ✅ NEW: Vision-guided extraction metadata
+                # Extraction metadata
                 'extraction_method': extraction_method,
                 'bbox': bbox,
                 'detection_confidence': detection_confidence,
-                'vision_provider': vision_provider,
-                'vision_model': vision_model,
                 'product_name': product_name,
                 'metadata': {
                     'source': 'mivaa_pdf_extraction',
