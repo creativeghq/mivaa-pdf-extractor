@@ -119,7 +119,7 @@ class ImageProcessingService:
 Respond ONLY with JSON:
 {"is_material": true/false, "confidence": 0.0-1.0, "reason": "brief explanation"}"""
 
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                async with httpx.AsyncClient(timeout=90.0) as client:  # ✅ Increased timeout from 30s to 90s for vision models
                     response = await client.post(
                         "https://api.together.xyz/v1/chat/completions",
                         headers={
@@ -143,6 +143,43 @@ Respond ONLY with JSON:
                     )
 
                     response_data = response.json()
+
+                    # ✅ CRITICAL FIX: Check for API errors before accessing 'choices'
+                    # TogetherAI returns {"error": {...}} when service is unavailable or rate limited
+                    if 'error' in response_data:
+                        error_info = response_data['error']
+                        error_msg = error_info.get('message', 'Unknown error')
+                        error_type = error_info.get('type', 'unknown')
+
+                        logger.error(f"❌ TogetherAI API Error for {image_path}")
+                        logger.error(f"   Error Type: {error_type}")
+                        logger.error(f"   Error Message: {error_msg}")
+                        logger.error(f"   HTTP Status: {response.status_code}")
+                        logger.error(f"   Response Data: {json.dumps(response_data, indent=2)}")
+
+                        return {
+                            'is_material': False,
+                            'confidence': 0.0,
+                            'reason': f'TogetherAI API error: {error_type} - {error_msg}',
+                            'model': f'{model.split("/")[-1]}_api_error',
+                            'error': error_msg,
+                            'retry_recommended': error_type in ['service_unavailable', 'rate_limit_exceeded']
+                        }
+
+                    # ✅ CRITICAL FIX: Validate 'choices' exists in response
+                    if 'choices' not in response_data or not response_data['choices']:
+                        logger.error(f"❌ Invalid TogetherAI response for {image_path}")
+                        logger.error(f"   Response missing 'choices' key")
+                        logger.error(f"   Response Data: {json.dumps(response_data, indent=2)}")
+
+                        return {
+                            'is_material': False,
+                            'confidence': 0.0,
+                            'reason': 'Invalid API response: missing choices',
+                            'model': f'{model.split("/")[-1]}_invalid_response',
+                            'error': 'Response missing choices key'
+                        }
+
                     result_text = response_data['choices'][0]['message']['content']
 
                     # ✅ FIX: Handle empty/invalid responses from Together AI
@@ -357,14 +394,36 @@ Respond ONLY with this JSON format:
                     logger.error(f"   Filename: {filename}")
                     return None
 
-            # STAGE 1: Fast primary model classification
+            # STAGE 1: Fast primary model classification with retry logic
             async with together_semaphore:
-                primary_result = await classify_image_with_vision_model(image_path, primary_model, base64_data=image_base64)
+                primary_result = None
+                max_retries = 3
+                retry_delay = 1.0  # Start with 1 second
+
+                for attempt in range(max_retries):
+                    primary_result = await classify_image_with_vision_model(image_path, primary_model, base64_data=image_base64)
+
+                    # ✅ CRITICAL: Check if we should retry (API errors, service unavailable)
+                    should_retry = (
+                        primary_result.get('retry_recommended', False) or
+                        '_api_error' in primary_result.get('model', '')
+                    )
+
+                    if not should_retry or attempt == max_retries - 1:
+                        break
+
+                    # Exponential backoff with jitter
+                    wait_time = retry_delay * (2 ** attempt) + (0.1 * attempt)
+                    logger.warning(f"   🔄 Retrying classification for {filename} (attempt {attempt + 2}/{max_retries}) after {wait_time:.1f}s...")
+                    await asyncio.sleep(wait_time)
 
             # ✅ NEW: Check if primary model failed (invalid response)
-            primary_failed = ('_invalid_response' in primary_result.get('model', '') or
-                            '_not_json' in primary_result.get('model', '') or
-                            '_empty_response' in primary_result.get('model', ''))
+            primary_failed = (
+                '_invalid_response' in primary_result.get('model', '') or
+                '_not_json' in primary_result.get('model', '') or
+                '_empty_response' in primary_result.get('model', '') or
+                '_api_error' in primary_result.get('model', '')
+            )
 
             # STAGE 2: If confidence is low OR primary failed, validate with secondary model
             if primary_result['confidence'] < confidence_threshold or primary_failed:
@@ -374,16 +433,34 @@ Respond ONLY with this JSON format:
                     logger.debug(f"   🔍 Low confidence ({primary_result['confidence']:.2f}) - validating with {validation_model}: {filename}")
 
                 async with claude_semaphore:
-                    # Use Claude or Qwen-32B for validation
-                    if 'claude' in validation_model.lower():
-                        validation_result = await validate_with_claude(image_path, base64_data=image_base64)
-                    else:
-                        validation_result = await classify_image_with_vision_model(image_path, validation_model, base64_data=image_base64)
+                    # Use Claude or Qwen-32B for validation with retry
+                    validation_result = None
+                    for attempt in range(max_retries):
+                        if 'claude' in validation_model.lower():
+                            validation_result = await validate_with_claude(image_path, base64_data=image_base64)
+                        else:
+                            validation_result = await classify_image_with_vision_model(image_path, validation_model, base64_data=image_base64)
+
+                        # Check if we should retry
+                        should_retry = (
+                            validation_result.get('retry_recommended', False) or
+                            '_api_error' in validation_result.get('model', '')
+                        )
+
+                        if not should_retry or attempt == max_retries - 1:
+                            break
+
+                        wait_time = retry_delay * (2 ** attempt) + (0.1 * attempt)
+                        logger.warning(f"   🔄 Retrying validation for {filename} (attempt {attempt + 2}/{max_retries}) after {wait_time:.1f}s...")
+                        await asyncio.sleep(wait_time)
 
                     # ✅ NEW: If validation also failed, use Claude as final fallback
-                    validation_failed = ('_invalid_response' in validation_result.get('model', '') or
-                                       '_not_json' in validation_result.get('model', '') or
-                                       '_empty_response' in validation_result.get('model', ''))
+                    validation_failed = (
+                        '_invalid_response' in validation_result.get('model', '') or
+                        '_not_json' in validation_result.get('model', '') or
+                        '_empty_response' in validation_result.get('model', '') or
+                        '_api_error' in validation_result.get('model', '')
+                    )
 
                     if validation_failed and 'claude' not in validation_model.lower():
                         logger.warning(f"   🔄 Validation model also failed for {filename}, using Claude as final fallback")
