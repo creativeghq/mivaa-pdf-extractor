@@ -117,10 +117,13 @@ async def process_product_images(
     )
 
     images_processed = save_result.get('images_saved', 0)
+    clip_embeddings = save_result.get('clip_embeddings_generated', 0)
     logger.info(f"   ✅ Processed {images_processed} material images for {product.name}")
+    logger.info(f"   ✅ Generated {clip_embeddings} CLIP embeddings")
 
     return {
         'images_processed': images_processed,
+        'clip_embeddings_generated': clip_embeddings,
         'images_material': len(material_images),
         'images_non_material': non_material_count
     }

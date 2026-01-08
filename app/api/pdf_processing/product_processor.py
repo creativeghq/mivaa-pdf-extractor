@@ -191,17 +191,21 @@ async def process_single_product(
         )
 
         images_processed = image_result.get('images_processed', 0)
+        clip_embeddings = image_result.get('clip_embeddings_generated', 0)
         await product_tracker.mark_stage_complete(
             product_id,
             ProductStage.IMAGES,
             {
                 "images_processed": images_processed,
                 "images_material": image_result.get('images_material', 0),
-                "images_non_material": image_result.get('images_non_material', 0)
+                "images_non_material": image_result.get('images_non_material', 0),
+                "clip_embeddings_generated": clip_embeddings
             }
         )
         result.images_processed = images_processed
+        result.clip_embeddings_generated = clip_embeddings
         logger_instance.info(f"✅ Processed {images_processed} images for {product.name}")
+        logger_instance.info(f"✅ Generated {clip_embeddings} CLIP embeddings for {product.name}")
 
         # ========================================================================
         # STAGE 4: Create Product in Database

@@ -2873,6 +2873,7 @@ async def process_document_with_discovery(
         total_chunks_created = 0
         total_images_processed = 0
         total_relationships_created = 0
+        total_clip_embeddings = 0
         products_completed = 0
         products_failed = 0
 
@@ -2923,6 +2924,16 @@ async def process_document_with_discovery(
                     total_chunks_created += result.chunks_created
                     total_images_processed += result.images_processed
                     total_relationships_created += result.relationships_created
+                    total_clip_embeddings += result.clip_embeddings_generated
+
+                    # ✅ FIX: Update job metadata counters in real-time
+                    await tracker.increment_counters(
+                        chunks_created=result.chunks_created,
+                        images_stored=result.images_processed,
+                        clip_embeddings=result.clip_embeddings_generated,
+                        products_created=1,
+                        sync_to_db=True
+                    )
 
                     logger.info(f"✅ Product {product_index}/{total_products} completed successfully")
                 else:
@@ -2951,6 +2962,7 @@ async def process_document_with_discovery(
         logger.info(f"❌ Products failed: {products_failed}/{total_products}")
         logger.info(f"📝 Total chunks created: {total_chunks_created}")
         logger.info(f"🖼️  Total images processed: {total_images_processed}")
+        logger.info(f"🎨 Total CLIP embeddings: {total_clip_embeddings}")
         logger.info(f"🔗 Total relationships created: {total_relationships_created}")
         logger.info(f"{'='*80}\n")
 

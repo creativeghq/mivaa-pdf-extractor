@@ -141,6 +141,7 @@ class ProductProcessingResult(BaseModel):
     chunks_created: int = Field(default=0)
     images_processed: int = Field(default=0)
     relationships_created: int = Field(default=0)
+    clip_embeddings_generated: int = Field(default=0, description="Number of CLIP embeddings generated")
 
     # Error info
     error: Optional[str] = Field(default=None)
