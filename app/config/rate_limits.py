@@ -102,26 +102,32 @@ def get_current_tier() -> RateLimitTier:
 def get_vision_concurrency_limit() -> int:
     """
     Calculate safe concurrency limit for vision model requests.
-    
+
     Vision models are part of LLM rate limits. We want to stay well below
     the limit to account for:
     - Other concurrent API usage
     - Retry attempts
     - Burst traffic
-    
+    - Model-specific capacity constraints (especially for large models like Qwen3-VL-32B)
+
     Returns:
         int: Safe number of concurrent vision requests
     """
     tier = get_current_tier()
-    
-    # Use 60% of available RPM to leave headroom
+
+    # CONSERVATIVE: Use lower concurrency for Tier 1 to avoid 503 errors
+    # Qwen3-VL-32B has capacity constraints that cause 503s at higher concurrency
+    if tier.tier == 1:
+        return 5  # Conservative limit for Tier 1 to prevent TogetherAI 503 errors
+
+    # Use 60% of available RPM to leave headroom for higher tiers
     # Convert to concurrent requests assuming ~2s average response time
     safe_rpm = tier.llm_rpm * 0.6
     avg_response_time_seconds = 2.0
-    
+
     # Concurrent requests = (RPM / 60) * avg_response_time
     concurrent_limit = int((safe_rpm / 60.0) * avg_response_time_seconds)
-    
+
     # Ensure minimum of 2 and maximum of 20
     return max(2, min(20, concurrent_limit))
 

@@ -487,6 +487,14 @@ async def create_chunks(
 
         logger.info(f"   Created {len(chunks)} chunks")
 
+        # Get quality metrics from chunking service
+        quality_metrics = chunking_service.get_quality_metrics()
+        logger.info(
+            f"   📊 Quality metrics: {quality_metrics.total_chunks_created} created, "
+            f"{quality_metrics.exact_duplicates_prevented} duplicates prevented, "
+            f"{quality_metrics.low_quality_rejected} low quality rejected"
+        )
+
         # Initialize embedding service
         embedding_service = RealEmbeddingsService()
 
@@ -539,7 +547,7 @@ async def create_chunks(
                 logger.error(f"   Error processing chunk {chunk.chunk_index}: {e}")
                 continue
 
-        # Update tracker
+        # Update tracker with quality metrics
         await tracker.update_stage(
             "CHUNKING",
             100,
@@ -547,7 +555,14 @@ async def create_chunks(
                 'chunks_created': chunks_created,
                 'embeddings_generated': embeddings_generated,
                 'relationships_created': relationships_created,
-                'skipped': False
+                'skipped': False,
+                'quality_metrics': {
+                    'total_chunks_created': quality_metrics.total_chunks_created,
+                    'exact_duplicates_prevented': quality_metrics.exact_duplicates_prevented,
+                    'semantic_duplicates_prevented': quality_metrics.semantic_duplicates_prevented,
+                    'low_quality_rejected': quality_metrics.low_quality_rejected,
+                    'final_chunks': quality_metrics.final_chunks
+                }
             },
             sync_to_db=True
         )

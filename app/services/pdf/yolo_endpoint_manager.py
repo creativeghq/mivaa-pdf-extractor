@@ -1,0 +1,302 @@
+"""
+YOLO DocParser Inference Endpoint Manager
+
+Manages HuggingFace Inference Endpoint lifecycle for YOLO DocParser layout detection model.
+Provides automatic pause/resume functionality to control billing costs.
+
+CRITICAL: Endpoint is paused by default (no billing). Only resumes when layout detection is needed,
+then auto-pauses after idle timeout to prevent unnecessary billing.
+
+Cost Control Strategy:
+- Endpoint paused: $0/hour
+- Endpoint running: ~$0.60/hour (GPU)
+- Auto-pause after 60s idle (configurable)
+- Force-pause after batch processing
+- Warmup required: 60 seconds before first inference
+- Typical cost: ~$0.01 per 30-page document
+"""
+
+import os
+import time
+import logging
+import requests
+from typing import Optional, Dict, Any
+from datetime import datetime
+
+try:
+    from huggingface_hub import get_inference_endpoint
+    HF_HUB_AVAILABLE = True
+except ImportError:
+    HF_HUB_AVAILABLE = False
+    logging.warning("huggingface_hub not available - pause/resume features disabled")
+
+logger = logging.getLogger(__name__)
+
+
+class YoloEndpointManager:
+    """
+    Manages HuggingFace Inference Endpoint lifecycle for YOLO DocParser.
+    
+    Features:
+    - Automatic resume before inference (start billing)
+    - Automatic pause after idle timeout (stop billing)
+    - Force pause after batch processing
+    - Warmup handling (60s required before first inference)
+    - Error handling and retry logic
+    - Cost tracking and monitoring
+    """
+    
+    def __init__(
+        self,
+        endpoint_url: str,
+        hf_token: str,
+        endpoint_name: Optional[str] = None,
+        namespace: Optional[str] = None,
+        auto_pause_timeout: int = 60,
+        inference_timeout: int = 30,
+        warmup_timeout: int = 60,
+        max_resume_retries: int = 3,
+        enabled: bool = True
+    ):
+        """
+        Initialize YOLO Endpoint Manager.
+
+        Args:
+            endpoint_url: Full URL of the YOLO inference endpoint
+            hf_token: HuggingFace API token (with write permissions)
+            endpoint_name: Endpoint name for pause/resume (e.g., 'yolo-docparser')
+            namespace: HuggingFace namespace/username (e.g., 'basiliskan')
+            auto_pause_timeout: Seconds of idle time before auto-pause (default: 60)
+            inference_timeout: Timeout for inference calls in seconds (default: 30)
+            warmup_timeout: Warmup time in seconds (default: 60)
+            max_resume_retries: Maximum retry attempts for resuming endpoint (default: 3)
+            enabled: Enable/disable YOLO layout detection (default: True)
+        """
+        self.endpoint_url = endpoint_url
+        self.hf_token = hf_token
+        self.endpoint_name = endpoint_name
+        self.namespace = namespace
+        self.auto_pause_timeout = auto_pause_timeout
+        self.inference_timeout = inference_timeout
+        self.warmup_timeout = warmup_timeout
+        self.max_resume_retries = max_resume_retries
+        self.enabled = enabled
+
+        # Track usage for auto-pause
+        self.last_used: Optional[float] = None
+        self.last_resume_time: Optional[float] = None
+        self.total_uptime: float = 0.0
+        self.resume_count: int = 0
+        self.pause_count: int = 0
+        self.inference_count: int = 0
+        self.warmup_completed: bool = False
+
+        # Endpoint instance (for pause/resume)
+        self._endpoint = None
+        self._can_pause_resume = HF_HUB_AVAILABLE and endpoint_name and namespace
+
+        if self._can_pause_resume:
+            logger.info(
+                f"✅ YOLO Endpoint Manager initialized with pause/resume: "
+                f"endpoint={endpoint_name}, namespace={namespace}, auto_pause={auto_pause_timeout}s, warmup={warmup_timeout}s"
+            )
+        else:
+            logger.warning(
+                f"⚠️ YOLO Endpoint Manager initialized WITHOUT pause/resume: "
+                f"hf_hub_available={HF_HUB_AVAILABLE}, endpoint_name={endpoint_name}, namespace={namespace}"
+            )
+
+    def _get_endpoint(self):
+        """Get or create endpoint instance for pause/resume operations."""
+        if not self._can_pause_resume:
+            return None
+
+        if self._endpoint is None:
+            try:
+                self._endpoint = get_inference_endpoint(
+                    name=self.endpoint_name,
+                    namespace=self.namespace,
+                    token=self.hf_token
+                )
+                logger.info(f"✅ Connected to YOLO endpoint: {self.endpoint_name}")
+            except Exception as e:
+                logger.error(f"❌ Failed to get YOLO endpoint: {e}")
+                return None
+
+        return self._endpoint
+
+    def resume_if_needed(self) -> bool:
+        """
+        Resume endpoint if it's paused.
+        CRITICAL: This starts billing! Only call when layout detection is needed.
+
+        Returns:
+            True if endpoint is running or successfully resumed, False if failed
+        """
+        if not self._can_pause_resume:
+            logger.info("Pause/resume not available - assuming endpoint is running")
+            return True
+
+        endpoint = self._get_endpoint()
+        if not endpoint:
+            return False
+
+        try:
+            # Fetch current status
+            endpoint.fetch()
+
+            if endpoint.status == "running":
+                logger.info("✅ YOLO endpoint already running")
+                return True
+
+            if endpoint.status in ["paused", "scaledToZero"]:
+                logger.info(f"🔄 Resuming YOLO endpoint (status: {endpoint.status})...")
+
+                # Resume with retries
+                for attempt in range(self.max_resume_retries):
+                    try:
+                        endpoint.resume().wait(timeout=300)  # Wait up to 5 minutes
+                        self.resume_count += 1
+                        self.last_resume_time = time.time()
+                        self.warmup_completed = False  # Reset warmup flag
+                        logger.info(f"✅ YOLO endpoint resumed (attempt {attempt + 1}/{self.max_resume_retries})")
+                        return True
+                    except Exception as e:
+                        logger.warning(f"⚠️ Resume attempt {attempt + 1} failed: {e}")
+                        if attempt < self.max_resume_retries - 1:
+                            time.sleep(2 ** attempt)  # Exponential backoff
+                        else:
+                            raise
+
+            logger.error(f"❌ Endpoint in unexpected state: {endpoint.status}")
+            return False
+
+        except Exception as e:
+            logger.error(f"❌ Failed to resume endpoint: {e}")
+            return False
+
+    def warmup(self) -> bool:
+        """
+        Warmup the YOLO endpoint after resume.
+        CRITICAL: YOLO requires 60 seconds warmup before first inference!
+
+        Returns:
+            True if warmup successful, False if failed
+        """
+        if self.warmup_completed:
+            logger.info("✅ YOLO endpoint already warmed up")
+            return True
+
+        logger.info(f"🔥 Warming up YOLO endpoint ({self.warmup_timeout}s)...")
+        time.sleep(self.warmup_timeout)
+        self.warmup_completed = True
+        logger.info("✅ YOLO endpoint warmup complete")
+        return True
+
+    def pause_if_idle(self) -> bool:
+        """
+        Pause endpoint if idle for too long.
+        CRITICAL: This prevents billing when not in use!
+
+        Returns:
+            True if paused or already paused, False if failed
+        """
+        if not self._can_pause_resume:
+            return False
+
+        if self.last_used is None:
+            return False
+
+        idle_time = time.time() - self.last_used
+
+        if idle_time > self.auto_pause_timeout:
+            endpoint = self._get_endpoint()
+            if not endpoint:
+                return False
+
+            try:
+                endpoint.fetch()
+                if endpoint.status == "running":
+                    logger.info(f"⏸️ Auto-pausing YOLO endpoint (idle for {idle_time:.0f}s)")
+                    endpoint.pause()
+                    self.pause_count += 1
+
+                    # Track uptime
+                    if self.last_resume_time:
+                        uptime = time.time() - self.last_resume_time
+                        self.total_uptime += uptime
+
+                    self.warmup_completed = False  # Reset warmup flag
+                    logger.info(f"✅ YOLO endpoint paused (no billing)")
+                    return True
+
+            except Exception as e:
+                logger.error(f"❌ Failed to pause endpoint: {e}")
+                return False
+
+        return False
+
+    def force_pause(self) -> bool:
+        """
+        Force pause endpoint immediately.
+        Use this after batch processing is complete.
+
+        Returns:
+            True if paused successfully, False if failed
+        """
+        if not self._can_pause_resume:
+            logger.warning("Pause/resume not available - cannot force pause")
+            return False
+
+        endpoint = self._get_endpoint()
+        if not endpoint:
+            return False
+
+        try:
+            endpoint.fetch()
+            if endpoint.status == "running":
+                logger.info("⏸️ Force pausing YOLO endpoint")
+                endpoint.pause()
+                self.pause_count += 1
+
+                # Track uptime
+                if self.last_resume_time:
+                    uptime = time.time() - self.last_resume_time
+                    self.total_uptime += uptime
+
+                self.warmup_completed = False  # Reset warmup flag
+                logger.info(f"✅ YOLO endpoint paused (no billing)")
+                return True
+            else:
+                logger.info(f"Endpoint already paused (status: {endpoint.status})")
+                return True
+
+        except Exception as e:
+            logger.error(f"❌ Failed to force pause endpoint: {e}")
+            return False
+
+    def get_stats(self) -> Dict[str, Any]:
+        """
+        Get endpoint usage statistics.
+
+        Returns:
+            Dictionary with usage stats
+        """
+        return {
+            "resume_count": self.resume_count,
+            "pause_count": self.pause_count,
+            "inference_count": self.inference_count,
+            "total_uptime_seconds": self.total_uptime,
+            "total_uptime_hours": self.total_uptime / 3600,
+            "estimated_cost_usd": (self.total_uptime / 3600) * 0.60,  # $0.60/hour estimate
+            "last_used": datetime.fromtimestamp(self.last_used).isoformat() if self.last_used else None,
+            "warmup_completed": self.warmup_completed,
+            "enabled": self.enabled
+        }
+
+    def mark_used(self):
+        """Mark endpoint as recently used (for auto-pause tracking)."""
+        self.last_used = time.time()
+        self.inference_count += 1
+
+

@@ -6,7 +6,7 @@ Includes metadata-first chunking, context enrichment, and type classification.
 """
 
 import logging
-from typing import Dict, Any, Set, List
+from typing import Dict, Any, Set, List, Optional
 
 
 async def process_product_chunking(
@@ -20,7 +20,8 @@ async def process_product_chunking(
     pdf_result: Any,
     config: Dict[str, Any],
     supabase: Any,
-    logger: logging.Logger
+    logger: logging.Logger,
+    product_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Create text chunks for a single product (product-centric pipeline).
@@ -77,6 +78,18 @@ async def process_product_chunking(
         logger.info(f"   Excluded pages: {sorted(excluded_pages)} ({len(excluded_pages)} metadata pages)")
 
     # ========================================================================
+    # STEP 1.5: Load Layout Regions (for layout-aware chunking)
+    # ========================================================================
+    layout_regions_by_page = {}
+    if product_id and config.get('enable_layout_aware_chunking', True):
+        logger.info(f"   📐 Loading layout regions for layout-aware chunking...")
+        layout_regions_by_page = await get_layout_regions(
+            product_id=product_id,
+            supabase=supabase,
+            logger=logger
+        )
+
+    # ========================================================================
     # STEP 2: Create Chunks (existing logic)
     # ========================================================================
     rag_service = RAGService(config={
@@ -108,7 +121,8 @@ async def process_product_chunking(
             'job_id': job_id
         },
         catalog=catalog,
-        pre_extracted_text=product_text if product_text else None
+        pre_extracted_text=product_text if product_text else None,
+        layout_regions_by_page=layout_regions_by_page  # Pass layout regions for layout-aware chunking
     )
 
     # Get chunks from result
@@ -180,4 +194,50 @@ async def process_product_chunking(
         'pages_excluded': len(excluded_pages),
         'chunks': enriched_chunks  # Return enriched chunks for further processing
     }
+
+
+async def get_layout_regions(
+    product_id: str,
+    supabase: Any,
+    logger: logging.Logger
+) -> Dict[int, List[Dict[str, Any]]]:
+    """
+    Fetch layout regions from database for a product.
+
+    Args:
+        product_id: Database product ID
+        supabase: Supabase client
+        logger: Logger instance
+
+    Returns:
+        Dict mapping page_number -> list of regions sorted by reading_order
+        Example: {1: [region1, region2], 2: [region3, region4]}
+    """
+    try:
+        # Fetch all layout regions for this product
+        result = supabase.client.table('product_layout_regions')\
+            .select('*')\
+            .eq('product_id', product_id)\
+            .order('page_number')\
+            .order('reading_order')\
+            .execute()
+
+        if not result.data:
+            logger.info(f"   No layout regions found for product {product_id}")
+            return {}
+
+        # Group regions by page number
+        regions_by_page = {}
+        for region in result.data:
+            page_num = region['page_number']
+            if page_num not in regions_by_page:
+                regions_by_page[page_num] = []
+            regions_by_page[page_num].append(region)
+
+        logger.info(f"   Loaded {len(result.data)} layout regions across {len(regions_by_page)} pages")
+        return regions_by_page
+
+    except Exception as e:
+        logger.error(f"   ❌ Failed to fetch layout regions: {e}")
+        return {}
 

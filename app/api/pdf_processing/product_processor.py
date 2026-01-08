@@ -95,7 +95,7 @@ async def process_single_product(
 
     try:
         # ========================================================================
-        # STAGE 1: Extract Product Pages
+        # STAGE 1: Extract Product Pages + YOLO Layout Detection
         # ========================================================================
         current_stage = ProductStage.EXTRACTION
         await product_tracker.update_product_stage(product_id, ProductStage.EXTRACTION)
@@ -103,23 +103,38 @@ async def process_single_product(
 
         from app.api.pdf_processing.stage_1_focused_extraction import extract_product_pages
 
-        product_pages = await extract_product_pages(
+        # ✅ NEW: extract_product_pages now returns a dict with layout detection results
+        extraction_result = await extract_product_pages(
             file_content=file_content,
             product=product,
             document_id=document_id,
             job_id=job_id,
             logger=logger_instance,
             total_pages=total_pages,
-            pages_per_sheet=getattr(catalog, 'pages_per_sheet', 1)
+            pages_per_sheet=getattr(catalog, 'pages_per_sheet', 1),
+            enable_layout_detection=False,  # Disable for now - will run after product creation
+            product_id=None  # Will be set after product creation
         )
+
+        # Extract results
+        product_pages = extraction_result['product_pages']
+        layout_regions = extraction_result.get('layout_regions', [])
+        layout_stats = extraction_result.get('layout_stats', {})
 
         await product_tracker.mark_stage_complete(
             product_id,
             ProductStage.EXTRACTION,
-            {"pages_extracted": len(product_pages)}
+            {
+                "pages_extracted": len(product_pages),
+                "layout_regions_detected": len(layout_regions),
+                "layout_stats": layout_stats
+            }
         )
         pages_extracted = len(product_pages)
-        logger_instance.info(f"✅ Extracted {pages_extracted} pages for {product.name}")
+        logger_instance.info(
+            f"✅ Extracted {pages_extracted} pages for {product.name} "
+            f"({len(layout_regions)} layout regions detected)"
+        )
 
         # ========================================================================
         # STAGE 2: Create Text Chunks
@@ -141,7 +156,8 @@ async def process_single_product(
             pdf_result=pdf_result,
             config=config,
             supabase=supabase,
-            logger=logger_instance
+            logger=logger_instance,
+            product_id=product_id  # Pass product_id for layout-aware chunking
         )
 
         chunks_created = chunk_result.get('chunks_created', 0)
@@ -214,6 +230,111 @@ async def process_single_product(
         )
         result.product_db_id = product_db_id
         logger_instance.info(f"✅ Created product in DB: {product_db_id}")
+
+        # ========================================================================
+        # STAGE 4.5: YOLO Layout Detection & Table Extraction
+        # ========================================================================
+        logger_instance.info(f"🎯 [STAGE 4.5/{product_index}] Running YOLO layout detection...")
+
+        try:
+            from app.services.pdf.yolo_layout_detector import YoloLayoutDetector
+            from app.services.pdf.table_extraction import TableExtractor
+            from app.config import get_settings
+            import tempfile
+            import os
+
+            settings = get_settings()
+
+            if settings.yolo_enabled and product_pages:
+                # Initialize YOLO detector
+                yolo_config = settings.get_yolo_config()
+                detector = YoloLayoutDetector(config=yolo_config)
+
+                # Save PDF to temp file
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+                    tmp_file.write(file_content)
+                    tmp_pdf_path = tmp_file.name
+
+                try:
+                    # Detect layout regions for each product page
+                    all_regions = []
+                    table_regions = []
+
+                    for page_idx in sorted(product_pages):
+                        logger_instance.info(f"      Detecting regions on page {page_idx}...")
+                        result_yolo = await detector.detect_layout_regions(tmp_pdf_path, page_idx)
+
+                        if result_yolo and result_yolo.regions:
+                            all_regions.extend(result_yolo.regions)
+                            table_regions.extend([r for r in result_yolo.regions if r.type == 'TABLE'])
+                            logger_instance.info(f"      ✅ Found {len(result_yolo.regions)} regions")
+
+                    # Store layout regions in database
+                    if all_regions and product_db_id:
+                        from app.services.core.supabase_client import get_supabase_client
+                        supabase_client = get_supabase_client()
+
+                        region_data = []
+                        for region in all_regions:
+                            region_data.append({
+                                'product_id': product_db_id,
+                                'page_number': region.bbox.page,
+                                'region_type': region.type,
+                                'bbox_x': region.bbox.x,
+                                'bbox_y': region.bbox.y,
+                                'bbox_width': region.bbox.width,
+                                'bbox_height': region.bbox.height,
+                                'confidence': region.confidence,
+                                'reading_order': region.reading_order,
+                                'text_content': getattr(region, 'text_content', None),
+                                'metadata': {'yolo_model': 'yolo-docparser'}
+                            })
+
+                        supabase_client.client.table('product_layout_regions').insert(region_data).execute()
+                        logger_instance.info(f"   💾 Stored {len(region_data)} layout regions")
+
+                    # Extract tables if TABLE regions found
+                    if table_regions and product_db_id:
+                        logger_instance.info(f"   📊 Extracting {len(table_regions)} tables...")
+                        extractor = TableExtractor()
+
+                        # Group by page
+                        tables_by_page = {}
+                        for region in table_regions:
+                            page_num = region.bbox.page
+                            if page_num not in tables_by_page:
+                                tables_by_page[page_num] = []
+                            tables_by_page[page_num].append(region)
+
+                        # Extract tables
+                        all_tables = []
+                        for page_num, regions in tables_by_page.items():
+                            tables = extractor.extract_tables_from_page(
+                                pdf_path=tmp_pdf_path,
+                                page_number=page_num,
+                                table_regions=regions,
+                                flavor='lattice'
+                            )
+                            all_tables.extend(tables)
+
+                        # Store tables
+                        if all_tables:
+                            stored_count = await extractor.store_tables_in_database(
+                                product_id=product_db_id,
+                                tables=all_tables,
+                                supabase_client=supabase_client
+                            )
+                            logger_instance.info(f"   ✅ Stored {stored_count} tables")
+
+                finally:
+                    if os.path.exists(tmp_pdf_path):
+                        os.unlink(tmp_pdf_path)
+            else:
+                logger_instance.info("   ⚠️ YOLO disabled or no pages to process")
+
+        except Exception as e:
+            logger_instance.error(f"   ❌ YOLO layout detection failed: {e}")
+            logger_instance.info("   Continuing without layout detection...")
 
         # ========================================================================
         # STAGE 5: Create Relationships (Link chunks/images to product)

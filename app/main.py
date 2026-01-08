@@ -258,7 +258,7 @@ async def lifespan(app: FastAPI):
                 logger.warning(f"⚠️ Error cleaning up RAG service: {e}")
 
         component_manager.register("rag_service", load_rag_service, cleanup_rag_service)
-        logger.info("✅ RAG service registered for lazy loading (Qwen3-VL-8B primary, Qwen3-VL-32B validation)")
+        logger.info("✅ RAG service registered for lazy loading (Qwen3-VL-32B primary, Claude Sonnet 4.5 fallback)")
 
         # Set placeholder
         app.state.rag_service = None

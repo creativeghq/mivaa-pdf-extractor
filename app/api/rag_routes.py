@@ -1543,7 +1543,8 @@ async def get_images(
 async def get_products(
     document_id: Optional[str] = Query(None, description="Filter by document ID"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of products to return"),
-    offset: int = Query(0, ge=0, description="Number of products to skip")
+    offset: int = Query(0, ge=0, description="Number of products to skip"),
+    include_tables: bool = Query(True, description="Include tables in product response")
 ):
     """
     Get products for a document.
@@ -1552,9 +1553,10 @@ async def get_products(
         document_id: Document ID to filter products
         limit: Maximum number of products to return
         offset: Pagination offset
+        include_tables: Whether to include tables in the response
 
     Returns:
-        List of products with metadata
+        List of products with metadata, optionally including tables
     """
     try:
         supabase_client = get_supabase_client()
@@ -1571,6 +1573,27 @@ async def get_products(
         result = query.execute()
 
         products = result.data if result.data else []
+
+        # Optionally fetch tables for each product
+        if include_tables and products:
+            product_ids = [p['id'] for p in products]
+            tables_response = supabase_client.client.table('product_tables')\
+                .select('*')\
+                .in_('product_id', product_ids)\
+                .execute()
+
+            # Group tables by product_id
+            tables_by_product = {}
+            if tables_response.data:
+                for table in tables_response.data:
+                    product_id = table.get('product_id')
+                    if product_id not in tables_by_product:
+                        tables_by_product[product_id] = []
+                    tables_by_product[product_id].append(table)
+
+            # Add tables to each product
+            for product in products:
+                product['tables'] = tables_by_product.get(product['id'], [])
 
         return JSONResponse(content={
             "document_id": document_id,

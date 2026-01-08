@@ -209,11 +209,30 @@ async def get_chunk_quality_metrics(
             flagged_query = flagged_query.eq("workspace_id", workspace_id)
         flagged_query = flagged_query.gte("flagged_at", start_date)
         flagged_response = flagged_query.execute()
-        
+
         flagged_data = flagged_response.data or []
         flagged_chunks_pending_review = sum(1 for f in flagged_data if not f.get("reviewed", False))
         flagged_chunks_reviewed = sum(1 for f in flagged_data if f.get("reviewed", False))
         borderline_quality_flagged = sum(1 for f in flagged_data if f.get("flag_type") == "borderline_quality")
+
+        # Get quality metrics from background jobs
+        jobs_query = supabase.client.table("background_jobs").select("metadata")
+        if workspace_id:
+            jobs_query = jobs_query.eq("workspace_id", workspace_id)
+        jobs_query = jobs_query.gte("created_at", start_date)
+        jobs_response = jobs_query.execute()
+
+        # Aggregate quality metrics from job metadata
+        exact_duplicates_prevented = 0
+        semantic_duplicates_prevented = 0
+        low_quality_rejected = 0
+
+        for job in (jobs_response.data or []):
+            metadata = job.get("metadata", {})
+            quality_metrics = metadata.get("quality_metrics", {})
+            exact_duplicates_prevented += quality_metrics.get("exact_duplicates_prevented", 0)
+            semantic_duplicates_prevented += quality_metrics.get("semantic_duplicates_prevented", 0)
+            low_quality_rejected += quality_metrics.get("low_quality_rejected", 0)
         
         # Calculate quality distribution
         quality_distribution = {
@@ -277,9 +296,9 @@ async def get_chunk_quality_metrics(
         return ChunkQualityMetrics(
             total_chunks=total_chunks,
             total_documents=total_documents,
-            exact_duplicates_prevented=0,  # TODO: Track this in processing
-            semantic_duplicates_prevented=0,  # TODO: Track this in processing
-            low_quality_rejected=0,  # TODO: Track this in processing
+            exact_duplicates_prevented=exact_duplicates_prevented,
+            semantic_duplicates_prevented=semantic_duplicates_prevented,
+            low_quality_rejected=low_quality_rejected,
             borderline_quality_flagged=borderline_quality_flagged,
             average_quality_score=round(average_quality_score, 3),
             quality_distribution=quality_distribution,

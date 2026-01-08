@@ -18,6 +18,8 @@ import easyocr
 import pytesseract
 from dataclasses import dataclass
 
+from app.services.pdf.chandra_endpoint_manager import ChandraEndpointManager
+
 # Fix for Pillow 10.0+ compatibility with EasyOCR
 if not hasattr(Image, 'ANTIALIAS'):
     Image.ANTIALIAS = Image.LANCZOS
@@ -52,7 +54,18 @@ class OCRConfig:
     use_gpu: bool = False
     confidence_threshold: float = 0.5
     preprocessing_enabled: bool = True
-    
+
+    # Chandra OCR Endpoint Settings
+    chandra_enabled: bool = True
+    chandra_endpoint_url: str = ""
+    chandra_hf_token: str = ""
+    chandra_endpoint_name: str = ""
+    chandra_namespace: str = ""
+    chandra_confidence_threshold: float = 0.7
+    chandra_auto_pause_timeout: int = 60
+    chandra_inference_timeout: int = 30
+    chandra_max_resume_retries: int = 3
+
     def __post_init__(self):
         if self.languages is None:
             self.languages = ['en']
@@ -156,7 +169,7 @@ class OCRService:
     def __init__(self, config: Optional[OCRConfig] = None):
         """
         Initialize OCR Service.
-        
+
         Args:
             config: OCR configuration settings
         """
@@ -164,7 +177,26 @@ class OCRService:
         self.preprocessor = ImagePreprocessor()
         self._easyocr_reader: Optional[easyocr.Reader] = None
         self._initialized = False
-        
+
+        # Initialize Chandra Endpoint Manager if enabled
+        self.chandra_manager: Optional[ChandraEndpointManager] = None
+        if self.config.chandra_enabled and self.config.chandra_endpoint_url and self.config.chandra_hf_token:
+            try:
+                self.chandra_manager = ChandraEndpointManager(
+                    endpoint_url=self.config.chandra_endpoint_url,
+                    hf_token=self.config.chandra_hf_token,
+                    endpoint_name=self.config.chandra_endpoint_name,
+                    namespace=self.config.chandra_namespace,
+                    auto_pause_timeout=self.config.chandra_auto_pause_timeout,
+                    inference_timeout=self.config.chandra_inference_timeout,
+                    max_resume_retries=self.config.chandra_max_resume_retries,
+                    enabled=self.config.chandra_enabled
+                )
+                logger.info("✅ Chandra OCR endpoint manager initialized")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to initialize Chandra endpoint manager: {e}")
+                self.chandra_manager = None
+
         logger.info(f"OCR Service initialized with languages: {self.config.languages}")
     
     def initialize(self) -> None:
@@ -231,49 +263,136 @@ class OCRService:
     
 
     def extract_text_from_image(
-        self, 
+        self,
         image_input: Union[str, Path, np.ndarray, Image.Image],
         use_preprocessing: bool = None
     ) -> List[OCRResult]:
         """
-        Extract text from image using available OCR engines.
-        
+        Extract text from image using EasyOCR with Chandra endpoint fallback.
+
+        Strategy:
+        1. Try EasyOCR FIRST (fast, local, free)
+        2. If confidence >= threshold (0.7), use EasyOCR result
+        3. If confidence < threshold, try Chandra endpoint (GPU, high accuracy)
+        4. Use whichever has higher confidence
+
         Args:
             image_input: Image file path, numpy array, or PIL Image
             use_preprocessing: Whether to apply image preprocessing
-            
+
         Returns:
-            List of OCR results from all successful engines
-            
+            List of OCR results from best engine
+
         Raises:
             ValueError: If image input is invalid
             RuntimeError: If all OCR engines fail
         """
         if not self._initialized:
             self.initialize()
-        
+
         # Load and convert image to numpy array
         image = self._load_image(image_input)
-        
+
         # Apply preprocessing if enabled
         if use_preprocessing or (use_preprocessing is None and self.config.preprocessing_enabled):
             image = self.preprocessor.enhance_image(image)
             image = self.preprocessor.preprocess_for_ocr(image)
-        
-        # Use EasyOCR for text extraction
+
+        # Step 1: Try EasyOCR FIRST
         try:
             easyocr_results = self.extract_text_easyocr(image)
-            logger.info(f"EasyOCR extracted {len(easyocr_results)} text regions")
-            return easyocr_results
+
+            if easyocr_results:
+                # Calculate average confidence
+                avg_confidence = sum(r.confidence for r in easyocr_results) / len(easyocr_results)
+
+                # Step 2: If confidence >= threshold, use EasyOCR
+                if avg_confidence >= self.config.chandra_confidence_threshold:
+                    logger.info(
+                        f"✅ EasyOCR confidence {avg_confidence:.2f} >= {self.config.chandra_confidence_threshold}, "
+                        f"using EasyOCR ({len(easyocr_results)} regions)"
+                    )
+                    return easyocr_results
+
+                # Step 3: Low confidence → Try Chandra endpoint
+                logger.warning(
+                    f"⚠️ EasyOCR low confidence ({avg_confidence:.2f}), trying Chandra endpoint"
+                )
+
+                if self.chandra_manager:
+                    try:
+                        # Convert image to PIL for Chandra
+                        if isinstance(image, np.ndarray):
+                            pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+                        else:
+                            pil_image = image
+
+                        # Call Chandra endpoint
+                        chandra_result = self.chandra_manager.run_inference(pil_image)
+
+                        # Parse Chandra result
+                        if isinstance(chandra_result, list) and len(chandra_result) > 0:
+                            chandra_text = chandra_result[0].get('generated_text', '')
+                        elif isinstance(chandra_result, dict):
+                            chandra_text = chandra_result.get('generated_text', '')
+                        else:
+                            chandra_text = str(chandra_result)
+
+                        chandra_confidence = 0.85  # Chandra typically high quality
+
+                        # Step 4: Use whichever is better
+                        if chandra_confidence > avg_confidence and chandra_text.strip():
+                            logger.info(
+                                f"✅ Using Chandra result (conf: {chandra_confidence:.2f} > {avg_confidence:.2f})"
+                            )
+                            return [OCRResult(
+                                text=chandra_text,
+                                confidence=chandra_confidence,
+                                method='chandra'
+                            )]
+                        else:
+                            logger.info(f"Using EasyOCR result (better than Chandra)")
+                            return easyocr_results
+
+                    except Exception as e:
+                        logger.error(f"❌ Chandra endpoint failed: {e}, falling back to EasyOCR")
+                        return easyocr_results
+                else:
+                    logger.warning("Chandra endpoint not available, using EasyOCR result")
+                    return easyocr_results
+
+            # No EasyOCR results → Try Chandra
+            logger.warning("EasyOCR found no text, trying Chandra endpoint")
+            if self.chandra_manager:
+                try:
+                    if isinstance(image, np.ndarray):
+                        pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+                    else:
+                        pil_image = image
+
+                    chandra_result = self.chandra_manager.run_inference(pil_image)
+
+                    if isinstance(chandra_result, list) and len(chandra_result) > 0:
+                        chandra_text = chandra_result[0].get('generated_text', '')
+                    elif isinstance(chandra_result, dict):
+                        chandra_text = chandra_result.get('generated_text', '')
+                    else:
+                        chandra_text = str(chandra_result)
+
+                    return [OCRResult(
+                        text=chandra_text,
+                        confidence=0.85,
+                        method='chandra'
+                    )]
+                except Exception as e:
+                    logger.error(f"❌ Chandra endpoint failed: {e}")
+                    return []
+
+            return []
+
         except Exception as e:
             logger.error(f"EasyOCR extraction failed: {str(e)}")
             raise
-        
-        # Sort results by confidence (highest first)
-        all_results.sort(key=lambda x: x.confidence, reverse=True)
-        
-        logger.info(f"Total OCR extraction: {len(all_results)} text regions")
-        return all_results
     
     def extract_text_simple(
         self, 
@@ -555,6 +674,24 @@ class OCRService:
         except Exception as e:
             logger.error(f"Error extracting icon metadata: {e}")
             return []
+
+    def get_endpoint_stats(self) -> Dict[str, Any]:
+        """
+        Get Chandra endpoint usage statistics.
+
+        Returns:
+            Dictionary with endpoint stats (uptime, calls, etc.)
+        """
+        if self.chandra_manager:
+            return {
+                'enabled': True,
+                'total_uptime': self.chandra_manager.total_uptime,
+                'inference_count': self.chandra_manager.inference_count,
+                'resume_count': self.chandra_manager.resume_count,
+                'pause_count': self.chandra_manager.pause_count,
+                'last_used': self.chandra_manager.last_used
+            }
+        return {'enabled': False}
 
 
 # Global instance

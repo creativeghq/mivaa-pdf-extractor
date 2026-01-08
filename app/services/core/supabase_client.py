@@ -277,7 +277,15 @@ class SupabaseClient:
         extraction_method: str = 'pymupdf',
         bbox: Optional[list] = None,
         detection_confidence: Optional[float] = None,
-        product_name: Optional[str] = None
+        product_name: Optional[str] = None,
+        # 4-Layer Extraction Metadata
+        layer: Optional[int] = None,
+        captures_vector_graphics: Optional[bool] = None,
+        is_duplicate: Optional[bool] = None,
+        duplicate_of: Optional[str] = None,
+        perceptual_hash: Optional[str] = None,
+        vision_provider: Optional[str] = None,
+        vision_model: Optional[str] = None
     ) -> Optional[str]:
         """
         Save a single image to document_images table.
@@ -347,6 +355,14 @@ class SupabaseClient:
                 'bbox': bbox,
                 'detection_confidence': detection_confidence,
                 'product_name': product_name,
+                # 4-Layer Extraction Metadata
+                'layer': layer or image_info.get('layer'),
+                'captures_vector_graphics': captures_vector_graphics if captures_vector_graphics is not None else image_info.get('captures_vector_graphics'),
+                'is_duplicate': is_duplicate if is_duplicate is not None else image_info.get('is_duplicate'),
+                'duplicate_of': duplicate_of or image_info.get('duplicate_of'),
+                'perceptual_hash': perceptual_hash or image_info.get('perceptual_hash'),
+                'vision_provider': vision_provider or image_info.get('vision_provider'),
+                'vision_model': vision_model or image_info.get('vision_model'),
                 'metadata': {
                     'source': 'mivaa_pdf_extraction',
                     'image_index': image_index,
@@ -372,10 +388,18 @@ class SupabaseClient:
                     'vision_guided': {
                         'bbox': bbox,
                         'confidence': detection_confidence,
-                        'provider': vision_provider,
-                        'model': vision_model,
+                        'provider': vision_provider or image_info.get('vision_provider'),
+                        'model': vision_model or image_info.get('vision_model'),
                         'product_name': product_name
-                    } if extraction_method == 'vision_guided' else None
+                    } if extraction_method == 'vision_guided' else None,
+                    # ✅ NEW: 4-Layer extraction metadata
+                    'layer_info': {
+                        'layer': layer or image_info.get('layer'),
+                        'captures_vector_graphics': captures_vector_graphics if captures_vector_graphics is not None else image_info.get('captures_vector_graphics'),
+                        'is_duplicate': is_duplicate if is_duplicate is not None else image_info.get('is_duplicate'),
+                        'duplicate_of': duplicate_of or image_info.get('duplicate_of'),
+                        'perceptual_hash': perceptual_hash or image_info.get('perceptual_hash')
+                    }
                 }
             }
 

@@ -105,8 +105,9 @@ class RAGService:
         metadata: Optional[Dict[str, Any]] = None,
         catalog: Optional[Any] = None,
         pre_extracted_text: Optional[str] = None,
-        page_chunks: Optional[List[Dict[str, Any]]] = None,  
-        progress_callback: Optional[callable] = None  
+        page_chunks: Optional[List[Dict[str, Any]]] = None,
+        progress_callback: Optional[callable] = None,
+        layout_regions_by_page: Optional[Dict[int, List[Dict[str, Any]]]] = None
     ) -> Dict[str, Any]:
         """
         Index PDF content by extracting text, chunking, and generating embeddings.
@@ -122,12 +123,15 @@ class RAGService:
             pre_extracted_text: Optional pre-extracted text (skips PDF extraction if provided)
             page_chunks: Optional page-aware text data from PyMuPDF4LLM (preserves page numbers)
             progress_callback: Optional async callback for progress updates (current, total, step_name)
+            layout_regions_by_page: Optional dict mapping page_number -> list of YOLO layout regions
+                                   for layout-aware chunking
 
         Returns:
             Dict containing:
                 - chunks_created: Number of chunks created
                 - chunk_ids: List of created chunk IDs
                 - success: Boolean indicating success
+                - quality_metrics: Chunk quality tracking metrics
         """
         try:
             start_time = time.time()
@@ -184,10 +188,15 @@ class RAGService:
 
             # Step 2: Create chunks using UnifiedChunkingService with page awareness
             try:
+                # Log layout-aware chunking status
+                if layout_regions_by_page:
+                    self.logger.info(f"   📐 Layout-aware chunking enabled ({len(layout_regions_by_page)} pages with regions)")
+
                 chunks = await self.chunking_service.chunk_pages(
                     pages=pages,
                     document_id=document_id,
-                    metadata=metadata
+                    metadata=metadata,
+                    layout_regions_by_page=layout_regions_by_page  # Pass layout regions
                 )
 
                 self.logger.info(f"   ✅ Created {len(chunks)} chunks from {len(pages)} pages")
@@ -404,14 +413,29 @@ class RAGService:
                     self.logger.debug(f"Memory monitoring unavailable: {mem_error}")
 
             elapsed_time = time.time() - start_time
-            self.logger.info(f"✅ Indexed PDF: {chunks_created} chunks created, {total_embeddings_stored} embeddings in {elapsed_time:.2f}s")
+
+            # Get quality metrics from chunking service
+            quality_metrics = self.chunking_service.get_quality_metrics()
+
+            self.logger.info(
+                f"✅ Indexed PDF: {chunks_created} chunks created, {total_embeddings_stored} embeddings in {elapsed_time:.2f}s "
+                f"(duplicates: {quality_metrics.exact_duplicates_prevented}, "
+                f"low quality: {quality_metrics.low_quality_rejected})"
+            )
 
             return {
                 "success": True,
                 "chunks_created": chunks_created,
                 "chunk_ids": chunk_ids,
                 "processing_time": elapsed_time,
-                "embeddings_generated": total_embeddings_stored  # Actual count of embeddings stored
+                "embeddings_generated": total_embeddings_stored,  # Actual count of embeddings stored
+                "quality_metrics": {
+                    "total_chunks_created": quality_metrics.total_chunks_created,
+                    "exact_duplicates_prevented": quality_metrics.exact_duplicates_prevented,
+                    "semantic_duplicates_prevented": quality_metrics.semantic_duplicates_prevented,
+                    "low_quality_rejected": quality_metrics.low_quality_rejected,
+                    "final_chunks": quality_metrics.final_chunks
+                }
             }
 
         except Exception as e:

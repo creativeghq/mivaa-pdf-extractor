@@ -11,6 +11,10 @@ PyMuPDF>=1.23.26
 pypdf>=4.0.1,<5.0.0
 pandas==2.1.4
 
+# Table extraction with Camelot
+camelot-py[cv]>=0.11.0  # Table extraction from PDFs (uses OpenCV for lattice detection)
+ghostscript>=0.7  # Required by Camelot for PDF rendering
+
 # Essential scientific computing
 numpy==1.26.4
 scipy>=1.11.0
@@ -27,6 +31,7 @@ opencv-python-headless>=4.8.0
 Pillow>=10.2.0,<11.0.0
 scikit-image>=0.21.0
 imageio>=2.31.0,<2.32.0
+imagehash==4.3.1
 
 # AI/ML API clients - exact compatible versions
 openai==1.51.0
@@ -73,6 +78,7 @@ email-validator>=2.1.0
 # OCR Dependencies
 easyocr>=1.7.0
 pytesseract>=0.3.10
+huggingface-hub>=0.19.0  # For managing HF Inference Endpoints: Chandra OCR + YOLO DocParser (serverless, pause/resume for billing control)
 
 # NLP Dependencies
 nltk==3.9.1

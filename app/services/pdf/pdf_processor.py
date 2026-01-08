@@ -37,6 +37,7 @@ import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
 from PIL.ExifTags import TAGS
 import imageio
+import imagehash  # For perceptual hash deduplication (Layer 4)
 
 try:
     from skimage import filters, morphology, measure
@@ -672,11 +673,15 @@ class PDFProcessor:
             loop = asyncio.get_event_loop()
             all_images = []
 
-            # Track extraction method for metrics
+            # Track extraction method for metrics (4-layer cascade)
             extraction_stats = {
-                'pymupdf_count': 0,
+                'embedded_count': 0,
+                'yolo_crop_count': 0,
+                'full_render_count': 0,
+                'pymupdf_count': 0,  # Keep for backward compatibility
                 'failed_count': 0,
-                'total_pages': len(pages_to_process)
+                'total_pages': len(pages_to_process),
+                'duplicates_removed': 0
             }
 
             for batch_num, batch_start in enumerate(range(0, len(pages_to_process), batch_size)):
@@ -685,10 +690,8 @@ class PDFProcessor:
 
                 self.logger.info(f"   📦 Batch {batch_num + 1}: Processing pages {batch_pages}")
 
-                # Extract images for THIS BATCH
-                batch_extracted_images = await loop.run_in_executor(
-                    None,
-                    self._extract_batch_images,
+                # Extract images for THIS BATCH (now async with 4-layer cascade)
+                batch_extracted_images = await self._extract_batch_images(
                     pdf_path,
                     image_dir,
                     batch_pages,
@@ -697,9 +700,22 @@ class PDFProcessor:
                     converter  # ✅ NEW: Pass PageConverter for page number validation
                 )
 
-                # Update extraction stats based on extracted images
+                # Update extraction stats based on extracted images (4-layer tracking)
                 for img in batch_extracted_images:
+                    layer = img.get('extraction_layer', 'embedded')
+                    if layer == 'embedded':
+                        extraction_stats['embedded_count'] += 1
+                    elif layer == 'yolo_crop':
+                        extraction_stats['yolo_crop_count'] += 1
+                    elif layer == 'full_render':
+                        extraction_stats['full_render_count'] += 1
+
+                    # Backward compatibility
                     extraction_stats['pymupdf_count'] += 1
+
+                    # Track duplicates
+                    if img.get('is_duplicate', False):
+                        extraction_stats['duplicates_removed'] += 1
 
                 # Process extracted images IMMEDIATELY (don't accumulate)
                 batch_images = await self._process_batch_images(
@@ -720,8 +736,11 @@ class PDFProcessor:
                 self.logger.info(f"   ✅ Batch {batch_num + 1} complete: {len(batch_images)} images processed, {len(all_images)} total")
 
             self.logger.info(
-                f"✅ STREAMING EXTRACTION COMPLETE: {len(all_images)} total images "
-                f"(pymupdf: {extraction_stats['pymupdf_count']})"
+                f"✅ 4-LAYER EXTRACTION COMPLETE: {len(all_images)} total images "
+                f"(embedded: {extraction_stats['embedded_count']}, "
+                f"yolo_crop: {extraction_stats['yolo_crop_count']}, "
+                f"full_render: {extraction_stats['full_render_count']}, "
+                f"duplicates_removed: {extraction_stats['duplicates_removed']})"
             )
 
             return all_images, extraction_stats
@@ -729,7 +748,7 @@ class PDFProcessor:
         except Exception as e:
             raise PDFExtractionError(f"Streaming image extraction failed: {str(e)}") from e
 
-    def _extract_batch_images(
+    async def _extract_batch_images(
         self,
         pdf_path: str,
         image_dir: str,
@@ -739,9 +758,13 @@ class PDFProcessor:
         converter: Optional[PageConverter] = None  # ✅ NEW: PageConverter for validation
     ) -> List[Dict[str, Any]]:
         """
-        Extract images from a specific batch of pages using PyMuPDF.
+        Extract images from a specific batch of pages with 4-layer cascade.
 
-        ✅ FULLY INTEGRATED with metadata propagation
+        ✅ 4-LAYER EXTRACTION CASCADE:
+        1. Layer 1: Embedded images (PyMuPDF) - Fast, extracts actual embedded images
+        2. Layer 2: YOLO-guided cropping - Detects IMAGE regions and crops from rendered page
+        3. Layer 3: Full page render - Fallback for scanned PDFs and vector graphics
+        4. Layer 4: Perceptual hash deduplication - Remove duplicates across all layers
 
         Args:
             pdf_path: Path to PDF file
@@ -752,12 +775,229 @@ class PDFProcessor:
             converter: Optional PageConverter for page number validation
 
         Returns:
-            List of extracted image data dictionaries
+            List of extracted image data dictionaries (deduplicated)
         """
-        self.logger.info(f"   📄 [Job: {job_id}] Using PyMuPDF extraction for pages {batch_pages}")
-        return self._extract_batch_images_with_pymupdf(
+        from app.config import get_settings
+        settings = get_settings()
+
+        all_images = []
+
+        self.logger.info(
+            f"   🎯 [Job: {job_id}] Starting 4-layer extraction for pages {batch_pages}"
+        )
+
+        # Layer 1: Try embedded images first (fastest)
+        self.logger.info(f"   📄 [Job: {job_id}] Layer 1: Extracting embedded images...")
+        embedded_images = self._extract_batch_images_with_pymupdf(
             pdf_path, image_dir, batch_pages, job_id, document_id
         )
+
+        # Mark extraction layer
+        for img in embedded_images:
+            img['extraction_layer'] = 'embedded'
+
+        all_images.extend(embedded_images)
+
+        self.logger.info(
+            f"   ✅ [Job: {job_id}] Layer 1 complete: {len(embedded_images)} embedded images"
+        )
+
+        # Layer 2: Try YOLO-guided extraction (if enabled and no embedded images)
+        if settings.yolo_enabled:
+            self.logger.info(f"   🎯 [Job: {job_id}] Layer 2: YOLO-guided extraction...")
+            yolo_images = await self._extract_batch_images_with_yolo(
+                pdf_path, image_dir, batch_pages, job_id, document_id
+            )
+
+            # Mark extraction layer
+            for img in yolo_images:
+                img['extraction_layer'] = 'yolo_crop'
+
+            all_images.extend(yolo_images)
+
+            self.logger.info(
+                f"   ✅ [Job: {job_id}] Layer 2 complete: {len(yolo_images)} YOLO-cropped images"
+            )
+        else:
+            self.logger.info(f"   ⚠️ [Job: {job_id}] Layer 2 skipped: YOLO disabled")
+
+        # Layer 3: Full page render is already handled in PyMuPDF method
+        # (it renders full page if no embedded images found)
+
+        # Layer 4: Deduplicate across all layers
+        self.logger.info(
+            f"   🔍 [Job: {job_id}] Layer 4: Deduplicating {len(all_images)} images..."
+        )
+        unique_images = self._deduplicate_images(all_images, threshold=5, job_id=job_id)
+
+        self.logger.info(
+            f"   ✅ [Job: {job_id}] 4-layer extraction complete: "
+            f"{len(unique_images)} unique images "
+            f"(embedded: {len(embedded_images)}, yolo: {len(all_images) - len(embedded_images)}, "
+            f"duplicates removed: {len(all_images) - len(unique_images)})"
+        )
+
+        return unique_images
+
+    async def _extract_batch_images_with_yolo(
+        self,
+        pdf_path: str,
+        image_dir: str,
+        batch_pages: List[int],
+        job_id: Optional[str] = None,
+        document_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Extract images using YOLO layout detection (Layer 2).
+
+        ✅ INTEGRATED with job tracking and error logging
+
+        Uses YOLO DocParser to detect IMAGE regions and crops them from rendered pages.
+        This is more accurate than embedded extraction for vector graphics and complex layouts.
+
+        Returns:
+            List of extracted image data with YOLO metadata
+        """
+        from app.services.pdf.yolo_layout_detector import YoloLayoutDetector
+        from app.config import get_settings
+        import fitz
+        import gc
+
+        settings = get_settings()
+
+        # Check if YOLO is enabled
+        if not settings.yolo_enabled:
+            self.logger.info(f"   ⚠️ [Job: {job_id}] YOLO layout detection disabled")
+            return []
+
+        extracted_images = []
+
+        try:
+            # Initialize YOLO detector
+            yolo_detector = YoloLayoutDetector()
+
+            # Process each page
+            for page_idx in batch_pages:
+                try:
+                    self.logger.info(
+                        f"   🎯 [Job: {job_id}] YOLO detecting layout on page {page_idx + 1}..."
+                    )
+
+                    # Detect layout regions
+                    layout_result = await yolo_detector.detect_layout_regions(
+                        pdf_path=pdf_path,
+                        page_num=page_idx,
+                        dpi=150
+                    )
+
+                    # Get IMAGE regions only
+                    image_regions = layout_result.get_regions_by_type("IMAGE")
+
+                    if not image_regions:
+                        self.logger.info(
+                            f"   ℹ️ [Job: {job_id}] No IMAGE regions detected on page {page_idx + 1}"
+                        )
+                        continue
+
+                    self.logger.info(
+                        f"   ✅ [Job: {job_id}] Found {len(image_regions)} IMAGE regions on page {page_idx + 1}"
+                    )
+
+                    # Render full page for cropping
+                    doc = fitz.open(pdf_path)
+                    page = doc[page_idx]
+
+                    # Render at high DPI for quality
+                    zoom = 150 / 72  # 150 DPI
+                    mat = fitz.Matrix(zoom, zoom)
+                    pix = page.get_pixmap(matrix=mat)
+
+                    # Convert to PIL Image
+                    from PIL import Image
+                    import io
+                    img_data = pix.tobytes("png")
+                    full_page_image = Image.open(io.BytesIO(img_data))
+
+                    # Crop each IMAGE region
+                    for region_idx, region in enumerate(image_regions):
+                        try:
+                            # Get bounding box coordinates
+                            bbox = region.bbox
+
+                            # Crop region from full page image
+                            cropped_image = full_page_image.crop((
+                                bbox.x,
+                                bbox.y,
+                                bbox.x2,
+                                bbox.y2
+                            ))
+
+                            # Save cropped image
+                            image_filename = f"page_{page_idx + 1}_yolo_region_{region_idx}.jpg"
+                            image_path = os.path.join(image_dir, image_filename)
+
+                            cropped_image.save(image_path, "JPEG", quality=95)
+
+                            # Get image dimensions
+                            width, height = cropped_image.size
+
+                            # Create image metadata
+                            image_info = {
+                                'path': image_path,
+                                'filename': image_filename,
+                                'page_number': page_idx + 1,
+                                'width': width,
+                                'height': height,
+                                'format': 'JPEG',
+                                'detection_method': 'yolo_guided',
+                                'extraction_layer': 'yolo_crop',
+                                'yolo_confidence': region.confidence,
+                                'yolo_region_type': region.type,
+                                'yolo_reading_order': region.reading_order,
+                                'bbox': {
+                                    'x': bbox.x,
+                                    'y': bbox.y,
+                                    'width': bbox.width,
+                                    'height': bbox.height
+                                }
+                            }
+
+                            extracted_images.append(image_info)
+
+                            self.logger.debug(
+                                f"   ✅ [Job: {job_id}] Extracted YOLO region {region_idx} "
+                                f"from page {page_idx + 1} (confidence: {region.confidence:.2f})"
+                            )
+
+                        except Exception as e:
+                            self.logger.error(
+                                f"   ❌ [Job: {job_id}] Failed to crop YOLO region {region_idx} "
+                                f"on page {page_idx + 1}: {e}"
+                            )
+                            continue
+
+                    # Cleanup
+                    full_page_image.close()
+                    doc.close()
+                    gc.collect()
+
+                except Exception as e:
+                    self.logger.error(
+                        f"   ❌ [Job: {job_id}] YOLO extraction failed for page {page_idx + 1}: {e}"
+                    )
+                    continue
+
+            self.logger.info(
+                f"   ✅ [Job: {job_id}] YOLO extraction complete: {len(extracted_images)} images extracted"
+            )
+
+            # Pause YOLO endpoint after batch
+            yolo_detector.pause_endpoint()
+
+        except Exception as e:
+            self.logger.error(f"   ❌ [Job: {job_id}] YOLO batch extraction failed: {e}")
+
+        return extracted_images
 
     def _extract_batch_images_with_pymupdf(
         self,
@@ -805,7 +1045,7 @@ class PDFProcessor:
                     )
 
                 # ============================================================
-                # CASE 1: Extract embedded images (normal PDFs)
+                # LAYER 1: Extract embedded images (normal PDFs)
                 # ============================================================
                 if len(image_list) > 0:
                     for img_idx, img in enumerate(image_list):
@@ -822,12 +1062,14 @@ class PDFProcessor:
                             with open(image_path, "wb") as img_file:
                                 img_file.write(image_bytes)
 
-                            # Populate image metadata
+                            # Populate image metadata with Layer 1 information
                             extracted_images.append({
                                 'path': image_path,
                                 'filename': image_filename,
                                 'page_number': page_idx + 1,
-                                'extraction_method': 'pymupdf',
+                                'extraction_method': 'pymupdf_embedded',  # Layer 1: Embedded images
+                                'layer': 1,
+                                'captures_vector_graphics': False,  # Embedded images don't capture vector graphics
                                 'format': image_ext,
                                 'size_bytes': len(image_bytes),
                                 'width': base_image.get('width'),
@@ -849,89 +1091,63 @@ class PDFProcessor:
                             continue
 
                 # ============================================================
-                # CASE 2: No embedded images - use OCR to extract text from scanned page
-                # (Common for scanned PDFs where each page IS an image)
+                # LAYER 2: Full Page Rendering (for vector graphics)
+                # Only render if Layer 1 found 0 embedded images
                 # ============================================================
                 else:
                     try:
                         self.logger.info(
                             f"   📸 [Job: {job_id}] No embedded images on page {page_idx + 1} - "
-                            f"using OCR to extract text from scanned page"
+                            f"rendering full page to capture vector graphics"
                         )
 
-                        # Render page to high-res image for OCR
-                        zoom = 2.0  # 144 DPI (72 * 2)
+                        # Render page to high-res image (2x zoom = 144 DPI)
+                        zoom = 2.0
                         mat = fitz.Matrix(zoom, zoom)
                         pix = page.get_pixmap(matrix=mat, alpha=False)
 
-                        # Convert pixmap to PIL Image for OCR
+                        # Convert pixmap to PIL Image
                         from PIL import Image
                         import io
-                        img_data = pix.tobytes('png')
+                        img_data = pix.tobytes('jpeg')
                         pil_image = Image.open(io.BytesIO(img_data))
 
-                        # Free pixmap memory immediately
+                        # Save full page render
+                        full_page_filename = f"page_{page_idx + 1}_full_render.jpg"
+                        full_page_path = os.path.join(image_dir, full_page_filename)
+                        pil_image.save(full_page_path, "JPEG", quality=85)
+
+                        # Get file size
+                        file_size = os.path.getsize(full_page_path)
+
+                        # Add to extracted images with Layer 2 metadata
+                        extracted_images.append({
+                            'path': full_page_path,
+                            'filename': full_page_filename,
+                            'page_number': page_idx + 1,
+                            'extraction_method': 'pymupdf_full_render',  # Layer 2: Full page render
+                            'layer': 2,
+                            'captures_vector_graphics': True,  # Full render captures vector graphics
+                            'format': 'jpg',
+                            'size_bytes': file_size,
+                            'width': pil_image.width,
+                            'height': pil_image.height
+                        })
+
+                        # Free memory immediately
                         pix = None
+                        pil_image = None
 
-                        # Use OCR service to extract text
-                        try:
-                            from app.services.pdf.ocr_service import OCRService
-                            ocr_service = OCRService()
-
-                            # Extract text with bounding boxes
-                            ocr_results = ocr_service.extract_text_from_image(
-                                pil_image,
-                                use_preprocessing=True
-                            )
-
-                            # Combine all text
-                            page_text = " ".join([
-                                r.text.strip()
-                                for r in ocr_results
-                                if r.text.strip() and r.confidence > 0.3
-                            ])
-
-                            if page_text:
-                                # Save OCR text to a text file alongside images
-                                text_filename = f"page_{page_idx + 1}_ocr.txt"
-                                text_path = os.path.join(image_dir, text_filename)
-                                with open(text_path, 'w', encoding='utf-8') as f:
-                                    f.write(page_text)
-
-                                self.logger.info(
-                                    f"   ✅ [Job: {job_id}] OCR extracted {len(page_text)} characters "
-                                    f"from page {page_idx + 1}"
-                                )
-                            else:
-                                self.logger.warning(
-                                    f"   ⚠️ [Job: {job_id}] OCR found no text on page {page_idx + 1}"
-                                )
-
-                            # Also save the full page image for reference
-                            full_page_filename = f"page_{page_idx + 1}_scanned.jpg"
-                            full_page_path = os.path.join(image_dir, full_page_filename)
-                            pil_image.save(full_page_path, "JPEG", quality=85)
-
-                            extracted_images.append({
-                                'path': full_page_path,
-                                'filename': full_page_filename,
-                                'page_number': page_idx + 1,
-                                'extraction_method': 'pymupdf_scanned_page',
-                                'format': 'jpg',
-                                'size_bytes': os.path.getsize(full_page_path),
-                                'width': pil_image.width,
-                                'height': pil_image.height
-                            })
-
-                        except Exception as ocr_error:
-                            self.logger.error(f"   ❌ [Job: {job_id}] OCR Service failure: {ocr_error}")
-                        finally:
-                            pil_image = None
+                        self.logger.info(
+                            f"   ✅ [Job: {job_id}] Full page render saved: {full_page_filename}"
+                        )
 
                     except Exception as e:
                         self.logger.error(
-                            f"   ❌ [Job: {job_id}] Failed to process scanned page {page_idx + 1}: {e}"
+                            f"   ❌ [Job: {job_id}] Failed to render full page {page_idx + 1}: {e}"
                         )
+                        continue
+
 
                 # Free page memory
                 page = None
@@ -945,7 +1161,103 @@ class PDFProcessor:
             doc.close()
             gc.collect()
 
+        # Layer 4: Deduplicate images using perceptual hashing
+        extracted_images = self._deduplicate_images(extracted_images, threshold=5, job_id=job_id)
+
         return extracted_images
+
+    def _deduplicate_images(
+        self,
+        extracted_images: List[Dict[str, Any]],
+        threshold: int = 5,
+        job_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Layer 4: Deduplicate images using perceptual hashing.
+
+        Uses imagehash.phash() to compute perceptual hashes and removes duplicates
+        based on Hamming distance threshold.
+
+        Args:
+            extracted_images: List of image dictionaries with 'path' key
+            threshold: Hamming distance threshold (default: 5)
+            job_id: Optional job ID for logging
+
+        Returns:
+            List of unique images with deduplication metadata
+        """
+        if not extracted_images:
+            return extracted_images
+
+        self.logger.info(
+            f"   🔍 [Job: {job_id}] Layer 4: Starting perceptual hash deduplication "
+            f"(threshold={threshold}, {len(extracted_images)} images)"
+        )
+
+        unique_images = []
+        seen_hashes = {}  # hash -> image_info mapping
+        duplicate_count = 0
+
+        for img_info in extracted_images:
+            image_path = img_info.get('path')
+
+            if not image_path or not os.path.exists(image_path):
+                self.logger.warning(f"   ⚠️ [Job: {job_id}] Image file not found: {image_path}")
+                continue
+
+            try:
+                # Compute perceptual hash
+                with Image.open(image_path) as img:
+                    phash = imagehash.phash(img)
+
+                # Check for duplicates
+                is_duplicate = False
+                duplicate_of = None
+
+                for existing_hash, existing_info in seen_hashes.items():
+                    hamming_distance = phash - existing_hash
+
+                    if hamming_distance <= threshold:
+                        # Found a duplicate
+                        is_duplicate = True
+                        duplicate_of = existing_info.get('filename')
+                        duplicate_count += 1
+
+                        self.logger.debug(
+                            f"   🔄 [Job: {job_id}] Duplicate found: {img_info.get('filename')} "
+                            f"(similar to {duplicate_of}, distance={hamming_distance})"
+                        )
+                        break
+
+                if is_duplicate:
+                    # Mark as duplicate but don't add to unique list
+                    img_info['is_duplicate'] = True
+                    img_info['duplicate_of'] = duplicate_of
+                    img_info['perceptual_hash'] = str(phash)
+                else:
+                    # Add to unique images
+                    img_info['is_duplicate'] = False
+                    img_info['duplicate_of'] = None
+                    img_info['perceptual_hash'] = str(phash)
+                    unique_images.append(img_info)
+                    seen_hashes[phash] = img_info
+
+            except Exception as e:
+                self.logger.error(
+                    f"   ❌ [Job: {job_id}] Failed to compute hash for {image_path}: {e}"
+                )
+                # Include image anyway if hashing fails
+                img_info['is_duplicate'] = False
+                img_info['duplicate_of'] = None
+                img_info['perceptual_hash'] = None
+                unique_images.append(img_info)
+
+        self.logger.info(
+            f"   ✅ [Job: {job_id}] Layer 4 complete: {len(unique_images)} unique images "
+            f"({duplicate_count} duplicates removed)"
+        )
+
+        return unique_images
 
     async def _process_batch_images(
         self,
@@ -993,11 +1305,16 @@ class PDFProcessor:
                 continue
 
             try:
-                # Process and upload image (ALWAYS uploads to Supabase)
+                # ✅ FIX: Skip upload during extraction - keep files for classification
+                # Images will be uploaded AFTER classification in stage_3_images.py
+                # This prevents files from being deleted before classification can use them
+
+                # Just process metadata without uploading
                 processed_info = await self._process_extracted_image(
                     image_path,
                     document_id,
-                    processing_options
+                    processing_options,
+                    skip_upload=True  # NEW: Skip upload, keep local files
                 )
 
                 if processed_info:
@@ -1006,23 +1323,15 @@ class PDFProcessor:
                     merged_info = {**img_info, **processed_info}
                     batch_images.append(merged_info)
 
-                # ALWAYS delete local file immediately after upload
-                try:
-                    os.remove(image_path)
-                    self.logger.debug(f"   🗑️ Deleted local file: {filename}")
-                except Exception as e:
-                    self.logger.warning(f"Failed to delete {image_path}: {e}")
+                # ✅ FIX: DO NOT delete local files - they're needed for classification
+                # Files will be cleaned up by admin cron job after classification completes
 
                 # Free memory after each image
                 gc.collect()
 
             except Exception as e:
                 self.logger.warning(f"Failed to process image {filename}: {e}")
-                # Still try to delete the file to prevent accumulation
-                try:
-                    os.remove(image_path)
-                except:
-                    pass
+                # Don't delete files on error - they might still be usable for classification
                 continue
 
         return batch_images
@@ -1094,22 +1403,24 @@ class PDFProcessor:
         self,
         image_path: str,
         document_id: str,
-        processing_options: Dict[str, Any]
+        processing_options: Dict[str, Any],
+        skip_upload: bool = False
     ) -> Optional[Dict[str, Any]]:
         """
-        Process a single extracted image with advanced capabilities and upload to Supabase Storage.
+        Process a single extracted image with advanced capabilities.
 
-        NEW ARCHITECTURE:
-        - ALWAYS uploads to Supabase immediately
-        - Returns image data with storage_url for subsequent processing
-        - No skip_upload parameter (deprecated)
+        Args:
+            image_path: Path to the image file
+            document_id: Document ID
+            processing_options: Processing configuration
+            skip_upload: If True, skip upload to Supabase (keep local files for classification)
 
         Features:
         - Format conversion and optimization
         - Metadata extraction (EXIF, technical specs)
         - Quality assessment
         - Image enhancement options
-        - Upload to Supabase Storage instead of local storage
+        - Optional upload to Supabase Storage
         - Duplicate detection preparation
         - Memory-efficient processing with explicit cleanup
         """
@@ -1172,29 +1483,40 @@ class PDFProcessor:
                         target_format
                     )
 
-                # Upload image to Supabase Storage
-                # NOTE: skip_upload parameter is deprecated - we ALWAYS upload now
-                upload_result = await self._upload_image_to_storage(
-                    image_path,
-                    document_id,
-                    basic_info,
-                    converted_path or enhanced_path
-                )
+                # ✅ FIX: Conditionally upload based on skip_upload parameter
+                if skip_upload:
+                    # Skip upload - keep local files for classification
+                    self.logger.debug(f"⏭️  Skipping upload for {basic_info['filename']} (will upload after classification)")
+                    upload_result = {
+                        'success': False,
+                        'skipped': True,
+                        'public_url': None,
+                        'storage_path': None,
+                        'page_number': None
+                    }
+                else:
+                    # Upload image to Supabase Storage
+                    upload_result = await self._upload_image_to_storage(
+                        image_path,
+                        document_id,
+                        basic_info,
+                        converted_path or enhanced_path
+                    )
 
-                # DETAILED LOGGING: Log upload result for debugging
-                self.logger.info(f"📤 Upload result for {basic_info['filename']}:")
-                self.logger.info(f"   success: {upload_result.get('success')}")
-                self.logger.info(f"   public_url: {upload_result.get('public_url')}")
-                self.logger.info(f"   storage_path: {upload_result.get('storage_path')}")
-                self.logger.info(f"   page_number: {upload_result.get('page_number')}")  # ✅ Log page number
-                self.logger.info(f"   error: {upload_result.get('error')}")
+                    # DETAILED LOGGING: Log upload result for debugging
+                    self.logger.info(f"📤 Upload result for {basic_info['filename']}:")
+                    self.logger.info(f"   success: {upload_result.get('success')}")
+                    self.logger.info(f"   public_url: {upload_result.get('public_url')}")
+                    self.logger.info(f"   storage_path: {upload_result.get('storage_path')}")
+                    self.logger.info(f"   page_number: {upload_result.get('page_number')}")
+                    self.logger.info(f"   error: {upload_result.get('error')}")
 
-                if not upload_result.get('success'):
-                    self.logger.error(f"❌ CRITICAL: Failed to upload image to storage: {upload_result.get('error')}")
-                    self.logger.error(f"   Image path: {image_path}")
-                    self.logger.error(f"   Document ID: {document_id}")
-                    # Continue processing even if upload fails, but mark it
-                    upload_result = {'success': False, 'error': 'Upload failed', 'public_url': None}
+                    if not upload_result.get('success'):
+                        self.logger.error(f"❌ CRITICAL: Failed to upload image to storage: {upload_result.get('error')}")
+                        self.logger.error(f"   Image path: {image_path}")
+                        self.logger.error(f"   Document ID: {document_id}")
+                        # Continue processing even if upload fails, but mark it
+                        upload_result = {'success': False, 'error': 'Upload failed', 'public_url': None}
 
                 # ✅ CRITICAL FIX: Skip AI analysis during extraction to prevent blocking
                 # AI analysis will be performed AFTER chunks/images are saved to database

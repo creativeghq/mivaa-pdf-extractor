@@ -129,20 +129,19 @@ class AIClientService:
     def httpx(self) -> httpx.AsyncClient:
         """Get shared httpx async client for TogetherAI and other HTTP APIs.
 
-        CRITICAL FIX: Timeout aligned with application timeout guard (30s for Qwen Vision)
-        to prevent HTTP 499 (Client Closed Request) errors.
+        ✅ FIX: Increased timeout to 200s for Qwen3-VL-32B model (large vision model needs more time)
 
-        Previous: 120s timeout caused conflicts when app timeout guard (30s) killed requests.
-        Result: httpx client still waiting → connection closed → HTTP 499
+        Previous: 35s timeout was too short for 32B model, causing ReadTimeout errors
+        New: 200s timeout allows 32B model to complete inference (typically 60-120s)
         """
         if self._httpx_client is None:
             self._httpx_client = httpx.AsyncClient(
-                # CRITICAL FIX: Reduced from 120s to 35s to align with app timeout guard (30s)
-                # This prevents HTTP 499 errors when timeout guard cancels the operation
-                timeout=httpx.Timeout(35.0),  # Slightly higher than app guard (30s) for graceful handling
+                # ✅ FIX: Increased from 35s to 200s for Qwen3-VL-32B model
+                # 32B model needs 60-120s for inference, 200s provides buffer
+                timeout=httpx.Timeout(200.0),  # Generous timeout for large vision models
                 limits=httpx.Limits(max_keepalive_connections=20, max_connections=100)
             )
-            logger.info("✅ HTTPX async client initialized (timeout: 35s, aligned with app guards)")
+            logger.info("✅ HTTPX async client initialized (timeout: 200s for large vision models)")
 
         return self._httpx_client
     

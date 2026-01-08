@@ -151,7 +151,9 @@ STANDARDIZED FIELD NAMES (use EXACTLY these names):
 **Commercial:**
 - grout_mapei: Mapei grout product name (e.g., "ULTRACOLOR PLUS")
 - grout_kerakoll: Kerakoll grout product name (e.g., "FUGABELLA")
-- grout_suppliers: Array of grout supplier names (e.g., ["MAPEI", "KERAKOLL"])
+- grout_isomat: Isomat grout product name (e.g., "MULTIFILL EPOXY")
+- grout_technica: Technica grout product name (e.g., "GROUT PREMIUM")
+- grout_suppliers: Array of grout supplier names (e.g., ["MAPEI", "KERAKOLL", "ISOMAT", "TECHNICA"])
 - grout_color_codes: Object mapping colors to grout codes (e.g., {{"white": "100", "clay": "145"}})
 - sku_codes: Object mapping colors/variants to SKU codes (e.g., {{"white": "37885", "clay": "37889"}})
 - product_codes: Array of product codes (e.g., ["H48", "H22"])

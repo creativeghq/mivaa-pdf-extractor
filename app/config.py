@@ -339,7 +339,7 @@ class Settings(BaseSettings):
         env="TOGETHER_TEMPERATURE"
     )
     together_timeout: int = Field(
-        default=60,
+        default=180,  # ✅ Increased from 60s to 180s for Qwen3-VL-32B (large model needs more time)
         env="TOGETHER_TIMEOUT"
     )
     together_enabled: bool = Field(
@@ -403,6 +403,50 @@ class Settings(BaseSettings):
         description="Claude model for RAG question answering"
     )
 
+    # Vision-Guided Extraction Settings (Model-Agnostic) - PREMIUM OPTIONAL
+    # Uses Claude Vision API to detect products and extract precise image regions
+    # NOTE: YOLO is the primary extraction method (7x cheaper, 2x faster, universal coverage)
+    # Vision-Guided is a premium option for high-value product catalogs only
+    vision_guided_enabled: bool = Field(
+        default=False,  # DISABLED by default - use YOLO as primary
+        env="VISION_GUIDED_ENABLED",
+        description="Enable vision-guided product extraction (premium option, requires API keys)"
+    )
+    vision_guided_provider: str = Field(
+        default="anthropic",
+        env="VISION_GUIDED_PROVIDER",
+        description="Vision model provider: 'anthropic' (Claude), 'openai' (GPT-4o), 'together' (Qwen)"
+    )
+    vision_guided_model: str = Field(
+        default="claude-sonnet-4-5-20250929",
+        env="VISION_GUIDED_MODEL",
+        description="Vision model to use (provider-specific model name)"
+    )
+    vision_guided_confidence_threshold: float = Field(
+        default=0.8,
+        ge=0.0,
+        le=1.0,
+        env="VISION_GUIDED_CONFIDENCE_THRESHOLD",
+        description="Minimum confidence threshold for vision-guided extraction"
+    )
+    vision_guided_fallback_to_pymupdf: bool = Field(
+        default=True,
+        env="VISION_GUIDED_FALLBACK_TO_PYMUPDF",
+        description="Fallback to PyMuPDF if vision extraction fails or confidence is low"
+    )
+    vision_guided_max_tokens: int = Field(
+        default=4096,
+        env="VISION_GUIDED_MAX_TOKENS",
+        description="Max tokens for vision model response"
+    )
+    vision_guided_temperature: float = Field(
+        default=0.1,
+        ge=0.0,
+        le=2.0,
+        env="VISION_GUIDED_TEMPERATURE",
+        description="Temperature for vision model"
+    )
+
     # Visual Embedding Models (SigLIP2 primary, CLIP fallback) - NOW CONFIGURABLE
     visual_embedding_primary_model: str = Field(
         default="google/siglip2-so400m-patch14-384",
@@ -462,6 +506,119 @@ class Settings(BaseSettings):
         default=3,
         env="HUGGINGFACE_MAX_RETRIES",
         description="Maximum retry attempts for Hugging Face API calls"
+    )
+
+    # Chandra OCR Inference Endpoint Settings (Serverless with Pause/Resume)
+    hf_token: str = Field(
+        default="",
+        env="HF_TOKEN",
+        description="HuggingFace API token for Inference Endpoints (with write permissions)"
+    )
+    chandra_endpoint_url: str = Field(
+        default="https://kgvlceo5zrww8a6m.us-east-1.aws.endpoints.huggingface.cloud",
+        env="CHANDRA_ENDPOINT_URL",
+        description="Chandra OCR Inference Endpoint URL"
+    )
+    chandra_endpoint_name: str = Field(
+        default="mh-chandra",
+        env="CHANDRA_ENDPOINT_NAME",
+        description="Chandra OCR Inference Endpoint name (for pause/resume operations)"
+    )
+    chandra_namespace: str = Field(
+        default="basiliskan",
+        env="CHANDRA_NAMESPACE",
+        description="HuggingFace namespace/username for endpoint management"
+    )
+    chandra_enabled: bool = Field(
+        default=True,
+        env="CHANDRA_ENABLED",
+        description="Enable Chandra OCR fallback when EasyOCR confidence is low"
+    )
+    chandra_confidence_threshold: float = Field(
+        default=0.7,
+        env="CHANDRA_CONFIDENCE_THRESHOLD",
+        description="EasyOCR confidence threshold - use Chandra if below this value"
+    )
+    chandra_auto_pause_timeout: int = Field(
+        default=60,
+        env="CHANDRA_AUTO_PAUSE_TIMEOUT",
+        description="Seconds of idle time before auto-pausing endpoint (to prevent billing)"
+    )
+    chandra_max_resume_retries: int = Field(
+        default=3,
+        env="CHANDRA_MAX_RESUME_RETRIES",
+        description="Maximum retry attempts for resuming endpoint"
+    )
+    chandra_resume_timeout: int = Field(
+        default=300,
+        env="CHANDRA_RESUME_TIMEOUT",
+        description="Timeout in seconds for endpoint resume operation"
+    )
+    chandra_inference_timeout: int = Field(
+        default=30,
+        env="CHANDRA_INFERENCE_TIMEOUT",
+        description="Timeout in seconds for OCR inference calls"
+    )
+
+    # ============================================================================
+    # YOLO DocParser - PRIMARY EXTRACTION METHOD (Layer 2 of 4-Layer Cascade)
+    # ============================================================================
+    # YOLO is the recommended primary extraction method because:
+    # - 7x cheaper than Vision-Guided ($0.03 vs $0.20 per 30 pages)
+    # - 2x faster (8 sec vs 15 sec per 30 pages)
+    # - Universal coverage (works on all PDF types, not just catalogs)
+    # - Post-processing adds intelligence (classification, metadata, embeddings)
+    # - Auto-pause/resume for cost control (~$0.60/hour when running)
+    # ============================================================================
+    yolo_enabled: bool = Field(
+        default=True,  # PRIMARY extraction method - enabled by default
+        env="YOLO_ENABLED",
+        description="Enable YOLO DocParser for layout detection (PRIMARY extraction method)"
+    )
+    yolo_endpoint_url: str = Field(
+        default="https://f763mkb5o68lmwtu.us-east-1.aws.endpoints.huggingface.cloud",
+        env="YOLO_ENDPOINT_URL",
+        description="YOLO DocParser Inference Endpoint URL"
+    )
+    yolo_endpoint_name: str = Field(
+        default="yolo-docparser",
+        env="YOLO_ENDPOINT_NAME",
+        description="YOLO DocParser Inference Endpoint name (for pause/resume operations)"
+    )
+    yolo_namespace: str = Field(
+        default="basiliskan",
+        env="YOLO_NAMESPACE",
+        description="HuggingFace namespace/username for YOLO endpoint management"
+    )
+    yolo_confidence_threshold: float = Field(
+        default=0.5,
+        env="YOLO_CONFIDENCE_THRESHOLD",
+        description="Minimum confidence threshold for layout region detection (0.0-1.0)"
+    )
+    yolo_auto_pause_timeout: int = Field(
+        default=60,
+        env="YOLO_AUTO_PAUSE_TIMEOUT",
+        description="Seconds of idle time before auto-pausing YOLO endpoint (to prevent billing)"
+    )
+    yolo_max_resume_retries: int = Field(
+        default=3,
+        env="YOLO_MAX_RESUME_RETRIES",
+        description="Maximum retry attempts for resuming YOLO endpoint"
+    )
+    yolo_resume_timeout: int = Field(
+        default=300,
+        env="YOLO_RESUME_TIMEOUT",
+        description="Timeout in seconds for YOLO endpoint resume operation"
+    )
+    yolo_inference_timeout: int = Field(
+        default=30,
+        env="YOLO_INFERENCE_TIMEOUT",
+        description="Timeout in seconds for YOLO layout detection inference calls"
+    )
+    yolo_warmup_timeout: int = Field(
+        default=60,
+        env="YOLO_WARMUP_TIMEOUT",
+        description="Warmup time in seconds for YOLO endpoint (required before first inference)"
     )
 
     # Voyage AI Settings (Text Embeddings - Primary Provider)
@@ -854,7 +1011,7 @@ class Settings(BaseSettings):
     def get_ocr_config(self) -> Dict[str, Any]:
         """
         Get OCR processing configuration.
-        
+
         This provides all necessary configuration for OCR text extraction
         including engine selection, language settings, and preprocessing options.
         """
@@ -868,7 +1025,57 @@ class Settings(BaseSettings):
             "deskew_enabled": self.ocr_deskew_enabled,
             "noise_removal_enabled": self.ocr_noise_removal_enabled,
         }
-    
+
+    def create_ocr_config(self, languages: Optional[List[str]] = None):
+        """
+        Create OCRConfig instance with Chandra endpoint settings.
+
+        Args:
+            languages: OCR languages (defaults to ['en'])
+
+        Returns:
+            OCRConfig instance with all settings from environment
+        """
+        from app.services.pdf.ocr_service import OCRConfig
+
+        return OCRConfig(
+            languages=languages or [self.ocr_language],
+            use_gpu=self.ocr_gpu_enabled,
+            confidence_threshold=self.ocr_confidence_threshold,
+            preprocessing_enabled=self.ocr_preprocessing_enabled,
+            # Chandra endpoint settings
+            chandra_enabled=self.chandra_enabled,
+            chandra_endpoint_url=self.chandra_endpoint_url,
+            chandra_hf_token=self.hf_token,
+            chandra_endpoint_name=self.chandra_endpoint_name,
+            chandra_namespace=self.chandra_namespace,
+            chandra_confidence_threshold=self.chandra_confidence_threshold,
+            chandra_auto_pause_timeout=self.chandra_auto_pause_timeout,
+            chandra_inference_timeout=self.chandra_inference_timeout,
+            chandra_max_resume_retries=self.chandra_max_resume_retries
+        )
+
+    def get_yolo_config(self) -> Dict[str, Any]:
+        """
+        Get YOLO DocParser layout detection configuration.
+
+        This provides all necessary configuration for YOLO layout detection
+        including endpoint settings, confidence thresholds, and pause/resume settings.
+        """
+        return {
+            "enabled": self.yolo_enabled,
+            "endpoint_url": self.yolo_endpoint_url,
+            "endpoint_name": self.yolo_endpoint_name,
+            "namespace": self.yolo_namespace,
+            "hf_token": self.hf_token,
+            "confidence_threshold": self.yolo_confidence_threshold,
+            "auto_pause_timeout": self.yolo_auto_pause_timeout,
+            "max_resume_retries": self.yolo_max_resume_retries,
+            "resume_timeout": self.yolo_resume_timeout,
+            "inference_timeout": self.yolo_inference_timeout,
+            "warmup_timeout": self.yolo_warmup_timeout,
+        }
+
     def get_image_processing_config(self) -> Dict[str, Any]:
         """
         Get image processing configuration.

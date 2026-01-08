@@ -144,8 +144,8 @@ class PDFProcessingRequest(BaseModel):
 
 
 class ImageInfo(BaseModel):
-    """Information about an extracted image."""
-    
+    """Information about an extracted image with 4-layer extraction metadata."""
+
     filename: str = Field(description="Image filename")
     path: str = Field(description="Path to the image file")
     size_bytes: int = Field(description="Image file size in bytes", ge=0)
@@ -153,6 +153,56 @@ class ImageInfo(BaseModel):
     width: Optional[int] = Field(None, description="Image width in pixels", ge=1)
     height: Optional[int] = Field(None, description="Image height in pixels", ge=1)
     page_number: Optional[int] = Field(None, description="Source page number", ge=1)
+
+    # 4-Layer Extraction Metadata
+    extraction_method: Optional[str] = Field(
+        None,
+        description="Extraction method: pymupdf_embedded (Layer 1), pymupdf_full_render (Layer 2), vision_guided (Layer 3)"
+    )
+    layer: Optional[int] = Field(
+        None,
+        description="Extraction layer: 1 (embedded), 2 (full render), 3 (vision AI)",
+        ge=1,
+        le=3
+    )
+    captures_vector_graphics: Optional[bool] = Field(
+        None,
+        description="Whether this extraction method captures vector graphics"
+    )
+
+    # Vision AI Metadata (Layer 3)
+    bbox: Optional[Dict[str, float]] = Field(
+        None,
+        description="Bounding box for vision-guided crops: {x, y, width, height}"
+    )
+    detection_confidence: Optional[float] = Field(
+        None,
+        description="Vision AI detection confidence (0-1)",
+        ge=0.0,
+        le=1.0
+    )
+    vision_provider: Optional[str] = Field(
+        None,
+        description="Vision AI provider: anthropic, openai, together"
+    )
+    vision_model: Optional[str] = Field(
+        None,
+        description="Vision AI model used for extraction"
+    )
+
+    # Deduplication Metadata (Layer 4)
+    is_duplicate: Optional[bool] = Field(
+        None,
+        description="Whether this image is a duplicate"
+    )
+    duplicate_of: Optional[str] = Field(
+        None,
+        description="Filename of the original image if this is a duplicate"
+    )
+    perceptual_hash: Optional[str] = Field(
+        None,
+        description="Perceptual hash for deduplication"
+    )
 
 
 class PDFMetadata(BaseModel):

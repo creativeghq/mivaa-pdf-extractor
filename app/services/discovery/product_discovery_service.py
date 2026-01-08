@@ -610,13 +610,46 @@ class ProductDiscoveryService:
    - Technical specifications table or detailed specs
    - Application examples or use cases described
 
+5. **Designer Signature Method** (for designer attribution pages):
+   - Product name WITH designer/studio attribution (e.g., "CASTELLO by Dsignio", "VALENOVA by SG NY")
+   - Designer biography, philosophy, or design inspiration
+   - Signature collection page with designer credits
+   - Even if single page with minimal specs, INCLUDE as separate product entry
+
+6. **Moodboard/Combinability Method** (for design showcase pages):
+   - Moodboard showing product in design context
+   - Product combination/compatibility showcase
+   - Design philosophy or aesthetic presentation
+   - "Signature" or "Collection by [Designer]" headers
+
+**SPECIAL CASE: DESIGNER SIGNATURE & MOODBOARD PAGES**
+
+**ALWAYS INCLUDE as valid products:**
+- Designer signature pages (e.g., "VALENOVA by SG NY", "ONA by Dsignio", "FOLD by Estudi{H}ac")
+- Designer introduction pages with product attribution
+- Moodboard/combinability pages showcasing product design philosophy
+- Signature collection pages with designer credits
+
+**For Designer Signature/Moodboard pages:**
+- Extract product name INCLUDING designer attribution (e.g., "CASTELLO by Dsignio" not just "CASTELLO")
+- Include the page number in page_range even if it's a single page
+- Extract all available metadata (designer, studio, philosophy, inspiration, aesthetic style)
+- Set confidence based on metadata completeness (typically 0.8-0.95)
+
+**Example:**
+Page 18 shows "VALENOVA by SG NY" with designer bio and moodboard:
+- ✅ CORRECT: name: "VALENOVA by SG NY", page_range: [18], confidence: 0.9
+- ❌ WRONG: Exclude this page as "not a product"
+
 **CRITICAL RULES:**
 - A product appearing in BOTH index AND dedicated section = count ONLY the dedicated section (not the index mention)
 - A product with ONLY thumbnail in index = EXCLUDE (no dedicated pages)
 - A product with small reference in footer/header = EXCLUDE
 - A product with comprehensive metadata even on 1 page = INCLUDE
+- Designer signature/moodboard page with product name = INCLUDE as separate product entry
 - A "dedicated section" means: product name as heading + ANY product details (dimensions, colors, designer, images, description)
 - If a product has its own page(s) with product information, it MUST be included even if also mentioned in index
+- When product appears with designer attribution ("Product by Designer"), INCLUDE designer in product name
 - When in doubt, INCLUDE the product - better to have false positives than miss real products
 
 **Extract ALL available metadata for each MAIN product:**

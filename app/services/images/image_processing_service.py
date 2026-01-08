@@ -42,18 +42,16 @@ class ImageProcessingService:
         self,
         extracted_images: List[Dict[str, Any]],
         confidence_threshold: float = 0.6,  # OPTIMIZED: Lowered from 0.7 to reduce validation calls
-        primary_model: str = "Qwen/Qwen3-VL-8B-Instruct",  # NEW: Qwen3-VL-8B (fast, cost-effective)
-        validation_model: str = "Qwen/Qwen3-VL-32B-Instruct",  # NEW: Qwen3-VL-32B (high accuracy)
+        primary_model: str = "Qwen/Qwen3-VL-32B-Instruct",  # PRIMARY: Qwen3-VL-32B (reliable, high accuracy)
+        validation_model: str = "claude-sonnet-4-20250514",  # FALLBACK: Claude Sonnet 4.5 (highest quality)
         batch_size: int = 15  # NEW: Process images in batches to prevent OOM
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Classify images as material or non-material using Qwen Vision models.
 
         SUPPORTED MODELS:
-        - Qwen/Qwen3-VL-8B-Instruct: Fast, cost-effective ($0.10/1M tokens)
-        - Qwen/Qwen3-VL-32B-Instruct: High accuracy ($0.50/1M tokens)
-        - Qwen/Qwen3-VL-8B-Instruct: Alternative vision model
-        - claude-sonnet-4-20250514: Claude Sonnet 4.5 (fallback)
+        - Qwen/Qwen3-VL-32B-Instruct: PRIMARY - High accuracy, reliable ($0.50/1M input, $1.50/1M output)
+        - claude-sonnet-4-20250514: FALLBACK - Highest quality vision model (for failures/low confidence)
 
         MEMORY OPTIMIZATIONS:
         - Processes images in batches (default: 15) to prevent OOM crashes
@@ -64,8 +62,8 @@ class ImageProcessingService:
         Args:
             extracted_images: List of extracted image data
             confidence_threshold: Threshold for validation (default: 0.6)
-            primary_model: Primary classification model (default: Qwen3-VL-8B)
-            validation_model: Validation model for uncertain cases (default: Qwen3-VL-32B)
+            primary_model: Primary classification model (default: Qwen3-VL-32B)
+            validation_model: Fallback model for failures/low confidence (default: Claude Sonnet 4.5)
             batch_size: Number of images to process per batch (default: 15)
 
         Returns:

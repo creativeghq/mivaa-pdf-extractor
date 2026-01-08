@@ -28,8 +28,10 @@ STANDARD_SCHEMA = {
     "commercial": {
         "grout_mapei": ["recommended_grout_mapei", "grout_product_mapei", "supplier_mapei", "grout_supplier_mapei"],
         "grout_kerakoll": ["recommended_grout_kerakoll", "grout_product_kerakoll", "supplier_kerakoll", "grout_supplier_kerakoll"],
+        "grout_isomat": ["recommended_grout_isomat", "grout_product_isomat", "supplier_isomat", "grout_supplier_isomat"],
+        "grout_technica": ["recommended_grout_technica", "grout_product_technica", "supplier_technica", "grout_supplier_technica"],
         "grout_suppliers": ["recommended_grout_brands", "grout_brands"],
-        "grout_color_codes": ["grout_color_codes_mapei", "grout_color_codes_kerakoll"],
+        "grout_color_codes": ["grout_color_codes_mapei", "grout_color_codes_kerakoll", "grout_color_codes_isomat", "grout_color_codes_technica"],
         "sku_codes": ["sku_variants", "sku_list"],
         "product_codes": ["product_code", "product_code_prefix", "reference_code", "format_code"],
     },

@@ -9,20 +9,6 @@
 help:
 	@echo "MIVAA PDF Extractor - Available Commands:"
 	@echo ""
-	@echo "Testing Commands:"
-	@echo "  test-unit          Run unit tests with coverage"
-	@echo "  test-integration   Run integration tests"
-	@echo "  test-e2e          Run end-to-end tests"
-	@echo "  test-performance  Run performance tests"
-	@echo "  test-security     Run security tests"
-	@echo "  test-all          Run all test suites"
-	@echo "  test              Alias for test-unit"
-	@echo ""
-	@echo "Coverage Commands:"
-	@echo "  coverage          Generate coverage report"
-	@echo "  coverage-report   Generate and display coverage report"
-	@echo "  coverage-html     Generate HTML coverage report"
-	@echo ""
 	@echo "Development Commands:"
 	@echo "  install           Install dependencies"
 	@echo "  dev               Start development server"
@@ -33,9 +19,9 @@ help:
 	@echo ""
 	@echo "Maintenance Commands:"
 	@echo "  clean             Clean up generated files"
-	@echo "  setup-test-env    Set up test environment"
-	@echo "  docs              Generate documentation"
-	@echo "  build             Build the application"
+	@echo ""
+	@echo "Note: Test infrastructure is not yet implemented."
+	@echo "      Test commands are commented out in the Makefile."
 
 # Testing Commands
 # NOTE: Test infrastructure is not yet implemented (tests/ directory is empty)

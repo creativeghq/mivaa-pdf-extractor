@@ -88,8 +88,8 @@ async def process_product_images(
         material_images, non_material_images = await image_service.classify_images(
             extracted_images=pdf_result.extracted_images,
             confidence_threshold=0.6,
-            primary_model="Qwen/Qwen3-VL-8B-Instruct",
-            validation_model="Qwen/Qwen3-VL-32B-Instruct",
+            primary_model="Qwen/Qwen3-VL-32B-Instruct",
+            validation_model="claude-sonnet-4-20250514",
             batch_size=15
         )
     except Exception as e:

@@ -719,6 +719,7 @@ class EntityLinkingService:
             stats = {
                 'image_product_links': 0,
                 'chunk_product_links': 0,
+                'tables_linked': 0,
                 'relationships_created': 0
             }
 
@@ -826,8 +827,21 @@ class EntityLinkingService:
             else:
                 logger.warning(f"   ⚠️ No chunks found matching product '{product_name}' on pages {sorted(product_pages)}")
 
+            # 3. Count tables linked to this product (already linked via product_id foreign key)
+            tables_response = self.supabase.client.table('product_tables')\
+                .select('id', count='exact')\
+                .eq('product_id', product_id)\
+                .execute()
+
+            tables_count = tables_response.count if tables_response.count is not None else 0
+            stats['tables_linked'] = tables_count
+            if tables_count > 0:
+                logger.info(f"   📊 Found {tables_count} tables linked to product")
+            else:
+                logger.debug(f"   ℹ️ No tables found for product")
+
             stats['relationships_created'] = stats['image_product_links'] + stats['chunk_product_links']
-            logger.info(f"   ✅ Total relationships created: {stats['relationships_created']}")
+            logger.info(f"   ✅ Total relationships created: {stats['relationships_created']} (+ {stats['tables_linked']} tables)")
 
             return stats
 
@@ -838,6 +852,7 @@ class EntityLinkingService:
             return {
                 'image_product_links': 0,
                 'chunk_product_links': 0,
+                'tables_linked': 0,
                 'relationships_created': 0
             }
 
