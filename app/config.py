@@ -8,7 +8,7 @@ existing extractor.py functionality with the production FastAPI structure.
 import os
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pydantic_settings import BaseSettings
 from pydantic import Field, field_validator, validator
 
