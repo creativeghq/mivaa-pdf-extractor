@@ -713,6 +713,16 @@ class UnifiedChunkingService:
             List of layout region dictionaries
         """
         try:
+            # 🔥 FIX: Check if product_id is a valid UUID before querying
+            # During product discovery, product_id is a string like "product_1_VALENOVA"
+            # which is not a UUID and will cause a database error
+            import uuid
+            try:
+                uuid.UUID(product_id)
+            except (ValueError, AttributeError):
+                self.logger.debug(f"      LAYOUT-AWARE: product_id '{product_id}' is not a UUID, skipping layout regions fetch")
+                return []
+
             from app.services.core.supabase_client import get_supabase_client
 
             supabase = get_supabase_client()

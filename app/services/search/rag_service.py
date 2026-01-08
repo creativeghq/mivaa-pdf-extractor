@@ -201,6 +201,12 @@ class RAGService:
 
                 self.logger.info(f"   ✅ Created {len(chunks)} chunks from {len(pages)} pages")
 
+                # 🔥 CRITICAL MEMORY FIX: Delete pages immediately after chunking
+                # Pages can be 100K+ characters and are no longer needed
+                del pages
+                gc.collect()
+                self.logger.info(f"   🧹 Released pages from memory")
+
             except Exception as e:
                 self.logger.error(f"   ❌ Chunking failed: {e}")
                 return {
@@ -411,6 +417,12 @@ class RAGService:
                     self.logger.info(f"🧠 Memory after batch {batch_num}/{total_batches}: {mem_stats.percent_used:.1f}% ({mem_stats.used_mb:.0f}MB / {mem_stats.total_mb:.0f}MB)")
                 except Exception as mem_error:
                     self.logger.debug(f"Memory monitoring unavailable: {mem_error}")
+
+            # 🔥 CRITICAL MEMORY FIX: Delete chunks list after all batches complete
+            # Chunks can be 100+ objects with large text content
+            del chunks
+            gc.collect()
+            self.logger.info(f"   🧹 Released chunks list from memory")
 
             elapsed_time = time.time() - start_time
 
