@@ -32,8 +32,7 @@ from app.services.core.ai_client_service import get_ai_client_service
 
 logger = logging.getLogger(__name__)
 
-# Get API keys from environment
-HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY", "")
+# Get API keys from environment - will be loaded from settings in __init__
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 
@@ -64,7 +63,14 @@ class RealImageAnalysisService:
     
     def __init__(self, supabase_client=None, embedding_service=None, workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"):
         self.logger = logger
-        self.together_ai_url = "https://api.together.xyz/v1"
+
+        # Load HuggingFace endpoint configuration from settings
+        from app.config import get_settings
+        settings = get_settings()
+        qwen_config = settings.get_qwen_config()
+
+        self.qwen_endpoint_url = qwen_config["endpoint_url"]
+        self.qwen_endpoint_token = qwen_config["endpoint_token"]
         self.anthropic_url = "https://api.anthropic.com/v1"
         self.clip_model = "clip-vit-base-patch32"
         self.workspace_id = workspace_id
@@ -356,7 +362,7 @@ class RealImageAnalysisService:
         """Analyze image with configurable vision model (default: Qwen3-VL-8B)"""
         start_time = time.time()
         try:
-            if not HUGGINGFACE_API_KEY:
+            if not self.qwen_endpoint_token:
                 raise ValueError("HUGGINGFACE_API_KEY not set - cannot perform vision model analysis")
 
             # Use database prompt or hardcoded fallback
@@ -391,9 +397,9 @@ Respond ONLY with valid JSON, no additional text."""
                     # Use centralized httpx client
                     ai_service = get_ai_client_service()
                     response = await ai_service.httpx.post(
-                            "https://api.together.xyz/v1/chat/completions",
+                            self.qwen_endpoint_url,
                             headers={
-                                "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
+                                "Authorization": f"Bearer {self.qwen_endpoint_token}",
                                 "Content-Type": "application/json"
                             },
                             json={

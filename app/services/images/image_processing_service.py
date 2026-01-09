@@ -87,11 +87,16 @@ class ImageProcessingService:
 
         ai_service = get_ai_client_service()
 
-        # Get HuggingFace API key for all cloud endpoints
-        huggingface_api_key = os.getenv('HUGGINGFACE_API_KEY')
+        # Get HuggingFace endpoint configuration from settings
+        from app.config import get_settings
+        settings = get_settings()
+        qwen_config = settings.get_qwen_config()
+
+        huggingface_api_key = qwen_config["endpoint_token"]
+        qwen_endpoint_url = qwen_config["endpoint_url"]
 
         if not huggingface_api_key:
-            logger.error("❌ CRITICAL: HUGGINGFACE_API_KEY environment variable not set!")
+            logger.error("❌ CRITICAL: HUGGINGFACE_API_KEY not configured!")
             logger.error("   Image classification will fail. Please set HUGGINGFACE_API_KEY.")
             raise ValueError("HUGGINGFACE_API_KEY not configured")
 
@@ -119,7 +124,7 @@ Respond ONLY with JSON:
 
                 async with httpx.AsyncClient(timeout=90.0) as client:  # ✅ Increased timeout from 30s to 90s for vision models
                     response = await client.post(
-                        "https://api.together.xyz/v1/chat/completions",
+                        qwen_endpoint_url,
                         headers={
                             "Authorization": f"Bearer {huggingface_api_key}",
                             "Content-Type": "application/json"
