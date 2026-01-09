@@ -519,9 +519,10 @@ class Settings(BaseSettings):
     # ============================================================================
     # HuggingFace Global Token (Used by all HF Endpoints)
     # ============================================================================
-    hf_token: str = Field(
+    # In Pydantic v2 with BaseSettings and case_sensitive=False:
+    # Field name 'huggingface_api_key' automatically reads from HUGGINGFACE_API_KEY env var
+    huggingface_api_key: str = Field(
         default="",
-        env="HUGGINGFACE_API_KEY",
         description="HuggingFace API token for Inference Endpoints (with write permissions)"
     )
 
@@ -1062,7 +1063,7 @@ class Settings(BaseSettings):
             # Chandra endpoint settings
             chandra_enabled=self.chandra_enabled,
             chandra_endpoint_url=self.chandra_endpoint_url,
-            chandra_hf_token=self.hf_token,
+            chandra_hf_token=self.huggingface_api_key,
             chandra_endpoint_name=self.chandra_endpoint_name,
             chandra_namespace=self.chandra_namespace,
             chandra_confidence_threshold=self.chandra_confidence_threshold,
@@ -1083,7 +1084,7 @@ class Settings(BaseSettings):
             "endpoint_url": self.yolo_endpoint_url,
             "endpoint_name": self.yolo_endpoint_name,
             "namespace": self.yolo_namespace,
-            "hf_token": self.hf_token,
+            "hf_token": self.huggingface_api_key,
             "confidence_threshold": self.yolo_confidence_threshold,
             "auto_pause_timeout": self.yolo_auto_pause_timeout,
             "max_resume_retries": self.yolo_max_resume_retries,
@@ -1113,10 +1114,10 @@ class Settings(BaseSettings):
     def set_qwen_token_default(cls, v, info):
         """Use HuggingFace token as default for Qwen endpoint token if not explicitly set."""
         if not v or v == "":
-            # Fall back to hf_token if qwen_endpoint_token is not set
-            # In Pydantic v2, we need to get hf_token from the data being validated
-            if info.data and "hf_token" in info.data:
-                return info.data.get("hf_token", "")
+            # Fall back to huggingface_api_key if qwen_endpoint_token is not set
+            # In Pydantic v2, we need to get huggingface_api_key from the data being validated
+            if info.data and "huggingface_api_key" in info.data:
+                return info.data.get("huggingface_api_key", "")
         return v
 
     @field_validator("qwen_model")
