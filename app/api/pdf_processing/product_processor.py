@@ -157,7 +157,7 @@ async def process_single_product(
             config=config,
             supabase=supabase,
             logger=logger_instance,
-            product_id=product_id  # Pass product_id for layout-aware chunking
+            product_id=None  # ✅ FIX: Don't pass temp ID - product not in DB yet, layout regions detected later in Stage 3
         )
 
         chunks_created = chunk_result.get('chunks_created', 0)

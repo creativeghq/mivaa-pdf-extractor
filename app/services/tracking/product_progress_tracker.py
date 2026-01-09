@@ -37,8 +37,36 @@ class ProductProgressTracker:
         self.job_id = job_id
         self.supabase = supabase if supabase is not None else get_supabase_client()
         self.table = "product_processing_status"
+
+        # ✅ FIX: Validate job exists in background_jobs table
+        self._validate_job_exists()
+
         logger.info(f"ProductProgressTracker initialized for job {job_id}")
-    
+
+    def _validate_job_exists(self) -> None:
+        """
+        Validate that the job_id exists in background_jobs table.
+        Raises exception if job doesn't exist to prevent foreign key constraint violations.
+        """
+        try:
+            result = self.supabase.client.table('background_jobs')\
+                .select('id')\
+                .eq('id', self.job_id)\
+                .execute()
+
+            if not result.data or len(result.data) == 0:
+                error_msg = f"Job {self.job_id} not found in background_jobs table"
+                logger.error(f"❌ {error_msg}")
+                raise ValueError(error_msg)
+
+            logger.debug(f"✅ Validated job {self.job_id} exists in background_jobs")
+
+        except Exception as e:
+            if isinstance(e, ValueError):
+                raise
+            logger.error(f"❌ Failed to validate job existence: {e}")
+            raise ValueError(f"Failed to validate job {self.job_id}: {str(e)}")
+
     async def initialize_product(
         self,
         product_id: str,
