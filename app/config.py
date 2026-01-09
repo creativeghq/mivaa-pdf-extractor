@@ -1108,16 +1108,18 @@ class Settings(BaseSettings):
             "format_conversion": self.image_format_conversion,
         }
     
-    @validator("qwen_endpoint_token", pre=True, always=True)
+    @field_validator("qwen_endpoint_token", mode="before")
     @classmethod
-    def set_qwen_token_default(cls, v, values):
+    def set_qwen_token_default(cls, v, info):
         """Use HuggingFace token as default for Qwen endpoint token if not explicitly set."""
         if not v or v == "":
             # Fall back to hf_token if qwen_endpoint_token is not set
-            return values.get("hf_token", "")
+            # In Pydantic v2, we need to get hf_token from the data being validated
+            if info.data and "hf_token" in info.data:
+                return info.data.get("hf_token", "")
         return v
 
-    @validator("qwen_model")
+    @field_validator("qwen_model")
     @classmethod
     def validate_qwen_model(cls, v):
         """Validate Qwen vision model name (locked to 32B only)."""
