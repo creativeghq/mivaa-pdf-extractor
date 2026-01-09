@@ -11,9 +11,8 @@ PyMuPDF>=1.23.26
 pypdf>=4.0.1,<5.0.0
 pandas==2.1.4
 
-# Table extraction with Camelot
-camelot-py[cv]>=0.11.0  # Table extraction from PDFs (uses OpenCV for lattice detection)
-ghostscript>=0.7  # Required by Camelot for PDF rendering
+# Table extraction with pdfplumber
+pdfplumber>=0.10.0  # Table extraction from PDFs
 
 # Essential scientific computing
 numpy==1.26.4

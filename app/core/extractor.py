@@ -206,43 +206,7 @@ def extract_pdf_to_markdown_with_doc(doc, page_number):
             raise
 
 
-def extract_pdf_tables(file_name, page_number):
-    """
-    Extract tables from PDF as CSV using PyMuPDF.
 
-    ⚠️ DEPRECATED: This function uses PyMuPDF's basic table detection which is less
-    accurate than Camelot. For new code, use:
-    - app.services.pdf.table_extraction.TableExtractor (Camelot-based, YOLO-guided)
-
-    This function is kept for backward compatibility with legacy code only.
-
-    Args:
-        file_name: Path to the PDF file
-        page_number: Specific page number to extract (None for all pages)
-
-    Returns:
-        List of table data
-    """
-    page_number_list = None
-    if page_number is not None:
-        page_number_list = [page_number-1]
-
-    doc = fitz.open(file_name)
-    tables = []
-    
-    for page_num in (page_number_list if page_number_list else range(len(doc))):
-        page = doc.load_page(page_num)
-        page_tables = page.find_tables()
-        
-        for table in page_tables:
-            table_data = table.extract()
-            tables.append({
-                'page': page_num + 1,
-                'data': table_data
-            })
-    
-    doc.close()
-    return tables
 
 
 def extract_json_and_images(file_path, output_dir, page_number, batch_size=5, page_list=None):

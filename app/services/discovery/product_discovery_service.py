@@ -443,8 +443,28 @@ class ProductDiscoveryService:
                 import pymupdf4llm
 
                 # Extract ALL pages (SLOW: 10+ minutes for 71 pages)
-                pdf_text = pymupdf4llm.to_markdown(pdf_path)
-                self.logger.info(f"   Extracted {len(pdf_text)} characters from {total_pages} pages")
+                try:
+                    pdf_text = pymupdf4llm.to_markdown(pdf_path)
+                    self.logger.info(f"   Extracted {len(pdf_text)} characters from {total_pages} pages")
+                except (ValueError, ReferenceError) as e:
+                    if "not a textpage" in str(e) or "weakly-referenced object" in str(e):
+                        self.logger.warning(f"   ⚠️ PyMuPDF textpage error, falling back to page-by-page extraction: {e}")
+                        # Fallback: Extract page by page, skipping problematic pages
+                        import fitz
+                        doc = fitz.open(pdf_path)
+                        pdf_text_parts = []
+                        for page_num in range(len(doc)):
+                            try:
+                                page_text = pymupdf4llm.to_markdown(pdf_path, pages=[page_num])
+                                pdf_text_parts.append(page_text)
+                            except Exception as page_error:
+                                self.logger.warning(f"   ⚠️ Skipping page {page_num + 1} due to error: {page_error}")
+                                continue
+                        doc.close()
+                        pdf_text = "\n\n".join(pdf_text_parts)
+                        self.logger.info(f"   Extracted {len(pdf_text)} characters from {total_pages} pages (with fallback)")
+                    else:
+                        raise
 
             # Iterative batch discovery
             catalog = await self._iterative_batch_discovery(
@@ -1567,7 +1587,26 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                 if not pdf_text:
                     self.logger.info("   Extracting text for page detection...")
                     import pymupdf4llm
-                    pdf_text = pymupdf4llm.to_markdown(pdf_path)
+                    try:
+                        pdf_text = pymupdf4llm.to_markdown(pdf_path)
+                    except (ValueError, ReferenceError) as e:
+                        if "not a textpage" in str(e) or "weakly-referenced object" in str(e):
+                            self.logger.warning(f"   ⚠️ PyMuPDF textpage error, extracting page-by-page: {e}")
+                            # Fallback: Extract page by page
+                            import fitz
+                            doc = fitz.open(pdf_path)
+                            pdf_text_parts = []
+                            for page_num in range(len(doc)):
+                                try:
+                                    page_text = pymupdf4llm.to_markdown(pdf_path, pages=[page_num])
+                                    pdf_text_parts.append(page_text)
+                                except Exception as page_error:
+                                    self.logger.warning(f"   ⚠️ Skipping page {page_num + 1}: {page_error}")
+                                    continue
+                            doc.close()
+                            pdf_text = "\n\n".join(pdf_text_parts)
+                        else:
+                            raise
 
                 for i, product in products_needing_vision:
                     try:

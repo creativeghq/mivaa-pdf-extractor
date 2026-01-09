@@ -1,12 +1,11 @@
 """
-Table Extraction Service using Camelot
+Table Extraction Service using pdfplumber
 
-This service extracts tables from PDFs using Camelot library, guided by YOLO layout regions.
+This service extracts tables from PDFs using pdfplumber library, guided by YOLO layout regions.
 Tables are extracted as structured JSON and stored in the product_tables database table.
 
 Features:
 - Uses YOLO TABLE region bounding boxes to guide extraction
-- Supports both lattice (bordered) and stream (borderless) table detection
 - Converts tables to structured JSON format
 - Stores in product_tables table with metadata
 """
@@ -14,121 +13,101 @@ Features:
 import logging
 from typing import List, Dict, Any, Optional
 from pathlib import Path
-
-# Make camelot optional - it's only needed for table extraction which is rarely used
-try:
-    import camelot
-    CAMELOT_AVAILABLE = True
-except ImportError:
-    CAMELOT_AVAILABLE = False
-    logger = logging.getLogger(__name__)
-    logger.warning("Camelot not installed - table extraction will be disabled")
+import pdfplumber
 
 logger = logging.getLogger(__name__)
 
 
 class TableExtractor:
     """
-    Extract tables from PDFs using Camelot, guided by YOLO layout regions.
+    Extract tables from PDFs using pdfplumber, guided by YOLO layout regions.
     """
-    
+
     def __init__(self):
         """Initialize table extractor."""
         self.logger = logger
-    
+
     def extract_tables_from_page(
         self,
         pdf_path: str,
         page_number: int,
-        table_regions: Optional[List[Dict[str, Any]]] = None,
-        flavor: str = 'lattice'
+        table_regions: Optional[List[Dict[str, Any]]] = None
     ) -> List[Dict[str, Any]]:
         """
         Extract tables from a specific PDF page.
-        
+
         Args:
             pdf_path: Path to PDF file
             page_number: Page number (1-based)
             table_regions: Optional YOLO TABLE regions with bounding boxes
-            flavor: 'lattice' for bordered tables, 'stream' for borderless
-            
+
         Returns:
             List of extracted tables as dictionaries
         """
         try:
-            # Check if camelot is available
-            if not CAMELOT_AVAILABLE:
-                self.logger.warning("Camelot not available - skipping table extraction")
-                return []
-
             # Validate PDF exists
             if not Path(pdf_path).exists():
                 raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
             extracted_tables = []
-            
-            # If YOLO regions provided, use them to guide extraction
-            if table_regions and len(table_regions) > 0:
-                self.logger.info(f"   📊 Extracting {len(table_regions)} tables from page {page_number} using YOLO regions")
-                
-                for region in table_regions:
-                    # Extract bounding box coordinates
-                    bbox = region.get('bbox', {})
-                    x1 = bbox.get('x1', 0)
-                    y1 = bbox.get('y1', 0)
-                    x2 = bbox.get('x2', 0)
-                    y2 = bbox.get('y2', 0)
-                    
-                    # Camelot uses table_areas parameter: "x1,y1,x2,y2" format
-                    # Note: Camelot coordinates are in points from bottom-left
-                    table_area = f"{x1},{y1},{x2},{y2}"
-                    
+
+            # Open PDF with pdfplumber
+            with pdfplumber.open(pdf_path) as pdf:
+                # pdfplumber uses 0-based indexing
+                page = pdf.pages[page_number - 1]
+
+                # If YOLO regions provided, use them to guide extraction
+                if table_regions and len(table_regions) > 0:
+                    self.logger.info(f"   📊 Extracting {len(table_regions)} tables from page {page_number} using YOLO regions")
+
+                    for region in table_regions:
+                        # Extract bounding box coordinates
+                        bbox = region.get('bbox', {})
+                        x1 = bbox.get('x1', 0)
+                        y1 = bbox.get('y1', 0)
+                        x2 = bbox.get('x2', 0)
+                        y2 = bbox.get('y2', 0)
+
+                        try:
+                            # Crop page to table region
+                            cropped_page = page.crop((x1, y1, x2, y2))
+
+                            # Extract tables from cropped region
+                            tables = cropped_page.extract_tables()
+
+                            # Convert each table to structured format
+                            for table in tables:
+                                if table:  # Skip empty tables
+                                    table_dict = self._convert_table_to_dict(
+                                        table=table,
+                                        page_number=page_number,
+                                        layout_region_id=region.get('id'),
+                                        confidence=region.get('confidence', 0.0)
+                                    )
+                                    extracted_tables.append(table_dict)
+
+                        except Exception as e:
+                            self.logger.warning(f"   ⚠️ Failed to extract table from region {region.get('id')}: {e}")
+                            continue
+
+                else:
+                    # No YOLO regions - extract all tables from page
+                    self.logger.info(f"   📊 Extracting tables from page {page_number} (no YOLO guidance)")
+
                     try:
-                        # Extract table using Camelot with region guidance
-                        tables = camelot.read_pdf(
-                            pdf_path,
-                            pages=str(page_number),
-                            flavor=flavor,
-                            table_areas=[table_area],
-                            suppress_stdout=True
-                        )
-                        
-                        # Convert each table to structured format
+                        tables = page.extract_tables()
+
                         for table in tables:
-                            table_dict = self._convert_table_to_dict(
-                                table=table,
-                                page_number=page_number,
-                                layout_region_id=region.get('id'),
-                                confidence=region.get('confidence', 0.0)
-                            )
-                            extracted_tables.append(table_dict)
-                            
+                            if table:  # Skip empty tables
+                                table_dict = self._convert_table_to_dict(
+                                    table=table,
+                                    page_number=page_number
+                                )
+                                extracted_tables.append(table_dict)
+
                     except Exception as e:
-                        self.logger.warning(f"   ⚠️ Failed to extract table from region {region.get('id')}: {e}")
-                        continue
-            
-            else:
-                # No YOLO regions - extract all tables from page
-                self.logger.info(f"   📊 Extracting tables from page {page_number} (no YOLO guidance)")
-                
-                try:
-                    tables = camelot.read_pdf(
-                        pdf_path,
-                        pages=str(page_number),
-                        flavor=flavor,
-                        suppress_stdout=True
-                    )
-                    
-                    for table in tables:
-                        table_dict = self._convert_table_to_dict(
-                            table=table,
-                            page_number=page_number
-                        )
-                        extracted_tables.append(table_dict)
-                        
-                except Exception as e:
-                    self.logger.warning(f"   ⚠️ Failed to extract tables from page {page_number}: {e}")
-            
+                        self.logger.warning(f"   ⚠️ Failed to extract tables from page {page_number}: {e}")
+
             self.logger.info(f"   ✅ Extracted {len(extracted_tables)} tables from page {page_number}")
             return extracted_tables
             
@@ -138,32 +117,30 @@ class TableExtractor:
     
     def _convert_table_to_dict(
         self,
-        table: Any,
+        table: List[List[str]],
         page_number: int,
         layout_region_id: Optional[str] = None,
         confidence: float = 0.0
     ) -> Dict[str, Any]:
         """
-        Convert Camelot table to structured dictionary format.
-        
+        Convert pdfplumber table to structured dictionary format.
+
         Args:
-            table: Camelot table object
+            table: pdfplumber table (list of lists)
             page_number: Page number
             layout_region_id: Optional YOLO region ID
             confidence: YOLO detection confidence
-            
+
         Returns:
             Structured table dictionary
         """
-        # Convert table to pandas DataFrame
-        df = table.df
-        
-        # Extract headers (first row)
-        headers = df.iloc[0].tolist() if len(df) > 0 else []
-        
+        # pdfplumber returns table as list of lists
+        # First row is typically headers
+        headers = table[0] if len(table) > 0 else []
+
         # Extract data rows (skip header row)
-        data_rows = df.iloc[1:].values.tolist() if len(df) > 1 else []
-        
+        data_rows = table[1:] if len(table) > 1 else []
+
         # Create structured table data
         table_data = {
             'headers': headers,
@@ -171,19 +148,15 @@ class TableExtractor:
             'num_rows': len(data_rows),
             'num_cols': len(headers)
         }
-        
+
         return {
             'page_number': page_number,
             'layout_region_id': layout_region_id,
             'table_data': table_data,
             'headers': headers,
             'confidence': confidence,
-            'extractor': 'camelot',
-            'metadata': {
-                'accuracy': table.accuracy if hasattr(table, 'accuracy') else None,
-                'whitespace': table.whitespace if hasattr(table, 'whitespace') else None,
-                'parsing_report': table.parsing_report if hasattr(table, 'parsing_report') else None
-            }
+            'extractor': 'pdfplumber',
+            'metadata': {}
         }
 
     def classify_table_type(self, headers: List[str], table_data: Dict[str, Any]) -> str:

@@ -310,14 +310,13 @@ async def process_single_product(
                                 tables_by_page[page_num] = []
                             tables_by_page[page_num].append(region)
 
-                        # Extract tables
+                        # Extract tables using pdfplumber
                         all_tables = []
                         for page_num, regions in tables_by_page.items():
                             tables = extractor.extract_tables_from_page(
                                 pdf_path=tmp_pdf_path,
                                 page_number=page_num,
-                                table_regions=regions,
-                                flavor='lattice'
+                                table_regions=regions
                             )
                             all_tables.extend(tables)
 

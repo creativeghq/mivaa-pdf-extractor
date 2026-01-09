@@ -299,23 +299,12 @@ async def _extract_and_store_tables(
         for page_num, regions in tables_by_page.items():
             logger.info(f"      Extracting {len(regions)} tables from page {page_num}...")
 
-            # Try lattice (bordered) tables first
+            # Extract tables using pdfplumber
             tables = extractor.extract_tables_from_page(
                 pdf_path=pdf_path,
                 page_number=page_num,
-                table_regions=regions,
-                flavor='lattice'
+                table_regions=regions
             )
-
-            # If no tables found, try stream (borderless) tables
-            if not tables:
-                logger.info(f"      No lattice tables found, trying stream detection...")
-                tables = extractor.extract_tables_from_page(
-                    pdf_path=pdf_path,
-                    page_number=page_num,
-                    table_regions=regions,
-                    flavor='stream'
-                )
 
             all_tables.extend(tables)
 
