@@ -57,9 +57,14 @@ class ProductVisionExtractor:
         from .real_image_analysis_service import RealImageAnalysisService
         from app.config import get_settings
         self.vision_service = RealImageAnalysisService()
-        # Get TogetherAI config for Qwen model
+
+        # Get HuggingFace endpoint configuration from settings
         settings = get_settings()
+        qwen_config = settings.get_qwen_config()
         together_config = settings.get_together_ai_config()
+
+        self.qwen_endpoint_url = qwen_config["endpoint_url"]
+        self.qwen_endpoint_token = qwen_config["endpoint_token"]
         self.together_model = together_config["model"]  # Qwen/Qwen3-VL-8B-Instruct
 
     async def _load_prompt_from_database(self, stage: str, category: str) -> Optional[str]:
@@ -228,9 +233,9 @@ IMPORTANT:
 
             async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(
-                    "https://api.together.xyz/v1/chat/completions",
+                    self.qwen_endpoint_url,
                     headers={
-                        "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
+                        "Authorization": f"Bearer {self.qwen_endpoint_token}",
                         "Content-Type": "application/json"
                     },
                     json={

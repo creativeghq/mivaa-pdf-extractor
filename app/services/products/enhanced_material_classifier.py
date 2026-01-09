@@ -58,6 +58,14 @@ class EnhancedMaterialClassifier:
         from .real_image_analysis_service import RealImageAnalysisService
         self.vision_service = RealImageAnalysisService(supabase_client)
 
+        # Load HuggingFace endpoint configuration from settings
+        from app.config import get_settings
+        settings = get_settings()
+        qwen_config = settings.get_qwen_config()
+
+        self.qwen_endpoint_url = qwen_config["endpoint_url"]
+        self.qwen_endpoint_token = qwen_config["endpoint_token"]
+
         # Initialize AI logger
         self.ai_logger = AICallLogger()
     
@@ -200,9 +208,9 @@ Respond ONLY with valid JSON, no additional text."""
             # Use centralized httpx client
             ai_service = get_ai_client_service()
             response = await ai_service.httpx.post(
-                "https://api.together.xyz/v1/chat/completions",
+                self.qwen_endpoint_url,
                 headers={
-                    "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
+                    "Authorization": f"Bearer {self.qwen_endpoint_token}",
                     "Content-Type": "application/json"
                 },
                     json={
