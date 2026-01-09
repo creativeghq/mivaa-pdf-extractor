@@ -11,15 +11,16 @@ from pydantic import BaseModel, Field
 
 class AIModelConfig(BaseModel):
     """Configuration for AI models used in PDF processing pipeline."""
-    
-    # Visual Embedding Models (SigLIP2 primary, CLIP fallback)
+
+    # Visual Embedding Model (SLIG Cloud Endpoint - basiliskan/siglip2)
+    # All visual embeddings are generated via HuggingFace cloud endpoint (768D)
     visual_embedding_primary: str = Field(
-        default="google/siglip2-so400m-patch14-384",
-        description="Primary visual embedding model (SigLIP2)"
+        default="basiliskan/siglip2",
+        description="Visual embedding model via SLIG cloud endpoint (768D)"
     )
     visual_embedding_fallback: str = Field(
-        default="openai/clip-vit-base-patch32",
-        description="Fallback visual embedding model (CLIP)"
+        default=None,
+        description="Fallback visual embedding model (not used - cloud-only)"
     )
     
     # Text Embedding Model (Voyage AI primary, OpenAI fallback)
@@ -113,8 +114,8 @@ class AIModelConfig(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
-                "visual_embedding_primary": "google/siglip2-so400m-patch14-384",
-                "visual_embedding_fallback": "openai/clip-vit-base-patch32",
+                "visual_embedding_primary": "basiliskan/siglip2",
+                "visual_embedding_fallback": null,
                 "text_embedding_model": "voyage-3.5",
                 "text_embedding_dimensions": 1024,
                 "text_embedding_input_type": "document",

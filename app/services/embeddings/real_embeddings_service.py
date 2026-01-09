@@ -13,9 +13,7 @@ Text Embedding Strategy:
 
 Visual Embedding Strategy:
 - Uses SLIG cloud endpoint exclusively (768D embeddings)
-- Specialized embeddings DEPRECATED (text-guided embeddings not supported by cloud endpoint)
-
-Removed fake embeddings and CLIP fallback - SigLIP only for consistency.
+- Cloud-only architecture - no local model loading
 """
 
 import logging
@@ -56,10 +54,7 @@ class RealEmbeddingsService:
 
     Visual Embedding Strategy:
     - Uses SLIG cloud endpoint exclusively for all visual embeddings (768D)
-    - Specialized embeddings DEPRECATED (text-guided not supported by cloud endpoint)
-    - No local model loading - cloud-only architecture
-
-    Removed fake embeddings and CLIP fallback.
+    - Cloud-only architecture - no local model loading
     """
 
     def __init__(self, supabase_client=None, config=None):
@@ -84,28 +79,22 @@ class RealEmbeddingsService:
         self._siglip_processor = None
         self._device = None  # Will be set when models are loaded
 
-        # Load visual embedding model configuration from settings
-        from app.config import settings
-        self.visual_primary_model = settings.visual_embedding_primary_model
-        self.visual_fallback_model = settings.visual_embedding_fallback_model
-        self.visual_dimensions = settings.visual_embedding_dimensions
-        self.visual_enabled = settings.visual_embedding_enabled
-
-        # Visual embedding mode: "local" or "remote"
-        self.visual_embedding_mode = settings.visual_embedding_mode
-
+        # ============================================================================
         # SLIG (SigLIP2) Cloud Endpoint Configuration
+        # ============================================================================
+        # All visual embeddings are generated via SLIG cloud endpoint (no local models)
+        from app.config import settings
         self.slig_endpoint_url = settings.slig_endpoint_url
         self.slig_endpoint_token = settings.slig_endpoint_token
         self.slig_model_name = settings.slig_model_name
         self.slig_embedding_dimension = settings.slig_embedding_dimension
+        self.slig_enabled = settings.slig_enabled
+        self.slig_timeout = settings.slig_timeout
+        self.slig_max_retries = settings.slig_max_retries
         self._slig_client = None  # Lazy-initialized SLIG client
 
-        # Log visual embedding mode
-        if self.visual_embedding_mode == "remote":
-            self.logger.info(f"☁️ Visual embedding mode: REMOTE (SLIG Cloud Endpoint)")
-        else:
-            self.logger.warning(f"⚠️ Visual embedding mode: LOCAL (deprecated - use REMOTE with SLIG endpoint)")
+        # Log SLIG configuration
+        self.logger.info(f"☁️ Visual Embeddings: SLIG Cloud Endpoint (basiliskan/siglip2, 768D)")
 
         # Voyage AI configuration
         self.voyage_api_key = settings.voyage_api_key
@@ -237,7 +226,7 @@ class RealEmbeddingsService:
 
             self.logger.info(f"✅ All embeddings generated: {len(embeddings['embeddings'])} types")
 
-            # Add success flag for compatibility with calling code
+            # Add success flag
             embeddings["success"] = True
 
             return embeddings
@@ -764,7 +753,7 @@ class RealEmbeddingsService:
         Args:
             image_url: URL of image
             image_data: Base64 encoded image data
-            confidence_threshold: Unused (kept for API compatibility)
+            confidence_threshold: Unused parameter
             pil_image: Optional pre-decoded PIL image (avoids redundant decoding)
             job_id: Optional job ID for logging
 
@@ -776,10 +765,10 @@ class RealEmbeddingsService:
             image_url, image_data, pil_image=pil_image, job_id=job_id
         )
         if visual_embedding:
-            self.logger.info(f"✅ Using visual embedding from {self.visual_primary_model}")
-            return visual_embedding, self.visual_primary_model, pil_image_out
+            self.logger.info(f"✅ Using visual embedding from {self.slig_model_name}")
+            return visual_embedding, self.slig_model_name, pil_image_out
 
-        self.logger.error(f"❌ Visual embedding generation failed for {self.visual_primary_model}")
+        self.logger.error(f"❌ Visual embedding generation failed for {self.slig_model_name}")
         return None, "none", None
 
     async def _generate_siglip_embedding(
@@ -817,8 +806,8 @@ class RealEmbeddingsService:
             import numpy as np
             import asyncio
 
-            # ✅ REMOTE MODE: Use SLIG Cloud Endpoint
-            if self.visual_embedding_mode == "remote":
+            # ✅ Use SLIG Cloud Endpoint (always remote, no local models)
+            if self.slig_enabled:
                 self.logger.debug("☁️ Using SLIG cloud endpoint for visual embeddings")
 
                 # Initialize SLIG client if needed
@@ -875,130 +864,12 @@ class RealEmbeddingsService:
 
                 except Exception as e:
                     self.logger.error(f"❌ SLIG cloud endpoint failed: {e}")
-                    self.logger.warning("⚠️ Remote embedding failed, falling back to local")
-                    # Fall through to local processing
-
-            # ✅ CLOUD MODE: Use SLIG cloud endpoint (replaces local SigLIP model)
-            # Initialize SLIG client if not already done
-            if not hasattr(self, '_slig_client') or self._slig_client is None:
-                from app.services.embeddings.slig_client import SLIGClient
-                from app.config import get_settings
-                settings = get_settings()
-
-                self._slig_client = SLIGClient(
-                    endpoint_url=settings.slig_endpoint_url,
-                    token=settings.slig_endpoint_token,
-                    endpoint_name="mh-siglip2",
-                    namespace="basiliskan",
-                    auto_pause=True,  # Enable auto-pause to save costs
-                    auto_pause_timeout=60  # Pause after 60s idle
-                )
-                self.logger.info("✅ SLIG cloud client initialized (auto-pause enabled)")
-
-            # Use pre-decoded PIL image if provided, otherwise decode
-            image_was_provided = pil_image is not None
-
-            if pil_image is None and image_data:
-                # Remove data URL prefix if present
-                if image_data.startswith('data:image'):
-                    image_data = image_data.split(',')[1]
-
-                try:
-                    image_bytes = base64.b64decode(image_data)
-                    pil_image = await asyncio.wait_for(
-                        asyncio.to_thread(Image.open, io.BytesIO(image_bytes)),
-                        timeout=30.0
-                    )
-
-                    # Convert RGBA to RGB if necessary
-                    if pil_image.mode == 'RGBA':
-                        # Create white background
-                        rgb_image = Image.new('RGB', pil_image.size, (255, 255, 255))
-                        rgb_image.paste(pil_image, mask=pil_image.split()[3])  # Use alpha channel as mask
-                        pil_image = rgb_image
-                    elif pil_image.mode != 'RGB':
-                        pil_image = pil_image.convert('RGB')
-                except asyncio.TimeoutError:
-                    self.logger.error("❌ Image decoding timed out after 30s")
                     return None, None
-
-            elif pil_image is None and image_url:
-                # Download image from URL if no PIL image provided
-                import httpx
-                try:
-                    async with httpx.AsyncClient(timeout=30.0) as client:
-                        response = await client.get(image_url)
-                        if response.status_code == 200:
-                            pil_image = Image.open(io.BytesIO(response.content))
-                except Exception as e:
-                    self.logger.error(f"Failed to download image from URL: {e}")
-                    return None, None
-
-            if pil_image is None:
-                self.logger.error("No image data provided")
+            else:
+                self.logger.error("❌ SLIG visual embeddings are disabled")
                 return None, None
 
-            # Ensure RGB format
-            if pil_image.mode == 'RGBA':
-                rgb_image = Image.new('RGB', pil_image.size, (255, 255, 255))
-                rgb_image.paste(pil_image, mask=pil_image.split()[3])
-                pil_image = rgb_image
-            elif pil_image.mode != 'RGB':
-                pil_image = pil_image.convert('RGB')
 
-            # ✅ Generate embedding using SLIG cloud endpoint (768D)
-            # Automatically handles endpoint resume, warmup, and auto-pause
-            try:
-                embedding = await self._slig_client.get_image_embedding(pil_image)
-
-                if embedding is None:
-                    self.logger.error("❌ SLIG returned None embedding")
-                    return None, None
-
-                # Verify dimension (should be 768D)
-                if len(embedding) != 768:
-                    self.logger.warning(f"⚠️ Unexpected embedding dimension: {len(embedding)} (expected 768)")
-
-                self.logger.info(f"✅ Generated 768D embedding via SLIG cloud endpoint")
-
-                # Log SLIG embedding generation
-                latency_ms = int((time.time() - start_time) * 1000)
-                await self.ai_logger.log_ai_call(
-                    task="visual_embedding_generation",
-                    model="basiliskan/siglip2",  # SLIG cloud model
-                    input_tokens=0,  # Visual models don't use tokens
-                    output_tokens=0,
-                    cost=0.0,  # Cloud endpoint cost tracked separately
-                    latency_ms=latency_ms,
-                    confidence_score=0.95,
-                    confidence_breakdown={
-                        "model_confidence": 0.98,
-                        "completeness": 1.0,
-                        "consistency": 0.95,
-                        "validation": 0.90
-                    },
-                    action="use_ai_result",
-                    job_id=job_id
-                )
-
-                # Return embedding AND PIL image for reuse (don't close it yet!)
-                # Only close if we created it (not if it was provided)
-                if image_was_provided:
-                    # Image was provided, return it for continued reuse
-                    return embedding, pil_image
-                else:
-                    # We created the image, caller can reuse it
-                    return embedding, pil_image
-
-            except asyncio.TimeoutError:
-                self.logger.error("❌ SLIG embedding generation timed out")
-                # Close image on error if we created it
-                if not image_was_provided and pil_image and hasattr(pil_image, 'close'):
-                    try:
-                        pil_image.close()
-                    except:
-                        pass
-                return None, None
 
         except Exception as e:
             self.logger.error(f"SLIG embedding generation failed: {e}")

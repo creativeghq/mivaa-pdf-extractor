@@ -175,7 +175,9 @@ class Settings(BaseSettings):
     database_max_overflow: int = Field(default=20, env="DATABASE_MAX_OVERFLOW")
     database_timeout: int = Field(default=30, env="DATABASE_TIMEOUT")
 
-    # OpenAI API Settings (Legacy - kept for backward compatibility)
+    # ============================================================================
+    # OpenAI API Settings (Fallback for Voyage AI text embeddings)
+    # ============================================================================
     openai_api_key: str = Field(default="", env="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-4o", env="OPENAI_MODEL")
     openai_embedding_model: str = Field(default="text-embedding-3-small", env="OPENAI_EMBEDDING_MODEL")
@@ -183,7 +185,9 @@ class Settings(BaseSettings):
     openai_temperature: float = Field(default=0.1, env="OPENAI_TEMPERATURE")
     openai_timeout: int = Field(default=30, env="OPENAI_TIMEOUT")
 
-    # Voyage AI Settings (Primary embedding provider)
+    # ============================================================================
+    # Voyage AI Settings (Primary Text Embedding Provider)
+    # ============================================================================
     # API key set via GitHub Secrets: VOYAGE_API_KEY
     voyage_api_key: str = Field(default="", env="VOYAGE_API_KEY")
     voyage_model: str = Field(default="voyage-3.5", env="VOYAGE_MODEL")
@@ -313,7 +317,10 @@ class Settings(BaseSettings):
         env="IMAGE_FORMAT_CONVERSION"
     )
     
+    # ============================================================================
     # Qwen Vision Model - HuggingFace Inference Endpoint
+    # ============================================================================
+    # Semantic analysis and material identification via cloud endpoint
     qwen_endpoint_url: str = Field(
         default="https://gbz6krk3i2is85b0.us-east-1.aws.endpoints.huggingface.cloud",
         env="QWEN_ENDPOINT_URL",
@@ -454,19 +461,10 @@ class Settings(BaseSettings):
         description="Temperature for vision model"
     )
 
-    # Visual Embedding Configuration (SLIG Cloud Endpoint Only)
-    visual_embedding_dimensions: int = Field(
-        default=768,
-        env="VISUAL_EMBEDDING_DIMENSIONS",
-        description="Dimensions of visual embeddings (768D for SLIG)"
-    )
-    visual_embedding_enabled: bool = Field(
-        default=True,
-        env="VISUAL_EMBEDDING_ENABLED",
-        description="Enable visual embedding generation"
-    )
-
-    # SLIG (SigLIP2) Inference Endpoint Settings
+    # ============================================================================
+    # SLIG (SigLIP2) Visual Embedding - HuggingFace Inference Endpoint
+    # ============================================================================
+    # All visual embeddings are generated via cloud endpoint (no local models)
     slig_endpoint_url: str = Field(
         default="https://myu36o511sw1rs2a.us-east-1.aws.endpoints.huggingface.cloud",
         env="SLIG_ENDPOINT_URL",
@@ -476,6 +474,16 @@ class Settings(BaseSettings):
         default="",
         env="SLIG_ENDPOINT_TOKEN",
         description="SLIG Inference Endpoint authentication token (HuggingFace token)"
+    )
+    slig_endpoint_name: str = Field(
+        default="mh-siglip2",
+        env="SLIG_ENDPOINT_NAME",
+        description="SLIG endpoint service name"
+    )
+    slig_namespace: str = Field(
+        default="basiliskan",
+        env="SLIG_NAMESPACE",
+        description="SLIG endpoint namespace"
     )
     slig_model_name: str = Field(
         default="basiliskan/siglip2",
@@ -487,40 +495,40 @@ class Settings(BaseSettings):
         env="SLIG_EMBEDDING_DIMENSION",
         description="SLIG embedding dimension (768 for basiliskan/siglip2)"
     )
-
-    # Legacy HuggingFace settings (kept for backward compatibility)
-    huggingface_api_url: str = Field(
-        default="https://api-inference.huggingface.co",
-        env="HUGGINGFACE_API_URL",
-        description="Hugging Face Inference API base URL (legacy)"
+    slig_enabled: bool = Field(
+        default=True,
+        env="SLIG_ENABLED",
+        description="Enable SLIG visual embeddings"
     )
-    huggingface_siglip_model: str = Field(
-        default="google/siglip2-so400m-patch14-384",
-        env="HUGGINGFACE_SIGLIP_MODEL",
-        description="SigLIP v2 model ID on Hugging Face (legacy)"
-    )
-    huggingface_batch_size: int = Field(
-        default=10,
-        env="HUGGINGFACE_BATCH_SIZE",
-        description="Batch size for Hugging Face API calls (max images per request)"
-    )
-    huggingface_timeout: int = Field(
+    slig_timeout: int = Field(
         default=60,
-        env="HUGGINGFACE_TIMEOUT",
-        description="Timeout for Hugging Face API calls in seconds"
+        env="SLIG_TIMEOUT",
+        description="Timeout for SLIG endpoint requests (seconds)"
     )
-    huggingface_max_retries: int = Field(
+    slig_max_retries: int = Field(
         default=3,
-        env="HUGGINGFACE_MAX_RETRIES",
-        description="Maximum retry attempts for Hugging Face API calls"
+        env="SLIG_MAX_RETRIES",
+        description="Maximum retry attempts for SLIG endpoint"
+    )
+    slig_retry_delay: int = Field(
+        default=2,
+        env="SLIG_RETRY_DELAY",
+        description="Delay between SLIG retry attempts (seconds)"
     )
 
-    # Chandra OCR Inference Endpoint Settings (Serverless with Pause/Resume)
+    # ============================================================================
+    # HuggingFace Global Token (Used by all HF Endpoints)
+    # ============================================================================
     hf_token: str = Field(
         default="",
         env="HUGGING_FACE_ACCESS_TOKEN",
         description="HuggingFace API token for Inference Endpoints (with write permissions)"
     )
+
+    # ============================================================================
+    # Chandra OCR - HuggingFace Inference Endpoint
+    # ============================================================================
+    # Advanced OCR fallback for low-confidence EasyOCR results
     chandra_endpoint_url: str = Field(
         default="https://kgvlceo5zrww8a6m.us-east-1.aws.endpoints.huggingface.cloud",
         env="CHANDRA_ENDPOINT_URL",
@@ -1100,6 +1108,15 @@ class Settings(BaseSettings):
             "format_conversion": self.image_format_conversion,
         }
     
+    @validator("qwen_endpoint_token", pre=True, always=True)
+    @classmethod
+    def set_qwen_token_default(cls, v, values):
+        """Use HuggingFace token as default for Qwen endpoint token if not explicitly set."""
+        if not v or v == "":
+            # Fall back to hf_token if qwen_endpoint_token is not set
+            return values.get("hf_token", "")
+        return v
+
     @validator("qwen_model")
     @classmethod
     def validate_qwen_model(cls, v):
