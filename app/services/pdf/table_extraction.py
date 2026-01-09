@@ -13,8 +13,16 @@ Features:
 
 import logging
 from typing import List, Dict, Any, Optional
-import camelot
 from pathlib import Path
+
+# Make camelot optional - it's only needed for table extraction which is rarely used
+try:
+    import camelot
+    CAMELOT_AVAILABLE = True
+except ImportError:
+    CAMELOT_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("Camelot not installed - table extraction will be disabled")
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +56,15 @@ class TableExtractor:
             List of extracted tables as dictionaries
         """
         try:
+            # Check if camelot is available
+            if not CAMELOT_AVAILABLE:
+                self.logger.warning("Camelot not available - skipping table extraction")
+                return []
+
             # Validate PDF exists
             if not Path(pdf_path).exists():
                 raise FileNotFoundError(f"PDF not found: {pdf_path}")
-            
+
             extracted_tables = []
             
             # If YOLO regions provided, use them to guide extraction

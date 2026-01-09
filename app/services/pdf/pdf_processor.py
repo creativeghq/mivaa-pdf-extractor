@@ -1069,7 +1069,7 @@ class PDFProcessor:
                                 'page_number': page_idx + 1,
                                 'extraction_method': 'pymupdf_embedded',  # Layer 1: Embedded images
                                 'layer': 1,
-                                'captures_vector_graphics': False,  # Embedded images don't capture vector graphics
+                                'captures_vector_graphics': True,  # Embedded images don't capture vector graphics
                                 'format': image_ext,
                                 'size_bytes': len(image_bytes),
                                 'width': base_image.get('width'),

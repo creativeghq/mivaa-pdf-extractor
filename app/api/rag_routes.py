@@ -846,9 +846,10 @@ async def upload_document(
             processing_mode = "standard"
 
         # Use the existing process_document_with_discovery function
-        # Start task immediately using asyncio.create_task() instead of background_tasks
-        # This ensures the task starts executing right away, not after response is sent
-        asyncio.create_task(process_document_with_discovery(
+        # Use FastAPI BackgroundTasks to run in thread pool (prevents blocking event loop)
+        # This ensures the API remains responsive during long-running processing
+        background_tasks.add_task(
+            run_async_in_background(process_document_with_discovery),
             job_id=job_id,
             document_id=document_id,
             file_path=file_path,  # PASS PATH, NOT CONTENT
@@ -864,7 +865,7 @@ async def upload_document(
             workspace_id=workspace_id,
             agent_prompt=agent_prompt,
             enable_prompt_enhancement=enable_prompt_enhancement
-        ))
+        )
         logger.info(f"✅ Background processing task started for job {job_id}")
 
         return {
@@ -2927,7 +2928,7 @@ async def process_document_with_discovery(
                     total_clip_embeddings += result.clip_embeddings_generated
 
                     # ✅ FIX: Update job metadata counters in real-time
-                    await tracker.increment_counters(
+                    await tracker.update_database_stats(
                         chunks_created=result.chunks_created,
                         images_stored=result.images_processed,
                         clip_embeddings=result.clip_embeddings_generated,

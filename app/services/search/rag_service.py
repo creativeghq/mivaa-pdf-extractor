@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Any
 import asyncio
 import time
 import io
+import gc
 
 # Import utilities
 from app.utils.circuit_breaker import CircuitBreaker, CircuitBreakerError
@@ -218,7 +219,6 @@ class RAGService:
 
             # Step 3: Store chunks and generate embeddings with BATCH PROCESSING
             # ✅ MEMORY OPTIMIZATION: Process chunks in batches to avoid OOM
-            import gc
             from app.utils.memory_monitor import MemoryPressureMonitor
 
             memory_monitor = MemoryPressureMonitor()

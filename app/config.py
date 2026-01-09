@@ -581,7 +581,7 @@ class Settings(BaseSettings):
         description="YOLO DocParser Inference Endpoint URL"
     )
     yolo_endpoint_name: str = Field(
-        default="yolo-docparser",
+        default="mh-yolo",
         env="YOLO_ENDPOINT_NAME",
         description="YOLO DocParser Inference Endpoint name (for pause/resume operations)"
     )
