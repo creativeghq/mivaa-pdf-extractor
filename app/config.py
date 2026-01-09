@@ -9,7 +9,7 @@ import os
 import logging
 from pathlib import Path
 from typing import Optional, Dict, Any, List
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, field_validator, validator
 
 
@@ -1165,17 +1165,16 @@ class Settings(BaseSettings):
             "retry_delay": self.qwen_retry_delay,
         }
     
-    class Config:
-        """Pydantic configuration."""
+    model_config = SettingsConfigDict(
         # ✅ FIX: Enable environment variable loading from system environment
         # This is critical for systemd services where env vars are set via Environment= directive
-        case_sensitive = False
+        case_sensitive=False,
         # Allow loading from .env file if present (optional)
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+        env_file=".env",
+        env_file_encoding="utf-8",
         # ✅ CRITICAL: Read from system environment variables (systemd, docker, etc.)
-        # Without this, Pydantic won't read from os.environ
-        extra = "ignore"  # Ignore extra fields in environment
+        extra="ignore",  # Ignore extra fields in environment
+    )
 
 
 # Global settings instance
