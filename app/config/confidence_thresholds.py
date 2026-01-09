@@ -191,18 +191,18 @@ class EscalationRules:
     
     # Model escalation chain (cheapest to most expensive)
     MODEL_CHAIN = [
-        "qwen3-vl-8b",            # Cheapest, fastest
+        "qwen3-vl-32b",           # Primary vision model (HF Endpoint)
         "claude-haiku-4-5",       # Balanced
         "claude-sonnet-4-5",      # Powerful
         "gpt-5",                  # Most powerful (for critical tasks)
     ]
 
-    # Cost multipliers for each model (relative to Qwen3-VL-8B)
+    # Cost multipliers for each model (relative to Qwen3-VL-32B)
     COST_MULTIPLIERS = {
-        "qwen3-vl-8b": 1.0,
-        "claude-haiku-4-5": 8.0,
-        "claude-sonnet-4-5": 30.0,
-        "gpt-5": 50.0,
+        "qwen3-vl-32b": 1.0,      # Baseline (32B only, 8B removed)
+        "claude-haiku-4-5": 2.0,
+        "claude-sonnet-4-5": 7.5,
+        "gpt-5": 12.5,
     }
     
     # Maximum escalation attempts before giving up

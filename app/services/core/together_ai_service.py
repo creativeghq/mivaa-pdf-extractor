@@ -1,9 +1,12 @@
 """
-TogetherAI Service for Qwen Vision integration with MIVAA platform.
+Qwen Vision Service for MIVAA platform - HuggingFace Endpoint Integration.
 
-This service provides semantic analysis capabilities using TogetherAI's Qwen3-VL models
-(Qwen/Qwen3-VL-8B-Instruct and Qwen/Qwen3-VL-32B-Instruct) for material identification and analysis.
+This service provides semantic analysis capabilities using Qwen3-VL-32B-Instruct
+via HuggingFace Inference Endpoint for material identification and analysis.
 Superior vision-language understanding with state-of-the-art performance.
+
+IMPORTANT: Uses HuggingFace Inference Endpoint (not TogetherAI).
+Model: Qwen/Qwen3-VL-32B-Instruct (32B only, 8B removed)
 """
 
 import asyncio
@@ -43,13 +46,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TogetherAIConfig:
-    """Configuration for TogetherAI service."""
-    api_key: str
-    base_url: str = "https://api.together.xyz/v1/chat/completions"
-    model: str = "Qwen/Qwen3-VL-8B-Instruct"
+    """Configuration for Qwen HuggingFace Endpoint service."""
+    api_key: str  # HuggingFace endpoint token
+    base_url: str  # HuggingFace endpoint URL
+    model: str = "Qwen/Qwen3-VL-32B-Instruct"  # Locked to 32B only
     max_tokens: int = 1024
     temperature: float = 0.1
-    timeout: int = 120
+    timeout: int = 180  # Increased for HF endpoint
     max_retries: int = 3
     rate_limit_requests_per_minute: int = 10
     rate_limit_burst: int = 5
@@ -91,27 +94,29 @@ class SemanticAnalysisResult:
 
 class TogetherAIService:
     """
-    Service for interfacing with TogetherAI's Qwen Vision model.
-    
+    Service for interfacing with Qwen Vision model via HuggingFace Endpoint.
+
     Provides semantic analysis capabilities for material images with rate limiting,
     caching, and robust error handling.
+
+    IMPORTANT: Now uses HuggingFace Inference Endpoint instead of TogetherAI API.
     """
-    
+
     def __init__(self, config: Optional[TogetherAIConfig] = None, supabase_client=None):
-        """Initialize TogetherAI service with configuration."""
+        """Initialize Qwen service with HuggingFace endpoint configuration."""
         if config is None:
             settings = get_settings()
-            together_config = settings.get_together_ai_config()
+            qwen_config = settings.get_qwen_config()
             config = TogetherAIConfig(
-                api_key=together_config["api_key"],
-                base_url=together_config["base_url"],
-                model=together_config["model"],
-                max_tokens=together_config["max_tokens"],
-                temperature=together_config["temperature"],
-                timeout=together_config["timeout"],
-                max_retries=together_config.get("retry_attempts", 3),
-                rate_limit_requests_per_minute=together_config.get("rate_limit_rpm", 10),
-                rate_limit_burst=5  # Default value since not in config
+                api_key=qwen_config["endpoint_token"],
+                base_url=qwen_config["endpoint_url"],
+                model=qwen_config["model"],
+                max_tokens=qwen_config["max_tokens"],
+                temperature=qwen_config["temperature"],
+                timeout=qwen_config["timeout"],
+                max_retries=qwen_config.get("max_retries", 3),
+                rate_limit_requests_per_minute=10,  # Default for HF endpoint
+                rate_limit_burst=5
             )
 
         self.config = config
@@ -135,21 +140,25 @@ class TogetherAIService:
         
         # Rate limiting state
         self._request_times: List[datetime] = []
-        
-        logger.info(f"TogetherAI service initialized with model: {self.config.model}")
-    
+
+        logger.info(f"Qwen HF Endpoint service initialized with model: {self.config.model}")
+
     def _validate_config(self) -> None:
-        """Validate the TogetherAI configuration."""
+        """Validate the Qwen HuggingFace endpoint configuration."""
         if not self.config.api_key:
-            raise PDFConfigurationError("TogetherAI API key is required")
+            raise PDFConfigurationError("Qwen HuggingFace endpoint token is required")
 
         if not self.config.base_url:
-            raise PDFConfigurationError("TogetherAI base URL is required")
+            raise PDFConfigurationError("Qwen HuggingFace endpoint URL is required")
 
         if not self.config.model:
-            raise PDFConfigurationError("TogetherAI model is required")
-        
-        logger.debug("TogetherAI configuration validated successfully")
+            raise PDFConfigurationError("Qwen model is required")
+
+        # Validate model is 32B only
+        if "32B" not in self.config.model:
+            raise PDFConfigurationError("Only Qwen3-VL-32B-Instruct is supported")
+
+        logger.debug("Qwen HuggingFace endpoint configuration validated successfully")
     
     def _generate_cache_key(self, request: SemanticAnalysisRequest) -> str:
         """Generate cache key for a semantic analysis request."""
@@ -214,7 +223,7 @@ Provide your response as a structured analysis with clear categorization."""
         before_sleep=before_sleep_log(logger, logging.WARNING)
     )
     async def _make_api_request(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Make API request to TogetherAI with retry logic."""
+        """Make API request to Qwen HuggingFace endpoint with retry logic."""
         try:
             response = await self.client.post(
                 self.config.base_url,
@@ -222,18 +231,18 @@ Provide your response as a structured analysis with clear categorization."""
             )
             response.raise_for_status()
             return response.json()
-            
+
         except httpx.HTTPStatusError as e:
-            logger.error(f"TogetherAI API HTTP error: {e.response.status_code} - {e.response.text}")
+            logger.error(f"Qwen HF Endpoint HTTP error: {e.response.status_code} - {e.response.text}")
             raise ExternalServiceError(
-                f"TogetherAI API error: {e.response.status_code} - {e.response.text}"
+                f"Qwen HF Endpoint error: {e.response.status_code} - {e.response.text}"
             )
         except httpx.TimeoutException as e:
-            logger.error(f"TogetherAI API timeout: {e}")
-            raise ExternalServiceError("TogetherAI API request timed out")
+            logger.error(f"Qwen HF Endpoint timeout: {e}")
+            raise ExternalServiceError("Qwen HF Endpoint request timed out")
         except Exception as e:
-            logger.error(f"Unexpected error in TogetherAI API request: {e}")
-            raise ExternalServiceError(f"Unexpected TogetherAI API error: {str(e)}")
+            logger.error(f"Unexpected error in Qwen HF Endpoint request: {e}")
+            raise ExternalServiceError(f"Unexpected Qwen HF Endpoint error: {str(e)}")
     
     async def analyze_material_semantics(
         self, 
@@ -250,7 +259,7 @@ Provide your response as a structured analysis with clear categorization."""
             
         Raises:
             ServiceError: If analysis fails
-            ExternalServiceError: If TogetherAI API fails
+            ExternalServiceError: If Qwen HF Endpoint fails
         """
         start_time = time.time()
         
@@ -308,14 +317,14 @@ Provide your response as a structured analysis with clear categorization."""
                 "stream": False
             }
             
-            logger.info(f"Making TogetherAI API request for material analysis...")
-            
+            logger.info(f"Making Qwen HF Endpoint request for material analysis...")
+
             # Make API request
             response_data = await self._make_api_request(api_request)
 
             # Parse response
             if "choices" not in response_data or not response_data["choices"]:
-                raise ExternalServiceError("Invalid response from TogetherAI API: no choices")
+                raise ExternalServiceError("Invalid response from Qwen HF Endpoint: no choices")
 
             analysis_text = response_data["choices"][0]["message"]["content"]
 
@@ -619,7 +628,7 @@ Provide your response as a structured analysis with clear categorization."""
     
     async def health_check(self) -> Dict[str, Any]:
         """
-        Perform health check for TogetherAI service.
+        Perform health check for Qwen HuggingFace Endpoint service.
         
         Returns:
             Health status information
@@ -662,10 +671,10 @@ Provide your response as a structured analysis with clear categorization."""
             }
             
         except Exception as e:
-            logger.error(f"TogetherAI health check failed: {e}")
+            logger.error(f"Qwen HF Endpoint health check failed: {e}")
             return {
                 "status": "unhealthy",
-                "service": "together_ai",
+                "service": "qwen_hf_endpoint",
                 "error": str(e),
                 "timestamp": datetime.utcnow().isoformat()
             }
@@ -700,7 +709,7 @@ Provide your response as a structured analysis with clear categorization."""
         cache_size = len(self._cache)
         self._cache.clear()
         
-        logger.info(f"Cleared TogetherAI service cache ({cache_size} entries)")
+        logger.info(f"Cleared Qwen HF Endpoint service cache ({cache_size} entries)")
         
         return {
             "status": "success",
@@ -719,7 +728,7 @@ Provide your response as a structured analysis with clear categorization."""
 
 # Service factory function
 def create_together_ai_service() -> TogetherAIService:
-    """Create a TogetherAI service instance with default configuration."""
+    """Create a Qwen HF Endpoint service instance with default configuration."""
     return TogetherAIService()
 
 
@@ -729,16 +738,16 @@ _together_ai_service: Optional[TogetherAIService] = None
 
 async def get_together_ai_service() -> TogetherAIService:
     """
-    Get the global TogetherAI service instance.
-    
+    Get the global Qwen HF Endpoint service instance.
+
     Returns:
-        TogetherAIService instance
+        TogetherAIService instance (now using HuggingFace Endpoint)
     """
     global _together_ai_service
-    
+
     if _together_ai_service is None:
         _together_ai_service = create_together_ai_service()
-    
+
     return _together_ai_service
 
 
@@ -779,36 +788,30 @@ async def analyze_material_image_base64(
     return await service.analyze_image_from_base64(image_base64, context)
 
 
-# Add missing method to TogetherAIService class
+# Add missing method to TogetherAIService class (HuggingFace Endpoint)
 def _add_missing_methods():
-    """Add missing methods to TogetherAIService class."""
+    """Add missing methods to TogetherAIService class (HuggingFace Endpoint)."""
 
     async def get_models_info(self) -> Dict[str, Any]:
-        """Get information about available TogetherAI models."""
+        """Get information about available Qwen models (HuggingFace Endpoint)."""
         return {
             "available_models": [
-                {
-                    "id": "Qwen/Qwen3-VL-8B-Instruct",
-                    "name": "Qwen3-VL-8B Vision Instruct",
-                    "type": "vision",
-                    "capabilities": ["image_analysis", "text_generation", "material_identification"],
-                    "max_tokens": 4096,
-                    "supports_streaming": True
-                },
                 {
                     "id": "Qwen/Qwen3-VL-32B-Instruct",
                     "name": "Qwen3-VL-32B Vision Instruct",
                     "type": "vision",
                     "capabilities": ["image_analysis", "text_generation", "material_identification"],
                     "max_tokens": 4096,
-                    "supports_streaming": True
+                    "supports_streaming": False,
+                    "endpoint": "HuggingFace Inference Endpoint"
                 }
             ],
             "current_model": self.config.model,
             "service_status": "available",
+            "endpoint_type": "huggingface",
             "rate_limits": {
-                "requests_per_minute": 60,
-                "tokens_per_minute": 100000
+                "requests_per_minute": 10,
+                "tokens_per_minute": 50000
             }
         }
 

@@ -177,45 +177,28 @@ class AIPricingConfig:
     
 
 
-    # Qwen Vision Models (TogetherAI) - per 1M tokens
+    # Qwen Vision Models (HuggingFace Endpoint) - per 1M tokens
     QWEN_PRICING = {
         "qwen3-vl-32b": {
             "input": Decimal("0.40"),
             "output": Decimal("0.40"),
-            "last_verified": "2025-12-26",
-            "source": "https://www.together.ai/pricing",
+            "last_verified": "2026-01-09",
+            "source": "HuggingFace Inference Endpoint",
             "full_name": "Qwen/Qwen3-VL-32B-Instruct",
-            "note": "Primary vision model for chunking and validation"
-        },
-        "qwen3-vl-8b": {
-            "input": Decimal("0.10"),
-            "output": Decimal("0.10"),
-            "last_verified": "2025-12-26",
-            "source": "https://www.together.ai/pricing",
-            "full_name": "Qwen/Qwen3-VL-8B-Instruct",
-            "note": "Lightweight vision model for image analysis"
+            "note": "Primary vision model via HuggingFace Endpoint (32B only, 8B removed)"
         }
     }
 
-    # Visual Embedding Models (Free - Open Source)
+    # Visual Embedding Models (SLIG Cloud Endpoint)
     VISUAL_EMBEDDING_PRICING = {
-        "siglip2-so400m": {
+        "slig-768d": {
             "input": Decimal("0.00"),
             "output": Decimal("0.00"),
-            "last_verified": "2025-12-29",
-            "source": "HuggingFace Transformers (open source)",
-            "full_name": "google/siglip2-so400m-patch14-384",
-            "dimensions": 1152,
-            "note": "Primary visual embedding model (SigLIP2) - free via Transformers"
-        },
-        "clip-vit-base": {
-            "input": Decimal("0.00"),
-            "output": Decimal("0.00"),
-            "last_verified": "2025-12-26",
-            "source": "OpenAI CLIP (open source)",
-            "full_name": "openai/clip-vit-base-patch32",
-            "dimensions": 512,
-            "note": "Fallback visual embedding model - free via Transformers"
+            "last_verified": "2026-01-09",
+            "source": "SLIG Cloud Endpoint (HuggingFace)",
+            "full_name": "SLIG (SigLIP2-based) 768D",
+            "dimensions": 768,
+            "note": "Primary visual embedding model via SLIG cloud endpoint (768D)"
         }
     }
 
@@ -238,8 +221,8 @@ class AIPricingConfig:
         Get pricing for a specific model.
 
         Args:
-            model: Model name (e.g., 'claude-haiku-4-5', 'gpt-4o', 'qwen3-vl-8b')
-            provider: Optional provider hint ('anthropic', 'openai', 'together', 'firecrawl')
+            model: Model name (e.g., 'claude-haiku-4-5', 'gpt-4o', 'qwen3-vl-32b')
+            provider: Optional provider hint ('anthropic', 'openai', 'huggingface', 'firecrawl')
 
         Returns:
             Dict with 'input' and 'output' pricing per million tokens

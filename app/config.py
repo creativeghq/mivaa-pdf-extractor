@@ -313,54 +313,61 @@ class Settings(BaseSettings):
         env="IMAGE_FORMAT_CONVERSION"
     )
     
-    # TogetherAI Settings
-    together_api_key: str = Field(
+    # Qwen Vision Model - HuggingFace Inference Endpoint
+    qwen_endpoint_url: str = Field(
+        default="https://gbz6krk3i2is85b0.us-east-1.aws.endpoints.huggingface.cloud",
+        env="QWEN_ENDPOINT_URL",
+        description="Qwen HuggingFace inference endpoint URL"
+    )
+    qwen_endpoint_token: str = Field(
         default="",
-        env="TOGETHER_API_KEY"
+        env="QWEN_ENDPOINT_TOKEN",
+        description="Qwen HuggingFace endpoint authentication token"
     )
-    together_base_url: str = Field(
-        default="https://api.together.xyz/v1/chat/completions",
-        env="TOGETHER_BASE_URL"
+    qwen_endpoint_name: str = Field(
+        default="mh-qwen332binstruct",
+        env="QWEN_ENDPOINT_NAME",
+        description="Qwen endpoint service name"
     )
-    together_model: str = Field(
-        default="Qwen/Qwen3-VL-8B-Instruct",
-        env="TOGETHER_MODEL"
+    qwen_namespace: str = Field(
+        default="basiliskan",
+        env="QWEN_NAMESPACE",
+        description="Qwen endpoint namespace"
     )
-    together_validation_model: str = Field(
+    qwen_model: str = Field(
         default="Qwen/Qwen3-VL-32B-Instruct",
-        env="TOGETHER_VALIDATION_MODEL"
+        env="QWEN_MODEL",
+        description="Qwen vision model (locked to 32B only)"
     )
-    together_max_tokens: int = Field(
+    qwen_max_tokens: int = Field(
         default=4096,
-        env="TOGETHER_MAX_TOKENS"
+        env="QWEN_MAX_TOKENS",
+        description="Maximum tokens for Qwen vision model"
     )
-    together_temperature: float = Field(
+    qwen_temperature: float = Field(
         default=0.1,
-        env="TOGETHER_TEMPERATURE"
+        env="QWEN_TEMPERATURE",
+        description="Temperature for Qwen vision model"
     )
-    together_timeout: int = Field(
-        default=180,  # ✅ Increased from 60s to 180s for Qwen3-VL-32B (large model needs more time)
-        env="TOGETHER_TIMEOUT"
+    qwen_timeout: int = Field(
+        default=180,
+        env="QWEN_TIMEOUT",
+        description="Timeout for Qwen endpoint requests (seconds)"
     )
-    together_enabled: bool = Field(
+    qwen_enabled: bool = Field(
         default=True,
-        env="TOGETHER_ENABLED"
+        env="QWEN_ENABLED",
+        description="Enable Qwen vision model"
     )
-    together_rate_limit_rpm: int = Field(
-        default=200,
-        env="TOGETHER_RATE_LIMIT_RPM"
-    )
-    together_rate_limit_tpm: int = Field(
-        default=20000,
-        env="TOGETHER_RATE_LIMIT_TPM"
-    )
-    together_retry_attempts: int = Field(
+    qwen_max_retries: int = Field(
         default=3,
-        env="TOGETHER_RETRY_ATTEMPTS"
+        env="QWEN_MAX_RETRIES",
+        description="Maximum retry attempts for Qwen endpoint"
     )
-    together_retry_delay: float = Field(
+    qwen_retry_delay: float = Field(
         default=1.0,
-        env="TOGETHER_RETRY_DELAY"
+        env="QWEN_RETRY_DELAY",
+        description="Delay between Qwen endpoint retries (seconds)"
     )
 
     # Anthropic Claude Settings
@@ -447,21 +454,11 @@ class Settings(BaseSettings):
         description="Temperature for vision model"
     )
 
-    # Visual Embedding Models (SigLIP2 primary, CLIP fallback) - NOW CONFIGURABLE
-    visual_embedding_primary_model: str = Field(
-        default="google/siglip2-so400m-patch14-384",
-        env="VISUAL_EMBEDDING_PRIMARY_MODEL",
-        description="Primary visual embedding model (SigLIP2)"
-    )
-    visual_embedding_fallback_model: str = Field(
-        default="openai/clip-vit-base-patch32",
-        env="VISUAL_EMBEDDING_FALLBACK_MODEL",
-        description="Fallback visual embedding model (CLIP)"
-    )
+    # Visual Embedding Configuration (SLIG Cloud Endpoint Only)
     visual_embedding_dimensions: int = Field(
-        default=1152,
+        default=768,
         env="VISUAL_EMBEDDING_DIMENSIONS",
-        description="Dimensions of visual embeddings (1152 for SigLIP, 512 for CLIP)"
+        description="Dimensions of visual embeddings (768D for SLIG)"
     )
     visual_embedding_enabled: bool = Field(
         default=True,
@@ -469,28 +466,38 @@ class Settings(BaseSettings):
         description="Enable visual embedding generation"
     )
 
-    # Visual Embedding Mode: "local" or "remote"
-    visual_embedding_mode: str = Field(
-        default="local",
-        env="VISUAL_EMBEDDING_MODE",
-        description="Visual embedding mode: 'local' (run SigLIP locally) or 'remote' (use Hugging Face API)"
+    # SLIG (SigLIP2) Inference Endpoint Settings
+    slig_endpoint_url: str = Field(
+        default="https://myu36o511sw1rs2a.us-east-1.aws.endpoints.huggingface.cloud",
+        env="SLIG_ENDPOINT_URL",
+        description="SLIG (SigLIP2) Inference Endpoint URL"
+    )
+    slig_endpoint_token: str = Field(
+        default="",
+        env="SLIG_ENDPOINT_TOKEN",
+        description="SLIG Inference Endpoint authentication token (HuggingFace token)"
+    )
+    slig_model_name: str = Field(
+        default="basiliskan/siglip2",
+        env="SLIG_MODEL_NAME",
+        description="SLIG model name for logging and tracking"
+    )
+    slig_embedding_dimension: int = Field(
+        default=768,
+        env="SLIG_EMBEDDING_DIMENSION",
+        description="SLIG embedding dimension (768 for basiliskan/siglip2)"
     )
 
-    # Hugging Face API Settings (for remote visual embeddings)
-    huggingface_api_key: str = Field(
-        default="",
-        env="HUGGINGFACE_API_KEY",
-        description="Hugging Face API key for remote visual embeddings"
-    )
+    # Legacy HuggingFace settings (kept for backward compatibility)
     huggingface_api_url: str = Field(
         default="https://api-inference.huggingface.co",
         env="HUGGINGFACE_API_URL",
-        description="Hugging Face Inference API base URL"
+        description="Hugging Face Inference API base URL (legacy)"
     )
     huggingface_siglip_model: str = Field(
         default="google/siglip2-so400m-patch14-384",
         env="HUGGINGFACE_SIGLIP_MODEL",
-        description="SigLIP v2 model ID on Hugging Face"
+        description="SigLIP v2 model ID on Hugging Face (legacy)"
     )
     huggingface_batch_size: int = Field(
         default=10,
@@ -943,14 +950,15 @@ class Settings(BaseSettings):
             "similarity_top_k": self.rag_similarity_top_k,
             "storage_dir": self.rag_storage_dir,
             "enable_rag": self.rag_enable,
-            # TogetherAI/Qwen Vision Model Configuration
-            "together_model": self.together_model,
-            "together_validation_model": self.together_validation_model,
-            "together_api_key": self.together_api_key,
-            "together_base_url": self.together_base_url,
-            "together_max_tokens": self.together_max_tokens,
-            "together_temperature": self.together_temperature,
-            "together_enabled": self.together_enabled,
+            # Qwen Vision Model Configuration (HuggingFace Endpoint)
+            "qwen_endpoint_url": self.qwen_endpoint_url,
+            "qwen_endpoint_token": self.qwen_endpoint_token,
+            "qwen_endpoint_name": self.qwen_endpoint_name,
+            "qwen_namespace": self.qwen_namespace,
+            "qwen_model": self.qwen_model,
+            "qwen_max_tokens": self.qwen_max_tokens,
+            "qwen_temperature": self.qwen_temperature,
+            "qwen_enabled": self.qwen_enabled,
         }
 
     def get_material_kai_config(self) -> Dict[str, Any]:
@@ -1092,17 +1100,15 @@ class Settings(BaseSettings):
             "format_conversion": self.image_format_conversion,
         }
     
-    @validator("together_model")
+    @validator("qwen_model")
     @classmethod
-    def validate_together_model(cls, v):
-        """Validate TogetherAI vision model name."""
+    def validate_qwen_model(cls, v):
+        """Validate Qwen vision model name (locked to 32B only)."""
         valid_models = [
-            # Qwen Vision Models
-            "Qwen/Qwen3-VL-8B-Instruct",
-            "Qwen/Qwen3-VL-32B-Instruct"
+            "Qwen/Qwen3-VL-32B-Instruct"  # Only 32B model supported
         ]
         if v not in valid_models:
-            raise ValueError(f"TogetherAI model must be one of: {valid_models}")
+            raise ValueError(f"Qwen model must be: {valid_models[0]} (32B only)")
         return v
 
     def get_jwt_config(self) -> Dict[str, Any]:
@@ -1121,25 +1127,25 @@ class Settings(BaseSettings):
             "audience": self.jwt_audience,
         }
     
-    def get_together_ai_config(self) -> Dict[str, Any]:
+    def get_qwen_config(self) -> Dict[str, Any]:
         """
-        Get TogetherAI configuration.
-        
-        This provides all necessary configuration for TogetherAI integration
-        including API settings, model configuration, rate limiting, and retry logic.
+        Get Qwen HuggingFace endpoint configuration.
+
+        This provides all necessary configuration for Qwen vision model integration
+        including endpoint URL, authentication, model configuration, and retry logic.
         """
         return {
-            "api_key": self.together_api_key,
-            "base_url": self.together_base_url,
-            "model": self.together_model,
-            "max_tokens": self.together_max_tokens,
-            "temperature": self.together_temperature,
-            "timeout": self.together_timeout,
-            "enabled": self.together_enabled,
-            "rate_limit_rpm": self.together_rate_limit_rpm,
-            "rate_limit_tpm": self.together_rate_limit_tpm,
-            "retry_attempts": self.together_retry_attempts,
-            "retry_delay": self.together_retry_delay,
+            "endpoint_url": self.qwen_endpoint_url,
+            "endpoint_token": self.qwen_endpoint_token,
+            "endpoint_name": self.qwen_endpoint_name,
+            "namespace": self.qwen_namespace,
+            "model": self.qwen_model,
+            "max_tokens": self.qwen_max_tokens,
+            "temperature": self.qwen_temperature,
+            "timeout": self.qwen_timeout,
+            "enabled": self.qwen_enabled,
+            "max_retries": self.qwen_max_retries,
+            "retry_delay": self.qwen_retry_delay,
         }
     
     class Config:

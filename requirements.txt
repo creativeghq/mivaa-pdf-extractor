@@ -1,5 +1,6 @@
 # MIVAA PDF Extractor Dependencies
-# OpenCV headless is installed automatically from requirements.txt
+# Cloud-only architecture - all ML inference via HuggingFace endpoints (SLIG, Qwen, OCR, YOLO)
+# No local model loading - PyTorch/transformers removed for faster builds and lower memory usage
 
 # Core FastAPI and server dependencies
 fastapi[standard]>=0.104.1
@@ -18,12 +19,7 @@ pdfplumber>=0.10.0  # Table extraction from PDFs
 numpy==1.26.4
 scipy>=1.11.0
 
-# ML and Computer Vision libraries with PyTorch for CLIP embeddings
-# Use CPU-only PyTorch for App Platform (smaller, faster builds)
---extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.2.2+cpu
-torchvision==0.17.2+cpu
-transformers>=4.30.0
+# Computer Vision libraries (cloud-only architecture - no local ML models)
 scikit-learn==1.3.2
 # OpenCV headless version for server deployment (no GUI dependencies)
 opencv-python-headless>=4.8.0
@@ -37,11 +33,9 @@ openai==1.51.0
 anthropic==0.23.1
 voyageai==0.3.7  # Voyage AI for text embeddings (primary provider)
 
-# SigLIP for superior visual embeddings (+19-29% accuracy improvement over CLIP)
-# Note: Using transformers directly instead of sentence-transformers to avoid 'hidden_size' error
-# sentence-transformers>=2.3.0  # REMOVED - incompatible with SigLIP composite config
-sentencepiece>=0.1.99  # Required by SigLIP tokenizer for visual embeddings
-protobuf>=3.20.0  # Required by SigLIP tokenizer (transformers dependency)
+# HuggingFace Hub for cloud endpoint management (SLIG + Qwen endpoints)
+# Note: No local model loading - all inference via cloud endpoints
+huggingface-hub>=0.20.0  # Required for endpoint authentication and management
 
 # Supabase integration
 supabase==2.3.0
@@ -77,14 +71,14 @@ email-validator>=2.1.0
 # OCR Dependencies
 easyocr>=1.7.0
 pytesseract>=0.3.10
-huggingface-hub>=0.19.0  # For managing HF Inference Endpoints: Chandra OCR + YOLO DocParser (serverless, pause/resume for billing control)
+# Note: huggingface-hub already included above for SLIG + Qwen + OCR + YOLO endpoint management
 
 # NLP Dependencies
 nltk==3.9.1
 
-# TogetherAI integration dependencies
-# Note: Using httpx for TogetherAI API calls instead of together package
-tenacity>=8.2.0
+# Cloud endpoint integration dependencies
+# Note: Using httpx for HuggingFace endpoint calls (Qwen, SLIG, OCR, YOLO)
+tenacity>=8.2.0  # Retry logic for API calls
 
 # Visualization
 matplotlib>=3.7.0

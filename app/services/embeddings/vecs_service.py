@@ -2,7 +2,7 @@
 VECS Service for managing vector embeddings with Supabase.
 
 This service uses the vecs library (Supabase's recommended approach) for:
-- Storing SigLIP image embeddings (1152D)
+- Storing SLIG image embeddings (768D)
 - Fast similarity search with automatic indexing
 - Metadata filtering
 - Batch operations
@@ -74,8 +74,8 @@ class VecsService:
         Get or create a vector collection with optimized indexing.
 
         Args:
-            name: Collection name (e.g., 'image_siglip_embeddings')
-            dimension: Vector dimension (e.g., 1152 for SigLIP)
+            name: Collection name (e.g., 'image_slig_embeddings')
+            dimension: Vector dimension (e.g., 768 for SLIG)
             create_index: Whether to create index for fast search
             index_method: Index method - 'hnsw' (fast, approximate) or 'ivfflat' (balanced)
 
@@ -130,7 +130,7 @@ class VecsService:
 
         Args:
             image_id: Image UUID
-            siglip_embedding: 1152D SigLIP embedding
+            siglip_embedding: 768D SLIG embedding
             metadata: Optional metadata (document_id, page_number, quality_score, etc.)
 
         Returns:
@@ -138,8 +138,8 @@ class VecsService:
         """
         try:
             collection = self.get_or_create_collection(
-                name="image_siglip_embeddings",
-                dimension=1152
+                name="image_slig_embeddings",
+                dimension=768
             )
             
             # Prepare metadata
@@ -172,8 +172,8 @@ class VecsService:
         """
         try:
             collection = self.get_or_create_collection(
-                name="image_siglip_embeddings",
-                dimension=1152
+                name="image_slig_embeddings",
+                dimension=768
             )
 
             # Batch upsert
@@ -197,7 +197,7 @@ class VecsService:
 
         Args:
             image_id: Image UUID
-            embeddings: Dict with keys: color, texture, style, material (each 1152D)
+            embeddings: Dict with keys: color, texture, style, material (each 768D)
             metadata: Metadata to store with each embedding
 
         Returns:
@@ -217,14 +217,14 @@ class VecsService:
                 try:
                     collection = self.get_or_create_collection(
                         name=collection_name,
-                        dimension=1152  # Updated to 1152D for SigLIP
+                        dimension=768  # Updated to 768D for SLIG
                     )
 
                     # Upsert single record
                     collection.upsert(records=[(image_id, embeddings[embedding_type], metadata)])
 
                     results[collection_name] = True
-                    logger.debug(f"✅ Upserted {embedding_type} embedding (1152D) to '{collection_name}'")
+                    logger.debug(f"✅ Upserted {embedding_type} embedding (768D) to '{collection_name}'")
 
                 except Exception as e:
                     logger.error(f"❌ Failed to upsert {embedding_type} embedding: {e}")
@@ -248,7 +248,7 @@ class VecsService:
         Search for similar images using SigLIP embeddings.
 
         Args:
-            query_embedding: 1152D query embedding
+            query_embedding: 768D query embedding
             limit: Maximum number of results
             filters: Optional metadata filters (e.g., {"document_id": {"$eq": "uuid"}})
             include_metadata: Whether to include metadata in results
@@ -258,8 +258,8 @@ class VecsService:
         """
         try:
             collection = self.get_or_create_collection(
-                name="image_siglip_embeddings",
-                dimension=1152
+                name="image_slig_embeddings",
+                dimension=768
             )
 
             # Query collection - Run in thread pool for true async parallelism
@@ -319,8 +319,8 @@ class VecsService:
         """
         try:
             collection = self.get_or_create_collection(
-                name="image_siglip_embeddings",
-                dimension=1152
+                name="image_slig_embeddings",
+                dimension=768
             )
 
             # Build filters
@@ -335,7 +335,7 @@ class VecsService:
             # Query with large limit to count all
             # Note: vecs doesn't have a direct count method, so we query and count results
             results = collection.query(
-                data=[0.0] * 1152,  # Dummy query vector
+                data=[0.0] * 768,  # Dummy query vector
                 limit=100000,  # Large limit to get all embeddings
                 filters=filters,
                 include_value=False,
@@ -363,7 +363,7 @@ class VecsService:
         Search for similar images using text-guided specialized SigLIP embeddings.
 
         Args:
-            query_embedding: Query embedding vector (1152D)
+            query_embedding: Query embedding vector (768D)
             embedding_type: Type of embedding ('color', 'texture', 'style', 'material')
             limit: Maximum number of results
             workspace_id: Optional workspace ID filter
@@ -388,7 +388,7 @@ class VecsService:
             collection_name = collection_mapping[embedding_type]
             collection = self.get_or_create_collection(
                 name=collection_name,
-                dimension=1152  # Updated to 1152D for SigLIP
+                dimension=768  # Updated to 768D for SLIG
             )
 
             # Build filters
@@ -449,8 +449,8 @@ class VecsService:
         """
         try:
             collection = self.get_or_create_collection(
-                name="image_siglip_embeddings",
-                dimension=1152
+                name="image_slig_embeddings",
+                dimension=768
             )
 
             collection.delete(ids=[image_id])
@@ -474,14 +474,14 @@ class VecsService:
         """
         try:
             collection = self.get_or_create_collection(
-                name="image_siglip_embeddings",
-                dimension=1152
+                name="image_slig_embeddings",
+                dimension=768
             )
 
             # Query to get all image IDs for this document
             # Note: vecs doesn't support delete by filter, so we need to query first
             results = collection.query(
-                data=[0.0] * 1152,  # Dummy query
+                data=[0.0] * 768,  # Dummy query
                 limit=10000,  # Large limit to get all
                 filters={"document_id": {"$eq": document_id}},
                 include_value=False,

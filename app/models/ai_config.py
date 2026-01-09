@@ -36,14 +36,14 @@ class AIModelConfig(BaseModel):
         description="Input type for Voyage AI: 'document' for indexing, 'query' for search"
     )
     
-    # Image Classification Models (Qwen primary, Qwen/Claude validation)
+    # Image Classification Models (Qwen 32B only - HuggingFace Endpoint)
     classification_primary_model: str = Field(
-        default="Qwen/Qwen3-VL-8B-Instruct",
-        description="Primary image classification model (Qwen Vision)"
+        default="Qwen/Qwen3-VL-32B-Instruct",
+        description="Primary image classification model (Qwen Vision 32B via HF Endpoint)"
     )
     classification_validation_model: str = Field(
         default="Qwen/Qwen3-VL-32B-Instruct",
-        description="Validation model for low-confidence classifications (Qwen3-VL-32B, Claude, etc.)"
+        description="Validation model for low-confidence classifications (same as primary - 32B only)"
     )
     classification_confidence_threshold: float = Field(
         default=0.7,

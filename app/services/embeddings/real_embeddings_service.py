@@ -3,8 +3,8 @@ Real Embeddings Service - Step 4 Implementation (Updated for Voyage AI)
 
 Generates 3 real embedding types using AI models:
 1. Text (1024D) - Voyage AI voyage-3.5 (primary) with OpenAI fallback (both 1024D)
-2. Visual Embeddings (1152D) - Google SigLIP ViT-SO400M
-3. Multimodal Fusion (2176D) - Combined text+visual (1024D + 1152D = 2176D)
+2. Visual Embeddings (768D) - SLIG (SigLIP2) via HuggingFace Cloud Endpoint
+3. Multimodal Fusion (1792D) - Combined text+visual (1024D + 768D = 1792D)
 
 Text Embedding Strategy:
 - Primary: Voyage AI voyage-3.5 (1024D default, supports 256/512/1024/2048)
@@ -12,8 +12,8 @@ Text Embedding Strategy:
 - Fallback: OpenAI text-embedding-3-small (1024D) if Voyage fails - matches DB schema vector(1024)
 
 Visual Embedding Strategy:
-- Uses Google SigLIP ViT-SO400M exclusively (1152D embeddings)
-- Text-guided specialized embeddings for color, texture, material, style (each 1152D)
+- Uses SLIG cloud endpoint exclusively (768D embeddings)
+- Specialized embeddings DEPRECATED (text-guided embeddings not supported by cloud endpoint)
 
 Removed fake embeddings and CLIP fallback - SigLIP only for consistency.
 """
@@ -46,8 +46,8 @@ class RealEmbeddingsService:
 
     This service provides:
     - Text embeddings via Voyage AI (1024D primary) with OpenAI fallback (1024D) - matches DB schema
-    - Visual embeddings (1152D) - Google SigLIP ViT-SO400M exclusively
-    - Multimodal fusion (2176D) - combined text+visual (1024D + 1152D = 2176D)
+    - Visual embeddings (768D) - SLIG (SigLIP2) via HuggingFace Cloud Endpoint
+    - Multimodal fusion (1792D) - combined text+visual (1024D + 768D = 1792D)
 
     Text Embedding Strategy:
     - Primary: Voyage AI voyage-3.5 (1024D default, supports 256/512/1024/2048)
@@ -55,9 +55,9 @@ class RealEmbeddingsService:
     - Fallback: OpenAI text-embedding-3-small (1024D) if Voyage fails - matches DB vector(1024)
 
     Visual Embedding Strategy:
-    - Uses SigLIP exclusively for all visual embeddings (1152D)
-    - Text-guided specialized embeddings for color, texture, material, style (each 1152D)
-    - No CLIP fallback - SigLIP only for dimensional consistency
+    - Uses SLIG cloud endpoint exclusively for all visual embeddings (768D)
+    - Specialized embeddings DEPRECATED (text-guided not supported by cloud endpoint)
+    - No local model loading - cloud-only architecture
 
     Removed fake embeddings and CLIP fallback.
     """
@@ -75,7 +75,7 @@ class RealEmbeddingsService:
         # Initialize AI logger
         self.ai_logger = AICallLogger()
 
-        # Model loading state
+        # Model loading state (for local mode only)
         self._models_loaded = False
         self._model_load_failed = False  # ✅ Track if model loading has permanently failed
         self._model_load_attempts = 0  # ✅ Track number of load attempts
@@ -94,17 +94,18 @@ class RealEmbeddingsService:
         # Visual embedding mode: "local" or "remote"
         self.visual_embedding_mode = settings.visual_embedding_mode
 
-        # Hugging Face remote embeddings service
-        self._hf_service = None
-        if self.visual_embedding_mode == "remote" and settings.huggingface_api_key:
-            from app.services.embeddings.huggingface_visual_embeddings import HuggingFaceVisualEmbeddingsService
-            self._hf_service = HuggingFaceVisualEmbeddingsService(
-                api_key=settings.huggingface_api_key,
-                config=config
-            )
-            self.logger.info(f"🤗 Visual embedding mode: REMOTE (Hugging Face API)")
+        # SLIG (SigLIP2) Cloud Endpoint Configuration
+        self.slig_endpoint_url = settings.slig_endpoint_url
+        self.slig_endpoint_token = settings.slig_endpoint_token
+        self.slig_model_name = settings.slig_model_name
+        self.slig_embedding_dimension = settings.slig_embedding_dimension
+        self._slig_client = None  # Lazy-initialized SLIG client
+
+        # Log visual embedding mode
+        if self.visual_embedding_mode == "remote":
+            self.logger.info(f"☁️ Visual embedding mode: REMOTE (SLIG Cloud Endpoint)")
         else:
-            self.logger.info(f"💻 Visual embedding mode: LOCAL (SigLIP on-device)")
+            self.logger.warning(f"⚠️ Visual embedding mode: LOCAL (deprecated - use REMOTE with SLIG endpoint)")
 
         # Voyage AI configuration
         self.voyage_api_key = settings.voyage_api_key
@@ -185,32 +186,32 @@ class RealEmbeddingsService:
                 embeddings["metadata"]["confidence_scores"]["text"] = 0.95
                 self.logger.info(f"✅ Text embedding generated (1024D, input_type={input_type})")
             
-            # 2. Visual Embedding (1152D) - REAL (SigLIP exclusive)
+            # 2. Visual Embedding (768D) - REAL (SLIG cloud endpoint)
             pil_image_for_reuse = None  # Track PIL image for reuse
             if image_url or image_data:
                 visual_embedding, model_used, pil_image_for_reuse = await self._generate_visual_embedding(
                     image_url, image_data
                 )
                 if visual_embedding:
-                    embeddings["embeddings"]["visual_1152"] = visual_embedding  # SigLIP 1152D
+                    embeddings["embeddings"]["visual_768"] = visual_embedding  # SLIG 768D
                     embeddings["metadata"]["model_versions"]["visual"] = model_used
                     embeddings["metadata"]["confidence_scores"]["visual"] = 0.95
-                    self.logger.info(f"✅ Visual embedding generated (1152D) using {model_used}")
+                    self.logger.info(f"✅ Visual embedding generated (768D) using {model_used}")
 
-                # 2a. Generate text-guided specialized visual embeddings for pattern/color/texture matching
-                # ✅ REUSE PIL image from visual embedding to avoid redundant decoding!
+                # 2a. Generate text-guided specialized visual embeddings using SLIG similarity mode
+                # Uses SLIG's similarity scoring to create embeddings focused on specific aspects
                 specialized_embeddings, pil_image_for_reuse = await self._generate_specialized_siglip_embeddings(
                     image_url, image_data, pil_image=pil_image_for_reuse
                 )
                 if specialized_embeddings:
-                    embeddings["embeddings"]["color_siglip_1152"] = specialized_embeddings.get("color")
-                    embeddings["embeddings"]["texture_siglip_1152"] = specialized_embeddings.get("texture")
-                    embeddings["embeddings"]["style_siglip_1152"] = specialized_embeddings.get("style")
-                    embeddings["embeddings"]["material_siglip_1152"] = specialized_embeddings.get("material")
-                    # Text-guided SigLIP embeddings
-                    embeddings["metadata"]["model_versions"]["specialized_visual"] = "siglip-so400m-patch14-384-text-guided"
-                    embeddings["metadata"]["confidence_scores"]["specialized_visual"] = 0.95  # High confidence for text-guided
-                    self.logger.info("✅ Text-guided specialized SigLIP embeddings generated (4 × 1152D)")
+                    embeddings["embeddings"]["color_slig_768"] = specialized_embeddings.get("color")
+                    embeddings["embeddings"]["texture_slig_768"] = specialized_embeddings.get("texture")
+                    embeddings["embeddings"]["style_slig_768"] = specialized_embeddings.get("style")
+                    embeddings["embeddings"]["material_slig_768"] = specialized_embeddings.get("material")
+                    # Text-guided SLIG embeddings using similarity mode
+                    embeddings["metadata"]["model_versions"]["specialized_visual"] = "slig-similarity-guided"
+                    embeddings["metadata"]["confidence_scores"]["specialized_visual"] = 0.90  # High confidence for SLIG
+                    self.logger.info("✅ Text-guided specialized SLIG embeddings generated (4 × 768D)")
 
                 # Close PIL image after all embeddings are generated
                 if pil_image_for_reuse and hasattr(pil_image_for_reuse, 'close'):
@@ -220,13 +221,13 @@ class RealEmbeddingsService:
                     except:
                         pass
 
-            # 3. Multimodal Fusion Embedding (2688D) - REAL (1536D text + 1152D visual)
-            if embeddings["embeddings"].get("text_1536") and embeddings["embeddings"].get("visual_1152"):
+            # 3. Multimodal Fusion Embedding (1792D) - REAL (1024D text + 768D visual)
+            if embeddings["embeddings"].get("text_1024") and embeddings["embeddings"].get("visual_768"):
                 multimodal_embedding = self._generate_multimodal_fusion(
-                    embeddings["embeddings"]["text_1536"],
-                    embeddings["embeddings"]["visual_1152"]
+                    embeddings["embeddings"]["text_1024"],
+                    embeddings["embeddings"]["visual_768"]
                 )
-                embeddings["embeddings"]["multimodal_2688"] = multimodal_embedding
+                embeddings["embeddings"]["multimodal_1792"] = multimodal_embedding
                 embeddings["metadata"]["model_versions"]["multimodal"] = "fusion-v1"
                 embeddings["metadata"]["confidence_scores"]["multimodal"] = 0.92
                 self.logger.info("✅ Multimodal fusion embedding generated (2688D)")
@@ -755,10 +756,10 @@ class RealEmbeddingsService:
         job_id: Optional[str] = None  # NEW: Add job_id for logging
     ) -> tuple[Optional[List[float]], str, Optional[any]]:
         """
-        Generate visual embedding using SigLIP exclusively.
+        Generate visual embedding using SLIG cloud endpoint exclusively.
 
-        Uses Google SigLIP ViT-SO400M for all visual embeddings (1152D).
-        No CLIP fallback - SigLIP only for dimensional consistency.
+        Uses SLIG (SigLIP2) via HuggingFace Cloud Endpoint for all visual embeddings (768D).
+        No local model loading - cloud-only architecture.
 
         Args:
             image_url: URL of image
@@ -768,7 +769,7 @@ class RealEmbeddingsService:
             job_id: Optional job ID for logging
 
         Returns:
-            Tuple of (1152D embedding vector or None, model_name used, PIL image for reuse)
+            Tuple of (768D embedding vector or None, model_name used, PIL image for reuse)
         """
         # Use configured visual embedding model (default: SigLIP)
         visual_embedding, pil_image_out = await self._generate_siglip_embedding(
@@ -816,31 +817,83 @@ class RealEmbeddingsService:
             import numpy as np
             import asyncio
 
-            # ✅ DUAL MODE: Use remote Hugging Face API if configured
-            if self.visual_embedding_mode == "remote" and self._hf_service:
-                self.logger.debug("🤗 Using Hugging Face remote embeddings")
-                embedding, pil_img = await self._hf_service.generate_embedding(
-                    image_data=image_data,
-                    pil_image=pil_image,
-                    job_id=job_id
-                )
+            # ✅ REMOTE MODE: Use SLIG Cloud Endpoint
+            if self.visual_embedding_mode == "remote":
+                self.logger.debug("☁️ Using SLIG cloud endpoint for visual embeddings")
 
-                if embedding is not None:
+                # Initialize SLIG client if needed
+                if self._slig_client is None:
+                    if not self.slig_endpoint_url or not self.slig_endpoint_token:
+                        self.logger.error("❌ SLIG endpoint URL or token not configured")
+                        return None, None
+
+                    from app.services.embeddings.slig_client import SLIGClient
+                    self._slig_client = SLIGClient(
+                        endpoint_url=self.slig_endpoint_url,
+                        token=self.slig_endpoint_token,
+                        model_name=self.slig_model_name
+                    )
+                    self.logger.info(f"✅ Initialized SLIG client: {self.slig_endpoint_url}")
+
+                # Decode image if needed
+                if pil_image is None and image_data:
+                    # Remove data URL prefix if present
+                    if image_data.startswith('data:image'):
+                        image_data = image_data.split(',')[1]
+
+                    # Decode base64 to PIL Image
+                    image_bytes = base64.b64decode(image_data)
+                    pil_image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
+
+                # Get embedding from SLIG endpoint
+                try:
+                    embedding = await self._slig_client.get_image_embedding(pil_image)
+
                     latency_ms = int((time.time() - start_time) * 1000)
-                    self.logger.info(f"✅ Remote visual embedding generated (latency={latency_ms}ms)")
-                    return embedding, pil_img
-                else:
+                    self.logger.info(f"✅ SLIG cloud embedding generated: {len(embedding)}D (latency={latency_ms}ms)")
+
+                    # Log AI call
+                    await self.ai_logger.log_ai_call(
+                        task="visual_embedding_generation",
+                        model=self.slig_model_name,
+                        input_tokens=0,
+                        output_tokens=0,
+                        cost=0.0,  # Endpoint cost tracked separately
+                        latency_ms=latency_ms,
+                        confidence_score=0.95,
+                        confidence_breakdown={
+                            "model_confidence": 0.98,
+                            "completeness": 1.0,
+                            "consistency": 0.95,
+                            "validation": 0.90
+                        },
+                        action="use_ai_result",
+                        job_id=job_id
+                    )
+
+                    return embedding, pil_image
+
+                except Exception as e:
+                    self.logger.error(f"❌ SLIG cloud endpoint failed: {e}")
                     self.logger.warning("⚠️ Remote embedding failed, falling back to local")
                     # Fall through to local processing
 
-            # LOCAL MODE: Use local SigLIP model
-            # Check if SigLIP model is loaded, load if needed
-            if self._siglip_model is None or self._siglip_processor is None:
-                self.logger.info("🔄 SigLIP model not loaded, loading now...")
-                loaded = await self.ensure_models_loaded()
-                if not loaded:
-                    self.logger.error("❌ Failed to load SigLIP model")
-                    return None, None
+            # ✅ CLOUD MODE: Use SLIG cloud endpoint (replaces local SigLIP model)
+            # Initialize SLIG client if not already done
+            if not hasattr(self, '_slig_client') or self._slig_client is None:
+                from app.services.embeddings.slig_client import SLIGClient
+                from app.config import get_settings
+                settings = get_settings()
+
+                self._slig_client = SLIGClient(
+                    endpoint_url=settings.slig_endpoint_url,
+                    token=settings.slig_endpoint_token,
+                    endpoint_name="mh-siglip2",
+                    namespace="basiliskan",
+                    auto_pause=True,  # Enable auto-pause to save costs
+                    auto_pause_timeout=60  # Pause after 60s idle
+                )
+                self.logger.info("✅ SLIG cloud client initialized (auto-pause enabled)")
 
             # Use pre-decoded PIL image if provided, otherwise decode
             image_was_provided = pil_image is not None
@@ -854,7 +907,7 @@ class RealEmbeddingsService:
                     image_bytes = base64.b64decode(image_data)
                     pil_image = await asyncio.wait_for(
                         asyncio.to_thread(Image.open, io.BytesIO(image_bytes)),
-                        timeout=30.0  # ✅ INCREASED from 10s to 30s
+                        timeout=30.0
                     )
 
                     # Convert RGBA to RGB if necessary
@@ -893,46 +946,29 @@ class RealEmbeddingsService:
             elif pil_image.mode != 'RGB':
                 pil_image = pil_image.convert('RGB')
 
-            # Generate embedding using SigLIP model WITH TIMEOUT and GPU support
+            # ✅ Generate embedding using SLIG cloud endpoint (768D)
+            # Automatically handles endpoint resume, warmup, and auto-pause
             try:
-                def _generate_embedding():
-                    with torch.no_grad():
-                        inputs = self._siglip_processor(images=pil_image, return_tensors="pt")
+                embedding = await self._slig_client.get_image_embedding(pil_image)
 
-                        # Move inputs to GPU if available
-                        if self._device and self._device.type == "cuda":
-                            inputs = {k: v.to(self._device) if isinstance(v, torch.Tensor) else v
-                                     for k, v in inputs.items()}
+                if embedding is None:
+                    self.logger.error("❌ SLIG returned None embedding")
+                    return None, None
 
-                        # Get image features from vision model
-                        image_features = self._siglip_model.get_image_features(**inputs)
+                # Verify dimension (should be 768D)
+                if len(embedding) != 768:
+                    self.logger.warning(f"⚠️ Unexpected embedding dimension: {len(embedding)} (expected 768)")
 
-                        # L2 normalize to unit vector
-                        embedding = image_features / image_features.norm(dim=-1, keepdim=True)
-                        result = embedding.squeeze().cpu().numpy()
+                self.logger.info(f"✅ Generated 768D embedding via SLIG cloud endpoint")
 
-                        # Explicit memory cleanup
-                        del inputs, image_features, embedding
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-
-                        return result
-
-                embedding = await asyncio.wait_for(
-                    asyncio.to_thread(_generate_embedding),
-                    timeout=30.0  # 30s max for embedding generation
-                )
-
-                self.logger.info(f"✅ Generated SigLIP visual embedding: {len(embedding)}D")
-
-                # Log SigLIP embedding generation
+                # Log SLIG embedding generation
                 latency_ms = int((time.time() - start_time) * 1000)
                 await self.ai_logger.log_ai_call(
                     task="visual_embedding_generation",
-                    model=self.visual_primary_model,  # Use configured model (SigLIP2)
+                    model="basiliskan/siglip2",  # SLIG cloud model
                     input_tokens=0,  # Visual models don't use tokens
                     output_tokens=0,
-                    cost=0.0,  # Free model
+                    cost=0.0,  # Cloud endpoint cost tracked separately
                     latency_ms=latency_ms,
                     confidence_score=0.95,
                     confidence_breakdown={
@@ -949,13 +985,13 @@ class RealEmbeddingsService:
                 # Only close if we created it (not if it was provided)
                 if image_was_provided:
                     # Image was provided, return it for continued reuse
-                    return embedding.tolist(), pil_image
+                    return embedding, pil_image
                 else:
                     # We created the image, caller can reuse it
-                    return embedding.tolist(), pil_image
+                    return embedding, pil_image
 
             except asyncio.TimeoutError:
-                self.logger.error("❌ SigLIP embedding generation timed out after 30s")
+                self.logger.error("❌ SLIG embedding generation timed out")
                 # Close image on error if we created it
                 if not image_was_provided and pil_image and hasattr(pil_image, 'close'):
                     try:
@@ -965,7 +1001,7 @@ class RealEmbeddingsService:
                 return None, None
 
         except Exception as e:
-            self.logger.error(f"SigLIP embedding generation failed: {e}")
+            self.logger.error(f"SLIG embedding generation failed: {e}")
             import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             # Close image on error if we created it
@@ -981,90 +1017,29 @@ class RealEmbeddingsService:
         self,
         image_url: Optional[str],
         image_data: Optional[str],
-        pil_image = None  # NEW: Accept pre-decoded PIL image
+        pil_image = None  # Accept pre-decoded PIL image
     ) -> tuple[Optional[Dict[str, List[float]]], Optional[any]]:
         """
-        Generate text-guided specialized visual embeddings using SigLIP2.
+        Generate specialized text-guided embeddings using SLIG's similarity mode.
 
-        This creates 4 unique text-guided embeddings (1152D each) for different search types:
-        - Color: "focus on color palette and color relationships"
-        - Texture: "focus on surface patterns and texture details"
-        - Material: "focus on material type and physical properties"
-        - Style: "focus on design style and aesthetic elements"
+        Uses SLIG cloud endpoint to create text-guided visual embeddings by:
+        1. Getting base image embedding (768D)
+        2. Calculating similarity scores with specialized text prompts
+        3. Weighting image embeddings by similarity to create specialized embeddings
 
-        Uses SigLIP2's text-image matching to create embeddings that emphasize different aspects.
-        Each embedding is unique and optimized for its specific search type.
-
-        NOTE: Models should be pre-loaded using ensure_models_loaded() before calling this.
+        This approach leverages SLIG's native similarity scoring to create
+        embeddings that are guided by specific visual aspects (color, texture, etc.)
 
         Args:
             image_url: URL of image
             image_data: Base64 encoded image data
-            pil_image: Optional pre-decoded PIL image (avoids redundant decoding)
+            pil_image: Optional pre-decoded PIL image (for reuse)
 
         Returns:
-            Tuple of (specialized embeddings dict or None, PIL image for reuse or None)
+            Tuple of (Dict with color/texture/style/material embeddings (768D each), PIL image for reuse)
         """
         try:
-            import torch
-            import base64
-            from PIL import Image
-            import io
-            import numpy as np
             import asyncio
-            import httpx
-
-            # ⚠️ NOTE: Specialized embeddings always use LOCAL mode
-            # Text-guided embeddings require full model access (not available via HF Inference API)
-            # Remote mode only supports basic visual embeddings
-
-            # Check if SigLIP model is loaded, load if needed
-            if self._siglip_model is None or self._siglip_processor is None:
-                self.logger.info("🔄 SigLIP model not loaded for specialized embeddings, loading now...")
-                loaded = await self.ensure_models_loaded()
-                if not loaded:
-                    self.logger.error("❌ Failed to load SigLIP model for specialized embeddings")
-                    return None, None
-
-            # Use pre-decoded PIL image if provided, otherwise decode
-            image_was_provided = pil_image is not None
-
-            if pil_image is None and image_data:
-                # Remove data URL prefix if present
-                if image_data.startswith('data:image'):
-                    image_data = image_data.split(',')[1]
-
-                try:
-                    image_bytes = base64.b64decode(image_data)
-                    pil_image = await asyncio.wait_for(
-                        asyncio.to_thread(Image.open, io.BytesIO(image_bytes)),
-                        timeout=30.0  # ✅ INCREASED from no timeout to 30s
-                    )
-                except asyncio.TimeoutError:
-                    self.logger.error("❌ Image decoding timed out after 30s (specialized embeddings)")
-                    return None, None
-
-            elif pil_image is None and image_url:
-                # Download image from URL
-                try:
-                    async with httpx.AsyncClient(timeout=30.0) as client:
-                        response = await client.get(image_url)
-                        if response.status_code == 200:
-                            pil_image = Image.open(io.BytesIO(response.content))
-                except Exception as e:
-                    self.logger.error(f"Failed to download image from URL: {e}")
-                    return None, None
-
-            if not pil_image:
-                return None, None
-
-            # Ensure RGB format
-            if pil_image.mode == 'RGBA':
-                rgb_image = Image.new('RGB', pil_image.size, (255, 255, 255))
-                rgb_image.paste(pil_image, mask=pil_image.split()[3])
-                pil_image = rgb_image
-            elif pil_image.mode != 'RGB':
-                pil_image = pil_image.convert('RGB')
 
             # Define text prompts for each specialized embedding type
             text_prompts = {
@@ -1074,114 +1049,86 @@ class RealEmbeddingsService:
                 "style": "focus on design style and aesthetic elements"
             }
 
-            # Generate text-guided embeddings for each specialized type
+            # First, get the base image embedding (768D)
+            image_embedding_result = await self.slig_client.get_image_embedding(
+                image_url=image_url,
+                image_data=image_data
+            )
+
+            if not image_embedding_result or "embedding" not in image_embedding_result:
+                self.logger.error("❌ Failed to get base image embedding for specialized embeddings")
+                return None, pil_image
+
+            base_image_embedding = image_embedding_result["embedding"]
+
+            # Generate specialized embeddings using similarity-weighted approach
             specialized = {}
 
-            try:
-                def _generate_text_guided_embedding(text_prompt: str):
-                    """Generate text-guided SigLIP embedding using separate image/text features.
-
-                    Note: SigLIP's forward() expects different inputs than CLIP.
-                    We use get_image_features() and get_text_features() separately,
-                    then combine them for text-guided visual embeddings.
-                    """
-                    with torch.no_grad():
-                        # Process image and text separately to avoid input_ids conflict
-                        image_inputs = self._siglip_processor(
-                            images=pil_image,
-                            return_tensors="pt"
-                        )
-                        text_inputs = self._siglip_processor(
-                            text=[text_prompt],
-                            return_tensors="pt",
-                            padding=True
-                        )
-
-                        # Move inputs to GPU if available
-                        if self._device and self._device.type == "cuda":
-                            image_inputs = {k: v.to(self._device) if isinstance(v, torch.Tensor) else v
-                                           for k, v in image_inputs.items()}
-                            text_inputs = {k: v.to(self._device) if isinstance(v, torch.Tensor) else v
-                                          for k, v in text_inputs.items()}
-
-                        # Get image features using the correct method
-                        image_features = self._siglip_model.get_image_features(**image_inputs)
-
-                        # Get text features for guidance
-                        text_features = self._siglip_model.get_text_features(**text_inputs)
-
-                        # Compute text-guided embedding by combining image and text features
-                        # Use weighted combination: image features biased by text similarity
-                        image_norm = image_features / image_features.norm(dim=-1, keepdim=True)
-                        text_norm = text_features / text_features.norm(dim=-1, keepdim=True)
-
-                        # Compute similarity weight
-                        similarity = (image_norm @ text_norm.T).squeeze()
-
-                        # Create text-guided embedding: blend image features with text guidance
-                        # Higher similarity = more weight on original image features
-                        # This creates unique embeddings for each text prompt
-                        blend_weight = 0.7  # 70% image, 30% text guidance
-                        guided_embedding = (blend_weight * image_features +
-                                          (1 - blend_weight) * text_features * similarity)
-
-                        # Normalize to unit vector
-                        embedding = guided_embedding / guided_embedding.norm(dim=-1, keepdim=True)
-                        result = embedding.squeeze().cpu().numpy()
-
-                        # Explicit memory cleanup
-                        del image_inputs, text_inputs, image_features, text_features
-                        del image_norm, text_norm, similarity, guided_embedding, embedding
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-
-                        return result
-
-                # Generate each specialized embedding with its text prompt
-                for embedding_type, text_prompt in text_prompts.items():
-                    embedding = await asyncio.wait_for(
-                        asyncio.to_thread(_generate_text_guided_embedding, text_prompt),
-                        timeout=30.0  # 30s max per embedding
+            for embedding_type, text_prompt in text_prompts.items():
+                try:
+                    # Get similarity score between image and text prompt
+                    similarity_result = await self.slig_client.get_similarity(
+                        image_url=image_url,
+                        image_data=image_data,
+                        text=text_prompt
                     )
-                    specialized[embedding_type] = embedding.tolist()
-                    self.logger.debug(f"✅ Generated {embedding_type} embedding (1152D) with prompt: '{text_prompt}'")
 
-                self.logger.info("✅ Generated 4 text-guided specialized SigLIP embeddings (1152D each)")
+                    if similarity_result and "similarity" in similarity_result:
+                        similarity_score = similarity_result["similarity"]
 
-                # Return embeddings AND PIL image for reuse (don't close it yet!)
-                # Only close if we created it (not if it was provided)
-                if image_was_provided:
-                    # Image was provided, return it for continued reuse
-                    return specialized, pil_image
-                else:
-                    # We created the image, caller can reuse it
-                    return specialized, pil_image
+                        # Also get text embedding for this prompt
+                        text_embedding_result = await self.slig_client.get_text_embedding(text_prompt)
 
-            except asyncio.TimeoutError:
-                self.logger.error("❌ Specialized SigLIP embedding generation timed out after 30s")
-                sentry_sdk.capture_message(
-                    "❌ Specialized SigLIP embedding generation timeout (30s)",
-                    level="error"
-                )
-                # Close image on error if we created it
-                if not image_was_provided and pil_image and hasattr(pil_image, 'close'):
-                    try:
-                        pil_image.close()
-                    except:
-                        pass
-                return None, None
+                        if text_embedding_result and "embedding" in text_embedding_result:
+                            text_embedding = text_embedding_result["embedding"]
+
+                            # Create text-guided embedding by blending:
+                            # - Base image embedding (weighted by similarity)
+                            # - Text embedding (weighted by 1-similarity)
+                            # This creates embeddings that focus on the specific aspect
+                            import numpy as np
+
+                            # Convert to numpy for easier math
+                            img_emb = np.array(base_image_embedding)
+                            txt_emb = np.array(text_embedding)
+
+                            # Blend: higher similarity = more image, lower = more text guidance
+                            blend_weight = 0.7 + (0.2 * similarity_score)  # 0.7-0.9 range
+                            guided_embedding = (blend_weight * img_emb + (1 - blend_weight) * txt_emb)
+
+                            # Normalize to unit vector
+                            norm = np.linalg.norm(guided_embedding)
+                            if norm > 0:
+                                guided_embedding = guided_embedding / norm
+
+                            specialized[embedding_type] = guided_embedding.tolist()
+                            self.logger.debug(f"✅ Generated {embedding_type} embedding (768D, similarity={similarity_score:.3f})")
+                        else:
+                            self.logger.warning(f"⚠️ Failed to get text embedding for {embedding_type}")
+                            # Fallback: use base image embedding
+                            specialized[embedding_type] = base_image_embedding
+                    else:
+                        self.logger.warning(f"⚠️ Failed to get similarity for {embedding_type}")
+                        # Fallback: use base image embedding
+                        specialized[embedding_type] = base_image_embedding
+
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to generate {embedding_type} embedding: {e}")
+                    # Fallback: use base image embedding
+                    specialized[embedding_type] = base_image_embedding
+
+            if len(specialized) == 4:
+                self.logger.info("✅ Generated 4 text-guided specialized SLIG embeddings (768D each)")
+                return specialized, pil_image
+            else:
+                self.logger.warning(f"⚠️ Only generated {len(specialized)}/4 specialized embeddings")
+                return specialized if specialized else None, pil_image
 
         except Exception as e:
-            self.logger.error(f"Specialized SigLIP embedding generation failed: {e}")
+            self.logger.error(f"❌ Specialized SLIG embedding generation failed: {e}")
             import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
-            # Close image on error if we created it
-            if not image_was_provided and pil_image and hasattr(pil_image, 'close'):
-                try:
-                    pil_image.close()
-                except:
-                    pass
-            return None, None
+            return None, pil_image
 
     def _generate_multimodal_fusion(
         self,
@@ -1191,7 +1138,7 @@ class RealEmbeddingsService:
         """Generate multimodal fusion embedding by concatenating text and visual.
 
         Returns:
-            Combined embedding: text (1536D) + visual (1152D) = 2688D
+            Combined embedding: text (1024D) + visual (768D) = 1792D
         """
         return text_embedding + visual_embedding
     
@@ -1203,162 +1150,5 @@ class RealEmbeddingsService:
     # These were redundant - text_embedding_1536 already contains all this information!
 
 
-    async def ensure_models_loaded(self):
-        """
-        Ensure CLIP/SigLIP models are loaded into memory with GPU support.
 
-        This should be called ONCE before batch processing to avoid
-        loading models multiple times per batch (which causes OOM).
-
-        Returns:
-            bool: True if models loaded successfully, False otherwise
-        """
-        if self._models_loaded:
-            self.logger.debug("Models already loaded, skipping initialization")
-            return True
-
-        # ✅ Check if model loading has permanently failed
-        if self._model_load_failed:
-            self.logger.warning(f"⚠️ Model loading previously failed after {self._model_load_attempts} attempts, skipping retry")
-            return False
-
-        # ✅ Check if we've exceeded max attempts
-        if self._model_load_attempts >= self._max_load_attempts:
-            self.logger.error(f"❌ Model loading failed after {self._max_load_attempts} attempts, giving up")
-            self._model_load_failed = True
-            return False
-
-        # ✅ Increment attempt counter
-        self._model_load_attempts += 1
-        self.logger.info(f"🔄 Model loading attempt {self._model_load_attempts}/{self._max_load_attempts}")
-
-        try:
-            from transformers import AutoModel, AutoProcessor
-            import torch
-            import asyncio
-
-            self.logger.info("🔄 Loading visual embedding model for batch processing...")
-
-            # Detect device (GPU if available, otherwise CPU)
-            if torch.cuda.is_available():
-                self._device = torch.device("cuda")
-                self.logger.info(f"   🚀 GPU detected: {torch.cuda.get_device_name(0)}")
-            else:
-                self._device = torch.device("cpu")
-                self.logger.warning("   ⚠️ No GPU detected - using CPU (will be slower)")
-
-            # Load visual embedding model (configurable - default SigLIP2)
-            try:
-                self.logger.info(f"   Loading visual model: {self.visual_primary_model}")
-
-                # ✅ FIX: Add explicit cache_dir and force_download to avoid corrupted cache issues
-                import os
-                cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
-
-                self._siglip_model = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        AutoModel.from_pretrained,
-                        self.visual_primary_model,
-                        trust_remote_code=True,
-                        cache_dir=cache_dir,
-                        local_files_only=False  # Allow downloading if needed
-                    ),
-                    timeout=60.0
-                )
-
-                # ✅ CRITICAL FIX: Use AutoProcessor (not AutoImageProcessor) for text-guided embeddings
-                # AutoProcessor supports both images AND text, required for specialized embeddings
-                # ✅ FIX: Add ignore_mismatched_sizes to handle tokenizer class mismatch
-                self._siglip_processor = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        AutoProcessor.from_pretrained,
-                        self.visual_primary_model,
-                        trust_remote_code=True,
-                        cache_dir=cache_dir,
-                        local_files_only=False,  # Allow downloading if needed
-                        use_fast=True  # Use fast tokenizer to avoid compatibility issues
-                    ),
-                    timeout=60.0
-                )
-
-                # Move model to GPU if available
-                self._siglip_model = self._siglip_model.to(self._device)
-                self._siglip_model.eval()  # Set to evaluation mode
-
-                self.logger.info(f"   ✅ Visual embedding model loaded on {self._device}: {self.visual_primary_model}")
-            except asyncio.TimeoutError:
-                self.logger.error(f"   ❌ Visual embedding model loading timed out after 60s: {self.visual_primary_model}")
-                self.logger.error(f"   💡 Suggestion: Check network connection or increase timeout")
-                # Don't mark as permanently failed - timeout might be temporary
-                return False
-            except TypeError as e:
-                if "NoneType" in str(e):
-                    self.logger.error(f"   ❌ Visual embedding model loading failed - corrupted cache detected: {e}")
-                    self.logger.error(f"   💡 Solution: Clear HuggingFace cache at ~/.cache/huggingface/hub and retry")
-                    self.logger.error(f"   💡 Command: rm -rf ~/.cache/huggingface/hub/models--google--siglip*")
-                    # ✅ Mark as permanently failed after max attempts - this is a cache corruption issue
-                    if self._model_load_attempts >= self._max_load_attempts:
-                        self._model_load_failed = True
-                        self.logger.error(f"   ❌ Marking model as permanently failed - manual cache cleanup required")
-                else:
-                    self.logger.error(f"   ❌ Visual embedding model loading failed with TypeError: {e}")
-                return False
-            except Exception as e:
-                self.logger.error(f"   ❌ Visual embedding model loading failed ({self.visual_primary_model}): {e}")
-                self.logger.error(f"   💡 Error type: {type(e).__name__}")
-                import traceback
-                self.logger.error(f"   💡 Traceback: {traceback.format_exc()}")
-                # ✅ Mark as permanently failed after max attempts for unknown errors
-                if self._model_load_attempts >= self._max_load_attempts:
-                    self._model_load_failed = True
-                    self.logger.error(f"   ❌ Marking model as permanently failed after {self._max_load_attempts} attempts")
-                return False
-
-            self._models_loaded = True
-            # ✅ Reset failure flags on successful load
-            self._model_load_failed = False
-            self._model_load_attempts = 0
-            self.logger.info(f"✅ Visual embedding model loaded successfully: {self.visual_primary_model} ({self.visual_dimensions}D) on {self._device}")
-            return True
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to load models: {e}")
-            import traceback
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
-            return False
-
-    def unload_siglip_model(self):
-        """
-        Unload SigLIP model from memory to free up resources.
-
-        Call this after batch processing to reduce memory footprint.
-        Model will be automatically reloaded on next use.
-        """
-        try:
-            import torch
-            import gc
-
-            # Unload SigLIP model
-            if self._siglip_model is not None:
-                del self._siglip_model
-                del self._siglip_processor
-                self._siglip_model = None
-                self._siglip_processor = None
-
-            # Reset loaded state
-            self._models_loaded = False
-
-            # Clear CUDA cache if available
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-            # Force garbage collection
-            gc.collect()
-
-            self.logger.info("🧹 Unloaded SigLIP model from memory")
-            return True
-
-        except Exception as e:
-            self.logger.warning(f"Failed to unload SigLIP model: {e}")
-            return False
 

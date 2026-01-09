@@ -228,13 +228,9 @@ Respond ONLY with JSON:
                     input_tokens = usage.get('prompt_tokens', 0)
                     output_tokens = usage.get('completion_tokens', 0)
 
-                    # Qwen pricing (TogetherAI)
-                    # Qwen3-VL-8B: $0.08/1M input, $0.50/1M output
-                    # Qwen3-VL-32B: $0.50/1M input, $1.50/1M output
-                    if 'Qwen3-VL-32B' in model:
-                        cost = (input_tokens / 1_000_000) * 0.50 + (output_tokens / 1_000_000) * 1.50
-                    else:  # Qwen3-VL-8B or other Qwen models
-                        cost = (input_tokens / 1_000_000) * 0.08 + (output_tokens / 1_000_000) * 0.50
+                    # Qwen pricing (HuggingFace Endpoint)
+                    # Qwen3-VL-32B: $0.40/1M input, $0.40/1M output (32B only, 8B removed)
+                    cost = (input_tokens / 1_000_000) * 0.40 + (output_tokens / 1_000_000) * 0.40
 
                     await ai_logger.log_together_call(
                         task="image_classification",

@@ -1971,116 +1971,69 @@ class PDFProcessor:
                 return {'should_process': False, 'reason': 'file_not_found', 'confidence': 0.0}
             
             image = Image.open(image_path).convert('RGB')
-            
-            # Initialize SigLIP model for OCR filtering (cached after first use)
-            # Use transformers directly instead of sentence-transformers to avoid 'hidden_size' error
-            from transformers import AutoModel, AutoProcessor
-            import torch
-            import numpy as np
 
-            if not hasattr(self, '_siglip_model_for_ocr'):
-                self.logger.info("🔄 Loading SigLIP2 model for OCR filtering: google/siglip2-so400m-patch14-384")
-                self._siglip_model_for_ocr = AutoModel.from_pretrained('google/siglip2-so400m-patch14-384')
-                self._siglip_processor_for_ocr = AutoProcessor.from_pretrained('google/siglip2-so400m-patch14-384')
-                self._siglip_model_for_ocr.eval()
-                self.logger.info("✅ Initialized SigLIP2 model for OCR filtering")
+            # ✅ Initialize SLIG client for OCR filtering (cloud-based, auto-pause enabled)
+            if not hasattr(self, '_slig_client_for_ocr'):
+                from app.config import get_settings
+                from app.services.embeddings.slig_client import SLIGClient
+                settings = get_settings()
 
-            # Define text prompts for classification
-            relevant_prompts = [
-                "product specification table with dimensions and measurements",
-                "technical data sheet with material properties and numbers",
-                "dimension annotations and measurements on product image",
-                "material property chart or graph with data",
-                "product label with technical specifications and text",
-                "technical drawing with dimension callouts and numbers",
-                "size chart or measurement guide with numbers",
-                "product features list with specifications",
-                "CAD drawing with dimension annotations",
-                "engineering diagram with measurements"
+                if not settings.slig_endpoint_url or not settings.slig_endpoint_token:
+                    self.logger.error("❌ SLIG endpoint not configured for OCR filtering")
+                    return {'should_process': True, 'reason': 'slig_not_configured', 'confidence': 0.5}
+
+                self._slig_client_for_ocr = SLIGClient(
+                    endpoint_url=settings.slig_endpoint_url,
+                    token=settings.slig_endpoint_token,
+                    endpoint_name="mh-siglip2",
+                    namespace="basiliskan",
+                    auto_pause=True,  # Enable auto-pause to save costs
+                    auto_pause_timeout=60  # Pause after 60s idle
+                )
+                self.logger.info(f"✅ SLIG cloud client initialized for OCR filtering (auto-pause enabled)")
+
+            # ✅ Define candidate labels for zero-shot classification
+            # Simplified labels for better classification accuracy
+            candidate_labels = [
+                "technical specification with text and measurements",
+                "decorative image without technical content"
             ]
 
-            irrelevant_prompts = [
-                "historical photograph of people without technical content",
-                "biography or portrait photo with captions",
-                "decorative mood board or lifestyle image",
-                "artistic photography without text or labels",
-                "interior design scene without specifications or measurements",
-                "pure product photo without text labels or annotations",
-                "texture or pattern sample without text",
-                "company history or timeline image",
-                "inspirational quote or decorative text",
-                "brand logo or company name only",
-                "artistic typography without technical information"
-            ]
+            # ✅ Use SLIG zero_shot mode for efficient classification
+            # This is more efficient than similarity mode for binary classification
+            import asyncio
 
-            # Get image embedding using transformers directly
-            with torch.no_grad():
-                inputs = self._siglip_processor_for_ocr(images=image, return_tensors="pt")
-                image_features = self._siglip_model_for_ocr.get_image_features(**inputs)
-
-                # L2 normalize to unit vector
-                image_embedding_tensor = image_features / image_features.norm(dim=-1, keepdim=True)
-                image_embedding_raw = image_embedding_tensor.squeeze().cpu().numpy()
-
-            image_embedding = image_embedding_raw.tolist() if hasattr(image_embedding_raw, 'tolist') else list(image_embedding_raw)
-
-            # Get text embeddings for all prompts using transformers directly
-            all_prompts = relevant_prompts + irrelevant_prompts
-            text_embeddings = []
-
-            with torch.no_grad():
-                for prompt in all_prompts:
-                    text_inputs = self._siglip_processor_for_ocr(text=prompt, return_tensors="pt")
-                    text_features = self._siglip_model_for_ocr.get_text_features(**text_inputs)
-
-                    # L2 normalize to unit vector
-                    text_emb_tensor = text_features / text_features.norm(dim=-1, keepdim=True)
-                    text_emb_raw = text_emb_tensor.squeeze().cpu().numpy()
-                    text_emb_list = text_emb_raw.tolist() if hasattr(text_emb_raw, 'tolist') else list(text_emb_raw)
-                    text_embeddings.append(text_emb_list)
-            
-            # Calculate similarities
-            image_embedding_tensor = torch.tensor(image_embedding).unsqueeze(0)
-            text_embeddings_tensor = torch.tensor(text_embeddings)
-            
-            # Cosine similarity
-            similarities = torch.nn.functional.cosine_similarity(
-                image_embedding_tensor,
-                text_embeddings_tensor
+            classification_result = await self._slig_client_for_ocr.zero_shot_classify(
+                image=image,
+                candidate_labels=candidate_labels
             )
-            
-            # Split similarities
-            relevant_similarities = similarities[:len(relevant_prompts)]
-            irrelevant_similarities = similarities[len(relevant_prompts):]
-            
-            # Calculate scores
-            relevant_score = relevant_similarities.max().item()
-            irrelevant_score = irrelevant_similarities.max().item()
-            
-            # Decision logic
-            # If relevant score is significantly higher, process with OCR
-            score_diff = relevant_score - irrelevant_score
-            
-            # STRICT THRESHOLDS: Only process images with high confidence of technical content
-            # relevant_score > 0.35 = Must have strong similarity to technical prompts (was 0.25)
-            # score_diff > 0.15 = Must be significantly more technical than decorative (was 0.05)
-            if relevant_score > 0.35 and score_diff > 0.15:
+
+            # Extract top prediction
+            top_prediction = classification_result[0]  # Highest scoring label
+            label = top_prediction['label']
+            score = top_prediction['score']
+
+            # Decision logic based on zero-shot classification
+            # If top label is "technical specification" with high confidence, process with OCR
+            if "technical" in label.lower() and score > 0.6:
                 # Image likely contains technical/specification content
                 should_process = True
-                reason = f"technical_content (relevant: {relevant_score:.3f}, irrelevant: {irrelevant_score:.3f})"
-                confidence = relevant_score
+                reason = f"technical_content (confidence: {score:.3f})"
+                confidence = score
             else:
                 # Image is likely decorative/historical
                 should_process = False
-                reason = f"decorative_content (relevant: {relevant_score:.3f}, irrelevant: {irrelevant_score:.3f})"
-                confidence = irrelevant_score
-            
+                reason = f"decorative_content (confidence: {score:.3f})"
+                confidence = score
+
+            self.logger.debug(f"OCR classification for {os.path.basename(image_path)}: {label} ({score:.3f})")
+
             return {
                 'should_process': should_process,
                 'reason': reason,
                 'confidence': confidence,
-                'relevant_score': relevant_score,
-                'irrelevant_score': irrelevant_score
+                'classification': label,
+                'score': score
             }
             
         except Exception as e:
