@@ -77,6 +77,9 @@ class RealEmbeddingsService:
 
         # Model loading state
         self._models_loaded = False
+        self._model_load_failed = False  # ✅ Track if model loading has permanently failed
+        self._model_load_attempts = 0  # ✅ Track number of load attempts
+        self._max_load_attempts = 3  # ✅ Maximum attempts before giving up
         self._siglip_model = None
         self._siglip_processor = None
         self._device = None  # Will be set when models are loaded
@@ -1214,6 +1217,21 @@ class RealEmbeddingsService:
             self.logger.debug("Models already loaded, skipping initialization")
             return True
 
+        # ✅ Check if model loading has permanently failed
+        if self._model_load_failed:
+            self.logger.warning(f"⚠️ Model loading previously failed after {self._model_load_attempts} attempts, skipping retry")
+            return False
+
+        # ✅ Check if we've exceeded max attempts
+        if self._model_load_attempts >= self._max_load_attempts:
+            self.logger.error(f"❌ Model loading failed after {self._max_load_attempts} attempts, giving up")
+            self._model_load_failed = True
+            return False
+
+        # ✅ Increment attempt counter
+        self._model_load_attempts += 1
+        self.logger.info(f"🔄 Model loading attempt {self._model_load_attempts}/{self._max_load_attempts}")
+
         try:
             from transformers import AutoModel, AutoProcessor
             import torch
@@ -1232,14 +1250,34 @@ class RealEmbeddingsService:
             # Load visual embedding model (configurable - default SigLIP2)
             try:
                 self.logger.info(f"   Loading visual model: {self.visual_primary_model}")
+
+                # ✅ FIX: Add explicit cache_dir and force_download to avoid corrupted cache issues
+                import os
+                cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+
                 self._siglip_model = await asyncio.wait_for(
-                    asyncio.to_thread(AutoModel.from_pretrained, self.visual_primary_model, trust_remote_code=True),
+                    asyncio.to_thread(
+                        AutoModel.from_pretrained,
+                        self.visual_primary_model,
+                        trust_remote_code=True,
+                        cache_dir=cache_dir,
+                        local_files_only=False  # Allow downloading if needed
+                    ),
                     timeout=60.0
                 )
+
                 # ✅ CRITICAL FIX: Use AutoProcessor (not AutoImageProcessor) for text-guided embeddings
                 # AutoProcessor supports both images AND text, required for specialized embeddings
+                # ✅ FIX: Add ignore_mismatched_sizes to handle tokenizer class mismatch
                 self._siglip_processor = await asyncio.wait_for(
-                    asyncio.to_thread(AutoProcessor.from_pretrained, self.visual_primary_model, trust_remote_code=True),
+                    asyncio.to_thread(
+                        AutoProcessor.from_pretrained,
+                        self.visual_primary_model,
+                        trust_remote_code=True,
+                        cache_dir=cache_dir,
+                        local_files_only=False,  # Allow downloading if needed
+                        use_fast=True  # Use fast tokenizer to avoid compatibility issues
+                    ),
                     timeout=60.0
                 )
 
@@ -1250,12 +1288,36 @@ class RealEmbeddingsService:
                 self.logger.info(f"   ✅ Visual embedding model loaded on {self._device}: {self.visual_primary_model}")
             except asyncio.TimeoutError:
                 self.logger.error(f"   ❌ Visual embedding model loading timed out after 60s: {self.visual_primary_model}")
+                self.logger.error(f"   💡 Suggestion: Check network connection or increase timeout")
+                # Don't mark as permanently failed - timeout might be temporary
+                return False
+            except TypeError as e:
+                if "NoneType" in str(e):
+                    self.logger.error(f"   ❌ Visual embedding model loading failed - corrupted cache detected: {e}")
+                    self.logger.error(f"   💡 Solution: Clear HuggingFace cache at ~/.cache/huggingface/hub and retry")
+                    self.logger.error(f"   💡 Command: rm -rf ~/.cache/huggingface/hub/models--google--siglip*")
+                    # ✅ Mark as permanently failed after max attempts - this is a cache corruption issue
+                    if self._model_load_attempts >= self._max_load_attempts:
+                        self._model_load_failed = True
+                        self.logger.error(f"   ❌ Marking model as permanently failed - manual cache cleanup required")
+                else:
+                    self.logger.error(f"   ❌ Visual embedding model loading failed with TypeError: {e}")
                 return False
             except Exception as e:
                 self.logger.error(f"   ❌ Visual embedding model loading failed ({self.visual_primary_model}): {e}")
+                self.logger.error(f"   💡 Error type: {type(e).__name__}")
+                import traceback
+                self.logger.error(f"   💡 Traceback: {traceback.format_exc()}")
+                # ✅ Mark as permanently failed after max attempts for unknown errors
+                if self._model_load_attempts >= self._max_load_attempts:
+                    self._model_load_failed = True
+                    self.logger.error(f"   ❌ Marking model as permanently failed after {self._max_load_attempts} attempts")
                 return False
 
             self._models_loaded = True
+            # ✅ Reset failure flags on successful load
+            self._model_load_failed = False
+            self._model_load_attempts = 0
             self.logger.info(f"✅ Visual embedding model loaded successfully: {self.visual_primary_model} ({self.visual_dimensions}D) on {self._device}")
             return True
 

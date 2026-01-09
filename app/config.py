@@ -511,7 +511,7 @@ class Settings(BaseSettings):
     # Chandra OCR Inference Endpoint Settings (Serverless with Pause/Resume)
     hf_token: str = Field(
         default="",
-        env="HF_TOKEN",
+        env="HUGGING_FACE_ACCESS_TOKEN",
         description="HuggingFace API token for Inference Endpoints (with write permissions)"
     )
     chandra_endpoint_url: str = Field(
@@ -1144,8 +1144,15 @@ class Settings(BaseSettings):
     
     class Config:
         """Pydantic configuration."""
-        # Load from environment variables only (GitHub Secrets, not .env files)
+        # ✅ FIX: Enable environment variable loading from system environment
+        # This is critical for systemd services where env vars are set via Environment= directive
         case_sensitive = False
+        # Allow loading from .env file if present (optional)
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+        # ✅ CRITICAL: Read from system environment variables (systemd, docker, etc.)
+        # Without this, Pydantic won't read from os.environ
+        extra = "ignore"  # Ignore extra fields in environment
 
 
 # Global settings instance

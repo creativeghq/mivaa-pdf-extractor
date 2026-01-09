@@ -41,8 +41,8 @@ class AICallLogger:
         # Import credits service here to avoid circular imports
         from app.services.integrations.credits_integration_service import get_credits_service
         self.credits_service = get_credits_service()
+
     @async_retry_with_backoff(max_retries=3, initial_delay=1.0, backoff_multiplier=2.0, max_delay=10.0)
-    
     async def log_ai_call(
         self,
         task: str,

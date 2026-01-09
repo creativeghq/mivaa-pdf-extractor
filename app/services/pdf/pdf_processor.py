@@ -83,13 +83,14 @@ async def download_image_to_base64(image_url: str) -> str:
 
 
 # Import existing extraction functions
+# ✅ REMOVED extract_pdf_tables - now using TableExtractor class from table_extraction.py
 try:
     # Try to import from the proper location first
-    from ..core.extractor import extract_pdf_to_markdown, extract_pdf_to_markdown_with_doc, extract_pdf_tables, extract_json_and_images
+    from ..core.extractor import extract_pdf_to_markdown, extract_pdf_to_markdown_with_doc, extract_json_and_images
 except ImportError:
     # Fall back to the root level extractor if it exists
     try:
-        from app.core.extractor import extract_pdf_to_markdown, extract_pdf_to_markdown_with_doc, extract_pdf_tables, extract_json_and_images
+        from app.core.extractor import extract_pdf_to_markdown, extract_pdf_to_markdown_with_doc, extract_json_and_images
     except ImportError as e:
         # Log the error and provide a fallback
         import logging
@@ -100,8 +101,6 @@ except ImportError:
             raise NotImplementedError("PDF extraction functions not available")
         def extract_pdf_to_markdown_with_doc(*args, **kwargs):
             raise NotImplementedError("PDF extraction functions not available")
-        def extract_pdf_tables(*args, **kwargs):
-            raise NotImplementedError("PDF table extraction functions not available")
         def extract_json_and_images(*args, **kwargs):
             raise NotImplementedError("PDF image extraction functions not available")
 
