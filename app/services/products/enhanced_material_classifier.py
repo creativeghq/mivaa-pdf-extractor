@@ -168,10 +168,10 @@ class EnhancedMaterialClassifier:
             import httpx
             import os
             import json
-            
-            TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY", "")
-            if not TOGETHER_API_KEY:
-                self.logger.warning("TOGETHER_API_KEY not set")
+
+            HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY", "")
+            if not HUGGINGFACE_API_KEY:
+                self.logger.warning("HUGGINGFACE_API_KEY not set")
                 return None
             
             prompt = """Analyze this image and classify the material. Provide detailed material analysis in JSON format:
@@ -202,7 +202,7 @@ Respond ONLY with valid JSON, no additional text."""
             response = await ai_service.httpx.post(
                 "https://api.together.xyz/v1/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {TOGETHER_API_KEY}",
+                    "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
                     "Content-Type": "application/json"
                 },
                     json={

@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY", "")  # From GitHub Secrets / Deno.env
-TOGETHER_AI_API_KEY = os.getenv("TOGETHER_AI_API_KEY", "")
+HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY", "")
 MIVAA_GATEWAY_URL = os.getenv("MIVAA_GATEWAY_URL", "http://localhost:3000")
 
 
@@ -63,7 +63,7 @@ class RealEmbeddingsService:
         self.logger = logger
         self.openai_api_key = OPENAI_API_KEY
         self.voyage_api_key = VOYAGE_API_KEY
-        self.together_api_key = TOGETHER_AI_API_KEY
+        self.huggingface_api_key = HUGGINGFACE_API_KEY
         self.mivaa_gateway_url = MIVAA_GATEWAY_URL
         self.config = config
 

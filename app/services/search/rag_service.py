@@ -1734,9 +1734,9 @@ class RAGService:
             import httpx
             import os
 
-            together_api_key = os.getenv('TOGETHER_API_KEY')
-            if not together_api_key:
-                self.logger.warning("TOGETHER_API_KEY not set, skipping analysis")
+            huggingface_api_key = os.getenv('HUGGINGFACE_API_KEY')
+            if not huggingface_api_key:
+                self.logger.warning("HUGGINGFACE_API_KEY not set, skipping analysis")
                 return {
                     'quality_score': 0.5,
                     'confidence_score': 0.0,
@@ -1762,7 +1762,7 @@ Respond with JSON:
                 response = await client.post(
                     'https://api.together.xyz/v1/chat/completions',
                     headers={
-                        'Authorization': f'Bearer {together_api_key}',
+                        'Authorization': f'Bearer {huggingface_api_key}',
                         'Content-Type': 'application/json'
                     },
                     json={
@@ -1841,9 +1841,9 @@ Respond with JSON:
             import httpx
             import os
 
-            together_api_key = os.getenv('TOGETHER_API_KEY')
-            if not together_api_key:
-                self.logger.warning("TOGETHER_API_KEY not set, skipping classification")
+            huggingface_api_key = os.getenv('HUGGINGFACE_API_KEY')
+            if not huggingface_api_key:
+                self.logger.warning("HUGGINGFACE_API_KEY not set, skipping classification")
                 return {'is_material': False, 'confidence': 0.0, 'reason': 'API key missing'}
 
             classification_prompt = """Analyze this image and classify it as:
@@ -1861,7 +1861,7 @@ Respond with JSON:
                 response = await client.post(
                     'https://api.together.xyz/v1/chat/completions',
                     headers={
-                        'Authorization': f'Bearer {together_api_key}',
+                        'Authorization': f'Bearer {huggingface_api_key}',
                         'Content-Type': 'application/json'
                     },
                     json={

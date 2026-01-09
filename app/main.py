@@ -1352,7 +1352,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
     # TogetherAI (Qwen)
     try:
         import os
-        if os.getenv("TOGETHER_API_KEY"):
+        if os.getenv("HUGGINGFACE_API_KEY"):
             # Check cache first (unless force_refresh is True)
             cache_key = "together_ai"
             current_time = time.time()
@@ -1366,7 +1366,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                 # Actually test the API
                 try:
                     from together import Together
-                    client = Together(api_key=os.getenv("TOGETHER_API_KEY"))
+                    client = Together(api_key=os.getenv("HUGGINGFACE_API_KEY"))
                     start_time = time.time()
 
                     # Minimal test using actual vision model we use in production

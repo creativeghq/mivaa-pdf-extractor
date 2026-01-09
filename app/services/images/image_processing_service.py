@@ -87,13 +87,13 @@ class ImageProcessingService:
 
         ai_service = get_ai_client_service()
 
-        # ✅ FIX 1: Get API key FIRST, then verify it's set
-        together_api_key = os.getenv('TOGETHER_API_KEY')
+        # Get HuggingFace API key for all cloud endpoints
+        huggingface_api_key = os.getenv('HUGGINGFACE_API_KEY')
 
-        if not together_api_key:
-            logger.error("❌ CRITICAL: TOGETHER_API_KEY environment variable not set!")
-            logger.error("   Image classification will fail. Please set TOGETHER_API_KEY.")
-            raise ValueError("TOGETHER_API_KEY not configured")
+        if not huggingface_api_key:
+            logger.error("❌ CRITICAL: HUGGINGFACE_API_KEY environment variable not set!")
+            logger.error("   Image classification will fail. Please set HUGGINGFACE_API_KEY.")
+            raise ValueError("HUGGINGFACE_API_KEY not configured")
 
         async def classify_image_with_vision_model(image_path: str, model: str, base64_data: str = None) -> Dict[str, Any]:
             """Fast classification using vision model (Qwen via TogetherAI)."""
@@ -121,7 +121,7 @@ Respond ONLY with JSON:
                     response = await client.post(
                         "https://api.together.xyz/v1/chat/completions",
                         headers={
-                            "Authorization": f"Bearer {together_api_key}",
+                            "Authorization": f"Bearer {huggingface_api_key}",
                             "Content-Type": "application/json"
                         },
                         json={

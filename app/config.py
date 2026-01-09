@@ -957,7 +957,7 @@ class Settings(BaseSettings):
             "enable_rag": self.rag_enable,
             # Qwen Vision Model Configuration (HuggingFace Endpoint)
             "qwen_endpoint_url": self.qwen_endpoint_url,
-            "qwen_endpoint_token": self.qwen_endpoint_token,
+            "qwen_endpoint_token": self.huggingface_api_key,  # Use global HF token
             "qwen_endpoint_name": self.qwen_endpoint_name,
             "qwen_namespace": self.qwen_namespace,
             "qwen_model": self.qwen_model,

@@ -33,7 +33,7 @@ from app.services.core.ai_client_service import get_ai_client_service
 logger = logging.getLogger(__name__)
 
 # Get API keys from environment
-TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY", "")
+HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 
@@ -356,8 +356,8 @@ class RealImageAnalysisService:
         """Analyze image with configurable vision model (default: Qwen3-VL-8B)"""
         start_time = time.time()
         try:
-            if not TOGETHER_API_KEY:
-                raise ValueError("TOGETHER_API_KEY not set - cannot perform vision model analysis")
+            if not HUGGINGFACE_API_KEY:
+                raise ValueError("HUGGINGFACE_API_KEY not set - cannot perform vision model analysis")
 
             # Use database prompt or hardcoded fallback
             if self.vision_prompt:
@@ -393,7 +393,7 @@ Respond ONLY with valid JSON, no additional text."""
                     response = await ai_service.httpx.post(
                             "https://api.together.xyz/v1/chat/completions",
                             headers={
-                                "Authorization": f"Bearer {TOGETHER_API_KEY}",
+                                "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
                                 "Content-Type": "application/json"
                             },
                             json={

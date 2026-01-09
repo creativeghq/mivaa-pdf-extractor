@@ -167,10 +167,10 @@ class ProductVisionExtractor:
         try:
             import httpx
             import os
-            
-            TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY", "")
-            if not TOGETHER_API_KEY:
-                self.logger.warning("TOGETHER_API_KEY not set - skipping vision analysis")
+
+            HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY", "")
+            if not HUGGINGFACE_API_KEY:
+                self.logger.warning("HUGGINGFACE_API_KEY not set - skipping vision analysis")
                 return None
             
             # Load prompt from database (image_analysis/products for vision-based extraction)
@@ -230,7 +230,7 @@ IMPORTANT:
                 response = await client.post(
                     "https://api.together.xyz/v1/chat/completions",
                     headers={
-                        "Authorization": f"Bearer {TOGETHER_API_KEY}",
+                        "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
                         "Content-Type": "application/json"
                     },
                     json={
