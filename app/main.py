@@ -1363,23 +1363,36 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                 cached_status["cached"] = True
                 services_status["together_ai"] = cached_status
             else:
-                # Actually test the API
+                # Actually test the HuggingFace endpoint
                 try:
-                    from together import Together
-                    client = Together(api_key=os.getenv("HUGGINGFACE_API_KEY"))
+                    import httpx
+                    from app.config import get_settings
+                    settings = get_settings()
+                    qwen_config = settings.get_qwen_config()
+
                     start_time = time.time()
 
                     # Minimal test using actual vision model we use in production
-                    response = client.chat.completions.create(
-                        model="Qwen/Qwen3-VL-8B-Instruct",
-                        max_tokens=1,
-                        messages=[{"role": "user", "content": "hi"}]
-                    )
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        response = await client.post(
+                            qwen_config["endpoint_url"],
+                            headers={
+                                "Authorization": f"Bearer {qwen_config['endpoint_token']}",
+                                "Content-Type": "application/json"
+                            },
+                            json={
+                                "model": "Qwen/Qwen3-VL-8B-Instruct",
+                                "max_tokens": 1,
+                                "messages": [{"role": "user", "content": "hi"}]
+                            }
+                        )
+                        response.raise_for_status()
+
                     latency_ms = int((time.time() - start_time) * 1000)
 
                     status_result = {
                         "status": "healthy",
-                        "message": "TogetherAI API operational",
+                        "message": "HuggingFace Qwen endpoint operational",
                         "latency_ms": latency_ms,
                         "last_checked": datetime.fromtimestamp(current_time).isoformat(),
                         "cached": False
