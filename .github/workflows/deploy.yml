@@ -506,7 +506,7 @@ jobs:
           python -c 'import supabase; print(f\"| **supabase** | Database | Database client | 🟢 Installed | {supabase.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **supabase** | Database | Database client | 🔴 Missing | N/A |' >> package_status_report.txt
           python -c 'import numpy; print(f\"| **numpy** | Computing | Numerical computing | 🟢 Installed | {numpy.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **numpy** | Computing | Numerical computing | 🔴 Missing | N/A |' >> package_status_report.txt
           python -c 'import pandas; print(f\"| **pandas** | Data | Data manipulation | 🟢 Installed | {pandas.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **pandas** | Data | Data manipulation | 🔴 Missing | N/A |' >> package_status_report.txt
-          python -c 'import torch; print(f\"| **torch** | AI/ML | PyTorch deep learning | 🟢 Installed | {torch.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **torch** | AI/ML | PyTorch deep learning | 🔴 Missing | N/A |' >> package_status_report.txt
+          # PyTorch removed - using cloud-only architecture (SLIG + Qwen endpoints)
           python -c 'import openai; print(f\"| **openai** | AI/ML | OpenAI API client | 🟢 Installed | {openai.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **openai** | AI/ML | OpenAI API client | 🔴 Missing | N/A |' >> package_status_report.txt
           python -c 'import anthropic; print(f\"| **anthropic** | AI/ML | Anthropic API client | 🟢 Installed | {anthropic.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **anthropic** | AI/ML | Anthropic API client | 🔴 Missing | N/A |' >> package_status_report.txt
 
