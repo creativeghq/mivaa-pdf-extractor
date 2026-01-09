@@ -321,15 +321,11 @@ class Settings(BaseSettings):
     # Qwen Vision Model - HuggingFace Inference Endpoint
     # ============================================================================
     # Semantic analysis and material identification via cloud endpoint
+    # Uses huggingface_api_key for authentication (no separate token needed)
     qwen_endpoint_url: str = Field(
         default="https://gbz6krk3i2is85b0.us-east-1.aws.endpoints.huggingface.cloud",
         env="QWEN_ENDPOINT_URL",
         description="Qwen HuggingFace inference endpoint URL"
-    )
-    qwen_endpoint_token: str = Field(
-        default="",
-        env="QWEN_ENDPOINT_TOKEN",
-        description="Qwen HuggingFace endpoint authentication token"
     )
     qwen_endpoint_name: str = Field(
         default="mh-qwen332binstruct",
@@ -1109,17 +1105,6 @@ class Settings(BaseSettings):
             "format_conversion": self.image_format_conversion,
         }
     
-    @field_validator("qwen_endpoint_token", mode="before")
-    @classmethod
-    def set_qwen_token_default(cls, v, info):
-        """Use HuggingFace token as default for Qwen endpoint token if not explicitly set."""
-        if not v or v == "":
-            # Fall back to huggingface_api_key if qwen_endpoint_token is not set
-            # In Pydantic v2, we need to get huggingface_api_key from the data being validated
-            if info.data and "huggingface_api_key" in info.data:
-                return info.data.get("huggingface_api_key", "")
-        return v
-
     @field_validator("qwen_model")
     @classmethod
     def validate_qwen_model(cls, v):
@@ -1153,10 +1138,11 @@ class Settings(BaseSettings):
 
         This provides all necessary configuration for Qwen vision model integration
         including endpoint URL, authentication, model configuration, and retry logic.
+        Uses huggingface_api_key for authentication.
         """
         return {
             "endpoint_url": self.qwen_endpoint_url,
-            "endpoint_token": self.qwen_endpoint_token,
+            "endpoint_token": self.huggingface_api_key,  # Use global HF token
             "endpoint_name": self.qwen_endpoint_name,
             "namespace": self.qwen_namespace,
             "model": self.qwen_model,
