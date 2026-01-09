@@ -21,7 +21,7 @@ router = APIRouter(prefix="/api/feedback", tags=["User Feedback"])
 
 # Initialize sentiment analysis service
 settings = get_settings()
-sentiment_service = SentimentAnalysisService(together_api_key=settings.huggingface_api_key)
+sentiment_service = SentimentAnalysisService(anthropic_api_key=settings.anthropic_api_key)
 
 
 # Request/Response Models

@@ -13,18 +13,18 @@ import asyncio
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 import re
+import json
 
-import httpx
-from together import Together
+from anthropic import Anthropic
 
 logger = logging.getLogger(__name__)
 
 
 class SentimentAnalysisService:
-    """Service for analyzing user feedback sentiment"""
-    
-    def __init__(self, together_api_key: str):
-        self.together_client = Together(api_key=together_api_key)
+    """Service for analyzing user feedback sentiment using Claude"""
+
+    def __init__(self, anthropic_api_key: str):
+        self.anthropic_client = Anthropic(api_key=anthropic_api_key)
         self.aspects = ["quality", "appearance", "durability", "value", "usability"]
     
     async def analyze_feedback(
@@ -45,23 +45,23 @@ class SentimentAnalysisService:
             Dictionary with sentiment analysis results
         """
         try:
-            # Use Together AI for sentiment analysis (Qwen model)
-            sentiment_result = await self._analyze_with_qwen(feedback_text, material_name, rating)
-            
+            # Use Claude for sentiment analysis (excellent for text understanding)
+            sentiment_result = await self._analyze_with_claude(feedback_text, material_name, rating)
+
             return sentiment_result
-            
+
         except Exception as e:
             logger.error(f"Sentiment analysis failed: {e}")
             # Return fallback result
             return self._get_fallback_sentiment(feedback_text, rating)
     
-    async def _analyze_with_qwen(
+    async def _analyze_with_claude(
         self,
         feedback_text: str,
         material_name: Optional[str],
         rating: Optional[int]
     ) -> Dict:
-        """Use Qwen model for comprehensive sentiment analysis"""
+        """Use Claude for comprehensive sentiment analysis"""
         
         prompt = f"""Analyze the following user feedback about a material product and provide a detailed sentiment analysis.
 
@@ -96,35 +96,30 @@ Rules:
 Respond ONLY with valid JSON, no additional text."""
 
         try:
-            response = self.together_client.chat.completions.create(
-                model="Qwen/Qwen3-VL-8B-Instruct",
+            response = self.anthropic_client.messages.create(
+                model="claude-haiku-4-5-20251001",  # Fast and cost-effective for text analysis
+                max_tokens=500,
+                temperature=0.1,
+                system="You are an expert sentiment analysis AI. Analyze user feedback and provide structured JSON responses.",
                 messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert sentiment analysis AI. Analyze user feedback and provide structured JSON responses."
-                    },
                     {
                         "role": "user",
                         "content": prompt
                     }
-                ],
-                max_tokens=500,
-                temperature=0.1,
-                response_format={"type": "json_object"}
+                ]
             )
-            
+
             # Parse JSON response
-            import json
-            result = json.loads(response.choices[0].message.content)
-            
+            result = json.loads(response.content[0].text)
+
             # Add metadata
             result["analyzed_at"] = datetime.utcnow().isoformat()
-            result["model_used"] = "Qwen/Qwen3-VL-8B-Instruct"
-            
+            result["model_used"] = "claude-haiku-4-5"
+
             return result
-            
+
         except Exception as e:
-            logger.error(f"Qwen sentiment analysis failed: {e}")
+            logger.error(f"Claude sentiment analysis failed: {e}")
             return self._get_fallback_sentiment(feedback_text, rating)
     
     def _get_fallback_sentiment(self, feedback_text: str, rating: Optional[int]) -> Dict:

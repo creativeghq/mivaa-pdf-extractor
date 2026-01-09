@@ -1361,7 +1361,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                 cached_status = _ai_health_cache[cache_key]["status"].copy()
                 cached_status["last_checked"] = datetime.fromtimestamp(_ai_health_cache[cache_key]["timestamp"]).isoformat()
                 cached_status["cached"] = True
-                services_status["together_ai"] = cached_status
+                services_status["qwen_endpoint"] = cached_status
             else:
                 # Actually test the HuggingFace endpoint
                 try:
@@ -1381,7 +1381,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                                 "Content-Type": "application/json"
                             },
                             json={
-                                "model": "Qwen/Qwen3-VL-8B-Instruct",
+                                "model": "Qwen/Qwen3-VL-32B-Instruct",
                                 "max_tokens": 1,
                                 "messages": [{"role": "user", "content": "hi"}]
                             }
@@ -1397,7 +1397,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                         "last_checked": datetime.fromtimestamp(current_time).isoformat(),
                         "cached": False
                     }
-                    services_status["together_ai"] = status_result
+                    services_status["qwen_endpoint"] = status_result
                     cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
                     _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time}
                 except Exception as api_error:
@@ -1407,14 +1407,14 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                         "last_checked": datetime.fromtimestamp(current_time).isoformat(),
                         "cached": False
                     }
-                    services_status["together_ai"] = status_result
+                    services_status["qwen_endpoint"] = status_result
                     overall_status = "unhealthy"
                     cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
                     _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time - _ai_health_cache_ttl + 60}
         else:
-            services_status["together_ai"] = {
+            services_status["qwen_endpoint"] = {
                 "status": "degraded",
-                "message": "API key not configured"
+                "message": "HuggingFace endpoint not configured"
             }
             if overall_status == "healthy":
                 overall_status = "degraded"

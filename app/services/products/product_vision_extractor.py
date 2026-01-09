@@ -61,11 +61,10 @@ class ProductVisionExtractor:
         # Get HuggingFace endpoint configuration from settings
         settings = get_settings()
         qwen_config = settings.get_qwen_config()
-        together_config = settings.get_together_ai_config()
 
         self.qwen_endpoint_url = qwen_config["endpoint_url"]
         self.qwen_endpoint_token = qwen_config["endpoint_token"]
-        self.together_model = together_config["model"]  # Qwen/Qwen3-VL-8B-Instruct
+        self.qwen_model = qwen_config["model"]  # Qwen/Qwen3-VL-32B-Instruct
 
     async def _load_prompt_from_database(self, stage: str, category: str) -> Optional[str]:
         """
@@ -239,7 +238,7 @@ IMPORTANT:
                         "Content-Type": "application/json"
                     },
                     json={
-                        "model": self.together_model,  # ✅ Use configured model (Qwen/Qwen3-VL-8B-Instruct)
+                        "model": self.qwen_model,  # ✅ Use configured model (Qwen/Qwen3-VL-32B-Instruct)
                         "messages": [
                             {
                                 "role": "user",
