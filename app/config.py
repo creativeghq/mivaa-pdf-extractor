@@ -521,7 +521,7 @@ class Settings(BaseSettings):
     # ============================================================================
     hf_token: str = Field(
         default="",
-        env="HUGGING_FACE_ACCESS_TOKEN",
+        env="HUGGINGFACE_API_KEY",
         description="HuggingFace API token for Inference Endpoints (with write permissions)"
     )
 
