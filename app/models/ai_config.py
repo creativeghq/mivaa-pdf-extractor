@@ -115,7 +115,7 @@ class AIModelConfig(BaseModel):
         json_schema_extra = {
             "example": {
                 "visual_embedding_primary": "basiliskan/siglip2",
-                "visual_embedding_fallback": null,
+                "visual_embedding_fallback": None,
                 "text_embedding_model": "voyage-3.5",
                 "text_embedding_dimensions": 1024,
                 "text_embedding_input_type": "document",
