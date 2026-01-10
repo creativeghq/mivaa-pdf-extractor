@@ -2740,14 +2740,17 @@ async def process_document_with_discovery(
         )
 
     # Read file content ONLY when needed
-    logger.info(f"📖 Reading file from disk: {file_path}")
+    logger.info(f"📖 [BACKGROUND TASK] Reading file from disk: {file_path}")
     if not os.path.exists(file_path):
+         logger.error(f"❌ [BACKGROUND TASK] File not found at {file_path}")
          raise FileNotFoundError(f"File not found at {file_path}")
 
+    logger.info(f"🔧 [BACKGROUND TASK] Opening file for reading...")
     with open(file_path, 'rb') as f:
         file_content = f.read()
 
     file_size = len(file_content)
+    logger.info(f"✅ [BACKGROUND TASK] File read successfully: {file_size} bytes ({file_size / (1024*1024):.1f} MB)")
     logger.info("=" * 80)
 
     # Get AI model configuration
@@ -2761,28 +2764,36 @@ async def process_document_with_discovery(
 
 
     try:
+        logger.info(f"🔧 [BACKGROUND TASK] Initializing progress tracking components...")
         # Initialize Progress Tracker
         from app.services.tracking.progress_tracker import ProgressTracker
         from app.schemas.jobs import ProcessingStage
         from app.services.tracking.checkpoint_recovery_service import checkpoint_recovery_service, ProcessingStage as CheckpointStage
         from app.services.tracking.job_progress_monitor import JobProgressMonitor
 
+        logger.info(f"🔧 [BACKGROUND TASK] Creating ProgressTracker...")
         tracker = ProgressTracker(
             job_id=job_id,
             document_id=document_id,
             total_pages=0,  # Will update after PDF extraction
             job_storage=job_storage
         )
+        logger.info(f"🔧 [BACKGROUND TASK] Starting processing...")
         await tracker.start_processing()
+        logger.info(f"✅ [BACKGROUND TASK] Processing started")
 
+        logger.info(f"🔧 [BACKGROUND TASK] Starting heartbeat (30s interval)...")
         # 🫀 Start heartbeat monitoring (30s interval, 2min crash detection)
         await tracker.start_heartbeat(interval_seconds=30)
+        logger.info(f"✅ [BACKGROUND TASK] Heartbeat started")
 
+        logger.info(f"🔧 [BACKGROUND TASK] Starting progress monitor...")
         # 📊 Start detailed progress monitoring (reports every 60s to logs + Sentry)
         progress_monitor = JobProgressMonitor(job_id=job_id, document_id=document_id, total_stages=9)
         await progress_monitor.start()
-        logger.info(f"✅ Started detailed progress monitoring for job {job_id}")
+        logger.info(f"✅ [BACKGROUND TASK] Progress monitoring started for job {job_id}")
 
+        logger.info(f"🔧 [BACKGROUND TASK] Creating INITIALIZED checkpoint...")
         # Create INITIALIZED checkpoint
         await checkpoint_recovery_service.create_checkpoint(
             job_id=job_id,
@@ -2801,15 +2812,19 @@ async def process_document_with_discovery(
                 "focused_extraction": focused_extraction
             }
         )
-        logger.info(f"✅ Created INITIALIZED checkpoint for job {job_id}")
+        logger.info(f"✅ [BACKGROUND TASK] INITIALIZED checkpoint created for job {job_id}")
         logger.info(f"   📄 PDF path saved: {file_path}")
 
         # ============================================================================
         # STAGE 0: PRODUCT DISCOVERY (MODULAR)
         # ============================================================================
+        logger.info(f"🚀 [BACKGROUND TASK] ========================================")
+        logger.info(f"🚀 [BACKGROUND TASK] STARTING STAGE 0: PRODUCT DISCOVERY")
+        logger.info(f"🚀 [BACKGROUND TASK] ========================================")
         progress_monitor.update_stage("product_discovery", {"discovery_model": discovery_model})
         from app.api.pdf_processing.stage_0_discovery import process_stage_0_discovery
 
+        logger.info(f"🔧 [BACKGROUND TASK] Calling process_stage_0_discovery...")
         stage_0_result = await process_stage_0_discovery(
             file_content=file_content,
             document_id=document_id,

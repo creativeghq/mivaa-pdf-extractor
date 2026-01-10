@@ -89,20 +89,25 @@ async def process_stage_0_discovery(
     # Save PDF to temporary file for two-stage discovery
     temp_pdf_path = None
     try:
+        logger.info(f"🔧 [STAGE 0] Step 1/7: Initializing resource manager...")
         # EVENT-BASED CLEANUP: Register resource manager
         from app.utils.resource_manager import get_resource_manager
         resource_manager = get_resource_manager()
-        
+        logger.info(f"✅ [STAGE 0] Resource manager initialized")
+
+        logger.info(f"🔧 [STAGE 0] Step 2/7: Creating temporary PDF file...")
         # Create temp file that persists during processing
         temp_fd, temp_pdf_path = tempfile.mkstemp(suffix='.pdf', prefix=f'{document_id}_')
         os.close(temp_fd)  # Close file descriptor, we'll write with aiofiles
-        
+        logger.info(f"✅ [STAGE 0] Temp file created: {temp_pdf_path}")
+
+        logger.info(f"🔧 [STAGE 0] Step 3/7: Writing PDF bytes to temp file ({len(file_content)} bytes)...")
         # Write PDF bytes to temp file
         async with aiofiles.open(temp_pdf_path, 'wb') as f:
             await f.write(file_content)
-        
-        logger.info(f"📁 Saved PDF to temp file: {temp_pdf_path}")
-        
+        logger.info(f"✅ [STAGE 0] PDF bytes written to temp file")
+
+        logger.info(f"🔧 [STAGE 0] Step 4/7: Registering resource with manager...")
         # Register temp file with resource manager
         await resource_manager.register_resource(
             resource_id=f"temp_pdf_{document_id}",
@@ -111,18 +116,25 @@ async def process_stage_0_discovery(
             job_id=job_id,
             metadata={"document_id": document_id, "filename": filename}
         )
-        
+        logger.info(f"✅ [STAGE 0] Resource registered")
+
+        logger.info(f"🔧 [STAGE 0] Step 5/7: Marking resource as IN_USE...")
         # Mark as IN_USE before PyMuPDF opens it
         await resource_manager.mark_in_use(f"temp_pdf_{document_id}", job_id)
-        
+        logger.info(f"✅ [STAGE 0] Resource marked as IN_USE")
+
+        logger.info(f"🔧 [STAGE 0] Step 6/7: Analyzing PDF structure...")
         # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on document size
         file_size_mb = len(file_content) / (1024 * 1024)
-        
+        logger.info(f"📊 File size: {file_size_mb:.1f} MB")
+
         # Quick page count check (fast, doesn't extract content)
+        logger.info(f"🔧 Opening PDF with PyMuPDF to count pages...")
         import fitz
         quick_doc = fitz.open(temp_pdf_path)
         page_count = len(quick_doc)
         quick_doc.close()
+        logger.info(f"✅ PDF opened successfully: {page_count} pages")
 
         # Calculate progressive timeout for PDF extraction
         pdf_extraction_timeout = ProgressiveTimeoutStrategy.calculate_pdf_extraction_timeout(
@@ -132,6 +144,7 @@ async def process_stage_0_discovery(
         logger.info(f"📊 Document: {page_count} pages, {file_size_mb:.1f} MB → timeout: {pdf_extraction_timeout:.0f}s")
 
         # Check memory pressure before PDF extraction
+        logger.info(f"🔧 Checking memory pressure...")
         mem_before_extraction = memory_monitor.get_memory_stats()
         logger.info(f"💾 Memory before PDF extraction: {mem_before_extraction.used_mb:.1f} MB ({mem_before_extraction.percent_used:.1f}%)")
 
@@ -143,6 +156,7 @@ async def process_stage_0_discovery(
                 max_wait_seconds=60,
                 operation_name="PDF extraction"
             )
+            logger.info(f"✅ Memory pressure resolved")
 
         # SKIP FULL PDF EXTRACTION - Let product_discovery_service handle it
         # The service will extract text on-demand in batches (100K chars at a time)
@@ -151,6 +165,7 @@ async def process_stage_0_discovery(
         logger.info(f"⏱️  This will be 10x faster than extracting all {page_count} pages upfront")
 
         # Create a minimal pdf_result with just page count
+        logger.info(f"🔧 Creating minimal PDF result object...")
         from dataclasses import dataclass
         @dataclass
         class MinimalPDFResult:
@@ -158,6 +173,7 @@ async def process_stage_0_discovery(
             markdown_content: str = None
 
         pdf_result = MinimalPDFResult(page_count=page_count, markdown_content=None)
+        logger.info(f"✅ [STAGE 0] PDF result created")
 
         logger.info(f"✅ PDF ready for on-demand extraction: {pdf_result.page_count} pages")
 
@@ -165,6 +181,7 @@ async def process_stage_0_discovery(
         mem_after_extraction = memory_monitor.get_memory_stats()
         logger.info(f"💾 Memory after setup: {mem_after_extraction.used_mb:.1f} MB (no extraction yet)")
 
+        logger.info(f"🔧 [STAGE 0] Creating processed_documents record in database...")
         # Create processed_documents record IMMEDIATELY (required for job_progress foreign key)
         supabase = get_supabase_client()
         try:
@@ -185,6 +202,7 @@ async def process_stage_0_discovery(
             logger.error(f"❌ CRITICAL: Failed to create processed_documents record: {e}")
             raise  # Don't continue if this fails
 
+        logger.info(f"🔧 [STAGE 0] Updating tracker with {pdf_result.page_count} pages...")
         # Update tracker with total pages
         tracker.total_pages = pdf_result.page_count
         for page_num in range(1, pdf_result.page_count + 1):
@@ -193,18 +211,22 @@ async def process_stage_0_discovery(
                 stage=ProcessingStage.INITIALIZING,
                 status="pending"
             )
+        logger.info(f"✅ Tracker updated with {pdf_result.page_count} pages")
 
+        logger.info(f"🔧 [STAGE 0] Step 7/7: Preparing product discovery...")
         # Run TWO-STAGE category-based discovery with prompt enhancement
         # Stage 0A: Index scan (first 50-100 pages)
         # Stage 0B: Focused extraction (specific pages per product)
 
         # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on pages and categories
+        logger.info(f"🔧 Calculating discovery timeout...")
         discovery_timeout = ProgressiveTimeoutStrategy.calculate_product_discovery_timeout(
             page_count=pdf_result.page_count,
             categories=extract_categories
         )
         logger.info(f"📊 Product discovery: {pdf_result.page_count} pages, {len(extract_categories)} categories → timeout: {discovery_timeout:.0f}s")
 
+        logger.info(f"🔧 Normalizing discovery model '{discovery_model}'...")
         #NORMALIZE: Map discovery_model to expected values
         # ProductDiscoveryService expects: "claude-vision", "claude", "gpt-vision", "gpt", "haiku-vision", "haiku"
         normalized_model = discovery_model.lower()
@@ -231,13 +253,24 @@ async def process_stage_0_discovery(
 
         logger.info(f"🤖 Discovery model normalized: '{discovery_model}' → '{normalized_model}'")
 
+        logger.info(f"🔧 Checking memory pressure before discovery...")
         # Check memory before discovery
         await memory_monitor.check_memory_pressure()
+        logger.info(f"✅ Memory check passed")
 
+        logger.info(f"🔧 Initializing ProductDiscoveryService with model '{normalized_model}'...")
         discovery_service = ProductDiscoveryService(model=normalized_model)
+        logger.info(f"✅ ProductDiscoveryService initialized")
+
+        logger.info(f"🚀 [STAGE 0] STARTING PRODUCT DISCOVERY (this may take several minutes)...")
+        logger.info(f"   📄 Pages: {pdf_result.page_count}")
+        logger.info(f"   📦 Categories: {', '.join(extract_categories)}")
+        logger.info(f"   🤖 Model: {normalized_model}")
+        logger.info(f"   ⏱️  Timeout: {discovery_timeout:.0f}s")
 
         # Wrap discovery in circuit breaker for fail-fast protection
         try:
+            logger.info(f"🔧 Calling discovery service through circuit breaker...")
             catalog = await discovery_breaker.call(
                 lambda: with_timeout(
                     discovery_service.discover_products(
@@ -256,6 +289,7 @@ async def process_stage_0_discovery(
                     operation_name="Product discovery (Stage 0A + 0B)"
                 )
             )
+            logger.info(f"✅ [STAGE 0] DISCOVERY COMPLETED SUCCESSFULLY")
         except CircuitBreakerError as cb_error:
             logger.error(f"❌ Product discovery failed (circuit breaker OPEN): {cb_error}")
             sentry_sdk.capture_exception(cb_error)
