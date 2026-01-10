@@ -439,32 +439,44 @@ class ProductDiscoveryService:
                 if pdf_path is None:
                     raise ValueError("Either pdf_text or pdf_path must be provided for text-based discovery")
 
-                self.logger.info(f"   Extracting full PDF text for iterative discovery...")
+                self.logger.info(f"📄 Extracting PDF text page-by-page with progress tracking...")
+                self.logger.info(f"   Total pages: {total_pages}")
                 import pymupdf4llm
+                import fitz
 
-                # Extract ALL pages (SLOW: 10+ minutes for 71 pages)
-                try:
-                    pdf_text = pymupdf4llm.to_markdown(pdf_path)
-                    self.logger.info(f"   Extracted {len(pdf_text)} characters from {total_pages} pages")
-                except (ValueError, ReferenceError) as e:
-                    if "not a textpage" in str(e) or "weakly-referenced object" in str(e):
-                        self.logger.warning(f"   ⚠️ PyMuPDF textpage error, falling back to page-by-page extraction: {e}")
-                        # Fallback: Extract page by page, skipping problematic pages
-                        import fitz
-                        doc = fitz.open(pdf_path)
-                        pdf_text_parts = []
-                        for page_num in range(len(doc)):
-                            try:
-                                page_text = pymupdf4llm.to_markdown(pdf_path, pages=[page_num])
-                                pdf_text_parts.append(page_text)
-                            except Exception as page_error:
-                                self.logger.warning(f"   ⚠️ Skipping page {page_num + 1} due to error: {page_error}")
-                                continue
-                        doc.close()
-                        pdf_text = "\n\n".join(pdf_text_parts)
-                        self.logger.info(f"   Extracted {len(pdf_text)} characters from {total_pages} pages (with fallback)")
-                    else:
-                        raise
+                # Extract page by page with progress logging
+                doc = fitz.open(pdf_path)
+                pdf_text_parts = []
+                pages_extracted = 0
+                pages_failed = 0
+
+                # Log progress every N pages
+                log_interval = max(1, total_pages // 10)  # Log ~10 times during extraction
+
+                for page_num in range(len(doc)):
+                    try:
+                        page_text = pymupdf4llm.to_markdown(pdf_path, pages=[page_num])
+                        pdf_text_parts.append(page_text)
+                        pages_extracted += 1
+
+                        # Log progress at intervals
+                        if (page_num + 1) % log_interval == 0 or (page_num + 1) == total_pages:
+                            progress_pct = int(((page_num + 1) / total_pages) * 100)
+                            self.logger.info(f"   📊 Progress: {page_num + 1}/{total_pages} pages ({progress_pct}%) - {len(''.join(pdf_text_parts)):,} chars extracted")
+
+                    except Exception as page_error:
+                        pages_failed += 1
+                        self.logger.warning(f"   ⚠️ Skipping page {page_num + 1} due to error: {page_error}")
+                        continue
+
+                doc.close()
+                pdf_text = "\n\n".join(pdf_text_parts)
+
+                self.logger.info(f"✅ PDF text extraction complete:")
+                self.logger.info(f"   📄 Pages extracted: {pages_extracted}/{total_pages}")
+                if pages_failed > 0:
+                    self.logger.warning(f"   ⚠️ Pages failed: {pages_failed}")
+                self.logger.info(f"   📝 Total characters: {len(pdf_text):,}")
 
             # Iterative batch discovery
             catalog = await self._iterative_batch_discovery(
