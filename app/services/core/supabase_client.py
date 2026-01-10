@@ -322,7 +322,13 @@ class SupabaseClient:
                 return None
 
             # Extract metadata
-            page_num = image_info.get('page') or image_info.get('page_number') or 1
+            page_num = image_info.get('page') or image_info.get('page_number')
+            if not page_num:
+                logger.warning(
+                    f"⚠️ Image {image_index} missing page_number - defaulting to 1. "
+                    f"Image info keys: {list(image_info.keys())}"
+                )
+                page_num = 1
             caption = image_info.get('caption') or image_info.get('description') or f"Image from page {page_num}"
 
             # Extract AI classification results if available

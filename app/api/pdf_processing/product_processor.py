@@ -208,32 +208,40 @@ async def process_single_product(
         logger_instance.info(f"✅ Generated {clip_embeddings} CLIP embeddings for {product.name}")
 
         # ========================================================================
-        # STAGE 4: Create Product in Database
+        # STAGE 4: Update Product with Extracted Metadata
         # ========================================================================
+        # NOTE: Product was already created in Stage 0 (discovery)
+        # Here we just update it with extracted metadata from processing
         current_stage = ProductStage.CREATION
         await product_tracker.update_product_stage(product_id, ProductStage.CREATION)
-        logger_instance.info(f"🏭 [STAGE 4/{product_index}] Creating product in database...")
+        logger_instance.info(f"🏭 [STAGE 4/{product_index}] Updating product with extracted metadata...")
 
-        from app.api.pdf_processing.stage_4_products import create_single_product
+        # Get product_db_id from product_progress metadata (set in Stage 0)
+        product_status = await product_tracker.get_product_status(product_id)
+        product_db_id = product_status.metadata.get('product_db_id') if product_status else None
 
-        product_creation_result = await create_single_product(
-            product=product,
-            document_id=document_id,
-            workspace_id=workspace_id,
-            job_id=job_id,
-            catalog=catalog,
-            supabase=supabase,
-            logger=logger_instance
-        )
+        if not product_db_id:
+            raise Exception(f"Product DB ID not found for {product.name} - product should have been created in Stage 0")
 
-        product_db_id = product_creation_result.get('product_id')
+        # Update product with extracted metadata from Stage 1
+        extracted_metadata = extraction_result.get('metadata', {})
+        if extracted_metadata:
+            try:
+                supabase.client.table('products')\
+                    .update({'metadata': extracted_metadata})\
+                    .eq('id', product_db_id)\
+                    .execute()
+                logger_instance.info(f"✅ Updated product metadata in DB: {product_db_id}")
+            except Exception as e:
+                logger_instance.error(f"❌ Failed to update product metadata: {e}")
+
         await product_tracker.mark_stage_complete(
             product_id,
             ProductStage.CREATION,
             {"product_db_id": product_db_id}
         )
         result.product_db_id = product_db_id
-        logger_instance.info(f"✅ Created product in DB: {product_db_id}")
+        logger_instance.info(f"✅ Product updated in DB: {product_db_id}")
 
         # ========================================================================
         # STAGE 4.5: YOLO Layout Detection & Table Extraction

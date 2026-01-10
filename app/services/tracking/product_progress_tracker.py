@@ -76,17 +76,57 @@ class ProductProgressTracker:
     ) -> ProductProgress:
         """
         Initialize tracking for a product.
-        
+        If product already exists (created during discovery), update it to PROCESSING status.
+
         Args:
             product_id: Unique product identifier
             product_name: Product name
             product_index: 1-based index in processing order
             metadata: Additional metadata
-            
+
         Returns:
             ProductProgress object
         """
         try:
+            # Check if product already exists (created during discovery)
+            existing = self.supabase.client.table(self.table)\
+                .select("*")\
+                .eq("job_id", self.job_id)\
+                .eq("product_id", product_id)\
+                .execute()
+
+            if existing.data and len(existing.data) > 0:
+                # Product already exists - update to PROCESSING status
+                logger.info(f"✅ Product {product_name} already exists - updating to PROCESSING")
+
+                update_data = {
+                    "status": ProductStatus.PROCESSING.value,
+                    "started_at": datetime.utcnow().isoformat(),
+                    "updated_at": datetime.utcnow().isoformat()
+                }
+
+                # Merge new metadata with existing
+                if metadata:
+                    existing_metadata = existing.data[0].get("metadata", {})
+                    existing_metadata.update(metadata)
+                    update_data["metadata"] = existing_metadata
+
+                self.supabase.client.table(self.table)\
+                    .update(update_data)\
+                    .eq("job_id", self.job_id)\
+                    .eq("product_id", product_id)\
+                    .execute()
+
+                product_progress = ProductProgress(
+                    product_id=product_id,
+                    product_name=product_name,
+                    product_index=product_index,
+                    status=ProductStatus.PROCESSING,
+                    metadata=update_data.get("metadata", {})
+                )
+                return product_progress
+
+            # Product doesn't exist - create new record
             product_progress = ProductProgress(
                 product_id=product_id,
                 product_name=product_name,
@@ -94,7 +134,7 @@ class ProductProgressTracker:
                 status=ProductStatus.PENDING,
                 metadata=metadata or {}
             )
-            
+
             # Insert into database
             data = {
                 "job_id": self.job_id,
@@ -106,16 +146,51 @@ class ProductProgressTracker:
                 "metrics": {},
                 "created_at": datetime.utcnow().isoformat()
             }
-            
+
             self.supabase.client.table(self.table).insert(data).execute()
-            
+
             logger.info(f"✅ Initialized product tracking: {product_name} (index {product_index})")
             return product_progress
-            
+
         except Exception as e:
             logger.error(f"❌ Failed to initialize product {product_name}: {e}")
             raise
-    
+
+    async def update_product_metadata(
+        self,
+        product_id: str,
+        metadata: Dict[str, Any]
+    ) -> None:
+        """
+        Update product metadata.
+
+        Args:
+            product_id: Product identifier
+            metadata: Metadata to merge with existing metadata
+        """
+        try:
+            # Get existing metadata
+            existing = self.supabase.client.table(self.table)\
+                .select("metadata")\
+                .eq("job_id", self.job_id)\
+                .eq("product_id", product_id)\
+                .execute()
+
+            if existing.data and len(existing.data) > 0:
+                existing_metadata = existing.data[0].get("metadata", {})
+                existing_metadata.update(metadata)
+
+                self.supabase.client.table(self.table)\
+                    .update({"metadata": existing_metadata, "updated_at": datetime.utcnow().isoformat()})\
+                    .eq("job_id", self.job_id)\
+                    .eq("product_id", product_id)\
+                    .execute()
+
+                logger.debug(f"✅ Updated metadata for product {product_id}")
+        except Exception as e:
+            logger.error(f"❌ Failed to update metadata for product {product_id}: {e}")
+            raise
+
     async def update_product_stage(
         self,
         product_id: str,

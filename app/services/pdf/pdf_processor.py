@@ -1333,7 +1333,9 @@ class PDFProcessor:
                 if processed_info:
                     # ✅ MERGE metadata: Combine extraction metadata with processing info
                     # Extraction info (confidence, bbox, product_name) is preserved
-                    merged_info = {**img_info, **processed_info}
+                    # ⚠️ CRITICAL: processed_info goes first, then img_info overwrites with correct values
+                    # This ensures page_number from extraction is NOT overwritten by filename regex
+                    merged_info = {**processed_info, **img_info}
                     batch_images.append(merged_info)
 
                 # ✅ FIX: DO NOT delete local files - they're needed for classification

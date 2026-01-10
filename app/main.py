@@ -1095,17 +1095,21 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
     - Bucket accessibility
     - Upload/download capability
 
-    ### AI Models
-    - Anthropic (Claude) availability
-    - OpenAI (GPT) availability
-    - TogetherAI (Qwen Vision) availability
-    - CLIP embeddings service
+    ### AI API Services
+    - **Anthropic (Claude)** - Language model for discovery & validation
+    - **OpenAI (GPT)** - Language model & text embeddings (fallback)
+    - **Voyage AI** - Primary text embeddings provider
 
-    ### Services
-    - RAG service (Qwen3-VL-8B/32B vision models)
-    - PDF processor
-    - Embedding service
-    - Image analysis service
+    ### HuggingFace Inference Endpoints
+    - **Qwen Vision (HF)** - Vision model for image analysis (auto-pause/resume)
+    - **SLIG (SigLIP2)** - Visual embeddings endpoint (auto-pause/resume)
+    - **YOLO DocParser** - Layout detection endpoint (auto-pause/resume)
+    - **Chandra OCR** - Advanced OCR endpoint (auto-pause/resume)
+
+    ### Application Services
+    - **RAG Service** - Lazy-loaded with Qwen3-VL models (memory optimized)
+    - **Database** - Supabase PostgreSQL with pgvector
+    - **Storage** - Supabase Storage for images and PDFs
 
     ## 📊 Response Format
 
@@ -1349,7 +1353,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
             "message": str(e)
         }
 
-    # TogetherAI (Qwen)
+    # HuggingFace (Qwen)
     try:
         import os
         if os.getenv("HUGGINGFACE_API_KEY"):
@@ -1363,7 +1367,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                 cached_status["cached"] = True
                 services_status["qwen_endpoint"] = cached_status
             else:
-                # Actually test the HuggingFace endpoint
+                # Check HuggingFace Qwen endpoint status (without resuming to avoid billing)
                 try:
                     import httpx
                     settings = get_settings()
@@ -1371,8 +1375,8 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
 
                     start_time = time.time()
 
-                    # Minimal test using actual vision model we use in production
-                    async with httpx.AsyncClient(timeout=30.0) as client:
+                    # Test endpoint status with minimal request
+                    async with httpx.AsyncClient(timeout=10.0) as client:
                         response = await client.post(
                             qwen_config["endpoint_url"],
                             headers={
@@ -1381,28 +1385,58 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                             },
                             json={
                                 "model": "Qwen/Qwen3-VL-32B-Instruct",
+                                "messages": [{"role": "user", "content": "hi"}],
                                 "max_tokens": 1,
-                                "messages": [{"role": "user", "content": "hi"}]
+                                "temperature": 0.1
                             }
                         )
-                        response.raise_for_status()
 
                     latency_ms = int((time.time() - start_time) * 1000)
 
-                    status_result = {
-                        "status": "healthy",
-                        "message": "HuggingFace Qwen endpoint operational",
-                        "latency_ms": latency_ms,
-                        "last_checked": datetime.fromtimestamp(current_time).isoformat(),
-                        "cached": False
-                    }
+                    # Check if endpoint is paused (normal state to save costs)
+                    if response.status_code == 400:
+                        response_text = response.text
+                        if "paused" in response_text.lower():
+                            status_result = {
+                                "status": "healthy",
+                                "message": "Endpoint paused (cost-saving mode - will auto-resume on use)",
+                                "latency_ms": latency_ms,
+                                "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                                "cached": False
+                            }
+                        else:
+                            status_result = {
+                                "status": "unhealthy",
+                                "message": f"API error: {response_text[:100]}",
+                                "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                                "cached": False
+                            }
+                            overall_status = "unhealthy"
+                    elif response.status_code == 200:
+                        status_result = {
+                            "status": "healthy",
+                            "message": "Endpoint running and operational",
+                            "latency_ms": latency_ms,
+                            "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                            "cached": False
+                        }
+                    else:
+                        status_result = {
+                            "status": "unhealthy",
+                            "message": f"HTTP {response.status_code}: {response.text[:100]}",
+                            "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                            "cached": False
+                        }
+                        overall_status = "unhealthy"
+
                     services_status["qwen_endpoint"] = status_result
                     cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
                     _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time}
+
                 except Exception as api_error:
                     status_result = {
                         "status": "unhealthy",
-                        "message": f"API error: {str(api_error)[:100]}",
+                        "message": f"Connection error: {str(api_error)[:100]}",
                         "last_checked": datetime.fromtimestamp(current_time).isoformat(),
                         "cached": False
                     }
@@ -1418,7 +1452,315 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
             if overall_status == "healthy":
                 overall_status = "degraded"
     except Exception as e:
-        services_status["together_ai"] = {
+        services_status["qwen_endpoint"] = {
+            "status": "unknown",
+            "message": str(e)
+        }
+
+    # Voyage AI (Text Embeddings - Primary Provider)
+    try:
+        import os
+        if os.getenv("VOYAGE_API_KEY"):
+            # Check cache first (unless force_refresh is True)
+            cache_key = "voyage_ai"
+            current_time = time.time()
+
+            if not force_refresh and cache_key in _ai_health_cache and (current_time - _ai_health_cache[cache_key]["timestamp"]) < _ai_health_cache_ttl:
+                cached_status = _ai_health_cache[cache_key]["status"].copy()
+                cached_status["last_checked"] = datetime.fromtimestamp(_ai_health_cache[cache_key]["timestamp"]).isoformat()
+                cached_status["cached"] = True
+                services_status["voyage_ai"] = cached_status
+            else:
+                # Test Voyage AI API with minimal request
+                try:
+                    import httpx
+                    start_time = time.time()
+
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        response = await client.post(
+                            "https://api.voyageai.com/v1/embeddings",
+                            headers={
+                                "Authorization": f"Bearer {os.getenv('VOYAGE_API_KEY')}",
+                                "Content-Type": "application/json"
+                            },
+                            json={
+                                "model": "voyage-3.5",
+                                "input": ["test"],
+                                "output_dimension": 1024
+                            }
+                        )
+
+                    latency_ms = int((time.time() - start_time) * 1000)
+
+                    if response.status_code == 200:
+                        status_result = {
+                            "status": "healthy",
+                            "message": "Voyage AI API operational",
+                            "latency_ms": latency_ms,
+                            "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                            "cached": False
+                        }
+                        services_status["voyage_ai"] = status_result
+                        cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
+                        _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time}
+                    else:
+                        status_result = {
+                            "status": "unhealthy",
+                            "message": f"API error: HTTP {response.status_code}",
+                            "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                            "cached": False
+                        }
+                        services_status["voyage_ai"] = status_result
+                        overall_status = "unhealthy"
+                        cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
+                        _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time - _ai_health_cache_ttl + 60}
+                except Exception as api_error:
+                    status_result = {
+                        "status": "unhealthy",
+                        "message": f"Connection error: {str(api_error)[:100]}",
+                        "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                        "cached": False
+                    }
+                    services_status["voyage_ai"] = status_result
+                    overall_status = "unhealthy"
+                    cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
+                    _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time - _ai_health_cache_ttl + 60}
+        else:
+            services_status["voyage_ai"] = {
+                "status": "degraded",
+                "message": "API key not configured"
+            }
+            if overall_status == "healthy":
+                overall_status = "degraded"
+    except Exception as e:
+        services_status["voyage_ai"] = {
+            "status": "unknown",
+            "message": str(e)
+        }
+
+    # SLIG (SigLIP2 Visual Embeddings Endpoint)
+    try:
+        import os
+        settings = get_settings()
+        if settings.slig_enabled and settings.slig_endpoint_url:
+            cache_key = "slig_endpoint"
+            current_time = time.time()
+
+            if not force_refresh and cache_key in _ai_health_cache and (current_time - _ai_health_cache[cache_key]["timestamp"]) < _ai_health_cache_ttl:
+                cached_status = _ai_health_cache[cache_key]["status"].copy()
+                cached_status["last_checked"] = datetime.fromtimestamp(_ai_health_cache[cache_key]["timestamp"]).isoformat()
+                cached_status["cached"] = True
+                services_status["slig_endpoint"] = cached_status
+            else:
+                # Check endpoint status (similar to Qwen - may be paused)
+                try:
+                    import httpx
+                    start_time = time.time()
+
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        response = await client.post(
+                            settings.slig_endpoint_url,
+                            headers={
+                                "Authorization": f"Bearer {settings.huggingface_api_key}",
+                                "Content-Type": "application/json"
+                            },
+                            json={"inputs": "test"}
+                        )
+
+                    latency_ms = int((time.time() - start_time) * 1000)
+
+                    if response.status_code == 400 and "paused" in response.text.lower():
+                        status_result = {
+                            "status": "healthy",
+                            "message": "SLIG endpoint paused (cost-saving mode)",
+                            "latency_ms": latency_ms,
+                            "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                            "cached": False
+                        }
+                    elif response.status_code in [200, 503]:  # 503 = loading
+                        status_result = {
+                            "status": "healthy",
+                            "message": "SLIG endpoint operational",
+                            "latency_ms": latency_ms,
+                            "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                            "cached": False
+                        }
+                    else:
+                        status_result = {
+                            "status": "degraded",
+                            "message": f"HTTP {response.status_code}",
+                            "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                            "cached": False
+                        }
+
+                    services_status["slig_endpoint"] = status_result
+                    cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
+                    _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time}
+                except Exception as api_error:
+                    status_result = {
+                        "status": "degraded",
+                        "message": f"Connection error: {str(api_error)[:100]}",
+                        "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                        "cached": False
+                    }
+                    services_status["slig_endpoint"] = status_result
+                    cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
+                    _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time - _ai_health_cache_ttl + 60}
+        else:
+            services_status["slig_endpoint"] = {
+                "status": "disabled",
+                "message": "SLIG endpoint not configured or disabled"
+            }
+    except Exception as e:
+        services_status["slig_endpoint"] = {
+            "status": "unknown",
+            "message": str(e)
+        }
+
+    # YOLO DocParser (Layout Detection Endpoint)
+    try:
+        settings = get_settings()
+        if settings.yolo_enabled and settings.yolo_endpoint_url:
+            cache_key = "yolo_endpoint"
+            current_time = time.time()
+
+            if not force_refresh and cache_key in _ai_health_cache and (current_time - _ai_health_cache[cache_key]["timestamp"]) < _ai_health_cache_ttl:
+                cached_status = _ai_health_cache[cache_key]["status"].copy()
+                cached_status["last_checked"] = datetime.fromtimestamp(_ai_health_cache[cache_key]["timestamp"]).isoformat()
+                cached_status["cached"] = True
+                services_status["yolo_endpoint"] = cached_status
+            else:
+                # Check endpoint status
+                try:
+                    import httpx
+                    start_time = time.time()
+
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        response = await client.get(
+                            settings.yolo_endpoint_url.replace("/v2/models", ""),  # Health endpoint
+                            headers={"Authorization": f"Bearer {settings.huggingface_api_key}"}
+                        )
+
+                    latency_ms = int((time.time() - start_time) * 1000)
+
+                    if response.status_code == 400 and "paused" in response.text.lower():
+                        status_result = {
+                            "status": "healthy",
+                            "message": "YOLO endpoint paused (cost-saving mode)",
+                            "latency_ms": latency_ms,
+                            "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                            "cached": False
+                        }
+                    elif response.status_code in [200, 503]:
+                        status_result = {
+                            "status": "healthy",
+                            "message": "YOLO endpoint operational",
+                            "latency_ms": latency_ms,
+                            "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                            "cached": False
+                        }
+                    else:
+                        status_result = {
+                            "status": "degraded",
+                            "message": f"HTTP {response.status_code}",
+                            "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                            "cached": False
+                        }
+
+                    services_status["yolo_endpoint"] = status_result
+                    cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
+                    _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time}
+                except Exception as api_error:
+                    status_result = {
+                        "status": "degraded",
+                        "message": f"Connection error: {str(api_error)[:100]}",
+                        "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                        "cached": False
+                    }
+                    services_status["yolo_endpoint"] = status_result
+                    cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
+                    _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time - _ai_health_cache_ttl + 60}
+        else:
+            services_status["yolo_endpoint"] = {
+                "status": "disabled",
+                "message": "YOLO endpoint not configured or disabled"
+            }
+    except Exception as e:
+        services_status["yolo_endpoint"] = {
+            "status": "unknown",
+            "message": str(e)
+        }
+
+    # Chandra OCR (Advanced OCR Endpoint)
+    try:
+        settings = get_settings()
+        if settings.chandra_enabled and settings.chandra_endpoint_url:
+            cache_key = "chandra_endpoint"
+            current_time = time.time()
+
+            if not force_refresh and cache_key in _ai_health_cache and (current_time - _ai_health_cache[cache_key]["timestamp"]) < _ai_health_cache_ttl:
+                cached_status = _ai_health_cache[cache_key]["status"].copy()
+                cached_status["last_checked"] = datetime.fromtimestamp(_ai_health_cache[cache_key]["timestamp"]).isoformat()
+                cached_status["cached"] = True
+                services_status["chandra_endpoint"] = cached_status
+            else:
+                # Check endpoint status
+                try:
+                    import httpx
+                    start_time = time.time()
+
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        response = await client.get(
+                            settings.chandra_endpoint_url.replace("/v2/models", ""),
+                            headers={"Authorization": f"Bearer {settings.huggingface_api_key}"}
+                        )
+
+                    latency_ms = int((time.time() - start_time) * 1000)
+
+                    if response.status_code == 400 and "paused" in response.text.lower():
+                        status_result = {
+                            "status": "healthy",
+                            "message": "Chandra endpoint paused (cost-saving mode)",
+                            "latency_ms": latency_ms,
+                            "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                            "cached": False
+                        }
+                    elif response.status_code in [200, 503]:
+                        status_result = {
+                            "status": "healthy",
+                            "message": "Chandra endpoint operational",
+                            "latency_ms": latency_ms,
+                            "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                            "cached": False
+                        }
+                    else:
+                        status_result = {
+                            "status": "degraded",
+                            "message": f"HTTP {response.status_code}",
+                            "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                            "cached": False
+                        }
+
+                    services_status["chandra_endpoint"] = status_result
+                    cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
+                    _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time}
+                except Exception as api_error:
+                    status_result = {
+                        "status": "degraded",
+                        "message": f"Connection error: {str(api_error)[:100]}",
+                        "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                        "cached": False
+                    }
+                    services_status["chandra_endpoint"] = status_result
+                    cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
+                    _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time - _ai_health_cache_ttl + 60}
+        else:
+            services_status["chandra_endpoint"] = {
+                "status": "disabled",
+                "message": "Chandra endpoint not configured or disabled"
+            }
+    except Exception as e:
+        services_status["chandra_endpoint"] = {
             "status": "unknown",
             "message": str(e)
         }

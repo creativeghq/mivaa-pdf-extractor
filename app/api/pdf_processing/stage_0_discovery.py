@@ -461,6 +461,68 @@ async def process_stage_0_discovery(
     )
     logger.info(f"✅ Created PRODUCTS_DETECTED checkpoint for job {job_id}")
 
+    # ✅ CREATE PRODUCTS IN DATABASE IMMEDIATELY AFTER DISCOVERY
+    # This creates the actual product records so all subsequent stages just update them
+    if catalog.products:
+        from app.services.tracking.product_progress_tracker import ProductProgressTracker
+        from app.schemas.product_progress import ProductStatus
+        from app.api.pdf_processing.stage_4_products import create_single_product
+
+        product_tracker = ProductProgressTracker(job_id=job_id)
+        logger.info(f"🏭 Creating {len(catalog.products)} products in database...")
+
+        product_db_ids = []  # Store created product IDs
+
+        for i, product in enumerate(catalog.products, start=1):
+            try:
+                # Generate product_id (same format as in product_processor.py)
+                product_id = f"product_{i}_{product.name.replace(' ', '_')}"
+
+                # 1. Initialize product_progress tracking
+                await product_tracker.initialize_product(
+                    product_id=product_id,
+                    product_name=product.name,
+                    product_index=i,
+                    metadata={
+                        "page_range": product.page_range,
+                        "confidence": product.confidence,
+                        "description": product.description
+                    }
+                )
+
+                # 2. Create product in database immediately
+                logger.info(f"   🏭 [{i}/{len(catalog.products)}] Creating product in DB: {product.name}")
+                product_creation_result = await create_single_product(
+                    product=product,
+                    document_id=document_id,
+                    workspace_id=workspace_id,
+                    job_id=job_id,
+                    catalog=catalog,
+                    supabase=supabase,
+                    logger=logger
+                )
+
+                product_db_id = product_creation_result.get('product_id')
+                product_db_ids.append(product_db_id)
+
+                # 3. Update product_progress with DB ID
+                await product_tracker.update_product_metadata(
+                    product_id=product_id,
+                    metadata={"product_db_id": product_db_id}
+                )
+
+                logger.info(f"   ✅ [{i}/{len(catalog.products)}] Created product: {product.name} (DB ID: {product_db_id})")
+
+            except Exception as e:
+                logger.error(f"   ❌ Failed to create product {product.name}: {e}")
+                sentry_sdk.capture_exception(e)
+                # Continue with other products even if one fails
+
+        logger.info(f"✅ Created {len(product_db_ids)} products in database")
+
+        # Store product DB IDs in checkpoint for later stages
+        checkpoint_data["product_db_ids"] = product_db_ids
+
     # ============================================================
     # RETURN DATA: Include comprehensive metrics
     # ============================================================
