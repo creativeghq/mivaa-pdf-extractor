@@ -16,10 +16,11 @@ from typing import Dict, Any, List, Optional, Callable
 from datetime import datetime
 import logging
 from collections import Counter
+import httpx
 
-from app.services.core.together_ai_service import TogetherAIService
 from app.services.core.gpt5_service import GPT5Service
 from app.services.core.ai_call_logger import AICallLogger
+from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +61,14 @@ class ConsensusValidator:
     def __init__(self, ai_logger: Optional[AICallLogger] = None):
         """
         Initialize consensus validator.
-        
+
         Args:
             ai_logger: AI call logger instance
         """
-        self.together_ai = TogetherAIService()
+        settings = get_settings()
+        qwen_config = settings.get_qwen_config()
+        self.qwen_endpoint_url = qwen_config["endpoint_url"]
+        self.qwen_endpoint_token = qwen_config["endpoint_token"]
         self.gpt5 = GPT5Service()
         self.ai_logger = ai_logger or AICallLogger()
     
@@ -271,16 +275,36 @@ class ConsensusValidator:
         # Define extraction functions for different models
         async def qwen_extract(data):
             prompt = f"Extract {extraction_type} from: {data['content'][:1000]}"
-            result = await self.together_ai.generate_completion(
-                prompt=prompt,
-                model="Qwen/Qwen3-VL-8B-Instruct",
-                max_tokens=200,
-            )
-            return {
-                "success": result.get("success", False),
-                "extracted_value": result.get("text", ""),
-                "confidence_score": 0.7,  # Default confidence
-            }
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.post(
+                        self.qwen_endpoint_url,
+                        headers={
+                            "Authorization": f"Bearer {self.qwen_endpoint_token}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "model": "Qwen/Qwen3-VL-32B-Instruct",
+                            "messages": [{"role": "user", "content": prompt}],
+                            "max_tokens": 200,
+                            "temperature": 0.1
+                        }
+                    )
+                    response.raise_for_status()
+                    response_data = response.json()
+                    extracted_text = response_data["choices"][0]["message"]["content"]
+                    return {
+                        "success": True,
+                        "extracted_value": extracted_text,
+                        "confidence_score": 0.7,  # Default confidence
+                    }
+            except Exception as e:
+                logger.error(f"Qwen extraction failed: {e}")
+                return {
+                    "success": False,
+                    "extracted_value": "",
+                    "confidence_score": 0.0
+                }
 
         async def gpt5_extract(data):
             result = await self.gpt5.generate_completion(

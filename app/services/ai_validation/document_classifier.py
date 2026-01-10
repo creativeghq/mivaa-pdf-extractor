@@ -12,10 +12,11 @@ import asyncio
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 import logging
+import httpx
 
-from app.services.core.together_ai_service import TogetherAIService
 from app.services.core.ai_call_logger import AICallLogger
 from app.config.confidence_thresholds import ConfidenceThresholds
+from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +40,14 @@ class DocumentClassifier:
     def __init__(self, ai_logger: Optional[AICallLogger] = None):
         """
         Initialize document classifier.
-        
+
         Args:
             ai_logger: AI call logger instance
         """
-        self.together_ai = TogetherAIService()
+        settings = get_settings()
+        qwen_config = settings.get_qwen_config()
+        self.qwen_endpoint_url = qwen_config["endpoint_url"]
+        self.qwen_endpoint_token = qwen_config["endpoint_token"]
         self.ai_logger = ai_logger or AICallLogger()
     
     async def classify_content(
@@ -130,20 +134,30 @@ Example: PRODUCT|0.85"""
         
         try:
             start_time = datetime.now()
-            
-            # Call Qwen for fast classification
-            response = await self.together_ai.generate_completion(
-                prompt=prompt,
-                model="Qwen/Qwen3-VL-8B-Instruct",
-                max_tokens=50,
-                temperature=0.1,
-            )
-            
+
+            # Call Qwen via HuggingFace endpoint for fast classification
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    self.qwen_endpoint_url,
+                    headers={
+                        "Authorization": f"Bearer {self.qwen_endpoint_token}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": "Qwen/Qwen3-VL-32B-Instruct",
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": 50,
+                        "temperature": 0.1
+                    }
+                )
+                response.raise_for_status()
+                response_data = response.json()
+
             end_time = datetime.now()
             latency_ms = int((end_time - start_time).total_seconds() * 1000)
-            
+
             # Parse response
-            response_text = response.get("text", "").strip()
+            response_text = response_data["choices"][0]["message"]["content"].strip()
             parts = response_text.split("|")
             
             if len(parts) >= 2:

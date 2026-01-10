@@ -1354,7 +1354,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
         import os
         if os.getenv("HUGGINGFACE_API_KEY"):
             # Check cache first (unless force_refresh is True)
-            cache_key = "together_ai"
+            cache_key = "qwen_endpoint"
             current_time = time.time()
 
             if not force_refresh and cache_key in _ai_health_cache and (current_time - _ai_health_cache[cache_key]["timestamp"]) < _ai_health_cache_ttl:
@@ -1366,7 +1366,6 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                 # Actually test the HuggingFace endpoint
                 try:
                     import httpx
-                    from app.config import get_settings
                     settings = get_settings()
                     qwen_config = settings.get_qwen_config()
 
@@ -1615,7 +1614,6 @@ from app.api.search import router as search_router
 from app.api.images import router as images_router
 from app.api.admin import router as admin_router
 from app.api.rag_routes import router as rag_router
-from app.api.together_ai_routes import router as together_ai_router
 from app.api.anthropic_routes import router as anthropic_router
 from app.api.products import router as products_router
 from app.api.document_entities import router as document_entities_router
@@ -1650,7 +1648,6 @@ app.include_router(search_router)
 app.include_router(images_router)
 app.include_router(admin_router)
 app.include_router(rag_router)
-app.include_router(together_ai_router)
 app.include_router(anthropic_router)
 app.include_router(products_router)
 app.include_router(document_entities_router)  # NEW: Document entities (certificates, logos, specifications)
