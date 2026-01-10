@@ -651,22 +651,31 @@ class PDFProcessor:
             if page_list:
                 # page_list contains catalog pages (1-indexed)
                 # Validate and convert to array indices
+                self.logger.info(f"   📋 Received page_list (catalog pages): {page_list}")
                 valid_catalog_pages = converter.validate_page_range(page_list)
+                self.logger.info(f"   ✅ Valid catalog pages after validation: {valid_catalog_pages}")
+
                 pages_to_process = [
                     converter.from_catalog_page(catalog_page).array_index
                     for catalog_page in valid_catalog_pages
                 ]
-                
+
+                self.logger.info(f"   🔄 Converted to PDF array indices (0-based): {pages_to_process}")
+
                 if len(valid_catalog_pages) < len(page_list):
-                    self.logger.info(
-                        f"   Filtered {len(page_list) - len(valid_catalog_pages)} "
-                        f"out-of-bounds catalog pages"
+                    filtered_count = len(page_list) - len(valid_catalog_pages)
+                    self.logger.warning(
+                        f"   ⚠️ Filtered {filtered_count} out-of-bounds catalog pages"
                     )
+                    self.logger.warning(f"      Original: {page_list}")
+                    self.logger.warning(f"      Valid: {valid_catalog_pages}")
             else:
                 pages_to_process = list(range(total_pages))
+                self.logger.info(f"   📋 No page_list provided - processing all {total_pages} pages")
 
 
             self.logger.info(f"🔄 STREAMING IMAGE EXTRACTION: {len(pages_to_process)} pages in batches of {batch_size}")
+            self.logger.info(f"   Pages to process (array indices): {pages_to_process}")
 
             # Process pages in small batches with aggressive memory cleanup
             loop = asyncio.get_event_loop()
@@ -1036,11 +1045,14 @@ class PDFProcessor:
                 # ✅ IMPROVED LOGGING: Differentiate between pages with/without images
                 if len(image_list) > 0:
                     self.logger.info(
-                        f"   📄 [Job: {job_id}] PyMuPDF: Page {page_idx + 1} has {len(image_list)} embedded images"
+                        f"   📄 [Job: {job_id}] PyMuPDF: Page {page_idx + 1} (array index {page_idx}) has {len(image_list)} embedded images"
                     )
                 else:
-                    self.logger.debug(
-                        f"   📄 [Job: {job_id}] PyMuPDF: Page {page_idx + 1} has no embedded images (text-only or scanned page)"
+                    self.logger.info(
+                        f"   📄 [Job: {job_id}] PyMuPDF: Page {page_idx + 1} (array index {page_idx}) has NO embedded images"
+                    )
+                    self.logger.info(
+                        f"      This could mean: text-only page, scanned page, or vector graphics"
                     )
 
                 # ============================================================
@@ -1078,8 +1090,10 @@ class PDFProcessor:
                             # Immediately free memory
                             del image_bytes, base_image
 
-                            self.logger.debug(
-                                f"   ✅ [Job: {job_id}] Extracted PyMuPDF image: {image_filename}"
+                            self.logger.info(
+                                f"   ✅ [Job: {job_id}] Extracted image {img_idx + 1}/{len(image_list)}: {image_filename} "
+                                f"({extracted_images[-1]['width']}x{extracted_images[-1]['height']}, "
+                                f"{extracted_images[-1]['size_bytes']} bytes)"
                             )
 
                         except Exception as e:
