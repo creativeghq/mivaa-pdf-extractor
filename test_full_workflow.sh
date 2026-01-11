@@ -7,8 +7,45 @@
 # - Prevents duplicate job uploads
 # - Cleans up stuck/old jobs before starting
 # - Comprehensive monitoring and verification
+# - 🧪 TEST MODE: Process only first product for quick validation
+#
+# Usage:
+#   ./test_full_workflow.sh              # Normal mode (all products)
+#   ./test_full_workflow.sh --test       # Test mode (first product only)
+#   ./test_full_workflow.sh --test-mode  # Test mode (first product only)
 
 set -e
+
+# Show usage if --help is passed
+if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+    echo ""
+    echo "MIVAA Full Workflow Test Script"
+    echo ""
+    echo "Usage:"
+    echo "  ./test_full_workflow.sh              # Normal mode (process all products)"
+    echo "  ./test_full_workflow.sh --test       # Test mode (process first product only)"
+    echo "  ./test_full_workflow.sh --test-mode  # Test mode (process first product only)"
+    echo ""
+    echo "Test Mode (--test):"
+    echo "  - Discovers ALL products in the catalog"
+    echo "  - Processes ONLY the first product"
+    echo "  - Faster completion (~2-5 minutes)"
+    echo "  - Use this to validate fixes before full run"
+    echo ""
+    echo "Normal Mode (default):"
+    echo "  - Discovers ALL products in the catalog"
+    echo "  - Processes ALL products sequentially"
+    echo "  - Longer completion time (depends on product count)"
+    echo "  - Production-ready processing"
+    echo ""
+    exit 0
+fi
+
+# Parse command line arguments
+TEST_MODE=false
+if [ "$1" = "--test" ] || [ "$1" = "--test-mode" ]; then
+    TEST_MODE=true
+fi
 
 # Configuration
 API_URL="http://localhost:8000"
@@ -95,7 +132,12 @@ check_health() {
 
 # Function to upload PDF from URL
 upload_pdf() {
-    print_status "Uploading PDF from URL: $PDF_URL"
+    if [ "$TEST_MODE" = true ]; then
+        print_warning "🧪 TEST MODE ENABLED - Will process ONLY the first product"
+        print_status "Uploading PDF from URL: $PDF_URL"
+    else
+        print_status "Uploading PDF from URL: $PDF_URL"
+    fi
 
     response=$(curl -s -X POST "$API_URL/api/rag/documents/upload" \
         -F "file_url=$PDF_URL" \
@@ -103,6 +145,7 @@ upload_pdf() {
         -F "processing_mode=standard" \
         -F "categories=all" \
         -F "discovery_model=claude-vision" \
+        -F "test_single_product=$TEST_MODE" \
         2>&1)
 
     echo "$response" > /tmp/upload_response.json
@@ -115,7 +158,11 @@ upload_pdf() {
         return 1
     fi
 
-    print_success "PDF uploaded successfully. Job ID: $job_id"
+    if [ "$TEST_MODE" = true ]; then
+        print_success "PDF uploaded in TEST MODE. Job ID: $job_id"
+    else
+        print_success "PDF uploaded successfully. Job ID: $job_id"
+    fi
     echo "$job_id"
 }
 
@@ -255,9 +302,22 @@ verify_results() {
 main() {
     echo ""
     print_status "========================================="
-    print_status "MIVAA Full Workflow Test"
+    if [ "$TEST_MODE" = true ]; then
+        print_status "🧪 MIVAA TEST MODE - Single Product"
+    else
+        print_status "MIVAA Full Workflow Test"
+    fi
     print_status "========================================="
     echo ""
+
+    if [ "$TEST_MODE" = true ]; then
+        print_warning "TEST MODE ENABLED:"
+        print_warning "  - Will discover ALL products"
+        print_warning "  - Will process ONLY the first product"
+        print_warning "  - Use this to validate fixes before full run"
+        print_warning "  - Run without --test flag for full processing"
+        echo ""
+    fi
 
     # Check service health
     if ! check_health; then
@@ -286,7 +346,11 @@ main() {
 
     echo ""
     print_success "Job started: $job_id"
-    print_status "This is the ONLY job running for $PDF_NAME"
+    if [ "$TEST_MODE" = true ]; then
+        print_status "🧪 TEST MODE: Processing first product only"
+    else
+        print_status "This is the ONLY job running for $PDF_NAME"
+    fi
     echo ""
 
     # Monitor job
@@ -295,20 +359,40 @@ main() {
         # Verify results
         if verify_results "$job_id"; then
             print_success "========================================="
-            print_success "WORKFLOW TEST COMPLETED SUCCESSFULLY!"
-            print_success "========================================="
-            print_success "Job ID: $job_id"
+            if [ "$TEST_MODE" = true ]; then
+                print_success "🧪 TEST MODE COMPLETED SUCCESSFULLY!"
+                print_success "========================================="
+                print_success "Job ID: $job_id"
+                echo ""
+                print_status "Next steps:"
+                print_status "  1. ✅ Verify product was created correctly"
+                print_status "  2. ✅ Check logs for any warnings"
+                print_status "  3. ✅ If all looks good, run full test:"
+                print_status "     ./test_full_workflow.sh"
+            else
+                print_success "WORKFLOW TEST COMPLETED SUCCESSFULLY!"
+                print_success "========================================="
+                print_success "Job ID: $job_id"
+            fi
             exit 0
         else
             print_error "========================================="
-            print_error "WORKFLOW TEST FAILED - VERIFICATION"
+            if [ "$TEST_MODE" = true ]; then
+                print_error "🧪 TEST MODE FAILED - VERIFICATION"
+            else
+                print_error "WORKFLOW TEST FAILED - VERIFICATION"
+            fi
             print_error "========================================="
             print_error "Job ID: $job_id"
             exit 1
         fi
     else
         print_error "========================================="
-        print_error "WORKFLOW TEST FAILED - JOB PROCESSING"
+        if [ "$TEST_MODE" = true ]; then
+            print_error "🧪 TEST MODE FAILED - JOB PROCESSING"
+        else
+            print_error "WORKFLOW TEST FAILED - JOB PROCESSING"
+        fi
         print_error "========================================="
         print_error "Job ID: $job_id"
         exit 1

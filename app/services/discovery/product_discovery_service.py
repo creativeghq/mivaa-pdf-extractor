@@ -981,33 +981,32 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
 
         prompt = f"""You are analyzing a product catalog PDF with {total_pages} pages (numbered 1 to {total_pages} in this file).
 
-**YOUR TASK**: Identify ALL products that actually exist in THIS PDF by analyzing the content.
+**YOUR TASK**: Identify ONLY the MAIN FEATURED PRODUCTS that have dedicated page spreads in THIS PDF.
 
-**⚠️ CRITICAL - PDF EXCERPT DETECTION**:
-This PDF may be an EXCERPT from a larger catalog. The index/TOC might reference page numbers from the ORIGINAL catalog that don't exist in this file.
+**⚠️ CRITICAL RULES**:
+1. **ONLY include products with DEDICATED PAGE SPREADS** (typically 2-12 pages each)
+2. **EXCLUDE products that are only mentioned in**:
+   - Table of contents / Index pages
+   - Thumbnail grids or product overview pages
+   - Cross-references or "related products" sections
+   - Small mentions or callouts
+3. **A MAIN PRODUCT must have**:
+   - Its own dedicated page spread (not just a thumbnail)
+   - Detailed product information (dimensions, materials, etc.)
+   - Large product images (not just small thumbnails)
+   - Typically 2-12 consecutive pages
+**VALIDATION**:
+- This PDF has pages 1-{total_pages}
+- Only include products with page ranges within 1-{total_pages}
+- Each product should have 2-12 consecutive pages (not just 1 page)
+- If you're unsure whether something is a main product, EXCLUDE it
 
-**INSTRUCTIONS**:
-1. **Look for any product index/listing section** - May have various names like "INDEX", "COLLECTIONS", "PRODUCTS", etc.
-2. **Scan the content** to identify all products by looking for:
-   - Product names in uppercase or bold
-   - Page numbers associated with products
-   - Designer/studio attributions
-3. **Validate page numbers**: This PDF has pages 1-{total_pages}. Any page number > {total_pages} does NOT exist in this file
-4. **For each product found**:
-   - If index says "Product X ... pages 50-55" but this PDF only has {total_pages} pages
-   - Check if Product X actually appears in the PDF content on pages 1-{total_pages}
-   - If YES: Include it with the ACTUAL pages where it appears in THIS PDF
-   - If NO: SKIP this product entirely (it's not in this excerpt)
-5. **Page ranges**: Include ALL consecutive pages where the product appears in THIS PDF
-6. **Be comprehensive**: Find ALL products that actually exist in pages 1-{total_pages}
-
-**WHAT TO LOOK FOR**:
+**WHAT TO LOOK FOR IN THE INDEX/TOC**:
 - Product names in uppercase or bold (e.g., "VALENOVA", "FOLD", "PIQUÉ")
 - Page numbers next to product names (e.g., "— **24**", "FOLD ... 32-35")
 - Designer names (e.g., "by SG NY", "by ESTUDI{{H}}AC", "by DSIGNIO")
-- Section headers indicating product categories
 
-**⚠️ IMPORTANT**: Only include products that you can accurately map to page numbers within the range 1-{total_pages}. If a product is mentioned but its page is outside this range or cannot be determined, SKIP it.
+**⚠️ BE CONSERVATIVE**: When in doubt, EXCLUDE the product. We want ONLY main featured products, not every product mention.
 
 **OUTPUT FORMAT** (JSON only):
 ```json
@@ -1192,7 +1191,7 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
             response = client.messages.create(
                 model="claude-sonnet-4-5",
                 max_tokens=16000,  # Large response for comprehensive catalog
-                temperature=0.1,  # Low temperature for consistent extraction
+                temperature=0,  # Zero temperature for maximum consistency
                 messages=[
                     {
                         "role": "user",

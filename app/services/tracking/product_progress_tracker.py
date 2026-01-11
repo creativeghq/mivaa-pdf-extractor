@@ -144,6 +144,7 @@ class ProductProgressTracker:
                 "status": ProductStatus.PENDING.value,
                 "stages_completed": [],
                 "metrics": {},
+                "metadata": metadata or {},  # ✅ FIX: Include metadata in initial insert
                 "created_at": datetime.utcnow().isoformat()
             }
 
@@ -392,6 +393,7 @@ class ProductProgressTracker:
                 error_stage=ProductStage(data["error_stage"]) if data.get("error_stage") else None,
                 error_timestamp=data.get("error_timestamp"),
                 metrics=ProductMetrics(**data.get("metrics", {})),
+                metadata=data.get("metadata", {}),  # ✅ FIX: Include metadata field
                 started_at=data.get("started_at"),
                 completed_at=data.get("completed_at")
             )

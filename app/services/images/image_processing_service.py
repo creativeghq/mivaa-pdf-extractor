@@ -149,10 +149,20 @@ Respond ONLY with JSON:
 
                     # ✅ CRITICAL FIX: Check for API errors before accessing 'choices'
                     # TogetherAI returns {"error": {...}} when service is unavailable or rate limited
+                    # Sometimes error is a string, sometimes it's a dict
                     if 'error' in response_data:
                         error_info = response_data['error']
-                        error_msg = error_info.get('message', 'Unknown error')
-                        error_type = error_info.get('type', 'unknown')
+
+                        # Handle both string and dict error formats
+                        if isinstance(error_info, str):
+                            error_msg = error_info
+                            error_type = 'unknown'
+                        elif isinstance(error_info, dict):
+                            error_msg = error_info.get('message', 'Unknown error')
+                            error_type = error_info.get('type', 'unknown')
+                        else:
+                            error_msg = str(error_info)
+                            error_type = 'unknown'
 
                         logger.error(f"❌ TogetherAI API Error for {image_path}")
                         logger.error(f"   Error Type: {error_type}")

@@ -349,6 +349,12 @@ async def upload_document(
         description="Processing mode: 'quick' (extract only), 'standard' (full RAG), 'deep' (complete analysis)"
     ),
 
+    # 🧪 TEST MODE: Process only first product for testing
+    test_single_product: bool = Form(
+        False,
+        description="TEST MODE: Process only the first product (for testing/debugging)"
+    ),
+
     # NEW: Category-based extraction
     categories: str = Form(
         "all",
@@ -826,7 +832,8 @@ async def upload_document(
                     "discovery_model": discovery_model,
                     "prompt_enhancement_enabled": enable_prompt_enhancement,
                     "agent_prompt": agent_prompt,
-                    "file_url": file_url
+                    "file_url": file_url,
+                    "test_single_product": test_single_product  # 🧪 TEST MODE flag
                 },
                 "created_at": datetime.utcnow().isoformat(),
                 "updated_at": datetime.utcnow().isoformat()
@@ -864,7 +871,8 @@ async def upload_document(
             chunk_overlap=chunk_overlap,
             workspace_id=workspace_id,
             agent_prompt=agent_prompt,
-            enable_prompt_enhancement=enable_prompt_enhancement
+            enable_prompt_enhancement=enable_prompt_enhancement,
+            test_single_product=test_single_product  # 🧪 TEST MODE flag
         )
         logger.info(f"✅ Background processing task started for job {job_id}")
 
@@ -1209,11 +1217,12 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
                 categories = job_metadata.get('categories', ['products'])
                 enable_prompt_enhancement = job_metadata.get('prompt_enhancement_enabled', False)
                 agent_prompt = job_metadata.get('agent_prompt')
+                test_single_product = job_metadata.get('test_single_product', False)  # 🧪 TEST MODE
 
                 # Determine focused extraction based on categories
                 use_focused_extraction = 'all' not in categories
 
-                logger.info(f"   Resume parameters: discovery_model={discovery_model}, categories={categories}, focused={use_focused_extraction}")
+                logger.info(f"   Resume parameters: discovery_model={discovery_model}, categories={categories}, focused={use_focused_extraction}, test_mode={test_single_product}")
 
                 background_tasks.add_task(
                     run_async_in_background(process_document_with_discovery),
@@ -1231,7 +1240,8 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
                     chunk_size=1000,
                     chunk_overlap=200,
                     agent_prompt=agent_prompt,
-                    enable_prompt_enhancement=enable_prompt_enhancement
+                    enable_prompt_enhancement=enable_prompt_enhancement,
+                    test_single_product=test_single_product  # 🧪 TEST MODE
                 )
             else:
                 # Use standard processing for resume
@@ -2666,7 +2676,8 @@ async def process_document_with_discovery(
     chunk_overlap: int,
     workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
     agent_prompt: Optional[str] = None,
-    enable_prompt_enhancement: bool = True
+    enable_prompt_enhancement: bool = True,
+    test_single_product: bool = False  # 🧪 TEST MODE: Process only first product
 ):
     """
     Background task to process document with intelligent product discovery.
@@ -2893,6 +2904,17 @@ async def process_document_with_discovery(
         products_completed = 0
         products_failed = 0
 
+        # 🧪 TEST MODE: Process only first product if test_single_product=True
+        if test_single_product:
+            logger.warning("=" * 80)
+            logger.warning("🧪 TEST MODE ENABLED: Processing ONLY the first product")
+            logger.warning("   This is for testing/debugging purposes only")
+            logger.warning("   Set test_single_product=False to process all products")
+            logger.warning("=" * 80)
+            products_to_process = catalog.products[:1]  # Only first product
+        else:
+            products_to_process = catalog.products  # All products
+
         # ========================================================================
         # PRODUCT LOOP: Process each product individually
         # ========================================================================
@@ -2906,7 +2928,7 @@ async def process_document_with_discovery(
         # 7. Preserves shared resources for next product
         # ========================================================================
 
-        for product_index, product in enumerate(catalog.products, start=1):
+        for product_index, product in enumerate(products_to_process, start=1):
             try:
                 logger.info(f"\n{'─'*80}")
                 logger.info(f"Processing product {product_index}/{total_products}: {product.name}")
