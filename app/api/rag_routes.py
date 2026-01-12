@@ -713,6 +713,7 @@ async def upload_document(
         logger.info(f"   Categories: {category_list}")
         logger.info(f"   Discovery Model: {discovery_model}")
         logger.info(f"   Source: {'URL' if file_url else 'Upload'}")
+        logger.info(f"   🧪 TEST MODE: {test_single_product} (type: {type(test_single_product).__name__})")
         if agent_prompt:
             logger.info(f"   Agent Prompt: {agent_prompt}")
 

@@ -139,13 +139,20 @@ upload_pdf() {
         print_status "Uploading PDF from URL: $PDF_URL"
     fi
 
+    # Convert bash boolean to FastAPI-compatible format (True/False with capital T/F)
+    if [ "$TEST_MODE" = true ]; then
+        TEST_PARAM="True"
+    else
+        TEST_PARAM="False"
+    fi
+
     response=$(curl -s -X POST "$API_URL/api/rag/documents/upload" \
         -F "file_url=$PDF_URL" \
         -F "title=$PDF_NAME" \
         -F "processing_mode=standard" \
         -F "categories=all" \
         -F "discovery_model=claude-vision" \
-        -F "test_single_product=$TEST_MODE" \
+        -F "test_single_product=$TEST_PARAM" \
         2>&1)
 
     echo "$response" > /tmp/upload_response.json
