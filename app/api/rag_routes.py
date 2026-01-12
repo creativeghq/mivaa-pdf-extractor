@@ -152,10 +152,6 @@ class DocumentUploadRequest(BaseModel):
     enable_embedding: bool = Field(True, description="Enable automatic embedding generation")
 
     # NEW: Consolidated upload parameters
-    processing_mode: Optional[str] = Field(
-        "standard",
-        description="Processing mode: 'quick' (extract only), 'standard' (full RAG), 'deep' (complete analysis)"
-    )
     categories: Optional[str] = Field(
         "all",
         description="Categories to extract: 'products', 'certificates', 'logos', 'specifications', 'all', 'extract_only'. Comma-separated."
@@ -348,12 +344,6 @@ async def upload_document(
     description: Optional[str] = Form(None, description="Document description"),
     tags: Optional[str] = Form(None, description="Comma-separated tags"),
 
-    # NEW: Processing mode parameter
-    processing_mode: str = Form(
-        "standard",
-        description="Processing mode: 'quick' (extract only), 'standard' (full RAG), 'deep' (complete analysis)"
-    ),
-
     # 🧪 TEST MODE: Process only first product for testing
     test_single_product: bool = Form(
         False,
@@ -364,6 +354,12 @@ async def upload_document(
     categories: str = Form(
         "all",
         description="Categories to extract: 'products', 'certificates', 'logos', 'specifications', 'all', 'extract_only'. Comma-separated."
+    ),
+
+    # Material category (tiles, wood, heating, etc.)
+    material_category: Optional[str] = Form(
+        None,
+        description="Material category: 'tiles', 'wood', 'decor', 'furniture', 'general_materials', 'paint_wall_decor', 'heating', 'sanitary', 'kitchen', 'lighting', etc."
     ),
 
     # NEW: URL-based upload
@@ -408,35 +404,23 @@ async def upload_document(
     - `/api/documents/process-url` (URL processing)
     - `/api/documents/upload` (old unified upload)
 
-    ## 📋 Processing Modes
-
-    ### Quick Mode (`processing_mode="quick"`)
-    - Fast extraction without RAG
-    - No embeddings generated
-    - No product discovery
-    - Use for: Simple text/image extraction
-
-    ### Standard Mode (`processing_mode="standard"`) - DEFAULT
-    - Full RAG pipeline
-    - Text embeddings generated
-    - Product discovery and extraction
-    - Use for: Normal document processing
-
-    ### Deep Mode (`processing_mode="deep"`)
-    - Complete analysis with all AI models
-    - Image embeddings (CLIP)
-    - Advanced product enrichment
-    - Quality validation
-    - Use for: High-quality catalog processing
-
     ## 🎨 Category-Based Extraction
 
     Control what gets extracted:
     - `categories="products"` - Extract only products
     - `categories="certificates"` - Extract only certificates
+    - `categories="logos"` - Extract only logos
+    - `categories="specifications"` - Extract only specifications
     - `categories="products,certificates"` - Extract multiple categories
-    - `categories="all"` - Extract everything (default)
+    - `categories="all"` - Extract everything (default - comprehensive deep analysis)
     - `categories="extract_only"` - Just extract text/images, no categorization
+
+    **Processing:** All uploads use deep processing mode with:
+    - Complete AI analysis with all models
+    - Image embeddings (CLIP)
+    - Advanced product enrichment
+    - Quality validation
+    - Full RAG pipeline
 
     ## 🌐 URL Processing
 
@@ -493,27 +477,17 @@ async def upload_document(
 
     ## 📝 Examples
 
-    ### Simple Extraction (Quick Mode)
-    ```bash
-    curl -X POST "/api/rag/documents/upload" \\
-      -F "file=@document.pdf" \\
-      -F "processing_mode=quick" \\
-      -F "categories=extract_only"
-    ```
-
-    ### Standard Product Extraction
+    ### Product Extraction
     ```bash
     curl -X POST "/api/rag/documents/upload" \\
       -F "file=@catalog.pdf" \\
-      -F "processing_mode=standard" \\
       -F "categories=products"
     ```
 
-    ### Deep Analysis with Multiple Categories
+    ### Multiple Categories
     ```bash
     curl -X POST "/api/rag/documents/upload" \\
       -F "file=@catalog.pdf" \\
-      -F "processing_mode=deep" \\
       -F "categories=products,certificates,logos"
     ```
 
@@ -521,7 +495,6 @@ async def upload_document(
     ```bash
     curl -X POST "/api/rag/documents/upload" \\
       -F "file_url=https://example.com/catalog.pdf" \\
-      -F "processing_mode=standard" \\
       -F "categories=all"
     ```
 
@@ -542,7 +515,6 @@ async def upload_document(
       "status": "pending",
       "message": "Document upload successful. Processing started.",
       "status_url": "/api/rag/documents/job/550e8400-e29b-41d4-a716-446655440000",
-      "processing_mode": "standard",
       "categories": ["products", "certificates"],
       "estimated_time": "2-5 minutes"
     }
@@ -581,7 +553,7 @@ async def upload_document(
     ## 🔄 Migration from Old Endpoints
 
     **Old:** `POST /api/documents/process`
-    **New:** `POST /api/rag/documents/upload` with `processing_mode="quick"`
+    **New:** `POST /api/rag/documents/upload`
 
     **Old:** `POST /api/documents/process-url`
     **New:** `POST /api/rag/documents/upload` with `file_url` parameter
@@ -602,14 +574,6 @@ async def upload_document(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Provide either 'file' or 'file_url', not both"
-            )
-
-        # Validate processing mode
-        valid_modes = ['quick', 'standard', 'deep']
-        if processing_mode not in valid_modes:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid processing_mode '{processing_mode}'. Valid modes: {', '.join(valid_modes)}"
             )
 
         # Parse and validate categories
@@ -708,7 +672,6 @@ async def upload_document(
         logger.info(f"   Job ID: {job_id}")
         logger.info(f"   Document ID: {document_id}")
         logger.info(f"   Filename: {filename}")
-        logger.info(f"   Processing Mode: {processing_mode}")
         logger.info(f"   Categories: {category_list}")
         logger.info(f"   Discovery Model: {discovery_model}")
         logger.info(f"   Source: {'URL' if file_url else 'Upload'}")
@@ -768,8 +731,8 @@ async def upload_document(
                     "description": description or f"Document with {', '.join(category_list)} extraction",
                     "tags": document_tags,
                     "source": "consolidated_upload",
-                    "processing_mode": processing_mode,
                     "categories": category_list,
+                    "material_category": material_category,
                     "discovery_model": discovery_model,
                     "prompt_enhancement_enabled": enable_prompt_enhancement,
                     "agent_prompt": agent_prompt,
@@ -799,7 +762,6 @@ async def upload_document(
                 "processing_status": "processing",
                 "processing_started_at": datetime.utcnow().isoformat(),
                 "metadata": {
-                    "processing_mode": processing_mode,
                     "categories": category_list
                 },
                 "created_at": datetime.utcnow().isoformat(),
@@ -825,8 +787,8 @@ async def upload_document(
                 "workspace_id": workspace_id,
                 "metadata": {
                     "filename": filename,
-                    "processing_mode": processing_mode,
                     "categories": category_list,
+                    "material_category": material_category,
                     "discovery_model": discovery_model,
                     "prompt_enhancement_enabled": enable_prompt_enhancement,
                     "agent_prompt": agent_prompt,
@@ -844,12 +806,7 @@ async def upload_document(
                 detail=f"Failed to create background job record: {str(e)}"
             )
 
-        # Start background processing
-        # Note: "quick" mode is not implemented - all processing uses standard mode
-        if processing_mode == "quick":
-            logger.info("Quick mode requested but not implemented, using standard mode")
-            processing_mode = "standard"
-
+        # Start background processing with deep mode
         # Use the existing process_document_with_discovery function
         # Use FastAPI BackgroundTasks to run in thread pool (prevents blocking event loop)
         # This ensures the API remains responsive during long-running processing
@@ -878,9 +835,8 @@ async def upload_document(
             "job_id": job_id,
             "document_id": document_id,
             "status": "processing",
-            "message": f"Document upload started with {processing_mode} mode and {', '.join(category_list)} extraction",
+            "message": f"Document upload started with deep processing and {', '.join(category_list)} extraction",
             "status_url": f"/api/rag/documents/job/{job_id}",
-            "processing_mode": processing_mode,
             "categories": category_list,
             "discovery_model": discovery_model,
             "prompt_enhancement_enabled": enable_prompt_enhancement,

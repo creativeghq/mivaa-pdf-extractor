@@ -78,6 +78,19 @@ async def process_product_chunking(
         logger.info(f"   Excluded pages: {sorted(excluded_pages)} ({len(excluded_pages)} metadata pages)")
 
     # ========================================================================
+    # EARLY EXIT: Skip chunking if no chunkable pages
+    # ========================================================================
+    if not chunkable_pages:
+        logger.info(f"   ⏭️ Skipping chunking - all pages are metadata pages")
+        return {
+            'chunks_created': 0,
+            'chunk_ids': [],
+            'pages_chunked': 0,
+            'pages_excluded': len(excluded_pages),
+            'chunks': []
+        }
+
+    # ========================================================================
     # STEP 1.5: Load Layout Regions (for layout-aware chunking)
     # ========================================================================
     layout_regions_by_page = {}
