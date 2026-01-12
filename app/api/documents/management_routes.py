@@ -21,14 +21,14 @@ except ImportError:
     from pydantic import BaseModel, Field
 
 from app.services.core.supabase_client import get_supabase_client
-from app.services.recovery.checkpoint_recovery_service import CheckpointRecoveryService
-from app.services.processing.processing_stage import ProcessingStage
+from app.services.tracking.checkpoint_recovery_service import CheckpointRecoveryService
+from app.schemas.jobs import ProcessingStage
 
 # Import orchestration functions from centralized module
+from app.api.rag_routes import process_document_background
 from app.orchestration import (
     run_async_in_background,
     process_document_with_discovery,
-    process_document_background,
 )
 
 # Import for file download

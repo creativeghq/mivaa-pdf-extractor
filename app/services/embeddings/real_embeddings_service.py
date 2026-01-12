@@ -921,7 +921,7 @@ class RealEmbeddingsService:
             }
 
             # First, get the base image embedding (768D)
-            image_embedding_result = await self.slig_client.get_image_embedding(
+            image_embedding_result = await self._slig_client.get_image_embedding(
                 image_url=image_url,
                 image_data=image_data
             )
@@ -938,7 +938,7 @@ class RealEmbeddingsService:
             for embedding_type, text_prompt in text_prompts.items():
                 try:
                     # Get similarity score between image and text prompt
-                    similarity_result = await self.slig_client.get_similarity(
+                    similarity_result = await self._slig_client.get_similarity(
                         image_url=image_url,
                         image_data=image_data,
                         text=text_prompt
@@ -948,7 +948,7 @@ class RealEmbeddingsService:
                         similarity_score = similarity_result["similarity"]
 
                         # Also get text embedding for this prompt
-                        text_embedding_result = await self.slig_client.get_text_embedding(text_prompt)
+                        text_embedding_result = await self._slig_client.get_text_embedding(text_prompt)
 
                         if text_embedding_result and "embedding" in text_embedding_result:
                             text_embedding = text_embedding_result["embedding"]
