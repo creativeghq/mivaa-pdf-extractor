@@ -7,6 +7,9 @@ document embedding, querying, chat interface, and document management.
 
 import logging
 import os
+import shutil
+import tempfile
+import gc
 import base64
 from datetime import datetime
 from typing import Dict, List, Optional, Any
@@ -15,6 +18,8 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, status, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
 import asyncio
+import aiohttp
+import httpx
 import sentry_sdk
 try:
     # Try Pydantic v2 first
@@ -636,11 +641,8 @@ async def upload_document(
                     detail="Only PDF files are supported"
                 )
             filename = file.filename
-            
+
             # STREAMING UPLOAD: Save directly to disk without loading into RAM
-            import shutil
-            import tempfile
-            
             # Create temp file
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
             file_path = temp_file.name
@@ -668,9 +670,6 @@ async def upload_document(
 
         elif file_url:
             # Download from URL
-            import aiohttp
-            import tempfile
-
             logger.info(f"📥 Downloading PDF from URL: {file_url}")
 
             try:
@@ -725,7 +724,6 @@ async def upload_document(
         # File is already saved to file_path above for 'file' case
         # For URL case, we need to save it
         if file_url and file_content:
-             import tempfile
              temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
              temp_file.write(file_content)
              temp_file.close()
@@ -735,7 +733,6 @@ async def upload_document(
              file_content = None
         else:
              # For file upload case, get file size from file_path
-             import os
              file_size = os.path.getsize(file_path)
 
         # Get Supabase client
@@ -1163,7 +1160,6 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
             # Check if file_path is a full URL (starts with http:// or https://)
             if file_path.startswith('http://') or file_path.startswith('https://'):
                 # Download from URL with extended timeout for large PDFs
-                import httpx
                 async with httpx.AsyncClient(timeout=60.0) as client:  # 60 second timeout for large files
                     response = await client.get(file_path)
                     response.raise_for_status()
@@ -1182,9 +1178,8 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
 
             file_content = file_response
             logger.info(f"✅ Downloaded file: {len(file_content)} bytes")
-            
+
             # STREAMING REFACTOR: Save to temp file for processing
-            import tempfile
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
             temp_file.write(file_content)
             temp_file.close()
@@ -1862,9 +1857,8 @@ async def create_products_background(
     Runs separately to avoid blocking main PDF processing.
     Creates a sub-job for tracking.
     """
-    import uuid
     supabase_client = get_supabase_client()
-    sub_job_id = str(uuid.uuid4())  # ✅ FIX: Generate proper UUID instead of appending "_products"
+    sub_job_id = str(uuid4())  # ✅ FIX: Generate proper UUID instead of appending "_products"
 
     try:
         logger.info(f"🏭 Starting background product creation for document {document_id}")
@@ -2034,9 +2028,8 @@ async def process_images_background(
     Runs separately to avoid blocking main PDF processing.
     Creates a sub-job for tracking.
     """
-    import uuid
     supabase_client = get_supabase_client()
-    sub_job_id = str(uuid.uuid4())  # ✅ FIX: Generate proper UUID instead of appending "_images"
+    sub_job_id = str(uuid4())  # ✅ FIX: Generate proper UUID instead of appending "_images"
 
     try:
         logger.info(f"🖼️ Starting background image AI analysis for document {document_id}")
@@ -3154,7 +3147,6 @@ async def process_document_with_discovery(
         logger.info(f"✅ Cleaned up {cleaned_count} temporary files after error")
 
         # Force garbage collection
-        import gc
         gc.collect()
 
         # Mark job as failed using tracker

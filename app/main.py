@@ -1956,6 +1956,7 @@ from app.api.search import router as search_router
 from app.api.images import router as images_router
 from app.api.admin import router as admin_router
 from app.api.rag_routes import router as rag_router
+from app.api.documents import upload_router, query_router, management_router  # NEW: Refactored upload, query, and management routes
 from app.api.anthropic_routes import router as anthropic_router
 from app.api.products import router as products_router
 from app.api.document_entities import router as document_entities_router
@@ -1990,9 +1991,12 @@ app.include_router(search_router)
 app.include_router(images_router)
 app.include_router(admin_router)
 app.include_router(rag_router)
+app.include_router(upload_router, prefix="/api/rag")  # NEW: Refactored upload routes (mounted at /api/rag/documents/upload)
+app.include_router(query_router, prefix="/api/rag")  # NEW: Refactored query routes (mounted at /api/rag/documents/query, /search, /chat)
+app.include_router(management_router, prefix="/api/rag")  # NEW: Refactored management routes (job status, content, AI tracking)
 app.include_router(anthropic_router)
 app.include_router(products_router)
-app.include_router(document_entities_router)  # NEW: Document entities (certificates, logos, specifications)
+app.include_router(document_entities_router) 
 app.include_router(embeddings_router)
 app.include_router(monitoring_router)
 app.include_router(ai_metrics_router)
