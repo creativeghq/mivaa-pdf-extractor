@@ -72,7 +72,6 @@ async def process_product_images(
     pdf_result = await pdf_processor.process_pdf_from_bytes(
         pdf_bytes=file_content,
         document_id=document_id,
-        job_id=job_id,  # ✅ FIX: Pass job_id for proper tracking
         processing_options=processing_options
     )
 
