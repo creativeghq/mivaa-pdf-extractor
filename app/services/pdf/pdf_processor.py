@@ -396,39 +396,58 @@ class PDFProcessor:
         loop = asyncio.get_event_loop()
 
         try:
-            # Extract markdown content using existing function with timeout
-            # Set a reasonable timeout for markdown extraction (5 minutes for large PDFs)
-            markdown_timeout = processing_options.get('markdown_timeout', 300)  # 5 minutes default
+            # ✅ FIX: Make markdown extraction conditional
+            # If extract_text is False, skip markdown extraction (for image-only processing)
+            extract_text = processing_options.get('extract_text', True)
 
-            # Extract markdown content using isolated worker process
-            # Progress callback is limited with ProcessPool, we notify start here
-            if progress_callback:
+            markdown_content = ""
+            metadata = {}
+            page_chunks = None
+
+            if extract_text:
+                # Extract markdown content using existing function with timeout
+                # Set a reasonable timeout for markdown extraction (5 minutes for large PDFs)
+                markdown_timeout = processing_options.get('markdown_timeout', 300)  # 5 minutes default
+
+                # Extract markdown content using isolated worker process
+                # Progress callback is limited with ProcessPool, we notify start here
+                if progress_callback:
+                    try:
+                        if not inspect.iscoroutinefunction(progress_callback):
+                            progress_callback(progress=10, details={"current_step": "Starting PDF extraction in isolated process"})
+                    except Exception:
+                        pass
+
                 try:
-                    if not inspect.iscoroutinefunction(progress_callback):
-                        progress_callback(progress=10, details={"current_step": "Starting PDF extraction in isolated process"})
-                except Exception:
-                    pass
-
-            try:
-                # Execute in thread pool
-                # ✅ NEW: Worker now returns (markdown_content, metadata, page_chunks)
-                # Filter out non-serializable objects (services, trackers) before passing to worker
-                filtered_options = {
-                    k: v for k, v in processing_options.items()
-                    if k not in ('checkpoint_recovery_service', 'progress_tracker', 'job_id')
+                    # Execute in thread pool
+                    # ✅ NEW: Worker now returns (markdown_content, metadata, page_chunks)
+                    # Filter out non-serializable objects (services, trackers) before passing to worker
+                    filtered_options = {
+                        k: v for k, v in processing_options.items()
+                        if k not in ('checkpoint_recovery_service', 'progress_tracker', 'job_id')
+                    }
+                    markdown_content, metadata, page_chunks = await asyncio.wait_for(
+                        loop.run_in_executor(
+                            self.executor,
+                            execute_pdf_extraction_job,
+                            pdf_path,
+                            filtered_options
+                        ),
+                        timeout=markdown_timeout
+                    )
+                except asyncio.TimeoutError:
+                    self.logger.error(f"Markdown extraction timed out after {markdown_timeout} seconds")
+                    raise PDFTimeoutError(f"Markdown extraction timed out after {markdown_timeout} seconds. The PDF may be corrupted or too complex.")
+            else:
+                # Image-only processing - get minimal metadata without text extraction
+                self.logger.info("📄 Skipping text extraction (extract_text=False) - extracting images only")
+                import fitz
+                doc = fitz.open(pdf_path)
+                metadata = {
+                    'page_count': len(doc),
+                    'file_size': os.path.getsize(pdf_path)
                 }
-                markdown_content, metadata, page_chunks = await asyncio.wait_for(
-                    loop.run_in_executor(
-                        self.executor,
-                        execute_pdf_extraction_job,
-                        pdf_path,
-                        filtered_options
-                    ),
-                    timeout=markdown_timeout
-                )
-            except asyncio.TimeoutError:
-                self.logger.error(f"Markdown extraction timed out after {markdown_timeout} seconds")
-                raise PDFTimeoutError(f"Markdown extraction timed out after {markdown_timeout} seconds. The PDF may be corrupted or too complex.")
+                doc.close()
             
             # Extract images if requested
             extracted_images = []

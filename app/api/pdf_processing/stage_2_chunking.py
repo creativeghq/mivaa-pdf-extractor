@@ -110,13 +110,58 @@ async def process_product_chunking(
         'chunk_overlap': config.get('chunk_overlap', 200)
     })
 
-    # Filter PDF content to only include product pages
-    # Extract text from product pages only
+    # ✅ FIX: Extract text from product pages when pdf_result is None
+    # In product-centric pipeline, pdf_result is None, so we need to extract text on-demand
     product_text = ""
     if pdf_result and pdf_result.markdown_content:
-        # TODO: Implement page-based text filtering
-        # For now, use all text (will be filtered by page metadata)
+        # Legacy path: use pre-extracted text
         product_text = pdf_result.markdown_content
+    else:
+        # Product-centric path: extract text from specific product pages
+        logger.info(f"   📄 Extracting text from {len(product_pages)} product pages...")
+        try:
+            import pymupdf4llm
+            import tempfile
+            import os
+
+            # Write PDF bytes to temp file
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+                tmp_file.write(file_content)
+                tmp_pdf_path = tmp_file.name
+
+            try:
+                # Convert product_pages (0-based array indices) to 1-based catalog pages
+                from app.utils.page_converter import PageConverter
+                pages_per_sheet = getattr(catalog, 'pages_per_sheet', 1)
+                converter = PageConverter(pages_per_sheet=pages_per_sheet)
+
+                catalog_pages = []
+                for array_index in product_pages:
+                    try:
+                        page = converter.from_array_index(array_index)
+                        catalog_pages.append(page.catalog_page)
+                    except ValueError:
+                        continue
+
+                # Extract text from specific pages using PyMuPDF4LLM
+                if catalog_pages:
+                    logger.info(f"   📄 Extracting text from catalog pages: {sorted(catalog_pages)}")
+                    markdown_result = pymupdf4llm.to_markdown(
+                        tmp_pdf_path,
+                        pages=sorted(catalog_pages),
+                        page_chunks=False  # Get full text, not page chunks
+                    )
+                    product_text = str(markdown_result) if markdown_result else ""
+                    logger.info(f"   ✅ Extracted {len(product_text)} characters from {len(catalog_pages)} pages")
+                else:
+                    logger.warning(f"   ⚠️ No valid catalog pages found for product")
+            finally:
+                # Clean up temp file
+                if os.path.exists(tmp_pdf_path):
+                    os.unlink(tmp_pdf_path)
+        except Exception as e:
+            logger.error(f"   ❌ Failed to extract product text: {e}")
+            product_text = ""
 
     # Create chunks with product-specific metadata
     # NOTE: We use chunkable_pages (metadata pages excluded)
@@ -138,74 +183,23 @@ async def process_product_chunking(
         layout_regions_by_page=layout_regions_by_page  # Pass layout regions for layout-aware chunking
     )
 
-    # Get chunks from result
-    chunks = chunk_result.get('chunks', [])
-    logger.info(f"   Created {len(chunks)} raw chunks")
+    # Get chunks count from result
+    # NOTE: Chunks are already created and stored in DB by index_pdf_content
+    # We don't need to re-process them here
+    chunks_created = chunk_result.get('chunks_created', 0)
+    logger.info(f"   ✅ Created {chunks_created} chunks for {product.name} (already stored in DB)")
 
-    # ========================================================================
-    # STEP 3: Enrich Chunks with Product Context
-    # ========================================================================
-    enrichment_service = ChunkContextEnrichmentService(
-        enabled=config.get('enable_chunk_enrichment', True)
-    )
-
-    # Convert product to dict format expected by enrichment service
-    product_dict = {
-        'id': getattr(product, 'id', f"product_{product.name.replace(' ', '_')}"),
-        'name': product.name,
-        'page_range': getattr(product, 'page_range', list(product_pages))
-    }
-
-    enriched_chunks = await enrichment_service.enrich_chunks(
-        chunks=chunks,
-        products=[product_dict],
-        document_id=document_id
-    )
-    logger.info(f"   Enriched {len(enriched_chunks)} chunks with product context")
-
-    # ========================================================================
-    # STEP 4: Classify Chunk Types
-    # ========================================================================
-    classification_service = ChunkTypeClassificationService()
-
-    if config.get('enable_chunk_classification', True):
-        logger.info(f"   Classifying {len(enriched_chunks)} chunks...")
-
-        for chunk in enriched_chunks:
-            try:
-                classification = await classification_service.classify_chunk(chunk.get('content', ''))
-
-                # Add classification metadata
-                if 'metadata' not in chunk:
-                    chunk['metadata'] = {}
-
-                chunk['metadata']['chunk_type'] = classification.chunk_type.value
-                chunk['metadata']['chunk_confidence'] = classification.confidence
-                chunk['metadata']['classification_reasoning'] = classification.reasoning
-
-                # Merge extracted metadata
-                if classification.metadata:
-                    chunk['metadata'].update(classification.metadata)
-            except Exception as e:
-                logger.warning(f"   ⚠️ Failed to classify chunk: {e}")
-                # Continue with unclassified chunk
-
-        logger.info(f"   ✅ Classified {len(enriched_chunks)} chunks")
-    else:
-        logger.info(f"   ⏭️ Chunk classification disabled")
-
-    # ========================================================================
-    # STEP 5: Return Results
-    # ========================================================================
-    chunks_created = len(enriched_chunks)
-    logger.info(f"   ✅ Created {chunks_created} enriched chunks for {product.name}")
+    # TODO: If we need chunk enrichment and classification, we should:
+    # 1. Fetch chunks from DB using chunk_ids
+    # 2. Enrich and classify them
+    # 3. Update them in DB
+    # For now, we skip this since chunks are already stored with basic metadata
 
     return {
         'chunks_created': chunks_created,
         'chunk_ids': chunk_result.get('chunk_ids', []),
         'pages_chunked': len(chunkable_pages),
-        'pages_excluded': len(excluded_pages),
-        'chunks': enriched_chunks  # Return enriched chunks for further processing
+        'pages_excluded': len(excluded_pages)
     }
 
 

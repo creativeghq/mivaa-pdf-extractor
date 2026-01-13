@@ -64,6 +64,7 @@ async def process_product_images(
     pdf_processor = PDFProcessor()
     processing_options = {
         'extract_images': True,
+        'extract_text': False,  # ✅ FIX: Skip text extraction to avoid 300s timeout
         'extract_tables': False,
         'page_list': catalog_pages,  # ✅ FIX: Use catalog pages, not array indices
         'extract_categories': ['products']

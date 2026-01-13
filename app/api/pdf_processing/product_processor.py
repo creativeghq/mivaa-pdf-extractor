@@ -161,6 +161,7 @@ async def process_single_product(
         )
 
         chunks_created = chunk_result.get('chunks_created', 0)
+        logger_instance.info(f"✅ Created {chunks_created} chunks for {product.name}")
         await product_tracker.mark_stage_complete(
             product_id,
             ProductStage.CHUNKING,
