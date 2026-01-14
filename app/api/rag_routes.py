@@ -3113,6 +3113,110 @@ async def process_document_with_discovery(
             pass
             
     finally:
+        # CLEANUP: Pause all HuggingFace inference endpoints to stop billing
+        logger.info("🛑 Pausing all HuggingFace inference endpoints...")
+        endpoints_paused = 0
+        
+        try:
+            # Pause Qwen endpoint (image classification)
+            from app.services.embeddings.qwen_endpoint_manager import QwenEndpointManager
+            from app.config import get_settings
+            settings = get_settings()
+            qwen_config = settings.get_qwen_config()
+            
+            if qwen_config.get("enabled", False):
+                try:
+                    qwen_manager = QwenEndpointManager(
+                        endpoint_url=qwen_config["endpoint_url"],
+                        endpoint_token=qwen_config["hf_token"],
+                        endpoint_name=qwen_config.get("endpoint_name", "mh-qwen332binstruct"),
+                        namespace=qwen_config.get("namespace", "basiliskan"),
+                        enabled=True
+                    )
+                    if qwen_manager.force_pause():
+                        endpoints_paused += 1
+                        logger.info("✅ Qwen endpoint paused")
+                    else:
+                        logger.warning("⚠️ Failed to pause Qwen endpoint")
+                except Exception as e:
+                    logger.warning(f"⚠️ Error pausing Qwen endpoint: {e}")
+        except Exception as e:
+            logger.warning(f"⚠️ Error initializing Qwen manager: {e}")
+        
+        try:
+            # Pause YOLO endpoint (layout detection)
+            from app.services.pdf.yolo_endpoint_manager import YoloEndpointManager
+            yolo_config = settings.get_yolo_config()
+            
+            if yolo_config.get("enabled", False):
+                try:
+                    yolo_manager = YoloEndpointManager(
+                        endpoint_url=yolo_config["endpoint_url"],
+                        hf_token=yolo_config.get("hf_token", ""),
+                        endpoint_name=yolo_config.get("endpoint_name"),
+                        namespace=yolo_config.get("namespace"),
+                        enabled=True
+                    )
+                    if yolo_manager.force_pause():
+                        endpoints_paused += 1
+                        logger.info("✅ YOLO endpoint paused")
+                    else:
+                        logger.warning("⚠️ Failed to pause YOLO endpoint")
+                except Exception as e:
+                    logger.warning(f"⚠️ Error pausing YOLO endpoint: {e}")
+        except Exception as e:
+            logger.warning(f"⚠️ Error initializing YOLO manager: {e}")
+        
+        try:
+            # Pause Chandra endpoint (OCR fallback)
+            from app.services.pdf.chandra_endpoint_manager import ChandraEndpointManager
+            chandra_config = settings.get_chandra_config()
+            
+            if chandra_config.get("enabled", False):
+                try:
+                    chandra_manager = ChandraEndpointManager(
+                        endpoint_url=chandra_config["endpoint_url"],
+                        hf_token=chandra_config.get("hf_token", ""),
+                        endpoint_name=chandra_config.get("endpoint_name"),
+                        namespace=chandra_config.get("namespace"),
+                        enabled=True
+                    )
+                    if chandra_manager.force_pause():
+                        endpoints_paused += 1
+                        logger.info("✅ Chandra endpoint paused")
+                    else:
+                        logger.warning("⚠️ Failed to pause Chandra endpoint")
+                except Exception as e:
+                    logger.warning(f"⚠️ Error pausing Chandra endpoint: {e}")
+        except Exception as e:
+            logger.warning(f"⚠️ Error initializing Chandra manager: {e}")
+        
+        try:
+            # Pause SLIG endpoint (embeddings)
+            from app.services.embeddings.slig_endpoint_manager import SLIGEndpointManager
+            slig_config = settings.get_slig_config()
+            
+            if slig_config.get("enabled", False):
+                try:
+                    slig_manager = SLIGEndpointManager(
+                        endpoint_url=slig_config["endpoint_url"],
+                        hf_token=slig_config.get("hf_token", ""),
+                        endpoint_name=slig_config.get("endpoint_name"),
+                        namespace=slig_config.get("namespace"),
+                        enabled=True
+                    )
+                    if slig_manager.force_pause():
+                        endpoints_paused += 1
+                        logger.info("✅ SLIG endpoint paused")
+                    else:
+                        logger.warning("⚠️ Failed to pause SLIG endpoint")
+                except Exception as e:
+                    logger.warning(f"⚠️ Error pausing SLIG endpoint: {e}")
+        except Exception as e:
+            logger.warning(f"⚠️ Error initializing SLIG manager: {e}")
+        
+        logger.info(f"🛑 Paused {endpoints_paused} HuggingFace endpoints (no billing)")
+        
         # CLEANUP: Remove local temp file
         if 'file_path' in locals() and file_path and os.path.exists(file_path):
             # Only delete if it's a temp file we created (basic safety check)
