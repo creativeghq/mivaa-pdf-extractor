@@ -89,6 +89,8 @@ class ImageProcessingService:
 
         # Get HuggingFace endpoint configuration from settings
         from app.config import get_settings
+        from app.services.embeddings.qwen_endpoint_manager import QwenEndpointManager
+
         settings = get_settings()
         qwen_config = settings.get_qwen_config()
 
@@ -99,6 +101,23 @@ class ImageProcessingService:
             logger.error("❌ CRITICAL: HUGGINGFACE_API_KEY not configured!")
             logger.error("   Image classification will fail. Please set HUGGINGFACE_API_KEY.")
             raise ValueError("HUGGINGFACE_API_KEY not configured")
+
+        # Initialize Qwen endpoint manager for auto-resume
+        qwen_manager = QwenEndpointManager(
+            endpoint_url=qwen_endpoint_url,
+            endpoint_name=qwen_config["endpoint_name"],
+            namespace=qwen_config["namespace"],
+            endpoint_token=huggingface_api_key,
+            enabled=qwen_config["enabled"]
+        )
+
+        # Resume endpoint if paused (CRITICAL: Must be called before inference)
+        logger.info("🔄 Checking Qwen endpoint status...")
+        if not qwen_manager.resume_if_needed():
+            logger.error("❌ Failed to resume Qwen endpoint - falling back to Claude")
+            # Don't raise error, let it fall back to Claude validation
+        else:
+            logger.info("✅ Qwen endpoint ready for inference")
 
         async def classify_image_with_vision_model(image_path: str, model: str, base64_data: str = None) -> Dict[str, Any]:
             """Fast classification using vision model (Qwen via TogetherAI)."""
@@ -615,6 +634,10 @@ Respond ONLY with this JSON format:
             logger.warning(f"⚠️ WARNING: Low classification success rate")
             logger.warning(f"   Successfully classified: {total_classified}/{total_input} ({total_classified/total_input*100:.1f}%)")
             logger.warning(f"   Failed: {total_input - total_classified}")
+
+        # Auto-pause Qwen endpoint after classification (cost optimization)
+        logger.info("⏸️ Auto-pausing Qwen endpoint to save costs...")
+        qwen_manager.auto_pause()
 
         return material_images, non_material_images
 

@@ -56,6 +56,8 @@ class ProductVisionExtractor:
         # Import here to avoid circular dependencies
         from .real_image_analysis_service import RealImageAnalysisService
         from app.config import get_settings
+        from app.services.embeddings.qwen_endpoint_manager import QwenEndpointManager
+
         self.vision_service = RealImageAnalysisService()
 
         # Get HuggingFace endpoint configuration from settings
@@ -65,6 +67,15 @@ class ProductVisionExtractor:
         self.qwen_endpoint_url = qwen_config["endpoint_url"]
         self.qwen_endpoint_token = qwen_config["endpoint_token"]
         self.qwen_model = qwen_config["model"]  # Qwen/Qwen3-VL-32B-Instruct
+
+        # Initialize Qwen endpoint manager for auto-resume/pause
+        self.qwen_manager = QwenEndpointManager(
+            endpoint_url=self.qwen_endpoint_url,
+            endpoint_name=qwen_config["endpoint_name"],
+            namespace=qwen_config["namespace"],
+            endpoint_token=self.qwen_endpoint_token,
+            enabled=qwen_config["enabled"]
+        )
 
     async def _load_prompt_from_database(self, stage: str, category: str) -> Optional[str]:
         """
@@ -230,6 +241,11 @@ IMPORTANT:
 - Note finish types (matte, glossy, polished, textured, etc.)
 - Respond ONLY with valid JSON, no additional text."""
 
+            # Resume Qwen endpoint if needed (CRITICAL: Must be called before inference)
+            if not self.qwen_manager.resume_if_needed():
+                self.logger.error("❌ Failed to resume Qwen endpoint for product extraction")
+                return []
+
             async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(
                     self.qwen_endpoint_url,
@@ -314,7 +330,10 @@ IMPORTANT:
         except Exception as e:
             self.logger.error(f"Product vision analysis failed: {e}")
             return None
-    
+        finally:
+            # Auto-pause Qwen endpoint after product extraction (cost optimization)
+            self.qwen_manager.auto_pause()
+
     async def enrich_existing_products(
         self,
         products: List[Dict[str, Any]],

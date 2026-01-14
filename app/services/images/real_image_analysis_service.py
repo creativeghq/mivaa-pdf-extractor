@@ -66,6 +66,8 @@ class RealImageAnalysisService:
 
         # Load HuggingFace endpoint configuration from settings
         from app.config import get_settings
+        from app.services.embeddings.qwen_endpoint_manager import QwenEndpointManager
+
         settings = get_settings()
         qwen_config = settings.get_qwen_config()
 
@@ -81,6 +83,15 @@ class RealImageAnalysisService:
 
         # Use provided embedding service (with loaded models) or create new instance
         self._embeddings_service = embedding_service
+
+        # Initialize Qwen endpoint manager for auto-resume/pause
+        self.qwen_manager = QwenEndpointManager(
+            endpoint_url=self.qwen_endpoint_url,
+            endpoint_name=qwen_config["endpoint_name"],
+            namespace=qwen_config["namespace"],
+            endpoint_token=self.qwen_endpoint_token,
+            enabled=qwen_config["enabled"]
+        )
 
         # Load prompts from database
         self._load_prompts_from_database()
@@ -387,6 +398,12 @@ class RealImageAnalysisService:
 }
 
 Respond ONLY with valid JSON, no additional text."""
+
+            # Resume Qwen endpoint if needed (CRITICAL: Must be called before inference)
+            if not self.qwen_manager.resume_if_needed():
+                self.logger.error("❌ Failed to resume Qwen endpoint - falling back to Claude")
+                # Fall back to Claude validation
+                return await self._analyze_with_claude(image_url, context, job_id)
 
             # ✅ FIX: Add retry logic for vision model empty responses
             max_retries = 3
@@ -713,7 +730,10 @@ Respond ONLY with valid JSON, no additional text."""
             )
 
             raise RuntimeError(f"Vision model analysis failed: {str(e)}") from e
-    
+        finally:
+            # Auto-pause Qwen endpoint after analysis (cost optimization)
+            self.qwen_manager.auto_pause()
+
     async def _analyze_with_claude(
         self,
         image_url: str,
