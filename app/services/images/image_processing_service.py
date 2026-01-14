@@ -113,16 +113,27 @@ class ImageProcessingService:
 
         # Resume endpoint if paused (CRITICAL: Must be called before inference)
         logger.info("🔄 Checking Qwen endpoint status...")
-        if not qwen_manager.resume_if_needed():
-            logger.error("❌ Failed to resume Qwen endpoint - falling back to Claude")
+        qwen_endpoint_available = qwen_manager.resume_if_needed()
+        if not qwen_endpoint_available:
+            logger.error("❌ Failed to resume Qwen endpoint - will use Claude for all classifications")
             # Don't raise error, let it fall back to Claude validation
         else:
             logger.info("✅ Qwen endpoint ready for inference")
 
         async def classify_image_with_vision_model(image_path: str, model: str, base64_data: str = None) -> Dict[str, Any]:
-            """Fast classification using vision model (Qwen via TogetherAI)."""
+            """Fast classification using vision model (Qwen via HuggingFace Inference Endpoint)."""
             import time
             from app.services.core.ai_call_logger import AICallLogger
+
+            # ✅ FIX: If Qwen endpoint is not available, return error to trigger Claude fallback
+            if not qwen_endpoint_available:
+                return {
+                    'is_material': False,
+                    'confidence': 0.0,
+                    'reason': 'Qwen endpoint unavailable - endpoint failed to resume',
+                    'model': f'{model.split("/")[-1]}_api_error',
+                    'error': 'Endpoint failed to resume'
+                }
 
             start_time = time.time()
             # If base64_data is provided, we use it directly. Otherwise, we read from disk.
@@ -141,152 +152,132 @@ class ImageProcessingService:
 Respond ONLY with JSON:
 {"is_material": true/false, "confidence": 0.0-1.0, "reason": "brief explanation"}"""
 
-                async with httpx.AsyncClient(timeout=90.0) as client:  # ✅ Increased timeout from 30s to 90s for vision models
-                    response = await client.post(
-                        qwen_endpoint_url,
-                        headers={
-                            "Authorization": f"Bearer {huggingface_api_key}",
-                            "Content-Type": "application/json"
-                        },
-                        json={
-                            "model": model,
-                            "messages": [{
-                                "role": "user",
-                                "content": [
-                                    # ✅ CRITICAL FIX: Text must come BEFORE image for Qwen models
-                                    # This matches Together AI documentation format
-                                    {"type": "text", "text": classification_prompt},
-                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
-                                ]
-                            }],
-                            "max_tokens": 512,
-                            "temperature": 0.1
-                        }
-                    )
+                # ✅ Use OpenAI client for HuggingFace endpoint (llamacpp provides OpenAI-compatible API)
+                from openai import AsyncOpenAI
 
-                    response_data = response.json()
+                # Ensure base_url ends with /v1/ for OpenAI client compatibility
+                # The client will append /chat/completions to this base
+                if not qwen_endpoint_url.endswith('/v1/') and not qwen_endpoint_url.endswith('/v1'):
+                    base_url = qwen_endpoint_url.rstrip('/') + '/v1/'
+                else:
+                    base_url = qwen_endpoint_url if qwen_endpoint_url.endswith('/') else qwen_endpoint_url + '/'
 
-                    # ✅ CRITICAL FIX: Check for API errors before accessing 'choices'
-                    # TogetherAI returns {"error": {...}} when service is unavailable or rate limited
-                    # Sometimes error is a string, sometimes it's a dict
-                    if 'error' in response_data:
-                        error_info = response_data['error']
+                logger.info(f"🔧 Qwen OpenAI client base_url: {base_url}")
 
-                        # Handle both string and dict error formats
-                        if isinstance(error_info, str):
-                            error_msg = error_info
-                            error_type = 'unknown'
-                        elif isinstance(error_info, dict):
-                            error_msg = error_info.get('message', 'Unknown error')
-                            error_type = error_info.get('type', 'unknown')
-                        else:
-                            error_msg = str(error_info)
-                            error_type = 'unknown'
+                client = AsyncOpenAI(
+                    base_url=base_url,  # https://...huggingface.cloud/v1/
+                    api_key=huggingface_api_key,
+                    timeout=90.0
+                )
 
-                        logger.error(f"❌ TogetherAI API Error for {image_path}")
-                        logger.error(f"   Error Type: {error_type}")
-                        logger.error(f"   Error Message: {error_msg}")
-                        logger.error(f"   HTTP Status: {response.status_code}")
-                        logger.error(f"   Response Data: {json.dumps(response_data, indent=2)}")
+                # ✅ Call endpoint using OpenAI format (as per your working example)
+                response = await client.chat.completions.create(
+                    model=model,  # unsloth/Qwen3-VL-32B-Instruct-GGUF
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            # ✅ Image first, then text (as per your working example)
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{image_base64}"
+                                }
+                            },
+                            {
+                                "type": "text",
+                                "text": classification_prompt
+                            }
+                        ]
+                    }],
+                    max_tokens=512,
+                    temperature=0.1,
+                    stream=False  # ✅ Disable streaming for simpler response handling
+                )
 
-                        return {
-                            'is_material': False,
-                            'confidence': 0.0,
-                            'reason': f'TogetherAI API error: {error_type} - {error_msg}',
-                            'model': f'{model.split("/")[-1]}_api_error',
-                            'error': error_msg,
-                            'retry_recommended': error_type in ['service_unavailable', 'rate_limit_exceeded']
-                        }
+                # ✅ Parse response from OpenAI format
+                result_text = response.choices[0].message.content
 
-                    # ✅ CRITICAL FIX: Validate 'choices' exists in response
-                    if 'choices' not in response_data or not response_data['choices']:
-                        logger.error(f"❌ Invalid TogetherAI response for {image_path}")
-                        logger.error(f"   Response missing 'choices' key")
-                        logger.error(f"   Response Data: {json.dumps(response_data, indent=2)}")
+                # ✅ FIX: Handle empty/invalid responses
+                # Qwen sometimes returns whitespace or single characters instead of JSON
+                result_text_stripped = result_text.strip() if result_text else ""
 
-                        return {
-                            'is_material': False,
-                            'confidence': 0.0,
-                            'reason': 'Invalid API response: missing choices',
-                            'model': f'{model.split("/")[-1]}_invalid_response',
-                            'error': 'Response missing choices key'
-                        }
-
-                    result_text = response_data['choices'][0]['message']['content']
-
-                    # ✅ FIX: Handle empty/invalid responses from Together AI
-                    # Qwen sometimes returns whitespace or single characters instead of JSON
-                    result_text_stripped = result_text.strip() if result_text else ""
-
-                    if not result_text_stripped or len(result_text_stripped) < 10:
-                        logger.warning(f"⚠️ Invalid response from {model} for {image_path}")
-                        logger.warning(f"   Content length: {len(result_text) if result_text else 0}, Stripped: {len(result_text_stripped)}")
-                        logger.warning(f"   Content preview: {repr(result_text[:100]) if result_text else 'None'}")
-                        return {
-                            'is_material': False,
-                            'confidence': 0.0,
-                            'reason': f'Invalid response from vision model (length: {len(result_text_stripped)})',
-                            'model': f'{model.split("/")[-1]}_invalid_response'
-                        }
-
-                    # Clean up response text (remove markdown code blocks if present)
-                    result_text = result_text_stripped
-                    if result_text.startswith("```json"):
-                        result_text = result_text[7:]
-                    if result_text.startswith("```"):
-                        result_text = result_text[3:]
-                    if result_text.endswith("```"):
-                        result_text = result_text[:-3]
-                    result_text = result_text.strip()
-
-                    # Final validation before JSON parsing
-                    if not result_text.startswith('{'):
-                        logger.warning(f"⚠️ Response doesn't start with '{{' for {image_path}")
-                        logger.warning(f"   Content: {repr(result_text[:100])}")
-                        return {
-                            'is_material': False,
-                            'confidence': 0.0,
-                            'reason': f'Response not JSON format: {result_text[:50]}',
-                            'model': f'{model.split("/")[-1]}_not_json'
-                        }
-
-                    result = json.loads(result_text)
-
-                    # Extract model name for logging
-                    model_short = model.split('/')[-1] if '/' in model else model
-
-                    # Log TogetherAI call (Qwen models)
-                    ai_logger = AICallLogger()
-                    latency_ms = int((time.time() - start_time) * 1000)
-                    usage = response_data.get('usage', {})
-                    input_tokens = usage.get('prompt_tokens', 0)
-                    output_tokens = usage.get('completion_tokens', 0)
-
-                    # Qwen pricing (HuggingFace Endpoint)
-                    # Qwen3-VL-32B: $0.40/1M input, $0.40/1M output (32B only, 8B removed)
-                    cost = (input_tokens / 1_000_000) * 0.40 + (output_tokens / 1_000_000) * 0.40
-
-                    await ai_logger.log_together_call(
-                        task="image_classification",
-                        model=model_short,
-                        response=response_data,
-                        latency_ms=latency_ms,
-                        confidence_score=result.get('confidence', 0.5),
-                        confidence_breakdown={
-                            "model_confidence": result.get('confidence', 0.5),
-                            "completeness": 1.0,
-                            "consistency": 0.95,
-                            "validation": 0.90
-                        },
-                        action="use_ai_result"
-                    )
-
+                if not result_text_stripped or len(result_text_stripped) < 10:
+                    logger.warning(f"⚠️ Invalid response from {model} for {image_path}")
+                    logger.warning(f"   Content length: {len(result_text) if result_text else 0}, Stripped: {len(result_text_stripped)}")
+                    logger.warning(f"   Content preview: {repr(result_text[:100]) if result_text else 'None'}")
                     return {
-                        'is_material': result.get('is_material', False),
-                        'confidence': result.get('confidence', 0.5),
-                        'reason': result.get('reason', 'Unknown'),
-                        'model': model_short
+                        'is_material': False,
+                        'confidence': 0.0,
+                        'reason': f'Invalid response from vision model (length: {len(result_text_stripped)})',
+                        'model': f'{model.split("/")[-1]}_invalid_response'
                     }
+
+                # Clean up response text (remove markdown code blocks if present)
+                result_text = result_text_stripped
+                if result_text.startswith("```json"):
+                    result_text = result_text[7:]
+                if result_text.startswith("```"):
+                    result_text = result_text[3:]
+                if result_text.endswith("```"):
+                    result_text = result_text[:-3]
+                result_text = result_text.strip()
+
+                # Final validation before JSON parsing
+                if not result_text.startswith('{'):
+                    logger.warning(f"⚠️ Response doesn't start with '{{' for {image_path}")
+                    logger.warning(f"   Content: {repr(result_text[:100])}")
+                    return {
+                        'is_material': False,
+                        'confidence': 0.0,
+                        'reason': f'Response not JSON format: {result_text[:50]}',
+                        'model': f'{model.split("/")[-1]}_not_json'
+                    }
+
+                result = json.loads(result_text)
+
+                # Extract model name for logging
+                model_short = model.split('/')[-1] if '/' in model else model
+
+                # Log Qwen endpoint call (HuggingFace Inference Endpoint)
+                ai_logger = AICallLogger()
+                latency_ms = int((time.time() - start_time) * 1000)
+
+                # Get usage from OpenAI response
+                usage = response.usage if hasattr(response, 'usage') else None
+                input_tokens = usage.prompt_tokens if usage else 0
+                output_tokens = usage.completion_tokens if usage else 0
+
+                # Qwen pricing (HuggingFace Endpoint)
+                # Qwen3-VL-32B: $0.40/1M input, $0.40/1M output
+                cost = (input_tokens / 1_000_000) * 0.40 + (output_tokens / 1_000_000) * 0.40
+
+                # Convert OpenAI response to dict for logging
+                response_dict = {
+                    'choices': [{'message': {'content': result_text}}],
+                    'usage': {'prompt_tokens': input_tokens, 'completion_tokens': output_tokens}
+                }
+
+                await ai_logger.log_together_call(
+                    task="image_classification",
+                    model=model_short,
+                    response=response_dict,
+                    latency_ms=latency_ms,
+                    confidence_score=result.get('confidence', 0.5),
+                    confidence_breakdown={
+                        "model_confidence": result.get('confidence', 0.5),
+                        "completeness": 1.0,
+                        "consistency": 0.95,
+                        "validation": 0.90
+                    },
+                    action="use_ai_result"
+                )
+
+                return {
+                    'is_material': result.get('is_material', False),
+                    'confidence': result.get('confidence', 0.5),
+                    'reason': result.get('reason', 'Unknown'),
+                    'model': model_short
+                }
 
             except Exception as e:
                 # ✅ FIX 2: Enhanced error logging with full details
@@ -637,7 +628,7 @@ Respond ONLY with this JSON format:
 
         # Auto-pause Qwen endpoint after classification (cost optimization)
         logger.info("⏸️ Auto-pausing Qwen endpoint to save costs...")
-        qwen_manager.auto_pause()
+        qwen_manager.pause_if_idle()
 
         return material_images, non_material_images
 
