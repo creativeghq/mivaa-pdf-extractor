@@ -329,7 +329,7 @@ class Settings(BaseSettings):
         description="Qwen endpoint namespace"
     )
     qwen_model: str = Field(
-        default="unsloth/Qwen3-VL-32B-Instruct-GGUF",
+        default="Qwen/Qwen3-VL-32B-Instruct",
         env="QWEN_MODEL",
         description="Qwen vision model (GGUF quantized version for llamacpp)"
     )
