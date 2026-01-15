@@ -314,9 +314,9 @@ class Settings(BaseSettings):
     # Semantic analysis and material identification via cloud endpoint
     # Uses huggingface_api_key for authentication (no separate token needed)
     qwen_endpoint_url: str = Field(
-        default="https://gbz6krk3i2is85b0.us-east-1.aws.endpoints.huggingface.cloud",
+        default="https://gbz6krk3i2is85b0.us-east-1.aws.endpoints.huggingface.cloud/v1/",
         env="QWEN_ENDPOINT_URL",
-        description="Qwen HuggingFace inference endpoint URL"
+        description="Qwen HuggingFace inference endpoint base URL (llamacpp with OpenAI compatibility)"
     )
     qwen_endpoint_name: str = Field(
         default="mh-qwen332binstruct",
@@ -329,9 +329,9 @@ class Settings(BaseSettings):
         description="Qwen endpoint namespace"
     )
     qwen_model: str = Field(
-        default="Qwen/Qwen3-VL-32B-Instruct",
+        default="unsloth/Qwen3-VL-32B-Instruct-GGUF",
         env="QWEN_MODEL",
-        description="Qwen vision model (locked to 32B only)"
+        description="Qwen vision model (GGUF quantized version for llamacpp)"
     )
     qwen_max_tokens: int = Field(
         default=4096,

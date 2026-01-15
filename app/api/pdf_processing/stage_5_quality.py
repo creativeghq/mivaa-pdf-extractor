@@ -146,6 +146,46 @@ async def process_stage_5_quality(
     gc.collect()
     logger.info("✅ All components unloaded, memory freed")
 
+    # CRITICAL: Pause all HuggingFace endpoints to stop billing
+    logger.info("⏸️ Pausing HuggingFace endpoints to stop billing...")
+    endpoints_paused = 0
+
+    # Pause Qwen endpoint
+    try:
+        from app.services.images.image_processing_service import ImageProcessingService
+        image_service = ImageProcessingService()
+        if hasattr(image_service, '_qwen_client') and image_service._qwen_client:
+            if hasattr(image_service._qwen_client, '_endpoint_manager') and image_service._qwen_client._endpoint_manager:
+                if image_service._qwen_client._endpoint_manager.force_pause():
+                    logger.info("✅ Qwen endpoint paused (no billing)")
+                    endpoints_paused += 1
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to pause Qwen endpoint: {e}")
+
+    # Pause SLIG endpoint
+    try:
+        from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+        embeddings_service = RealEmbeddingsService()
+        if hasattr(embeddings_service, '_slig_client') and embeddings_service._slig_client:
+            if embeddings_service._slig_client.pause_endpoint():
+                logger.info("✅ SLIG endpoint paused (no billing)")
+                endpoints_paused += 1
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to pause SLIG endpoint: {e}")
+
+    # Pause YOLO endpoint
+    try:
+        from app.services.pdf.pdf_processor import PDFProcessor
+        pdf_processor = PDFProcessor()
+        if hasattr(pdf_processor, '_yolo_endpoint_manager') and pdf_processor._yolo_endpoint_manager:
+            if pdf_processor._yolo_endpoint_manager.force_pause():
+                logger.info("✅ YOLO endpoint paused (no billing)")
+                endpoints_paused += 1
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to pause YOLO endpoint: {e}")
+
+    logger.info(f"✅ Paused {endpoints_paused} HuggingFace endpoints")
+
     # EVENT-BASED CLEANUP: Release temp PDF file and cleanup
     from app.utils.resource_manager import get_resource_manager
     resource_manager = get_resource_manager()

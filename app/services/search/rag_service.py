@@ -322,6 +322,13 @@ class RAGService:
                             }
                         }
 
+                        # ✅ FIX: Add product_id as top-level field if available in metadata
+                        if metadata.get('product_id'):
+                            chunk_record['product_id'] = metadata.get('product_id')
+                            # Also ensure it's in metadata for backward compatibility
+                            chunk_record['metadata']['product_id'] = metadata.get('product_id')
+                            chunk_record['metadata']['product_name'] = metadata.get('product_name')
+
                         # Add catalog category if available
                         if catalog and hasattr(catalog, 'catalog_factory'):
                             chunk_record['metadata']['catalog_factory'] = catalog.catalog_factory

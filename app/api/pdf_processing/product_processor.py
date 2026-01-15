@@ -101,6 +101,11 @@ async def process_single_product(
         await product_tracker.update_product_stage(product_id, ProductStage.EXTRACTION)
         logger_instance.info(f"📄 [STAGE 1/{product_index}] Extracting pages for {product.name}...")
 
+        # UPDATE PROGRESS: Update tracker at start of each stage
+        if tracker:
+            tracker.current_step = f"Stage 1: Extracting pages for {product.name}"
+            await tracker.update_heartbeat()
+
         from app.api.pdf_processing.stage_1_focused_extraction import extract_product_pages
 
         # ✅ NEW: extract_product_pages now returns a dict with layout detection results
@@ -143,6 +148,11 @@ async def process_single_product(
         await product_tracker.update_product_stage(product_id, ProductStage.CHUNKING)
         logger_instance.info(f"📝 [STAGE 2/{product_index}] Creating chunks for {product.name}...")
 
+        # ✅ UPDATE PROGRESS: Update tracker at start of chunking stage
+        if tracker:
+            tracker.current_step = f"Stage 2: Creating chunks for {product.name}"
+            await tracker.update_heartbeat()
+
         from app.api.pdf_processing.stage_2_chunking import process_product_chunking
 
         chunk_result = await process_product_chunking(
@@ -161,13 +171,23 @@ async def process_single_product(
         )
 
         chunks_created = chunk_result.get('chunks_created', 0)
-        logger_instance.info(f"✅ Created {chunks_created} chunks for {product.name}")
+        embeddings_generated = chunk_result.get('embeddings_generated', 0)
+        logger_instance.info(f"✅ Created {chunks_created} chunks for {product.name} ({embeddings_generated} text embeddings)")
         await product_tracker.mark_stage_complete(
             product_id,
             ProductStage.CHUNKING,
-            {"chunks_created": chunks_created}
+            {"chunks_created": chunks_created, "text_embeddings_generated": embeddings_generated}
         )
         result.chunks_created = chunks_created
+
+        # ✅ FIX: Update tracker with text embeddings count
+        if tracker:
+            await tracker.update_database_stats(
+                chunks_created=chunks_created,
+                text_embeddings=embeddings_generated,
+                sync_to_db=True
+            )
+            logger_instance.info(f"   📊 Updated tracker: {chunks_created} chunks, {embeddings_generated} text embeddings")
         logger_instance.info(f"✅ Created {chunks_created} chunks for {product.name}")
 
         # ========================================================================
@@ -176,6 +196,11 @@ async def process_single_product(
         current_stage = ProductStage.IMAGES
         await product_tracker.update_product_stage(product_id, ProductStage.IMAGES)
         logger_instance.info(f"🖼️  [STAGE 3/{product_index}] Processing images for {product.name}...")
+
+        # ✅ UPDATE PROGRESS: Update tracker at start of image processing stage
+        if tracker:
+            tracker.current_step = f"Stage 3: Processing images for {product.name}"
+            await tracker.update_heartbeat()
 
         from app.api.pdf_processing.stage_3_images import process_product_images
 
@@ -208,6 +233,16 @@ async def process_single_product(
         logger_instance.info(f"✅ Processed {images_processed} images for {product.name}")
         logger_instance.info(f"✅ Generated {clip_embeddings} CLIP embeddings for {product.name}")
 
+        # ✅ FIX: Update tracker with CLIP embeddings count
+        if tracker:
+            await tracker.update_database_stats(
+                images_stored=images_processed,
+                clip_embeddings=clip_embeddings,
+                image_embeddings=clip_embeddings,
+                sync_to_db=True
+            )
+            logger_instance.info(f"   📊 Updated tracker: {images_processed} images, {clip_embeddings} CLIP embeddings")
+
         # ========================================================================
         # STAGE 4: Update Product with Extracted Metadata
         # ========================================================================
@@ -216,6 +251,11 @@ async def process_single_product(
         current_stage = ProductStage.CREATION
         await product_tracker.update_product_stage(product_id, ProductStage.CREATION)
         logger_instance.info(f"🏭 [STAGE 4/{product_index}] Updating product with extracted metadata...")
+
+        # ✅ UPDATE PROGRESS: Update tracker at start of product update stage
+        if tracker:
+            tracker.current_step = f"Stage 4: Updating product metadata for {product.name}"
+            await tracker.update_heartbeat()
 
         # Get product_db_id from product_progress metadata (set in Stage 0)
         product_status = await product_tracker.get_product_status(product_id)

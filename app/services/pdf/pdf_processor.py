@@ -2038,7 +2038,7 @@ class PDFProcessor:
             # This is more efficient than similarity mode for binary classification
             import asyncio
 
-            classification_result = await self._slig_client_for_ocr.zero_shot_classify(
+            classification_result = await self._slig_client_for_ocr.zero_shot_classification(
                 image=image,
                 candidate_labels=candidate_labels
             )

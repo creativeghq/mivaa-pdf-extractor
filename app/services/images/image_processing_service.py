@@ -674,12 +674,14 @@ Respond ONLY with this JSON format:
                     None  # No enhanced path
                 )
 
-                if upload_result:
-                    img_data['storage_url'] = upload_result.get('storage_url')
+                if upload_result and upload_result.get('success'):
+                    img_data['storage_url'] = upload_result.get('public_url')
                     img_data['storage_path'] = upload_result.get('storage_path')
+                    img_data['storage_uploaded'] = True  # ✅ FIX: Set storage_uploaded flag
+                    img_data['storage_bucket'] = upload_result.get('bucket', 'pdf-tiles')
                     return img_data
                 else:
-                    logger.warning(f"Failed to upload image: {img_data.get('filename')}")
+                    logger.warning(f"Failed to upload image: {img_data.get('filename')} - Error: {upload_result.get('error') if upload_result else 'No result'}")
                     return None
 
             except Exception as e:

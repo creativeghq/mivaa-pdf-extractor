@@ -176,7 +176,9 @@ async def process_product_chunking(
             'chunk_size': config.get('chunk_size', 1000),
             'chunk_overlap': config.get('chunk_overlap', 200),
             'workspace_id': workspace_id,
-            'job_id': job_id
+            'job_id': job_id,
+            'product_id': product_id,  # ✅ FIX: Add product_id to metadata for chunk-product association
+            'product_name': product.name  # ✅ FIX: Add product_name for easier querying
         },
         catalog=catalog,
         pre_extracted_text=product_text if product_text else None,
@@ -198,6 +200,7 @@ async def process_product_chunking(
     return {
         'chunks_created': chunks_created,
         'chunk_ids': chunk_result.get('chunk_ids', []),
+        'embeddings_generated': chunk_result.get('embeddings_generated', 0),  # ✅ FIX: Return embeddings count for tracker update
         'pages_chunked': len(chunkable_pages),
         'pages_excluded': len(excluded_pages)
     }

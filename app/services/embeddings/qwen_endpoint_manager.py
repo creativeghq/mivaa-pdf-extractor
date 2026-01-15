@@ -222,6 +222,45 @@ class QwenEndpointManager:
             logger.error(f"❌ Failed to pause Qwen endpoint: {e}")
             return False
 
+    def force_pause(self) -> bool:
+        """
+        Force pause endpoint immediately.
+        Use this after batch processing is complete to stop billing.
+
+        Returns:
+            True if paused successfully, False if failed
+        """
+        if not self._can_pause_resume:
+            logger.warning("Pause/resume not available - cannot force pause")
+            return False
+
+        endpoint = self._get_endpoint()
+        if not endpoint:
+            return False
+
+        try:
+            endpoint.fetch()
+            if endpoint.status == "running":
+                logger.info("⏸️ Force pausing Qwen endpoint")
+                endpoint.pause()
+                self.pause_count += 1
+
+                # Track uptime
+                if self.last_resume_time:
+                    uptime = time.time() - self.last_resume_time
+                    self.total_uptime += uptime
+
+                self.warmup_completed = False  # Reset warmup flag
+                logger.info(f"✅ Qwen endpoint paused (no billing)")
+                return True
+            else:
+                logger.info(f"Endpoint already paused (status: {endpoint.status})")
+                return True
+
+        except Exception as e:
+            logger.error(f"❌ Failed to force pause Qwen endpoint: {e}")
+            return False
+
     async def analyze_image(
         self,
         image_base64: str,
@@ -283,6 +322,45 @@ class QwenEndpointManager:
         except Exception as e:
             logger.error(f"❌ Qwen inference failed: {e}")
             return None
+
+    def force_pause(self) -> bool:
+        """
+        Force pause endpoint immediately.
+        Use this after batch processing is complete.
+
+        Returns:
+            True if paused successfully, False if failed
+        """
+        if not self._can_pause_resume:
+            logger.warning("Pause/resume not available - cannot force pause")
+            return False
+
+        endpoint = self._get_endpoint()
+        if not endpoint:
+            return False
+
+        try:
+            endpoint.fetch()
+            if endpoint.status == "running":
+                logger.info("⏸️ Force pausing Qwen endpoint")
+                endpoint.pause()
+                self.pause_count += 1
+
+                # Track uptime
+                if self.last_resume_time:
+                    uptime = time.time() - self.last_resume_time
+                    self.total_uptime += uptime
+
+                self.warmup_completed = False  # Reset warmup flag
+                logger.info(f"✅ Qwen endpoint paused (no billing)")
+                return True
+            else:
+                logger.info(f"Endpoint already paused (status: {endpoint.status})")
+                return True
+
+        except Exception as e:
+            logger.error(f"❌ Failed to force pause endpoint: {e}")
+            return False
 
     def get_stats(self) -> Dict[str, Any]:
         """Get usage statistics for cost tracking."""
