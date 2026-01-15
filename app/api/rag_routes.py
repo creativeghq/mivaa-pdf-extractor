@@ -2725,6 +2725,115 @@ async def process_document_with_discovery(
 
 
     try:
+        # ============================================================================
+        # WARMUP ALL HUGGINGFACE ENDPOINTS BEFORE PROCESSING STARTS
+        # ============================================================================
+        logger.info("=" * 80)
+        logger.info("🔥 WARMING UP ALL HUGGINGFACE ENDPOINTS")
+        logger.info("=" * 80)
+
+        settings = get_settings()
+        warmup_tasks = []
+        endpoint_managers = {}
+
+        # 1. Qwen Endpoint (Product Discovery)
+        try:
+            from app.services.embeddings.qwen_endpoint_manager import QwenEndpointManager
+            qwen_config = settings.get_qwen_config()
+            if qwen_config.get("enabled", False):
+                logger.info("🔥 Initializing Qwen endpoint manager...")
+                qwen_manager = QwenEndpointManager(
+                    endpoint_url=qwen_config["endpoint_url"],
+                    endpoint_token=qwen_config["hf_token"],
+                    endpoint_name=qwen_config.get("endpoint_name", "mh-qwen332binstruct"),
+                    namespace=qwen_config.get("namespace", "basiliskan"),
+                    enabled=True
+                )
+                endpoint_managers['qwen'] = qwen_manager
+                logger.info("   Resuming Qwen endpoint...")
+                if qwen_manager.resume_if_needed():
+                    logger.info("   ✅ Qwen endpoint resumed")
+                    logger.info(f"   ⏳ Warming up Qwen ({qwen_manager.warmup_timeout}s)...")
+                    await asyncio.sleep(qwen_manager.warmup_timeout)
+                    qwen_manager.warmup_completed = True
+                    logger.info("   ✅ Qwen warmup complete")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to warmup Qwen endpoint: {e}")
+
+        # 2. SLIG Endpoint (Visual Embeddings)
+        try:
+            from app.services.embeddings.slig_endpoint_manager import SLIGEndpointManager
+            slig_config = settings.get_slig_config()
+            if slig_config.get("enabled", False):
+                logger.info("🔥 Initializing SLIG endpoint manager...")
+                slig_manager = SLIGEndpointManager(
+                    endpoint_url=slig_config["endpoint_url"],
+                    hf_token=slig_config["hf_token"],
+                    endpoint_name=slig_config.get("endpoint_name", "mh-siglip2"),
+                    namespace=slig_config.get("namespace", "basiliskan"),
+                    enabled=True
+                )
+                endpoint_managers['slig'] = slig_manager
+                logger.info("   Resuming SLIG endpoint...")
+                if slig_manager.resume_if_needed():
+                    logger.info("   ✅ SLIG endpoint resumed")
+                    if slig_manager.warmup():
+                        logger.info("   ✅ SLIG warmup complete")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to warmup SLIG endpoint: {e}")
+
+        # 3. YOLO Endpoint (Layout Detection)
+        try:
+            from app.services.pdf.yolo_endpoint_manager import YoloEndpointManager
+            yolo_config = settings.get_yolo_config()
+            if yolo_config.get("enabled", False):
+                logger.info("🔥 Initializing YOLO endpoint manager...")
+                yolo_manager = YoloEndpointManager(
+                    endpoint_url=yolo_config["endpoint_url"],
+                    hf_token=yolo_config.get("hf_token", ""),
+                    endpoint_name=yolo_config.get("endpoint_name"),
+                    namespace=yolo_config.get("namespace"),
+                    enabled=True
+                )
+                endpoint_managers['yolo'] = yolo_manager
+                logger.info("   Resuming YOLO endpoint...")
+                if yolo_manager.resume_if_needed():
+                    logger.info("   ✅ YOLO endpoint resumed")
+                    if yolo_manager.warmup():
+                        logger.info("   ✅ YOLO warmup complete")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to warmup YOLO endpoint: {e}")
+
+        # 4. Chandra Endpoint (OCR)
+        try:
+            from app.services.pdf.chandra_endpoint_manager import ChandraEndpointManager
+            chandra_config = settings.get_chandra_config()
+            if chandra_config.get("enabled", False):
+                logger.info("🔥 Initializing Chandra endpoint manager...")
+                chandra_manager = ChandraEndpointManager(
+                    endpoint_url=chandra_config["endpoint_url"],
+                    hf_token=chandra_config.get("hf_token", ""),
+                    endpoint_name=chandra_config.get("endpoint_name"),
+                    namespace=chandra_config.get("namespace"),
+                    enabled=True
+                )
+                endpoint_managers['chandra'] = chandra_manager
+                logger.info("   Resuming Chandra endpoint...")
+                if chandra_manager.resume_if_needed():
+                    logger.info("   ✅ Chandra endpoint resumed")
+                    logger.info(f"   ⏳ Warming up Chandra (60s)...")
+                    await asyncio.sleep(60)
+                    logger.info("   ✅ Chandra warmup complete")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to warmup Chandra endpoint: {e}")
+
+        logger.info("=" * 80)
+        logger.info(f"✅ WARMUP COMPLETE - {len(endpoint_managers)} endpoints ready")
+        logger.info("=" * 80)
+
+        # ============================================================================
+        # INITIALIZE PROGRESS TRACKING
+        # ============================================================================
         logger.info(f"🔧 [BACKGROUND TASK] Initializing progress tracking components...")
         # Initialize Progress Tracker
         from app.services.tracking.progress_tracker import ProgressTracker
