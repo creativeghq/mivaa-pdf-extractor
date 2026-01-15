@@ -2,8 +2,8 @@
 Search Enrichment Service
 
 Enriches VECS search results with relationship data from:
-- product_image_relationships
-- chunk_image_relationships  
+- image_product_associations (✅ UPDATED: was product_image_relationships)
+- chunk_image_relationships
 - chunk_product_relationships
 
 This service queries the relationship tables to provide complete context
@@ -169,24 +169,25 @@ class SearchEnrichmentService:
         min_relevance: float = 0.0
     ) -> List[Dict[str, Any]]:
         """
-        Get products related to an image via product_image_relationships.
-        
+        Get products related to an image via image_product_associations.
+        ✅ UPDATED: Now uses image_product_associations table
+
         Args:
             image_id: Image UUID
             min_relevance: Minimum relevance score
-            
+
         Returns:
             List of related products with relevance scores
         """
         try:
-            # Query product_image_relationships with product details
-            response = self.supabase.client.table('product_image_relationships')\
-                .select('product_id, relevance_score, relationship_type, products(id, name, description, metadata)')\
+            # ✅ UPDATED: Query image_product_associations with product details
+            response = self.supabase.client.table('image_product_associations')\
+                .select('product_id, overall_score, reasoning, products(id, name, description, metadata)')\
                 .eq('image_id', image_id)\
-                .gte('relevance_score', min_relevance)\
-                .order('relevance_score', desc=True)\
+                .gte('overall_score', min_relevance)\
+                .order('overall_score', desc=True)\
                 .execute()
-            
+
             products = []
             if response.data:
                 for rel in response.data:
@@ -197,8 +198,8 @@ class SearchEnrichmentService:
                             'name': product_data.get('name'),
                             'description': product_data.get('description'),
                             'metadata': product_data.get('metadata', {}),
-                            'relevance_score': rel['relevance_score'],
-                            'relationship_type': rel['relationship_type']
+                            'relevance_score': rel['overall_score'],  # ✅ UPDATED: Use overall_score
+                            'relationship_type': rel['reasoning']  # ✅ UPDATED: Use reasoning
                         })
             
             return products

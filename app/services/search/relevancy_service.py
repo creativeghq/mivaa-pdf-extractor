@@ -119,7 +119,8 @@ class RelevancyService:
         product_ids: List[str]
     ) -> int:
         """
-        Create product-to-image relationships based on page numbers and metadata.
+        Create product-to-image associations based on page numbers and metadata.
+        ✅ UPDATED: Now uses image_product_associations table instead of product_image_relationships
 
         Args:
             document_id: Document ID
@@ -171,14 +172,20 @@ class RelevancyService:
 
                     for image in images:
                         try:
+                            # ✅ UPDATED: Use image_product_associations schema
                             relationship = {
                                 'product_id': product_id,
                                 'image_id': image['id'],
-                                'relevance_score': 0.7,  # Lower score for fallback matching
-                                'relationship_type': 'document_association'
+                                'spatial_score': 0.0,
+                                'caption_score': 0.0,
+                                'clip_score': 0.0,
+                                'overall_score': 0.7,  # Lower score for fallback matching
+                                'confidence': 0.7,
+                                'reasoning': 'document_association',  # replaces relationship_type
+                                'metadata': {'fallback': True}
                             }
 
-                            self.supabase_client.client.table('product_image_relationships')\
+                            self.supabase_client.client.table('image_product_associations')\
                                 .insert(relationship)\
                                 .execute()
 
@@ -213,14 +220,20 @@ class RelevancyService:
                     # Create relationships
                     for image in images:
                         try:
+                            # ✅ UPDATED: Use image_product_associations schema
                             relationship = {
                                 'product_id': product_id,
                                 'image_id': image['id'],
-                                'relevance_score': 1.0,  # High score for page-based matching
-                                'relationship_type': 'page_proximity'
+                                'spatial_score': 1.0,  # High score for page-based matching
+                                'caption_score': 0.0,
+                                'clip_score': 0.0,
+                                'overall_score': 1.0,
+                                'confidence': 1.0,
+                                'reasoning': 'page_proximity',  # replaces relationship_type
+                                'metadata': {'page_based': True}
                             }
 
-                            self.supabase_client.client.table('product_image_relationships')\
+                            self.supabase_client.client.table('image_product_associations')\
                                 .insert(relationship)\
                                 .execute()
 

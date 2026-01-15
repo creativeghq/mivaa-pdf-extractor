@@ -683,7 +683,7 @@ class RAGService:
             # ============================================================================
             product_scores = {}  # Maps product_id -> {source_type: score}
 
-            # 3A: Map images to products via product_image_relationships
+            # 3A: Map images to products via image_product_associations
             if image_scores:
                 image_ids = list(image_scores.keys())
                 batch_size = 100
@@ -691,8 +691,9 @@ class RAGService:
 
                 for i in range(0, len(image_ids), batch_size):
                     batch_ids = image_ids[i:i + batch_size]
-                    rel_response = self.supabase_client.client.table('product_image_relationships')\
-                        .select('product_id, image_id, relevance_score')\
+                    # ✅ UPDATED: Use image_product_associations table
+                    rel_response = self.supabase_client.client.table('image_product_associations')\
+                        .select('product_id, image_id, overall_score')\
                         .in_('image_id', batch_ids)\
                         .execute()
                     if rel_response.data:
@@ -703,7 +704,7 @@ class RAGService:
                 for rel in all_image_rels:
                     product_id = rel.get('product_id')
                     image_id = rel.get('image_id')
-                    relevance = rel.get('relevance_score', 1.0)
+                    relevance = rel.get('overall_score', 1.0)  # ✅ UPDATED: Use overall_score
 
                     if image_id in image_scores:
                         if product_id not in product_scores:

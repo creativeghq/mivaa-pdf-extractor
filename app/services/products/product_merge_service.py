@@ -217,35 +217,42 @@ class ProductMergeService:
         """Transfer all relationships from source products to target product."""
         try:
             # Transfer product-image relationships
+            # ✅ UPDATED: Use image_product_associations table
             for source_id in source_product_ids:
                 # Get existing relationships
-                rel_response = self.supabase.client.table('product_image_relationships').select(
+                rel_response = self.supabase.client.table('image_product_associations').select(
                     '*'
                 ).eq('product_id', source_id).execute()
-                
+
                 if rel_response.data:
                     for rel in rel_response.data:
                         # Check if relationship already exists for target
-                        existing = self.supabase.client.table('product_image_relationships').select(
+                        existing = self.supabase.client.table('image_product_associations').select(
                             'id'
                         ).eq('product_id', target_product_id).eq(
                             'image_id', rel['image_id']
                         ).execute()
-                        
+
                         if not existing.data:
                             # Create new relationship for target
+                            # ✅ UPDATED: Use new schema
                             new_rel = {
                                 'product_id': target_product_id,
                                 'image_id': rel['image_id'],
-                                'relationship_type': rel.get('relationship_type'),
-                                'relevance_score': rel.get('relevance_score')
+                                'spatial_score': rel.get('spatial_score', 0.0),
+                                'caption_score': rel.get('caption_score', 0.0),
+                                'clip_score': rel.get('clip_score', 0.0),
+                                'overall_score': rel.get('overall_score', 0.5),
+                                'confidence': rel.get('confidence', 0.5),
+                                'reasoning': rel.get('reasoning', 'merged'),
+                                'metadata': rel.get('metadata', {})
                             }
-                            self.supabase.client.table('product_image_relationships').insert(
+                            self.supabase.client.table('image_product_associations').insert(
                                 new_rel
                             ).execute()
-                    
+
                     # Delete old relationships
-                    self.supabase.client.table('product_image_relationships').delete().eq(
+                    self.supabase.client.table('image_product_associations').delete().eq(
                         'product_id', source_id
                     ).execute()
             

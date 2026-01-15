@@ -675,10 +675,21 @@ Respond ONLY with this JSON format:
                 )
 
                 if upload_result and upload_result.get('success'):
-                    img_data['storage_url'] = upload_result.get('public_url')
-                    img_data['storage_path'] = upload_result.get('storage_path')
+                    public_url = upload_result.get('public_url')
+                    storage_path = upload_result.get('storage_path')
+
+                    # Set storage metadata
+                    img_data['storage_url'] = public_url
+                    img_data['storage_path'] = storage_path
                     img_data['storage_uploaded'] = True  # ✅ FIX: Set storage_uploaded flag
                     img_data['storage_bucket'] = upload_result.get('bucket', 'pdf-tiles')
+
+                    # Debug logging
+                    logger.debug(f"✅ Upload successful for {img_data.get('filename')}")
+                    logger.debug(f"   storage_url: {public_url[:100] if public_url else 'None'}")
+                    logger.debug(f"   storage_path: {storage_path}")
+                    logger.debug(f"   img_data keys after upload: {list(img_data.keys())}")
+
                     return img_data
                 else:
                     logger.warning(f"Failed to upload image: {img_data.get('filename')} - Error: {upload_result.get('error') if upload_result else 'No result'}")

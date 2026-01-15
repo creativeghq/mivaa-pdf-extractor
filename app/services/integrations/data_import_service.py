@@ -505,17 +505,24 @@ class DataImportService:
             logger.info(f"✅ Inserted {len(insert_response.data)} images into document_images")
 
             # Step 2: Create product-image relationships
+            # ✅ UPDATED: Use image_product_associations schema
             relationship_records = []
             for idx, image_data in enumerate(insert_response.data):
+                score = 1.0 - (idx * 0.05)  # First image gets highest score
                 relationship_records.append({
                     "product_id": product_id,
                     "image_id": image_data['id'],
-                    "relationship_type": "depicts",
-                    "relevance_score": 1.0 - (idx * 0.05)  # First image gets highest score
+                    "spatial_score": 0.0,
+                    "caption_score": 0.0,
+                    "clip_score": 0.0,
+                    "overall_score": score,
+                    "confidence": score,
+                    "reasoning": "depicts",  # replaces relationship_type
+                    "metadata": {"import_index": idx}
                 })
 
             if relationship_records:
-                self.supabase.client.table('product_image_relationships').insert(relationship_records).execute()
+                self.supabase.client.table('image_product_associations').insert(relationship_records).execute()
                 logger.info(f"✅ Created {len(relationship_records)} product-image relationships")
 
         except Exception as e:

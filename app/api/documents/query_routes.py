@@ -185,9 +185,10 @@ async def _enhance_search_results(
 
             # Fetch related images
             try:
-                images_response = supabase_client.client.table('product_image_relationships').select(
-                    'id, image_id, relationship_type, relevance_score, document_images(id, image_url, caption)'
-                ).eq('product_id', product_id).order('relevance_score', desc=True).limit(10).execute()
+                # ✅ UPDATED: Use image_product_associations instead of product_image_relationships
+                images_response = supabase_client.client.table('image_product_associations').select(
+                    'id, image_id, reasoning, overall_score, document_images(id, image_url, caption)'
+                ).eq('product_id', product_id).order('overall_score', desc=True).limit(10).execute()
 
                 related_images = []
                 for img_rel in images_response.data or []:
@@ -195,8 +196,8 @@ async def _enhance_search_results(
                         related_images.append({
                             'id': img_rel['document_images']['id'],
                             'url': img_rel['document_images']['image_url'],
-                            'relationship_type': img_rel['relationship_type'],
-                            'relevance_score': img_rel['relevance_score'],
+                            'relationship_type': img_rel.get('reasoning', 'related'),  # reasoning replaces relationship_type
+                            'relevance_score': img_rel.get('overall_score', 0.0),  # overall_score replaces relevance_score
                             'caption': img_rel['document_images'].get('caption')
                         })
 

@@ -310,12 +310,22 @@ class SupabaseClient:
         """
         try:
             # Extract image URL (try multiple possible keys)
+            # Priority: storage_url (cloud) > public_url (cloud) > url > path (local fallback)
             image_url = (
                 image_info.get('storage_url') or
-                image_info.get('url') or
                 image_info.get('public_url') or
+                image_info.get('url') or
                 image_info.get('path')
             )
+
+            # Debug logging to track which URL is being used
+            if image_info.get('storage_url'):
+                logger.debug(f"✅ Using storage_url for image {image_index}: {image_url[:100]}")
+            elif image_info.get('public_url'):
+                logger.debug(f"✅ Using public_url for image {image_index}: {image_url[:100]}")
+            elif image_info.get('path'):
+                logger.warning(f"⚠️ Using local path for image {image_index} (upload may have failed): {image_url[:100]}")
+                logger.warning(f"   Available keys in image_info: {list(image_info.keys())}")
 
             if not image_url or image_url.startswith('placeholder_'):
                 logger.debug(f"⏭️  Skipping image {image_index} - no valid URL")

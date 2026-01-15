@@ -170,7 +170,7 @@ class CreateRelationshipsResponse(BaseModel):
     """Response model for creating relationships."""
     success: bool
     chunk_image_relationships: int
-    product_image_relationships: int
+    product_image_associations: int  # ✅ UPDATED: Renamed from product_image_relationships
 
 
 # ============================================================================
@@ -626,17 +626,17 @@ async def create_relationships(
             100,
             metadata={
                 'chunk_image_relationships': result['chunk_image_relationships'],
-                'product_image_relationships': result['product_image_relationships']
+                'product_image_associations': result.get('product_image_relationships', result.get('product_image_associations', 0))  # ✅ Support both old and new key names
             },
             sync_to_db=True
         )
 
-        logger.info(f"✅ [Job {job_id}] Relationships complete: {result['chunk_image_relationships']} chunk-image, {result['product_image_relationships']} product-image")
+        logger.info(f"✅ [Job {job_id}] Relationships complete: {result['chunk_image_relationships']} chunk-image, {result.get('product_image_relationships', result.get('product_image_associations', 0))} product-image")
 
         return CreateRelationshipsResponse(
             success=True,
             chunk_image_relationships=result['chunk_image_relationships'],
-            product_image_relationships=result['product_image_relationships']
+            product_image_associations=result.get('product_image_relationships', result.get('product_image_associations', 0))  # ✅ Support both old and new key names
         )
 
     except Exception as e:

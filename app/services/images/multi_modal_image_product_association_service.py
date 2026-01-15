@@ -383,18 +383,24 @@ class MultiModalImageProductAssociationService:
                 return 0
 
             # Create product-image relationships
+            # ✅ UPDATED: Use image_product_associations schema
             product_image_data = [
                 {
                     "product_id": assoc.product_id,
                     "image_id": assoc.image_id,
-                    "relationship_type": "depicts",
-                    "relevance_score": assoc.overall_score
+                    "spatial_score": assoc.spatial_score,
+                    "caption_score": assoc.caption_score,
+                    "clip_score": assoc.clip_score,
+                    "overall_score": assoc.overall_score,
+                    "confidence": assoc.confidence,
+                    "reasoning": "depicts",  # replaces relationship_type
+                    "metadata": {}
                 }
                 for assoc in associations
             ]
 
             if product_image_data:
-                result = self.supabase.client.table('product_image_relationships').upsert(
+                result = self.supabase.client.table('image_product_associations').upsert(
                     product_image_data,
                     on_conflict='product_id,image_id'
                 ).execute()

@@ -6,7 +6,7 @@ Links images, chunks, and products using the SAME relationship tables as fronten
 IMPORTANT: This service uses the SAME tables as entityRelationshipService.ts:
 - chunk_product_relationships (chunk_id, product_id, relevance_score)
 - chunk_image_relationships (chunk_id, image_id, relevance_score)
-- product_image_relationships (product_id, image_id, relevance_score)
+- image_product_associations (product_id, image_id, overall_score) ✅ UPDATED
 
 Relationships implemented:
 1. Product → Image: Links products to images based on page proximity and visual similarity
@@ -35,7 +35,7 @@ class EntityLinkingService:
     Tables used:
     - chunk_product_relationships
     - chunk_image_relationships
-    - product_image_relationships
+    - image_product_associations ✅ UPDATED (was product_image_relationships)
 
     Relevance Score Algorithms:
     - Product → Image: page_overlap(40%) + visual_similarity(40%) + detection_score(20%)
@@ -180,13 +180,18 @@ class EntityLinkingService:
                         )
 
                     # Create relationship entry
-                    # NOTE: metadata column removed - table doesn't have it
+                    # ✅ UPDATED: Use image_product_associations schema
                     relationships.append({
                         'id': str(uuid.uuid4()),
                         'image_id': image_id,
                         'product_id': product_id,
-                        'relevance_score': relevance_score,
-                        'relationship_type': 'product_image',
+                        'spatial_score': 0.0,
+                        'caption_score': 0.0,
+                        'clip_score': 0.0,
+                        'overall_score': relevance_score,
+                        'confidence': relevance_score,
+                        'reasoning': 'product_image',  # replaces relationship_type
+                        'metadata': {'linking_method': linking_method},
                         'created_at': datetime.utcnow().isoformat()
                     })
 
@@ -195,7 +200,7 @@ class EntityLinkingService:
 
             # Batch insert all relationships (using SAME table as frontend)
             if relationships:
-                self.supabase.client.table('product_image_relationships')\
+                self.supabase.client.table('image_product_associations')\
                     .insert(relationships)\
                     .execute()
                 self.logger.info(f"✅ Created {len(relationships)} product-image relationship entries")
@@ -739,17 +744,24 @@ class EntityLinkingService:
                 if img_page in product_pages:
                     # Image is on a product page - high relevance
                     relevance = 0.8
+                    # ✅ UPDATED: Use image_product_associations schema
                     image_relationships.append({
                         'id': str(uuid.uuid4()),
                         'product_id': product_id,
                         'image_id': img['id'],
-                        'relevance_score': relevance,
+                        'spatial_score': 0.0,
+                        'caption_score': 0.0,
+                        'clip_score': 0.0,
+                        'overall_score': relevance,
+                        'confidence': relevance,
+                        'reasoning': 'page_proximity',
+                        'metadata': {'page_number': img_page},
                         'created_at': datetime.utcnow().isoformat()
                     })
                     logger.debug(f"   ✅ Image {img['id'][:8]}... on page {img_page} → Product (relevance: {relevance})")
 
             if image_relationships:
-                self.supabase.client.table('product_image_relationships')\
+                self.supabase.client.table('image_product_associations')\
                     .upsert(image_relationships, on_conflict='product_id,image_id')\
                     .execute()
                 stats['image_product_links'] = len(image_relationships)

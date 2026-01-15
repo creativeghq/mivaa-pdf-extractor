@@ -921,9 +921,9 @@ class RealEmbeddingsService:
             }
 
             # First, get the base image embedding (768D)
+            # ✅ FIX: get_image_embedding only accepts 'image' parameter (URL or PIL Image)
             image_embedding_result = await self._slig_client.get_image_embedding(
-                image_url=image_url,
-                image_data=image_data
+                image=image_data if image_data else image_url
             )
 
             if not image_embedding_result or "embedding" not in image_embedding_result:
