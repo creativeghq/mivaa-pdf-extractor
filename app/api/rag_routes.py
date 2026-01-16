@@ -46,6 +46,7 @@ from app.utils.logging import PDFProcessingLogger
 from app.utils.timeout_guard import with_timeout, TimeoutConstants, TimeoutError, ProgressiveTimeoutStrategy
 from app.utils.circuit_breaker import claude_breaker, vision_breaker, clip_breaker, CircuitBreakerError
 from app.utils.memory_monitor import memory_monitor
+from app.utils.resource_manager import get_resource_manager
 
 logger = logging.getLogger(__name__)
 
@@ -1142,6 +1143,17 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
             # Update file_path to point to local temp file
             file_path = temp_file.name
             logger.info(f"✅ Saved to temp file for processing: {file_path}")
+
+            # Register with resource manager for lifecycle control
+            resource_manager = get_resource_manager()
+            await resource_manager.register_resource(
+                resource_id=f"temp_pdf_{document_id}",
+                resource_type="file",
+                path=file_path,
+                job_id=job_id,
+                metadata={"document_id": document_id}
+            )
+            logger.info(f"✅ Registered temp PDF with ResourceManager: {file_path}")
             
             # Free memory
             file_content = None
@@ -2726,110 +2738,151 @@ async def process_document_with_discovery(
 
     try:
         # ============================================================================
-        # WARMUP ALL HUGGINGFACE ENDPOINTS BEFORE PROCESSING STARTS
+        # WARMUP ALL HUGGINGFACE ENDPOINTS IN PARALLEL
         # ============================================================================
         logger.info("=" * 80)
-        logger.info("🔥 WARMING UP ALL HUGGINGFACE ENDPOINTS")
+        logger.info("🔥 WARMING UP ALL HUGGINGFACE ENDPOINTS (PARALLEL)")
         logger.info("=" * 80)
 
         settings = get_settings()
-        warmup_tasks = []
         endpoint_managers = {}
 
-        # 1. Qwen Endpoint (Product Discovery)
-        try:
-            from app.services.embeddings.qwen_endpoint_manager import QwenEndpointManager
-            qwen_config = settings.get_qwen_config()
-            if qwen_config.get("enabled", False):
-                logger.info("🔥 Initializing Qwen endpoint manager...")
-                qwen_manager = QwenEndpointManager(
-                    endpoint_url=qwen_config["endpoint_url"],
-                    endpoint_token=qwen_config["hf_token"],
-                    endpoint_name=qwen_config.get("endpoint_name", "mh-qwen332binstruct"),
-                    namespace=qwen_config.get("namespace", "basiliskan"),
-                    enabled=True
-                )
-                endpoint_managers['qwen'] = qwen_manager
-                logger.info("   Resuming Qwen endpoint...")
-                if qwen_manager.resume_if_needed():
-                    logger.info("   ✅ Qwen endpoint resumed")
-                    logger.info(f"   ⏳ Warming up Qwen ({qwen_manager.warmup_timeout}s)...")
-                    await asyncio.sleep(qwen_manager.warmup_timeout)
-                    qwen_manager.warmup_completed = True
-                    logger.info("   ✅ Qwen warmup complete")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to warmup Qwen endpoint: {e}")
+        async def warmup_qwen():
+            try:
+                from app.services.embeddings.qwen_endpoint_manager import QwenEndpointManager
+                qwen_config = settings.get_qwen_config()
+                if qwen_config.get("enabled", False):
+                    manager = QwenEndpointManager(
+                        endpoint_url=qwen_config["endpoint_url"],
+                        endpoint_token=qwen_config["hf_token"],
+                        endpoint_name=qwen_config.get("endpoint_name", "mh-qwen332binstruct"),
+                        namespace=qwen_config.get("namespace", "basiliskan"),
+                        enabled=True
+                    )
+                    endpoint_managers['qwen'] = manager
+                    
+                    # Check status before resuming
+                    endpoint = manager._get_endpoint()
+                    if endpoint:
+                        endpoint.fetch()
+                        if endpoint.status == "running":
+                            logger.info("   ✅ Qwen endpoint already running, skipping warmup")
+                            manager.warmup_completed = True
+                            return
+                    
+                    if manager.resume_if_needed():
+                        logger.info(f"   ⏳ Warming up Qwen ({manager.warmup_timeout}s)...")
+                        # Note: manager.resume_if_needed() already has a blocking time.sleep, 
+                        # but we still use asyncio.sleep here for consistency in the async flow
+                        # if the manager didn't wait long enough.
+                        await asyncio.sleep(1) # Minimal async yield
+                        manager.warmup_completed = True
+                        logger.info("   ✅ Qwen warmup complete")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to warmup Qwen endpoint: {e}")
 
-        # 2. SLIG Endpoint (Visual Embeddings)
-        try:
-            from app.services.embeddings.slig_endpoint_manager import SLIGEndpointManager
-            slig_config = settings.get_slig_config()
-            if slig_config.get("enabled", False):
-                logger.info("🔥 Initializing SLIG endpoint manager...")
-                slig_manager = SLIGEndpointManager(
-                    endpoint_url=slig_config["endpoint_url"],
-                    hf_token=slig_config["hf_token"],
-                    endpoint_name=slig_config.get("endpoint_name", "mh-siglip2"),
-                    namespace=slig_config.get("namespace", "basiliskan"),
-                    enabled=True
-                )
-                endpoint_managers['slig'] = slig_manager
-                logger.info("   Resuming SLIG endpoint...")
-                if slig_manager.resume_if_needed():
-                    logger.info("   ✅ SLIG endpoint resumed")
-                    if slig_manager.warmup():
-                        logger.info("   ✅ SLIG warmup complete")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to warmup SLIG endpoint: {e}")
+        async def warmup_slig():
+            try:
+                from app.services.embeddings.slig_endpoint_manager import SLIGEndpointManager
+                slig_config = settings.get_slig_config()
+                if slig_config.get("enabled", False):
+                    manager = SLIGEndpointManager(
+                        endpoint_url=slig_config["endpoint_url"],
+                        hf_token=slig_config["hf_token"],
+                        endpoint_name=slig_config.get("endpoint_name", "mh-siglip2"),
+                        namespace=slig_config.get("namespace", "basiliskan"),
+                        enabled=True
+                    )
+                    endpoint_managers['slig'] = manager
+                    
+                    endpoint = manager._get_endpoint()
+                    if endpoint:
+                        endpoint.fetch()
+                        if endpoint.status == "running":
+                            logger.info("   ✅ SLIG endpoint already running")
+                            return
 
-        # 3. YOLO Endpoint (Layout Detection)
-        try:
-            from app.services.pdf.yolo_endpoint_manager import YoloEndpointManager
-            yolo_config = settings.get_yolo_config()
-            if yolo_config.get("enabled", False):
-                logger.info("🔥 Initializing YOLO endpoint manager...")
-                yolo_manager = YoloEndpointManager(
-                    endpoint_url=yolo_config["endpoint_url"],
-                    hf_token=yolo_config.get("hf_token", ""),
-                    endpoint_name=yolo_config.get("endpoint_name"),
-                    namespace=yolo_config.get("namespace"),
-                    enabled=True
-                )
-                endpoint_managers['yolo'] = yolo_manager
-                logger.info("   Resuming YOLO endpoint...")
-                if yolo_manager.resume_if_needed():
-                    logger.info("   ✅ YOLO endpoint resumed")
-                    if yolo_manager.warmup():
-                        logger.info("   ✅ YOLO warmup complete")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to warmup YOLO endpoint: {e}")
+                    if manager.resume_if_needed():
+                        if manager.warmup():
+                            logger.info("   ✅ SLIG warmup complete")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to warmup SLIG endpoint: {e}")
 
-        # 4. Chandra Endpoint (OCR)
-        try:
-            from app.services.pdf.chandra_endpoint_manager import ChandraEndpointManager
-            chandra_config = settings.get_chandra_config()
-            if chandra_config.get("enabled", False):
-                logger.info("🔥 Initializing Chandra endpoint manager...")
-                chandra_manager = ChandraEndpointManager(
-                    endpoint_url=chandra_config["endpoint_url"],
-                    hf_token=chandra_config.get("hf_token", ""),
-                    endpoint_name=chandra_config.get("endpoint_name"),
-                    namespace=chandra_config.get("namespace"),
-                    enabled=True
-                )
-                endpoint_managers['chandra'] = chandra_manager
-                logger.info("   Resuming Chandra endpoint...")
-                if chandra_manager.resume_if_needed():
-                    logger.info("   ✅ Chandra endpoint resumed")
-                    logger.info(f"   ⏳ Warming up Chandra (60s)...")
-                    await asyncio.sleep(60)
-                    logger.info("   ✅ Chandra warmup complete")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to warmup Chandra endpoint: {e}")
+        async def warmup_yolo():
+            try:
+                from app.services.pdf.yolo_endpoint_manager import YoloEndpointManager
+                yolo_config = settings.get_yolo_config()
+                if yolo_config.get("enabled", False):
+                    manager = YoloEndpointManager(
+                        endpoint_url=yolo_config["endpoint_url"],
+                        hf_token=yolo_config.get("hf_token", ""),
+                        endpoint_name=yolo_config.get("endpoint_name"),
+                        namespace=yolo_config.get("namespace"),
+                        enabled=True
+                    )
+                    endpoint_managers['yolo'] = manager
+                    
+                    endpoint = manager._get_endpoint()
+                    if endpoint:
+                        endpoint.fetch()
+                        if endpoint.status == "running":
+                            logger.info("   ✅ YOLO endpoint already running")
+                            return
+
+                    if manager.resume_if_needed():
+                        if manager.warmup():
+                            logger.info("   ✅ YOLO warmup complete")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to warmup YOLO endpoint: {e}")
+
+        async def warmup_chandra():
+            try:
+                from app.services.pdf.chandra_endpoint_manager import ChandraEndpointManager
+                chandra_config = settings.get_chandra_config()
+                if chandra_config.get("enabled", False):
+                    manager = ChandraEndpointManager(
+                        endpoint_url=chandra_config["endpoint_url"],
+                        hf_token=chandra_config.get("hf_token", ""),
+                        endpoint_name=chandra_config.get("endpoint_name"),
+                        namespace=chandra_config.get("namespace"),
+                        enabled=True
+                    )
+                    endpoint_managers['chandra'] = manager
+                    
+                    endpoint = manager._get_endpoint()
+                    if endpoint:
+                        endpoint.fetch()
+                        if endpoint.status == "running":
+                            logger.info("   ✅ Chandra endpoint already running")
+                            return
+
+                    if manager.resume_if_needed():
+                        logger.info(f"   ⏳ Warming up Chandra (60s)...")
+                        await asyncio.sleep(60)
+                        logger.info("   ✅ Chandra warmup complete")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to warmup Chandra endpoint: {e}")
+
+        # Execute all warmups in parallel
+        await asyncio.gather(
+            warmup_qwen(),
+            warmup_slig(),
+            warmup_yolo(),
+            warmup_chandra()
+        )
 
         logger.info("=" * 80)
         logger.info(f"✅ WARMUP COMPLETE - {len(endpoint_managers)} endpoints ready")
         logger.info("=" * 80)
+
+        # ============================================================================
+        # REGISTER WARMED-UP MANAGERS WITH SINGLETON REGISTRY
+        # ============================================================================
+        # This ensures all processing stages reuse the same warmed-up endpoint managers
+        # instead of creating new ones (which would trigger repeated warmups)
+        from app.services.embeddings.endpoint_registry import endpoint_registry
+        endpoint_registry.register_endpoint_managers(endpoint_managers)
+        logger.info(f"📌 Registered {len(endpoint_managers)} endpoint managers with singleton registry")
 
         # ============================================================================
         # INITIALIZE PROGRESS TRACKING
@@ -2909,7 +2962,8 @@ async def process_document_with_discovery(
             enable_prompt_enhancement=enable_prompt_enhancement,
             tracker=tracker,
             checkpoint_recovery_service=checkpoint_recovery_service,
-            logger=logger
+            logger=logger,
+            temp_pdf_path=file_path  # 
         )
 
         catalog = stage_0_result["catalog"]
@@ -3019,7 +3073,8 @@ async def process_document_with_discovery(
                     supabase=supabase,  # SHARED: Database client
                     config=processing_config,  # SHARED: Configuration
                     logger_instance=logger,
-                    total_pages=page_count
+                    total_pages=page_count,
+                    temp_pdf_path=file_path  # ✅ NEW: Pass temp path
                 )
 
                 # Accumulate metrics
@@ -3152,6 +3207,16 @@ async def process_document_with_discovery(
         await progress_monitor.stop()
         logger.info("✅ Stopped progress monitoring")
 
+        # Clear endpoint registry to release resources
+        from app.services.embeddings.endpoint_registry import endpoint_registry
+        endpoint_registry.clear_all()
+        logger.info("🗑️ Cleared endpoint registry")
+
+        # Clear singleton PDFProcessor
+        from app.api.pdf_processing.stage_3_images import clear_pdf_processor
+        clear_pdf_processor()
+        logger.info("🗑️ Cleared singleton PDFProcessor")
+
     except Exception as e:
         logger.error(f"❌ [PRODUCT DISCOVERY PIPELINE] FAILED: {e}", exc_info=True)
 
@@ -3198,155 +3263,63 @@ async def process_document_with_discovery(
             await progress_monitor.stop()
             logger.info("✅ Stopped progress monitoring (error)")
 
-        # LAZY LOADING: Unload all loaded components on error
-        logger.info("🧹 Unloading loaded components due to error...")
-        for component_name in loaded_components:
-            try:
-                await component_manager.unload(component_name)
-                logger.info(f"✅ Unloaded {component_name}")
-            except Exception as unload_error:
-                logger.warning(f"⚠️ Failed to unload {component_name}: {unload_error}")
-
-        # EVENT-BASED CLEANUP: Release resources on error
-        from app.utils.resource_manager import get_resource_manager
-        resource_manager = get_resource_manager()
-
-        # Release the temp PDF file
-        await resource_manager.release_resource(f"temp_pdf_{document_id}", job_id)
-
-        # Cleanup all ready resources
-        cleaned_count = await resource_manager.cleanup_ready_resources()
-        logger.info(f"✅ Cleaned up {cleaned_count} temporary files after error")
-
-        # Force garbage collection
-        gc.collect()
-
         # Mark job as failed using tracker
         if 'tracker' in locals():
             await tracker.fail_job(error=e)
-        else:
-            # Fallback if tracker wasn't initialized
-            pass
             
     finally:
-        # CLEANUP: Pause all HuggingFace inference endpoints to stop billing
-        logger.info("🛑 Pausing all HuggingFace inference endpoints...")
-        endpoints_paused = 0
+        # ============================================================================
+        # CONSOLIDATED CLEANUP (Failure or Success)
+        # ============================================================================
+        logger.info("🧹 [CLEANUP] Starting comprehensive pipeline cleanup...")
+        
+        # 1. Stop progress monitoring (if still running)
+        if 'progress_monitor' in locals():
+            try:
+                await progress_monitor.stop()
+            except Exception:
+                pass
 
+        # 2. Unload lazy components
+        if 'component_manager' in locals() and 'loaded_components' in locals():
+            for component_name in loaded_components:
+                try:
+                    await component_manager.unload(component_name)
+                    logger.info(f"   ✅ Unloaded {component_name}")
+                except Exception as unload_error:
+                    logger.warning(f"   ⚠️ Failed to unload {component_name}: {unload_error}")
+
+        # 3. Release resources & delete temp files
         try:
-            # Pause Qwen endpoint (image classification)
-            from app.services.embeddings.qwen_endpoint_manager import QwenEndpointManager
-            # get_settings is already imported at module level (line 31)
-            settings = get_settings()
-            qwen_config = settings.get_qwen_config()
+            from app.utils.resource_manager import get_resource_manager
+            resource_manager = get_resource_manager()
+            
+            # Release the main temp PDF
+            await resource_manager.release_resource(f"temp_pdf_{document_id}", job_id)
+            
+            # Cleanup all ready resources (this also handles os.unlink for us if registered)
+            cleaned_count = await resource_manager.cleanup_ready_resources()
+            logger.info(f"   ✅ Cleaned up {cleaned_count} temporary resources")
+        except Exception as cleanup_error:
+            logger.warning(f"   ⚠️ Resource cleanup failed: {cleanup_error}")
 
-            if qwen_config.get("enabled", False):
+        # 4. Pause HuggingFace endpoints (Stop billing)
+        logger.info("🛑 [CLEANUP] Pausing AI endpoints...")
+        endpoints_to_pause = ['qwen', 'slig', 'yolo', 'chandra']
+        paused_count = 0
+        
+        for name in endpoints_to_pause:
+            if name in endpoint_managers:
                 try:
-                    qwen_manager = QwenEndpointManager(
-                        endpoint_url=qwen_config["endpoint_url"],
-                        endpoint_token=qwen_config["hf_token"],
-                        endpoint_name=qwen_config.get("endpoint_name", "mh-qwen332binstruct"),
-                        namespace=qwen_config.get("namespace", "basiliskan"),
-                        enabled=True
-                    )
-                    if qwen_manager.force_pause():
-                        endpoints_paused += 1
-                        logger.info("✅ Qwen endpoint paused")
-                    else:
-                        logger.warning("⚠️ Failed to pause Qwen endpoint")
-                except Exception as e:
-                    logger.warning(f"⚠️ Error pausing Qwen endpoint: {e}")
-        except Exception as e:
-            logger.warning(f"⚠️ Error initializing Qwen manager: {e}")
+                    if endpoint_managers[name].force_pause():
+                        paused_count += 1
+                        logger.info(f"   ✅ {name.upper()} endpoint paused")
+                except Exception as pause_error:
+                    logger.warning(f"   ⚠️ Failed to pause {name} endpoint: {pause_error}")
 
-        try:
-            # Pause YOLO endpoint (layout detection)
-            from app.services.pdf.yolo_endpoint_manager import YoloEndpointManager
-            yolo_config = settings.get_yolo_config()
-
-            if yolo_config.get("enabled", False):
-                try:
-                    yolo_manager = YoloEndpointManager(
-                        endpoint_url=yolo_config["endpoint_url"],
-                        hf_token=yolo_config.get("hf_token", ""),
-                        endpoint_name=yolo_config.get("endpoint_name"),
-                        namespace=yolo_config.get("namespace"),
-                        enabled=True
-                    )
-                    if yolo_manager.force_pause():
-                        endpoints_paused += 1
-                        logger.info("✅ YOLO endpoint paused")
-                    else:
-                        logger.warning("⚠️ Failed to pause YOLO endpoint")
-                except Exception as e:
-                    logger.warning(f"⚠️ Error pausing YOLO endpoint: {e}")
-        except Exception as e:
-            logger.warning(f"⚠️ Error initializing YOLO manager: {e}")
-
-        try:
-            # Pause Chandra endpoint (OCR fallback)
-            from app.services.pdf.chandra_endpoint_manager import ChandraEndpointManager
-            chandra_config = settings.get_chandra_config()
-
-            if chandra_config.get("enabled", False):
-                try:
-                    chandra_manager = ChandraEndpointManager(
-                        endpoint_url=chandra_config["endpoint_url"],
-                        hf_token=chandra_config.get("hf_token", ""),
-                        endpoint_name=chandra_config.get("endpoint_name"),
-                        namespace=chandra_config.get("namespace"),
-                        enabled=True
-                    )
-                    if chandra_manager.force_pause():
-                        endpoints_paused += 1
-                        logger.info("✅ Chandra endpoint paused")
-                    else:
-                        logger.warning("⚠️ Failed to pause Chandra endpoint")
-                except Exception as e:
-                    logger.warning(f"⚠️ Error pausing Chandra endpoint: {e}")
-        except Exception as e:
-            logger.warning(f"⚠️ Error initializing Chandra manager: {e}")
-
-        try:
-            # Pause SLIG endpoint (embeddings)
-            from app.services.embeddings.slig_endpoint_manager import SLIGEndpointManager
-            slig_config = settings.get_slig_config()
-
-            if slig_config.get("enabled", False):
-                try:
-                    slig_manager = SLIGEndpointManager(
-                        endpoint_url=slig_config["endpoint_url"],
-                        hf_token=slig_config.get("hf_token", ""),
-                        endpoint_name=slig_config.get("endpoint_name"),
-                        namespace=slig_config.get("namespace"),
-                        enabled=True
-                    )
-                    if slig_manager.force_pause():
-                        endpoints_paused += 1
-                        logger.info("✅ SLIG endpoint paused")
-                    else:
-                        logger.warning("⚠️ Failed to pause SLIG endpoint")
-                except Exception as e:
-                    logger.warning(f"⚠️ Error pausing SLIG endpoint: {e}")
-        except Exception as e:
-            logger.warning(f"⚠️ Error initializing SLIG manager: {e}")
-
-        logger.info(f"🛑 Paused {endpoints_paused} HuggingFace endpoints (no billing)")
-
-        # CLEANUP: Remove local temp file
-        if 'file_path' in locals() and file_path and os.path.exists(file_path):
-            # Only delete if it's a temp file we created (basic safety check)
-            if file_path.startswith('/tmp/') or 'Temp' in file_path or 'tmp' in file_path:
-                try:
-                    os.unlink(file_path)
-                    logger.info(f"🧹 Removed temporary file: {file_path}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to remove temporary file {file_path}: {e}")
-            # Only update job_storage if the job exists
-            if job_id in job_storage:
-                job_storage[job_id]["status"] = "failed"
-                job_storage[job_id]["error"] = str(e)
-                job_storage[job_id]["progress"] = 100
+        # 5. Final Garbage Collection
+        gc.collect()
+        logger.info(f"✨ [CLEANUP] Finished. Endpoints paused: {paused_count}")
 
 
 @router.post("/query", response_model=QueryResponse)

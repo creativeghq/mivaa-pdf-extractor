@@ -1985,46 +1985,48 @@ class PDFProcessor:
     async def _should_image_have_ocr(self, image_path: str) -> Dict[str, Any]:
         """
         AI-powered decision on whether an image needs OCR processing.
-        
+
         Uses CLIP embeddings to classify images as:
         - RELEVANT: Product specs, dimensions, technical data, material properties
         - IRRELEVANT: Historical photos, biographies, decorative images, mood boards
-        
+
         Args:
             image_path: Path to the image file
-            
+
         Returns:
             Dict with 'should_process' (bool), 'reason' (str), 'confidence' (float)
         """
         try:
             from PIL import Image
             import torch
-            
+
             # Load image
             if not os.path.exists(image_path):
                 return {'should_process': False, 'reason': 'file_not_found', 'confidence': 0.0}
-            
+
             image = Image.open(image_path).convert('RGB')
 
-            # ✅ Initialize SLIG client for OCR filtering (cloud-based, auto-pause enabled)
-            if not hasattr(self, '_slig_client_for_ocr'):
-                from app.config import get_settings
-                from app.services.embeddings.slig_client import SLIGClient
-                settings = get_settings()
+            # ============================================================================
+            # IMAGE VALIDATION - Resize large images to prevent 400 errors
+            # ============================================================================
+            MAX_DIMENSION = 1024
+            if image.width > MAX_DIMENSION or image.height > MAX_DIMENSION:
+                original_size = (image.width, image.height)
+                image.thumbnail((MAX_DIMENSION, MAX_DIMENSION), Image.LANCZOS)
+                self.logger.debug(f"📐 Resized image from {original_size} to {image.size} for SLIG classification")
 
-                if not settings.slig_endpoint_url or not settings.slig_endpoint_token:
-                    self.logger.error("❌ SLIG endpoint not configured for OCR filtering")
-                    return {'should_process': True, 'reason': 'slig_not_configured', 'confidence': 0.5}
+            # ✅ Use singleton SLIG client from endpoint registry (prevents repeated warmups)
+            if not hasattr(self, '_slig_client_for_ocr') or self._slig_client_for_ocr is None:
+                from app.services.embeddings.endpoint_registry import endpoint_registry
 
-                self._slig_client_for_ocr = SLIGClient(
-                    endpoint_url=settings.slig_endpoint_url,
-                    token=settings.slig_endpoint_token,
-                    endpoint_name="mh-siglip2",
-                    namespace="basiliskan",
-                    auto_pause=True,  # Enable auto-pause to save costs
-                    auto_pause_timeout=60  # Pause after 60s idle
-                )
-                self.logger.info(f"✅ SLIG cloud client initialized for OCR filtering (auto-pause enabled)")
+                # Try to get client from registry first (pre-warmed)
+                self._slig_client_for_ocr = endpoint_registry.get_slig_client()
+
+                if self._slig_client_for_ocr:
+                    self.logger.info("♻️ Using SLIG client from endpoint registry (singleton)")
+                else:
+                    self.logger.warning("⚠️ SLIG client not available from registry")
+                    return {'should_process': True, 'reason': 'slig_not_available', 'confidence': 0.5}
 
             # ✅ Define candidate labels for zero-shot classification
             # Simplified labels for better classification accuracy

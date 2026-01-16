@@ -38,7 +38,8 @@ async def process_stage_0_discovery(
     enable_prompt_enhancement: bool,
     tracker: Any,
     checkpoint_recovery_service: Any,
-    logger: Any
+    logger: Any,
+    temp_pdf_path: Optional[str] = None  # ✅ NEW: Optional existing temp path
 ) -> Dict[str, Any]:
     """
     Stage 0: Product Discovery
@@ -66,7 +67,7 @@ async def process_stage_0_discovery(
         - catalog: Discovered catalog with products and entities
         - pdf_result: PDF extraction result with page count and content
         - product_pages: Set of page numbers containing products
-        - temp_pdf_path: Path to temporary PDF file
+        - temp_pdf_path: Path to temporary PDF file (returned existing or new)
     """
     from app.services.discovery.product_discovery_service import ProductDiscoveryService
     from app.services.pdf.pdf_processor import PDFProcessor
@@ -86,40 +87,46 @@ async def process_stage_0_discovery(
     mem_stats = memory_monitor.get_memory_stats()
     logger.info(f"💾 Initial memory: {mem_stats.used_mb:.1f} MB ({mem_stats.percent_used:.1f}%)")
 
-    # Save PDF to temporary file for two-stage discovery
-    temp_pdf_path = None
+    # Save PDF to temporary file for two-stage discovery (if not provided)
+    pdf_resource_registered = False
     try:
-        logger.info(f"🔧 [STAGE 0] Step 1/7: Initializing resource manager...")
-        # EVENT-BASED CLEANUP: Register resource manager
         from app.utils.resource_manager import get_resource_manager
         resource_manager = get_resource_manager()
-        logger.info(f"✅ [STAGE 0] Resource manager initialized")
 
-        logger.info(f"🔧 [STAGE 0] Step 2/7: Creating temporary PDF file...")
-        # Create temp file that persists during processing
-        temp_fd, temp_pdf_path = tempfile.mkstemp(suffix='.pdf', prefix=f'{document_id}_')
-        os.close(temp_fd)  # Close file descriptor, we'll write with aiofiles
-        logger.info(f"✅ [STAGE 0] Temp file created: {temp_pdf_path}")
+        if temp_pdf_path and os.path.exists(temp_pdf_path):
+            logger.info(f"♻️ [STAGE 0] Reusing existing temp PDF: {temp_pdf_path}")
+            # Ensure it's registered (though it should be by rag_routes)
+            await resource_manager.register_resource(
+                resource_id=f"temp_pdf_{document_id}",
+                resource_type="file",
+                path=temp_pdf_path,
+                job_id=job_id,
+                metadata={"document_id": document_id, "filename": filename}
+            )
+            pdf_resource_registered = True
+        else:
+            logger.info(f"🔧 [STAGE 0] Step 1/7: Creating temporary PDF file...")
+            # Create temp file that persists during processing
+            temp_fd, temp_pdf_path = tempfile.mkstemp(suffix='.pdf', prefix=f'{document_id}_')
+            os.close(temp_fd)
+            logger.info(f"✅ [STAGE 0] Temp file created: {temp_pdf_path}")
 
-        logger.info(f"🔧 [STAGE 0] Step 3/7: Writing PDF bytes to temp file ({len(file_content)} bytes)...")
-        # Write PDF bytes to temp file
-        async with aiofiles.open(temp_pdf_path, 'wb') as f:
-            await f.write(file_content)
-        logger.info(f"✅ [STAGE 0] PDF bytes written to temp file")
+            logger.info(f"🔧 [STAGE 0] Step 2/7: Writing PDF bytes to temp file ({len(file_content)} bytes)...")
+            async with aiofiles.open(temp_pdf_path, 'wb') as f:
+                await f.write(file_content)
+            
+            # Register temp file with resource manager
+            await resource_manager.register_resource(
+                resource_id=f"temp_pdf_{document_id}",
+                resource_type="file",
+                path=temp_pdf_path,
+                job_id=job_id,
+                metadata={"document_id": document_id, "filename": filename}
+            )
+            pdf_resource_registered = True
+            logger.info(f"✅ [STAGE 0] PDF registered with ResourceManager")
 
-        logger.info(f"🔧 [STAGE 0] Step 4/7: Registering resource with manager...")
-        # Register temp file with resource manager
-        await resource_manager.register_resource(
-            resource_id=f"temp_pdf_{document_id}",
-            resource_type="file",
-            path=temp_pdf_path,
-            job_id=job_id,
-            metadata={"document_id": document_id, "filename": filename}
-        )
-        logger.info(f"✅ [STAGE 0] Resource registered")
-
-        logger.info(f"🔧 [STAGE 0] Step 5/7: Marking resource as IN_USE...")
-        # Mark as IN_USE before PyMuPDF opens it
+        # Mark as IN_USE
         await resource_manager.mark_in_use(f"temp_pdf_{document_id}", job_id)
         logger.info(f"✅ [STAGE 0] Resource marked as IN_USE")
 

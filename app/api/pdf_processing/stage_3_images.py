@@ -6,7 +6,28 @@ This module handles image processing for individual products in the product-cent
 
 import os
 import logging
-from typing import Dict, Any, Set
+from typing import Dict, Any, Set, Optional
+
+# ============================================================================
+# SINGLETON PDF PROCESSOR - Reuse across all products to prevent re-initialization
+# ============================================================================
+_pdf_processor_instance: Optional[Any] = None
+
+
+def get_pdf_processor():
+    """Get or create singleton PDFProcessor instance."""
+    global _pdf_processor_instance
+    if _pdf_processor_instance is None:
+        from app.services.pdf.pdf_processor import PDFProcessor
+        _pdf_processor_instance = PDFProcessor()
+        logging.getLogger(__name__).info("♻️ Created singleton PDFProcessor for Stage 3")
+    return _pdf_processor_instance
+
+
+def clear_pdf_processor():
+    """Clear the singleton PDFProcessor (call at job completion)."""
+    global _pdf_processor_instance
+    _pdf_processor_instance = None
 
 
 async def process_product_images(
@@ -37,7 +58,6 @@ async def process_product_images(
     Returns:
         Dictionary with images_processed, images_material, images_non_material counts
     """
-    from app.services.pdf.pdf_processor import PDFProcessor
     from app.services.images.image_processing_service import ImageProcessingService
 
     logger.info(f"🖼️  Processing images for product: {product.name}")
@@ -46,7 +66,8 @@ async def process_product_images(
     pdf_indices_1based = [idx + 1 for idx in product_pages]  # Convert 0-based to 1-based
     logger.info(f"   PDF pages (1-based): {sorted(pdf_indices_1based)}")
 
-    pdf_processor = PDFProcessor()
+    # ✅ FIX: Use singleton PDFProcessor to prevent repeated SLIG client initialization
+    pdf_processor = get_pdf_processor()
     processing_options = {
         'extract_images': True,
         'extract_text': False,  
@@ -92,15 +113,15 @@ async def process_product_images(
     # ✅ FIX: Provide more context when no images are extracted
     if total_images == 0:
         logger.warning(f"   ⚠️ NO IMAGES EXTRACTED!")
-        logger.warning(f"      Catalog pages requested: {sorted(catalog_pages)}")
-        logger.warning(f"      PDF array indices: {sorted(product_pages)}")
+        logger.warning(f"      PDF pages requested (1-based): {sorted(pdf_indices_1based)}")
+        logger.warning(f"      PDF array indices (0-based): {sorted(product_pages)}")
         logger.warning(f"      This could mean:")
         logger.warning(f"      1. Pages are text-only (no embedded images)")
         logger.warning(f"      2. Page number conversion failed")
         logger.warning(f"      3. Images were filtered out by size/quality thresholds")
-        return {'images_processed': 0, 'images_material': 0, 'images_non_material': 0}
+        return {'images_processed': 0, 'images_material': 0, 'images_non_material': 0, 'clip_embeddings_generated': 0}
 
-    logger.info(f"   ✅ Extracted {total_images} images from {len(catalog_pages)} pages")
+    logger.info(f"   ✅ Extracted {total_images} images from {len(product_pages)} pages")
 
     # ✅ FIX 8: Log image paths before classification to verify they exist
     logger.info(f"   Verifying extracted image files...")

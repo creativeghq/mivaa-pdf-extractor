@@ -81,6 +81,7 @@ class ProgressTracker:
     image_embeddings_generated: int = 0  # NEW: Track image embeddings separately
     clip_embeddings_generated: int = 0  # Track CLIP/SigLIP embeddings separately
     total_images_extracted: int = 0  # Total images found in PDF (including non-material)
+    relations_created: int = 0  # Track entity relationships created
 
     # Error tracking
     errors: List[Dict[str, Any]] = field(default_factory=list)
@@ -170,6 +171,7 @@ class ProgressTracker:
                     'total_images_extracted': self.total_images_extracted,  # All images found in PDF
                     'chunks_created': self.chunks_created,
                     'products_created': self.products_created,
+                    'relations_created': self.relations_created,  # Entity relationships created
                     'embeddings_generated': self.text_embeddings_generated + self.image_embeddings_generated,  # Total embeddings (backward compatibility)
                     'text_embeddings_generated': self.text_embeddings_generated,  # NEW: Separate text embeddings count
                     'image_embeddings_generated': self.image_embeddings_generated,  # NEW: Separate image embeddings count
@@ -393,6 +395,7 @@ class ProgressTracker:
         clip_embeddings: int = 0,
         text_embeddings: int = 0,  # NEW: Separate text embeddings count
         image_embeddings: int = 0,  # NEW: Separate image embeddings count
+        relations_created: int = 0,  # Entity relationships created
         total_images_extracted: int = 0,
         sync_to_db: bool = True
     ):
@@ -402,6 +405,7 @@ class ProgressTracker:
         Args:
             text_embeddings: Number of text embeddings generated (from chunks)
             image_embeddings: Number of image embeddings generated (CLIP/SigLIP)
+            relations_created: Number of entity relationships created
             sync_to_db: If True, sync progress to database after update
         """
         self.database_records_created += records_created
@@ -412,13 +416,15 @@ class ProgressTracker:
         self.clip_embeddings_generated += clip_embeddings
         self.text_embeddings_generated += text_embeddings  # NEW: Track text embeddings
         self.image_embeddings_generated += image_embeddings  # NEW: Track image embeddings
+        self.relations_created += relations_created  # Track relationships
         if total_images_extracted > 0:
             self.total_images_extracted = total_images_extracted
 
         logger.info(f"Updated database stats for job {self.job_id}: "
                    f"records={self.database_records_created}, kb={self.knowledge_base_entries}, "
                    f"images={self.images_stored}, chunks={self.chunks_created}, products={self.products_created}, "
-                   f"text_emb={self.text_embeddings_generated}, image_emb={self.image_embeddings_generated}")
+                   f"text_emb={self.text_embeddings_generated}, image_emb={self.image_embeddings_generated}, "
+                   f"relations={self.relations_created}")
 
         # Sync to database
         if sync_to_db:

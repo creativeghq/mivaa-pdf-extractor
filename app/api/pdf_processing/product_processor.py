@@ -38,7 +38,8 @@ async def process_single_product(
     supabase: Any,
     config: Dict[str, Any],
     logger_instance: logging.Logger,
-    total_pages: Optional[int] = None
+    total_pages: Optional[int] = None,
+    temp_pdf_path: Optional[str] = None  # ✅ NEW: Reuse existing temp path
 ) -> ProductProcessingResult:
     """
     Process a single product through all stages.
@@ -137,9 +138,60 @@ async def process_single_product(
         )
         pages_extracted = len(product_pages)
         logger_instance.info(
-            f"✅ Extracted {pages_extracted} pages for {product.name} "
-            f"({len(layout_regions)} layout regions detected)"
+            f"✅ Extracted {pages_extracted} pages for {product.name}"
         )
+
+        # ========================================================================
+        # STAGE 1.5: YOLO Layout Detection
+        # ========================================================================
+        logger_instance.info(f"🎯 [STAGE 1.5/{product_index}] Running YOLO layout detection...")
+        layout_regions = []
+
+        try:
+            from app.services.pdf.yolo_layout_detector import YoloLayoutDetector
+            from app.config import get_settings
+            import os
+            import tempfile
+
+            settings = get_settings()
+
+            if settings.yolo_enabled and product_pages:
+                # Initialize YOLO detector
+                yolo_config = settings.get_yolo_config()
+                detector = YoloLayoutDetector(config=yolo_config)
+
+                # ✅ FIX: Reuse existing temp PDF
+                used_temp_path = temp_pdf_path
+                created_temp = False
+
+                if not used_temp_path or not os.path.exists(used_temp_path):
+                    logger_instance.info("      ⚠️ No temp_pdf_path provided, creating temporary copy...")
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+                        tmp_file.write(file_content)
+                        used_temp_path = tmp_file.name
+                        created_temp = True
+                else:
+                    logger_instance.info(f"      ♻️ Reusing existing temp PDF: {used_temp_path}")
+
+                try:
+                    # Detect layout regions for each product page
+                    for page_idx in sorted(product_pages):
+                        logger_instance.info(f"      Detecting regions on page {page_idx}...")
+                        result_yolo = await detector.detect_layout_regions(used_temp_path, page_idx)
+
+                        if result_yolo and result_yolo.regions:
+                            layout_regions.extend(result_yolo.regions)
+                            logger_instance.info(f"      ✅ Found {len(result_yolo.regions)} regions")
+                finally:
+                    # Only delete if we created it locally in this stage
+                    if created_temp and used_temp_path and os.path.exists(used_temp_path):
+                        os.unlink(used_temp_path)
+            else:
+                logger_instance.info("   ⚠️ YOLO disabled or no pages to process")
+
+        except Exception as e:
+            logger_instance.error(f"   ❌ YOLO layout detection failed: {e}")
+            logger_instance.info("   Continuing without layout detection...")
 
         # ========================================================================
         # STAGE 2: Create Text Chunks
@@ -167,7 +219,9 @@ async def process_single_product(
             config=config,
             supabase=supabase,
             logger=logger_instance,
-            product_id=None  # ✅ FIX: Don't pass temp ID - product not in DB yet, layout regions detected later in Stage 3
+            product_id=None,
+            temp_pdf_path=temp_pdf_path,  # ✅ NEW: Pass temp path
+            layout_regions=layout_regions  # ✅ NEW: Pass layout regions directly
         )
 
         chunks_created = chunk_result.get('chunks_created', 0)
@@ -176,7 +230,7 @@ async def process_single_product(
         await product_tracker.mark_stage_complete(
             product_id,
             ProductStage.CHUNKING,
-            {"chunks_created": chunks_created, "text_embeddings_generated": embeddings_generated}
+            {"chunks_created": chunks_created, "text_embeddings_generated": embeddings_generated, "layout_aware": True}
         )
         result.chunks_created = chunks_created
 
@@ -187,7 +241,9 @@ async def process_single_product(
                 text_embeddings=embeddings_generated,
                 sync_to_db=True
             )
+            # Log the actual tracker values to verify sync
             logger_instance.info(f"   📊 Updated tracker: {chunks_created} chunks, {embeddings_generated} text embeddings")
+            logger_instance.info(f"   📊 Tracker totals: chunks={tracker.chunks_created}, text_embeddings={tracker.text_embeddings_generated}")
         logger_instance.info(f"✅ Created {chunks_created} chunks for {product.name}")
 
         # ========================================================================
@@ -241,7 +297,9 @@ async def process_single_product(
                 image_embeddings=clip_embeddings,
                 sync_to_db=True
             )
+            # Log the actual tracker values to verify sync
             logger_instance.info(f"   📊 Updated tracker: {images_processed} images, {clip_embeddings} CLIP embeddings")
+            logger_instance.info(f"   📊 Tracker totals: images_stored={tracker.images_stored}, clip_embeddings={tracker.clip_embeddings_generated}, image_embeddings={tracker.image_embeddings_generated}")
 
         # ========================================================================
         # STAGE 4: Update Product with Extracted Metadata
@@ -276,100 +334,71 @@ async def process_single_product(
             except Exception as e:
                 logger_instance.error(f"❌ Failed to update product metadata: {e}")
 
-        await product_tracker.mark_stage_complete(
-            product_id,
-            ProductStage.CREATION,
-            {"product_db_id": product_db_id}
-        )
-        result.product_db_id = product_db_id
-        logger_instance.info(f"✅ Product updated in DB: {product_db_id}")
+        # 4b. Store layout regions and extract tables
+        if layout_regions and product_db_id:
+            try:
+                from app.services.pdf.table_extraction import TableExtractor
+                from app.services.core.supabase_client import get_supabase_client
+                supabase_client = get_supabase_client()
 
-        # ========================================================================
-        # STAGE 4.5: YOLO Layout Detection & Table Extraction
-        # ========================================================================
-        logger_instance.info(f"🎯 [STAGE 4.5/{product_index}] Running YOLO layout detection...")
+                # Store layout regions
+                region_data = []
+                table_regions = []
+                for region in layout_regions:
+                    if region.type == 'TABLE':
+                        table_regions.append(region)
+                    
+                    region_data.append({
+                        'product_id': product_db_id,
+                        'page_number': region.bbox.page,
+                        'region_type': region.type,
+                        'bbox_x': region.bbox.x,
+                        'bbox_y': region.bbox.y,
+                        'bbox_width': region.bbox.width,
+                        'bbox_height': region.bbox.height,
+                        'confidence': region.confidence,
+                        'reading_order': region.reading_order,
+                        'text_content': getattr(region, 'text_content', None),
+                        'metadata': {'yolo_model': 'yolo-docparser'}
+                    })
 
-        try:
-            from app.services.pdf.yolo_layout_detector import YoloLayoutDetector
-            from app.services.pdf.table_extraction import TableExtractor
-            from app.config import get_settings
-            import tempfile
-            import os
+                supabase_client.client.table('product_layout_regions').insert(region_data).execute()
+                logger_instance.info(f"   💾 Stored {len(region_data)} layout regions")
 
-            settings = get_settings()
+                # Extract tables if TABLE regions found
+                if table_regions:
+                    logger_instance.info(f"   📊 Extracting {len(table_regions)} tables...")
+                    extractor = TableExtractor()
+                    
+                    # Group by page
+                    tables_by_page = {}
+                    for region in table_regions:
+                        p_num = region.bbox.page
+                        if p_num not in tables_by_page:
+                            tables_by_page[p_num] = []
+                        tables_by_page[p_num].append(region)
 
-            if settings.yolo_enabled and product_pages:
-                # Initialize YOLO detector
-                yolo_config = settings.get_yolo_config()
-                detector = YoloLayoutDetector(config=yolo_config)
+                    # Extract tables
+                    all_tables = []
+                    # Use existing temp path if available
+                    tab_temp_path = temp_pdf_path
+                    tab_created_temp = False
+                    
+                    if not tab_temp_path or not os.path.exists(tab_temp_path):
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+                            tmp_file.write(file_content)
+                            tab_temp_path = tmp_file.name
+                            tab_created_temp = True
 
-                # Save PDF to temp file
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-                    tmp_file.write(file_content)
-                    tmp_pdf_path = tmp_file.name
-
-                try:
-                    # Detect layout regions for each product page
-                    all_regions = []
-                    table_regions = []
-
-                    for page_idx in sorted(product_pages):
-                        logger_instance.info(f"      Detecting regions on page {page_idx}...")
-                        result_yolo = await detector.detect_layout_regions(tmp_pdf_path, page_idx)
-
-                        if result_yolo and result_yolo.regions:
-                            all_regions.extend(result_yolo.regions)
-                            table_regions.extend([r for r in result_yolo.regions if r.type == 'TABLE'])
-                            logger_instance.info(f"      ✅ Found {len(result_yolo.regions)} regions")
-
-                    # Store layout regions in database
-                    if all_regions and product_db_id:
-                        from app.services.core.supabase_client import get_supabase_client
-                        supabase_client = get_supabase_client()
-
-                        region_data = []
-                        for region in all_regions:
-                            region_data.append({
-                                'product_id': product_db_id,
-                                'page_number': region.bbox.page,
-                                'region_type': region.type,
-                                'bbox_x': region.bbox.x,
-                                'bbox_y': region.bbox.y,
-                                'bbox_width': region.bbox.width,
-                                'bbox_height': region.bbox.height,
-                                'confidence': region.confidence,
-                                'reading_order': region.reading_order,
-                                'text_content': getattr(region, 'text_content', None),
-                                'metadata': {'yolo_model': 'yolo-docparser'}
-                            })
-
-                        supabase_client.client.table('product_layout_regions').insert(region_data).execute()
-                        logger_instance.info(f"   💾 Stored {len(region_data)} layout regions")
-
-                    # Extract tables if TABLE regions found
-                    if table_regions and product_db_id:
-                        logger_instance.info(f"   📊 Extracting {len(table_regions)} tables...")
-                        extractor = TableExtractor()
-
-                        # Group by page
-                        tables_by_page = {}
-                        for region in table_regions:
-                            page_num = region.bbox.page
-                            if page_num not in tables_by_page:
-                                tables_by_page[page_num] = []
-                            tables_by_page[page_num].append(region)
-
-                        # Extract tables using pdfplumber
-                        all_tables = []
+                    try:
                         for page_num, regions in tables_by_page.items():
                             tables = extractor.extract_tables_from_page(
-                                pdf_path=tmp_pdf_path,
+                                pdf_path=tab_temp_path,
                                 page_number=page_num,
                                 table_regions=regions
                             )
                             all_tables.extend(tables)
 
-                        # Store tables
                         if all_tables:
                             stored_count = await extractor.store_tables_in_database(
                                 product_id=product_db_id,
@@ -377,16 +406,19 @@ async def process_single_product(
                                 supabase_client=supabase_client
                             )
                             logger_instance.info(f"   ✅ Stored {stored_count} tables")
+                    finally:
+                        if tab_created_temp and tab_temp_path and os.path.exists(tab_temp_path):
+                            os.unlink(tab_temp_path)
+            except Exception as e:
+                logger_instance.error(f"❌ Failed to store layout/tables: {e}")
 
-                finally:
-                    if os.path.exists(tmp_pdf_path):
-                        os.unlink(tmp_pdf_path)
-            else:
-                logger_instance.info("   ⚠️ YOLO disabled or no pages to process")
-
-        except Exception as e:
-            logger_instance.error(f"   ❌ YOLO layout detection failed: {e}")
-            logger_instance.info("   Continuing without layout detection...")
+        await product_tracker.mark_stage_complete(
+            product_id,
+            ProductStage.CREATION,
+            {"product_db_id": product_db_id}
+        )
+        result.product_db_id = product_db_id
+        logger_instance.info(f"✅ Product updated in DB: {product_db_id}")
 
         # ========================================================================
         # STAGE 5: Create Relationships (Link chunks/images to product)
@@ -414,6 +446,14 @@ async def process_single_product(
         )
         result.relationships_created = relationships_created
         logger_instance.info(f"✅ Created {relationships_created} relationships")
+
+        # ✅ FIX: Update tracker with relationships count
+        if tracker:
+            await tracker.update_database_stats(
+                relations_created=relationships_created,
+                sync_to_db=True
+            )
+            logger_instance.info(f"   📊 Updated tracker: {relationships_created} relationships (total relations={tracker.relations_created})")
 
         # ========================================================================
         # SUCCESS: Mark product as complete

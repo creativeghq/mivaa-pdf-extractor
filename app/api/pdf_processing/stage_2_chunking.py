@@ -21,7 +21,9 @@ async def process_product_chunking(
     config: Dict[str, Any],
     supabase: Any,
     logger: logging.Logger,
-    product_id: Optional[str] = None
+    product_id: Optional[str] = None,
+    temp_pdf_path: Optional[str] = None,  # ✅ NEW: Reuse existing temp path
+    layout_regions: Optional[List[Any]] = None  # ✅ NEW: Use provided regions
 ) -> Dict[str, Any]:
     """
     Create text chunks for a single product (product-centric pipeline).
@@ -94,8 +96,22 @@ async def process_product_chunking(
     # STEP 1.5: Load Layout Regions (for layout-aware chunking)
     # ========================================================================
     layout_regions_by_page = {}
-    if product_id and config.get('enable_layout_aware_chunking', True):
-        logger.info(f"   📐 Loading layout regions for layout-aware chunking...")
+    
+    # Priority 1: Use provided layout regions (already in-memory)
+    if layout_regions:
+        logger.info(f"   📐 Using {len(layout_regions)} provided layout regions for chunking")
+        for region in layout_regions:
+            page_num = region.bbox.page
+            if page_num not in layout_regions_by_page:
+                layout_regions_by_page[page_num] = []
+            
+            # Convert to dict if it's a Pydantic model
+            region_dict = region.dict() if hasattr(region, 'dict') else region
+            layout_regions_by_page[page_num].append(region_dict)
+    
+    # Priority 2: Load from DB if product_id provided
+    elif product_id and config.get('enable_layout_aware_chunking', True):
+        logger.info(f"   📐 Loading layout regions from DB for layout-aware chunking...")
         layout_regions_by_page = await get_layout_regions(
             product_id=product_id,
             supabase=supabase,
@@ -124,10 +140,18 @@ async def process_product_chunking(
             import tempfile
             import os
 
-            # Write PDF bytes to temp file
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-                tmp_file.write(file_content)
-                tmp_pdf_path = tmp_file.name
+            # ✅ FIX: Reuse existing temp PDF if provided
+            used_temp_path = temp_pdf_path
+            created_temp = False
+
+            if not used_temp_path or not os.path.exists(used_temp_path):
+                logger.info("      ⚠️ No temp_pdf_path provided, creating temporary copy for extraction...")
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+                    tmp_file.write(file_content)
+                    used_temp_path = tmp_file.name
+                    created_temp = True
+            else:
+                logger.info(f"      ♻️ Reusing existing temp PDF: {used_temp_path}")
 
             try:
                 # Convert product_pages (0-based array indices) to 1-based catalog pages
@@ -147,7 +171,7 @@ async def process_product_chunking(
                 if catalog_pages:
                     logger.info(f"   📄 Extracting text from catalog pages: {sorted(catalog_pages)}")
                     markdown_result = pymupdf4llm.to_markdown(
-                        tmp_pdf_path,
+                        used_temp_path,  # Use our temp path
                         pages=sorted(catalog_pages),
                         page_chunks=False  # Get full text, not page chunks
                     )
@@ -156,9 +180,9 @@ async def process_product_chunking(
                 else:
                     logger.warning(f"   ⚠️ No valid catalog pages found for product")
             finally:
-                # Clean up temp file
-                if os.path.exists(tmp_pdf_path):
-                    os.unlink(tmp_pdf_path)
+                # Only delete if we created it locally
+                if created_temp and used_temp_path and os.path.exists(used_temp_path):
+                    os.unlink(used_temp_path)
         except Exception as e:
             logger.error(f"   ❌ Failed to extract product text: {e}")
             product_text = ""
