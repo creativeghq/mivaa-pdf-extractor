@@ -39,34 +39,19 @@ async def process_product_images(
     """
     from app.services.pdf.pdf_processor import PDFProcessor
     from app.services.images.image_processing_service import ImageProcessingService
-    from app.utils.page_converter import PageConverter
 
     logger.info(f"🖼️  Processing images for product: {product.name}")
     logger.info(f"   PDF array indices (0-based): {sorted(product_pages)}")
 
-    # ✅ FIX: Convert 0-based array indices to 1-based catalog pages
-    # product_pages contains 0-based array indices from Stage 1
-    # PDF processor expects 1-based catalog pages in page_list
-    pages_per_sheet = getattr(catalog, 'pages_per_sheet', 1)
-    converter = PageConverter(pages_per_sheet=pages_per_sheet)
-
-    catalog_pages = []
-    for array_index in product_pages:
-        try:
-            page = converter.from_array_index(array_index)
-            catalog_pages.append(page.catalog_page)
-        except ValueError as e:
-            logger.warning(f"   ⚠️ Skipping invalid array index {array_index}: {e}")
-            continue
-
-    logger.info(f"   Catalog pages (1-based): {sorted(catalog_pages)}")
+    pdf_indices_1based = [idx + 1 for idx in product_pages]  # Convert 0-based to 1-based
+    logger.info(f"   PDF pages (1-based): {sorted(pdf_indices_1based)}")
 
     pdf_processor = PDFProcessor()
     processing_options = {
         'extract_images': True,
-        'extract_text': False,  # ✅ FIX: Skip text extraction to avoid 300s timeout
+        'extract_text': False,  
         'extract_tables': False,
-        'page_list': catalog_pages,  # ✅ FIX: Use catalog pages, not array indices
+        'page_list': pdf_indices_1based,  # Pass 1-based PDF page numbers directly
         'extract_categories': ['products']
     }
 

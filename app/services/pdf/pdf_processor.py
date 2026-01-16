@@ -668,26 +668,25 @@ class PDFProcessor:
 
             # Determine which pages to process
             if page_list:
-                # page_list contains catalog pages (1-indexed)
-                # Validate and convert to array indices
-                self.logger.info(f"   📋 Received page_list (catalog pages): {page_list}")
-                valid_catalog_pages = converter.validate_page_range(page_list)
-                self.logger.info(f"   ✅ Valid catalog pages after validation: {valid_catalog_pages}")
 
-                pages_to_process = [
-                    converter.from_catalog_page(catalog_page).array_index
-                    for catalog_page in valid_catalog_pages
-                ]
+                self.logger.info(f"   📋 Received page_list (1-based PDF pages): {page_list}")
 
-                self.logger.info(f"   🔄 Converted to PDF array indices (0-based): {pages_to_process}")
+                # Validate pages are within bounds
+                pages_to_process = []
+                invalid_pages = []
+                for pdf_page in page_list:
+                    if pdf_page > 0 and pdf_page <= total_pages:
+                        pages_to_process.append(pdf_page - 1)  # Convert to 0-based
+                    else:
+                        invalid_pages.append(pdf_page)
 
-                if len(valid_catalog_pages) < len(page_list):
-                    filtered_count = len(page_list) - len(valid_catalog_pages)
+                self.logger.info(f"   ✅ Valid PDF pages converted to array indices (0-based): {pages_to_process}")
+
+                if invalid_pages:
                     self.logger.warning(
-                        f"   ⚠️ Filtered {filtered_count} out-of-bounds catalog pages"
+                        f"   ⚠️ Filtered {len(invalid_pages)} out-of-bounds PDF pages: {invalid_pages}"
                     )
-                    self.logger.warning(f"      Original: {page_list}")
-                    self.logger.warning(f"      Valid: {valid_catalog_pages}")
+                    self.logger.warning(f"      PDF has {total_pages} pages total")
             else:
                 pages_to_process = list(range(total_pages))
                 self.logger.info(f"   📋 No page_list provided - processing all {total_pages} pages")
