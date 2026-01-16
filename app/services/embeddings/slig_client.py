@@ -124,10 +124,33 @@ class SLIGClient:
 
         return result
     
-    def _image_to_base64(self, image: Image.Image) -> str:
-        """Convert PIL Image to base64 string."""
+    def _image_to_base64(self, image: Image.Image, max_dimension: int = 512) -> str:
+        """
+        Convert PIL Image to base64 string.
+
+        Automatically resizes large images to prevent 400 Bad Request errors
+        from the SLIG endpoint which has payload size limits.
+
+        Args:
+            image: PIL Image to convert
+            max_dimension: Maximum width/height (default 512 for SigLIP2)
+
+        Returns:
+            Base64 encoded image string
+        """
+        # Resize if needed to prevent 400 errors
+        if image.width > max_dimension or image.height > max_dimension:
+            original_size = (image.width, image.height)
+            image = image.copy()  # Don't modify original
+            image.thumbnail((max_dimension, max_dimension), Image.LANCZOS)
+            logger.debug(f"📐 Resized image from {original_size} to {image.size} for SLIG")
+
+        # Use JPEG for smaller payload (vs PNG)
         buffered = io.BytesIO()
-        image.save(buffered, format="PNG")
+        # Convert to RGB if needed (JPEG doesn't support alpha)
+        if image.mode in ('RGBA', 'LA', 'P'):
+            image = image.convert('RGB')
+        image.save(buffered, format="JPEG", quality=85, optimize=True)
         img_bytes = buffered.getvalue()
         return base64.b64encode(img_bytes).decode('utf-8')
     
