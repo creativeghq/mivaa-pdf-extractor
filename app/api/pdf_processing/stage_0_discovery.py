@@ -11,7 +11,7 @@ import os
 import logging
 import tempfile
 import aiofiles
-from typing import Dict, Any, List, Set
+from typing import Dict, Any, List, Set, Optional
 from datetime import datetime
 import sentry_sdk
 
