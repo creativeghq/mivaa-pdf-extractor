@@ -2872,7 +2872,7 @@ async def process_document_with_discovery(
         )
 
         logger.info("=" * 80)
-        logger.info(f"✅ WARMUP COMPLETE - {len(endpoint_managers)} endpoints ready")
+        logger.info(f"✅ WARMUP PHASE COMPLETE - {len(endpoint_managers)} endpoints resumed")
         logger.info("=" * 80)
 
         # ============================================================================
@@ -2883,6 +2883,91 @@ async def process_document_with_discovery(
         from app.services.embeddings.endpoint_registry import endpoint_registry
         endpoint_registry.register_endpoint_managers(endpoint_managers)
         logger.info(f"📌 Registered {len(endpoint_managers)} endpoint managers with singleton registry")
+
+        # ============================================================================
+        # HEALTH VALIDATION - Verify endpoints actually respond before processing
+        # ============================================================================
+        # Unlike warmup (which just waits), health checks verify actual inference works
+        from app.services.embeddings.endpoint_health_checker import EndpointHealthChecker
+
+        logger.info("=" * 80)
+        logger.info("🔍 VALIDATING ENDPOINT HEALTH (inference-based)")
+        logger.info("=" * 80)
+
+        health_checker = EndpointHealthChecker(
+            max_health_check_attempts=10,  # 10 attempts × 6 seconds = 60s max
+            health_check_interval_seconds=6,
+            health_check_timeout_seconds=30
+        )
+
+        # Build config for health checks based on what was warmed up
+        endpoints_config = {}
+        if 'qwen' in endpoint_managers:
+            qwen_config = settings.get_qwen_config()
+            endpoints_config['qwen'] = {
+                'url': qwen_config['endpoint_url'],
+                'token': qwen_config['hf_token']
+            }
+        if 'slig' in endpoint_managers:
+            slig_config = settings.get_slig_config()
+            endpoints_config['slig'] = {
+                'url': slig_config['endpoint_url'],
+                'token': slig_config['hf_token']
+            }
+        if 'yolo' in endpoint_managers:
+            yolo_config = settings.get_yolo_config()
+            endpoints_config['yolo'] = {
+                'url': yolo_config['endpoint_url'],
+                'token': yolo_config.get('hf_token', '')
+            }
+
+        # Qwen is required for image classification, SLIG is required for CLIP embeddings
+        # YOLO and Chandra are optional (layout detection enhancement)
+        required_endpoints = []
+        if 'qwen' in endpoints_config:
+            required_endpoints.append('qwen')
+        if 'slig' in endpoints_config:
+            required_endpoints.append('slig')
+
+        all_healthy, health_results = await health_checker.check_all_endpoints(
+            endpoints_config=endpoints_config,
+            required_endpoints=required_endpoints
+        )
+
+        # Store health results in registry
+        endpoint_registry.set_health_validated(all_healthy, health_results)
+
+        # ============================================================================
+        # BLOCKING GATE - Stop processing if required endpoints are unhealthy
+        # ============================================================================
+        if not all_healthy:
+            failed_endpoints = [
+                name for name, result in health_results.items()
+                if result.status.value != 'healthy' and name in required_endpoints
+            ]
+
+            if failed_endpoints:
+                error_msg = f"Required endpoints failed health check: {failed_endpoints}"
+                logger.error(f"❌ {error_msg}")
+                logger.error("   Pipeline cannot proceed without healthy endpoints")
+
+                # Update job status to failed
+                await job_storage.update_job_status(
+                    job_id=job_id,
+                    status="failed",
+                    error=error_msg
+                )
+                raise RuntimeError(error_msg)
+            else:
+                # Only optional endpoints failed - log warning but proceed
+                logger.warning("⚠️ Some optional endpoints unhealthy, proceeding with degraded functionality")
+
+        logger.info("=" * 80)
+        logger.info("✅ ALL REQUIRED ENDPOINTS HEALTHY - Ready to process")
+        logger.info("=" * 80)
+
+        # Mark processing as started (prevents auto-pause)
+        endpoint_registry.start_processing(job_id)
 
         # ============================================================================
         # INITIALIZE PROGRESS TRACKING
@@ -3207,8 +3292,10 @@ async def process_document_with_discovery(
         await progress_monitor.stop()
         logger.info("✅ Stopped progress monitoring")
 
-        # Clear endpoint registry to release resources
+        # Mark processing complete and clear endpoint registry
         from app.services.embeddings.endpoint_registry import endpoint_registry
+        endpoint_registry.end_processing(job_id)
+        logger.info(f"🔓 Processing ended for job {job_id}")
         endpoint_registry.clear_all()
         logger.info("🗑️ Cleared endpoint registry")
 
@@ -3272,7 +3359,16 @@ async def process_document_with_discovery(
         # CONSOLIDATED CLEANUP (Failure or Success)
         # ============================================================================
         logger.info("🧹 [CLEANUP] Starting comprehensive pipeline cleanup...")
-        
+
+        # 0. End processing lock (allow auto-pause, even on error)
+        try:
+            from app.services.embeddings.endpoint_registry import endpoint_registry
+            if endpoint_registry.is_processing():
+                endpoint_registry.end_processing(job_id)
+                logger.info(f"🔓 [CLEANUP] Processing lock released for job {job_id}")
+        except Exception as lock_error:
+            logger.warning(f"⚠️ Failed to release processing lock: {lock_error}")
+
         # 1. Stop progress monitoring (if still running)
         if 'progress_monitor' in locals():
             try:
