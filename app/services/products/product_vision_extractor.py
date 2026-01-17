@@ -330,9 +330,7 @@ IMPORTANT:
         except Exception as e:
             self.logger.error(f"Product vision analysis failed: {e}")
             return None
-        finally:
-            # Auto-pause Qwen endpoint after product extraction (cost optimization)
-            self.qwen_manager.auto_pause()
+        # NOTE: Removed between-batch auto_pause - endpoints pause only at full job completion
 
     async def enrich_existing_products(
         self,

@@ -3399,11 +3399,11 @@ async def process_document_with_discovery(
         except Exception as cleanup_error:
             logger.warning(f"   ⚠️ Resource cleanup failed: {cleanup_error}")
 
-        # 4. Pause HuggingFace endpoints (Stop billing)
+        # 4. Pause HuggingFace endpoints (Stop billing) - SINGLE LOCATION for all endpoint pausing
         logger.info("🛑 [CLEANUP] Pausing AI endpoints...")
         endpoints_to_pause = ['qwen', 'slig', 'yolo', 'chandra']
         paused_count = 0
-        
+
         for name in endpoints_to_pause:
             if name in endpoint_managers:
                 try:
@@ -3413,7 +3413,14 @@ async def process_document_with_discovery(
                 except Exception as pause_error:
                     logger.warning(f"   ⚠️ Failed to pause {name} endpoint: {pause_error}")
 
-        # 5. Final Garbage Collection
+        # 5. Clear endpoint registry (cleanup singleton state)
+        try:
+            endpoint_registry.clear_all()
+            logger.info("   ✅ Endpoint registry cleared")
+        except Exception as registry_error:
+            logger.warning(f"   ⚠️ Failed to clear endpoint registry: {registry_error}")
+
+        # 6. Final Garbage Collection
         gc.collect()
         logger.info(f"✨ [CLEANUP] Finished. Endpoints paused: {paused_count}")
 

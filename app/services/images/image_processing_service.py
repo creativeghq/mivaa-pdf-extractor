@@ -626,9 +626,8 @@ Respond ONLY with this JSON format:
             logger.warning(f"   Successfully classified: {total_classified}/{total_input} ({total_classified/total_input*100:.1f}%)")
             logger.warning(f"   Failed: {total_input - total_classified}")
 
-        # Auto-pause Qwen endpoint after classification (cost optimization)
-        logger.info("⏸️ Auto-pausing Qwen endpoint to save costs...")
-        qwen_manager.pause_if_idle()
+        # NOTE: Removed between-batch pause_if_idle - endpoints pause only at full job completion
+        # This prevents expensive re-warmup cycles when processing multiple products
 
         return material_images, non_material_images
 

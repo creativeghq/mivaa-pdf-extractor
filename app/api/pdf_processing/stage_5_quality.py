@@ -146,66 +146,9 @@ async def process_stage_5_quality(
     gc.collect()
     logger.info("✅ All components unloaded, memory freed")
 
-    # CRITICAL: Pause all HuggingFace endpoints to stop billing
-    # Use the singleton EndpointRegistry to access the actual running managers
-    logger.info("⏸️ Pausing HuggingFace endpoints to stop billing...")
-    endpoints_paused = 0
-
-    try:
-        from app.services.embeddings.endpoint_registry import endpoint_registry
-
-        # End processing for this job (allows auto-pause)
-        endpoint_registry.end_processing(job_id)
-
-        # Pause Qwen endpoint via registry
-        qwen_manager = endpoint_registry.get_qwen_manager()
-        if qwen_manager:
-            try:
-                if qwen_manager.force_pause():
-                    logger.info("✅ Qwen endpoint paused (no billing)")
-                    endpoints_paused += 1
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to pause Qwen endpoint: {e}")
-
-        # Pause SLIG endpoint via registry
-        slig_manager = endpoint_registry.get_slig_manager()
-        if slig_manager:
-            try:
-                if slig_manager.force_pause():
-                    logger.info("✅ SLIG endpoint paused (no billing)")
-                    endpoints_paused += 1
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to pause SLIG endpoint: {e}")
-
-        # Also try the SLIG client if manager not available
-        if not slig_manager:
-            slig_client = endpoint_registry.get_slig_client()
-            if slig_client and hasattr(slig_client, 'pause_endpoint'):
-                try:
-                    if slig_client.pause_endpoint():
-                        logger.info("✅ SLIG endpoint paused via client (no billing)")
-                        endpoints_paused += 1
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to pause SLIG endpoint via client: {e}")
-
-        # Pause YOLO endpoint via registry
-        yolo_manager = endpoint_registry.get_yolo_manager()
-        if yolo_manager:
-            try:
-                if yolo_manager.force_pause():
-                    logger.info("✅ YOLO endpoint paused (no billing)")
-                    endpoints_paused += 1
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to pause YOLO endpoint: {e}")
-
-        # Clear all managers from registry after pausing
-        endpoint_registry.clear_all()
-        logger.info("🗑️ Cleared endpoint registry")
-
-    except Exception as e:
-        logger.error(f"❌ Failed to pause endpoints via registry: {e}")
-
-    logger.info(f"✅ Paused {endpoints_paused} HuggingFace endpoints")
+    # NOTE: Endpoint pausing moved to rag_routes.py cleanup (finally block)
+    # This ensures endpoints are paused ONCE at the very end of the pipeline,
+    # whether it succeeds or fails, avoiding duplicate pause calls.
 
     # EVENT-BASED CLEANUP: Release temp PDF file and cleanup
     from app.utils.resource_manager import get_resource_manager

@@ -730,9 +730,7 @@ Respond ONLY with valid JSON, no additional text."""
             )
 
             raise RuntimeError(f"Vision model analysis failed: {str(e)}") from e
-        finally:
-            # Auto-pause Qwen endpoint after analysis (cost optimization)
-            self.qwen_manager.auto_pause()
+        # NOTE: Removed between-batch auto_pause - endpoints pause only at full job completion
 
     async def _analyze_with_claude(
         self,
