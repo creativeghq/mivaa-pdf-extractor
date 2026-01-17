@@ -1670,12 +1670,12 @@ class ProductDiscoveryService:
             if page_num > total_pages:
                 continue
 
-            # Use word boundaries for better accuracy
+            # Use word boundaries ONLY - no substring fallback
+            # (Fixes false matches like "internacional" matching "ONA")
             if word_boundary_pattern.search(content_lower):
                 detected_pages.add(page_num)
-            # Fallback to simple containment if no word boundary match
-            elif clean_name in content_lower:
-                detected_pages.add(page_num)
+            # NOTE: Removed substring fallback - it caused false positives
+            # Products like ONA matched "internacional", "tradicional", "emocional" etc.
 
         return sorted(list(detected_pages))
 

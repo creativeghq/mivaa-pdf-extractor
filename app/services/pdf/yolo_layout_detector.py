@@ -295,10 +295,13 @@ class YoloLayoutDetector:
                         )
                         continue
 
-                    x = float(box.get("xmin", 0))
-                    y = float(box.get("ymin", 0))
-                    xmax = float(box.get("xmax", 0))
-                    ymax = float(box.get("ymax", 0))
+                    # Support both YOLO formats:
+                    # Format 1 (expected): {"xmin": 10, "ymin": 20, "xmax": 500, "ymax": 100}
+                    # Format 2 (actual):   {"x1": 10, "y1": 20, "x2": 500, "y2": 100}
+                    x = float(box.get("xmin", box.get("x1", 0)))
+                    y = float(box.get("ymin", box.get("y1", 0)))
+                    xmax = float(box.get("xmax", box.get("x2", 0)))
+                    ymax = float(box.get("ymax", box.get("y2", 0)))
                     width = xmax - x
                     height = ymax - y
 

@@ -133,7 +133,7 @@ def analyze_pdf_layout(pdf_path: str) -> PDFLayoutAnalysis:
     pages_info: List[PageLayoutInfo] = []
     physical_to_pdf_map: Dict[int, Tuple[int, str]] = {}
 
-    current_physical_page = 1
+    current_physical_page = 0  # Start from 0 (cover)
     has_any_spread = False
 
     for pdf_page_idx in range(total_pdf_pages):
@@ -196,7 +196,7 @@ def analyze_pdf_layout(pdf_path: str) -> PDFLayoutAnalysis:
 
     doc.close()
 
-    total_physical_pages = current_physical_page - 1
+    total_physical_pages = current_physical_page  # 0-based: pages 0 to (current-1) = current total pages
 
     analysis = PDFLayoutAnalysis(
         total_pdf_pages=total_pdf_pages,
