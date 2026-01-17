@@ -227,9 +227,15 @@ class ProductCatalog:
     # pages_per_sheet removed - we only use PDF pages now
 
     # Metadata
-    total_pages: int = 0
+    total_pages: int = 0  # Total PHYSICAL pages (accounting for spreads)
+    total_pdf_pages: int = 0  # Actual PDF page count
     total_images: int = 0
     content_classification: Dict[int, str] = None  # page_number -> "product" | "certificate" | "logo" | "specification" | "marketing" | "admin"
+
+    # Spread layout info (for catalogs with 2-page spreads)
+    has_spread_layout: bool = False
+    # Mapping: physical_page -> (pdf_page_idx, 'left'|'right'|'single'|'full')
+    physical_to_pdf_map: Dict[int, tuple] = None
 
     # Processing info
     processing_time_ms: float = 0.0
@@ -246,6 +252,8 @@ class ProductCatalog:
             self.specifications = []
         if self.content_classification is None:
             self.content_classification = {}
+        if self.physical_to_pdf_map is None:
+            self.physical_to_pdf_map = {}
 
 
 class ProductDiscoveryService:
@@ -992,13 +1000,22 @@ class ProductDiscoveryService:
             all_product_pages = set()
             product_page_mapping = {}  # Map product index to its pages
 
-            # Get PDF page count directly with PyMuPDF
-            import fitz
-            doc = fitz.open(pdf_path)
-            pdf_page_count = len(doc)
-            doc.close()
+            # ============================================================
+            # SPREAD LAYOUT DETECTION - Handle catalogs with 2-page spreads
+            # ============================================================
+            from app.utils.pdf_to_images import (
+                analyze_pdf_layout,
+                extract_text_with_physical_pages,
+                PDFLayoutAnalysis
+            )
 
-            self.logger.info(f"   📄 PDF has {pdf_page_count} pages")
+            # Analyze PDF layout to detect spread pages
+            pdf_layout = analyze_pdf_layout(pdf_path)
+            pdf_page_count = pdf_layout.total_physical_pages  # Use PHYSICAL page count
+
+            self.logger.info(f"   📄 PDF has {pdf_layout.total_pdf_pages} PDF pages -> {pdf_page_count} physical pages")
+            if pdf_layout.has_spread_layout:
+                self.logger.info(f"   📐 Spread layout detected - using physical page numbers for product mapping")
 
             # ============================================================
             # DETERMINISTIC PAGE DETECTION FOR ALL PRODUCTS (OPTIMIZED)
@@ -1008,28 +1025,14 @@ class ProductDiscoveryService:
                 f"🔍 DETERMINISTIC PAGE DETECTION: Detecting pages for {len(catalog.products)} products using text search + YOLO"
             )
 
-            # Ensure we have pdf_text with page markers
+            # Ensure we have pdf_text with PHYSICAL page markers (handles spread layouts)
             if not pdf_text:
-                self.logger.info("   Extracting text for page detection...")
-                import pymupdf4llm
-                import fitz
-                # Always extract page-by-page to add explicit page markers
-                doc = fitz.open(pdf_path)
-                pdf_text_parts = []
-                for page_num in range(len(doc)):
-                    try:
-                        page_text = pymupdf4llm.to_markdown(pdf_path, pages=[page_num])
-                        page_marker = f"\n\n--- # Page {page_num + 1} ---\n\n"
-                        pdf_text_parts.append(page_marker + page_text)
-                    except Exception as page_error:
-                        self.logger.warning(f"   ⚠️ Skipping page {page_num + 1}: {page_error}")
-                        continue
-                doc.close()
-                pdf_text = "\n\n".join(pdf_text_parts)
+                self.logger.info("   Extracting text for page detection (with spread layout handling)...")
+                pdf_text, _ = extract_text_with_physical_pages(pdf_path)
 
             # ⚡ OPTIMIZATION: Parse PDF text into pages ONCE (not per-product)
             pages_content = self._parse_pdf_text_into_pages(pdf_text, pdf_page_count)
-            self.logger.info(f"   📄 Parsed {len(pages_content)} pages from text (one-time operation)")
+            self.logger.info(f"   📄 Parsed {len(pages_content)} physical pages from text (one-time operation)")
 
             # ⚡ OPTIMIZATION: Initialize YOLO detector ONCE (not per-product)
             yolo_detector = None
@@ -1064,7 +1067,8 @@ class ProductDiscoveryService:
                             pdf_path=pdf_path,
                             detected_pages=detected_pages,
                             product_name=product.name,
-                            detector=yolo_detector
+                            detector=yolo_detector,
+                            pdf_layout=pdf_layout  # Pass layout for spread handling
                         )
                         # Use validated pages if YOLO returned any, otherwise keep text-detected pages
                         if validated_pages:
@@ -1287,6 +1291,14 @@ class ProductDiscoveryService:
 
             # Update catalog with enriched products
             catalog.products = enriched_products
+
+            # Store spread layout info in catalog for downstream use
+            catalog.total_pages = pdf_layout.total_physical_pages
+            catalog.total_pdf_pages = pdf_layout.total_pdf_pages
+            catalog.has_spread_layout = pdf_layout.has_spread_layout
+            catalog.physical_to_pdf_map = pdf_layout.physical_to_pdf_map
+
+            self.logger.info(f"   📐 Catalog layout info: {catalog.total_pdf_pages} PDF pages -> {catalog.total_pages} physical pages")
 
             return catalog
 
@@ -1687,16 +1699,18 @@ class ProductDiscoveryService:
         pdf_path: str,
         detected_pages: List[int],
         product_name: str,
-        detector: Any
+        detector: Any,
+        pdf_layout: Optional[Any] = None
     ) -> List[int]:
         """
         ⚡ OPTIMIZED: Validate pages using a pre-initialized YOLO detector.
 
         Args:
             pdf_path: Path to PDF file
-            detected_pages: List of page numbers (1-based) from text search
+            detected_pages: List of PHYSICAL page numbers (1-based) from text search
             product_name: Product name (for logging)
             detector: Pre-initialized YoloLayoutDetector (shared across products)
+            pdf_layout: Optional PDFLayoutAnalysis for spread layout handling
 
         Returns:
             List of validated page numbers (1-based) where YOLO confirms product content
@@ -1704,10 +1718,17 @@ class ProductDiscoveryService:
         validated_pages = []
 
         for page_num in detected_pages:
-            page_idx = page_num - 1  # Convert to 0-based for YOLO
+            # Handle spread layout: convert physical page to PDF page + position
+            if pdf_layout and pdf_layout.has_spread_layout and page_num in pdf_layout.physical_to_pdf_map:
+                pdf_page_idx, position = pdf_layout.physical_to_pdf_map[page_num]
+                # For spreads, we run YOLO on the full PDF page
+                # The position ('left', 'right', 'full') tells us which half to focus on
+                page_idx = pdf_page_idx
+            else:
+                page_idx = page_num - 1  # Convert to 0-based for YOLO (non-spread case)
 
             try:
-                # Run YOLO layout detection on the page
+                # Run YOLO layout detection on the PDF page
                 result = await detector.detect_layout_regions(pdf_path, page_idx)
 
                 if result and result.regions:

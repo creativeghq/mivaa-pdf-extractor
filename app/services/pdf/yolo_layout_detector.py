@@ -134,33 +134,25 @@ class YoloLayoutDetector:
         if not self.enabled:
             logger.warning("YOLO layout detection is disabled")
             return LayoutDetectionResult(page_number=page_num, regions=[])
-        
+
         start_time = time.time()
-        
+
         try:
-            # Step 1: Resume endpoint if needed
-            logger.info(f"🔄 Resuming YOLO endpoint for page {page_num}...")
-            if not self.endpoint_manager.resume_if_needed():
-                logger.error("Failed to resume YOLO endpoint")
-                return LayoutDetectionResult(page_number=page_num, regions=[])
-            
-            # Step 2: Warmup if needed
-            if not self.endpoint_manager.warmup_completed:
-                logger.info(f"🔥 Warming up YOLO endpoint...")
-                self.endpoint_manager.warmup()
-            
-            # Step 3: Convert page to image
+            # NOTE: Warmup is handled centrally in rag_routes.py at job start
+            # The endpoint should already be running and warmed up
+
+            # Step 1: Convert page to image
             logger.info(f"📄 Converting page {page_num} to image...")
             image = self.convert_pdf_page_to_image(pdf_path, page_num, dpi)
 
-            # Step 4: Call YOLO endpoint
+            # Step 2: Call YOLO endpoint
             logger.info(f"🎯 Detecting layout regions on page {page_num}...")
             regions = await self._call_yolo_endpoint(image, page_num)
 
-            # Step 5: Sort by reading order
+            # Step 3: Sort by reading order
             regions = self._sort_by_reading_order(regions)
 
-            # Step 6: Mark endpoint as used
+            # Step 4: Mark endpoint as used
             self.endpoint_manager.mark_used()
 
             # Calculate detection time
@@ -294,11 +286,38 @@ class YoloLayoutDetector:
 
                     # Extract bounding box
                     box = detection.get("box", {})
+
+                    # Check for missing or empty bounding box
+                    if not box:
+                        logger.warning(
+                            f"YOLO detection missing 'box' field! "
+                            f"Label: {label}, Score: {confidence}, Full detection: {detection}"
+                        )
+                        continue
+
+                    x = float(box.get("xmin", 0))
+                    y = float(box.get("ymin", 0))
+                    xmax = float(box.get("xmax", 0))
+                    ymax = float(box.get("ymax", 0))
+                    width = xmax - x
+                    height = ymax - y
+
+                    # Skip degenerate boxes with zero/negative dimensions
+                    if width <= 0 or height <= 0:
+                        logger.warning(
+                            f"YOLO returned degenerate bounding box! "
+                            f"Label: {label}, Score: {confidence:.2f}, "
+                            f"Box: xmin={x}, ymin={y}, xmax={xmax}, ymax={ymax} "
+                            f"-> width={width}, height={height}. "
+                            f"This indicates a YOLO model issue or malformed API response."
+                        )
+                        continue
+
                     bbox = BoundingBox(
-                        x=float(box.get("xmin", 0)),
-                        y=float(box.get("ymin", 0)),
-                        width=float(box.get("xmax", 0)) - float(box.get("xmin", 0)),
-                        height=float(box.get("ymax", 0)) - float(box.get("ymin", 0)),
+                        x=x,
+                        y=y,
+                        width=width,
+                        height=height,
                         page=page_num
                     )
 

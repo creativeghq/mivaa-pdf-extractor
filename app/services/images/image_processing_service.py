@@ -102,7 +102,8 @@ class ImageProcessingService:
             logger.error("   Image classification will fail. Please set HUGGINGFACE_API_KEY.")
             raise ValueError("HUGGINGFACE_API_KEY not configured")
 
-        # Initialize Qwen endpoint manager for auto-resume
+        # Initialize Qwen endpoint manager
+        # NOTE: Warmup is handled centrally in rag_routes.py at job start
         qwen_manager = QwenEndpointManager(
             endpoint_url=qwen_endpoint_url,
             endpoint_name=qwen_config["endpoint_name"],
@@ -111,14 +112,12 @@ class ImageProcessingService:
             enabled=qwen_config["enabled"]
         )
 
-        # Resume endpoint if paused (CRITICAL: Must be called before inference)
-        logger.info("🔄 Checking Qwen endpoint status...")
-        qwen_endpoint_available = qwen_manager.resume_if_needed()
-        if not qwen_endpoint_available:
-            logger.error("❌ Failed to resume Qwen endpoint - will use Claude for all classifications")
-            # Don't raise error, let it fall back to Claude validation
+        # Check if Qwen is enabled and assume it's ready (warmup done at job start)
+        qwen_endpoint_available = qwen_config["enabled"]
+        if qwen_endpoint_available:
+            logger.info("✅ Qwen endpoint configured (warmup done at job start)")
         else:
-            logger.info("✅ Qwen endpoint ready for inference")
+            logger.info("ℹ️ Qwen endpoint disabled - will use Claude for all classifications")
 
         async def classify_image_with_vision_model(image_path: str, model: str, base64_data: str = None) -> Dict[str, Any]:
             """Fast classification using vision model (Qwen via HuggingFace Inference Endpoint)."""

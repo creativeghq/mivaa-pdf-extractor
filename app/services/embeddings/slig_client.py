@@ -89,16 +89,10 @@ class SLIGClient:
         
     async def _ensure_endpoint_ready(self):
         """Ensure endpoint is running and warmed up before inference."""
-        if self._endpoint_manager:
-            # Resume endpoint if paused
-            if not self._endpoint_manager.resume_if_needed():
-                logger.error("❌ Failed to resume SLIG endpoint")
-                raise RuntimeError("Failed to resume SLIG endpoint")
-
-            # Warmup if needed
-            if not self._endpoint_manager.warmup():
-                logger.error("❌ Failed to warmup SLIG endpoint")
-                raise RuntimeError("Failed to warmup SLIG endpoint")
+        # NOTE: Warmup is handled centrally in rag_routes.py at job start
+        # The endpoint should already be running and warmed up
+        # This method is kept for interface compatibility but is now a no-op
+        pass
 
     async def _call_endpoint(self, payload: Dict[str, Any]) -> Any:
         """

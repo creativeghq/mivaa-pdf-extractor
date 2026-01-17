@@ -110,6 +110,7 @@ async def process_single_product(
         from app.api.pdf_processing.stage_1_focused_extraction import extract_product_pages
 
         # ✅ NEW: extract_product_pages now returns a dict with layout detection results
+        # Pass catalog for spread layout info (physical page -> PDF page mapping)
         extraction_result = await extract_product_pages(
             file_content=file_content,
             product=product,
@@ -118,7 +119,8 @@ async def process_single_product(
             logger=logger_instance,
             total_pages=total_pages,
             enable_layout_detection=False,  # Disable for now - will run after product creation
-            product_id=None  # Will be set after product creation
+            product_id=None,  # Will be set after product creation
+            catalog=catalog  # NEW: Pass catalog for spread layout handling
         )
 
         # Extract results

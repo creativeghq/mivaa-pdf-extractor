@@ -6,7 +6,7 @@ This module handles image processing for individual products in the product-cent
 
 import os
 import logging
-from typing import Dict, Any, Set, Optional
+from typing import Dict, Any, Set, Optional, List
 
 # ============================================================================
 # SINGLETON PDF PROCESSOR - Reuse across all products to prevent re-initialization
@@ -61,18 +61,38 @@ async def process_product_images(
     from app.services.images.image_processing_service import ImageProcessingService
 
     logger.info(f"🖼️  Processing images for product: {product.name}")
-    logger.info(f"   PDF array indices (0-based): {sorted(product_pages)}")
+    logger.info(f"   PDF page indices (0-based): {sorted(product_pages)}")
 
-    pdf_indices_1based = [idx + 1 for idx in product_pages]  # Convert 0-based to 1-based
-    logger.info(f"   PDF pages (1-based): {sorted(pdf_indices_1based)}")
+    # Convert 0-based PDF indices to 1-based PDF page numbers
+    # NOTE: product_pages now contains CORRECT PDF indices (already accounting for spread layout)
+    pdf_pages_1based = [idx + 1 for idx in product_pages]
+    logger.info(f"   PDF pages (1-based): {sorted(pdf_pages_1based)}")
+
+    # Build PDF page -> physical page mapping for image metadata correction
+    has_spread_layout = catalog and getattr(catalog, 'has_spread_layout', False)
+    physical_to_pdf_map = catalog.physical_to_pdf_map if has_spread_layout else {}
+
+    # Create reverse mapping: PDF page (1-based) -> physical page(s)
+    pdf_to_physical_map: Dict[int, List[int]] = {}
+    if has_spread_layout and physical_to_pdf_map:
+        logger.info(f"   📐 Spread layout detected - building PDF-to-physical page mapping")
+        for physical_page, (pdf_idx, position) in physical_to_pdf_map.items():
+            pdf_page_1based = pdf_idx + 1
+            if pdf_page_1based not in pdf_to_physical_map:
+                pdf_to_physical_map[pdf_page_1based] = []
+            pdf_to_physical_map[pdf_page_1based].append(physical_page)
+        # Sort physical pages for each PDF page
+        for pdf_page in pdf_to_physical_map:
+            pdf_to_physical_map[pdf_page].sort()
+        logger.info(f"   📐 PDF to physical mapping: {pdf_to_physical_map}")
 
     # ✅ FIX: Use singleton PDFProcessor to prevent repeated SLIG client initialization
     pdf_processor = get_pdf_processor()
     processing_options = {
         'extract_images': True,
-        'extract_text': False,  
+        'extract_text': False,
         'extract_tables': False,
-        'page_list': pdf_indices_1based,  # Pass 1-based PDF page numbers directly
+        'page_list': pdf_pages_1based,  # Pass 1-based PDF page numbers
         'extract_categories': ['products']
     }
 
@@ -84,18 +104,32 @@ async def process_product_images(
 
     total_images = len(pdf_result.extracted_images) if pdf_result.extracted_images else 0
 
+    # ✅ FIX: Convert PDF page numbers to physical page numbers for spread layouts
+    if pdf_result.extracted_images and pdf_to_physical_map:
+        logger.info(f"   📐 Converting PDF page numbers to physical page numbers...")
+        for img in pdf_result.extracted_images:
+            pdf_page = img.get('page_number')
+            if pdf_page and pdf_page in pdf_to_physical_map:
+                physical_pages = pdf_to_physical_map[pdf_page]
+                # For spreads, use the first physical page (left side) as primary
+                # Store both for reference
+                img['pdf_page_number'] = pdf_page  # Keep original PDF page
+                img['page_number'] = physical_pages[0]  # Use physical page for DB
+                img['physical_pages'] = physical_pages  # Store all physical pages
+                logger.debug(f"      Image on PDF page {pdf_page} -> physical page {physical_pages[0]}")
+
     # ✅ DETAILED LOGGING: Track image extraction results
     logger.info(f"   📊 IMAGE EXTRACTION SUMMARY:")
     logger.info(f"      Total images extracted: {total_images}")
 
     if pdf_result.extracted_images:
-        # Log images per page
+        # Log images per page (now showing physical pages)
         images_by_page = {}
         for img in pdf_result.extracted_images:
             page_num = img.get('page_number', 'unknown')
             images_by_page[page_num] = images_by_page.get(page_num, 0) + 1
 
-        logger.info(f"      Images per page: {dict(sorted(images_by_page.items()))}")
+        logger.info(f"      Images per physical page: {dict(sorted(images_by_page.items()))}")
 
         # Log extraction methods
         extraction_methods = {}
@@ -113,7 +147,7 @@ async def process_product_images(
     # ✅ FIX: Provide more context when no images are extracted
     if total_images == 0:
         logger.warning(f"   ⚠️ NO IMAGES EXTRACTED!")
-        logger.warning(f"      PDF pages requested (1-based): {sorted(pdf_indices_1based)}")
+        logger.warning(f"      PDF pages requested (1-based): {sorted(pdf_pages_1based)}")
         logger.warning(f"      PDF array indices (0-based): {sorted(product_pages)}")
         logger.warning(f"      This could mean:")
         logger.warning(f"      1. Pages are text-only (no embedded images)")
@@ -121,7 +155,7 @@ async def process_product_images(
         logger.warning(f"      3. Images were filtered out by size/quality thresholds")
         return {'images_processed': 0, 'images_material': 0, 'images_non_material': 0, 'clip_embeddings_generated': 0}
 
-    logger.info(f"   ✅ Extracted {total_images} images from {len(product_pages)} pages")
+    logger.info(f"   ✅ Extracted {total_images} images from {len(product_pages)} PDF pages")
 
     # ✅ FIX 8: Log image paths before classification to verify they exist
     logger.info(f"   Verifying extracted image files...")

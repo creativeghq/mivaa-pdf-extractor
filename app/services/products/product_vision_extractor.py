@@ -241,10 +241,8 @@ IMPORTANT:
 - Note finish types (matte, glossy, polished, textured, etc.)
 - Respond ONLY with valid JSON, no additional text."""
 
-            # Resume Qwen endpoint if needed (CRITICAL: Must be called before inference)
-            if not self.qwen_manager.resume_if_needed():
-                self.logger.error("❌ Failed to resume Qwen endpoint for product extraction")
-                return []
+            # NOTE: Warmup is handled centrally in rag_routes.py at job start
+            # The endpoint should already be running and warmed up
 
             async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(
