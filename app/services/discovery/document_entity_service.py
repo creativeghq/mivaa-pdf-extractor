@@ -266,59 +266,72 @@ class DocumentEntityService:
             relationships_created = 0
             entities_processed = 0
 
+            # ⚡ OPTIMIZATION: Pre-compute product data ONCE (not per-entity)
+            # This reduces redundant string operations and set conversions
+            # For 50 entities × 100 products, this saves ~5000 repeated computations
+            preprocessed_products = []
+            for product in products:
+                product_metadata = product.get('metadata', {})
+                product_page_range = product_metadata.get('page_range', [])
+                preprocessed_products.append({
+                    'id': product['id'],
+                    'name': product.get('name', ''),
+                    'name_lower': product.get('name', '').lower(),
+                    'page_range_set': set(product_page_range) if product_page_range else set(),
+                    'page_range_len': len(product_page_range) if product_page_range else 0,
+                    'factory': product_metadata.get('factory_name', '').lower() if product_metadata.get('factory_name') else None,
+                    'manufacturer': product_metadata.get('manufacturer', '').lower() if product_metadata.get('manufacturer') else None,
+                })
+
+            self.logger.info(f"   ⚡ Pre-processed {len(preprocessed_products)} products for matching")
+
             for entity in entities:
                 entity_id = entity['id']
                 entity_type = entity['entity_type']
                 entity_name = entity.get('name', '')
+                entity_name_lower = entity_name.lower()
                 entity_page_range = entity.get('page_range', [])
+                entity_page_range_set = set(entity_page_range) if entity_page_range else set()
+                entity_page_range_len = len(entity_page_range) if entity_page_range else 0
                 entity_factory = entity.get('factory_name', '').lower() if entity.get('factory_name') else None
                 entity_manufacturer = entity.get('manufacturer', '').lower() if entity.get('manufacturer') else None
 
                 entities_processed += 1
                 matched_products = []
 
-                for product in products:
-                    product_id = product['id']
-                    product_name = product.get('name', '')
-                    product_metadata = product.get('metadata', {})
-
-                    # Extract product page range from metadata
-                    product_page_range = product_metadata.get('page_range', [])
-                    product_factory = product_metadata.get('factory_name', '').lower() if product_metadata.get('factory_name') else None
-                    product_manufacturer = product_metadata.get('manufacturer', '').lower() if product_metadata.get('manufacturer') else None
-
-                    # Calculate match score
+                for product in preprocessed_products:
+                    # Calculate match score using pre-computed values
                     match_score = 0.0
                     match_reasons = []
 
                     # 1. Page overlap (highest priority - 0.6)
-                    if entity_page_range and product_page_range:
-                        overlap = set(entity_page_range) & set(product_page_range)
+                    if entity_page_range_set and product['page_range_set']:
+                        overlap = entity_page_range_set & product['page_range_set']
                         if overlap:
-                            overlap_ratio = len(overlap) / max(len(entity_page_range), len(product_page_range))
+                            overlap_ratio = len(overlap) / max(entity_page_range_len, product['page_range_len'])
                             match_score += 0.6 * overlap_ratio
                             match_reasons.append(f"Page overlap: {len(overlap)} pages")
 
                     # 2. Factory match (medium priority - 0.3)
-                    if entity_factory and product_factory and entity_factory == product_factory:
+                    if entity_factory and product['factory'] and entity_factory == product['factory']:
                         match_score += 0.3
                         match_reasons.append(f"Factory match: {entity_factory}")
 
                     # 3. Manufacturer match (medium priority - 0.3)
-                    if entity_manufacturer and product_manufacturer and entity_manufacturer == product_manufacturer:
+                    if entity_manufacturer and product['manufacturer'] and entity_manufacturer == product['manufacturer']:
                         match_score += 0.3
                         match_reasons.append(f"Manufacturer match: {entity_manufacturer}")
 
-                    # 4. Name similarity (low priority - 0.1)
-                    if product_name.lower() in entity_name.lower() or entity_name.lower() in product_name.lower():
+                    # 4. Name similarity (low priority - 0.1) - using pre-computed lowercase
+                    if product['name_lower'] in entity_name_lower or entity_name_lower in product['name_lower']:
                         match_score += 0.1
                         match_reasons.append(f"Name similarity")
 
                     # Create relationship if match score >= 0.5
                     if match_score >= 0.5:
                         matched_products.append({
-                            'product_id': product_id,
-                            'product_name': product_name,
+                            'product_id': product['id'],
+                            'product_name': product['name'],
                             'match_score': match_score,
                             'match_reasons': match_reasons
                         })

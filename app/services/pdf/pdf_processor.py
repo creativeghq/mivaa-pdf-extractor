@@ -182,13 +182,15 @@ class PDFProcessor:
         self.max_file_size = self.config.get('max_file_size_mb', 50) * 1024 * 1024  # Convert to bytes
         self.temp_dir_base = self.config.get('temp_dir', tempfile.gettempdir())
 
-        # Initialize THREAD pool executor for async processing
+        # ⚡ OPTIMIZED: Initialize THREAD pool executor for async processing
         # NOTE: Using ThreadPoolExecutor instead of ProcessPoolExecutor to avoid pickle issues
         # with pydantic Settings and other non-picklable objects
-        max_workers = self.config.get('max_workers', 2)
+        # Default increased from 2 to 4 - modern CPUs handle this well
+        # For I/O-bound operations (PDF reading), higher concurrency improves throughput
+        max_workers = self.config.get('max_workers', 4)
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
 
-        self.logger.info("PDFProcessor initialized with config: %s (max_workers=%d for memory efficiency)", self.config, max_workers)
+        self.logger.info("PDFProcessor initialized with config: %s (max_workers=%d)", self.config, max_workers)
 
     def __del__(self):
         """Cleanup resources when the processor is destroyed."""

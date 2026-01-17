@@ -15,10 +15,18 @@ ARCHITECTURE:
    - Can be extracted DURING or AFTER product processing
 
 DISCOVERY PROCESS:
-- Stage 0A: Discover products with metadata (ALWAYS)
-- Stage 0B: Discover document entities (OPTIONAL - based on extract_categories)
-- Both stages identify content location and classification
+- Stage 0A: Claude discovers PRODUCT NAMES + metadata (NO page numbers!)
+- Stage 0B: DETERMINISTIC page detection using:
+  * Text search (PyMuPDF) to find pages containing product names
+  * YOLO layout validation to confirm product-relevant content
+- This eliminates catalog vs PDF page number confusion
 - Subsequent stages create semantic chunks for RAG search
+
+KEY DESIGN DECISION:
+Claude does NOT return page_range. Instead, we detect pages deterministically:
+1. Add explicit page markers (--- # Page N ---) during PDF text extraction
+2. Search for product names in the text
+3. Use YOLO to validate pages have product content (TITLE, IMAGE, TEXT regions)
 
 EXTENSIBILITY:
 This service is designed to support future extraction types:
@@ -45,6 +53,7 @@ import io
 from app.services.core.ai_call_logger import AICallLogger
 from app.services.metadata.dynamic_metadata_extractor import DynamicMetadataExtractor
 from app.services.core.ai_client_service import get_ai_client_service
+from app.services.utilities.prompt_templates import get_prompt_template_from_db
 # PageConverter removed - using simple PDF page numbers instead
 from app.config import get_settings
 
@@ -459,7 +468,12 @@ class ProductDiscoveryService:
                 for page_num in range(len(doc)):
                     try:
                         page_text = pymupdf4llm.to_markdown(pdf_path, pages=[page_num])
-                        pdf_text_parts.append(page_text)
+                        # ✅ FIX: Add explicit page markers that Claude can use
+                        # PyMuPDF4LLM does NOT include page numbers - only "-----" separators
+                        # Without these markers, Claude uses printed catalog page numbers from INDEX
+                        # which are DIFFERENT from actual PDF page numbers
+                        page_marker = f"\n\n--- # Page {page_num + 1} ---\n\n"
+                        pdf_text_parts.append(page_marker + page_text)
                         pages_extracted += 1
 
                         # Log progress at intervals
@@ -506,10 +520,11 @@ class ProductDiscoveryService:
                 await self.tracker.update_heartbeat()
                 await self.tracker._sync_to_database(stage="product_discovery")
             for product in catalog.products:
-                self.logger.info(f"   📦 {product.name}: pages {product.page_range}")
+                self.logger.info(f"   📦 {product.name}")
 
             # ============================================================
-            # STAGE 0B: FOCUSED EXTRACTION - Deep analysis per product
+            # STAGE 0B: DETERMINISTIC PAGE DETECTION + FOCUSED EXTRACTION
+            # Claude returns ONLY product names - we detect pages using text search + YOLO
             # ============================================================
             if "products" in categories and catalog.products and pdf_path:
                 self.logger.info(f"🔍 STAGE 0B: Extracting detailed metadata for each product...")
@@ -558,414 +573,38 @@ class ProductDiscoveryService:
         """
         Build comprehensive prompt for category-based discovery.
 
-        Uses admin-configured prompts as templates and enhances with agent context.
+        Fetches prompt template from database and fills in variables.
+        All prompts are managed via /admin/ai-configs.
         """
+        try:
+            # Fetch discovery prompt from database
+            prompt_template = await get_prompt_template_from_db(
+                workspace_id=workspace_id,
+                stage="discovery",
+                category="products"
+            )
 
-        # If prompt enhancement is enabled, use PromptEnhancementService
-        if enable_prompt_enhancement and agent_prompt:
-            try:
-                from app.services.utilities.prompt_enhancement_service import PromptEnhancementService
+            self.logger.info(f"   ✅ Loaded discovery prompt from database")
 
-                enhancement_service = PromptEnhancementService()
+            # Replace template variables
+            prompt = prompt_template.replace("{total_pages}", str(total_pages))
+            prompt = prompt.replace("{categories}", ", ".join(categories))
+            prompt = prompt.replace("{pdf_text}", pdf_text[:200000])
 
-                # Enhance prompt for each category
-                enhanced_prompts = []
-                for category in categories:
-                    enhanced = await enhancement_service.enhance_prompt(
-                        agent_prompt=agent_prompt,
-                        stage="discovery",
-                        category=category,
-                        workspace_id=workspace_id,
-                        context={
-                            "total_pages": total_pages,
-                            "pdf_text_preview": pdf_text[:2000],  # First 2000 chars for context
-                            "categories": categories
-                        }
-                    )
-                    enhanced_prompts.append({
-                        "category": category,
-                        "enhanced": enhanced.enhanced_prompt,
-                        "version": enhanced.prompt_version
-                    })
+            if agent_prompt:
+                prompt = prompt.replace("{agent_prompt}", agent_prompt)
+            else:
+                prompt = prompt.replace("{agent_prompt}", "Extract all products from this catalog")
 
-                    self.logger.info(f"   ✅ Enhanced prompt for {category} (v{enhanced.prompt_version})")
+            return prompt
 
-                # Build combined prompt from enhanced templates
-                return await self._build_enhanced_discovery_prompt(
-                    pdf_text,
-                    total_pages,
-                    categories,
-                    enhanced_prompts,
-                    agent_prompt
-                )
+        except Exception as e:
+            self.logger.error(f"Failed to load discovery prompt from database: {e}")
+            raise ValueError(
+                f"Discovery prompt not found in database for workspace={workspace_id}, "
+                f"stage=discovery, category=products. Please add it via /admin/ai-configs."
+            )
 
-            except Exception as e:
-                self.logger.warning(f"⚠️ Prompt enhancement failed, using default: {e}")
-                # Fall through to default prompt building
-
-        # Default prompt building (fallback or when enhancement disabled)
-        return self._build_default_discovery_prompt(pdf_text, total_pages, categories, agent_prompt)
-
-    def _build_default_discovery_prompt(
-        self,
-        pdf_text: str,
-        total_pages: int,
-        categories: List[str],
-        agent_prompt: Optional[str] = None
-    ) -> str:
-        """Build default discovery prompt without enhancement"""
-
-        # Build category-specific instructions
-        category_instructions = []
-
-        if "products" in categories:
-            category_instructions.append("""
-**PRODUCTS (with ALL metadata - inseparable):**
-- Identify ONLY MAIN FEATURED PRODUCTS with dedicated presentations (e.g., "NOVA", "BEAT", "FOLD")
-- EXCLUDE products that appear only in:
-  * Index pages (table of contents, product lists, thumbnails)
-  * Cross-references or "related products" sections
-  * Small preview images or catalog grids
-  * Footer/header references
-
-**PRODUCT IDENTIFICATION CRITERIA (use ANY of these to identify a MAIN product):**
-
-1. **Page Spread Method** (most common):
-   - Dedicated page spread (typically 1-12 consecutive pages)
-   - Large hero images showing the product prominently
-   - Detailed product description and specifications
-   - Designer/studio attribution (usually present)
-
-2. **Metadata Presence Method** (for compact catalogs):
-   - Product has comprehensive metadata including:
-     * Product name prominently displayed (large font, title position)
-     * Dimensions/sizes listed (e.g., "15×38", "20×40", "60x60cm")
-     * Designer or studio name mentioned
-     * Technical specifications (material, finish, thickness, etc.)
-     * Factory/manufacturer information
-   - Even if on a single page, if metadata is comprehensive, it's a MAIN product
-
-3. **Visual Prominence Method** (for mixed layouts):
-   - Product image is significantly larger than surrounding content (>30% of page)
-   - Product name in prominent typography (larger than body text)
-   - Dedicated section with clear visual separation from other content
-   - Product has its own design space, not part of a grid/list
-
-4. **Content Depth Method** (for text-heavy catalogs):
-   - Detailed product description (>100 words)
-   - Multiple paragraphs about the product
-   - Technical specifications table or detailed specs
-   - Application examples or use cases described
-
-5. **Designer Signature Method** (for designer attribution pages):
-   - Product name WITH designer/studio attribution (e.g., "CASTELLO by Dsignio", "VALENOVA by SG NY")
-   - Designer biography, philosophy, or design inspiration
-   - Signature collection page with designer credits
-   - Even if single page with minimal specs, INCLUDE as separate product entry
-
-6. **Moodboard/Combinability Method** (for design showcase pages):
-   - Moodboard showing product in design context
-   - Product combination/compatibility showcase
-   - Design philosophy or aesthetic presentation
-   - "Signature" or "Collection by [Designer]" headers
-
-**SPECIAL CASE: DESIGNER SIGNATURE & MOODBOARD PAGES**
-
-**ALWAYS INCLUDE as valid products:**
-- Designer signature pages (e.g., "VALENOVA by SG NY", "ONA by Dsignio", "FOLD by Estudi{H}ac")
-- Designer introduction pages with product attribution
-- Moodboard/combinability pages showcasing product design philosophy
-- Signature collection pages with designer credits
-
-**For Designer Signature/Moodboard pages:**
-- Extract product name INCLUDING designer attribution (e.g., "CASTELLO by Dsignio" not just "CASTELLO")
-- Include the page number in page_range even if it's a single page
-- Extract all available metadata (designer, studio, philosophy, inspiration, aesthetic style)
-- Set confidence based on metadata completeness (typically 0.8-0.95)
-
-**Example:**
-Page 18 shows "VALENOVA by SG NY" with designer bio and moodboard:
-- ✅ CORRECT: name: "VALENOVA by SG NY", page_range: [18], confidence: 0.9
-- ❌ WRONG: Exclude this page as "not a product"
-
-**CRITICAL RULES:**
-- A product appearing in BOTH index AND dedicated section = count ONLY the dedicated section (not the index mention)
-- A product with ONLY thumbnail in index = EXCLUDE (no dedicated pages)
-- A product with small reference in footer/header = EXCLUDE
-- A product with comprehensive metadata even on 1 page = INCLUDE
-- Designer signature/moodboard page with product name = INCLUDE as separate product entry
-- A "dedicated section" means: product name as heading + ANY product details (dimensions, colors, designer, images, description)
-- If a product has its own page(s) with product information, it MUST be included even if also mentioned in index
-- When product appears with designer attribution ("Product by Designer"), INCLUDE designer in product name
-- When in doubt, INCLUDE the product - better to have false positives than miss real products
-
-**Extract ALL available metadata for each MAIN product:**
-- Basic info: name, description, category
-- Design: designer, studio
-- Dimensions: all size variants (e.g., ["15×38", "20×40"])
-- Variants: color, finish, texture variants
-- Factory/Group: factory name, factory group, manufacturer, country of origin
-- Technical specs: slip resistance, fire rating, thickness, water absorption, finish, material
-- Any other relevant metadata found in the PDF
-- Image pages for each product (the full page range of the product spread)
-- Products and metadata are INSEPARABLE - always extract together""")
-
-        if "certificates" in categories:
-            category_instructions.append("""
-**CERTIFICATES:**
-- Identify ALL certificates (ISO, CE, fire ratings, quality certifications)
-- Extract: name, type, issuer, issue/expiry dates, standards (e.g., "ISO 9001", "EN 14411")
-- Page range where certificate appears""")
-
-        if "logos" in categories:
-            category_instructions.append("""
-**LOGOS:**
-- Identify company logos, brand marks, certification logos
-- Extract: name, type (company/brand/certification), description
-- Page range where logo appears""")
-
-        if "specifications" in categories:
-            category_instructions.append("""
-**SPECIFICATIONS:**
-- Identify technical specs, installation guides, maintenance instructions
-- Extract: name, type (technical/installation/maintenance), description
-- Page range where specification appears""")
-
-        # Build agent prompt context
-        agent_context = ""
-        if agent_prompt:
-            agent_context = f"""
-**AGENT REQUEST:**
-The user requested: "{agent_prompt}"
-Focus your analysis on fulfilling this specific request while still providing comprehensive results.
-"""
-
-        prompt = f"""You are analyzing a material/product catalog PDF with {total_pages} pages.
-
-**FIRST: EXTRACT DOCUMENT-LEVEL INFORMATION**
-Look at the cover page, intro pages, and headers/footers to identify:
-1. **catalog_factory**: The main factory/brand name for this catalog (e.g., "HARMONY", "Porcelanosa")
-2. **catalog_factory_group**: The parent company or group (e.g., "Peronda Group", "Porcelanosa Group")
-3. **catalog_manufacturer**: The manufacturer if different from factory
-
-This information typically appears on:
-- Cover page (large logo/brand name)
-- Footer/header of pages
-- "About Us" or intro sections
-- Copyright notices
-
-**THEN: Extract content across the following categories:**
-{chr(10).join(category_instructions)}
-
-{agent_context}
-
-**GENERAL INSTRUCTIONS:**
-1. Be comprehensive - identify EVERY product name in the catalog
-2. **DO NOT include page numbers** - we will detect pages automatically using vision/text search
-3. Focus on extracting product names and metadata accurately
-4. Provide confidence scores (0.0-1.0) for each item
-
-**OUTPUT FORMAT (JSON):**
-```json
-{{
-  "catalog_factory": "HARMONY",
-  "catalog_factory_group": "Peronda Group",
-  "catalog_manufacturer": "Peronda Group",
-  "products": [
-    {{
-      "name": "NOVA",
-      "description": "Modern ceramic tile collection",
-      "confidence": 0.95,
-      "metadata": {{
-        "designer": "SG NY",
-        "studio": "SG NY",
-        "material_category": "Ceramic Tile",
-        "dimensions": ["15×38", "20×40"],
-
-        // ✅ CRITICAL: Product variants with SKU codes, colors, shapes, patterns
-        // Each variant is a COMPLETE product configuration with its own SKU
-        "variants": [
-          {{
-            "sku": "37885",
-            "name": "FOLD WHITE/15X38",
-            "color": "WHITE",
-            "shape": "FOLD",
-            "pattern": null,
-            "size": "15×38",
-            "pattern_count": null,
-            "mapei_code": "100"
-          }},
-          {{
-            "sku": "37889",
-            "name": "FOLD CLAY/15X38",
-            "color": "CLAY",
-            "shape": "FOLD",
-            "pattern": null,
-            "size": "15×38",
-            "pattern_count": null,
-            "mapei_code": "145"
-          }},
-          {{
-            "sku": "38343",
-            "name": "TRI. FOLD WHITE/7X14,8",
-            "color": "WHITE",
-            "shape": "TRI. FOLD",
-            "pattern": null,
-            "size": "7×14.8",
-            "pattern_count": null,
-            "mapei_code": "100"
-          }},
-          {{
-            "sku": "39656",
-            "name": "VALENOVA WHITE LT/11,8X11,8",
-            "color": "WHITE LT",
-            "shape": null,
-            "pattern": null,
-            "size": "11.8×11.8",
-            "pattern_count": 12,
-            "mapei_code": "100"
-          }},
-          {{
-            "sku": "40123",
-            "name": "CHEVRON OAK/20X120",
-            "color": "OAK",
-            "shape": null,
-            "pattern": "CHEVRON",
-            "size": "20×120",
-            "pattern_count": null,
-            "mapei_code": null
-          }}
-        ],
-
-        // Available colors (when listed without individual SKUs)
-        "available_colors": ["clay", "sand", "white", "taupe"],
-
-        "factory_name": "HARMONY",
-        "factory_group_name": "Peronda Group",
-        "country_of_origin": "Spain",
-        "slip_resistance": "R11",
-        "fire_rating": "A1",
-        "thickness": "8mm",
-        "water_absorption": "Class 3",
-        "finish": "matte",
-        "material": "ceramic",
-
-        // Packaging details (CRITICAL for quote management)
-        "packaging": {{
-          "pieces_per_box": 12,
-          "boxes_per_pallet": 48,
-          "weight_per_box_kg": 18.5,
-          "coverage_per_box_m2": 1.14,
-          "coverage_per_box_sqft": 12.27
-        }}
-      }}
-    }}
-  ],
-  "certificates": [...],
-  "logos": [...],
-  "specifications": [...],
-  "page_classification": {{...}},
-  "total_products": 14,
-  "confidence_score": 0.92
-}}
-```
-
-**CRITICAL: Product Variant Extraction Rules**
-
-Products often have multiple SKU codes representing different variants (colors, shapes, patterns, sizes).
-You MUST identify the MAIN PRODUCT NAME and extract ALL variants as separate entries.
-
-**Example 1 - Color & Shape Variants:**
-```
-37885 FOLD WHITE/15X38
-37889 FOLD CLAY/15X38
-37888 FOLD GREEN/15X38
-38343 TRI. FOLD WHITE/7X14,8
-38341 TRI. FOLD CLAY/7X14,8
-```
-
-**Extraction:**
-- Main Product: "FOLD"
-- Variants:
-  * SKU 37885: color="WHITE", shape="FOLD", size="15×38"
-  * SKU 37889: color="CLAY", shape="FOLD", size="15×38"
-  * SKU 37888: color="GREEN", shape="FOLD", size="15×38"
-  * SKU 38343: color="WHITE", shape="TRI. FOLD", size="7×14.8"
-  * SKU 38341: color="CLAY", shape="TRI. FOLD", size="7×14.8"
-
-**Example 2 - Pattern Variants:**
-```
-39656 VALENOVA WHITE LT/11,8X11,8
-12 patterns · * 100 Mapei
-39659 VALENOVA CLAY LT/11,8X11,8
-12 patterns · ** 40 Kerakoll
-```
-
-**Extraction:**
-- Main Product: "VALENOVA"
-- Variants:
-  * SKU 39656: color="WHITE LT", size="11.8×11.8", pattern_count=12, mapei_code="100"
-  * SKU 39659: color="CLAY LT", size="11.8×11.8", pattern_count=12, mapei_code="40"
-
-**Variant Extraction Rules:**
-1. **Identify the base product name** (e.g., "FOLD", "VALENOVA", "NOVA")
-2. **Extract ALL SKU codes** - these are typically 5-digit numbers at the start of each line
-3. **Parse variant attributes from the full name:**
-   - Color: Extract color name (WHITE, CLAY, GREEN, SAND, TAUPE, etc.)
-   - Shape/Pattern: Extract shape OR pattern modifier (TRI., RECT., HEX., CHEVRON, HERRINGBONE, etc.)
-   - Size: Extract dimensions (15×38, 11.8×11.8, etc.)
-4. **Extract pattern count** if mentioned (e.g., "12 patterns")
-5. **Extract reference codes** (Mapei codes, Kerakoll codes, etc.)
-6. **Extract available colors from lists** - Look for color lists like "clay · sand · white · taupe" and create variants for each
-7. **DO NOT create separate products for each color** - they are variants of the SAME product
-8. **DO NOT confuse product names with colors** - "VALENOVA CLAY" is product "VALENOVA" with color "CLAY", NOT a product called "VALENOVA CLAY"
-
-**Color List Extraction:**
-When you see color lists like:
-```
-VALENOVA by SG NY
-White Body Tile
-11,8x11,8 cm
-clay · sand · white · taupe
-```
-
-Extract as:
-- Product: "VALENOVA"
-- Available colors: ["clay", "sand", "white", "taupe"]
-- If SKUs are listed separately for each color, create full variants
-- If only color list is shown, store as "available_colors" in metadata
-
-**Packaging Details Extraction (CRITICAL for Quote Management):**
-
-Extract ALL packaging information found in the PDF:
-- **pieces_per_box**: Number of pieces/tiles per box
-- **boxes_per_pallet**: Number of boxes per pallet
-- **weight_per_box_kg**: Weight per box in kilograms
-- **weight_per_box_lb**: Weight per box in pounds (if provided)
-- **coverage_per_box_m2**: Coverage area per box in square meters
-- **coverage_per_box_sqft**: Coverage area per box in square feet
-
-Common patterns to look for:
-- "12 pcs/box", "pieces per box: 12"
-- "48 boxes/pallet", "boxes per pallet: 48"
-- "18.5 kg/box", "weight: 18.5 kg"
-- "1.14 m²/box", "coverage: 1.14 m²"
-- "12.27 sqft/box", "coverage: 12.27 sqft"
-
-**IMPORTANT:**
-- ALWAYS extract catalog_factory from cover/intro pages - this is the brand that makes ALL products
-- Products inherit factory_name from catalog_factory if not specified individually
-- Use consistent field names: factory_name (not factory), factory_group_name (not factory_group), material_category (not category)
-- Each variant MUST have: sku, name (full variant name), color, size
-- Optional variant fields: shape, pattern, pattern_count, mapei_code, kerakoll_code
-- ALWAYS extract packaging details when available - critical for quote calculations
-
-**PDF CONTENT:**
-{pdf_text[:200000]}
-
-Analyze the above content and return ONLY valid JSON with ALL content discovered across the requested categories."""
-
-        return prompt
 
     async def _build_index_scan_prompt(
         self,
@@ -979,8 +618,8 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
         """
         Build lightweight prompt for Stage 0A index scanning.
 
-        This prompt is optimized for FAST discovery of product names and page ranges
-        from TOC/Index pages. It does NOT extract detailed metadata (that's Stage 0B).
+        Fetches prompt template from database and fills in variables.
+        All prompts are managed via /admin/ai-configs.
 
         Args:
             index_text: Text from index/TOC pages
@@ -993,214 +632,35 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
         Returns:
             Optimized prompt for index scanning
         """
+        try:
+            # Fetch index scan prompt from database
+            prompt_template = await get_prompt_template_from_db(
+                workspace_id=workspace_id,
+                stage="discovery",
+                category="index_scan"
+            )
 
-        prompt = f"""You are analyzing a product catalog PDF with {total_pages} pages (numbered 1 to {total_pages} in this file).
+            self.logger.info(f"   ✅ Loaded index_scan prompt from database")
 
-**YOUR TASK**: Identify ONLY the MAIN FEATURED PRODUCTS that have dedicated page spreads in THIS PDF.
+            # Replace template variables
+            prompt = prompt_template.replace("{total_pages}", str(total_pages))
+            prompt = prompt.replace("{index_text}", index_text)
+            prompt = prompt.replace("{categories}", ", ".join(categories))
 
-**⚠️ CRITICAL RULES**:
-1. **ONLY include products with DEDICATED PAGE SPREADS** (typically 2-12 pages each)
-2. **EXCLUDE products that are only mentioned in**:
-   - Table of contents / Index pages
-   - Thumbnail grids or product overview pages
-   - Cross-references or "related products" sections
-   - Small mentions or callouts
-3. **A MAIN PRODUCT must have**:
-   - Its own dedicated page spread (not just a thumbnail)
-   - Detailed product information (dimensions, materials, etc.)
-   - Large product images (not just small thumbnails)
-   - Typically 2-12 consecutive pages
-**🚨 CRITICAL - PAGE NUMBER RULES**:
-The text contains PDF PAGE MARKERS like "# Page 1", "# Page 2", etc.
+            if agent_prompt:
+                prompt = prompt.replace("{agent_prompt}", agent_prompt)
+            else:
+                prompt = prompt.replace("{agent_prompt}", "Extract all products from this catalog")
 
-**IGNORE PRINTED PAGE NUMBERS IN THE INDEX!**
-- The INDEX shows CATALOG page numbers (e.g., "VALENOVA ... 74-79") - IGNORE these!
-- You MUST find where each product ACTUALLY appears using "# Page N" markers
-- Search for the product name in the content and note which "# Page N" marker precedes it
+            return prompt
 
-**HOW TO DETERMINE page_range**:
-1. Find the product name in the INDEX to confirm it exists
-2. Search the FULL TEXT for that product name
-3. Look at which "# Page N" marker appears before the product content
-4. Use THOSE page numbers for page_range
+        except Exception as e:
+            self.logger.error(f"Failed to load index_scan prompt from database: {e}")
+            raise ValueError(
+                f"Index scan prompt not found in database for workspace={workspace_id}, "
+                f"stage=discovery, category=index_scan. Please add it via /admin/ai-configs."
+            )
 
-**VALIDATION**:
-- This PDF has pages 1-{total_pages}
-- ALL page_range values MUST be actual PDF pages (1-{total_pages})
-- page_range should have 2-12 consecutive pages typically
-- If you can't find a product in the actual content, SKIP it
-
-**WHAT TO LOOK FOR**:
-- Product names in uppercase or bold (e.g., "VALENOVA", "FOLD", "PIQUÉ")
-- Designer names (e.g., "by SG NY", "by DSIGNIO")
-
-**⚠️ BE CONSERVATIVE**: When in doubt, EXCLUDE the product.
-
-**OUTPUT FORMAT** (JSON only):
-```json
-{{
-  "products": [
-    {{
-      "name": "VALENOVA",
-      "page_range": [38, 39, 40, 41, 42, 43],
-      "description": "Brief description if available",
-      "confidence": 0.95,
-      "metadata": {{
-        "designer": "SG NY",
-        "category": "tiles"
-      }}
-    }}
-  ],
-  "confidence_score": 0.92
-}}
-```
-
-**PDF CONTENT (with # Page N markers):**
-{index_text}
-
-Return ONLY valid JSON with products found. Use ACTUAL PDF page numbers from "# Page N" markers, NOT printed catalog page numbers!"""
-
-        return prompt
-
-    async def _build_enhanced_discovery_prompt(
-        self,
-        pdf_text: str,
-        total_pages: int,
-        categories: List[str],
-        enhanced_prompts: List[Dict[str, Any]],
-        agent_prompt: str
-    ) -> str:
-        """
-        Build discovery prompt using admin-enhanced templates.
-
-        Combines admin-configured prompts with agent context and PDF content.
-        """
-
-        # Build category-specific sections from enhanced prompts
-        category_sections = []
-        for ep in enhanced_prompts:
-            category_sections.append(f"""
-**{ep['category'].upper()}:**
-{ep['enhanced']}
-(Using admin template v{ep['version']})
-""")
-
-        # Build comprehensive prompt
-        prompt = f"""You are analyzing a material/product catalog PDF with {total_pages} pages.
-
-**USER REQUEST:** "{agent_prompt}"
-
-**FIRST: EXTRACT DOCUMENT-LEVEL INFORMATION**
-Look at the cover page, intro pages, and headers/footers to identify:
-1. **catalog_factory**: The main factory/brand name for this catalog (e.g., "HARMONY", "Porcelanosa")
-2. **catalog_factory_group**: The parent company or group (e.g., "Peronda Group", "Porcelanosa Group")
-3. **catalog_manufacturer**: The manufacturer if different from factory
-
-This information typically appears on:
-- Cover page (large logo/brand name)
-- Footer/header of pages
-- "About Us" or intro sections
-- Copyright notices
-
-**THEN: Extract content across the following categories:**
-{chr(10).join(category_sections)}
-
-**⚠️ CRITICAL - PAGE NUMBER RULES**:
-This PDF has {total_pages} pages. The text below contains PDF PAGE MARKERS like "# Page 1", "# Page 2", etc.
-
-**🚨 IMPORTANT: IGNORE PRINTED PAGE NUMBERS IN THE INDEX/TOC!**
-- The INDEX/TOC may show CATALOG page numbers (e.g., "VALENOVA ... 74-79")
-- These are NOT the actual PDF page numbers!
-- You MUST use the "# Page N" markers to determine which PDF page contains each product
-
-**HOW TO FIND THE CORRECT page_range**:
-1. Find the product name in the INDEX/TOC to know it exists
-2. Then SEARCH the actual PDF content for that product name
-3. Look at which "# Page N" marker appears BEFORE the product content
-4. Use THOSE page numbers (from the markers) for page_range
-
-**Example**:
-- INDEX says: "VALENOVA ... 74-79" (these are CATALOG page numbers - IGNORE them!)
-- You search the PDF content and find "VALENOVA" appears after "# Page 38" through "# Page 43"
-- CORRECT: page_range: [38, 39, 40, 41, 42, 43]
-- WRONG: page_range: [74, 75, 76, 77, 78, 79]
-
-**VALIDATION**:
-- ALL page_range values MUST be between 1 and {total_pages}
-- If you can't find a product in the actual content, SKIP it
-
-**PRODUCT IDENTIFICATION**:
-1. Identify ONLY main featured products using ANY of these criteria:
-   - EXCLUDE index pages, thumbnails, cross-references, and catalog grids (this is critical!)
-   - INCLUDE if product has: dedicated page spread (1-12 pages) OR comprehensive metadata OR visual prominence OR content depth
-   - Use multiple identification methods: page spread, metadata presence, visual prominence, or content depth
-   - Even single-page products count if they have comprehensive metadata and visual prominence
-2. **For page_range**: Include ALL consecutive pages where the product appears in THIS PDF (pages 1-{total_pages})
-   - Example: If a product spans pages 22-27, return [22, 23, 24, 25, 26, 27], NOT just [22, 23]
-   - Look for: product name continuity, related images, variant displays, technical specs across multiple pages
-   - A product's page range ends when a new product begins or when content becomes unrelated
-3. For other categories: Be comprehensive - identify EVERY instance
-4. Focus on fulfilling the user's request: "{agent_prompt}"
-5. Classify each page as: "product", "certificate", "logo", "specification", "marketing", "admin", or "transitional"
-6. Provide confidence scores (0.0-1.0) for each item
-
-**SPECIAL HANDLING FOR USER REQUEST:**
-- If user mentions specific product names (e.g., "NOVA"), prioritize finding those products
-- If user requests "search", provide comprehensive results with high confidence scores
-- If user requests "extract", focus on complete data extraction with all metadata
-
-**OUTPUT FORMAT (JSON):**
-```json
-{{
-  "catalog_factory": "HARMONY",
-  "catalog_factory_group": "Peronda Group",
-  "catalog_manufacturer": "Peronda Group",
-  "products": [
-    {{
-      "name": "NOVA",
-      "description": "Modern ceramic tile collection",
-      "confidence": 0.95,
-      "metadata": {{
-        "designer": "SG NY",
-        "studio": "SG NY",
-        "material_category": "Ceramic Tile",
-        "dimensions": ["15×38", "20×40"],
-        "variants": [
-          {{"type": "color", "value": "beige"}},
-          {{"type": "finish", "value": "matte"}}
-        ],
-        "factory_name": "HARMONY",
-        "factory_group_name": "Peronda Group",
-        "country_of_origin": "Spain",
-        "slip_resistance": "R11",
-        "fire_rating": "A1",
-        "thickness": "8mm",
-        "water_absorption": "Class 3",
-        "finish": "matte",
-        "material": "ceramic"
-      }}
-    }}
-  ],
-  "certificates": [...],
-  "logos": [...],
-  "specifications": [...],
-  "page_classification": {{...}},
-  "total_products": 14,
-  "confidence_score": 0.92
-}}
-```
-
-**IMPORTANT:**
-- ALWAYS extract catalog_factory from cover/intro pages - this is the brand that makes ALL products
-- Products inherit factory_name from catalog_factory if not specified individually
-- Use consistent field names: factory_name (not factory), factory_group_name (not factory_group), material_category (not category)
-
-**PDF CONTENT:**
-{pdf_text[:200000]}
-
-Analyze the above content and return ONLY valid JSON with ALL content discovered across the requested categories."""
-
-        return prompt
 
     def _repair_json(self, json_str: str) -> str:
         """Attempt to repair common JSON issues"""
@@ -1371,9 +831,8 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
     ) -> ProductCatalog:
         """Parse and validate discovery results across all categories"""
 
-        # Parse products
+        # Parse products (Claude returns product names + metadata, NO page_range - that's detected separately)
         products = []
-        products_missing_pages = []
         for p in result.get("products", []):
             # Extract metadata (new architecture - products + metadata inseparable)
             metadata = p.get("metadata", {})
@@ -1386,7 +845,6 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                     "dimensions": p.get("dimensions", []),
                     "variants": p.get("variants", []),
                     "category": p.get("category"),
-                    "page_range": p.get("page_range", []),
                     "confidence": p.get("confidence", 0.8)
                 }
                 # Remove None values
@@ -1413,21 +871,8 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
             )
             products.append(product)
 
-            # Track products with missing page ranges for fallback processing
-            if not page_range or len(page_range) == 0:
-                products_missing_pages.append(product.name)
-
-            # Log if image_pages was missing (helps debug Claude Vision behavior)
-            if not p.get("image_pages"):
-                self.logger.warning(f"   ⚠️ Product '{product.name}' missing image_pages - using page_range as fallback")
-
-        # Log products that need fallback page detection
-        if products_missing_pages:
-            self.logger.warning(
-                f"   ⚠️ {len(products_missing_pages)} products missing page ranges - will need fallback detection: "
-                f"{', '.join(products_missing_pages[:5])}"
-                f"{' and ' + str(len(products_missing_pages) - 5) + ' more' if len(products_missing_pages) > 5 else ''}"
-            )
+            # page_range is intentionally not returned by Claude - we detect pages using text search + YOLO
+            # This is by design - Claude only returns product names, we handle page detection deterministically
 
         # Parse certificates
         certificates = []
@@ -1511,20 +956,24 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
         tracker: Optional[Any] = None
     ) -> ProductCatalog:
         """
-        STAGE 0B: Extract detailed metadata for each product using focused page extraction.
+        STAGE 0B: Deterministic page detection + detailed metadata extraction.
 
         This is the core of the Two-Stage Discovery system:
-        1. For each product, extract ONLY its specific pages from the PDF
-        2. Send focused text to AI for detailed metadata extraction
-        3. No token limits - can handle products with 50+ pages each
+        1. DETERMINISTIC PAGE DETECTION: Use text search + YOLO to find pages for each product
+           (Claude returns ONLY product names, NOT page numbers)
+        2. For each product, extract ONLY its detected pages from the PDF
+        3. Send focused text to AI for detailed metadata extraction
+        4. No token limits - can handle products with 50+ pages each
 
         Args:
-            catalog: Product catalog from Stage 0A (with page ranges)
+            catalog: Product catalog from Stage 0A (product names only, NO page_range)
             pdf_path: Path to PDF file for page extraction
+            pdf_text: Optional pre-extracted PDF text with page markers
             job_id: Optional job ID for logging
+            tracker: Optional progress tracker
 
         Returns:
-            Catalog with fully enriched product metadata
+            Catalog with detected page_range and fully enriched product metadata
         """
         try:
             from app.core.extractor import extract_pdf_to_markdown
@@ -1551,111 +1000,95 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
 
             self.logger.info(f"   📄 PDF has {pdf_page_count} pages")
 
-            # Track products that need vision-based page detection
-            products_needing_vision = []
-
-            for i, product in enumerate(catalog.products):
-                # Validate PDF page numbers and convert to array indices
-                page_indices = []
-                invalid_pages = []
-
-                # ✅ CHECK: If product has empty page_range, mark for vision-based detection
-                if not product.page_range or len(product.page_range) == 0:
-                    self.logger.warning(
-                        f"   ⚠️ Product '{product.name}' has EMPTY page_range - "
-                        f"will use vision-based detection to find pages"
-                    )
-                    products_needing_vision.append((i, product))
-                    continue  # Skip normal page mapping for now
-
-                # page_range contains PDF page numbers (1-based)
-                for pdf_page in product.page_range:
-                    if 1 <= pdf_page <= pdf_page_count:
-                        # Convert PDF page (1-based) to array index (0-based)
-                        array_index = pdf_page - 1
-                        page_indices.append(array_index)
-                    else:
-                        invalid_pages.append(pdf_page)
-
-                if invalid_pages:
-                    self.logger.warning(
-                        f"   ⚠️ Product '{product.name}' has {len(invalid_pages)} invalid pages: {invalid_pages} "
-                        f"(PDF has {pdf_page_count} pages) - skipping these pages"
-                    )
-
-                    # ✅ SANITIZATION: Remove invalid pages from the product's page_range
-                    # This prevents downstream services from trying to process non-existent pages
-                    product.page_range = [p for p in product.page_range if p not in invalid_pages]
-
-                if page_indices:
-                    all_product_pages.update(page_indices)
-                    product_page_mapping[i] = page_indices
-
             # ============================================================
-            # TEXT-BASED PAGE DETECTION FOR PRODUCTS WITH EMPTY PAGE_RANGE
+            # DETERMINISTIC PAGE DETECTION FOR ALL PRODUCTS (OPTIMIZED)
+            # Claude returns ONLY product names - we detect pages using text search + YOLO
             # ============================================================
-            if products_needing_vision:
-                self.logger.info(
-                    f"🔍 TEXT-BASED PAGE DETECTION: {len(products_needing_vision)} products need page detection"
-                )
+            self.logger.info(
+                f"🔍 DETERMINISTIC PAGE DETECTION: Detecting pages for {len(catalog.products)} products using text search + YOLO"
+            )
 
-                # Ensure we have pdf_text
-                if not pdf_text:
-                    self.logger.info("   Extracting text for page detection...")
-                    import pymupdf4llm
+            # Ensure we have pdf_text with page markers
+            if not pdf_text:
+                self.logger.info("   Extracting text for page detection...")
+                import pymupdf4llm
+                import fitz
+                # Always extract page-by-page to add explicit page markers
+                doc = fitz.open(pdf_path)
+                pdf_text_parts = []
+                for page_num in range(len(doc)):
                     try:
-                        pdf_text = pymupdf4llm.to_markdown(pdf_path)
-                    except (ValueError, ReferenceError) as e:
-                        if "not a textpage" in str(e) or "weakly-referenced object" in str(e):
-                            self.logger.warning(f"   ⚠️ PyMuPDF textpage error, extracting page-by-page: {e}")
-                            # Fallback: Extract page by page
-                            import fitz
-                            doc = fitz.open(pdf_path)
-                            pdf_text_parts = []
-                            for page_num in range(len(doc)):
-                                try:
-                                    page_text = pymupdf4llm.to_markdown(pdf_path, pages=[page_num])
-                                    pdf_text_parts.append(page_text)
-                                except Exception as page_error:
-                                    self.logger.warning(f"   ⚠️ Skipping page {page_num + 1}: {page_error}")
-                                    continue
-                            doc.close()
-                            pdf_text = "\n\n".join(pdf_text_parts)
-                        else:
-                            raise
-
-                for i, product in products_needing_vision:
-                    try:
-                        self.logger.info(f"   🔍 Detecting pages for: {product.name}")
-
-                        detected_pages = await self._detect_product_pages_with_text(
-                            pdf_text=pdf_text,
-                            product_name=product.name,
-                            total_pages=pdf_page_count
-                        )
-
-                        if detected_pages:
-                            self.logger.info(
-                                f"   ✅ Found {len(detected_pages)} pages for '{product.name}': {detected_pages}"
-                            )
-                        else:
-                            self.logger.error(
-                                f"   ❌ Could not detect pages for '{product.name}' - "
-                                f"product will be SKIPPED to prevent hallucinated data"
-                            )
-
-                        # Update product and mapping
-                        if detected_pages:
-                            product.page_range = detected_pages
-                            page_indices = [p - 1 for p in detected_pages]  # Convert to 0-based
-                            all_product_pages.update(page_indices)
-                            product_page_mapping[i] = page_indices
-
-                    except Exception as e:
-                        self.logger.error(
-                            f"   ❌ Detection failed for '{product.name}': {e}"
-                        )
+                        page_text = pymupdf4llm.to_markdown(pdf_path, pages=[page_num])
+                        page_marker = f"\n\n--- # Page {page_num + 1} ---\n\n"
+                        pdf_text_parts.append(page_marker + page_text)
+                    except Exception as page_error:
+                        self.logger.warning(f"   ⚠️ Skipping page {page_num + 1}: {page_error}")
                         continue
+                doc.close()
+                pdf_text = "\n\n".join(pdf_text_parts)
+
+            # ⚡ OPTIMIZATION: Parse PDF text into pages ONCE (not per-product)
+            pages_content = self._parse_pdf_text_into_pages(pdf_text, pdf_page_count)
+            self.logger.info(f"   📄 Parsed {len(pages_content)} pages from text (one-time operation)")
+
+            # ⚡ OPTIMIZATION: Initialize YOLO detector ONCE (not per-product)
+            yolo_detector = None
+            yolo_enabled = False
+            try:
+                from app.config import get_settings
+                settings = get_settings()
+                yolo_enabled = settings.yolo_enabled
+                if yolo_enabled:
+                    from app.services.pdf.yolo_layout_detector import YoloLayoutDetector
+                    yolo_config = settings.get_yolo_config()
+                    yolo_detector = YoloLayoutDetector(config=yolo_config)
+                    self.logger.info("   🎯 YOLO detector initialized (reused for all products)")
+            except Exception as e:
+                self.logger.warning(f"   ⚠️ YOLO initialization failed: {e}, using text-only detection")
+
+            # Detect pages for ALL products using pre-parsed pages
+            for i, product in enumerate(catalog.products):
+                try:
+                    self.logger.info(f"   🔍 Detecting pages for: {product.name}")
+
+                    # Step 1: Text-based page detection (uses pre-parsed pages)
+                    detected_pages = self._detect_product_pages_optimized(
+                        pages_content=pages_content,
+                        product_name=product.name,
+                        total_pages=pdf_page_count
+                    )
+
+                    # Step 2: YOLO validation (if enabled, uses shared detector)
+                    if detected_pages and yolo_enabled and yolo_detector:
+                        validated_pages = await self._validate_pages_with_yolo_optimized(
+                            pdf_path=pdf_path,
+                            detected_pages=detected_pages,
+                            product_name=product.name,
+                            detector=yolo_detector
+                        )
+                        # Use validated pages if YOLO returned any, otherwise keep text-detected pages
+                        if validated_pages:
+                            detected_pages = validated_pages
+
+                    if detected_pages:
+                        self.logger.info(
+                            f"   ✅ Found {len(detected_pages)} pages for '{product.name}': {detected_pages}"
+                        )
+                        product.page_range = detected_pages
+                        page_indices = [p - 1 for p in detected_pages]  # Convert to 0-based
+                        all_product_pages.update(page_indices)
+                        product_page_mapping[i] = page_indices
+                    else:
+                        self.logger.error(
+                            f"   ❌ Could not detect pages for '{product.name}' - "
+                            f"product will be SKIPPED to prevent hallucinated data"
+                        )
+
+                except Exception as e:
+                    self.logger.error(
+                        f"   ❌ Detection failed for '{product.name}': {e}"
+                    )
+                    continue
 
             # ============================================================
             # INTELLIGENT PAGE EXTRACTION BASED ON PAGE TYPES
@@ -1989,9 +1422,9 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
 
         page_texts = {}
 
-        # Split by page markers (PyMuPDF4LLM uses "-----" as separator)
-        # Pattern: -----\n# Page N\n or similar
-        pages = re.split(r'-{3,}\s*(?:#\s*Page\s*\d+)?', markdown_text)
+        # Split by page markers (our explicit markers: --- # Page N ---)
+        # Also handles old format: -----\n# Page N\n for backward compatibility
+        pages = re.split(r'-{3,}\s*#?\s*Page\s*\d+\s*-*', markdown_text, flags=re.IGNORECASE)
 
         # Map extracted pages to their indices
         for i, page_text in enumerate(pages):
@@ -2138,6 +1571,102 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
         return pdf_text[:100000]
 
 
+    # Pre-compiled regex pattern for page markers (compiled once, reused)
+    _PAGE_MARKER_PATTERN = re.compile(r'-{3,}\s*#?\s*Page\s*(\d+)\s*-*', re.IGNORECASE)
+
+    def _parse_pdf_text_into_pages(
+        self,
+        pdf_text: str,
+        total_pages: int
+    ) -> Dict[int, str]:
+        """
+        ⚡ OPTIMIZED: Parse PDF text into pages ONCE.
+
+        This is called once before processing all products, avoiding
+        repeated regex parsing for each product.
+
+        Args:
+            pdf_text: Full PDF markdown text with page markers
+            total_pages: Total number of pages in PDF
+
+        Returns:
+            Dictionary mapping page_num (1-based) -> page_content (lowercased for search)
+        """
+        pages_content = {}
+
+        if not pdf_text:
+            return pages_content
+
+        # Use pre-compiled pattern
+        markers = list(self._PAGE_MARKER_PATTERN.finditer(pdf_text))
+
+        if not markers:
+            # Fallback: Treat whole text as Page 1 if no markers
+            pages_content[1] = pdf_text.lower()
+        else:
+            # Add text before first marker to Page 1
+            first_text = pdf_text[:markers[0].start()].strip()
+            if first_text:
+                pages_content[1] = first_text.lower()
+
+            for i in range(len(markers)):
+                start = markers[i].end()
+                end = markers[i + 1].start() if i + 1 < len(markers) else len(pdf_text)
+
+                page_num_str = markers[i].group(1)
+                page_num = int(page_num_str) if page_num_str else (i + 1)
+
+                if page_num <= total_pages:
+                    content = pdf_text[start:end].strip()
+                    if content:
+                        # Store lowercased content for faster search
+                        pages_content[page_num] = content.lower()
+
+        return pages_content
+
+    def _detect_product_pages_optimized(
+        self,
+        pages_content: Dict[int, str],
+        product_name: str,
+        total_pages: int
+    ) -> List[int]:
+        """
+        ⚡ OPTIMIZED: Detect product pages using pre-parsed page content.
+
+        This method uses pre-parsed pages (from _parse_pdf_text_into_pages)
+        instead of re-parsing the entire PDF text for each product.
+
+        Args:
+            pages_content: Pre-parsed dictionary of page_num -> lowercased_content
+            product_name: Name of product to search for
+            total_pages: Total number of pages in PDF
+
+        Returns:
+            List of page numbers (1-based) where product was found
+        """
+        if not pages_content or not product_name:
+            return []
+
+        detected_pages = set()
+        clean_name = product_name.lower().strip()
+
+        # Pre-compile word boundary pattern for this product
+        word_boundary_pattern = re.compile(r'\b' + re.escape(clean_name) + r'\b')
+
+        # Search in pre-parsed pages (already lowercased)
+        for page_num, content_lower in pages_content.items():
+            if page_num > total_pages:
+                continue
+
+            # Use word boundaries for better accuracy
+            if word_boundary_pattern.search(content_lower):
+                detected_pages.add(page_num)
+            # Fallback to simple containment if no word boundary match
+            elif clean_name in content_lower:
+                detected_pages.add(page_num)
+
+        return sorted(list(detected_pages))
+
     async def _detect_product_pages_with_text(
         self,
         pdf_text: str,
@@ -2145,68 +1674,121 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
         total_pages: int
     ) -> List[int]:
         """
-        Use text-based analysis to detect which pages contain a specific product.
+        DEPRECATED: Use _detect_product_pages_optimized instead.
 
-        This is a fallback mechanism for when both AI discovery and vision-based
-        detection fail to assign page ranges.
+        Kept for backward compatibility. Parses PDF text each time (inefficient).
+        """
+        # Parse pages (this is inefficient - called for each product)
+        pages_content = self._parse_pdf_text_into_pages(pdf_text, total_pages)
+        return self._detect_product_pages_optimized(pages_content, product_name, total_pages)
+
+    async def _validate_pages_with_yolo_optimized(
+        self,
+        pdf_path: str,
+        detected_pages: List[int],
+        product_name: str,
+        detector: Any
+    ) -> List[int]:
+        """
+        ⚡ OPTIMIZED: Validate pages using a pre-initialized YOLO detector.
 
         Args:
-            pdf_text: Full PDF markdown text with page markers
-            product_name: Name of product to search for
-            total_pages: Total number of pages in PDF
+            pdf_path: Path to PDF file
+            detected_pages: List of page numbers (1-based) from text search
+            product_name: Product name (for logging)
+            detector: Pre-initialized YoloLayoutDetector (shared across products)
 
         Returns:
-            List of page numbers (1-based) where product was found
+            List of validated page numbers (1-based) where YOLO confirms product content
         """
-        if not pdf_text or not product_name:
-            return []
+        validated_pages = []
 
-        import re
-        detected_pages = set()
-        clean_name = product_name.lower().strip()
+        for page_num in detected_pages:
+            page_idx = page_num - 1  # Convert to 0-based for YOLO
 
-        # 1. Try exact match first
-        # 2. Try partial match if no exact match found
-        
-        # Split text into pages using PyMuPDF4LLM markers
-        # Pattern: -----\n# Page N\n (matches _split_markdown_by_pages)
-        markers = list(re.finditer(r'-{3,}\s*(?:#\s*Page\s*(\d+))?', pdf_text))
-        
-        pages_content = []
-        if not markers:
-            # Fallback: Treat whole text as Page 1 if no markers
-            pages_content.append((1, pdf_text))
-        else:
-            # Add text before first marker to Page 1
-            first_text = pdf_text[:markers[0].start()].strip()
-            if first_text:
-                pages_content.append((1, first_text))
-            
-            for i in range(len(markers)):
-                start = markers[i].end()
-                end = markers[i+1].start() if i+1 < len(markers) else len(pdf_text)
-                
-                page_num_str = markers[i].group(1)
-                # If no page number in marker, use sequence
-                page_num = int(page_num_str) if page_num_str else (i + 1)
-                
-                content = pdf_text[start:end].strip()
-                if content:
-                    pages_content.append((page_num, content))
+            try:
+                # Run YOLO layout detection on the page
+                result = await detector.detect_layout_regions(pdf_path, page_idx)
 
-        # Search for product name in each page
-        for page_num, content in pages_content:
-            if page_num > total_pages:
-                continue
-                
-            content_lower = content.lower()
-            
-            # Use word boundaries for better accuracy
-            if re.search(r'\b' + re.escape(clean_name) + r'\b', content_lower):
-                detected_pages.add(page_num)
-            # Fallback to simple containment if no word boundary match
-            elif clean_name in content_lower:
-                detected_pages.add(page_num)
+                if result and result.regions:
+                    # Check if page has product-relevant content
+                    has_title = result.title_regions > 0
+                    has_image = result.image_regions > 0
+                    has_text = result.text_regions > 0
 
-        return sorted(list(detected_pages))
+                    # A product page should have at least:
+                    # - TITLE + IMAGE (typical product spread), OR
+                    # - IMAGE + TEXT (product with description), OR
+                    # - Just IMAGE (image-only page in product spread)
+                    is_product_page = (has_title and has_image) or (has_image and has_text) or has_image
+
+                    if is_product_page:
+                        validated_pages.append(page_num)
+                        self.logger.debug(
+                            f"      ✅ Page {page_num} validated: TITLE={has_title}, IMAGE={has_image}, TEXT={has_text}"
+                        )
+                    else:
+                        # Still include pages with text but log as uncertain
+                        if has_text:
+                            validated_pages.append(page_num)
+                            self.logger.debug(
+                                f"      ⚠️ Page {page_num} has text only, including but uncertain"
+                            )
+                        else:
+                            self.logger.debug(
+                                f"      ❌ Page {page_num} excluded: no relevant content found"
+                            )
+                else:
+                    # YOLO returned no regions - keep the page from text search
+                    validated_pages.append(page_num)
+                    self.logger.debug(f"      ⚠️ Page {page_num}: YOLO returned no regions, keeping from text search")
+
+            except Exception as e:
+                # If YOLO fails for a page, keep it from text search
+                validated_pages.append(page_num)
+                self.logger.warning(f"      ⚠️ YOLO failed for page {page_num}: {e}, keeping from text search")
+
+        # Log summary
+        if len(validated_pages) != len(detected_pages):
+            removed = set(detected_pages) - set(validated_pages)
+            self.logger.info(
+                f"   🎯 YOLO validation: {len(detected_pages)} → {len(validated_pages)} pages "
+                f"(removed: {sorted(removed)})"
+            )
+
+        return sorted(validated_pages)
+
+    async def _validate_pages_with_yolo(
+        self,
+        pdf_path: str,
+        detected_pages: List[int],
+        product_name: str
+    ) -> List[int]:
+        """
+        DEPRECATED: Use _validate_pages_with_yolo_optimized with pre-initialized detector.
+
+        Kept for backward compatibility. Initializes YOLO detector each time (inefficient).
+        """
+        try:
+            from app.config import get_settings
+            settings = get_settings()
+
+            # Skip YOLO validation if disabled
+            if not settings.yolo_enabled:
+                self.logger.debug(f"   YOLO disabled, skipping validation for '{product_name}'")
+                return detected_pages
+
+            from app.services.pdf.yolo_layout_detector import YoloLayoutDetector
+
+            # Initialize YOLO detector (inefficient - called for each product)
+            yolo_config = settings.get_yolo_config()
+            detector = YoloLayoutDetector(config=yolo_config)
+
+            return await self._validate_pages_with_yolo_optimized(
+                pdf_path, detected_pages, product_name, detector
+            )
+
+        except Exception as e:
+            self.logger.warning(f"   ⚠️ YOLO validation failed for '{product_name}': {e}, using text-detected pages")
+            return detected_pages
 

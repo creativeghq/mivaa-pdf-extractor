@@ -39,17 +39,20 @@ class BackgroundImageProcessor:
     async def process_pending_images(
         self,
         document_id: str,
-        batch_size: int = 10,
-        max_concurrent: int = 3
+        batch_size: int = 20,
+        max_concurrent: int = 8
     ) -> Dict[str, Any]:
         """
-        Process all images needing AI analysis for a document.
-        
+        ⚡ OPTIMIZED: Process all images needing AI analysis for a document.
+
+        Default max_concurrent increased from 3 to 8 for better throughput.
+        Vision APIs can handle higher concurrency without rate limiting issues.
+
         Args:
             document_id: Document ID to process images for
-            batch_size: Number of images to process in each batch
-            max_concurrent: Maximum concurrent image processing tasks
-            
+            batch_size: Number of images to process in each batch (default: 20)
+            max_concurrent: Maximum concurrent image processing tasks (default: 8)
+
         Returns:
             Dictionary with processing statistics
         """

@@ -310,21 +310,37 @@ class EnhancedPDFProcessor:
         chunk_content: str,
         sections: List[Dict[str, Any]]
     ) -> Optional[Dict[str, Any]]:
-        """Find best matching classification for a chunk."""
-        # Simple matching: find section with most content overlap
+        """
+        ⚡ OPTIMIZED: Find best matching classification for a chunk.
+
+        Pre-computes chunk word set ONCE instead of inside the loop.
+        For 1000 chunks × 50 sections, this reduces set creations from 50,000 to 1,050.
+        """
+        if not sections:
+            return None
+
+        # ⚡ OPTIMIZATION: Compute chunk words ONCE (not per-section)
+        chunk_words = set(chunk_content.lower().split())
+
+        if not chunk_words:
+            return None
+
         best_match = None
         best_overlap = 0
-        
+
         for section in sections:
-            # Calculate simple word overlap
-            chunk_words = set(chunk_content.lower().split())
-            section_words = set(section["content"].lower().split())
+            section_content = section.get("content", "")
+            if not section_content:
+                continue
+
+            # Section words still computed per-section (unavoidable), but chunk_words is reused
+            section_words = set(section_content.lower().split())
             overlap = len(chunk_words & section_words)
-            
+
             if overlap > best_overlap:
                 best_overlap = overlap
                 best_match = section.get("classification")
-        
+
         return best_match
     
     async def _extract_and_validate_products(

@@ -95,6 +95,10 @@ class UnifiedChunkingService:
         self.quality_metrics = ChunkQualityMetrics()
         self._content_hashes: set = set()  # Track exact duplicates
 
+        # ⚡ OPTIMIZATION: Cache layout regions per product to avoid repeated DB queries
+        # Key: product_id, Value: Dict[page_number, List[regions]] or List[regions] for all pages
+        self._layout_regions_cache: Dict[str, Dict[Optional[int], List[Dict[str, Any]]]] = {}
+
         # Get quality threshold from centralized configuration
         self.min_quality_threshold = ConfidenceThresholds.get_threshold(
             "chunking_quality",
@@ -345,7 +349,11 @@ class UnifiedChunkingService:
         paragraphs = re.split(self.PARAGRAPH_BREAKS, text)
         self.logger.info(f"         SEMANTIC: Found {len(paragraphs)} paragraphs, processing...")
 
-        current_chunk = ""
+        # ⚡ OPTIMIZATION: Use list accumulation instead of string concatenation
+        # Python strings are immutable, so += creates new string objects each time
+        # Using list.append() + join() is O(n) vs O(n²) for repeated concatenation
+        current_chunk_parts: List[str] = []
+        current_chunk_length = 0
 
         for para_idx, paragraph in enumerate(paragraphs):
             if para_idx % 50 == 0 and para_idx > 0:
@@ -354,10 +362,12 @@ class UnifiedChunkingService:
             if not paragraph.strip():
                 continue
 
-            paragraph_with_break = paragraph + "\n\n"
+            para_length = len(paragraph) + 2  # +2 for "\n\n"
 
             # If adding this paragraph would exceed max size, finalize current chunk
-            if len(current_chunk) + len(paragraph_with_break) > self.config.max_chunk_size and current_chunk:
+            if current_chunk_length + para_length > self.config.max_chunk_size and current_chunk_parts:
+                # Join accumulated parts into chunk content
+                current_chunk = "\n\n".join(current_chunk_parts)
                 chunk = self._create_chunk(
                     current_chunk.strip(),
                     document_id,
@@ -370,24 +380,28 @@ class UnifiedChunkingService:
 
                 # Start new chunk with overlap
                 overlap_content = self._get_overlap_content(current_chunk, self.config.overlap_size)
-                current_chunk = overlap_content + paragraph_with_break
+                current_chunk_parts = [overlap_content, paragraph] if overlap_content else [paragraph]
+                current_chunk_length = len(overlap_content) + para_length if overlap_content else para_length
                 chunk_index += 1
             else:
-                current_chunk += paragraph_with_break
+                current_chunk_parts.append(paragraph)
+                current_chunk_length += para_length
 
-            current_position += len(paragraph_with_break)
+            current_position += para_length
 
         # Add final chunk
-        if current_chunk.strip():
-            chunk = self._create_chunk(
-                current_chunk.strip(),
-                document_id,
-                chunk_index,
-                current_position,
-                metadata,
-                page_number
-            )
-            chunks.append(chunk)
+        if current_chunk_parts:
+            current_chunk = "\n\n".join(current_chunk_parts)
+            if current_chunk.strip():
+                chunk = self._create_chunk(
+                    current_chunk.strip(),
+                    document_id,
+                    chunk_index,
+                    current_position,
+                    metadata,
+                    page_number
+                )
+                chunks.append(chunk)
 
         self.logger.info(f"         SEMANTIC: Updating total chunks count for {len(chunks)} chunks...")
         # Update total chunks count
@@ -703,7 +717,10 @@ class UnifiedChunkingService:
 
     def _fetch_layout_regions(self, product_id: str, page_number: Optional[int] = None) -> List[Dict[str, Any]]:
         """
-        Fetch layout regions from database for a product.
+        ⚡ OPTIMIZED: Fetch layout regions with caching.
+
+        Fetches all regions for a product ONCE, then filters by page from cache.
+        This avoids N database queries for N pages.
 
         Args:
             product_id: Product UUID
@@ -714,8 +731,6 @@ class UnifiedChunkingService:
         """
         try:
             # 🔥 FIX: Check if product_id is a valid UUID before querying
-            # During product discovery, product_id is a string like "product_1_VALENOVA"
-            # which is not a UUID and will cause a database error
             import uuid
             try:
                 uuid.UUID(product_id)
@@ -723,28 +738,45 @@ class UnifiedChunkingService:
                 self.logger.debug(f"      LAYOUT-AWARE: product_id '{product_id}' is not a UUID, skipping layout regions fetch")
                 return []
 
-            from app.services.core.supabase_client import get_supabase_client
+            # ⚡ OPTIMIZATION: Check cache first
+            if product_id in self._layout_regions_cache:
+                all_regions = self._layout_regions_cache[product_id].get(None, [])
+                if page_number is not None:
+                    # Filter from cached data
+                    return [r for r in all_regions if r.get('page_number') == page_number]
+                return all_regions
 
+            # Fetch ALL regions for this product ONCE (not per-page)
+            from app.services.core.supabase_client import get_supabase_client
             supabase = get_supabase_client()
 
-            # Build query
+            # Fetch all regions for product (no page filter) and order by reading_order
             query = supabase.client.table('product_layout_regions').select('*').eq('product_id', product_id)
-
-            # Filter by page if provided
-            if page_number is not None:
-                query = query.eq('page_number', page_number)
-
-            # Order by reading order
             query = query.order('reading_order')
-
-            # Execute query
             result = query.execute()
 
-            return result.data if result.data else []
+            all_regions = result.data if result.data else []
+
+            # Store in cache
+            self._layout_regions_cache[product_id] = {None: all_regions}
+            self.logger.debug(f"      LAYOUT-AWARE: Cached {len(all_regions)} regions for product {product_id}")
+
+            # Filter by page if requested
+            if page_number is not None:
+                return [r for r in all_regions if r.get('page_number') == page_number]
+
+            return all_regions
 
         except Exception as e:
             self.logger.error(f"      LAYOUT-AWARE: Failed to fetch layout regions: {e}")
             return []
+
+    def clear_layout_cache(self, product_id: Optional[str] = None):
+        """Clear layout regions cache for a product or all products."""
+        if product_id:
+            self._layout_regions_cache.pop(product_id, None)
+        else:
+            self._layout_regions_cache.clear()
     
     def _create_chunk(
         self,
