@@ -2712,6 +2712,21 @@ async def process_document_with_discovery(
             level="info"
         )
 
+    # Initialize job_storage for this job if not already present
+    # This is critical - the job may not exist in memory if this is a new upload
+    if job_id not in job_storage:
+        job_storage[job_id] = {
+            "job_id": job_id,
+            "document_id": document_id,
+            "status": "processing",
+            "progress": 0,
+            "metadata": {
+                "filename": filename,
+                "test_single_product": test_single_product
+            }
+        }
+        logger.info(f"✅ Initialized job_storage for job {job_id}")
+
     # Read file content ONLY when needed
     logger.info(f"📖 [BACKGROUND TASK] Reading file from disk: {file_path}")
     if not os.path.exists(file_path):
@@ -2796,22 +2811,26 @@ async def process_document_with_discovery(
                     )
                     endpoint_managers['qwen'] = manager
 
-                    # Check status before resuming
-                    endpoint = manager._get_endpoint()
-                    if endpoint:
-                        endpoint.fetch()
-                        if endpoint.status == "running":
-                            logger.info("   ✅ Qwen endpoint already running, skipping warmup")
-                            manager.warmup_completed = True
-                            warmup_results["skipped"].append("qwen")
-                            return
+                    # Check status before resuming (use thread pool for blocking call)
+                    def check_qwen_status():
+                        endpoint = manager._get_endpoint()
+                        if endpoint:
+                            endpoint.fetch()
+                            return endpoint.status
+                        return None
+                    
+                    status = await asyncio.to_thread(check_qwen_status)
+                    if status == "running":
+                        logger.info("   ✅ Qwen endpoint already running, skipping warmup")
+                        manager.warmup_completed = True
+                        warmup_results["skipped"].append("qwen")
+                        return
 
-                    if manager.resume_if_needed():
+                    # Run blocking resume in thread pool
+                    resumed = await asyncio.to_thread(manager.resume_if_needed)
+                    if resumed:
                         logger.info(f"   ⏳ Warming up Qwen ({manager.warmup_timeout}s)...")
-                        # Note: manager.resume_if_needed() already has a blocking time.sleep,
-                        # but we still use asyncio.sleep here for consistency in the async flow
-                        # if the manager didn't wait long enough.
-                        await asyncio.sleep(1) # Minimal async yield
+                        await asyncio.sleep(1)  # Minimal async yield
                         manager.warmup_completed = True
                         warmup_results["success"].append("qwen")
                         logger.info("   ✅ Qwen warmup complete")
@@ -2835,18 +2854,30 @@ async def process_document_with_discovery(
                     )
                     endpoint_managers['slig'] = manager
 
-                    endpoint = manager._get_endpoint()
-                    if endpoint:
-                        endpoint.fetch()
-                        if endpoint.status == "running":
-                            logger.info("   ✅ SLIG endpoint already running")
-                            warmup_results["skipped"].append("slig")
-                            return
+                    # Check if already running (use thread pool for blocking call)
+                    def check_slig_status():
+                        endpoint = manager._get_endpoint()
+                        if endpoint:
+                            endpoint.fetch()
+                            return endpoint.status
+                        return None
+                    
+                    status = await asyncio.to_thread(check_slig_status)
+                    if status == "running":
+                        logger.info("   ✅ SLIG endpoint already running")
+                        warmup_results["skipped"].append("slig")
+                        return
 
-                    if manager.resume_if_needed():
-                        if manager.warmup():
-                            warmup_results["success"].append("slig")
-                            logger.info("   ✅ SLIG warmup complete")
+                    # Run blocking resume and warmup in thread pool
+                    def resume_and_warmup_slig():
+                        if manager.resume_if_needed():
+                            return manager.warmup()
+                        return False
+                    
+                    success = await asyncio.to_thread(resume_and_warmup_slig)
+                    if success:
+                        warmup_results["success"].append("slig")
+                        logger.info("   ✅ SLIG warmup complete")
                 else:
                     warmup_results["skipped"].append("slig")
             except Exception as e:
@@ -2867,18 +2898,30 @@ async def process_document_with_discovery(
                     )
                     endpoint_managers['yolo'] = manager
 
-                    endpoint = manager._get_endpoint()
-                    if endpoint:
-                        endpoint.fetch()
-                        if endpoint.status == "running":
-                            logger.info("   ✅ YOLO endpoint already running")
-                            warmup_results["skipped"].append("yolo")
-                            return
+                    # Check if already running (use thread pool for blocking call)
+                    def check_yolo_status():
+                        endpoint = manager._get_endpoint()
+                        if endpoint:
+                            endpoint.fetch()
+                            return endpoint.status
+                        return None
+                    
+                    status = await asyncio.to_thread(check_yolo_status)
+                    if status == "running":
+                        logger.info("   ✅ YOLO endpoint already running")
+                        warmup_results["skipped"].append("yolo")
+                        return
 
-                    if manager.resume_if_needed():
-                        if manager.warmup():
-                            warmup_results["success"].append("yolo")
-                            logger.info("   ✅ YOLO warmup complete")
+                    # Run blocking resume and warmup in thread pool
+                    def resume_and_warmup_yolo():
+                        if manager.resume_if_needed():
+                            return manager.warmup()
+                        return False
+                    
+                    success = await asyncio.to_thread(resume_and_warmup_yolo)
+                    if success:
+                        warmup_results["success"].append("yolo")
+                        logger.info("   ✅ YOLO warmup complete")
                 else:
                     warmup_results["skipped"].append("yolo")
             except Exception as e:
@@ -2899,15 +2942,23 @@ async def process_document_with_discovery(
                     )
                     endpoint_managers['chandra'] = manager
 
-                    endpoint = manager._get_endpoint()
-                    if endpoint:
-                        endpoint.fetch()
-                        if endpoint.status == "running":
-                            logger.info("   ✅ Chandra endpoint already running")
-                            warmup_results["skipped"].append("chandra")
-                            return
+                    # Check if already running (use thread pool for blocking call)
+                    def check_chandra_status():
+                        endpoint = manager._get_endpoint()
+                        if endpoint:
+                            endpoint.fetch()
+                            return endpoint.status
+                        return None
+                    
+                    status = await asyncio.to_thread(check_chandra_status)
+                    if status == "running":
+                        logger.info("   ✅ Chandra endpoint already running")
+                        warmup_results["skipped"].append("chandra")
+                        return
 
-                    if manager.resume_if_needed():
+                    # Run blocking resume in thread pool
+                    resumed = await asyncio.to_thread(manager.resume_if_needed)
+                    if resumed:
                         logger.info(f"   ⏳ Warming up Chandra (60s)...")
                         await asyncio.sleep(60)
                         warmup_results["success"].append("chandra")
@@ -3086,8 +3137,8 @@ async def process_document_with_discovery(
         logger.info(f"🔧 [BACKGROUND TASK] Initializing progress tracking components...")
         # Initialize Progress Tracker
         from app.services.tracking.progress_tracker import ProgressTracker
-        from app.schemas.jobs import ProcessingStage
-        from app.services.tracking.checkpoint_recovery_service import checkpoint_recovery_service, ProcessingStage as CheckpointStage
+        # ProcessingStage already imported from checkpoint_recovery_service at module level (line 36)
+        # checkpoint_recovery_service already imported at module level (line 36)
         from app.services.tracking.job_progress_monitor import JobProgressMonitor
 
         logger.info(f"🔧 [BACKGROUND TASK] Creating ProgressTracker...")
@@ -3116,7 +3167,7 @@ async def process_document_with_discovery(
         # Create INITIALIZED checkpoint
         await checkpoint_recovery_service.create_checkpoint(
             job_id=job_id,
-            stage=CheckpointStage.INITIALIZED,
+            stage=ProcessingStage.INITIALIZED,
             data={
                 "document_id": document_id,
                 "filename": filename,
@@ -3515,6 +3566,10 @@ async def process_document_with_discovery(
         endpoints_to_pause = ['qwen', 'slig', 'yolo', 'chandra']
         paused_count = 0
 
+        # Only process if endpoint_managers exists (may not if job failed early)
+        if 'endpoint_managers' not in locals():
+            endpoint_managers = {}
+            
         for name in endpoints_to_pause:
             if name in endpoint_managers:
                 try:

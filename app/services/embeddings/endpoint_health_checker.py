@@ -86,7 +86,7 @@ class EndpointHealthChecker:
                 async with httpx.AsyncClient(timeout=self.health_check_timeout_seconds) as client:
                     # Simple health check - ask for a single word response
                     response = await client.post(
-                        f"{endpoint_url.rstrip('/')}/v1/chat/completions",
+                        f"{endpoint_url.rstrip('/')}/chat/completions" if endpoint_url.rstrip('/').endswith('/v1') else f"{endpoint_url.rstrip('/')}/v1/chat/completions",
                         headers={
                             "Authorization": f"Bearer {token}",
                             "Content-Type": "application/json"

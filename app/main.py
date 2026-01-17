@@ -1378,7 +1378,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                     # Test endpoint status with minimal request
                     async with httpx.AsyncClient(timeout=10.0) as client:
                         response = await client.post(
-                            qwen_config["endpoint_url"],
+                            f"{qwen_config['endpoint_url'].rstrip('/')}/chat/completions",
                             headers={
                                 "Authorization": f"Bearer {qwen_config['endpoint_token']}",
                                 "Content-Type": "application/json"
