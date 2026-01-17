@@ -1080,6 +1080,47 @@ class Settings(BaseSettings):
             "warmup_timeout": self.yolo_warmup_timeout,
         }
 
+    def get_slig_config(self) -> Dict[str, Any]:
+        """
+        Get SLIG (SigLIP2) visual embedding configuration.
+
+        This provides all necessary configuration for SLIG visual embeddings
+        including endpoint URL, authentication, model settings, and retry logic.
+        """
+        return {
+            "enabled": self.slig_enabled,
+            "endpoint_url": self.slig_endpoint_url,
+            "endpoint_token": self.slig_endpoint_token or self.huggingface_api_key,
+            "hf_token": self.slig_endpoint_token or self.huggingface_api_key,
+            "endpoint_name": self.slig_endpoint_name,
+            "namespace": self.slig_namespace,
+            "model_name": self.slig_model_name,
+            "embedding_dimension": self.slig_embedding_dimension,
+            "timeout": self.slig_timeout,
+            "max_retries": self.slig_max_retries,
+            "retry_delay": self.slig_retry_delay,
+        }
+
+    def get_chandra_config(self) -> Dict[str, Any]:
+        """
+        Get Chandra OCR endpoint configuration.
+
+        This provides all necessary configuration for Chandra OCR processing
+        including endpoint settings, confidence thresholds, and pause/resume settings.
+        """
+        return {
+            "enabled": self.chandra_enabled,
+            "endpoint_url": self.chandra_endpoint_url,
+            "hf_token": self.huggingface_api_key,
+            "endpoint_name": self.chandra_endpoint_name,
+            "namespace": self.chandra_namespace,
+            "confidence_threshold": self.chandra_confidence_threshold,
+            "auto_pause_timeout": self.chandra_auto_pause_timeout,
+            "max_resume_retries": self.chandra_max_resume_retries,
+            "resume_timeout": self.chandra_resume_timeout,
+            "inference_timeout": self.chandra_inference_timeout,
+        }
+
     def get_image_processing_config(self) -> Dict[str, Any]:
         """
         Get image processing configuration.
@@ -1134,6 +1175,7 @@ class Settings(BaseSettings):
         return {
             "endpoint_url": self.qwen_endpoint_url,
             "endpoint_token": self.huggingface_api_key,  # Use global HF token
+            "hf_token": self.huggingface_api_key,  # Alias for backwards compatibility
             "endpoint_name": self.qwen_endpoint_name,
             "namespace": self.qwen_namespace,
             "model": self.qwen_model,

@@ -19,6 +19,7 @@ import logging
 import httpx
 
 from app.services.core.ai_call_logger import AICallLogger
+from app.services.core.supabase_client import get_supabase_client
 from app.config.ai_pricing import AIPricingConfig
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,58 @@ class GPT5Service:
         self.ai_logger = ai_logger or AICallLogger()
         self.base_url = "https://api.openai.com/v1"
         self.pricing = AIPricingConfig()
-    
+        self._supabase = get_supabase_client()
+
+    async def _get_analysis_prompt_from_db(
+        self,
+        workspace_id: str,
+        analysis_type: str
+    ) -> str:
+        """
+        Fetch analysis prompt from database.
+        NO FALLBACK - All prompts must exist in the database.
+
+        Args:
+            workspace_id: Workspace ID
+            analysis_type: Type of analysis (product_extraction, material_classification, technical_analysis)
+
+        Returns:
+            System prompt string
+
+        Raises:
+            ValueError: If prompt is not found in database
+        """
+        try:
+            result = self._supabase.client.table('prompts')\
+                .select('prompt_text, system_prompt')\
+                .eq('prompt_type', 'extraction')\
+                .eq('workspace_id', workspace_id)\
+                .eq('stage', 'entity_creation')\
+                .eq('category', analysis_type)\
+                .eq('is_active', True)\
+                .order('version', desc=True)\
+                .limit(1)\
+                .execute()
+
+            if result.data and len(result.data) > 0:
+                prompt = result.data[0].get('system_prompt') or result.data[0].get('prompt_text')
+                if prompt:
+                    logger.info(f"Loaded GPT5 analysis prompt for '{analysis_type}' from database")
+                    return prompt
+
+            # No prompt found - this is an error
+            error_msg = (
+                f"CRITICAL: No GPT5 analysis prompt found in database for analysis_type='{analysis_type}'. "
+                f"Please add it via /admin/ai-configs with: prompt_type='extraction', "
+                f"stage='entity_creation', category='{analysis_type}'."
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        except Exception as e:
+            logger.error(f"Error fetching GPT5 analysis prompt: {str(e)}")
+            raise
+
     async def generate_completion(
         self,
         prompt: str,
@@ -202,38 +254,23 @@ class GPT5Service:
         analysis_type: str,
         context: Optional[Dict[str, Any]] = None,
         job_id: Optional[str] = None,
+        workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
     ) -> Dict[str, Any]:
         """
         Analyze complex content using GPT-5.
-        
+
         Args:
             content: Content to analyze
             analysis_type: Type of analysis (e.g., 'product_extraction', 'material_classification')
             context: Optional context information
             job_id: Optional job ID
-            
+            workspace_id: Workspace ID for fetching prompts from database
+
         Returns:
             Analysis result with structured data
         """
-        # Build system prompt based on analysis type
-        system_prompts = {
-            "product_extraction": """You are an expert at extracting product information from documents.
-Extract product name, specifications, features, dimensions, materials, and any other relevant details.
-Return structured JSON with all extracted information.""",
-            
-            "material_classification": """You are an expert at classifying building materials and products.
-Analyze the content and classify the material type, properties, and applications.
-Return structured JSON with classification and confidence scores.""",
-            
-            "technical_analysis": """You are a technical expert analyzing product specifications.
-Extract all technical details, measurements, certifications, and compliance information.
-Return structured JSON with organized technical data.""",
-        }
-        
-        system_prompt = system_prompts.get(
-            analysis_type,
-            "You are an expert analyst. Analyze the content and return structured JSON."
-        )
+        # Fetch system prompt from database - NO FALLBACK
+        system_prompt = await self._get_analysis_prompt_from_db(workspace_id, analysis_type)
         
         # Build user prompt
         context_str = ""

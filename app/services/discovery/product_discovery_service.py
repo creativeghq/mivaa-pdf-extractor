@@ -422,6 +422,9 @@ class ProductDiscoveryService:
             categories = ["products"]
 
         try:
+            # Store tracker reference for progress updates
+            self.tracker = tracker
+
             self.logger.info(f"🔍 Starting TEXT-BASED discovery for {total_pages} pages using {self.model.upper()}")
             self.logger.info(f"   Categories: {', '.join(categories)}")
             if agent_prompt:
@@ -463,6 +466,12 @@ class ProductDiscoveryService:
                         if (page_num + 1) % log_interval == 0 or (page_num + 1) == total_pages:
                             progress_pct = int(((page_num + 1) / total_pages) * 100)
                             self.logger.info(f"   📊 Progress: {page_num + 1}/{total_pages} pages ({progress_pct}%) - {len(''.join(pdf_text_parts)):,} chars extracted")
+                            # Update tracker with extraction progress (0-3% of Stage 0)
+                            if self.tracker:
+                                extraction_progress = int((progress_pct / 100) * 3)  # 0-3%
+                                self.tracker.manual_progress_override = extraction_progress
+                                self.tracker.current_step = f"Extracting text: {page_num + 1}/{total_pages} pages"
+                                await self.tracker.update_heartbeat()
 
                     except Exception as page_error:
                         pages_failed += 1
@@ -490,6 +499,12 @@ class ProductDiscoveryService:
                 )
 
             self.logger.info(f"✅ STAGE 0A complete: Found {len(catalog.products)} products")
+            # Update progress: Stage 0A complete (discovery scan) = 5%
+            if self.tracker:
+                self.tracker.manual_progress_override = 5
+                self.tracker.current_step = f"Discovery complete: {len(catalog.products)} products found"
+                await self.tracker.update_heartbeat()
+                await self.tracker._sync_to_database(stage="product_discovery")
             for product in catalog.products:
                 self.logger.info(f"   📦 {product.name}: pages {product.page_range}")
 
@@ -2018,6 +2033,9 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
             ProductCatalog with all discovered products
         """
         BATCH_SIZE = 100000  # 100K chars per batch
+        MIN_CHARS_BEFORE_EARLY_STOP = 200000  # Process at least 200K chars before allowing early stop
+        CONSECUTIVE_EMPTY_BATCHES_TO_STOP = 2  # Require 2 consecutive empty batches
+
         all_products = []
         all_certificates = []
         all_logos = []
@@ -2026,6 +2044,7 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
 
         batch_num = 0
         offset = 0
+        consecutive_empty_batches = 0  # Track consecutive batches with no new products
 
         while offset < len(pdf_text):
             batch_num += 1
@@ -2067,13 +2086,22 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
 
             self.logger.info(f"      ✅ Found {new_products_count} NEW products (total: {len(all_products)})")
 
-            # Early stopping: If no new products found, stop
+            # Track consecutive empty batches for early stopping
             if new_products_count == 0:
-                self.logger.info(f"   🛑 EARLY STOP: No new products in batch {batch_num}, stopping discovery")
-                break
+                consecutive_empty_batches += 1
+            else:
+                consecutive_empty_batches = 0  # Reset counter when we find new products
 
             # Move to next batch
             offset += BATCH_SIZE
+            chars_processed = offset
+
+            # Early stopping conditions:
+            # 1. Must have processed minimum chars (200K) before considering early stop
+            # 2. Must have 2 consecutive batches with no new products
+            if chars_processed >= MIN_CHARS_BEFORE_EARLY_STOP and consecutive_empty_batches >= CONSECUTIVE_EMPTY_BATCHES_TO_STOP:
+                self.logger.info(f"   🛑 EARLY STOP: {consecutive_empty_batches} consecutive empty batches after {chars_processed:,} chars, stopping discovery")
+                break
 
             # Safety limit: Max 10 batches (1M chars)
             if batch_num >= 10:

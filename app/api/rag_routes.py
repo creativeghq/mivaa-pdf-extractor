@@ -2754,7 +2754,7 @@ async def process_document_with_discovery(
                 if qwen_config.get("enabled", False):
                     manager = QwenEndpointManager(
                         endpoint_url=qwen_config["endpoint_url"],
-                        endpoint_token=qwen_config["hf_token"],
+                        endpoint_token=qwen_config.get("endpoint_token", qwen_config.get("hf_token", "")),
                         endpoint_name=qwen_config.get("endpoint_name", "mh-qwen332binstruct"),
                         namespace=qwen_config.get("namespace", "basiliskan"),
                         enabled=True
@@ -2921,10 +2921,12 @@ async def process_document_with_discovery(
                 'token': yolo_config.get('hf_token', '')
             }
 
-        # Qwen is required for image classification, SLIG is required for CLIP embeddings
+        # SLIG is required for CLIP embeddings
+        # Qwen is only required if NOT using Claude Vision for discovery
         # YOLO and Chandra are optional (layout detection enhancement)
         required_endpoints = []
-        if 'qwen' in endpoints_config:
+        if 'qwen' in endpoints_config and discovery_model != 'claude-vision':
+            # Only require Qwen when using it for discovery (not Claude Vision)
             required_endpoints.append('qwen')
         if 'slig' in endpoints_config:
             required_endpoints.append('slig')
@@ -2951,12 +2953,20 @@ async def process_document_with_discovery(
                 logger.error(f"❌ {error_msg}")
                 logger.error("   Pipeline cannot proceed without healthy endpoints")
 
-                # Update job status to failed
-                await job_storage.update_job_status(
-                    job_id=job_id,
-                    status="failed",
-                    error=error_msg
-                )
+                # Update job status to failed (job_storage is a dict)
+                job_storage[job_id]["status"] = "failed"
+                job_storage[job_id]["error"] = error_msg
+                job_storage[job_id]["failed_at"] = datetime.utcnow().isoformat()
+                # Also persist to database
+                if job_recovery_service:
+                    await job_recovery_service.persist_job(
+                        job_id=job_id,
+                        document_id=document_id,
+                        filename=filename,
+                        status="failed",
+                        progress=0,
+                        error=error_msg
+                    )
                 raise RuntimeError(error_msg)
             else:
                 # Only optional endpoints failed - log warning but proceed

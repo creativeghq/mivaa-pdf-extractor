@@ -860,6 +860,10 @@ class RealEmbeddingsService:
                         job_id=job_id
                     )
 
+                    # Slice to 768D if endpoint returns concatenated embeddings (768+384=1152)
+                    if len(embedding) > self.slig_embedding_dimension:
+                        self.logger.info(f"   Slicing embedding from {len(embedding)}D to {self.slig_embedding_dimension}D")
+                        embedding = embedding[:self.slig_embedding_dimension]
                     return embedding, pil_image
 
                 except Exception as e:
