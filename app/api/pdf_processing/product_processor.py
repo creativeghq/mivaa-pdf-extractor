@@ -117,7 +117,6 @@ async def process_single_product(
             job_id=job_id,
             logger=logger_instance,
             total_pages=total_pages,
-            pages_per_sheet=getattr(catalog, 'pages_per_sheet', 1),
             enable_layout_detection=False,  # Disable for now - will run after product creation
             product_id=None  # Will be set after product creation
         )

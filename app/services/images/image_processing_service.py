@@ -20,7 +20,7 @@ from app.services.core.supabase_client import get_supabase_client
 from app.services.embeddings.vecs_service import VecsService
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 from app.services.pdf.pdf_processor import PDFProcessor
-from app.utils.page_converter import PageConverter, PageNumber  
+# PageConverter removed - using simple PDF page numbers instead
 from app.config import get_settings
 
 
@@ -822,17 +822,19 @@ Respond ONLY with this JSON format:
                 embeddings = embedding_result.get('embeddings', {})
                 model_used = embedding_result.get('model_used', 'unknown')
 
-                # Save visual CLIP embedding
-                visual_embedding = embeddings.get('visual_512')
+                # Save visual CLIP embedding (768D from SigLIP2)
+                # ✅ FIXED: Changed from 'visual_512' to 'visual_768' to match real_embeddings_service output
+                visual_embedding = embeddings.get('visual_768')
                 if visual_embedding:
                     # Save to embeddings table for tracking
                     try:
                         # Save visual CLIP embedding to document_images
+                        # Note: Column is named visual_clip_embedding_512 but stores 768D SigLIP embeddings
                         update_data = {
                             "visual_clip_embedding_512": visual_embedding
                         }
                         self.supabase_client.client.table('document_images').update(update_data).eq('id', image_id).execute()
-                        logger.debug(f"   ✅ Saved visual CLIP embedding (512D) to document_images for {image_id}")
+                        logger.debug(f"   ✅ Saved visual CLIP embedding (768D SigLIP) to document_images for {image_id}")
                     except Exception as emb_error:
                         logger.error(f"   ❌ Failed to save visual embedding to document_images: {emb_error}")
                         last_error = f"Failed to save visual embedding: {emb_error}"

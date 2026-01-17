@@ -5,7 +5,7 @@ This module handles page extraction and layout analysis for individual products
 in the product-centric pipeline.
 
 Features:
-- Page mapping (catalog pages → PDF pages)
+- Page validation (PDF pages)
 - YOLO layout detection (TEXT, IMAGE, TABLE, TITLE, CAPTION regions)
 - Layout region storage in database
 - Caption-to-image linking
@@ -15,7 +15,6 @@ import logging
 import tempfile
 import os
 from typing import Set, Any, Optional, Dict, List
-from app.utils.page_converter import PageConverter
 
 
 async def extract_product_pages(
@@ -25,7 +24,6 @@ async def extract_product_pages(
     job_id: str,
     logger: logging.Logger,
     total_pages: Optional[int] = None,
-    pages_per_sheet: int = 1,
     enable_layout_detection: bool = True,
     product_id: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -33,7 +31,7 @@ async def extract_product_pages(
     Extract pages and detect layout regions for a single product.
 
     This function:
-    1. Maps catalog pages to physical PDF pages
+    1. Validates PDF page numbers and converts to array indices
     2. Detects layout regions using YOLO DocParser (if enabled)
     3. Stores layout regions in database
     4. Links captions to images
@@ -45,7 +43,6 @@ async def extract_product_pages(
         job_id: Job identifier
         logger: Logger instance
         total_pages: Optional total pages in PDF for validation
-        pages_per_sheet: Number of catalog pages per PDF sheet (default: 1)
         enable_layout_detection: Enable YOLO layout detection (default: True)
         product_id: Database product ID (required for layout storage)
 
@@ -56,26 +53,25 @@ async def extract_product_pages(
         - layout_stats: Statistics on detected regions
     """
     logger.info(f"📄 [STAGE 1] Extracting pages for product: {product.name}")
-    logger.info(f"   Catalog page range: {product.page_range}")
+    logger.info(f"   PDF page range: {product.page_range}")
     logger.info(f"   Layout detection: {'ENABLED' if enable_layout_detection else 'DISABLED'}")
 
     # ========================================================================
-    # STEP 1: Map Catalog Pages to PDF Pages
+    # STEP 1: Validate PDF Pages and Convert to Array Indices
     # ========================================================================
-    converter = PageConverter(pages_per_sheet=pages_per_sheet, total_pdf_pages=total_pages)
-
     product_pages = set()
     if product.page_range:
-        for p in product.page_range:
-            if p > 0:
-                try:
-                    page = converter.from_catalog_page(p)
-                    product_pages.add(page.array_index)
-                except ValueError as e:
-                    logger.warning(f"   ⚠️ Skipping out-of-bounds page: Catalog {p} -> {e}")
-                    continue
+        for pdf_page in product.page_range:
+            # Validate PDF page is within bounds
+            if total_pages and pdf_page > total_pages:
+                logger.warning(f"   ⚠️ Skipping out-of-bounds page: PDF page {pdf_page} > {total_pages}")
+                continue
+            if pdf_page > 0:
+                # Convert PDF page (1-based) to array index (0-based)
+                array_index = pdf_page - 1
+                product_pages.add(array_index)
 
-    logger.info(f"   ✅ Mapped to PDF indices: {sorted(product_pages)} ({len(product_pages)} pages)")
+    logger.info(f"   ✅ PDF page indices: {sorted(product_pages)} ({len(product_pages)} pages)")
 
     # ========================================================================
     # STEP 2: YOLO Layout Detection (if enabled)

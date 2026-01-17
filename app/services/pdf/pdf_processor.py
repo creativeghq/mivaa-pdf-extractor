@@ -130,8 +130,7 @@ from app.services.chunking.unified_chunking_service import UnifiedChunkingServic
 # Import worker for process isolation
 from app.services.pdf.pdf_worker import execute_pdf_extraction_job
 
-# Import PageConverter for centralized page number management
-from app.utils.page_converter import PageConverter, PageNumber
+# PageConverter removed - using simple PDF page numbers instead
 
 
 @dataclass
@@ -655,16 +654,7 @@ class PDFProcessor:
             total_pages = len(doc)
             doc.close()
 
-            # ✅ NEW: Use PageConverter for centralized page number management
-            converter = PageConverter.from_pdf_path(pdf_path)
-            
-            self.logger.info(
-                f"📐 Detected PDF layout: {converter.pages_per_sheet} page(s) per sheet"
-            )
-            self.logger.info(
-                f"   Physical pages: {converter.total_pdf_pages}, "
-                f"Catalog pages: {converter.total_catalog_pages}"
-            )
+            self.logger.info(f"📐 PDF has {total_pages} pages")
 
             # Determine which pages to process
             if page_list:
@@ -722,8 +712,7 @@ class PDFProcessor:
                     image_dir,
                     batch_pages,
                     job_id,
-                    document_id,
-                    converter  # ✅ NEW: Pass PageConverter for page number validation
+                    document_id
                 )
 
                 # Update extraction stats based on extracted images (4-layer tracking)
@@ -780,8 +769,7 @@ class PDFProcessor:
         image_dir: str,
         batch_pages: List[int],
         job_id: Optional[str] = None,
-        document_id: Optional[str] = None,
-        converter: Optional[PageConverter] = None  # ✅ NEW: PageConverter for validation
+        document_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Extract images from a specific batch of pages with 4-layer cascade.
@@ -798,7 +786,6 @@ class PDFProcessor:
             batch_pages: List of page indices (0-based) to process
             job_id: Optional job ID for tracking
             document_id: Optional document ID
-            converter: Optional PageConverter for page number validation
 
         Returns:
             List of extracted image data dictionaries (deduplicated)
@@ -905,8 +892,11 @@ class PDFProcessor:
             # Process each page
             for page_idx in batch_pages:
                 try:
+                    # PDF page number (1-based)
+                    pdf_page = page_idx + 1
+
                     self.logger.info(
-                        f"   🎯 [Job: {job_id}] YOLO detecting layout on page {page_idx + 1}..."
+                        f"   🎯 [Job: {job_id}] YOLO detecting layout on PDF page {pdf_page}..."
                     )
 
                     # Detect layout regions
@@ -921,12 +911,12 @@ class PDFProcessor:
 
                     if not image_regions:
                         self.logger.info(
-                            f"   ℹ️ [Job: {job_id}] No IMAGE regions detected on page {page_idx + 1}"
+                            f"   ℹ️ [Job: {job_id}] No IMAGE regions detected on PDF page {pdf_page}"
                         )
                         continue
 
                     self.logger.info(
-                        f"   ✅ [Job: {job_id}] Found {len(image_regions)} IMAGE regions on page {page_idx + 1}"
+                        f"   ✅ [Job: {job_id}] Found {len(image_regions)} IMAGE regions on PDF page {pdf_page}"
                     )
 
                     # Render full page for cropping
@@ -959,7 +949,7 @@ class PDFProcessor:
                             ))
 
                             # Save cropped image
-                            image_filename = f"page_{page_idx + 1}_yolo_region_{region_idx}.jpg"
+                            image_filename = f"page_{pdf_page}_yolo_region_{region_idx}.jpg"
                             image_path = os.path.join(image_dir, image_filename)
 
                             cropped_image.save(image_path, "JPEG", quality=95)
@@ -967,11 +957,11 @@ class PDFProcessor:
                             # Get image dimensions
                             width, height = cropped_image.size
 
-                            # Create image metadata
+                            # Create image metadata (using PDF page number)
                             image_info = {
                                 'path': image_path,
                                 'filename': image_filename,
-                                'page_number': page_idx + 1,
+                                'page_number': pdf_page,
                                 'width': width,
                                 'height': height,
                                 'format': 'JPEG',
@@ -992,13 +982,13 @@ class PDFProcessor:
 
                             self.logger.debug(
                                 f"   ✅ [Job: {job_id}] Extracted YOLO region {region_idx} "
-                                f"from page {page_idx + 1} (confidence: {region.confidence:.2f})"
+                                f"from PDF page {pdf_page} (confidence: {region.confidence:.2f})"
                             )
 
                         except Exception as e:
                             self.logger.error(
                                 f"   ❌ [Job: {job_id}] Failed to crop YOLO region {region_idx} "
-                                f"on page {page_idx + 1}: {e}"
+                                f"on PDF page {pdf_page}: {e}"
                             )
                             continue
 
@@ -1009,7 +999,7 @@ class PDFProcessor:
 
                 except Exception as e:
                     self.logger.error(
-                        f"   ❌ [Job: {job_id}] YOLO extraction failed for page {page_idx + 1}: {e}"
+                        f"   ❌ [Job: {job_id}] YOLO extraction failed for PDF page {pdf_page}: {e}"
                     )
                     continue
 
@@ -1057,17 +1047,20 @@ class PDFProcessor:
                 if page_idx >= len(doc):
                     continue
 
+                # PDF page number (1-based)
+                pdf_page = page_idx + 1
+
                 page = doc[page_idx]
                 image_list = page.get_images(full=True)
 
-                # ✅ IMPROVED LOGGING: Differentiate between pages with/without images
+                # Log page info
                 if len(image_list) > 0:
                     self.logger.info(
-                        f"   📄 [Job: {job_id}] PyMuPDF: Page {page_idx + 1} (array index {page_idx}) has {len(image_list)} embedded images"
+                        f"   📄 [Job: {job_id}] PyMuPDF: PDF page {pdf_page} has {len(image_list)} embedded images"
                     )
                 else:
                     self.logger.info(
-                        f"   📄 [Job: {job_id}] PyMuPDF: Page {page_idx + 1} (array index {page_idx}) has NO embedded images"
+                        f"   📄 [Job: {job_id}] PyMuPDF: PDF page {pdf_page} has NO embedded images"
                     )
                     self.logger.info(
                         f"      This could mean: text-only page, scanned page, or vector graphics"
@@ -1085,17 +1078,17 @@ class PDFProcessor:
                             image_ext = base_image["ext"]
 
                             # Save image to disk
-                            image_filename = f"page_{page_idx + 1}_image_{img_idx}.{image_ext}"
+                            image_filename = f"page_{pdf_page}_image_{img_idx}.{image_ext}"
                             image_path = os.path.join(image_dir, image_filename)
 
                             with open(image_path, "wb") as img_file:
                                 img_file.write(image_bytes)
 
-                            # Populate image metadata with Layer 1 information
+                            # Populate image metadata with Layer 1 information (using PDF page number)
                             extracted_images.append({
                                 'path': image_path,
                                 'filename': image_filename,
-                                'page_number': page_idx + 1,
+                                'page_number': pdf_page,
                                 'extraction_method': 'pymupdf_embedded',  # Layer 1: Embedded images
                                 'layer': 1,
                                 'captures_vector_graphics': True,  # Embedded images don't capture vector graphics
@@ -1117,7 +1110,7 @@ class PDFProcessor:
                         except Exception as e:
                             self.logger.error(
                                 f"   ❌ [Job: {job_id}] Failed to extract image {img_idx} "
-                                f"from page {page_idx + 1}: {e}"
+                                f"from PDF page {pdf_page}: {e}"
                             )
                             continue
 
@@ -1128,7 +1121,7 @@ class PDFProcessor:
                 else:
                     try:
                         self.logger.info(
-                            f"   📸 [Job: {job_id}] No embedded images on page {page_idx + 1} - "
+                            f"   📸 [Job: {job_id}] No embedded images on PDF page {pdf_page} - "
                             f"rendering full page to capture vector graphics"
                         )
 
@@ -1144,18 +1137,18 @@ class PDFProcessor:
                         pil_image = Image.open(io.BytesIO(img_data))
 
                         # Save full page render
-                        full_page_filename = f"page_{page_idx + 1}_full_render.jpg"
+                        full_page_filename = f"page_{pdf_page}_full_render.jpg"
                         full_page_path = os.path.join(image_dir, full_page_filename)
                         pil_image.save(full_page_path, "JPEG", quality=85)
 
                         # Get file size
                         file_size = os.path.getsize(full_page_path)
 
-                        # Add to extracted images with Layer 2 metadata
+                        # Add to extracted images with Layer 2 metadata (using PDF page number)
                         extracted_images.append({
                             'path': full_page_path,
                             'filename': full_page_filename,
-                            'page_number': page_idx + 1,
+                            'page_number': pdf_page,
                             'extraction_method': 'pymupdf_full_render',  # Layer 2: Full page render
                             'layer': 2,
                             'captures_vector_graphics': True,  # Full render captures vector graphics
@@ -1175,7 +1168,7 @@ class PDFProcessor:
 
                     except Exception as e:
                         self.logger.error(
-                            f"   ❌ [Job: {job_id}] Failed to render full page {page_idx + 1}: {e}"
+                            f"   ❌ [Job: {job_id}] Failed to render full PDF page {pdf_page}: {e}"
                         )
                         continue
 

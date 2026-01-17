@@ -45,7 +45,7 @@ import io
 from app.services.core.ai_call_logger import AICallLogger
 from app.services.metadata.dynamic_metadata_extractor import DynamicMetadataExtractor
 from app.services.core.ai_client_service import get_ai_client_service
-from app.utils.page_converter import PageConverter, PageNumber  # ✅ NEW: Centralized page management
+# PageConverter removed - using simple PDF page numbers instead
 from app.config import get_settings
 
 
@@ -215,7 +215,7 @@ class ProductCatalog:
     catalog_factory: Optional[str] = None  # e.g., "HARMONY"
     catalog_factory_group: Optional[str] = None  # e.g., "Peronda Group"
     catalog_manufacturer: Optional[str] = None  # e.g., "Harmony Materials"
-    pages_per_sheet: int = 1  # 1 for standard, 2 for 2-page spreads
+    # pages_per_sheet removed - we only use PDF pages now
 
     # Metadata
     total_pages: int = 0
@@ -995,18 +995,31 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
    - Detailed product information (dimensions, materials, etc.)
    - Large product images (not just small thumbnails)
    - Typically 2-12 consecutive pages
+**🚨 CRITICAL - PAGE NUMBER RULES**:
+The text contains PDF PAGE MARKERS like "# Page 1", "# Page 2", etc.
+
+**IGNORE PRINTED PAGE NUMBERS IN THE INDEX!**
+- The INDEX shows CATALOG page numbers (e.g., "VALENOVA ... 74-79") - IGNORE these!
+- You MUST find where each product ACTUALLY appears using "# Page N" markers
+- Search for the product name in the content and note which "# Page N" marker precedes it
+
+**HOW TO DETERMINE page_range**:
+1. Find the product name in the INDEX to confirm it exists
+2. Search the FULL TEXT for that product name
+3. Look at which "# Page N" marker appears before the product content
+4. Use THOSE page numbers for page_range
+
 **VALIDATION**:
 - This PDF has pages 1-{total_pages}
-- Only include products with page ranges within 1-{total_pages}
-- Each product should have 2-12 consecutive pages (not just 1 page)
-- If you're unsure whether something is a main product, EXCLUDE it
+- ALL page_range values MUST be actual PDF pages (1-{total_pages})
+- page_range should have 2-12 consecutive pages typically
+- If you can't find a product in the actual content, SKIP it
 
-**WHAT TO LOOK FOR IN THE INDEX/TOC**:
+**WHAT TO LOOK FOR**:
 - Product names in uppercase or bold (e.g., "VALENOVA", "FOLD", "PIQUÉ")
-- Page numbers next to product names (e.g., "— **24**", "FOLD ... 32-35")
-- Designer names (e.g., "by SG NY", "by ESTUDI{{H}}AC", "by DSIGNIO")
+- Designer names (e.g., "by SG NY", "by DSIGNIO")
 
-**⚠️ BE CONSERVATIVE**: When in doubt, EXCLUDE the product. We want ONLY main featured products, not every product mention.
+**⚠️ BE CONSERVATIVE**: When in doubt, EXCLUDE the product.
 
 **OUTPUT FORMAT** (JSON only):
 ```json
@@ -1014,8 +1027,8 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
   "products": [
     {{
       "name": "VALENOVA",
-      "page_range": [24, 25, 26, 27],
-      "description": "Brief description if available in index",
+      "page_range": [38, 39, 40, 41, 42, 43],
+      "description": "Brief description if available",
       "confidence": 0.95,
       "metadata": {{
         "designer": "SG NY",
@@ -1027,10 +1040,10 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
 }}
 ```
 
-**INDEX/TOC CONTENT:**
+**PDF CONTENT (with # Page N markers):**
 {index_text}
 
-Return ONLY valid JSON with ALL products found in the index."""
+Return ONLY valid JSON with products found. Use ACTUAL PDF page numbers from "# Page N" markers, NOT printed catalog page numbers!"""
 
         return prompt
 
@@ -1077,20 +1090,29 @@ This information typically appears on:
 **THEN: Extract content across the following categories:**
 {chr(10).join(category_sections)}
 
-**⚠️ CRITICAL - PDF EXCERPT HANDLING**:
-This PDF has {total_pages} pages (numbered 1 to {total_pages}). It may be an EXCERPT from a larger catalog.
+**⚠️ CRITICAL - PAGE NUMBER RULES**:
+This PDF has {total_pages} pages. The text below contains PDF PAGE MARKERS like "# Page 1", "# Page 2", etc.
 
-**VALIDATION RULES**:
-1. **Scan ACTUAL CONTENT** - Don't just copy page numbers from the index/TOC
-2. **Page number validation**: ALL page_range values MUST be between 1 and {total_pages}
-3. **If a product's index entry references pages > {total_pages}**:
-   - Search for that product name in the ACTUAL PDF content (pages 1-{total_pages})
-   - If found: Use the ACTUAL pages where it appears in THIS PDF
-   - If NOT found: SKIP this product (it's not in this excerpt)
-4. **Example**: Index says "LOG ... pages 74-79" but PDF has only {total_pages} pages
-   - Search pages 1-{total_pages} for "LOG" product
-   - If found on pages 45-48: Use [45,46,47,48]
-   - If not found: SKIP LOG entirely
+**🚨 IMPORTANT: IGNORE PRINTED PAGE NUMBERS IN THE INDEX/TOC!**
+- The INDEX/TOC may show CATALOG page numbers (e.g., "VALENOVA ... 74-79")
+- These are NOT the actual PDF page numbers!
+- You MUST use the "# Page N" markers to determine which PDF page contains each product
+
+**HOW TO FIND THE CORRECT page_range**:
+1. Find the product name in the INDEX/TOC to know it exists
+2. Then SEARCH the actual PDF content for that product name
+3. Look at which "# Page N" marker appears BEFORE the product content
+4. Use THOSE page numbers (from the markers) for page_range
+
+**Example**:
+- INDEX says: "VALENOVA ... 74-79" (these are CATALOG page numbers - IGNORE them!)
+- You search the PDF content and find "VALENOVA" appears after "# Page 38" through "# Page 43"
+- CORRECT: page_range: [38, 39, 40, 41, 42, 43]
+- WRONG: page_range: [74, 75, 76, 77, 78, 79]
+
+**VALIDATION**:
+- ALL page_range values MUST be between 1 and {total_pages}
+- If you can't find a product in the actual content, SKIP it
 
 **PRODUCT IDENTIFICATION**:
 1. Identify ONLY main featured products using ANY of these criteria:
@@ -1441,9 +1463,6 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
         catalog_factory_group = result.get("catalog_factory_group")
         catalog_manufacturer = result.get("catalog_manufacturer")
 
-        # Extract pages_per_sheet (layout info)
-        pages_per_sheet = result.get("pages_per_sheet", 1)  # Default to 1 if not provided
-
         # Log if catalog-level factory info was found
         if catalog_factory:
             self.logger.info(f"   🏭 Catalog factory: {catalog_factory}")
@@ -1459,7 +1478,6 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
             catalog_factory_group=catalog_factory_group,
             catalog_manufacturer=catalog_manufacturer,
             total_pages=total_pages,
-            pages_per_sheet=pages_per_sheet, # ✅ PERSIST LAYOUT
             total_images=0,  # Will be updated later
             content_classification=page_classification,
             processing_time_ms=0,  # Will be set by caller
@@ -1510,26 +1528,19 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
             all_product_pages = set()
             product_page_mapping = {}  # Map product index to its pages
 
-            # 🔍 VALIDATION: Get PDF page count and detect layout using PageConverter
-            from app.utils.page_converter import PageConverter
+            # Get PDF page count directly with PyMuPDF
+            import fitz
+            doc = fitz.open(pdf_path)
+            pdf_page_count = len(doc)
+            doc.close()
 
-            converter = PageConverter.from_pdf_path(pdf_path)
-            pdf_page_count = converter.total_pdf_pages
-            pages_per_sheet = converter.pages_per_sheet
-
-            if pages_per_sheet == 2:
-                self.logger.info(f"   ✅ DOMINANT LAYOUT: 2-page spreads")
-                self.logger.info(f"      → Catalog pages 1-{converter.total_catalog_pages} mapped to PDF pages 1-{pdf_page_count}")
-            else:
-                self.logger.info(f"   ✅ DOMINANT LAYOUT: Standard")
-
-            self.logger.info(f"   📄 PDF has {pdf_page_count} pages ({converter.total_catalog_pages} catalog pages)")
+            self.logger.info(f"   📄 PDF has {pdf_page_count} pages")
 
             # Track products that need vision-based page detection
             products_needing_vision = []
 
             for i, product in enumerate(catalog.products):
-                # Convert catalog pages to PDF pages and validate
+                # Validate PDF page numbers and convert to array indices
                 page_indices = []
                 invalid_pages = []
 
@@ -1542,41 +1553,20 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                     products_needing_vision.append((i, product))
                     continue  # Skip normal page mapping for now
 
-                for catalog_page in product.page_range:
-                    if catalog_page > 0:
-                        try:
-                            # ✅ USE PAGE CONVERTER: Type-safe conversion
-                            page = converter.from_catalog_page(catalog_page)
-                            page_indices.append(page.array_index)
-                        except ValueError as e:
-                            # Page is out of bounds
-                            invalid_pages.append(catalog_page)
+                # page_range contains PDF page numbers (1-based)
+                for pdf_page in product.page_range:
+                    if 1 <= pdf_page <= pdf_page_count:
+                        # Convert PDF page (1-based) to array index (0-based)
+                        array_index = pdf_page - 1
+                        page_indices.append(array_index)
+                    else:
+                        invalid_pages.append(pdf_page)
 
                 if invalid_pages:
-                    # Log each invalid page individually for clarity
-                    for invalid_page in invalid_pages:
-                        if pages_per_sheet == 2:
-                            self.logger.warning(
-                                f"   ⚠️ Skipping hallucinated page {invalid_page} "
-                                f"(PDF has only {pdf_page_count * 2} catalog pages = {pdf_page_count} PDF pages)"
-                            )
-                        else:
-                            self.logger.warning(
-                                f"   ⚠️ Skipping hallucinated page {invalid_page} "
-                                f"(PDF has only {pdf_page_count} pages)"
-                            )
-
-                    # Summary log
-                    if pages_per_sheet == 2:
-                        self.logger.warning(
-                            f"   ⚠️ Product '{product.name}' has {len(invalid_pages)} invalid catalog pages "
-                            f"(PDF has {pdf_page_count} pages = {pdf_page_count * 2} catalog pages) - skipping these pages"
-                        )
-                    else:
-                        self.logger.warning(
-                            f"   ⚠️ Product '{product.name}' has {len(invalid_pages)} invalid pages "
-                            f"(PDF has {pdf_page_count} pages) - skipping these pages"
-                        )
+                    self.logger.warning(
+                        f"   ⚠️ Product '{product.name}' has {len(invalid_pages)} invalid pages: {invalid_pages} "
+                        f"(PDF has {pdf_page_count} pages) - skipping these pages"
+                    )
 
                     # ✅ SANITIZATION: Remove invalid pages from the product's page_range
                     # This prevents downstream services from trying to process non-existent pages
@@ -1728,12 +1718,8 @@ Analyze the above content and return ONLY valid JSON with ALL content discovered
                     page_indices = product_page_mapping.get(i)
 
                     if not page_indices:
-                        if pages_per_sheet == 2:
-                            self.logger.warning(f"   ⚠️ Product '{product.name}' has no valid pages in this PDF - REMOVING from catalog")
-                            self.logger.warning(f"      Catalog pages: {product.page_range} (PDF has {pdf_page_count} pages = {pdf_page_count * 2} catalog pages)")
-                        else:
-                            self.logger.warning(f"   ⚠️ Product '{product.name}' has no valid pages in this PDF - REMOVING from catalog")
-                            self.logger.warning(f"      Original page_range: {product.page_range} (PDF has {pdf_page_count} pages)")
+                        self.logger.warning(f"   ⚠️ Product '{product.name}' has no valid pages in this PDF - REMOVING from catalog")
+                        self.logger.warning(f"      Original page_range: {product.page_range} (PDF has {pdf_page_count} pages)")
                         # DO NOT add to enriched_products - this product doesn't exist in this PDF
                         continue
 

@@ -154,31 +154,22 @@ async def process_product_chunking(
                 logger.info(f"      ♻️ Reusing existing temp PDF: {used_temp_path}")
 
             try:
-                # Convert product_pages (0-based array indices) to 1-based catalog pages
-                from app.utils.page_converter import PageConverter
-                pages_per_sheet = getattr(catalog, 'pages_per_sheet', 1)
-                converter = PageConverter(pages_per_sheet=pages_per_sheet)
-
-                catalog_pages = []
-                for array_index in product_pages:
-                    try:
-                        page = converter.from_array_index(array_index)
-                        catalog_pages.append(page.catalog_page)
-                    except ValueError:
-                        continue
+                # product_pages contains 0-based array indices
+                # pymupdf4llm.to_markdown expects 0-based page indices
+                page_indices = sorted(list(product_pages))
 
                 # Extract text from specific pages using PyMuPDF4LLM
-                if catalog_pages:
-                    logger.info(f"   📄 Extracting text from catalog pages: {sorted(catalog_pages)}")
+                if page_indices:
+                    logger.info(f"   📄 Extracting text from PDF page indices: {page_indices}")
                     markdown_result = pymupdf4llm.to_markdown(
                         used_temp_path,  # Use our temp path
-                        pages=sorted(catalog_pages),
+                        pages=page_indices,  # 0-based indices
                         page_chunks=False  # Get full text, not page chunks
                     )
                     product_text = str(markdown_result) if markdown_result else ""
-                    logger.info(f"   ✅ Extracted {len(product_text)} characters from {len(catalog_pages)} pages")
+                    logger.info(f"   ✅ Extracted {len(product_text)} characters from {len(page_indices)} pages")
                 else:
-                    logger.warning(f"   ⚠️ No valid catalog pages found for product")
+                    logger.warning(f"   ⚠️ No valid pages found for product")
             finally:
                 # Only delete if we created it locally
                 if created_temp and used_temp_path and os.path.exists(used_temp_path):
