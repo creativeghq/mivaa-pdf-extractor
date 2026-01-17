@@ -1095,6 +1095,56 @@ class ProductDiscoveryService:
                     continue
 
             # ============================================================
+            # EXCLUDE TOC/INDEX PAGES (pages appearing in most products)
+            # ============================================================
+            # TOC/Index pages list all product names, so they match every product.
+            # We detect them by finding pages that appear in 70%+ of all products.
+            if len(catalog.products) >= 3:  # Only meaningful with 3+ products
+                page_occurrence_count: Dict[int, int] = {}
+                products_with_pages = 0
+
+                for product in catalog.products:
+                    if product.page_range:
+                        products_with_pages += 1
+                        for page_num in product.page_range:
+                            page_occurrence_count[page_num] = page_occurrence_count.get(page_num, 0) + 1
+
+                if products_with_pages >= 3:
+                    # Find pages appearing in 70%+ of products - likely TOC/index pages
+                    toc_threshold = int(products_with_pages * 0.7)
+                    toc_pages = {
+                        page_num for page_num, count in page_occurrence_count.items()
+                        if count >= toc_threshold
+                    }
+
+                    if toc_pages:
+                        self.logger.warning(
+                            f"   🚫 Detected {len(toc_pages)} likely TOC/Index pages (appear in 70%+ of products): {sorted(toc_pages)}"
+                        )
+
+                        # Remove TOC pages from each product's page_range
+                        for i, product in enumerate(catalog.products):
+                            if product.page_range:
+                                original_pages = product.page_range.copy()
+                                product.page_range = [p for p in product.page_range if p not in toc_pages]
+
+                                removed_pages = set(original_pages) - set(product.page_range)
+                                if removed_pages:
+                                    self.logger.info(
+                                        f"   ✂️  Removed TOC pages {sorted(removed_pages)} from '{product.name}'"
+                                    )
+
+                                # Update mapping
+                                if i in product_page_mapping:
+                                    product_page_mapping[i] = [p - 1 for p in product.page_range]
+
+                        # Update all_product_pages to exclude TOC pages
+                        toc_page_indices = {p - 1 for p in toc_pages}
+                        all_product_pages -= toc_page_indices
+
+                        self.logger.info(f"   ✅ TOC page exclusion complete. Remaining pages: {len(all_product_pages)}")
+
+            # ============================================================
             # INTELLIGENT PAGE EXTRACTION BASED ON PAGE TYPES
             # ============================================================
             page_texts = {}
