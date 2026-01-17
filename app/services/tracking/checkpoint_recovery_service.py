@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 class ProcessingStage(str, Enum):
     """Processing stages with checkpoint support"""
     INITIALIZED = "initialized"
+    WARMUP_STARTED = "warmup_started"
+    WARMUP_COMPLETE = "warmup_complete"
     PDF_EXTRACTED = "pdf_extracted"
     CHUNKS_CREATED = "chunks_created"
     TEXT_EMBEDDINGS_GENERATED = "text_embeddings_generated"
@@ -317,9 +319,37 @@ class CheckpointRecoveryService:
                 return False
             
             data = checkpoint["checkpoint_data"]
-            
+
             # Verify based on stage
-            if stage == ProcessingStage.CHUNKS_CREATED:
+            if stage == ProcessingStage.WARMUP_STARTED:
+                # Verify warmup started checkpoint has endpoint list
+                endpoints_to_warmup = data.get("endpoints_to_warmup", [])
+                if not endpoints_to_warmup:
+                    logger.warning(f"⚠️ WARMUP_STARTED checkpoint missing endpoints_to_warmup list")
+                    return False
+                logger.info(f"✅ WARMUP_STARTED checkpoint valid: {len(endpoints_to_warmup)} endpoints queued")
+                return True
+
+            elif stage == ProcessingStage.WARMUP_COMPLETE:
+                # Verify warmup complete checkpoint has results
+                endpoint_names = data.get("endpoint_names", [])
+                total_ready = data.get("total_ready", 0)
+                endpoints_failed = data.get("endpoints_failed", [])
+
+                # Log warmup results for visibility
+                logger.info(f"📊 WARMUP_COMPLETE checkpoint: {total_ready} endpoints ready")
+                if endpoints_failed:
+                    logger.warning(f"   ⚠️ Failed endpoints: {endpoints_failed}")
+
+                # Warmup is valid even with some failures (we can still proceed with available endpoints)
+                # Only fail if we have 0 endpoints ready AND there were failures
+                if total_ready == 0 and endpoints_failed:
+                    logger.error(f"❌ WARMUP_COMPLETE checkpoint invalid: 0 endpoints ready with failures")
+                    return False
+
+                return True
+
+            elif stage == ProcessingStage.CHUNKS_CREATED:
                 # Verify chunks exist in database
                 chunk_ids = data.get("chunk_ids", [])
                 chunks_created = data.get("chunks_created", 0)

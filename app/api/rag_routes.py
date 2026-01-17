@@ -2744,8 +2744,43 @@ async def process_document_with_discovery(
         logger.info("🔥 WARMING UP ALL HUGGINGFACE ENDPOINTS (PARALLEL)")
         logger.info("=" * 80)
 
+        # Create WARMUP_STARTED checkpoint
+        warmup_endpoints_to_start = ["qwen", "slig", "yolo", "chandra"]
+        await checkpoint_recovery_service.create_checkpoint(
+            job_id=job_id,
+            stage=ProcessingStage.WARMUP_STARTED,
+            data={
+                "endpoints_to_warmup": warmup_endpoints_to_start,
+                "total_endpoints": len(warmup_endpoints_to_start)
+            },
+            metadata={
+                "current_step": "Starting HuggingFace endpoint warm-up",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        )
+
+        # Update progress to 12% (warm-up started)
+        job_storage[job_id]["progress"] = 12
+        job_storage[job_id]["metadata"] = {
+            **job_storage[job_id].get("metadata", {}),
+            "current_step": "Warming up HuggingFace endpoints",
+            "warmup_status": "started",
+            "endpoints_to_warmup": warmup_endpoints_to_start
+        }
+        if job_recovery_service:
+            await job_recovery_service.persist_job(
+                job_id=job_id,
+                document_id=document_id,
+                filename=filename,
+                status="processing",
+                progress=12,
+                metadata=job_storage[job_id]["metadata"]
+            )
+        logger.info(f"📊 Job {job_id} progress: 12% - Starting endpoint warm-up")
+
         settings = get_settings()
         endpoint_managers = {}
+        warmup_results = {"success": [], "failed": [], "skipped": []}
 
         async def warmup_qwen():
             try:
@@ -2760,7 +2795,7 @@ async def process_document_with_discovery(
                         enabled=True
                     )
                     endpoint_managers['qwen'] = manager
-                    
+
                     # Check status before resuming
                     endpoint = manager._get_endpoint()
                     if endpoint:
@@ -2768,17 +2803,22 @@ async def process_document_with_discovery(
                         if endpoint.status == "running":
                             logger.info("   ✅ Qwen endpoint already running, skipping warmup")
                             manager.warmup_completed = True
+                            warmup_results["skipped"].append("qwen")
                             return
-                    
+
                     if manager.resume_if_needed():
                         logger.info(f"   ⏳ Warming up Qwen ({manager.warmup_timeout}s)...")
-                        # Note: manager.resume_if_needed() already has a blocking time.sleep, 
+                        # Note: manager.resume_if_needed() already has a blocking time.sleep,
                         # but we still use asyncio.sleep here for consistency in the async flow
                         # if the manager didn't wait long enough.
                         await asyncio.sleep(1) # Minimal async yield
                         manager.warmup_completed = True
+                        warmup_results["success"].append("qwen")
                         logger.info("   ✅ Qwen warmup complete")
+                else:
+                    warmup_results["skipped"].append("qwen")
             except Exception as e:
+                warmup_results["failed"].append({"endpoint": "qwen", "error": str(e)})
                 logger.warning(f"⚠️ Failed to warmup Qwen endpoint: {e}")
 
         async def warmup_slig():
@@ -2794,18 +2834,23 @@ async def process_document_with_discovery(
                         enabled=True
                     )
                     endpoint_managers['slig'] = manager
-                    
+
                     endpoint = manager._get_endpoint()
                     if endpoint:
                         endpoint.fetch()
                         if endpoint.status == "running":
                             logger.info("   ✅ SLIG endpoint already running")
+                            warmup_results["skipped"].append("slig")
                             return
 
                     if manager.resume_if_needed():
                         if manager.warmup():
+                            warmup_results["success"].append("slig")
                             logger.info("   ✅ SLIG warmup complete")
+                else:
+                    warmup_results["skipped"].append("slig")
             except Exception as e:
+                warmup_results["failed"].append({"endpoint": "slig", "error": str(e)})
                 logger.warning(f"⚠️ Failed to warmup SLIG endpoint: {e}")
 
         async def warmup_yolo():
@@ -2821,18 +2866,23 @@ async def process_document_with_discovery(
                         enabled=True
                     )
                     endpoint_managers['yolo'] = manager
-                    
+
                     endpoint = manager._get_endpoint()
                     if endpoint:
                         endpoint.fetch()
                         if endpoint.status == "running":
                             logger.info("   ✅ YOLO endpoint already running")
+                            warmup_results["skipped"].append("yolo")
                             return
 
                     if manager.resume_if_needed():
                         if manager.warmup():
+                            warmup_results["success"].append("yolo")
                             logger.info("   ✅ YOLO warmup complete")
+                else:
+                    warmup_results["skipped"].append("yolo")
             except Exception as e:
+                warmup_results["failed"].append({"endpoint": "yolo", "error": str(e)})
                 logger.warning(f"⚠️ Failed to warmup YOLO endpoint: {e}")
 
         async def warmup_chandra():
@@ -2848,19 +2898,24 @@ async def process_document_with_discovery(
                         enabled=True
                     )
                     endpoint_managers['chandra'] = manager
-                    
+
                     endpoint = manager._get_endpoint()
                     if endpoint:
                         endpoint.fetch()
                         if endpoint.status == "running":
                             logger.info("   ✅ Chandra endpoint already running")
+                            warmup_results["skipped"].append("chandra")
                             return
 
                     if manager.resume_if_needed():
                         logger.info(f"   ⏳ Warming up Chandra (60s)...")
                         await asyncio.sleep(60)
+                        warmup_results["success"].append("chandra")
                         logger.info("   ✅ Chandra warmup complete")
+                else:
+                    warmup_results["skipped"].append("chandra")
             except Exception as e:
+                warmup_results["failed"].append({"endpoint": "chandra", "error": str(e)})
                 logger.warning(f"⚠️ Failed to warmup Chandra endpoint: {e}")
 
         # Execute all warmups in parallel
@@ -2873,7 +2928,53 @@ async def process_document_with_discovery(
 
         logger.info("=" * 80)
         logger.info(f"✅ WARMUP PHASE COMPLETE - {len(endpoint_managers)} endpoints resumed")
+        logger.info(f"   Success: {warmup_results['success']}")
+        logger.info(f"   Skipped (already running): {warmup_results['skipped']}")
+        if warmup_results['failed']:
+            logger.warning(f"   Failed: {warmup_results['failed']}")
         logger.info("=" * 80)
+
+        # Create WARMUP_COMPLETE checkpoint with results
+        await checkpoint_recovery_service.create_checkpoint(
+            job_id=job_id,
+            stage=ProcessingStage.WARMUP_COMPLETE,
+            data={
+                "endpoints_warmed_up": warmup_results["success"],
+                "endpoints_skipped": warmup_results["skipped"],
+                "endpoints_failed": warmup_results["failed"],
+                "total_ready": len(endpoint_managers),
+                "endpoint_names": list(endpoint_managers.keys())
+            },
+            metadata={
+                "current_step": "HuggingFace endpoint warm-up complete",
+                "timestamp": datetime.utcnow().isoformat(),
+                "warmup_summary": {
+                    "success_count": len(warmup_results["success"]),
+                    "skipped_count": len(warmup_results["skipped"]),
+                    "failed_count": len(warmup_results["failed"])
+                }
+            }
+        )
+
+        # Update progress to 18% (warm-up complete, ready for processing)
+        job_storage[job_id]["progress"] = 18
+        job_storage[job_id]["metadata"] = {
+            **job_storage[job_id].get("metadata", {}),
+            "current_step": "Endpoints ready - starting PDF processing",
+            "warmup_status": "complete",
+            "endpoints_ready": list(endpoint_managers.keys()),
+            "warmup_results": warmup_results
+        }
+        if job_recovery_service:
+            await job_recovery_service.persist_job(
+                job_id=job_id,
+                document_id=document_id,
+                filename=filename,
+                status="processing",
+                progress=18,
+                metadata=job_storage[job_id]["metadata"]
+            )
+        logger.info(f"📊 Job {job_id} progress: 18% - Warm-up complete, {len(endpoint_managers)} endpoints ready")
 
         # ============================================================================
         # REGISTER WARMED-UP MANAGERS WITH SINGLETON REGISTRY
