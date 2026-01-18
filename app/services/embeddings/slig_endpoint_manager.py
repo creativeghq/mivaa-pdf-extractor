@@ -227,11 +227,11 @@ class SLIGEndpointManager:
         try:
             import requests
 
-            # Create a minimal 1x1 red pixel PNG for testing
-            # This is the smallest valid PNG that will work with CLIP/SigLIP
+            # Create a 16x16 red pixel PNG for testing
+            # 1x1 images are too small for SigLIP - use 16x16 minimum
             test_image_base64 = (
-                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8"
-                "z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
+                "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR4"
+                "2mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg=="
             )
 
             headers = {
