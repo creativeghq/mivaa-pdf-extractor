@@ -15,18 +15,18 @@ ARCHITECTURE:
    - Can be extracted DURING or AFTER product processing
 
 DISCOVERY PROCESS:
-- Stage 0A: Claude discovers PRODUCT NAMES + metadata (NO page numbers!)
-- Stage 0B: DETERMINISTIC page detection using:
-  * Text search (PyMuPDF) to find pages containing product names
-  * YOLO layout validation to confirm product-relevant content
+- Stage 0A: Claude discovers PRODUCT NAMES + metadata INCLUDING page_range
+- Stage 0B: Page detection with PRIORITY:
+  1. USE Claude's page_range if provided (trust the vision model)
+  2. FALLBACK to text search + YOLO only if Claude didn't provide page_range
 - This eliminates catalog vs PDF page number confusion
 - Subsequent stages create semantic chunks for RAG search
 
 KEY DESIGN DECISION:
-Claude does NOT return page_range. Instead, we detect pages deterministically:
-1. Add explicit page markers (--- # Page N ---) during PDF text extraction
-2. Search for product names in the text
-3. Use YOLO to validate pages have product content (TITLE, IMAGE, TEXT regions)
+Claude CAN return page_range from visual analysis. We prioritize Claude's pages because:
+1. Vision model sees product names in images (not just extractable text)
+2. Text search fails when product names are embedded in images
+3. YOLO validation is used only as fallback when Claude doesn't provide pages
 
 EXTENSIBILITY:
 This service is designed to support future extraction types:
@@ -598,7 +598,7 @@ class ProductDiscoveryService:
 
             # ============================================================
             # STAGE 0B: DETERMINISTIC PAGE DETECTION + FOCUSED EXTRACTION
-            # Claude returns ONLY product names - we detect pages using text search + YOLO
+            # Claude CAN return page_range - we prioritize it, fallback to text search if not provided
             # ============================================================
             if "products" in categories and catalog.products and pdf_path:
                 self.logger.info(f"🔍 STAGE 0B: Extracting detailed metadata for each product...")
@@ -950,8 +950,8 @@ class ProductDiscoveryService:
             )
             products.append(product)
 
-            # page_range is intentionally not returned by Claude - we detect pages using text search + YOLO
-            # This is by design - Claude only returns product names, we handle page detection deterministically
+            # page_range CAN be returned by Claude - we prioritize it if available
+            # Only fall back to text search + YOLO if Claude didn't provide page_range
 
         # Parse certificates
         certificates = []
@@ -1039,7 +1039,7 @@ class ProductDiscoveryService:
 
         This is the core of the Two-Stage Discovery system:
         1. DETERMINISTIC PAGE DETECTION: Use text search + YOLO to find pages for each product
-           (Claude returns ONLY product names, NOT page numbers)
+           (Claude CAN return page_range - prioritized if available)
         2. For each product, extract ONLY its detected pages from the PDF
         3. Send focused text to AI for detailed metadata extraction
         4. No token limits - can handle products with 50+ pages each
@@ -1073,7 +1073,7 @@ class ProductDiscoveryService:
 
             # ============================================================
             # DETERMINISTIC PAGE DETECTION FOR ALL PRODUCTS (OPTIMIZED)
-            # Claude returns ONLY product names - we detect pages using text search + YOLO
+            # Claude CAN return page_range - we prioritize it, fallback to text search if not provided
             # ============================================================
             self.logger.info(
                 f"🔍 DETERMINISTIC PAGE DETECTION: Detecting pages for {len(catalog.products)} products using text search + YOLO"
@@ -1105,35 +1105,45 @@ class ProductDiscoveryService:
             # Get all product names for section boundary detection
             all_product_names = [p.name for p in catalog.products]
 
-            # Detect pages for ALL products using SECTION-BASED detection
+            # Detect pages for ALL products
+            # PRIORITY: Use Claude's page_range if provided, fall back to text search only if empty
             for i, product in enumerate(catalog.products):
                 try:
-                    self.logger.info(f"   🔍 Detecting section for: {product.name}")
-
-                    # Step 1: Section-based page detection (finds product section, not all mentions)
-                    detected_pages = self._detect_product_pages_optimized(
-                        pages_content=pages_content,
-                        product_name=product.name,
-                        total_pages=pdf_page_count,
-                        all_product_names=all_product_names
-                    )
-
-                    # Step 2: YOLO validation (if enabled, uses shared detector)
-                    if detected_pages and yolo_enabled and yolo_detector:
-                        validated_pages = await self._validate_pages_with_yolo_optimized(
-                            pdf_path=pdf_path,
-                            detected_pages=detected_pages,
-                            product_name=product.name,
-                            detector=yolo_detector,
-                            pdf_layout=catalog  # Use catalog which has layout info
+                    # Check if Claude already provided page_range
+                    if product.page_range and len(product.page_range) > 0:
+                        # USE CLAUDE'S PAGE RANGE (trust the vision model)
+                        detected_pages = product.page_range
+                        self.logger.info(
+                            f"   ✅ Using Claude's page_range for '{product.name}': {detected_pages}"
                         )
-                        # Use validated pages if YOLO returned any, otherwise keep text-detected pages
-                        if validated_pages:
-                            detected_pages = validated_pages
+                    else:
+                        # FALLBACK: Use text-based section detection
+                        self.logger.info(f"   🔍 Detecting section for: {product.name} (Claude didn't provide page_range)")
+
+                        # Step 1: Section-based page detection (finds product section, not all mentions)
+                        detected_pages = self._detect_product_pages_optimized(
+                            pages_content=pages_content,
+                            product_name=product.name,
+                            total_pages=pdf_page_count,
+                            all_product_names=all_product_names
+                        )
+
+                        # Step 2: YOLO validation (if enabled, uses shared detector)
+                        if detected_pages and yolo_enabled and yolo_detector:
+                            validated_pages = await self._validate_pages_with_yolo_optimized(
+                                pdf_path=pdf_path,
+                                detected_pages=detected_pages,
+                                product_name=product.name,
+                                detector=yolo_detector,
+                                pdf_layout=catalog  # Use catalog which has layout info
+                            )
+                            # Use validated pages if YOLO returned any, otherwise keep text-detected pages
+                            if validated_pages:
+                                detected_pages = validated_pages
 
                     if detected_pages:
                         self.logger.info(
-                            f"   ✅ Found {len(detected_pages)} pages for '{product.name}': {detected_pages}"
+                            f"   ✅ Final pages for '{product.name}': {detected_pages}"
                         )
                         product.page_range = detected_pages
                         page_indices = [p - 1 for p in detected_pages]  # Convert to 0-based
