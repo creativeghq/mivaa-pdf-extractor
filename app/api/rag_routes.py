@@ -2747,6 +2747,57 @@ async def process_document_with_discovery(
     logger.info(f"✅ [BACKGROUND TASK] File read successfully: {file_size} bytes ({file_size / (1024*1024):.1f} MB)")
     logger.info("=" * 80)
 
+    # ============================================================================
+    # PRE-PROCESSING: ADD PAGE NUMBERS TO PDF
+    # ============================================================================
+    logger.info("=" * 80)
+    logger.info("📝 PRE-PROCESSING: ADDING PAGE NUMBERS TO PDF")
+    logger.info("=" * 80)
+
+    from app.services.preprocessing import preprocess_pdf_with_page_numbers
+
+    # Update progress to 5% (page numbering started)
+    job_storage[job_id]["progress"] = 5
+    job_storage[job_id]["metadata"] = {
+        **job_storage[job_id].get("metadata", {}),
+        "current_step": "Adding page numbers to PDF"
+    }
+
+    def page_numbering_progress(current: int, total: int, message: str):
+        """Progress callback for page numbering."""
+        # Update job metadata with page numbering progress
+        pct = 5 + int((current / max(total, 1)) * 5)  # 5-10% range
+        job_storage[job_id]["progress"] = pct
+        job_storage[job_id]["metadata"]["current_step"] = message
+        if current % 50 == 0 or current == total:
+            logger.info(f"   📝 {message}")
+
+    try:
+        numbered_pdf_path, numbering_stats = await preprocess_pdf_with_page_numbers(
+            pdf_path=file_path,
+            job_id=job_id,
+            progress_callback=page_numbering_progress
+        )
+        logger.info(f"✅ Page numbering complete: {numbering_stats['pages_numbered']} pages")
+        logger.info(f"   📄 Numbered PDF: {numbered_pdf_path}")
+
+        # Use the numbered PDF for all subsequent processing
+        file_path = numbered_pdf_path
+
+        # Re-read file content from numbered PDF
+        with open(file_path, 'rb') as f:
+            file_content = f.read()
+        logger.info(f"   📖 Re-read numbered PDF: {len(file_content)} bytes")
+
+    except Exception as e:
+        logger.warning(f"⚠️ Page numbering failed, continuing with original PDF: {e}")
+        # Continue with original file_path and file_content
+
+    # Update progress to 10% (page numbering complete)
+    job_storage[job_id]["progress"] = 10
+    job_storage[job_id]["metadata"]["current_step"] = "Page numbering complete"
+    logger.info("=" * 80)
+
     # Get AI model configuration
     settings = get_settings()
     image_analysis_model = settings.image_analysis_model  # ✅ FIXED: Direct property access

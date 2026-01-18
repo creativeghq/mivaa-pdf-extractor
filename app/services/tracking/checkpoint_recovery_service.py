@@ -31,6 +31,7 @@ class ProcessingStage(str, Enum):
     INITIALIZED = "initialized"
     WARMUP_STARTED = "warmup_started"
     WARMUP_COMPLETE = "warmup_complete"
+    PDF_PAGES_NUMBERED = "pdf_pages_numbered"  # Pre-processing: add visible page numbers
     PDF_EXTRACTED = "pdf_extracted"
     CHUNKS_CREATED = "chunks_created"
     TEXT_EMBEDDINGS_GENERATED = "text_embeddings_generated"
