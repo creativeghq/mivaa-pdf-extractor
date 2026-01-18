@@ -80,45 +80,77 @@ class CheckpointRecoveryService:
             bool: True if checkpoint created successfully
         """
         try:
-            # ✅ VALIDATION: Check if checkpoint has meaningful results
-            # If all key metrics are 0, this is a failed job, not a successful one
+            # ✅ CONTEXT-AWARE VALIDATION: Check if checkpoint has meaningful results
+            # Empty results are VALID when:
+            # - User requested specific categories (logos, certificates) and none exist in document
+            # - User requested extract_only mode (text/images only, no products)
+            # - Document type doesn't support requested extraction
+
             should_fail = False
             failure_reason = None
+
+            # Get job context to determine expected outputs
+            job_metadata = metadata or {}
+            requested_categories = job_metadata.get('categories', [])
+            extraction_mode = job_metadata.get('extraction_mode', 'full')
+            is_extract_only = extraction_mode == 'extract_only' or 'extract_only' in requested_categories
+
+            # Check if this is a filtered extraction (specific categories requested)
+            is_filtered_extraction = bool(requested_categories) and requested_categories != ['all', 'products']
 
             if stage == ProcessingStage.CHUNKS_CREATED:
                 chunks_created = data.get('chunks_created', 0)
                 if chunks_created == 0:
-                    should_fail = True
-                    failure_reason = "Chunking completed but created 0 chunks - no content to process"
+                    # Empty chunks is only a failure for full extraction
+                    # Scanned PDFs with images-only content may have 0 chunks legitimately
+                    should_fail = not is_filtered_extraction
+                    if should_fail:
+                        failure_reason = "Chunking completed but created 0 chunks - no text content found"
 
             elif stage == ProcessingStage.PRODUCTS_CREATED:
                 products_created = data.get('products_created', 0)
                 if products_created == 0:
-                    should_fail = True
-                    failure_reason = "Product creation completed but created 0 products - no products found"
+                    # Empty products is VALID when:
+                    # - User requested logos/certificates only (no products expected)
+                    # - User requested extract_only mode
+                    # - Document is not a product catalog
+                    non_product_categories = {'logos', 'certificates', 'specifications', 'extract_only'}
+                    expects_products = not (set(requested_categories) <= non_product_categories or is_extract_only)
+
+                    should_fail = expects_products
+                    if should_fail:
+                        failure_reason = "Product creation completed but created 0 products - no products found in document"
 
             elif stage == ProcessingStage.IMAGES_EXTRACTED:
                 images_extracted = data.get('images_extracted', 0)
                 images_processed = data.get('images_processed', 0)
                 if images_extracted == 0 and images_processed == 0:
-                    should_fail = True
-                    failure_reason = "Image extraction completed but extracted 0 images - no images found"
+                    # Empty images is VALID - many documents don't have embedded images
+                    # Only fail if images were explicitly requested
+                    expects_images = 'images' in requested_categories
+                    should_fail = expects_images
+                    if should_fail:
+                        failure_reason = "Image extraction requested but extracted 0 images"
 
             elif stage == ProcessingStage.COMPLETED:
                 products_created = data.get('products_created', 0)
                 chunks_created = data.get('chunks_created', 0)
                 images_processed = data.get('images_processed', 0)
 
-                # Job is failed if ALL metrics are 0
+                # Job fails only if ALL metrics are 0 AND we expected full extraction
                 if products_created == 0 and chunks_created == 0 and images_processed == 0:
-                    should_fail = True
-                    failure_reason = "Processing completed but produced 0 products, 0 chunks, and 0 images - nothing was extracted"
+                    should_fail = not is_extract_only and not is_filtered_extraction
+                    if should_fail:
+                        failure_reason = "Processing completed but produced 0 products, 0 chunks, and 0 images - document may be empty or corrupted"
 
             # If validation failed, mark job as failed instead of creating checkpoint
             if should_fail:
                 logger.error(f"❌ Checkpoint validation failed: {failure_reason}")
                 await self._mark_job_failed(job_id, failure_reason)
                 return False
+            elif data.get('chunks_created', 0) == 0 or data.get('products_created', 0) == 0:
+                # Log warning for empty results that are valid (context-aware)
+                logger.warning(f"⚠️ Checkpoint has empty results (valid for context): stage={stage.value}, data={data}, categories={requested_categories}")
 
             checkpoint_data = {
                 "job_id": job_id,
@@ -375,19 +407,22 @@ class CheckpointRecoveryService:
                     return False
             
             elif stage == ProcessingStage.TEXT_EMBEDDINGS_GENERATED:
-                # Verify embeddings exist
+                # Verify embeddings exist in document_chunks.text_embedding column
+                # Note: Embeddings are stored directly in document_chunks, not a separate embeddings table
                 chunk_ids = data.get("chunk_ids", [])
                 if not chunk_ids:
                     return False
-                
-                result = self.supabase_client.client.table("embeddings")\
+
+                # Query document_chunks where text_embedding is not null
+                result = self.supabase_client.client.table("document_chunks")\
                     .select("id")\
-                    .in_("chunk_id", chunk_ids)\
+                    .in_("id", chunk_ids)\
+                    .not_.is_("text_embedding", "null")\
                     .execute()
-                
+
                 found_count = len(result.data or [])
                 expected_count = len(chunk_ids)
-                
+
                 if found_count < expected_count * 0.9:  # Allow 10% missing
                     logger.warning(f"⚠️ Too many missing embeddings: {found_count}/{expected_count}")
                     return False

@@ -170,21 +170,104 @@ class SLIGEndpointManager:
 
     def warmup(self) -> bool:
         """
-        Warmup the SLIG endpoint after resume.
-        CRITICAL: SLIG requires 60 seconds warmup before first inference!
+        Warmup the SLIG endpoint after resume using inference testing.
+
+        Instead of blind sleep, this method polls the endpoint with test
+        requests until it responds successfully, with exponential backoff.
 
         Returns:
-            True if warmup successful, False if failed
+            True if warmup successful, False if failed/timeout
         """
         if self.warmup_completed:
             logger.info("✅ SLIG endpoint already warmed up")
             return True
 
-        logger.info(f"🔥 Warming up SLIG endpoint ({self.warmup_timeout}s)...")
-        time.sleep(self.warmup_timeout)
-        self.warmup_completed = True
-        logger.info("✅ SLIG endpoint warmup complete")
-        return True
+        logger.info(f"🔥 Warming up SLIG endpoint (max {self.warmup_timeout}s)...")
+
+        # Test inference with exponential backoff
+        start_time = time.time()
+        attempt = 0
+        base_delay = 2  # Start with 2 second delay
+        max_delay = 15  # Cap at 15 seconds between attempts
+
+        while (time.time() - start_time) < self.warmup_timeout:
+            attempt += 1
+
+            if self._test_inference():
+                elapsed = time.time() - start_time
+                logger.info(f"✅ SLIG endpoint warmed up in {elapsed:.1f}s ({attempt} attempts)")
+                self.warmup_completed = True
+                return True
+
+            # Calculate delay with exponential backoff (2, 4, 8, 15, 15, ...)
+            delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
+            remaining = self.warmup_timeout - (time.time() - start_time)
+
+            if remaining > delay:
+                logger.info(f"   ⏳ Attempt {attempt} failed, retrying in {delay}s...")
+                time.sleep(delay)
+            else:
+                # Not enough time for another full delay, do a quick final check
+                time.sleep(min(2, remaining))
+
+        # Timeout reached
+        elapsed = time.time() - start_time
+        logger.error(f"❌ SLIG warmup failed after {elapsed:.1f}s ({attempt} attempts)")
+        return False
+
+    def _test_inference(self) -> bool:
+        """
+        Test if the endpoint can handle inference requests.
+
+        Uses a minimal test to check endpoint health without wasting resources.
+
+        Returns:
+            True if endpoint responds successfully, False otherwise
+        """
+        try:
+            import requests
+
+            # Create a minimal 1x1 red pixel PNG for testing
+            # This is the smallest valid PNG that will work with CLIP/SigLIP
+            test_image_base64 = (
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8"
+                "z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
+            )
+
+            headers = {
+                "Authorization": f"Bearer {self.hf_token}",
+                "Content-Type": "application/json"
+            }
+
+            # Send minimal inference request
+            response = requests.post(
+                self.endpoint_url,
+                headers=headers,
+                json={"inputs": {"image": test_image_base64}},
+                timeout=10  # Short timeout for health check
+            )
+
+            if response.status_code == 200:
+                return True
+            elif response.status_code == 503:
+                # Service unavailable - still warming up
+                return False
+            elif response.status_code == 500:
+                # Internal error - might still be loading model
+                return False
+            else:
+                logger.debug(f"   Warmup test returned status {response.status_code}")
+                return False
+
+        except requests.exceptions.Timeout:
+            # Timeout is expected during warmup
+            return False
+        except requests.exceptions.ConnectionError:
+            # Connection error means endpoint not ready
+            return False
+        except Exception as e:
+            logger.debug(f"   Warmup test error: {e}")
+            return False
 
     def pause_if_idle(self) -> bool:
         """

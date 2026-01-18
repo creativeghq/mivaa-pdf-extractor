@@ -858,6 +858,11 @@ class ProductDiscoveryService:
                 # Remove None values
                 metadata = {k: v for k, v in metadata.items() if v is not None}
 
+            # Extract available_colors from Claude response and add to metadata
+            available_colors = p.get("available_colors", [])
+            if available_colors:
+                metadata["available_colors"] = available_colors
+
             # Parse page_types (convert string keys to int)
             page_types_raw = p.get("page_types", {})
             page_types = {}

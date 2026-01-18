@@ -25,7 +25,7 @@ from app.services.tracking.checkpoint_recovery_service import CheckpointRecovery
 from app.schemas.jobs import ProcessingStage
 
 # Import orchestration functions from centralized module
-from app.api.rag_routes import process_document_background
+# CONSOLIDATED: All jobs now use process_document_with_discovery (removed legacy process_document_background)
 from app.orchestration import (
     run_async_in_background,
     process_document_with_discovery,
@@ -34,6 +34,8 @@ from app.orchestration import (
 # Import for file download
 import httpx
 import tempfile
+
+from app.utils.resource_manager import get_resource_manager
 
 logger = logging.getLogger(__name__)
 
@@ -273,7 +275,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
         logger.info(f"✅ Job {job_id} marked for restart from {resume_stage}")
 
         # ✅ CRITICAL FIX: Restart the job by re-triggering the processing pipeline
-        # The process_document_background function supports checkpoint recovery
+        # The process_document_with_discovery function supports checkpoint recovery
         # Documents are processed directly into the vector database
 
         # Get the file content from storage
@@ -342,10 +344,21 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
             file_path = temp_file.name
             logger.info(f"✅ Saved to temp file for processing: {file_path}")
 
+            # Register temp file with ResourceManager for cleanup tracking
+            resource_manager = get_resource_manager()
+            await resource_manager.register_resource(
+                resource_id=f"temp_pdf_{document_id}",
+                resource_type="temp_file",
+                path=file_path,
+                job_id=job_id,
+                metadata={"filename": filename, "source": "management_routes_resume"}
+            )
+            logger.info(f"✅ Registered temp PDF with ResourceManager: {file_path}")
+
             # Free memory
             file_content = None
 
-            # Initialize job in job_storage (CRITICAL: required by process_document_background)
+            # Initialize job in job_storage (CRITICAL: required by process_document_with_discovery)
             job_storage[job_id] = {
                 "job_id": job_id,
                 "document_id": document_id,
@@ -355,62 +368,45 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
             }
             logger.info(f"✅ Job {job_id} added to job_storage for resume")
 
-            # Determine which processing function to use based on job_type
+            # CONSOLIDATED: All jobs now use process_document_with_discovery
+            # This pipeline handles checkpoint recovery and continues from where it left off
             job_type = job_data.get('job_type', 'document_upload')
+            logger.info(f"🔄 Resuming job {job_id} (type: {job_type}) using unified discovery pipeline")
 
-            if job_type == 'product_discovery_upload':
-                # Use product discovery pipeline for resume
-                logger.info(f"🔄 Resuming product discovery job {job_id}")
+            # Extract parameters from job metadata (works for both legacy and discovery jobs)
+            job_metadata = job_data.get('metadata', {})
+            discovery_model = job_metadata.get('discovery_model', 'claude-sonnet-4.5')
+            categories = job_metadata.get('categories', ['products'])
+            enable_prompt_enhancement = job_metadata.get('prompt_enhancement_enabled', False)
+            agent_prompt = job_metadata.get('agent_prompt')
+            test_single_product = job_metadata.get('test_single_product', False)
 
-                # Extract parameters from job metadata
-                job_metadata = job_data.get('metadata', {})
-                discovery_model = job_metadata.get('discovery_model', 'claude-sonnet-4.5')
-                categories = job_metadata.get('categories', ['products'])
-                enable_prompt_enhancement = job_metadata.get('prompt_enhancement_enabled', False)
-                agent_prompt = job_metadata.get('agent_prompt')
-                test_single_product = job_metadata.get('test_single_product', False)  # 🧪 TEST MODE
+            # Determine focused extraction based on categories
+            use_focused_extraction = 'all' not in categories
 
-                # Determine focused extraction based on categories
-                use_focused_extraction = 'all' not in categories
+            logger.info(f"   Resume parameters: discovery_model={discovery_model}, categories={categories}, focused={use_focused_extraction}")
 
-                logger.info(f"   Resume parameters: discovery_model={discovery_model}, categories={categories}, focused={use_focused_extraction}, test_mode={test_single_product}")
+            background_tasks.add_task(
+                run_async_in_background(process_document_with_discovery),
+                job_id=job_id,
+                document_id=document_id,
+                file_path=file_path,
+                filename=filename,
+                workspace_id=doc_data.get('workspace_id', 'ffafc28b-1b8b-4b0d-b226-9f9a6154004e'),
+                title=doc_data.get('title'),
+                description=doc_data.get('description'),
+                document_tags=doc_data.get('tags', []),
+                discovery_model=discovery_model,
+                focused_extraction=use_focused_extraction,
+                extract_categories=categories,
+                chunk_size=1000,
+                chunk_overlap=200,
+                agent_prompt=agent_prompt,
+                enable_prompt_enhancement=enable_prompt_enhancement,
+                test_single_product=test_single_product
+            )
 
-                background_tasks.add_task(
-                    run_async_in_background(process_document_with_discovery),
-                    job_id=job_id,
-                    document_id=document_id,
-                    file_path=file_path,  # Use file_path
-                    filename=filename,
-                    workspace_id=doc_data.get('workspace_id', 'ffafc28b-1b8b-4b0d-b226-9f9a6154004e'),
-                    title=doc_data.get('title'),
-                    description=doc_data.get('description'),
-                    document_tags=doc_data.get('tags', []),
-                    discovery_model=discovery_model,
-                    focused_extraction=use_focused_extraction,
-                    extract_categories=categories,
-                    chunk_size=1000,
-                    chunk_overlap=200,
-                    agent_prompt=agent_prompt,
-                    enable_prompt_enhancement=enable_prompt_enhancement,
-                    test_single_product=test_single_product  # 🧪 TEST MODE
-                )
-            else:
-                # Use standard processing for resume
-                logger.info(f"🔄 Resuming standard document job {job_id}")
-                background_tasks.add_task(
-                    run_async_in_background(process_document_background),
-                    job_id=job_id,
-                    document_id=document_id,
-                    file_path=file_path, # Use file_path
-                    filename=filename,
-                    title=doc_data.get('title'),
-                    description=doc_data.get('description'),
-                    document_tags=doc_data.get('tags', []),
-                    chunk_size=1000,
-                    chunk_overlap=200
-                )
-
-            logger.info(f"✅ Background task triggered for job {job_id} (type: {job_type})")
+            logger.info(f"✅ Background task triggered for job {job_id} using unified pipeline")
 
         except HTTPException:
             raise

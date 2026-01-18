@@ -220,7 +220,7 @@ class CleanupService:
     ):
         """
         Cleanup when processing fails.
-        
+
         Args:
             job_id: Job ID
             document_id: Document ID
@@ -229,19 +229,96 @@ class CleanupService:
         """
         try:
             self.logger.info(f"🧹 Cleanup on failure for job {job_id}: {error}")
-            
+
             # Perform standard cleanup
             await self.cleanup_after_processing(
                 job_id=job_id,
                 document_id=document_id,
                 job_storage=job_storage
             )
-            
+
             # Additional failure-specific cleanup
             # (e.g., mark resources for retry, send alerts, etc.)
-            
+
         except Exception as e:
             self.logger.error(f"❌ Cleanup on failure failed: {e}")
+
+    async def rollback_discovered_products(
+        self,
+        document_id: str,
+        product_db_ids: Optional[List[str]] = None,
+        supabase_client=None
+    ) -> Dict[str, Any]:
+        """
+        Rollback products created during discovery if subsequent stages fail.
+
+        This ensures we don't leave orphan products in the database when
+        processing fails after Stage 0 (discovery).
+
+        Args:
+            document_id: Document ID to rollback products for
+            product_db_ids: Optional list of specific product IDs to delete
+            supabase_client: Supabase client instance
+
+        Returns:
+            Dictionary with rollback statistics
+        """
+        stats = {
+            'products_rolled_back': 0,
+            'product_progress_cleared': 0,
+            'errors': []
+        }
+
+        try:
+            if not supabase_client:
+                from app.services.core.supabase_client import get_supabase_client
+                supabase_client = get_supabase_client()
+
+            self.logger.info(f"🔄 Rolling back products for document {document_id}")
+
+            # Delete products by document_id (or specific IDs if provided)
+            try:
+                if product_db_ids:
+                    # Delete specific products
+                    for product_id in product_db_ids:
+                        supabase_client.client.table('products')\
+                            .delete()\
+                            .eq('id', product_id)\
+                            .execute()
+                    stats['products_rolled_back'] = len(product_db_ids)
+                else:
+                    # Delete all products for this document
+                    products_response = supabase_client.client.table('products')\
+                        .delete()\
+                        .eq('document_id', document_id)\
+                        .execute()
+                    stats['products_rolled_back'] = len(products_response.data) if products_response.data else 0
+
+                self.logger.info(f"✅ Rolled back {stats['products_rolled_back']} products")
+
+            except Exception as e:
+                self.logger.error(f"❌ Failed to rollback products: {e}")
+                stats['errors'].append(f"Products rollback failed: {str(e)}")
+
+            # Clear product_progress tracking
+            try:
+                progress_response = supabase_client.client.table('product_progress')\
+                    .delete()\
+                    .eq('document_id', document_id)\
+                    .execute()
+                stats['product_progress_cleared'] = len(progress_response.data) if progress_response.data else 0
+                self.logger.info(f"✅ Cleared {stats['product_progress_cleared']} product progress records")
+
+            except Exception as e:
+                self.logger.warning(f"⚠️ Failed to clear product_progress: {e}")
+                # Not critical - progress tracking is informational
+
+            return stats
+
+        except Exception as e:
+            self.logger.error(f"❌ Product rollback failed: {e}")
+            stats['errors'].append(str(e))
+            return stats
     
     def cleanup_storage_bucket(self, bucket_name: str, document_id: str) -> int:
         """

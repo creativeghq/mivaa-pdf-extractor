@@ -9,6 +9,7 @@ Product-centric pipeline with single-product processing functions:
 - Stage 4: create_single_product (stage_4_products.py)
 - Stage 5: Quality Enhancement (stage_5_quality.py)
 - Product Processor: process_single_product (product_processor.py)
+- Parallel Processor: process_products_parallel (parallel_product_processor.py)
 """
 
 from .stage_0_discovery import process_stage_0_discovery
@@ -18,6 +19,11 @@ from .stage_3_images import process_product_images
 from .stage_4_products import create_single_product
 from .stage_5_quality import process_stage_5_quality
 from .product_processor import process_single_product
+from .parallel_product_processor import (
+    process_products_parallel,
+    ParallelProcessingConfig,
+    ParallelProcessingResult
+)
 
 __all__ = [
     'process_stage_0_discovery',
@@ -27,6 +33,9 @@ __all__ = [
     'create_single_product',
     'process_stage_5_quality',
     'process_single_product',
+    'process_products_parallel',
+    'ParallelProcessingConfig',
+    'ParallelProcessingResult',
 ]
 
 

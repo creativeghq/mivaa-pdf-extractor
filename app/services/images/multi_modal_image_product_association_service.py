@@ -34,7 +34,7 @@ class AssociationOptions:
     spatial_threshold: float = 0.3
     caption_threshold: float = 0.4
     clip_threshold: float = 0.5
-    overall_threshold: float = 0.6
+    overall_threshold: float = 0.3
     max_associations_per_image: int = 3
     max_associations_per_product: int = 5
 
@@ -168,6 +168,18 @@ class MultiModalImageProductAssociationService:
         # Generate reasoning
         reasoning = self._generate_reasoning(spatial_score, caption_score, clip_score, overall_score, weights)
 
+        # Get page info for metadata
+        image_page = image.get('page_number', 0)
+        product_metadata = product.get('metadata', {})
+        product_pages = product_metadata.get('page_range', [])
+        if not product_pages and product.get('page_number'):
+            product_pages = [product.get('page_number')]
+
+        # Find minimum page difference
+        min_page_diff = min(
+            abs(image_page - p) for p in product_pages
+        ) if product_pages and image_page else None
+
         return ImageProductAssociation(
             image_id=image['id'],
             product_id=product['id'],
@@ -179,61 +191,127 @@ class MultiModalImageProductAssociationService:
             reasoning=reasoning,
             metadata={
                 "spatial_proximity": {
-                    "page_difference": abs((image.get('page_number', 0)) - (product.get('page_number', 0))),
-                    "same_page_group": abs((image.get('page_number', 0)) - (product.get('page_number', 0))) <= 1
+                    "image_page": image_page,
+                    "product_pages": product_pages,
+                    "min_page_difference": min_page_diff,
+                    "same_page_group": min_page_diff is not None and min_page_diff <= 1
                 },
                 "caption_similarity": {
                     "image_caption": image.get('caption', '') or image.get('alt_text', ''),
-                    "product_description": product.get('description', '') or product.get('name', ''),
+                    "product_name": product.get('name', ''),
                     "text_similarity": caption_score
                 },
                 "clip_similarity": {
                     "visual_text_similarity": clip_score,
-                    "embedding_distance": 1 - clip_score,
-                    "model_used": "clip-vit-base-patch32"
+                    "has_image_embedding": bool(image.get('clip_embedding') or image.get('visual_embedding')),
+                    "has_product_embedding": bool(product.get('clip_embedding') or product_metadata.get('clip_embedding'))
                 }
             }
         )
 
     async def _calculate_spatial_score(self, image: Dict[str, Any], product: Dict[str, Any]) -> float:
-        """Calculate spatial proximity score (0-1)."""
+        """Calculate spatial proximity score (0-1).
+
+        Checks all pages in product's page_range and returns the best score.
+        """
         image_page = image.get('page_number', 0)
-        product_page = product.get('page_number', 0)
+        if not image_page:
+            return 0.1  # No image page info, low score
 
-        # Same page = highest score
-        if image_page == product_page:
-            return 1.0
+        # Get all product pages from both top-level and metadata.page_range
+        product_pages = []
 
-        # Adjacent pages = high score
-        page_difference = abs(image_page - product_page)
-        if page_difference == 1:
-            return 0.8
+        # Check top-level page_number
+        top_level_page = product.get('page_number', 0)
+        if top_level_page:
+            product_pages.append(top_level_page)
 
-        # Within 2 pages = medium score
-        if page_difference <= 2:
-            return 0.6
+        # Check metadata.page_range (can contain multiple pages)
+        metadata = product.get('metadata', {})
+        page_range = metadata.get('page_range', [])
+        if page_range:
+            for page in page_range:
+                if isinstance(page, (int, float)) and page not in product_pages:
+                    product_pages.append(int(page))
 
-        # Within 3 pages = low score
-        if page_difference <= 3:
-            return 0.4
+        if not product_pages:
+            return 0.1  # No product page info, low score
 
-        # Further apart = very low score
-        return max(0.1, 1 / (page_difference * 0.5))
+        # Calculate score for each product page and return the best
+        best_score = 0.1
+        for product_page in product_pages:
+            page_difference = abs(image_page - product_page)
+
+            # Same page = highest score
+            if page_difference == 0:
+                return 1.0  # Can't get better, return immediately
+
+            # Adjacent pages = high score
+            if page_difference == 1:
+                score = 0.85
+            # Within 2 pages = good score
+            elif page_difference <= 2:
+                score = 0.7
+            # Within 3 pages = medium score
+            elif page_difference <= 3:
+                score = 0.5
+            # Within 5 pages = low-medium score
+            elif page_difference <= 5:
+                score = 0.3
+            # Further apart = very low score
+            else:
+                score = max(0.1, 0.5 / page_difference)
+
+            best_score = max(best_score, score)
+
+        return best_score
 
     async def _calculate_caption_score(self, image: Dict[str, Any], product: Dict[str, Any]) -> float:
-        """Calculate caption similarity score (0-1)."""
+        """Calculate caption similarity score (0-1).
+
+        Handles generic captions like "Image from page 22" with neutral scores.
+        """
         image_text = (image.get('caption', '') or image.get('alt_text', '')).lower()
         product_text = (product.get('description', '') or product.get('name', '')).lower()
 
-        if not image_text or not product_text:
-            return 0.0
+        # Check for generic/uninformative captions
+        generic_patterns = [
+            r'^image\s+(from\s+)?page\s+\d+',
+            r'^page\s+\d+\s+image',
+            r'^figure\s+\d+',
+            r'^img_?\d+',
+            r'^extracted\s+image',
+            r'^document\s+image',
+        ]
+
+        is_generic_caption = False
+        if image_text:
+            for pattern in generic_patterns:
+                if re.match(pattern, image_text.strip()):
+                    is_generic_caption = True
+                    break
+
+        # If caption is generic, return neutral score (don't penalize or boost)
+        if is_generic_caption or not image_text:
+            return 0.5  # Neutral - let other signals (spatial, CLIP) decide
+
+        if not product_text:
+            return 0.5  # Neutral if no product text
 
         # Simple text similarity using word overlap
-        image_words = set(word for word in re.split(r'\s+', image_text) if len(word) > 2)
-        product_words = set(word for word in re.split(r'\s+', product_text) if len(word) > 2)
+        # Filter out common stopwords and short words
+        stopwords = {'the', 'and', 'for', 'with', 'from', 'this', 'that', 'image', 'page'}
+        image_words = set(
+            word for word in re.split(r'\s+', image_text)
+            if len(word) > 2 and word not in stopwords
+        )
+        product_words = set(
+            word for word in re.split(r'\s+', product_text)
+            if len(word) > 2 and word not in stopwords
+        )
 
         if not image_words or not product_words:
-            return 0.0
+            return 0.5  # Neutral if no meaningful words
 
         # Calculate Jaccard similarity
         intersection = image_words.intersection(product_words)
@@ -242,42 +320,81 @@ class MultiModalImageProductAssociationService:
 
         # Boost score if product name appears in image caption
         product_name = (product.get('name', '')).lower()
-        if product_name and product_name in image_text:
-            return min(1.0, jaccard_similarity + 0.3)
+        if product_name and len(product_name) > 2 and product_name in image_text:
+            return min(1.0, jaccard_similarity + 0.4)
 
-        return jaccard_similarity
+        # Check for partial product name match (first word of multi-word name)
+        product_name_parts = product_name.split()
+        if len(product_name_parts) > 0:
+            first_part = product_name_parts[0]
+            if len(first_part) > 3 and first_part in image_text:
+                return min(1.0, jaccard_similarity + 0.25)
+
+        # Scale Jaccard similarity: 0 Jaccard -> 0.3, 0.5 Jaccard -> 0.65, 1.0 Jaccard -> 1.0
+        # This ensures even low text overlap doesn't completely tank the score
+        return 0.3 + (jaccard_similarity * 0.7)
 
     async def _calculate_clip_score(self, image: Dict[str, Any], product: Dict[str, Any]) -> float:
-        """Calculate CLIP visual similarity score (0-1)."""
+        """Calculate CLIP visual similarity score (0-1).
+
+        Uses actual cosine similarity between embeddings when available.
+        Falls back to neutral score when embeddings are missing.
+        """
         try:
-            # For now, return a placeholder score based on available metadata
-            # In a full implementation, this would use actual CLIP embeddings
-            
-            has_image_embedding = image.get('clip_embedding') or image.get('visual_embedding')
-            has_product_text = product.get('description') or product.get('name')
+            # Get image embedding (could be under different field names)
+            image_embedding = (
+                image.get('clip_embedding') or
+                image.get('visual_embedding') or
+                image.get('embedding')
+            )
 
-            if not has_image_embedding or not has_product_text:
-                return 0.5  # Neutral score when embeddings are not available
+            # Get product text embedding (if available)
+            product_embedding = None
+            product_metadata = product.get('metadata', {})
+            product_embedding = (
+                product.get('clip_embedding') or
+                product.get('text_embedding') or
+                product_metadata.get('clip_embedding') or
+                product_metadata.get('text_embedding')
+            )
 
-            # Placeholder: Use text similarity as a proxy for CLIP similarity
-            # In production, this would compute cosine similarity between CLIP embeddings
-            image_caption = image.get('caption', '') or image.get('alt_text', '')
-            product_text = product.get('description', '') or product.get('name', '')
-            
-            if image_caption and product_text:
-                text_similarity = await self._calculate_caption_score(
-                    {'caption': image_caption},
-                    {'description': product_text}
-                )
-                
-                # Adjust for visual context
-                return min(1.0, text_similarity * 1.2)
+            # If we have both embeddings, compute actual cosine similarity
+            if image_embedding and product_embedding:
+                similarity = self._cosine_similarity(image_embedding, product_embedding)
+                # CLIP similarities are typically in range [-1, 1], normalize to [0, 1]
+                normalized = (similarity + 1) / 2
+                return max(0.0, min(1.0, normalized))
 
+            # If we have image embedding but no product embedding, use neutral score
+            if image_embedding:
+                # Slight boost for having visual data even if no product embedding
+                return 0.5
+
+            # No embeddings available - return neutral score
+            # This doesn't penalize but doesn't boost either
             return 0.5
 
         except Exception as e:
             self.logger.warning(f"⚠️ Error calculating CLIP score: {e}")
             return 0.5  # Neutral score on error
+
+    def _cosine_similarity(self, vec_a: list, vec_b: list) -> float:
+        """Compute cosine similarity between two vectors."""
+        if not vec_a or not vec_b or len(vec_a) != len(vec_b):
+            return 0.0
+
+        try:
+            # Compute dot product and magnitudes
+            dot_product = sum(a * b for a, b in zip(vec_a, vec_b))
+            magnitude_a = math.sqrt(sum(a * a for a in vec_a))
+            magnitude_b = math.sqrt(sum(b * b for b in vec_b))
+
+            if magnitude_a == 0 or magnitude_b == 0:
+                return 0.0
+
+            return dot_product / (magnitude_a * magnitude_b)
+        except (TypeError, ValueError):
+            return 0.0
 
     def _calculate_confidence(
         self,
@@ -451,7 +568,7 @@ class MultiModalImageProductAssociationService:
         """Get all products for a document."""
         try:
             result = self.supabase.client.table('products').select('*').eq(
-                'document_id', document_id
+                'source_document_id', document_id
             ).order('created_at').execute()
 
             return result.data or []

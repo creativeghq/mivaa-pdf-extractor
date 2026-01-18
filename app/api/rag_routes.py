@@ -694,6 +694,17 @@ async def upload_document(
              # For file upload case, get file size from file_path
              file_size = os.path.getsize(file_path)
 
+        # Register temp file with ResourceManager for cleanup tracking
+        resource_manager = get_resource_manager()
+        await resource_manager.register_resource(
+            resource_id=f"temp_pdf_{document_id}",
+            resource_type="temp_file",
+            path=file_path,
+            job_id=job_id,
+            metadata={"filename": filename, "source": "rag_routes_upload"}
+        )
+        logger.info(f"✅ Registered temp PDF with ResourceManager: {file_path}")
+
         # Get Supabase client
         supabase_client = get_supabase_client()
 
@@ -1070,7 +1081,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
         logger.info(f"✅ Job {job_id} marked for restart from {resume_stage}")
 
         # ✅ CRITICAL FIX: Restart the job by re-triggering the processing pipeline
-        # The process_document_background function supports checkpoint recovery
+        # The process_document_with_discovery function supports checkpoint recovery
         # Documents are processed directly into the vector database
 
         # Get the file content from storage
@@ -1153,7 +1164,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
             # Free memory
             file_content = None
 
-            # Initialize job in job_storage (CRITICAL: required by process_document_background)
+            # Initialize job in job_storage (CRITICAL: required by process_document_with_discovery)
             job_storage[job_id] = {
                 "job_id": job_id,
                 "document_id": document_id,
@@ -1163,60 +1174,43 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
             }
             logger.info(f"✅ Job {job_id} added to job_storage for resume")
 
-            # Determine which processing function to use based on job_type
+            # CONSOLIDATED: All jobs now use process_document_with_discovery
+            # This pipeline handles checkpoint recovery and continues from where it left off
             job_type = job_data.get('job_type', 'document_upload')
+            logger.info(f"🔄 Resuming job {job_id} (type: {job_type}) using unified discovery pipeline")
 
-            if job_type == 'product_discovery_upload':
-                # Use product discovery pipeline for resume
-                logger.info(f"🔄 Resuming product discovery job {job_id}")
+            # Extract parameters from job metadata (works for both legacy and discovery jobs)
+            job_metadata = job_data.get('metadata', {})
+            discovery_model = job_metadata.get('discovery_model', 'claude-sonnet-4.5')
+            categories = job_metadata.get('categories', ['products'])
+            enable_prompt_enhancement = job_metadata.get('prompt_enhancement_enabled', False)
+            agent_prompt = job_metadata.get('agent_prompt')
+            test_single_product = job_metadata.get('test_single_product', False)
 
-                # Extract parameters from job metadata
-                job_metadata = job_data.get('metadata', {})
-                discovery_model = job_metadata.get('discovery_model', 'claude-sonnet-4.5')
-                categories = job_metadata.get('categories', ['products'])
-                enable_prompt_enhancement = job_metadata.get('prompt_enhancement_enabled', False)
-                agent_prompt = job_metadata.get('agent_prompt')
-                test_single_product = job_metadata.get('test_single_product', False)  # 🧪 TEST MODE
+            # Determine focused extraction based on categories
+            use_focused_extraction = 'all' not in categories
 
-                # Determine focused extraction based on categories
-                use_focused_extraction = 'all' not in categories
+            logger.info(f"   Resume parameters: discovery_model={discovery_model}, categories={categories}, focused={use_focused_extraction}, test_mode={test_single_product}")
 
-                logger.info(f"   Resume parameters: discovery_model={discovery_model}, categories={categories}, focused={use_focused_extraction}, test_mode={test_single_product}")
-
-                background_tasks.add_task(
-                    run_async_in_background(process_document_with_discovery),
-                    job_id=job_id,
-                    document_id=document_id,
-                    file_path=file_path,  # Use file_path
-                    filename=filename,
-                    workspace_id=doc_data.get('workspace_id', 'ffafc28b-1b8b-4b0d-b226-9f9a6154004e'),
-                    title=doc_data.get('title'),
-                    description=doc_data.get('description'),
-                    document_tags=doc_data.get('tags', []),
-                    discovery_model=discovery_model,
-                    focused_extraction=use_focused_extraction,
-                    extract_categories=categories,
-                    chunk_size=1000,
-                    chunk_overlap=200,
-                    agent_prompt=agent_prompt,
-                    enable_prompt_enhancement=enable_prompt_enhancement,
-                    test_single_product=test_single_product  # 🧪 TEST MODE
-                )
-            else:
-                # Use standard processing for resume
-                logger.info(f"🔄 Resuming standard document job {job_id}")
-                background_tasks.add_task(
-                    run_async_in_background(process_document_background),
-                    job_id=job_id,
-                    document_id=document_id,
-                    file_path=file_path, # Use file_path
-                    filename=filename,
-                    title=doc_data.get('title'),
-                    description=doc_data.get('description'),
-                    document_tags=doc_data.get('tags', []),
-                    chunk_size=1000,
-                    chunk_overlap=200
-                )
+            background_tasks.add_task(
+                run_async_in_background(process_document_with_discovery),
+                job_id=job_id,
+                document_id=document_id,
+                file_path=file_path,
+                filename=filename,
+                workspace_id=doc_data.get('workspace_id', 'ffafc28b-1b8b-4b0d-b226-9f9a6154004e'),
+                title=doc_data.get('title'),
+                description=doc_data.get('description'),
+                document_tags=doc_data.get('tags', []),
+                discovery_model=discovery_model,
+                focused_extraction=use_focused_extraction,
+                extract_categories=categories,
+                chunk_size=1000,
+                chunk_overlap=200,
+                agent_prompt=agent_prompt,
+                enable_prompt_enhancement=enable_prompt_enhancement,
+                test_single_product=test_single_product
+            )
 
             logger.info(f"✅ Background task triggered for job {job_id} (type: {job_type})")
 
@@ -2099,8 +2093,22 @@ async def process_document_background(
     file_url: Optional[str] = None
 ):
     """
+    DEPRECATED: Use process_document_with_discovery instead.
+
+    This legacy pipeline is kept for backwards compatibility but all new jobs
+    should use the unified process_document_with_discovery pipeline which supports:
+    - Product discovery with AI classification
+    - Checkpoint recovery and resume
+    - Focused extraction by category
+
     Background task to process document with checkpoint recovery support.
     """
+    import warnings
+    warnings.warn(
+        "process_document_background is deprecated. Use process_document_with_discovery instead.",
+        DeprecationWarning,
+        stacklevel=2
+    )
     start_time = datetime.utcnow()
 
     logger.info("=" * 80)
@@ -2161,12 +2169,15 @@ async def process_document_background(
                 if not file_url:
                     file_url = f"https://bgbavxtjlbvgplozizxu.supabase.co/storage/v1/object/public/pdf-documents/{document_id}/{filename}"
 
+                # Get file size from file path instead of undefined file_content
+                file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+
                 supabase_client.client.table('documents').insert({
                     "id": document_id,
                     "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
                     "filename": filename,
                     "content_type": "application/pdf",
-                    "file_size": len(file_content),
+                    "file_size": file_size,
                     "file_url": file_url,
                     "processing_status": "processing",
                     "metadata": {
@@ -2210,7 +2221,7 @@ async def process_document_background(
                 data={
                     "document_id": document_id,
                     "filename": filename,
-                    "file_size": len(file_content),
+                    "file_size": file_size,  # Use file_size from os.path.getsize
                     "pdf_path": file_path  # ✅ FIX: Add pdf_path for vision-guided extraction
                 },
                 metadata={
@@ -2510,7 +2521,7 @@ async def process_document_background(
 
             # ✅ FIX 4: Start background image processing with sub-job tracking
             # Get images_extracted from database
-            images_extracted_result = supabase.client.table("document_images").select("id", count="exact").eq("document_id", document_id).execute()
+            images_extracted_result = supabase_client.client.table("document_images").select("id", count="exact").eq("document_id", document_id).execute()
             images_extracted = images_extracted_result.count if images_extracted_result else 0
             if images_extracted > 0:
                 logger.info(f"🖼️ Scheduling background image AI analysis for {images_extracted} images")
@@ -2524,7 +2535,7 @@ async def process_document_background(
                 logger.info("⚠️ No images extracted, skipping background image analysis")
 
             job_storage[job_id]["status"] = "completed"
-            job_storage[job_id]["progress"] = 90  # Main processing complete, products/images running in background
+            job_storage[job_id]["progress"] = 100  # Main processing complete (background tasks are independent sub-jobs)
             job_storage[job_id]["completed_at"] = datetime.utcnow().isoformat()
             job_storage[job_id]["result"] = {
                 "document_id": document_id,
@@ -3053,7 +3064,7 @@ async def process_document_with_discovery(
             qwen_config = settings.get_qwen_config()
             endpoints_config['qwen'] = {
                 'url': qwen_config['endpoint_url'],
-                'token': qwen_config['hf_token']
+                'token': qwen_config.get('endpoint_token', qwen_config.get('hf_token', ''))
             }
         if 'slig' in endpoint_managers:
             slig_config = settings.get_slig_config()
@@ -3223,6 +3234,10 @@ async def process_document_with_discovery(
         # Initialize product progress tracker
         from app.services.tracking.product_progress_tracker import ProductProgressTracker
         from app.api.pdf_processing.product_processor import process_single_product
+        from app.api.pdf_processing.parallel_product_processor import (
+            process_products_parallel,
+            ParallelProcessingConfig
+        )
 
         product_tracker = ProductProgressTracker(job_id=job_id)
         supabase = get_supabase_client()
@@ -3252,12 +3267,6 @@ async def process_document_with_discovery(
 
         # Track overall metrics
         total_products = len(catalog.products)
-        total_chunks_created = 0
-        total_images_processed = 0
-        total_relationships_created = 0
-        total_clip_embeddings = 0
-        products_completed = 0
-        products_failed = 0
 
         # 🧪 TEST MODE: Process only first product if test_single_product=True
         if test_single_product:
@@ -3271,89 +3280,51 @@ async def process_document_with_discovery(
             products_to_process = catalog.products  # All products
 
         # ========================================================================
-        # PRODUCT LOOP: Process each product individually
+        # PARALLEL PRODUCT PROCESSING
         # ========================================================================
-        # Each iteration:
-        # 1. Extracts ONLY this product's pages from file_content
-        # 2. Creates chunks ONLY for this product
-        # 3. Processes images ONLY from this product's pages
-        # 4. Creates this product in database
-        # 5. Links chunks/images to this product
-        # 6. CLEANS UP product-specific data (pages, chunks, images)
-        # 7. Preserves shared resources for next product
+        # Uses controlled concurrency to process 2-3 products simultaneously:
+        # - Semaphore limits concurrent processing to prevent resource exhaustion
+        # - Each product still goes through all stages (extraction, chunking, images, etc.)
+        # - Shared resources (file_content, catalog, tracker) are safely accessed
+        # - Falls back to sequential processing for small catalogs (<=2 products)
         # ========================================================================
 
-        for product_index, product in enumerate(products_to_process, start=1):
-            try:
-                logger.info(f"\n{'─'*80}")
-                logger.info(f"Processing product {product_index}/{total_products}: {product.name}")
-                logger.info(f"{'─'*80}")
+        # Configure parallel processing (can be adjusted based on server resources)
+        parallel_config = ParallelProcessingConfig(
+            max_concurrent=2,  # Process 2 products concurrently
+            enable_parallel=len(products_to_process) > 2  # Only parallelize if >2 products
+        )
 
-                # UPDATE PROGRESS: Update tracker before processing each product
-                # This ensures monitoring tools see which product is being processed
-                tracker.current_step = f"Processing product {product_index}/{total_products}: {product.name}"
-                tracker.progress_current = product_index - 1
-                tracker.progress_total = total_products
-                await tracker.update_heartbeat()  # Send heartbeat to show we're alive
+        logger.info(f"🚀 Processing mode: {'PARALLEL' if parallel_config.enable_parallel else 'SEQUENTIAL'}")
+        if parallel_config.enable_parallel:
+            logger.info(f"   Max concurrent products: {parallel_config.max_concurrent}")
 
-                # Process single product through all stages
-                # NOTE: pdf_result=None means each product extracts its own pages
-                # This keeps memory low by not holding ALL pages in memory
-                result = await process_single_product(
-                    product=product,
-                    product_index=product_index,
-                    total_products=total_products,
-                    file_content=file_content,  # SHARED: Reused for all products
-                    document_id=document_id,
-                    workspace_id=workspace_id,
-                    job_id=job_id,
-                    catalog=catalog,  # SHARED: Contains all products
-                    pdf_result=None,  # PRODUCT-SPECIFIC: Will extract per product
-                    tracker=tracker,  # SHARED: Main job tracker
-                    product_tracker=product_tracker,  # SHARED: Product progress tracker
-                    checkpoint_recovery_service=checkpoint_recovery_service,
-                    supabase=supabase,  # SHARED: Database client
-                    config=processing_config,  # SHARED: Configuration
-                    logger_instance=logger,
-                    total_pages=page_count,
-                    temp_pdf_path=file_path  # ✅ NEW: Pass temp path
-                )
+        # Process all products (parallel or sequential based on config)
+        parallel_result = await process_products_parallel(
+            products=products_to_process,
+            file_content=file_content,  # SHARED: Reused for all products
+            document_id=document_id,
+            workspace_id=workspace_id,
+            job_id=job_id,
+            catalog=catalog,  # SHARED: Contains all products
+            tracker=tracker,  # SHARED: Main job tracker
+            product_tracker=product_tracker,  # SHARED: Product progress tracker
+            checkpoint_recovery_service=checkpoint_recovery_service,
+            supabase=supabase,  # SHARED: Database client
+            config=processing_config,  # SHARED: Configuration
+            logger_instance=logger,
+            total_pages=page_count,
+            temp_pdf_path=file_path,
+            parallel_config=parallel_config
+        )
 
-                # Accumulate metrics
-                if result.success:
-                    products_completed += 1
-                    total_chunks_created += result.chunks_created
-                    total_images_processed += result.images_processed
-                    total_relationships_created += result.relationships_created
-                    total_clip_embeddings += result.clip_embeddings_generated
-
-                    # ✅ FIX: Update job metadata counters in real-time
-                    await tracker.update_database_stats(
-                        chunks_created=result.chunks_created,
-                        images_stored=result.images_processed,
-                        clip_embeddings=result.clip_embeddings_generated,
-                        products_created=1,
-                        sync_to_db=True
-                    )
-
-                    logger.info(f"✅ Product {product_index}/{total_products} completed successfully")
-                else:
-                    products_failed += 1
-                    logger.error(f"❌ Product {product_index}/{total_products} failed: {result.error}")
-
-                # Update overall progress
-                overall_progress = int((product_index / total_products) * 70) + 15  # 15-85%
-                await tracker.update_progress(overall_progress, {
-                    "current_step": f"Processed {product_index}/{total_products} products",
-                    "products_completed": products_completed,
-                    "products_failed": products_failed
-                })
-
-            except Exception as e:
-                products_failed += 1
-                logger.error(f"❌ Failed to process product {product.name}: {e}", exc_info=True)
-                # Continue with next product
-                continue
+        # Extract metrics from parallel result
+        products_completed = parallel_result.products_completed
+        products_failed = parallel_result.products_failed
+        total_chunks_created = parallel_result.total_chunks_created
+        total_images_processed = parallel_result.total_images_processed
+        total_relationships_created = parallel_result.total_relationships_created
+        total_clip_embeddings = parallel_result.total_clip_embeddings
 
         # Summary
         logger.info(f"\n{'='*80}")
@@ -3365,6 +3336,7 @@ async def process_document_with_discovery(
         logger.info(f"🖼️  Total images processed: {total_images_processed}")
         logger.info(f"🎨 Total CLIP embeddings: {total_clip_embeddings}")
         logger.info(f"🔗 Total relationships created: {total_relationships_created}")
+        logger.info(f"⏱️  Processing time: {parallel_result.processing_time_seconds:.1f}s")
         logger.info(f"{'='*80}\n")
 
         # Update tracker with final counts
@@ -3510,7 +3482,22 @@ async def process_document_with_discovery(
         # Mark job as failed using tracker
         if 'tracker' in locals():
             await tracker.fail_job(error=e)
-            
+
+        # Rollback products created during discovery if processing failed
+        # This prevents orphan products in the database
+        try:
+            from app.services.utilities.cleanup_service import CleanupService
+            cleanup_service = CleanupService()
+            rollback_stats = await cleanup_service.rollback_discovered_products(
+                document_id=document_id,
+                product_db_ids=None,  # Delete all products for this document
+                supabase_client=None  # Will get from singleton
+            )
+            logger.info(f"🔄 Product rollback completed: {rollback_stats}")
+        except Exception as rollback_error:
+            logger.error(f"⚠️ Product rollback failed: {rollback_error}")
+            sentry_sdk.capture_exception(rollback_error)
+
     finally:
         # ============================================================================
         # CONSOLIDATED CLEANUP (Failure or Success)
@@ -4670,7 +4657,8 @@ class KnowledgeBaseSearchResponse(BaseModel):
 @router.post("/search/knowledge-base", response_model=KnowledgeBaseSearchResponse)
 async def search_knowledge_base(
     request: KnowledgeBaseSearchRequest,
-    rag_service: RAGService = Depends(get_rag_service)
+    rag_service: RAGService = Depends(get_rag_service),
+    supabase: SupabaseClient = Depends(get_supabase_client)
 ):
     """
     🔍 Search existing knowledge base without uploading a PDF.

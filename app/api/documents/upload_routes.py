@@ -21,6 +21,7 @@ import aiohttp
 
 from app.services.core.supabase_client import get_supabase_client
 from app.orchestration import process_document_with_discovery, run_async_in_background
+from app.utils.resource_manager import get_resource_manager
 
 logger = logging.getLogger(__name__)
 
@@ -304,6 +305,20 @@ async def upload_document(
              # For file upload case, get file size from file_path
              file_size = os.path.getsize(file_path)
 
+        # Register temp file with ResourceManager for cleanup tracking
+        resource_manager = get_resource_manager()
+        import asyncio
+        asyncio.create_task(
+            resource_manager.register_resource(
+                resource_id=f"temp_pdf_{document_id}",
+                resource_type="temp_file",
+                path=file_path,
+                job_id=job_id,
+                metadata={"filename": filename, "source": "upload_routes"}
+            )
+        )
+        logger.info(f"✅ Registered temp PDF with ResourceManager: {file_path}")
+
         # Get Supabase client
         supabase_client = get_supabase_client()
 
@@ -328,7 +343,8 @@ async def upload_document(
                 "filename": filename,
                 "content_type": "application/pdf",
                 "file_size": file_size,
-                "file_path": file_path,
+                "file_path": file_url or file_path,  # Store durable file_url, fallback to local path
+                "file_url": file_url,  # Also store in dedicated column if available
                 "processing_status": "processing",
                 "metadata": {
                     "title": title or filename,
@@ -340,7 +356,7 @@ async def upload_document(
                     "discovery_model": discovery_model,
                     "prompt_enhancement_enabled": enable_prompt_enhancement,
                     "agent_prompt": agent_prompt,
-                    "file_url": file_url
+                    "local_temp_path": file_path  # Keep temp path in metadata for debugging
                 },
                 "created_at": datetime.utcnow().isoformat(),
                 "updated_at": datetime.utcnow().isoformat()

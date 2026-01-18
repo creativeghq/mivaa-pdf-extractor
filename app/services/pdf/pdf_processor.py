@@ -1898,15 +1898,15 @@ class PDFProcessor:
     def _opencv_fast_text_detection(self, image_path: str) -> Dict[str, Any]:
         """
         Ultra-fast text detection using OpenCV edge detection and contour analysis.
-        
+
         This is Phase 1 of the OCR filtering pipeline. It uses simple computer vision
         techniques to detect text-like patterns without running expensive OCR.
-        
+
         Speed: ~0.1 seconds per image (300x faster than EasyOCR)
-        
+
         Args:
             image_path: Path to the image file
-            
+
         Returns:
             Dict with:
                 - has_text: Boolean indicating if text patterns detected
@@ -1914,8 +1914,19 @@ class PDFProcessor:
                 - confidence: Confidence score (0.0-1.0)
                 - method: Detection method used
         """
+        # Check if OpenCV is available before attempting to use it
+        if not CV2_AVAILABLE:
+            self.logger.warning("OpenCV not available, skipping fast text detection")
+            return {
+                'has_text': True,  # Conservative default when tool unavailable
+                'text_contours_count': 0,
+                'confidence': 0.0,
+                'method': 'opencv_edge_detection',
+                'error': 'opencv_unavailable',
+                'fallback_reason': 'OpenCV not installed - defaulting to has_text=True to avoid false negatives'
+            }
+
         try:
-            import cv2
             import numpy as np
             
             # Load image in grayscale

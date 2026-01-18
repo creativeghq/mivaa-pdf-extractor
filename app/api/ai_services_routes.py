@@ -19,7 +19,7 @@ from app.services.ai_validation.boundary_detector import BoundaryDetector
 from app.services.products.product_validator import ProductValidator
 from app.services.ai_validation.consensus_validator import ConsensusValidator
 from app.services.ai_validation.escalation_engine import EscalationEngine
-from app.services.pdf.enhanced_pdf_processor import EnhancedPDFProcessor
+# REMOVED: EnhancedPDFProcessor was imported but never used - consolidated into process_document_with_discovery
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,6 @@ boundary_detector = BoundaryDetector()
 product_validator = ProductValidator()
 consensus_validator = ConsensusValidator()
 escalation_engine = EscalationEngine()
-enhanced_processor = EnhancedPDFProcessor()
 
 
 # ============================================================================
