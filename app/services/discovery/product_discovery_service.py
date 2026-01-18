@@ -1124,8 +1124,9 @@ class ProductDiscoveryService:
                             page_occurrence_count[page_num] = page_occurrence_count.get(page_num, 0) + 1
 
                 if products_with_pages >= 3:
-                    # Find pages appearing in 70%+ of products - likely TOC/index pages
-                    toc_threshold = int(products_with_pages * 0.7)
+                    # Find pages appearing in 30%+ of products - likely TOC/index pages
+                    # Lowered from 70% to catch INDEX pages that appear in fewer products
+                    toc_threshold = max(2, int(products_with_pages * 0.3))  # At least 2 products must share the page
                     toc_pages = {
                         page_num for page_num, count in page_occurrence_count.items()
                         if count >= toc_threshold
@@ -1133,7 +1134,7 @@ class ProductDiscoveryService:
 
                     if toc_pages:
                         self.logger.warning(
-                            f"   🚫 Detected {len(toc_pages)} likely TOC/Index pages (appear in 70%+ of products): {sorted(toc_pages)}"
+                            f"   🚫 Detected {len(toc_pages)} likely TOC/Index pages (appear in 30%+ of products): {sorted(toc_pages)}"
                         )
 
                         # Remove TOC pages from each product's page_range

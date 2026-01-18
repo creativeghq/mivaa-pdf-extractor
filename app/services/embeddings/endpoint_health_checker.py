@@ -180,6 +180,13 @@ class EndpointHealthChecker:
                             return result
                     elif response.status_code == 503:
                         logger.info(f"⏳ SLIG still warming up (attempt {attempt}/{self.max_health_check_attempts})")
+                    elif response.status_code == 400:
+                        # Bad request - log response body for debugging
+                        try:
+                            error_body = response.text[:500]
+                            logger.warning(f"⚠️ SLIG health check 400 Bad Request: {error_body}")
+                        except:
+                            logger.warning(f"⚠️ SLIG health check failed: HTTP 400 Bad Request")
                     else:
                         logger.warning(f"⚠️ SLIG health check failed: HTTP {response.status_code}")
 

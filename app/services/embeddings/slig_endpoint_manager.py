@@ -240,10 +240,14 @@ class SLIGEndpointManager:
             }
 
             # Send minimal inference request
+            # Handler expects: {"inputs": "<base64_string>", "parameters": {"mode": "image_embedding"}}
             response = requests.post(
                 self.endpoint_url,
                 headers=headers,
-                json={"inputs": {"image": test_image_base64}},
+                json={
+                    "inputs": test_image_base64,
+                    "parameters": {"mode": "image_embedding"}
+                },
                 timeout=10  # Short timeout for health check
             )
 

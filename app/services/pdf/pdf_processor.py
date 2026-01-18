@@ -1012,12 +1012,12 @@ class PDFProcessor:
                                     'yolo_confidence': region.confidence,
                                     'yolo_region_type': region.type,
                                     'yolo_reading_order': region.reading_order,
-                                    'bbox': {
-                                        'x': bbox.x,
-                                        'y': bbox.y,
-                                        'width': bbox.width,
-                                        'height': bbox.height
-                                    }
+                                    'bbox': [
+                                        bbox.x / full_page_image.width,  # x normalized
+                                        bbox.y / full_page_image.height,  # y normalized
+                                        bbox.width / full_page_image.width,  # width normalized
+                                        bbox.height / full_page_image.height  # height normalized
+                                    ] if full_page_image else None
                                 }
 
                                 extracted_images.append(image_info)

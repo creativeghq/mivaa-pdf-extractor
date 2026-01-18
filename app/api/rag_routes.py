@@ -2989,6 +2989,30 @@ async def process_document_with_discovery(
         logger.info(f"   Skipped (already running): {warmup_results['skipped']}")
         if warmup_results['failed']:
             logger.warning(f"   Failed: {warmup_results['failed']}")
+
+            # Check if SLIG (critical for CLIP embeddings) failed
+            failed_endpoints = [f.get('endpoint') if isinstance(f, dict) else f for f in warmup_results['failed']]
+            if 'slig' in failed_endpoints:
+                logger.error("❌ CRITICAL: SLIG endpoint warmup failed - cannot generate CLIP embeddings")
+                logger.error("   Stopping processing to prevent incomplete data")
+
+                # Update job status to failed
+                job_storage[job_id]["status"] = "failed"
+                job_storage[job_id]["error"] = "SLIG endpoint warmup failed - CLIP embeddings unavailable"
+                if job_recovery_service:
+                    await job_recovery_service.persist_job(
+                        job_id=job_id,
+                        document_id=document_id,
+                        filename=filename,
+                        status="failed",
+                        progress=job_storage[job_id].get("progress", 0),
+                        metadata=job_storage[job_id].get("metadata", {}),
+                        error="SLIG endpoint warmup failed - CLIP embeddings unavailable"
+                    )
+                raise HTTPException(
+                    status_code=503,
+                    detail="SLIG endpoint warmup failed. Please retry later or check HuggingFace endpoint status."
+                )
         logger.info("=" * 80)
 
         # Create WARMUP_COMPLETE checkpoint with results
