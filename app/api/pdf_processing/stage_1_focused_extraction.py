@@ -14,7 +14,9 @@ Features:
 import logging
 import tempfile
 import os
+import fitz
 from typing import Set, Any, Optional, Dict, List
+from app.utils.pdf_to_images import get_physical_page_text
 
 
 async def extract_product_pages(
@@ -128,17 +130,70 @@ async def extract_product_pages(
                 try:
                     # Detect layout regions for each product page
                     all_regions = []
-                    for page_idx in sorted(product_pages):
-                        # YOLO uses 0-based page numbers
-                        logger.info(f"      Detecting regions on page {page_idx}...")
-                        result = await detector.detect_layout_regions(tmp_pdf_path, page_idx)
+                    for physical_page in sorted(physical_pages):
+                        # Convert physical page to PDF page index and position
+                        if has_spread_layout and physical_page in physical_to_pdf_map:
+                            pdf_page_idx, position = physical_to_pdf_map[physical_page]
+                        else:
+                            pdf_page_idx = physical_page - 1
+                            position = 'single'
+
+                        logger.info(f"      Detecting regions on physical page {physical_page} (PDF sheet {pdf_page_idx}, position {position})...")
+                        
+                        # YOLO always detects on the full sheet
+                        result = await detector.detect_layout_regions(tmp_pdf_path, pdf_page_idx)
 
                         if result and result.regions:
-                            all_regions.extend(result.regions)
-                            logger.info(
-                                f"      ✅ Found {len(result.regions)} regions "
-                                f"({result.detection_time_ms}ms)"
-                            )
+                            # Filter and clip regions if it's a spread
+                            if position in ['left', 'right']:
+                                # Use catalog's pre-analyzed sheet width (avoids redundant PDF opening)
+                                sheet_width = 0
+                                if catalog and hasattr(catalog, 'pdf_page_widths') and catalog.pdf_page_widths:
+                                    sheet_width = catalog.pdf_page_widths.get(pdf_page_idx, 0)
+                                
+                                # Fallback if catalog missing width (unlikely)
+                                if sheet_width == 0:
+                                    doc = fitz.open(tmp_pdf_path)
+                                    sheet = doc[pdf_page_idx]
+                                    sheet_width = sheet.rect.width
+                                    doc.close()
+                                    logger.debug(f"      ⚠️ Sheet width for page {pdf_page_idx} missing from catalog, opened PDF")
+                                
+                                mid_x = sheet_width / 2
+
+                                filtered_regions = []
+                                for region in result.regions:
+                                    # Check spatial position relative to center
+                                    region_mid_x = region.bbox.x + (region.bbox.width / 2)
+                                    is_left = region_mid_x < mid_x
+                                    
+                                    # SCENE DETECTION: Spans across the middle
+                                    spans_middle = (region.bbox.x < mid_x) and (region.bbox.x + region.bbox.width > mid_x)
+                                    is_scene = spans_middle and (region.bbox.width > sheet.rect.width * 0.4)
+                                    
+                                    if is_scene:
+                                        # Keep scene regions on both physical pages (or just the first one)
+                                        # For now, we assign it to the physical_page currently being processed
+                                        region.bbox.page = physical_page
+                                        region.is_scene = True # Flag for downstream
+                                        filtered_regions.append(region)
+                                        logger.info(f"      🎞️ Scene detected: {region.label} bridging spread")
+                                    elif (position == 'left' and is_left) or (position == 'right' and not is_left):
+                                        # Normal side-specific region
+                                        region.bbox.page = physical_page
+                                        filtered_regions.append(region)
+                                
+                                logger.info(f"      ✅ Found {len(filtered_regions)} regions on {position} side")
+                                all_regions.extend(filtered_regions)
+                            else:
+                                # Normal single page or full spread image
+                                for region in result.regions:
+                                    region.bbox.page = physical_page
+                                all_regions.extend(result.regions)
+                                logger.info(
+                                    f"      ✅ Found {len(result.regions)} regions "
+                                    f"({result.detection_time_ms}ms)"
+                                )
 
                     layout_regions = all_regions
 

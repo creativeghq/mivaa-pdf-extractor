@@ -88,59 +88,121 @@ async def process_product_images(
 
     # ✅ FIX: Use singleton PDFProcessor to prevent repeated SLIG client initialization
     pdf_processor = get_pdf_processor()
-    processing_options = {
-        'extract_images': True,
-        'extract_text': False,
-        'extract_tables': False,
-        'page_list': pdf_pages_1based,  # Pass 1-based PDF page numbers
-        'extract_categories': ['products']
-    }
+    
+    # NEW: We need to handle spreads by potentially splitting image extraction
+    # and adjusting bounding boxes to physical pages.
+    
+    # Process images from PDF result
+    extracted_images_list = []
+    
+    for pdf_page_1based in pdf_pages_1based:
+        pdf_idx = pdf_page_1based - 1
+        
+        # Get physical pages for this sheet
+        sheet_physical_pages = pdf_to_physical_map.get(pdf_page_1based, [pdf_page_1based])
+        
+        # Extract images for this specific sheet
+        processing_options = {
+            'extract_images': True,
+            'extract_text': False,
+            'extract_tables': False,
+            'page_list': [pdf_page_1based],
+            'extract_categories': ['products']
+        }
+        
+        page_result = await pdf_processor.process_pdf_from_bytes(
+            pdf_bytes=file_content,
+            document_id=document_id,
+            processing_options=processing_options
+        )
+        
+        if not page_result.extracted_images:
+            continue
+            
+        # For each image, determine which physical page it's on if it's a spread
+        if has_spread_layout and len(sheet_physical_pages) > 1:
+            # It's a spread (usually 2 physical pages)
+            import fitz
+            
+            # Use catalog's pre-analyzed sheet width (avoids redundant PDF opening)
+            sheet_width = 0
+            if catalog and hasattr(catalog, 'pdf_page_widths') and catalog.pdf_page_widths:
+                sheet_width = catalog.pdf_page_widths.get(pdf_idx, 0)
+            
+            # Fallback if catalog missing width (unlikely)
+            if sheet_width == 0:
+                import fitz
+                doc = fitz.open(stream=file_content, filetype="pdf")
+                sheet = doc[pdf_idx]
+                sheet_width = sheet.rect.width
+                doc.close()
+                logger.debug(f"      ⚠️ Sheet width for page {pdf_idx} missing from catalog, opened PDF")
+            
+            mid_x = sheet_width / 2
+            
+            # sheet_physical_pages should be [left_phys, right_phys]
+            left_phys = min(sheet_physical_pages)
+            right_phys = max(sheet_physical_pages)
+            
+            for img in page_result.extracted_images:
+                # Use bbox or center point to determine side
+                bbox = img.get('bbox', [0, 0, 0, 0]) # [x, y, w, h]
+                img_width = bbox[2]
+                center_x = bbox[0] + (img_width / 2)
+                
+                # SCENE DETECTION: Wide image bridging the center
+                spans_middle = (bbox[0] < mid_x) and (bbox[0] + img_width > mid_x)
+                is_scene = spans_middle and (img_width > sheet.rect.width * 0.45)
+                
+                if is_scene:
+                    # Assign to the first physical page of the pair and mark as scene
+                    img['pdf_page_number'] = pdf_page_1based
+                    img['page_number'] = left_phys
+                    img['physical_side'] = 'spread'
+                    img['is_scene'] = True
+                    # Only add once even if iterating through physical pages
+                    if physical_page == left_phys:
+                        extracted_images_list.append(img)
+                        logger.info(f"      🎞️ Scene image detected on PDF page {pdf_page_1based}")
+                else:
+                    # Normal side detection
+                    is_left = center_x < mid_x
+                    target_phys = left_phys if is_left else right_phys
+                    
+                    if physical_page == target_phys:
+                        img['pdf_page_number'] = pdf_page_1based
+                        img['page_number'] = target_phys
+                        img['physical_side'] = 'left' if is_left else 'right'
+                        extracted_images_list.append(img)
+        else:
+            # Single page or fallback
+            target_phys = sheet_physical_pages[0]
+            for img in page_result.extracted_images:
+                img['pdf_page_number'] = pdf_page_1based
+                img['page_number'] = target_phys
+                extracted_images_list.append(img)
 
-    pdf_result = await pdf_processor.process_pdf_from_bytes(
-        pdf_bytes=file_content,
-        document_id=document_id,
-        processing_options=processing_options
-    )
+    total_images = len(extracted_images_list)
 
-    total_images = len(pdf_result.extracted_images) if pdf_result.extracted_images else 0
-
-    # ✅ FIX: Convert PDF page numbers to physical page numbers for spread layouts
-    if pdf_result.extracted_images and pdf_to_physical_map:
-        logger.info(f"   📐 Converting PDF page numbers to physical page numbers...")
-        for img in pdf_result.extracted_images:
-            pdf_page = img.get('page_number')
-            if pdf_page and pdf_page in pdf_to_physical_map:
-                physical_pages = pdf_to_physical_map[pdf_page]
-                # For spreads, use the first physical page (left side) as primary
-                # Store both for reference
-                img['pdf_page_number'] = pdf_page  # Keep original PDF page
-                img['page_number'] = physical_pages[0]  # Use physical page for DB
-                img['physical_pages'] = physical_pages  # Store all physical pages
-                logger.debug(f"      Image on PDF page {pdf_page} -> physical page {physical_pages[0]}")
-
-    # ✅ DETAILED LOGGING: Track image extraction results
-    logger.info(f"   📊 IMAGE EXTRACTION SUMMARY:")
-    logger.info(f"      Total images extracted: {total_images}")
-
-    if pdf_result.extracted_images:
+    if extracted_images_list:
         # Log images per page (now showing physical pages)
         images_by_page = {}
-        for img in pdf_result.extracted_images:
+        for img in extracted_images_list:
             page_num = img.get('page_number', 'unknown')
             images_by_page[page_num] = images_by_page.get(page_num, 0) + 1
-
+ 
         logger.info(f"      Images per physical page: {dict(sorted(images_by_page.items()))}")
-
+ 
         # Log extraction methods
         extraction_methods = {}
-        for img in pdf_result.extracted_images:
+        for img in extracted_images_list:
             method = img.get('extraction_method', 'unknown')
             extraction_methods[method] = extraction_methods.get(method, 0) + 1
-
+ 
         logger.info(f"      Extraction methods: {extraction_methods}")
-
+ 
         # Log image sizes
-        sizes = [img.get('size_bytes', 0) for img in pdf_result.extracted_images]
+        sizes = [img.get('size_bytes', 0) for img in extracted_images_list]
         if sizes:
             logger.info(f"      Image sizes: min={min(sizes)} bytes, max={max(sizes)} bytes, avg={sum(sizes)//len(sizes)} bytes")
 
@@ -160,7 +222,7 @@ async def process_product_images(
     # ✅ FIX 8: Log image paths before classification to verify they exist
     logger.info(f"   Verifying extracted image files...")
     missing_files = []
-    for i, img in enumerate(pdf_result.extracted_images[:5]):  # Check first 5
+    for i, img in enumerate(extracted_images_list[:5]):  # Check first 5
         img_path = img.get('path', '')
         exists = os.path.exists(img_path) if img_path else False
         logger.debug(f"     Image {i+1}: {img.get('filename')} - exists: {exists}")

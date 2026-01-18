@@ -49,13 +49,16 @@ import anthropic
 import openai
 from PIL import Image
 import io
+import json
 
+from app.schemas.jobs import ProcessingStage
 from app.services.core.ai_call_logger import AICallLogger
 from app.services.metadata.dynamic_metadata_extractor import DynamicMetadataExtractor
 from app.services.core.ai_client_service import get_ai_client_service
 from app.services.utilities.prompt_templates import get_prompt_template_from_db
 # PageConverter removed - using simple PDF page numbers instead
 from app.config import get_settings
+from app.utils.pdf_to_images import analyze_pdf_layout, get_physical_page_text, PDFLayoutAnalysis
 
 
 logger = logging.getLogger(__name__)
@@ -236,6 +239,8 @@ class ProductCatalog:
     has_spread_layout: bool = False
     # Mapping: physical_page -> (pdf_page_idx, 'left'|'right'|'single'|'full')
     physical_to_pdf_map: Dict[int, tuple] = None
+    # PDF page widths (pdf_page_idx -> width) - for spread center calculation
+    pdf_page_widths: Dict[int, float] = None
 
     # Processing info
     processing_time_ms: float = 0.0
@@ -454,71 +459,132 @@ class ProductDiscoveryService:
             # ============================================================
             self.logger.info(f"📋 TEXT MODE: Iterative batch discovery with early stopping...")
 
+            # Analyze layout if path is provided to handle spreads correctly
+            layout_analysis = None
+            if pdf_path:
+                # Update progress stage
+                if self.tracker:
+                    await self.tracker.update_stage(ProcessingStage.ANALYZING_STRUCTURE, stage_name="product_discovery")
+                    await self.tracker.update_detailed_progress(
+                        current_step="Analyzing PDF layout and spread detection",
+                        progress_current=0,
+                        progress_total=total_pages
+                    )
+
+                # 🏁 CHECKPOINT: Check if layout analysis already exists in job metadata
+                if job_id and self.tracker and self.tracker._supabase:
+                    try:
+                        job_data = self.tracker._supabase.client.table('background_jobs').select('metadata').eq('id', job_id).execute()
+                        if job_data.data and 'layout_analysis' in job_data.data[0].get('metadata', {}):
+                            layout_dict = job_data.data[0]['metadata']['layout_analysis']
+                            layout_analysis = PDFLayoutAnalysis.from_dict(layout_dict)
+                            self.logger.info(f"♻️  [CHECKPOINT] Reusing existing layout analysis from job metadata")
+                    except Exception as cp_err:
+                        self.logger.warning(f"⚠️ Failed to load layout checkpoint: {cp_err}")
+
+                if not layout_analysis:
+                    self.logger.info(f"📐 Analyzing PDF layout for spread detection...")
+                    
+                    # Define progress callback
+                    def layout_progress_callback(current, total):
+                        if self.tracker:
+                            self.tracker.progress_current = current
+                            self.tracker.progress_total = total
+                            self.tracker.current_step = f"Analyzing layout: page {current}/{total}"
+
+                    # Run sync layout analysis in executor to avoid blocking main loop
+                    loop = asyncio.get_event_loop()
+                    layout_analysis = await loop.run_in_executor(
+                        None, 
+                        analyze_pdf_layout, 
+                        pdf_path, 
+                        layout_progress_callback
+                    )
+
+                    # 💾 SAVE CHECKPOINT: Save layout analysis to job metadata
+                    if job_id and self.tracker and self.tracker._supabase:
+                        try:
+                            # Fetch current metadata to avoid overwriting
+                            current_job = self.tracker._supabase.client.table('background_jobs').select('metadata').eq('id', job_id).execute()
+                            metadata = current_job.data[0].get('metadata', {}) if current_job.data else {}
+                            metadata['layout_analysis'] = layout_analysis.to_dict()
+                            
+                            self.tracker._supabase.client.table('background_jobs').update({
+                                'metadata': metadata
+                            }).eq('id', job_id).execute()
+                            self.logger.info(f"💾 Saved layout analysis checkpoint to job metadata")
+                        except Exception as save_err:
+                            self.logger.warning(f"⚠️ Failed to save layout checkpoint: {save_err}")
+
+                total_physical_pages = layout_analysis.total_physical_pages
+                self.logger.info(f"   Layout analysis: {total_pages} PDF sheets -> {total_physical_pages} physical pages")
+            else:
+                total_physical_pages = total_pages
+
             # Extract text from PDF if not provided
             if pdf_text is None:
                 if pdf_path is None:
                     raise ValueError("Either pdf_text or pdf_path must be provided for text-based discovery")
 
-                self.logger.info(f"📄 Extracting PDF text page-by-page with progress tracking...")
-                self.logger.info(f"   Total pages: {total_pages}")
-                import pymupdf4llm
+                self.logger.info(f"📄 Extracting PDF text physical-page-by-page with progress tracking...")
                 import fitz
 
                 # Extract page by page with progress logging
                 doc = fitz.open(pdf_path)
                 pdf_text_parts = []
-                pages_extracted = 0
-                pages_failed = 0
-
-                # Log progress every N pages
-                log_interval = max(1, total_pages // 10)  # Log ~10 times during extraction
-
-                for page_num in range(len(doc)):
-                    try:
-                        page_text = pymupdf4llm.to_markdown(pdf_path, pages=[page_num])
-                        # ✅ FIX: Add explicit page markers that Claude can use
-                        # PyMuPDF4LLM does NOT include page numbers - only "-----" separators
-                        # Without these markers, Claude uses printed catalog page numbers from INDEX
-                        # which are DIFFERENT from actual PDF page numbers
-                        page_marker = f"\n\n--- # Page {page_num + 1} ---\n\n"
-                        pdf_text_parts.append(page_marker + page_text)
-                        pages_extracted += 1
-
-                        # Log progress at intervals
-                        if (page_num + 1) % log_interval == 0 or (page_num + 1) == total_pages:
-                            progress_pct = int(((page_num + 1) / total_pages) * 100)
-                            self.logger.info(f"   📊 Progress: {page_num + 1}/{total_pages} pages ({progress_pct}%) - {len(''.join(pdf_text_parts)):,} chars extracted")
-                            # Update tracker with extraction progress (0-3% of Stage 0)
-                            if self.tracker:
-                                extraction_progress = int((progress_pct / 100) * 3)  # 0-3%
-                                self.tracker.manual_progress_override = extraction_progress
-                                self.tracker.current_step = f"Extracting text: {page_num + 1}/{total_pages} pages"
-                                await self.tracker.update_heartbeat()
-
-                    except Exception as page_error:
-                        pages_failed += 1
-                        self.logger.warning(f"   ⚠️ Skipping page {page_num + 1} due to error: {page_error}")
-                        continue
+                
+                # Use layout analysis if available to iterate physical pages
+                if layout_analysis:
+                    for physical_page in range(1, total_physical_pages + 1):
+                        try:
+                            page_text, _ = get_physical_page_text(doc, layout_analysis, physical_page)
+                            page_marker = f"\n\n--- # Page {physical_page} ---\n\n"
+                            pdf_text_parts.append(page_marker + page_text)
+                            
+                            # Log progress at intervals
+                            if physical_page % 10 == 0 or physical_page == total_physical_pages:
+                                progress_pct = int((physical_page / total_physical_pages) * 100)
+                                self.logger.info(f"   📊 Progress: {physical_page}/{total_physical_pages} physical pages ({progress_pct}%)")
+                        except Exception as e:
+                            self.logger.warning(f"   ⚠️ Skipping physical page {physical_page} due to error: {e}")
+                            continue
+                else:
+                    # Fallback to sheet-based extraction if no layout analysis
+                    for page_num in range(total_pages):
+                        try:
+                            page = doc[page_num]
+                            page_text = page.get_text()
+                            page_marker = f"\n\n--- # Page {page_num + 1} ---\n\n"
+                            pdf_text_parts.append(page_marker + page_text)
+                        except Exception as e:
+                            self.logger.warning(f"   ⚠️ Skipping sheet {page_num + 1} due to error: {e}")
+                            continue
 
                 doc.close()
                 pdf_text = "\n\n".join(pdf_text_parts)
 
                 self.logger.info(f"✅ PDF text extraction complete:")
-                self.logger.info(f"   📄 Pages extracted: {pages_extracted}/{total_pages}")
-                if pages_failed > 0:
-                    self.logger.warning(f"   ⚠️ Pages failed: {pages_failed}")
                 self.logger.info(f"   📝 Total characters: {len(pdf_text):,}")
 
             # Iterative batch discovery
             catalog = await self._iterative_batch_discovery(
                 pdf_text,
-                total_pages,
+                total_physical_pages,
                 categories,
                 agent_prompt,
                 workspace_id,
                 enable_prompt_enhancement,
                 job_id
-                )
+            )
+            
+            # Store layout info in catalog
+            if layout_analysis:
+                catalog.has_spread_layout = layout_analysis.has_spread_layout
+                catalog.physical_to_pdf_map = layout_analysis.physical_to_pdf_map
+                catalog.total_pages = total_physical_pages
+                catalog.total_pdf_pages = total_pages
+                # Store PDF page widths for downstream stages (e.g. Stage 3 scene detection)
+                catalog.pdf_page_widths = {p.pdf_page_num: p.width for p in layout_analysis.pages}
 
             self.logger.info(f"✅ STAGE 0A complete: Found {len(catalog.products)} products")
             # Update progress: Stage 0A complete (discovery scan) = 5%
@@ -1006,23 +1072,6 @@ class ProductDiscoveryService:
             product_page_mapping = {}  # Map product index to its pages
 
             # ============================================================
-            # SPREAD LAYOUT DETECTION - Handle catalogs with 2-page spreads
-            # ============================================================
-            from app.utils.pdf_to_images import (
-                analyze_pdf_layout,
-                extract_text_with_physical_pages,
-                PDFLayoutAnalysis
-            )
-
-            # Analyze PDF layout to detect spread pages
-            pdf_layout = analyze_pdf_layout(pdf_path)
-            pdf_page_count = pdf_layout.total_physical_pages  # Use PHYSICAL page count
-
-            self.logger.info(f"   📄 PDF has {pdf_layout.total_pdf_pages} PDF pages -> {pdf_page_count} physical pages")
-            if pdf_layout.has_spread_layout:
-                self.logger.info(f"   📐 Spread layout detected - using physical page numbers for product mapping")
-
-            # ============================================================
             # DETERMINISTIC PAGE DETECTION FOR ALL PRODUCTS (OPTIMIZED)
             # Claude returns ONLY product names - we detect pages using text search + YOLO
             # ============================================================
@@ -1031,14 +1080,8 @@ class ProductDiscoveryService:
             )
 
             # Ensure we have pdf_text with PHYSICAL page markers (handles spread layouts)
-            # ⚠️ FIX: For spread layouts, ALWAYS re-extract with physical page markers
-            # The initial extraction uses PDF page indices (1-71), not physical pages (1-140)
-            if not pdf_text or pdf_layout.has_spread_layout:
-                if pdf_layout.has_spread_layout:
-                    self.logger.info("   🔄 Spread layout detected - re-extracting text with PHYSICAL page markers...")
-                else:
-                    self.logger.info("   Extracting text for page detection (with spread layout handling)...")
-                pdf_text, _ = extract_text_with_physical_pages(pdf_path)
+            # Use the page count from catalog
+            pdf_page_count = catalog.total_pages
 
             # ⚡ OPTIMIZATION: Parse PDF text into pages ONCE (not per-product)
             pages_content = self._parse_pdf_text_into_pages(pdf_text, pdf_page_count)
@@ -1082,7 +1125,7 @@ class ProductDiscoveryService:
                             detected_pages=detected_pages,
                             product_name=product.name,
                             detector=yolo_detector,
-                            pdf_layout=pdf_layout  # Pass layout for spread handling
+                            pdf_layout=catalog  # Use catalog which has layout info
                         )
                         # Use validated pages if YOLO returned any, otherwise keep text-detected pages
                         if validated_pages:

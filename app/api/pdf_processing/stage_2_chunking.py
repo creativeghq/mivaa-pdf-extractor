@@ -6,7 +6,9 @@ Includes metadata-first chunking, context enrichment, and type classification.
 """
 
 import logging
+import fitz
 from typing import Dict, Any, Set, List, Optional
+from app.utils.pdf_to_images import analyze_pdf_layout, get_physical_page_text
 
 
 async def process_product_chunking(
@@ -154,22 +156,50 @@ async def process_product_chunking(
                 logger.info(f"      ♻️ Reusing existing temp PDF: {used_temp_path}")
 
             try:
-                # product_pages contains 0-based array indices
-                # pymupdf4llm.to_markdown expects 0-based page indices
-                page_indices = sorted(list(product_pages))
+                # product_pages contains PDF SHEET indices (0-based)
+                # physical_pages contains VISUAL page numbers (1-based)
+                # We should use PHYSICAL pages to ensure we split spreads correctly
+                
+                # Get physical pages for this product from catalog or work it out
+                # In discover_products, we added them to the product/catalog
+                physical_page_list = []
+                if catalog and hasattr(catalog, 'physical_to_pdf_map'):
+                    # Map back: find physical pages that map to our PDF sheets
+                    for phys, (sheet, pos) in catalog.physical_to_pdf_map.items():
+                        if sheet in product_pages:
+                            # Verify this visual page belongs to this specific product's range
+                            if phys in product.page_range:
+                                physical_page_list.append(phys)
+                
+                if not physical_page_list:
+                    # Fallback to simple mapping
+                    physical_page_list = [p + 1 for p in sorted(list(product_pages))]
 
-                # Extract text from specific pages using PyMuPDF4LLM
-                if page_indices:
-                    logger.info(f"   📄 Extracting text from PDF page indices: {page_indices}")
-                    markdown_result = pymupdf4llm.to_markdown(
-                        used_temp_path,  # Use our temp path
-                        pages=page_indices,  # 0-based indices
-                        page_chunks=False  # Get full text, not page chunks
-                    )
-                    product_text = str(markdown_result) if markdown_result else ""
-                    logger.info(f"   ✅ Extracted {len(product_text)} characters from {len(page_indices)} pages")
+                logger.info(f"   📄 Extracting text from physical pages: {physical_page_list}")
+                
+                doc = fitz.open(used_temp_path)
+                # Use existing layout check from catalog if available
+                # This avoids redundant expensive PDF analysis
+                layout_analysis = None
+                if catalog and hasattr(catalog, 'has_spread_layout'):
+                    # Create a mock/compatible layout object from catalog
+                    from app.utils.pdf_to_images import PDFLayoutAnalysis
+                    layout_analysis = catalog
+                    logger.info("      ♻️ Reusing layout analysis from catalog")
                 else:
-                    logger.warning(f"   ⚠️ No valid pages found for product")
+                    logger.info("      📐 No layout in catalog, performing fresh layout analysis...")
+                    layout_analysis = analyze_pdf_layout(used_temp_path)
+                
+                text_parts = []
+                for phys_page in sorted(physical_page_list):
+                    page_text, _ = get_physical_page_text(doc, layout_analysis, phys_page)
+                    # Add physical page marker for chunking context
+                    page_marker = f"\n\n--- # Page {phys_page} ---\n\n"
+                    text_parts.append(page_marker + page_text)
+                
+                doc.close()
+                product_text = "".join(text_parts)
+                logger.info(f"   ✅ Extracted {len(product_text)} characters from {len(physical_page_list)} visual pages")
             finally:
                 # Only delete if we created it locally
                 if created_temp and used_temp_path and os.path.exists(used_temp_path):

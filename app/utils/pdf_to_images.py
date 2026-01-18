@@ -41,6 +41,29 @@ class PageLayoutInfo:
     aspect_ratio: float
     has_full_spread_image: bool = False
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "pdf_page_num": self.pdf_page_num,
+            "layout_type": self.layout_type.value,
+            "physical_pages": self.physical_pages,
+            "width": self.width,
+            "height": self.height,
+            "aspect_ratio": self.aspect_ratio,
+            "has_full_spread_image": self.has_full_spread_image
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'PageLayoutInfo':
+        return cls(
+            pdf_page_num=data["pdf_page_num"],
+            layout_type=PageLayoutType(data["layout_type"]),
+            physical_pages=data["physical_pages"],
+            width=data["width"],
+            height=data["height"],
+            aspect_ratio=data["aspect_ratio"],
+            has_full_spread_image=data.get("has_full_spread_image", False)
+        )
+
 
 @dataclass
 class PDFLayoutAnalysis:
@@ -52,6 +75,29 @@ class PDFLayoutAnalysis:
     # Mapping from physical page to PDF page info
     # physical_page -> (pdf_page_idx, 'left'|'right'|'single'|'full')
     physical_to_pdf_map: Dict[int, Tuple[int, str]]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "total_pdf_pages": self.total_pdf_pages,
+            "total_physical_pages": self.total_physical_pages,
+            "has_spread_layout": self.has_spread_layout,
+            "pages": [p.to_dict() for p in self.pages],
+            "physical_to_pdf_map": {str(k): list(v) for k, v in self.physical_to_pdf_map.items()}
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'PDFLayoutAnalysis':
+        # Convert map keys back to int and tuples
+        raw_map = data.get("physical_to_pdf_map", {})
+        physical_to_pdf_map = {int(k): (v[0], v[1]) for k, v in raw_map.items()}
+        
+        return cls(
+            total_pdf_pages=data["total_pdf_pages"],
+            total_physical_pages=data["total_physical_pages"],
+            has_spread_layout=data["has_spread_layout"],
+            pages=[PageLayoutInfo.from_dict(p) for p in data["pages"]],
+            physical_to_pdf_map=physical_to_pdf_map
+        )
 
 
 def detect_full_spread_image(page: fitz.Page, threshold: float = 0.75) -> bool:
@@ -112,7 +158,9 @@ def detect_full_spread_image(page: fitz.Page, threshold: float = 0.75) -> bool:
     return False
 
 
-def analyze_pdf_layout(pdf_path: str) -> PDFLayoutAnalysis:
+from typing import List, Optional, Tuple, Dict, Any, Callable
+
+def analyze_pdf_layout(pdf_path: str, progress_callback: Optional[Callable[[int, int], None]] = None) -> PDFLayoutAnalysis:
     """
     Analyze PDF layout to detect spreads and map physical page numbers.
 
@@ -137,6 +185,10 @@ def analyze_pdf_layout(pdf_path: str) -> PDFLayoutAnalysis:
     has_any_spread = False
 
     for pdf_page_idx in range(total_pdf_pages):
+        # Progress callback
+        if progress_callback:
+            progress_callback(pdf_page_idx + 1, total_pdf_pages)
+
         page = doc[pdf_page_idx]
         width = page.rect.width
         height = page.rect.height
