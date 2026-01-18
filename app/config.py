@@ -1174,8 +1174,7 @@ class Settings(BaseSettings):
         """
         return {
             "endpoint_url": self.qwen_endpoint_url,
-            "endpoint_token": self.huggingface_api_key,  # Use global HF token
-            "hf_token": self.huggingface_api_key,  # Alias for backwards compatibility
+            "endpoint_token": self.huggingface_api_key,
             "endpoint_name": self.qwen_endpoint_name,
             "namespace": self.qwen_namespace,
             "model": self.qwen_model,

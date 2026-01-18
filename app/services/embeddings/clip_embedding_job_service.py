@@ -429,10 +429,7 @@ class CLIPEmbeddingJobService:
 
     async def _save_visual_embedding_to_db(self, image_id: str, embedding: List[float]) -> bool:
         """
-        Save visual CLIP embedding to embeddings table (NOT document_images).
-
-        Note: This method is deprecated. Use embeddings table + VECS directly.
-        Kept for backward compatibility but now saves to embeddings table only.
+        Save visual CLIP embedding to document_images table.
 
         Args:
             image_id: Image ID

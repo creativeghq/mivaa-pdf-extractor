@@ -241,5 +241,5 @@ memory_monitor = MemoryPressureMonitor(
     enable_auto_cleanup=True
 )
 
-# Create global instance with alias for backward compatibility
+# Global instance alias
 global_memory_monitor = memory_monitor

@@ -22,6 +22,7 @@ from datetime import datetime
 import uuid
 
 from app.services.core.supabase_client import get_supabase_client
+from app.services.images.multi_modal_image_product_association_service import MultiModalImageProductAssociationService
 
 logger = logging.getLogger(__name__)
 
@@ -852,6 +853,13 @@ class EntityLinkingService:
             else:
                 logger.debug(f"   ℹ️ No tables found for product")
 
+            # Enhance image associations with multi-modal analysis (CLIP embeddings)
+            multimodal_result = await self._enhance_image_associations_multimodal(
+                document_id=document_id,
+                logger=logger
+            )
+            stats['multimodal_associations'] = multimodal_result.get('associations_created', 0)
+
             stats['relationships_created'] = stats['image_product_links'] + stats['chunk_product_links']
             logger.info(f"   ✅ Total relationships created: {stats['relationships_created']} (+ {stats['tables_linked']} tables)")
 
@@ -868,4 +876,33 @@ class EntityLinkingService:
                 'relationships_created': 0
             }
 
+    async def _enhance_image_associations_multimodal(
+        self,
+        document_id: str,
+        logger: logging.Logger
+    ) -> Dict[str, Any]:
+        """
+        Enhance image-product associations using multi-modal analysis.
+        Uses CLIP embeddings for visual similarity scoring.
+        """
+        try:
+            logger.info("🎯 Enhancing image associations with multi-modal analysis...")
 
+            multimodal_service = MultiModalImageProductAssociationService()
+            result = await multimodal_service.create_document_associations(document_id)
+
+            associations_created = result.get('associations_created', 0)
+            avg_confidence = result.get('average_confidence', 0)
+
+            if associations_created > 0:
+                logger.info(f"   ✅ Multi-modal: {associations_created} associations enhanced")
+                logger.info(f"   📊 Avg confidence: {avg_confidence * 100:.1f}%")
+            else:
+                logger.info("   ℹ️ No multi-modal associations created (may already exist or no CLIP embeddings)")
+
+            return result
+        except Exception as e:
+            logger.warning(f"   ⚠️ Multi-modal enhancement failed: {e}")
+            import traceback
+            logger.debug(f"   Traceback: {traceback.format_exc()}")
+            return {'associations_created': 0, 'error': str(e)}

@@ -397,20 +397,48 @@ class EnhancedPDFProcessor:
         chunks: List[Dict[str, Any]],
         all_images: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
-        """Extract product data from chunk group."""
+        """Extract product data from chunk group.
+
+        Associates images with products based on page proximity.
+        Images are matched to products if they appear on the same page(s)
+        as any of the product's chunks.
+        """
         # Combine chunk content
         combined_content = "\n\n".join(chunk.get("content", "") for chunk in chunks)
-        
-        # Find associated images (simple proximity-based)
+
+        # Find associated images based on page proximity
         product_images = []
-        # For now, just include all images - can be enhanced later
-        
+
+        # Get all page numbers from chunks in this group
+        chunk_pages = set()
+        for chunk in chunks:
+            # Check various metadata locations for page number
+            page_num = chunk.get("page_number")
+            if page_num is None:
+                metadata = chunk.get("metadata", {})
+                page_num = metadata.get("page_number") or metadata.get("page")
+            if page_num is not None:
+                chunk_pages.add(page_num)
+
+        # Match images by page number
+        if chunk_pages and all_images:
+            for image in all_images:
+                image_page = image.get("page_number")
+                if image_page is None:
+                    # Try alternate locations
+                    image_page = image.get("page") or image.get("metadata", {}).get("page_number")
+
+                # Associate image if it's on the same page as any chunk
+                if image_page is not None and image_page in chunk_pages:
+                    product_images.append(image)
+
         return {
             "content": combined_content,
             "chunks": chunks,
             "images": product_images,
             "chunk_count": len(chunks),
             "character_count": len(combined_content),
+            "page_numbers": list(chunk_pages) if chunk_pages else [],
         }
 
 

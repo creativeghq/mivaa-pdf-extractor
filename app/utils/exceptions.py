@@ -353,16 +353,16 @@ def get_http_status_code(exception: Exception) -> int:
 def create_error_response(exception: Exception) -> Dict[str, Any]:
     """
     Create a standardized error response dictionary from an exception.
-    
+
     Args:
         exception: The exception instance
-        
+
     Returns:
         Dictionary containing error information suitable for API responses
     """
     if isinstance(exception, PDFProcessingError):
         return exception.to_dict()
-    
+
     # Handle non-custom exceptions
     return {
         "error": "UNKNOWN_ERROR",
@@ -371,3 +371,173 @@ def create_error_response(exception: Exception) -> Dict[str, Any]:
             "exception_type": type(exception).__name__
         }
     }
+
+
+# =============================================================================
+# ERROR HANDLING UTILITIES
+# =============================================================================
+
+import functools
+import logging
+from typing import Callable, TypeVar, Union
+
+T = TypeVar('T')
+
+
+def handle_extraction_errors(
+    operation_name: str,
+    default_return: T = None,
+    reraise: bool = False,
+    log_level: int = logging.ERROR
+) -> Callable:
+    """
+    Decorator for consistent error handling in PDF extraction methods.
+
+    Provides standardized logging, exception conversion, and recovery behavior
+    for extraction operations.
+
+    Args:
+        operation_name: Name of the operation for logging (e.g., "image extraction")
+        default_return: Default value to return on error (if not reraising)
+        reraise: If True, reraises the exception after logging; if False, returns default
+        log_level: Logging level for error messages (default: ERROR)
+
+    Usage:
+        @handle_extraction_errors("image extraction", default_return=[], reraise=False)
+        async def extract_images(self, pdf_path: str) -> List[Dict]:
+            ...
+
+        @handle_extraction_errors("PDF processing", reraise=True)
+        async def process_pdf(self, pdf_bytes: bytes) -> PDFProcessingResult:
+            ...
+    """
+    def decorator(func: Callable) -> Callable:
+        @functools.wraps(func)
+        async def async_wrapper(*args, **kwargs) -> T:
+            logger = logging.getLogger(func.__module__)
+            try:
+                return await func(*args, **kwargs)
+            except PDFProcessingError:
+                # Already a custom exception, just log and handle
+                logger.log(log_level, f"{operation_name} failed with PDF processing error", exc_info=True)
+                if reraise:
+                    raise
+                return default_return
+            except Exception as e:
+                # Convert to appropriate custom exception
+                logger.log(log_level, f"{operation_name} failed: {str(e)}", exc_info=True)
+                if reraise:
+                    raise PDFExtractionError(
+                        message=f"{operation_name} failed: {str(e)}",
+                        extraction_type=operation_name,
+                        original_error=e
+                    )
+                return default_return
+
+        @functools.wraps(func)
+        def sync_wrapper(*args, **kwargs) -> T:
+            logger = logging.getLogger(func.__module__)
+            try:
+                return func(*args, **kwargs)
+            except PDFProcessingError:
+                logger.log(log_level, f"{operation_name} failed with PDF processing error", exc_info=True)
+                if reraise:
+                    raise
+                return default_return
+            except Exception as e:
+                logger.log(log_level, f"{operation_name} failed: {str(e)}", exc_info=True)
+                if reraise:
+                    raise PDFExtractionError(
+                        message=f"{operation_name} failed: {str(e)}",
+                        extraction_type=operation_name,
+                        original_error=e
+                    )
+                return default_return
+
+        # Return appropriate wrapper based on function type
+        import asyncio
+        if asyncio.iscoroutinefunction(func):
+            return async_wrapper
+        return sync_wrapper
+
+    return decorator
+
+
+class ErrorRecoveryContext:
+    """
+    Context manager for recoverable operations with automatic cleanup.
+
+    Provides structured error handling with resource cleanup for operations
+    that should attempt recovery before failing.
+
+    Usage:
+        async with ErrorRecoveryContext("image processing", logger) as ctx:
+            result = await process_image(path)
+            ctx.set_result(result)
+        # If exception occurred, ctx.result will be None but cleanup runs
+    """
+
+    def __init__(
+        self,
+        operation_name: str,
+        logger: logging.Logger,
+        cleanup_func: Optional[Callable] = None,
+        suppress_errors: bool = True
+    ):
+        self.operation_name = operation_name
+        self.logger = logger
+        self.cleanup_func = cleanup_func
+        self.suppress_errors = suppress_errors
+        self.result = None
+        self.error = None
+        self.success = False
+
+    def set_result(self, result: Any) -> None:
+        """Set the successful result."""
+        self.result = result
+        self.success = True
+
+    async def __aenter__(self) -> 'ErrorRecoveryContext':
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> bool:
+        if exc_type is not None:
+            self.error = exc_val
+            self.logger.warning(
+                f"{self.operation_name} encountered error: {exc_val}",
+                exc_info=(exc_type, exc_val, exc_tb)
+            )
+
+        # Run cleanup if provided
+        if self.cleanup_func:
+            try:
+                import asyncio
+                if asyncio.iscoroutinefunction(self.cleanup_func):
+                    await self.cleanup_func()
+                else:
+                    self.cleanup_func()
+            except Exception as cleanup_error:
+                self.logger.warning(f"Cleanup failed for {self.operation_name}: {cleanup_error}")
+
+        # Return True to suppress exception if configured
+        return self.suppress_errors and exc_type is not None
+
+    def __enter__(self) -> 'ErrorRecoveryContext':
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        if exc_type is not None:
+            self.error = exc_val
+            self.logger.warning(
+                f"{self.operation_name} encountered error: {exc_val}",
+                exc_info=(exc_type, exc_val, exc_tb)
+            )
+
+        # Run cleanup if provided
+        if self.cleanup_func:
+            try:
+                self.cleanup_func()
+            except Exception as cleanup_error:
+                self.logger.warning(f"Cleanup failed for {self.operation_name}: {cleanup_error}")
+
+        return self.suppress_errors and exc_type is not None

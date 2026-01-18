@@ -163,7 +163,7 @@ STANDARDIZED FIELD NAMES (use EXACTLY these names):
 - designers: Array of designer names (e.g., ["José Manuel Ferrero"])
 - studio: Design studio name (e.g., "Estudi{{H}}ac")
 - studio_founded: Year studio was founded (e.g., "2003")
-- collection: Collection name (e.g., "VALENOVA")
+- collection: Collection/product line name (NOT fabric techniques like "piqué" - leave empty if unsure)
 - philosophy: Design philosophy or concept
 - inspiration: Design inspiration source
 - aesthetic_style: Aesthetic style description
@@ -385,8 +385,19 @@ class DynamicMetadataExtractor:
         # 1. Always include beginning (product name, description, basic info)
         extracted_sections.append(("START", pdf_text[:8000]))
 
-        # 2. Search for relevant sections
+        # 1.5. Include index/TOC pages (usually pages 8-20) for dimension data
+        # Index pages often contain product dimensions in table format
         import re
+        index_start = 8000  # Approximate start of index pages
+        index_end = min(25000, len(pdf_text))  # Include up to ~page 20
+        if len(pdf_text) > index_end:
+            # Look for dimension patterns in index area
+            index_area = pdf_text[index_start:index_end]
+            if re.search(r'\d+[.,]?\d*\s*[x×]\s*\d+[.,]?\d*\s*(cm|mm|inch)?', index_area, re.IGNORECASE):
+                extracted_sections.append(("INDEX_DIMENSIONS", index_area))
+                self.logger.debug("   📐 Found dimensions in index area - including")
+
+        # 2. Search for relevant sections
         for keyword_pattern in section_keywords:
             for match in re.finditer(keyword_pattern, pdf_text, re.IGNORECASE):
                 start = max(0, match.start() - 1000)  # 1000 chars before

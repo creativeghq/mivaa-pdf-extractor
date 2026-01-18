@@ -206,11 +206,8 @@ async def process_product_chunking(
     chunks_created = chunk_result.get('chunks_created', 0)
     logger.info(f"   ✅ Created {chunks_created} chunks for {product.name} (already stored in DB)")
 
-    # TODO: If we need chunk enrichment and classification, we should:
-    # 1. Fetch chunks from DB using chunk_ids
-    # 2. Enrich and classify them
-    # 3. Update them in DB
-    # For now, we skip this since chunks are already stored with basic metadata
+    # Note: Chunks are stored with basic metadata. Enrichment and classification
+    # can be added in a future stage if needed by fetching chunks by ID from DB.
 
     return {
         'chunks_created': chunks_created,

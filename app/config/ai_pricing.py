@@ -48,7 +48,7 @@ class AIPricingConfig:
             "last_verified": "2025-12-26",
             "source": "https://www.anthropic.com/pricing"
         },
-        # Legacy models (for backward compatibility)
+        # Previous generation models
         "claude-3-5-sonnet-20241022": {
             "input": Decimal("3.00"),
             "output": Decimal("15.00"),

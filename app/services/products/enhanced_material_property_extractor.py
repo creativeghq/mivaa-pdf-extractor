@@ -754,13 +754,11 @@ async def extract_enhanced_properties_from_analysis(
 
 def convert_to_legacy_format(extraction_result: PropertyExtractionResult) -> Dict[str, Any]:
     """
-    Convert enhanced extraction result to legacy material_properties format.
-    
-    This ensures backward compatibility with existing MIVAA components.
+    Convert enhanced extraction result to standard material_properties format.
     """
     enhanced_props = extraction_result.enhanced_properties
-    
-    # Map enhanced properties to legacy format for backward compatibility
+
+    # Map enhanced properties to standard format
     legacy_format = {}
     
     # Determine material family from enhanced analysis

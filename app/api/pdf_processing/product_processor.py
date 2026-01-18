@@ -195,6 +195,14 @@ async def process_single_product(
             logger_instance.info("   Continuing without layout detection...")
 
         # ========================================================================
+        # Get product_db_id early (set in Stage 0 discovery) for chunk linking
+        # ========================================================================
+        product_status = await product_tracker.get_product_status(product_id)
+        product_db_id = product_status.metadata.get('product_db_id') if product_status else None
+        if not product_db_id:
+            logger_instance.warning(f"⚠️ product_db_id not found for {product.name} - chunks won't be linked")
+
+        # ========================================================================
         # STAGE 2: Create Text Chunks
         # ========================================================================
         current_stage = ProductStage.CHUNKING
@@ -220,7 +228,7 @@ async def process_single_product(
             config=config,
             supabase=supabase,
             logger=logger_instance,
-            product_id=None,
+            product_id=product_db_id,  # ✅ FIX: Pass actual DB ID for chunk linking
             temp_pdf_path=temp_pdf_path,  # ✅ NEW: Pass temp path
             layout_regions=layout_regions  # ✅ NEW: Pass layout regions directly
         )
@@ -316,9 +324,7 @@ async def process_single_product(
             tracker.current_step = f"Stage 4: Updating product metadata for {product.name}"
             await tracker.update_heartbeat()
 
-        # Get product_db_id from product_progress metadata (set in Stage 0)
-        product_status = await product_tracker.get_product_status(product_id)
-        product_db_id = product_status.metadata.get('product_db_id') if product_status else None
+        # product_db_id was already retrieved early (before Stage 2) for chunk linking
 
         if not product_db_id:
             raise Exception(f"Product DB ID not found for {product.name} - product should have been created in Stage 0")
@@ -420,6 +426,30 @@ async def process_single_product(
         )
         result.product_db_id = product_db_id
         logger_instance.info(f"✅ Product updated in DB: {product_db_id}")
+
+        # ========================================================================
+        # STAGE 4.5: Auto-create KB documents from extracted metadata
+        # ========================================================================
+        logger_instance.info(f"📚 [STAGE 4.5/{product_index}] Creating knowledge base documents...")
+
+        try:
+            from app.services.knowledge.auto_kb_document_service import AutoKBDocumentService
+
+            kb_service = AutoKBDocumentService()
+            kb_result = await kb_service.create_kb_documents_from_metadata(
+                product_id=product_db_id,
+                product_name=product.name,
+                workspace_id=workspace_id,
+                metadata=extraction_result.get('metadata', {})
+            )
+
+            kb_docs_created = kb_result.get('documents_created', 0)
+            if kb_docs_created > 0:
+                logger_instance.info(f"   ✅ Created {kb_docs_created} KB documents")
+            else:
+                logger_instance.info(f"   ℹ️ No KB documents created (no eligible metadata)")
+        except Exception as e:
+            logger_instance.warning(f"   ⚠️ KB creation failed: {e}")
 
         # ========================================================================
         # STAGE 5: Create Relationships (Link chunks/images to product)

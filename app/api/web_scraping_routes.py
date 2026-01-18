@@ -122,7 +122,7 @@ async def process_scraping_session(
             success=True,
             session_id=request.session_id,
             message="Session processing started in background",
-            job_id=None  # TODO: Integrate with AsyncQueueService for job tracking
+            job_id=None  # Job tracking via AsyncQueueService not yet implemented
         )
 
     except HTTPException:
@@ -228,7 +228,7 @@ async def retry_session_processing(
             try:
                 result = await scraping_service.process_scraping_session(
                     session_id=session_id,
-                    workspace_id=session.get("workspace_id") or "default",  # TODO: Get from session
+                    workspace_id=session.get("workspace_id") or "default",
                     categories=["products"]
                 )
                 logger.info(f"✅ Session retry complete: {result}")

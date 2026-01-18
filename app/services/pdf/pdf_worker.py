@@ -6,18 +6,12 @@ import inspect
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 
-# Import core extraction functions
-# Try/Except block copied from pdf_processor.py to ensure compatibility
-try:
-    from app.core.extractor import extract_pdf_to_markdown, extract_pdf_to_markdown_with_doc
-except ImportError:
-    try:
-        from ..core.extractor import extract_pdf_to_markdown, extract_pdf_to_markdown_with_doc
-    except ImportError:
-        def extract_pdf_to_markdown(*args, **kwargs):
-            raise NotImplementedError("PDF extraction functions not available")
-        def extract_pdf_to_markdown_with_doc(*args, **kwargs):
-            raise NotImplementedError("PDF extraction functions not available")
+# Import core extraction functions from centralized module
+from app.services.pdf.extractor_imports import (
+    extract_pdf_to_markdown,
+    extract_pdf_to_markdown_with_doc,
+    EXTRACTOR_AVAILABLE
+)
 
 from app.services.pdf.ocr_service import get_ocr_service, OCRConfig
 from app.utils.exceptions import PDFExtractionError
@@ -39,7 +33,7 @@ def execute_pdf_extraction_job(
 
     Returns:
         Tuple of (markdown_content, metadata, page_chunks)
-        - markdown_content: Combined markdown string (for backward compatibility)
+        - markdown_content: Combined markdown string
         - metadata: Extraction metadata
         - page_chunks: Optional list of page dicts with metadata (when page_list is provided)
     """
@@ -124,7 +118,7 @@ def execute_pdf_extraction_job(
                 else:
                     page_chunks = pymupdf4llm.to_markdown(pdf_path, pages=page_indices, page_chunks=True)
 
-                # Also create combined markdown for backward compatibility
+                # Create combined markdown from page chunks
                 markdown_content = "\n\n-----\n\n".join([page.get('text', '') for page in page_chunks])
                 logger.info(f"Worker: Extracted {len(page_chunks)} pages with metadata, {len(markdown_content)} chars total")
             except Exception as e:

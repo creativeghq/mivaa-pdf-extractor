@@ -1,8 +1,8 @@
 """
 PDF Processing Service - Integration with existing PyMuPDF4LLM functionality
 
-This service wraps the existing extractor.py functionality to work with the 
-production FastAPI application structure, providing async interfaces and 
+This service wraps the existing extractor.py functionality to work with the
+production FastAPI application structure, providing async interfaces and
 proper error handling while leveraging the proven PDF extraction code.
 """
 
@@ -21,7 +21,59 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import aiofiles
 import httpx
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+
+# =============================================================================
+# CONFIGURATION CONSTANTS
+# =============================================================================
+# Centralized configuration for PDF processing to avoid magic numbers
+
+
+@dataclass
+class PDFProcessingConstants:
+    """
+    Configuration constants for PDF processing.
+
+    These values were previously scattered as magic numbers throughout the code.
+    Centralizing them here makes them easier to tune and understand.
+    """
+
+    # Text detection thresholds (used in _opencv_fast_text_detection)
+    TEXT_CONTOUR_MIN_COUNT: int = 10  # Minimum text-like contours to consider text present
+    TEXT_CONTOUR_CONFIDENCE_DIVISOR: float = 50.0  # Divides contour count for confidence
+    ASPECT_RATIO_MIN: float = 0.1  # Minimum aspect ratio for text-like contours
+    ASPECT_RATIO_MAX: float = 10.0  # Maximum aspect ratio for text-like contours
+    MIN_CONTOUR_WIDTH: int = 10  # Minimum width (px) for text-like contours
+    MIN_CONTOUR_HEIGHT: int = 5  # Minimum height (px) for text-like contours
+    MAX_CONTOUR_SIZE_RATIO: float = 0.9  # Max ratio of image size for contour
+    MIN_AREA_RATIO: float = 0.0001  # Minimum area ratio for text-like contours
+    MAX_AREA_RATIO: float = 0.5  # Maximum area ratio for text-like contours
+
+    # Deduplication thresholds
+    DEDUP_HAMMING_THRESHOLD: int = 5  # Hamming distance threshold for perceptual hash dedup
+
+    # Image quality thresholds
+    SHARPNESS_NORMALIZATION_DIVISOR: float = 1000.0  # Divides Laplacian variance for normalization
+    CONTRAST_NORMALIZATION_DIVISOR: float = 128.0  # Divides std for contrast normalization
+    NOISE_NORMALIZATION_DIVISOR: float = 50.0  # Divides noise level for normalization
+
+    # Image validation
+    MAX_IMAGE_DIMENSION_FOR_SLIG: int = 1024  # Max dimension for SLIG classification
+    OCR_TECHNICAL_CONFIDENCE_THRESHOLD: float = 0.6  # Confidence threshold for technical content
+
+    # Page analysis thresholds (used in pdf_worker.py)
+    LOW_TEXT_THRESHOLD: int = 50  # Characters per page for "low text" classification
+    VERY_LOW_TEXT_THRESHOLD: int = 10  # Characters per page for "very low text"
+    TEXT_TO_IMAGE_RATIO_THRESHOLD: float = 30.0  # Threshold for text-to-image ratio
+
+    # Render settings
+    YOLO_RENDER_DPI: int = 150  # DPI for YOLO layout detection rendering
+    FULL_PAGE_RENDER_ZOOM: float = 2.0  # Zoom factor for full page rendering (144 DPI)
+
+
+# Global instance for easy access
+PDF_CONSTANTS = PDFProcessingConstants()
 
 # Import image processing libraries (headless OpenCV)
 try:
@@ -82,27 +134,14 @@ async def download_image_to_base64(image_url: str) -> str:
         raise Exception(f"Error downloading image to base64: {str(e)}")
 
 
-# Import existing extraction functions
+# Import existing extraction functions from centralized module
 # ✅ REMOVED extract_pdf_tables - now using TableExtractor class from table_extraction.py
-try:
-    # Try to import from the proper location first
-    from ..core.extractor import extract_pdf_to_markdown, extract_pdf_to_markdown_with_doc, extract_json_and_images
-except ImportError:
-    # Fall back to the root level extractor if it exists
-    try:
-        from app.core.extractor import extract_pdf_to_markdown, extract_pdf_to_markdown_with_doc, extract_json_and_images
-    except ImportError as e:
-        # Log the error and provide a fallback
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.error(f"Failed to import extractor functions: {e}")
-        # Define placeholder functions that will raise NotImplementedError
-        def extract_pdf_to_markdown(*args, **kwargs):
-            raise NotImplementedError("PDF extraction functions not available")
-        def extract_pdf_to_markdown_with_doc(*args, **kwargs):
-            raise NotImplementedError("PDF extraction functions not available")
-        def extract_json_and_images(*args, **kwargs):
-            raise NotImplementedError("PDF image extraction functions not available")
+from app.services.pdf.extractor_imports import (
+    extract_pdf_to_markdown,
+    extract_pdf_to_markdown_with_doc,
+    extract_json_and_images,
+    EXTRACTOR_AVAILABLE
+)
 
 # Import OCR service
 from app.services.pdf.ocr_service import get_ocr_service, OCRConfig
@@ -121,8 +160,6 @@ from app.utils.exceptions import (
     PDFStorageError,
     PDFFormatError
 )
-
-# Import unified chunking service (Step 6)
 
 # Import unified chunking service (Step 6)
 from app.services.chunking.unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
@@ -189,6 +226,10 @@ class PDFProcessor:
         # For I/O-bound operations (PDF reading), higher concurrency improves throughput
         max_workers = self.config.get('max_workers', 4)
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
+
+        # Thread-safe SLIG client initialization lock
+        self._slig_client_for_ocr = None
+        self._slig_client_lock = asyncio.Lock()
 
         self.logger.info("PDFProcessor initialized with config: %s (max_workers=%d)", self.config, max_workers)
 
@@ -696,7 +737,6 @@ class PDFProcessor:
                 'embedded_count': 0,
                 'yolo_crop_count': 0,
                 'full_render_count': 0,
-                'pymupdf_count': 0,  # Keep for backward compatibility
                 'failed_count': 0,
                 'total_pages': len(pages_to_process),
                 'duplicates_removed': 0
@@ -726,9 +766,6 @@ class PDFProcessor:
                         extraction_stats['yolo_crop_count'] += 1
                     elif layer == 'full_render':
                         extraction_stats['full_render_count'] += 1
-
-                    # Backward compatibility
-                    extraction_stats['pymupdf_count'] += 1
 
                     # Track duplicates
                     if img.get('is_duplicate', False):
@@ -843,7 +880,7 @@ class PDFProcessor:
         self.logger.info(
             f"   🔍 [Job: {job_id}] Layer 4: Deduplicating {len(all_images)} images..."
         )
-        unique_images = self._deduplicate_images(all_images, threshold=5, job_id=job_id)
+        unique_images = self._deduplicate_images(all_images, threshold=PDF_CONSTANTS.DEDUP_HAMMING_THRESHOLD, job_id=job_id)
 
         self.logger.info(
             f"   ✅ [Job: {job_id}] 4-layer extraction complete: "
@@ -921,83 +958,88 @@ class PDFProcessor:
                         f"   ✅ [Job: {job_id}] Found {len(image_regions)} IMAGE regions on PDF page {pdf_page}"
                     )
 
-                    # Render full page for cropping
-                    doc = fitz.open(pdf_path)
-                    page = doc[page_idx]
+                    # Render full page for cropping - use try/finally to ensure cleanup
+                    doc = None
+                    full_page_image = None
+                    try:
+                        doc = fitz.open(pdf_path)
+                        page = doc[page_idx]
 
-                    # Render at high DPI for quality
-                    zoom = 150 / 72  # 150 DPI
-                    mat = fitz.Matrix(zoom, zoom)
-                    pix = page.get_pixmap(matrix=mat)
+                        # Render at high DPI for quality
+                        zoom = 150 / 72  # 150 DPI
+                        mat = fitz.Matrix(zoom, zoom)
+                        pix = page.get_pixmap(matrix=mat)
 
-                    # Convert to PIL Image
-                    from PIL import Image
-                    import io
-                    img_data = pix.tobytes("png")
-                    full_page_image = Image.open(io.BytesIO(img_data))
+                        # Convert to PIL Image
+                        from PIL import Image
+                        import io
+                        img_data = pix.tobytes("png")
+                        full_page_image = Image.open(io.BytesIO(img_data))
 
-                    # Crop each IMAGE region
-                    for region_idx, region in enumerate(image_regions):
-                        try:
-                            # Get bounding box coordinates
-                            bbox = region.bbox
+                        # Crop each IMAGE region
+                        for region_idx, region in enumerate(image_regions):
+                            try:
+                                # Get bounding box coordinates
+                                bbox = region.bbox
 
-                            # Crop region from full page image
-                            cropped_image = full_page_image.crop((
-                                bbox.x,
-                                bbox.y,
-                                bbox.x2,
-                                bbox.y2
-                            ))
+                                # Crop region from full page image
+                                cropped_image = full_page_image.crop((
+                                    bbox.x,
+                                    bbox.y,
+                                    bbox.x2,
+                                    bbox.y2
+                                ))
 
-                            # Save cropped image
-                            image_filename = f"page_{pdf_page}_yolo_region_{region_idx}.jpg"
-                            image_path = os.path.join(image_dir, image_filename)
+                                # Save cropped image
+                                image_filename = f"page_{pdf_page}_yolo_region_{region_idx}.jpg"
+                                image_path = os.path.join(image_dir, image_filename)
 
-                            cropped_image.save(image_path, "JPEG", quality=95)
+                                cropped_image.save(image_path, "JPEG", quality=95)
 
-                            # Get image dimensions
-                            width, height = cropped_image.size
+                                # Get image dimensions
+                                width, height = cropped_image.size
 
-                            # Create image metadata (using PDF page number)
-                            image_info = {
-                                'path': image_path,
-                                'filename': image_filename,
-                                'page_number': pdf_page,
-                                'width': width,
-                                'height': height,
-                                'format': 'JPEG',
-                                'detection_method': 'yolo_guided',
-                                'extraction_layer': 'yolo_crop',
-                                'yolo_confidence': region.confidence,
-                                'yolo_region_type': region.type,
-                                'yolo_reading_order': region.reading_order,
-                                'bbox': {
-                                    'x': bbox.x,
-                                    'y': bbox.y,
-                                    'width': bbox.width,
-                                    'height': bbox.height
+                                # Create image metadata (using PDF page number)
+                                image_info = {
+                                    'path': image_path,
+                                    'filename': image_filename,
+                                    'page_number': pdf_page,
+                                    'width': width,
+                                    'height': height,
+                                    'format': 'JPEG',
+                                    'detection_method': 'yolo_guided',
+                                    'extraction_layer': 'yolo_crop',
+                                    'yolo_confidence': region.confidence,
+                                    'yolo_region_type': region.type,
+                                    'yolo_reading_order': region.reading_order,
+                                    'bbox': {
+                                        'x': bbox.x,
+                                        'y': bbox.y,
+                                        'width': bbox.width,
+                                        'height': bbox.height
+                                    }
                                 }
-                            }
 
-                            extracted_images.append(image_info)
+                                extracted_images.append(image_info)
 
-                            self.logger.debug(
-                                f"   ✅ [Job: {job_id}] Extracted YOLO region {region_idx} "
-                                f"from PDF page {pdf_page} (confidence: {region.confidence:.2f})"
-                            )
+                                self.logger.debug(
+                                    f"   ✅ [Job: {job_id}] Extracted YOLO region {region_idx} "
+                                    f"from PDF page {pdf_page} (confidence: {region.confidence:.2f})"
+                                )
 
-                        except Exception as e:
-                            self.logger.error(
-                                f"   ❌ [Job: {job_id}] Failed to crop YOLO region {region_idx} "
-                                f"on PDF page {pdf_page}: {e}"
-                            )
-                            continue
-
-                    # Cleanup
-                    full_page_image.close()
-                    doc.close()
-                    gc.collect()
+                            except Exception as e:
+                                self.logger.error(
+                                    f"   ❌ [Job: {job_id}] Failed to crop YOLO region {region_idx} "
+                                    f"on PDF page {pdf_page}: {e}"
+                                )
+                                continue
+                    finally:
+                        # Ensure cleanup even on exception
+                        if full_page_image is not None:
+                            full_page_image.close()
+                        if doc is not None:
+                            doc.close()
+                        gc.collect()
 
                 except Exception as e:
                     self.logger.error(
@@ -1093,7 +1135,7 @@ class PDFProcessor:
                                 'page_number': pdf_page,
                                 'extraction_method': 'pymupdf_embedded',  # Layer 1: Embedded images
                                 'layer': 1,
-                                'captures_vector_graphics': True,  # Embedded images don't capture vector graphics
+                                'captures_vector_graphics': False,  # Embedded images don't capture vector graphics
                                 'format': image_ext,
                                 'size_bytes': len(image_bytes),
                                 'width': base_image.get('width'),
@@ -1187,8 +1229,8 @@ class PDFProcessor:
             doc.close()
             gc.collect()
 
-        # Layer 4: Deduplicate images using perceptual hashing
-        extracted_images = self._deduplicate_images(extracted_images, threshold=5, job_id=job_id)
+        # Note: Deduplication is handled in _extract_batch_images() after combining all layers
+        # This avoids duplicate deduplication calls
 
         return extracted_images
 
@@ -1849,33 +1891,10 @@ class PDFProcessor:
         except Exception as e:
             self.logger.error("Error converting image format: %s", str(e))
             return None
-    
-    def _remove_duplicate_images(self, images: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Remove duplicate images based on perceptual hash similarity."""
-        if len(images) <= 1:
-            return images
-        
-        unique_images = []
-        seen_hashes = set()
-        
-        for image in images:
-            image_hash = image.get('image_hash', '')
-            
-            # Check for exact hash matches
-            if image_hash and image_hash not in seen_hashes:
-                seen_hashes.add(image_hash)
-                unique_images.append(image)
-            elif not image_hash:
-                # Keep images without hashes (fallback)
-                unique_images.append(image)
-        
-        self.logger.info(
-            "Duplicate removal: %d original images, %d unique images",
-            len(images), len(unique_images)
-        )
-        
-        return unique_images
-    
+
+    # Note: _remove_duplicate_images was removed as it was unused.
+    # Use _deduplicate_images() instead which uses perceptual hashing with Hamming distance.
+
     def _opencv_fast_text_detection(self, image_path: str) -> Dict[str, Any]:
         """
         Ultra-fast text detection using OpenCV edge detection and contour analysis.
@@ -1928,30 +1947,31 @@ class PDFProcessor:
             for contour in contours:
                 # Get bounding rectangle
                 x, y, w, h = cv2.boundingRect(contour)
-                
+
                 # Calculate aspect ratio
                 aspect_ratio = w / h if h > 0 else 0
-                
-                # Text characteristics:
-                # - Aspect ratio between 0.1 and 10 (not too wide, not too tall)
-                # - Minimum size (width > 10px, height > 5px)
+
+                # Text characteristics (using centralized constants):
+                # - Aspect ratio within configured bounds
+                # - Minimum size requirements
                 # - Maximum size (not the entire image)
-                # - Reasonable area (not too small, not too large)
+                # - Reasonable area ratio
                 area = w * h
                 image_area = img.shape[0] * img.shape[1]
                 area_ratio = area / image_area if image_area > 0 else 0
-                
-                if (0.1 < aspect_ratio < 10 and 
-                    w > 10 and h > 5 and 
-                    w < img.shape[1] * 0.9 and h < img.shape[0] * 0.9 and
-                    0.0001 < area_ratio < 0.5):
+
+                if (PDF_CONSTANTS.ASPECT_RATIO_MIN < aspect_ratio < PDF_CONSTANTS.ASPECT_RATIO_MAX and
+                    w > PDF_CONSTANTS.MIN_CONTOUR_WIDTH and h > PDF_CONSTANTS.MIN_CONTOUR_HEIGHT and
+                    w < img.shape[1] * PDF_CONSTANTS.MAX_CONTOUR_SIZE_RATIO and
+                    h < img.shape[0] * PDF_CONSTANTS.MAX_CONTOUR_SIZE_RATIO and
+                    PDF_CONSTANTS.MIN_AREA_RATIO < area_ratio < PDF_CONSTANTS.MAX_AREA_RATIO):
                     text_like_contours += 1
-            
-            # Decision threshold: If fewer than 10 text-like shapes, probably no text
-            has_text = text_like_contours >= 10
-            
-            # Calculate confidence (normalize to 0-1)
-            confidence = min(text_like_contours / 50, 1.0)
+
+            # Decision threshold using configured constant
+            has_text = text_like_contours >= PDF_CONSTANTS.TEXT_CONTOUR_MIN_COUNT
+
+            # Calculate confidence (normalize to 0-1) using configured divisor
+            confidence = min(text_like_contours / PDF_CONSTANTS.TEXT_CONTOUR_CONFIDENCE_DIVISOR, 1.0)
             
             self.logger.debug(
                 f"OpenCV text detection: {text_like_contours} text-like contours "
@@ -2004,24 +2024,28 @@ class PDFProcessor:
             # ============================================================================
             # IMAGE VALIDATION - Resize large images to prevent 400 errors
             # ============================================================================
-            MAX_DIMENSION = 1024
-            if image.width > MAX_DIMENSION or image.height > MAX_DIMENSION:
+            max_dim = PDF_CONSTANTS.MAX_IMAGE_DIMENSION_FOR_SLIG
+            if image.width > max_dim or image.height > max_dim:
                 original_size = (image.width, image.height)
-                image.thumbnail((MAX_DIMENSION, MAX_DIMENSION), Image.LANCZOS)
+                image.thumbnail((max_dim, max_dim), Image.LANCZOS)
                 self.logger.debug(f"📐 Resized image from {original_size} to {image.size} for SLIG classification")
 
             # ✅ Use singleton SLIG client from endpoint registry (prevents repeated warmups)
-            if not hasattr(self, '_slig_client_for_ocr') or self._slig_client_for_ocr is None:
-                from app.services.embeddings.endpoint_registry import endpoint_registry
+            # Thread-safe initialization with asyncio lock
+            if self._slig_client_for_ocr is None:
+                async with self._slig_client_lock:
+                    # Double-check pattern after acquiring lock
+                    if self._slig_client_for_ocr is None:
+                        from app.services.embeddings.endpoint_registry import endpoint_registry
 
-                # Try to get client from registry first (pre-warmed)
-                self._slig_client_for_ocr = endpoint_registry.get_slig_client()
+                        # Try to get client from registry first (pre-warmed)
+                        self._slig_client_for_ocr = endpoint_registry.get_slig_client()
 
-                if self._slig_client_for_ocr:
-                    self.logger.info("♻️ Using SLIG client from endpoint registry (singleton)")
-                else:
-                    self.logger.warning("⚠️ SLIG client not available from registry")
-                    return {'should_process': True, 'reason': 'slig_not_available', 'confidence': 0.5}
+                        if self._slig_client_for_ocr:
+                            self.logger.info("♻️ Using SLIG client from endpoint registry (singleton)")
+                        else:
+                            self.logger.warning("⚠️ SLIG client not available from registry")
+                            return {'should_process': True, 'reason': 'slig_not_available', 'confidence': 0.5}
 
             # ✅ Define candidate labels for zero-shot classification
             # Simplified labels for better classification accuracy
@@ -2046,7 +2070,7 @@ class PDFProcessor:
 
             # Decision logic based on zero-shot classification
             # If top label is "technical specification" with high confidence, process with OCR
-            if "technical" in label.lower() and score > 0.6:
+            if "technical" in label.lower() and score > PDF_CONSTANTS.OCR_TECHNICAL_CONFIDENCE_THRESHOLD:
                 # Image likely contains technical/specification content
                 should_process = True
                 reason = f"technical_content (confidence: {score:.3f})"
@@ -2199,7 +2223,7 @@ class PDFProcessor:
             
             for idx, item in enumerate(images_to_process):
                 image_data = item['data']
-                ocr_decision = item['clip_decision']
+                ocr_decision = item.get('clip_decision', {})  # Safe default to prevent NameError
                 image_path = image_data.get('path')
 
                 try:

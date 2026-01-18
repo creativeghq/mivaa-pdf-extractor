@@ -57,7 +57,7 @@ class AdminPromptService:
 
             result = query.order('prompt_type').order('stage').order('category').execute()
 
-            # Transform to include prompt_template for backward compatibility
+            # Transform to unified format
             prompts = []
             for p in (result.data or []):
                 prompts.append({

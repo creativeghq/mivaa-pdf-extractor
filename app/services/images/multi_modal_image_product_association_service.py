@@ -18,7 +18,7 @@ import json
 import math
 import re
 
-from .supabase_client import get_supabase_client
+from app.services.core.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 

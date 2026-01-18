@@ -172,11 +172,10 @@ class ProgressTracker:
                     'chunks_created': self.chunks_created,
                     'products_created': self.products_created,
                     'relations_created': self.relations_created,  # Entity relationships created
-                    'embeddings_generated': self.text_embeddings_generated + self.image_embeddings_generated,  # Total embeddings (backward compatibility)
-                    'text_embeddings_generated': self.text_embeddings_generated,  # NEW: Separate text embeddings count
-                    'image_embeddings_generated': self.image_embeddings_generated,  # NEW: Separate image embeddings count
-                    'clip_embeddings_generated': self.image_embeddings_generated,  # Alias for backward compatibility
-                    'clip_embeddings': self.clip_embeddings_generated,  # CLIP/SigLIP embeddings count
+                    'embeddings_generated': self.text_embeddings_generated + self.image_embeddings_generated,
+                    'text_embeddings_generated': self.text_embeddings_generated,
+                    'image_embeddings_generated': self.image_embeddings_generated,
+                    'clip_embeddings': self.clip_embeddings_generated,
                     'ocr_pages_processed': self.ocr_pages_processed,
                     'total_text_extracted': self.total_text_extracted,
                     'errors_count': len(self.errors),
@@ -205,10 +204,9 @@ class ProgressTracker:
                         'total_images_extracted': self.total_images_extracted,  # All images found
                         'chunks_created': self.chunks_created,
                         'products_created': self.products_created,
-                        'embeddings_generated': self.text_embeddings_generated + self.image_embeddings_generated,  # Total (backward compatibility)
-                        'text_embeddings_generated': self.text_embeddings_generated,  # NEW: Separate text embeddings
-                        'image_embeddings_generated': self.image_embeddings_generated,  # NEW: Separate image embeddings
-                        'clip_embeddings_generated': self.image_embeddings_generated,  # Alias for backward compatibility
+                        'embeddings_generated': self.text_embeddings_generated + self.image_embeddings_generated,
+                        'text_embeddings_generated': self.text_embeddings_generated,
+                        'image_embeddings_generated': self.image_embeddings_generated,
                         'ocr_pages_processed': self.ocr_pages_processed
                     },
                     'updated_at': datetime.utcnow().isoformat()

@@ -382,7 +382,7 @@ class SupabaseClient:
                 'metadata': {
                     'source': 'mivaa_pdf_extraction',
                     'image_index': image_index,
-                    'extraction_method': extraction_method,  # Also store in metadata for backward compatibility
+                    'extraction_method': extraction_method,
                     'storage_uploaded': image_info.get('storage_uploaded', False),
                     'storage_bucket': image_info.get('storage_bucket', 'material-images'),
                     'storage_path': image_info.get('storage_path'),

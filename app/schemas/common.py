@@ -4,8 +4,8 @@ Common Pydantic schemas used across all API endpoints.
 This module contains base response models, pagination, error handling,
 and other shared data structures.
 
-NOTE: For new endpoints, use UnifiedApiResponse from unified_response.py
-instead of BaseResponse. BaseResponse is kept for backward compatibility.
+For new endpoints, prefer using UnifiedApiResponse from unified_response.py
+for consistent API response formatting.
 """
 
 from datetime import datetime

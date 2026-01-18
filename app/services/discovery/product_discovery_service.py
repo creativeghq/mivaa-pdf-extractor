@@ -845,7 +845,7 @@ class ProductDiscoveryService:
             # Extract metadata (new architecture - products + metadata inseparable)
             metadata = p.get("metadata", {})
 
-            # If metadata is not in the new format, build it from old fields for backward compatibility
+            # Build metadata from fields if not present
             if not metadata:
                 metadata = {
                     "designer": p.get("designer"),
@@ -1026,8 +1026,13 @@ class ProductDiscoveryService:
             )
 
             # Ensure we have pdf_text with PHYSICAL page markers (handles spread layouts)
-            if not pdf_text:
-                self.logger.info("   Extracting text for page detection (with spread layout handling)...")
+            # ⚠️ FIX: For spread layouts, ALWAYS re-extract with physical page markers
+            # The initial extraction uses PDF page indices (1-71), not physical pages (1-140)
+            if not pdf_text or pdf_layout.has_spread_layout:
+                if pdf_layout.has_spread_layout:
+                    self.logger.info("   🔄 Spread layout detected - re-extracting text with PHYSICAL page markers...")
+                else:
+                    self.logger.info("   Extracting text for page detection (with spread layout handling)...")
                 pdf_text, _ = extract_text_with_physical_pages(pdf_path)
 
             # ⚡ OPTIMIZATION: Parse PDF text into pages ONCE (not per-product)
@@ -1049,16 +1054,20 @@ class ProductDiscoveryService:
             except Exception as e:
                 self.logger.warning(f"   ⚠️ YOLO initialization failed: {e}, using text-only detection")
 
-            # Detect pages for ALL products using pre-parsed pages
+            # Get all product names for section boundary detection
+            all_product_names = [p.name for p in catalog.products]
+
+            # Detect pages for ALL products using SECTION-BASED detection
             for i, product in enumerate(catalog.products):
                 try:
-                    self.logger.info(f"   🔍 Detecting pages for: {product.name}")
+                    self.logger.info(f"   🔍 Detecting section for: {product.name}")
 
-                    # Step 1: Text-based page detection (uses pre-parsed pages)
+                    # Step 1: Section-based page detection (finds product section, not all mentions)
                     detected_pages = self._detect_product_pages_optimized(
                         pages_content=pages_content,
                         product_name=product.name,
-                        total_pages=pdf_page_count
+                        total_pages=pdf_page_count,
+                        all_product_names=all_product_names
                     )
 
                     # Step 2: YOLO validation (if enabled, uses shared detector)
@@ -1484,8 +1493,7 @@ class ProductDiscoveryService:
 
         page_texts = {}
 
-        # Split by page markers (our explicit markers: --- # Page N ---)
-        # Also handles old format: -----\n# Page N\n for backward compatibility
+        # Split by page markers (format: --- # Page N ---)
         pages = re.split(r'-{3,}\s*#?\s*Page\s*\d+\s*-*', markdown_text, flags=re.IGNORECASE)
 
         # Map extracted pages to their indices
@@ -1690,59 +1698,123 @@ class ProductDiscoveryService:
         self,
         pages_content: Dict[int, str],
         product_name: str,
-        total_pages: int
+        total_pages: int,
+        all_product_names: Optional[List[str]] = None
     ) -> List[int]:
         """
-        ⚡ OPTIMIZED: Detect product pages using pre-parsed page content.
+        ⚡ OPTIMIZED: Detect product pages using SECTION-BASED detection.
 
-        This method uses pre-parsed pages (from _parse_pdf_text_into_pages)
-        instead of re-parsing the entire PDF text for each product.
+        Instead of finding ALL pages where product name appears, this method:
+        1. Finds the first page where the product appears as a HEADLINE (section start)
+        2. Continues until another product's headline is found (section end)
+        3. Ignores TOC/index mentions outside the product's actual section
 
         Args:
             pages_content: Pre-parsed dictionary of page_num -> lowercased_content
             product_name: Name of product to search for
             total_pages: Total number of pages in PDF
+            all_product_names: List of ALL product names (to detect section boundaries)
 
         Returns:
-            List of page numbers (1-based) where product was found
+            List of page numbers (1-based) for the product's section
         """
         if not pages_content or not product_name:
             return []
 
-        detected_pages = set()
         clean_name = product_name.lower().strip()
 
-        # Pre-compile word boundary pattern for this product
+        # Pre-compile patterns
+        # Headline pattern: Product name appears prominently (often alone or at start of line)
+        headline_pattern = re.compile(
+            r'(^|\n)\s*' + re.escape(clean_name) + r'\s*(\n|$|by\s|collection)',
+            re.IGNORECASE | re.MULTILINE
+        )
         word_boundary_pattern = re.compile(r'\b' + re.escape(clean_name) + r'\b')
 
-        # Search in pre-parsed pages (already lowercased)
-        for page_num, content_lower in pages_content.items():
+        # Build patterns for OTHER products (to detect section boundaries)
+        other_product_patterns = []
+        if all_product_names:
+            for other_name in all_product_names:
+                other_clean = other_name.lower().strip()
+                if other_clean != clean_name:
+                    # Other product headlines
+                    other_pattern = re.compile(
+                        r'(^|\n)\s*' + re.escape(other_clean) + r'\s*(\n|$|by\s|collection)',
+                        re.IGNORECASE | re.MULTILINE
+                    )
+                    other_product_patterns.append((other_clean, other_pattern))
+
+        # PHASE 1: Find the FIRST page where product appears as a headline (section start)
+        section_start = None
+        sorted_pages = sorted(pages_content.keys())
+
+        for page_num in sorted_pages:
             if page_num > total_pages:
                 continue
+            content = pages_content[page_num]
 
-            # Use word boundaries ONLY - no substring fallback
-            # (Fixes false matches like "internacional" matching "ONA")
-            if word_boundary_pattern.search(content_lower):
-                detected_pages.add(page_num)
-            # NOTE: Removed substring fallback - it caused false positives
-            # Products like ONA matched "internacional", "tradicional", "emocional" etc.
+            # Check if this page has the product as a HEADLINE (not just mentioned)
+            if headline_pattern.search(content):
+                section_start = page_num
+                break
+            # Fallback: if product name appears multiple times, likely a product page
+            elif content.count(clean_name) >= 2:
+                section_start = page_num
+                break
 
-        return sorted(list(detected_pages))
+        # If no headline found, fall back to first mention (but skip early TOC pages)
+        if section_start is None:
+            for page_num in sorted_pages:
+                if page_num > total_pages:
+                    continue
+                # Skip first ~15% of pages (likely TOC/intro)
+                if page_num < total_pages * 0.15:
+                    continue
+                content = pages_content[page_num]
+                if word_boundary_pattern.search(content):
+                    section_start = page_num
+                    break
 
-    async def _detect_product_pages_with_text(
-        self,
-        pdf_text: str,
-        product_name: str,
-        total_pages: int
-    ) -> List[int]:
-        """
-        DEPRECATED: Use _detect_product_pages_optimized instead.
+        if section_start is None:
+            return []
 
-        Kept for backward compatibility. Parses PDF text each time (inefficient).
-        """
-        # Parse pages (this is inefficient - called for each product)
-        pages_content = self._parse_pdf_text_into_pages(pdf_text, total_pages)
-        return self._detect_product_pages_optimized(pages_content, product_name, total_pages)
+        # PHASE 2: Find section END (where another product's headline appears)
+        section_end = total_pages
+
+        for page_num in sorted_pages:
+            if page_num <= section_start:
+                continue
+            if page_num > total_pages:
+                continue
+            content = pages_content[page_num]
+
+            # Check if another product's headline appears
+            for other_name, other_pattern in other_product_patterns:
+                if other_pattern.search(content):
+                    # Found another product's section - our section ends here
+                    section_end = page_num - 1
+                    break
+                # Also check if other product appears multiple times (product page)
+                elif content.count(other_name) >= 3:
+                    section_end = page_num - 1
+                    break
+
+            if section_end < total_pages:
+                break
+
+        # PHASE 3: Return contiguous page range
+        detected_pages = list(range(section_start, min(section_end + 1, total_pages + 1)))
+
+        # Validate: ensure our product actually appears on these pages (at least first few)
+        validated_pages = []
+        for page_num in detected_pages:
+            if page_num in pages_content:
+                content = pages_content[page_num]
+                # Keep page if product mentioned OR if it's in the first 3 pages of section
+                if word_boundary_pattern.search(content) or (page_num - section_start) < 3:
+                    validated_pages.append(page_num)
+
+        return validated_pages if validated_pages else detected_pages[:5]  # Fallback to first 5 pages
 
     async def _validate_pages_with_yolo_optimized(
         self,
@@ -1838,7 +1910,7 @@ class ProductDiscoveryService:
         """
         DEPRECATED: Use _validate_pages_with_yolo_optimized with pre-initialized detector.
 
-        Kept for backward compatibility. Initializes YOLO detector each time (inefficient).
+        This method initializes YOLO detector each time, which is inefficient.
         """
         try:
             from app.config import get_settings

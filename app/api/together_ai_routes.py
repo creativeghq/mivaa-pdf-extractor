@@ -13,12 +13,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
-try:
-    # Try Pydantic v2 first
-    from pydantic import BaseModel, Field, field_validator as validator
-except ImportError:
-    # Fall back to Pydantic v1
-    from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator as validator
 
 from ..schemas.common import BaseResponse, ErrorResponse
 from ..services.core.together_ai_service import (
