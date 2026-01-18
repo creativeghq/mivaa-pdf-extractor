@@ -1763,10 +1763,11 @@ class ProductDiscoveryService:
         """
         ⚡ OPTIMIZED: Detect product pages using SECTION-BASED detection.
 
-        Instead of finding ALL pages where product name appears, this method:
-        1. Finds the first page where the product appears as a HEADLINE (section start)
-        2. Continues until another product's headline is found (section end)
-        3. Ignores TOC/index mentions outside the product's actual section
+        SMART SECTION-BASED DETECTION:
+        1. Build a map of ALL product headline locations across ALL pages
+        2. For each product, find where its section starts (headline page)
+        3. Section ends where the NEXT product's headline begins
+        4. This handles "PRODUCT by DESIGNER" format and overlapping mentions
 
         Args:
             pages_content: Pre-parsed dictionary of page_num -> lowercased_content
@@ -1781,99 +1782,155 @@ class ProductDiscoveryService:
             return []
 
         clean_name = product_name.lower().strip()
+        sorted_pages = sorted(pages_content.keys())
 
-        # Pre-compile patterns
-        # Headline pattern: Product name appears prominently (often alone or at start of line)
-        headline_pattern = re.compile(
-            r'(^|\n)\s*' + re.escape(clean_name) + r'\s*(\n|$|by\s|collection)',
-            re.IGNORECASE | re.MULTILINE
-        )
-        word_boundary_pattern = re.compile(r'\b' + re.escape(clean_name) + r'\b')
+        # Skip TOC pages (typically first 15-20% of document)
+        # TOC pages list ALL products, so they confuse section detection
+        toc_cutoff = max(3, int(total_pages * 0.15))
 
-        # Build patterns for OTHER products (to detect section boundaries)
-        other_product_patterns = []
+        # =================================================================
+        # STEP 1: Build headline patterns for ALL products
+        # =================================================================
+        # Headline patterns match: "PRODUCT", "PRODUCT by Designer", "PRODUCT collection"
+        # Must be prominent (start of line, standalone, or followed by "by"/"collection")
+
+        def build_headline_pattern(name: str) -> re.Pattern:
+            """Build a pattern that matches product headlines."""
+            escaped = re.escape(name.lower().strip())
+            # Match: start of line/text + optional whitespace + PRODUCT NAME +
+            # (end of line OR "by" OR "collection" OR just whitespace before newline)
+            return re.compile(
+                r'(?:^|\n)\s*' + escaped + r'\s*(?:\n|$|by\s|collection|designed)',
+                re.IGNORECASE | re.MULTILINE
+            )
+
+        word_boundary_pattern = re.compile(r'\b' + re.escape(clean_name) + r'\b', re.IGNORECASE)
+        headline_pattern = build_headline_pattern(clean_name)
+
+        # Build patterns for all OTHER products
+        other_products = []
         if all_product_names:
             for other_name in all_product_names:
                 other_clean = other_name.lower().strip()
-                if other_clean != clean_name:
-                    # Other product headlines
-                    other_pattern = re.compile(
-                        r'(^|\n)\s*' + re.escape(other_clean) + r'\s*(\n|$|by\s|collection)',
-                        re.IGNORECASE | re.MULTILINE
-                    )
-                    other_product_patterns.append((other_clean, other_pattern))
+                if other_clean != clean_name and len(other_clean) >= 2:
+                    other_products.append({
+                        'name': other_clean,
+                        'headline_pattern': build_headline_pattern(other_clean),
+                        'word_pattern': re.compile(r'\b' + re.escape(other_clean) + r'\b', re.IGNORECASE)
+                    })
 
-        # PHASE 1: Find the FIRST page where product appears as a headline (section start)
-        section_start = None
-        sorted_pages = sorted(pages_content.keys())
+        # =================================================================
+        # STEP 2: Find ALL headline occurrences for ALL products
+        # =================================================================
+        # This creates a map: page_num -> list of products that have headlines on that page
+
+        product_headline_pages: Dict[str, List[int]] = {clean_name: []}
+        for other in other_products:
+            product_headline_pages[other['name']] = []
 
         for page_num in sorted_pages:
             if page_num > total_pages:
                 continue
+            # Skip TOC pages for headline detection
+            if page_num <= toc_cutoff:
+                continue
+
             content = pages_content[page_num]
 
-            # Check if this page has the product as a HEADLINE (not just mentioned)
+            # Check if THIS product has a headline on this page
             if headline_pattern.search(content):
-                section_start = page_num
-                break
-            # Fallback: if product name appears multiple times, likely a product page
-            elif content.count(clean_name) >= 2:
-                section_start = page_num
-                break
+                product_headline_pages[clean_name].append(page_num)
 
-        # If no headline found, fall back to first mention (but skip early TOC pages)
-        if section_start is None:
+            # Check other products for their headlines
+            for other in other_products:
+                if other['headline_pattern'].search(content):
+                    product_headline_pages[other['name']].append(page_num)
+
+        # =================================================================
+        # STEP 3: Determine section boundaries
+        # =================================================================
+        # Section starts at product's first headline
+        # Section ends just before the next product's headline (any product)
+
+        my_headlines = product_headline_pages.get(clean_name, [])
+
+        # If no headlines found, try fallback: first mention after TOC
+        if not my_headlines:
             for page_num in sorted_pages:
-                if page_num > total_pages:
-                    continue
-                # Skip first ~15% of pages (likely TOC/intro)
-                if page_num < total_pages * 0.15:
+                if page_num <= toc_cutoff or page_num > total_pages:
                     continue
                 content = pages_content[page_num]
-                if word_boundary_pattern.search(content):
-                    section_start = page_num
-                    break
+                # Look for product name appearing prominently (multiple times or as standalone)
+                matches = word_boundary_pattern.findall(content)
+                if len(matches) >= 1:  # At least one clear mention
+                    # Verify it's not just a TOC-style list (many products on same page)
+                    other_product_count = sum(
+                        1 for other in other_products
+                        if other['word_pattern'].search(content)
+                    )
+                    if other_product_count <= 2:  # Not a TOC page
+                        my_headlines = [page_num]
+                        break
 
-        if section_start is None:
+        if not my_headlines:
+            self.logger.debug(f"      No headlines found for '{product_name}'")
             return []
 
-        # PHASE 2: Find section END (where another product's headline appears)
-        section_end = total_pages
+        section_start = my_headlines[0]
 
-        for page_num in sorted_pages:
-            if page_num <= section_start:
-                continue
-            if page_num > total_pages:
+        # Find section end: the page BEFORE the next product's headline
+        # Collect all headline pages from other products that come AFTER our start
+        next_product_pages = []
+        for other in other_products:
+            for page in product_headline_pages.get(other['name'], []):
+                if page > section_start:
+                    next_product_pages.append(page)
+
+        if next_product_pages:
+            # Section ends just before the nearest next product
+            section_end = min(next_product_pages) - 1
+        else:
+            # No other products after us - extend to reasonable limit
+            # Products typically don't span more than 10 pages in catalogs
+            section_end = min(section_start + 10, total_pages)
+
+        # Ensure section_end >= section_start
+        section_end = max(section_end, section_start)
+
+        # =================================================================
+        # STEP 4: Build and validate page range
+        # =================================================================
+        detected_pages = list(range(section_start, section_end + 1))
+
+        # Light validation: keep pages that are part of the contiguous section
+        # Don't require product name on every page (it's often in images)
+        # But do verify no OTHER product's headline appears mid-section
+        validated_pages = []
+        for page_num in detected_pages:
+            if page_num not in pages_content:
                 continue
             content = pages_content[page_num]
 
-            # Check if another product's headline appears
-            for other_name, other_pattern in other_product_patterns:
-                if other_pattern.search(content):
-                    # Found another product's section - our section ends here
-                    section_end = page_num - 1
-                    break
-                # Also check if other product appears multiple times (product page)
-                elif content.count(other_name) >= 3:
-                    section_end = page_num - 1
+            # Check if another product's HEADLINE appears (not just mention)
+            is_other_product_headline = False
+            for other in other_products:
+                if other['headline_pattern'].search(content):
+                    is_other_product_headline = True
                     break
 
-            if section_end < total_pages:
+            if not is_other_product_headline:
+                validated_pages.append(page_num)
+            else:
+                # Another product's section starts here - stop
                 break
 
-        # PHASE 3: Return contiguous page range
-        detected_pages = list(range(section_start, min(section_end + 1, total_pages + 1)))
+        self.logger.debug(
+            f"      Section detection for '{product_name}': "
+            f"headlines={my_headlines}, range={section_start}-{section_end}, "
+            f"validated={len(validated_pages)} pages"
+        )
 
-        # Validate: ensure our product actually appears on these pages (at least first few)
-        validated_pages = []
-        for page_num in detected_pages:
-            if page_num in pages_content:
-                content = pages_content[page_num]
-                # Keep page if product mentioned OR if it's in the first 3 pages of section
-                if word_boundary_pattern.search(content) or (page_num - section_start) < 3:
-                    validated_pages.append(page_num)
-
-        return validated_pages if validated_pages else detected_pages[:5]  # Fallback to first 5 pages
+        return validated_pages if validated_pages else detected_pages[:6]  # Fallback to first 6 pages
 
     async def _validate_pages_with_yolo_optimized(
         self,
