@@ -1,12 +1,18 @@
 """
 PDF Page Numbering Service
 
-Pre-processing service that adds physical page numbers to each PDF page
+Pre-processing service that adds PHYSICAL page numbers to each PDF page
 BEFORE discovery begins. This ensures:
 1. Every page has a visible, unambiguous page number
 2. Claude and other AI models can reference exact pages
 3. Debugging and verification is straightforward
 4. Page numbers persist through all processing stages
+
+SPREAD-AWARE: For PDFs with 2-page spreads, this service adds TWO page
+numbers per PDF sheet (one on the left half, one on the right half),
+matching the physical/human-readable page numbers used throughout the system.
+
+Example: PDF page 12 (a spread) shows "Page 24" on the left and "Page 25" on the right.
 
 Uses PyMuPDF (fitz) to overlay page numbers in a non-intrusive way.
 """
@@ -17,13 +23,18 @@ import os
 import shutil
 import tempfile
 from datetime import datetime
-from typing import Optional, Dict, Any, Callable, Tuple
+from typing import Optional, Dict, Any, Callable, Tuple, List
 
 import fitz  # PyMuPDF
 
 from app.services.tracking.checkpoint_recovery_service import (
     checkpoint_recovery_service,
     ProcessingStage
+)
+from app.utils.pdf_to_images import (
+    analyze_pdf_layout,
+    PDFLayoutAnalysis,
+    PageLayoutType
 )
 
 logger = logging.getLogger(__name__)
@@ -149,7 +160,14 @@ class PDFPageNumberingService:
             )
             self.logger.info(f"💾 Created checkpoint for page numbering: {stats['pages_numbered']} pages")
 
-        self.logger.info(f"✅ Page numbering complete: {stats['pages_numbered']} pages in {processing_time:.2f}s")
+        # Log final stats
+        if stats.get("has_spread_layout"):
+            self.logger.info(
+                f"✅ Page numbering complete: {stats['physical_pages_numbered']} physical page numbers "
+                f"added to {stats['pages_numbered']} PDF sheets in {processing_time:.2f}s"
+            )
+        else:
+            self.logger.info(f"✅ Page numbering complete: {stats['pages_numbered']} pages in {processing_time:.2f}s")
         return result_path, stats
 
     def _add_page_numbers_sync(
@@ -160,100 +178,109 @@ class PDFPageNumberingService:
         product_pages: Optional[Dict[str, list]] = None
     ) -> Tuple[str, Dict[str, Any]]:
         """
-        Synchronous implementation of page numbering.
+        Synchronous implementation of SPREAD-AWARE page numbering.
+
+        For spread PDFs (2-page spreads), this adds TWO page numbers per PDF sheet:
+        - Left half: "Page X" (left physical page number)
+        - Right half: "Page Y" (right physical page number)
+
+        For single-page PDFs, adds one page number per page.
 
         This is called in an executor to not block the async loop.
         """
         stats = {
-            "total_pages": 0,
+            "total_pdf_pages": 0,
+            "total_physical_pages": 0,
+            "total_pages": 0,  # Keep for backward compatibility
             "pages_numbered": 0,
+            "physical_pages_numbered": 0,
             "pages_skipped": 0,
+            "has_spread_layout": False,
             "errors": [],
         }
 
         try:
-            # Build reverse mapping: page -> product (for optional annotations)
+            # Build reverse mapping: physical page -> product (for optional annotations)
             page_to_product = {}
             if product_pages:
                 for product_name, pages in product_pages.items():
                     for page in pages:
                         page_to_product[page] = product_name
 
-            # Open the PDF
+            # First, analyze the PDF layout to detect spreads
+            self.logger.info(f"📐 Analyzing PDF layout...")
+            layout = analyze_pdf_layout(input_path)
+
+            stats["total_pdf_pages"] = layout.total_pdf_pages
+            stats["total_physical_pages"] = layout.total_physical_pages
+            stats["total_pages"] = layout.total_physical_pages  # For backward compat, use physical
+            stats["has_spread_layout"] = layout.has_spread_layout
+
+            self.logger.info(
+                f"📖 PDF Layout: {layout.total_pdf_pages} PDF sheets -> "
+                f"{layout.total_physical_pages} physical pages "
+                f"(spread layout: {layout.has_spread_layout})"
+            )
+
+            # Open the PDF for editing
             doc = fitz.open(input_path)
-            stats["total_pages"] = len(doc)
 
-            self.logger.info(f"📖 Opened PDF with {len(doc)} pages")
-
-            # Process each page
-            for page_idx, page in enumerate(doc):
-                page_num = page_idx + 1  # 1-based page number
+            # Process each PDF page using layout info
+            for page_info in layout.pages:
+                pdf_page_idx = page_info.pdf_page_num
+                page = doc[pdf_page_idx]
+                rect = page.rect
 
                 try:
                     # Report progress
                     if progress_callback:
                         progress_callback(
-                            page_num,
-                            stats["total_pages"],
-                            f"Adding page number to page {page_num}/{stats['total_pages']}"
+                            pdf_page_idx + 1,
+                            layout.total_pdf_pages,
+                            f"Numbering PDF page {pdf_page_idx + 1}/{layout.total_pdf_pages} "
+                            f"(physical pages {page_info.physical_pages})"
                         )
 
-                    # Get page dimensions
-                    rect = page.rect
+                    # Add page numbers based on layout type
+                    if page_info.layout_type in (PageLayoutType.SPREAD, PageLayoutType.SPREAD_FULL_IMAGE):
+                        # Spread page: add TWO page numbers (left and right)
+                        left_phys = page_info.physical_pages[0]
+                        right_phys = page_info.physical_pages[1]
 
-                    # Calculate position based on config
-                    x, y = self._calculate_position(rect, page_num)
-
-                    # Build page number text
-                    text = f"{self.config['prefix']}{page_num}"
-
-                    # Add background if configured
-                    if self.config["background"]:
-                        # Calculate text width/height for background
-                        font = fitz.Font(fontname=self.config["font_name"])
-                        text_length = font.text_length(text, fontsize=self.config["font_size"])
-                        padding = self.config["background_padding"]
-
-                        bg_rect = fitz.Rect(
-                            x - padding,
-                            y - self.config["font_size"] - padding,
-                            x + text_length + padding,
-                            y + padding
+                        # Add left page number (bottom-left of left half)
+                        self._add_page_number_to_spread(
+                            page, rect, left_phys, "left", page_to_product
                         )
-                        page.draw_rect(bg_rect, color=None, fill=self.config["background_color"])
+                        stats["physical_pages_numbered"] += 1
 
-                    # Insert page number text
-                    page.insert_text(
-                        (x, y),
-                        text,
-                        fontsize=self.config["font_size"],
-                        fontname=self.config["font_name"],
-                        color=self.config["color"]
-                    )
-
-                    # Optionally add product label (for debugging)
-                    if page_num in page_to_product:
-                        product_name = page_to_product[page_num]
-                        # Add product label in top-left corner
-                        page.insert_text(
-                            (10, 20),
-                            f"[{product_name}]",
-                            fontsize=8,
-                            fontname=self.config["font_name"],
-                            color=(0, 0.5, 0)  # Green
+                        # Add right page number (bottom-right of right half)
+                        self._add_page_number_to_spread(
+                            page, rect, right_phys, "right", page_to_product
                         )
+                        stats["physical_pages_numbered"] += 1
+
+                    else:
+                        # Single page: add ONE page number
+                        phys_page = page_info.physical_pages[0]
+                        self._add_page_number_to_single(
+                            page, rect, phys_page, page_to_product
+                        )
+                        stats["physical_pages_numbered"] += 1
 
                     stats["pages_numbered"] += 1
 
-                    # Log progress every 50 pages
-                    if page_num % 50 == 0:
-                        self.logger.info(f"   📝 Numbered page {page_num}/{stats['total_pages']}")
+                    # Log progress every 20 PDF pages
+                    if (pdf_page_idx + 1) % 20 == 0:
+                        self.logger.info(
+                            f"   📝 Processed {pdf_page_idx + 1}/{layout.total_pdf_pages} PDF pages"
+                        )
 
                 except Exception as e:
-                    self.logger.warning(f"⚠️ Failed to number page {page_num}: {e}")
+                    self.logger.warning(f"⚠️ Failed to number PDF page {pdf_page_idx}: {e}")
                     stats["pages_skipped"] += 1
                     stats["errors"].append({
-                        "page": page_num,
+                        "pdf_page": pdf_page_idx,
+                        "physical_pages": page_info.physical_pages,
                         "error": str(e)
                     })
 
@@ -261,7 +288,10 @@ class PDFPageNumberingService:
             doc.save(output_path)
             doc.close()
 
-            self.logger.info(f"💾 Saved numbered PDF to: {output_path}")
+            self.logger.info(
+                f"💾 Saved numbered PDF: {stats['physical_pages_numbered']} physical page numbers "
+                f"added to {stats['pages_numbered']} PDF sheets"
+            )
 
             return output_path, stats
 
@@ -269,6 +299,129 @@ class PDFPageNumberingService:
             self.logger.error(f"❌ Page numbering failed: {e}")
             stats["errors"].append({"global": str(e)})
             raise
+
+    def _add_page_number_to_spread(
+        self,
+        page: fitz.Page,
+        rect: fitz.Rect,
+        physical_page: int,
+        side: str,  # "left" or "right"
+        page_to_product: Dict[int, str]
+    ) -> None:
+        """
+        Add a page number to one half of a spread page.
+
+        Args:
+            page: PyMuPDF page object
+            rect: Page rectangle
+            physical_page: Physical page number to display
+            side: "left" or "right" half
+            page_to_product: Optional mapping for product labels
+        """
+        margin_x = self.config["margin_x"]
+        margin_y = self.config["margin_y"]
+        half_width = rect.width / 2
+
+        text = f"{self.config['prefix']}{physical_page}"
+
+        if side == "left":
+            # Position in bottom-left of left half
+            x = margin_x
+            y = rect.height - margin_y
+        else:
+            # Position in bottom-right of right half
+            x = rect.width - margin_x - 50  # Account for text width
+            y = rect.height - margin_y
+
+        # Add background if configured
+        if self.config["background"]:
+            self._add_text_background(page, x, y, text)
+
+        # Insert page number
+        page.insert_text(
+            (x, y),
+            text,
+            fontsize=self.config["font_size"],
+            fontname=self.config["font_name"],
+            color=self.config["color"]
+        )
+
+        # Optionally add product label
+        if physical_page in page_to_product:
+            product_name = page_to_product[physical_page]
+            label_x = margin_x if side == "left" else half_width + margin_x
+            page.insert_text(
+                (label_x, 20),
+                f"[{product_name}]",
+                fontsize=8,
+                fontname=self.config["font_name"],
+                color=(0, 0.5, 0)  # Green
+            )
+
+    def _add_page_number_to_single(
+        self,
+        page: fitz.Page,
+        rect: fitz.Rect,
+        physical_page: int,
+        page_to_product: Dict[int, str]
+    ) -> None:
+        """
+        Add a page number to a single (non-spread) page.
+
+        Args:
+            page: PyMuPDF page object
+            rect: Page rectangle
+            physical_page: Physical page number to display
+            page_to_product: Optional mapping for product labels
+        """
+        # Calculate position based on config
+        x, y = self._calculate_position(rect, physical_page)
+
+        text = f"{self.config['prefix']}{physical_page}"
+
+        # Add background if configured
+        if self.config["background"]:
+            self._add_text_background(page, x, y, text)
+
+        # Insert page number
+        page.insert_text(
+            (x, y),
+            text,
+            fontsize=self.config["font_size"],
+            fontname=self.config["font_name"],
+            color=self.config["color"]
+        )
+
+        # Optionally add product label
+        if physical_page in page_to_product:
+            product_name = page_to_product[physical_page]
+            page.insert_text(
+                (10, 20),
+                f"[{product_name}]",
+                fontsize=8,
+                fontname=self.config["font_name"],
+                color=(0, 0.5, 0)  # Green
+            )
+
+    def _add_text_background(
+        self,
+        page: fitz.Page,
+        x: float,
+        y: float,
+        text: str
+    ) -> None:
+        """Add a background rectangle behind text."""
+        font = fitz.Font(fontname=self.config["font_name"])
+        text_length = font.text_length(text, fontsize=self.config["font_size"])
+        padding = self.config["background_padding"]
+
+        bg_rect = fitz.Rect(
+            x - padding,
+            y - self.config["font_size"] - padding,
+            x + text_length + padding,
+            y + padding
+        )
+        page.draw_rect(bg_rect, color=None, fill=self.config["background_color"])
 
     def _calculate_position(self, rect: fitz.Rect, page_num: int) -> Tuple[float, float]:
         """

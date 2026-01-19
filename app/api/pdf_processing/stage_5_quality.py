@@ -2,10 +2,12 @@
 Stage 5: Quality Enhancement
 
 This module handles async quality enhancement using Claude validation.
+
+IMPORTANT: This module uses PHYSICAL PAGE NUMBERS (1-based) throughout.
 """
 
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List
 from datetime import datetime
 from app.schemas.jobs import ProcessingStage
 from app.services.tracking.checkpoint_recovery_service import ProcessingStage as CheckpointStage
@@ -19,7 +21,7 @@ async def process_stage_5_quality(
     job_id: str,
     workspace_id: str,
     catalog: Any,
-    product_pages: set,
+    physical_pages: List[int],  # ✅ FIXED: Now using physical pages (1-based)
     products_created: int,
     images_processed: int,
     focused_extraction: bool,
@@ -34,15 +36,17 @@ async def process_stage_5_quality(
 ) -> Dict[str, Any]:
     """
     Stage 5: Quality Enhancement
-    
+
+    IMPORTANT: Uses PHYSICAL PAGE NUMBERS (1-based) throughout.
+
     Performs async quality enhancement using Claude validation for low-scoring images.
-    
+
     Args:
         document_id: Unique document identifier
         job_id: Job identifier for tracking
         workspace_id: Workspace identifier
         catalog: Product catalog from Stage 0
-        product_pages: Set of processed page numbers
+        physical_pages: List of physical page numbers (1-based) that were processed
         products_created: Number of products created
         images_processed: Number of images processed
         focused_extraction: Whether focused extraction was enabled
@@ -53,7 +57,7 @@ async def process_stage_5_quality(
         loaded_components: List of loaded components
         claude_breaker: Circuit breaker for Claude API
         logger: Logger instance
-        
+
     Returns:
         Dictionary containing:
         - result: Final processing result
@@ -99,8 +103,8 @@ async def process_stage_5_quality(
         "images_processed": images_processed,
         "claude_validations": validation_results.get('validated', 0),
         "focused_extraction": focused_extraction,
-        "pages_processed": len(product_pages),
-        "pages_skipped": len([p for p in range(1, tracker.total_pages + 1) if p not in product_pages]),
+        "pages_processed": len(physical_pages),
+        "pages_skipped": len([p for p in range(1, tracker.total_pages + 1) if p not in physical_pages]),
         "confidence_score": catalog.confidence_score
     }
     
@@ -120,7 +124,7 @@ async def process_stage_5_quality(
             "processing_time": (datetime.utcnow() - start_time).total_seconds(),
             "confidence_score": catalog.confidence_score,
             "focused_extraction": focused_extraction,
-            "pages_processed": len(product_pages)
+            "pages_processed": len(physical_pages)
         }
     )
     logger.info(f"✅ Created COMPLETED checkpoint for job {job_id}")

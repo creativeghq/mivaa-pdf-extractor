@@ -4,8 +4,12 @@ Stage 1: Focused Extraction with YOLO Layout Detection
 This module handles page extraction and layout analysis for individual products
 in the product-centric pipeline.
 
+IMPORTANT: This module uses PHYSICAL PAGE NUMBERS (1-based) throughout.
+Physical pages are what users see in catalogs. PDF sheet indices are only
+used internally when accessing PyMuPDF - never exposed to other stages.
+
 Features:
-- Page validation (PDF pages)
+- Page validation (physical pages)
 - YOLO layout detection (TEXT, IMAGE, TABLE, TITLE, CAPTION regions)
 - Layout region storage in database
 - Caption-to-image linking
@@ -28,14 +32,17 @@ async def extract_product_pages(
     total_pages: Optional[int] = None,
     enable_layout_detection: bool = True,
     product_id: Optional[str] = None,
-    catalog: Optional[Any] = None  # NEW: Catalog with spread layout info
+    catalog: Optional[Any] = None  # Catalog with spread layout info
 ) -> Dict[str, Any]:
     """
     Extract pages and detect layout regions for a single product.
 
+    IMPORTANT: Returns PHYSICAL PAGE NUMBERS (1-based) as the primary output.
+    PDF sheet indices are only used internally for PyMuPDF access.
+
     This function:
-    1. Validates PHYSICAL page numbers and converts to PDF page indices
-    2. Handles spread layouts (physical page -> PDF page + position mapping)
+    1. Validates PHYSICAL page numbers
+    2. Handles spread layouts internally (for YOLO detection)
     3. Detects layout regions using YOLO DocParser (if enabled)
     4. Stores layout regions in database
     5. Links captions to images
@@ -53,10 +60,11 @@ async def extract_product_pages(
 
     Returns:
         Dict with:
-        - product_pages: Set of PDF page indices (0-based) to extract
-        - physical_pages: Original physical page numbers (1-based) for metadata
+        - physical_pages: List of physical page numbers (1-based) - PRIMARY OUTPUT
         - layout_regions: List of detected layout regions (if enabled)
         - layout_stats: Statistics on detected regions
+        - has_spread_layout: Whether document uses spread layout
+        - physical_to_pdf_map: Mapping for internal PDF access (passed through from catalog)
     """
     logger.info(f"📄 [STAGE 1] Extracting pages for product: {product.name}")
     logger.info(f"   Physical page range: {product.page_range}")
@@ -67,13 +75,13 @@ async def extract_product_pages(
     physical_to_pdf_map = catalog.physical_to_pdf_map if catalog and hasattr(catalog, 'physical_to_pdf_map') else {}
 
     if has_spread_layout:
-        logger.info(f"   📐 Spread layout detected - converting physical pages to PDF pages")
+        logger.info(f"   📐 Spread layout detected")
+        logger.info(f"   📐 Physical-to-PDF mapping available: {len(physical_to_pdf_map)} entries")
 
     # ========================================================================
-    # STEP 1: Convert Physical Pages to PDF Page Indices (handling spread layout)
+    # STEP 1: Validate Physical Pages (NO CONVERSION - keep as physical pages)
     # ========================================================================
-    product_pages = set()  # PDF page indices (0-based)
-    physical_pages = []  # Original physical page numbers for metadata
+    physical_pages = []  # Physical page numbers (1-based) - this is our PRIMARY output
 
     if product.page_range:
         for physical_page in product.page_range:
@@ -84,20 +92,7 @@ async def extract_product_pages(
             if physical_page > 0:
                 physical_pages.append(physical_page)
 
-                # Convert physical page to PDF page index
-                if has_spread_layout and physical_page in physical_to_pdf_map:
-                    pdf_page_idx, position = physical_to_pdf_map[physical_page]
-                    product_pages.add(pdf_page_idx)
-                    logger.debug(f"      Physical page {physical_page} -> PDF page {pdf_page_idx} ({position})")
-                else:
-                    # Non-spread: simple 1-based to 0-based conversion
-                    pdf_page_idx = physical_page - 1
-                    product_pages.add(pdf_page_idx)
-
-    if has_spread_layout:
-        logger.info(f"   ✅ Physical pages {physical_pages} -> PDF indices {sorted(product_pages)}")
-    else:
-        logger.info(f"   ✅ PDF page indices: {sorted(product_pages)} ({len(product_pages)} pages)")
+    logger.info(f"   ✅ Validated {len(physical_pages)} physical pages: {physical_pages}")
 
     # ========================================================================
     # STEP 2: YOLO Layout Detection (if enabled)
@@ -105,8 +100,8 @@ async def extract_product_pages(
     layout_regions = []
     layout_stats = {}
 
-    if enable_layout_detection and product_pages:
-        logger.info(f"   🎯 Running YOLO layout detection on {len(product_pages)} pages...")
+    if enable_layout_detection and physical_pages:
+        logger.info(f"   🎯 Running YOLO layout detection on {len(physical_pages)} physical pages...")
 
         try:
             from app.services.pdf.yolo_layout_detector import YoloLayoutDetector
@@ -234,12 +229,14 @@ async def extract_product_pages(
             logger.error(f"   ❌ Layout detection failed: {e}")
             logger.info("   Continuing without layout detection...")
 
-    # Return comprehensive result
+    # Return comprehensive result - PHYSICAL PAGES are the primary output
     return {
-        'product_pages': product_pages,  # PDF page indices (0-based) for image extraction
-        'physical_pages': physical_pages,  # Original physical page numbers (1-based) for metadata
+        'physical_pages': physical_pages,  # Physical page numbers (1-based) - PRIMARY OUTPUT
         'layout_regions': layout_regions,
-        'layout_stats': layout_stats
+        'layout_stats': layout_stats,
+        # Pass through spread layout info for stages that need PDF access
+        'has_spread_layout': has_spread_layout,
+        'physical_to_pdf_map': physical_to_pdf_map
     }
 
 

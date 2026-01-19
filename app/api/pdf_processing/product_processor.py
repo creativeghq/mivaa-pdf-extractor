@@ -123,23 +123,26 @@ async def process_single_product(
             catalog=catalog  # NEW: Pass catalog for spread layout handling
         )
 
-        # Extract results
-        product_pages = extraction_result['product_pages']
+        # Extract results - NOW USING PHYSICAL PAGES as primary
+        physical_pages = extraction_result['physical_pages']  # Physical page numbers (1-based)
         layout_regions = extraction_result.get('layout_regions', [])
         layout_stats = extraction_result.get('layout_stats', {})
+        # Get spread layout info for internal PDF access
+        has_spread_layout = extraction_result.get('has_spread_layout', False)
+        physical_to_pdf_map = extraction_result.get('physical_to_pdf_map', {})
 
         await product_tracker.mark_stage_complete(
             product_id,
             ProductStage.EXTRACTION,
             {
-                "pages_extracted": len(product_pages),
+                "pages_extracted": len(physical_pages),
                 "layout_regions_detected": len(layout_regions),
                 "layout_stats": layout_stats
             }
         )
-        pages_extracted = len(product_pages)
+        pages_extracted = len(physical_pages)
         logger_instance.info(
-            f"✅ Extracted {pages_extracted} pages for {product.name}"
+            f"✅ Extracted {pages_extracted} physical pages for {product.name}: {physical_pages}"
         )
 
         # ========================================================================
@@ -156,7 +159,7 @@ async def process_single_product(
 
             settings = get_settings()
 
-            if settings.yolo_enabled and product_pages:
+            if settings.yolo_enabled and physical_pages:
                 # Initialize YOLO detector
                 yolo_config = settings.get_yolo_config()
                 detector = YoloLayoutDetector(config=yolo_config)
@@ -175,12 +178,22 @@ async def process_single_product(
                     logger_instance.info(f"      ♻️ Reusing existing temp PDF: {used_temp_path}")
 
                 try:
-                    # Detect layout regions for each product page
-                    for page_idx in sorted(product_pages):
-                        logger_instance.info(f"      Detecting regions on page {page_idx}...")
-                        result_yolo = await detector.detect_layout_regions(used_temp_path, page_idx)
+                    # Detect layout regions for each physical page
+                    # Convert to PDF index internally for PyMuPDF access
+                    for physical_page in sorted(physical_pages):
+                        # Convert physical page to PDF index for YOLO
+                        if has_spread_layout and physical_page in physical_to_pdf_map:
+                            pdf_idx, position = physical_to_pdf_map[physical_page]
+                        else:
+                            pdf_idx = physical_page - 1  # Simple 1-based to 0-based
+
+                        logger_instance.info(f"      Detecting regions on physical page {physical_page} (PDF index {pdf_idx})...")
+                        result_yolo = await detector.detect_layout_regions(used_temp_path, pdf_idx)
 
                         if result_yolo and result_yolo.regions:
+                            # Store physical page number in regions (not PDF index)
+                            for region in result_yolo.regions:
+                                region.bbox.page = physical_page
                             layout_regions.extend(result_yolo.regions)
                             logger_instance.info(f"      ✅ Found {len(result_yolo.regions)} regions")
                 finally:
@@ -222,15 +235,15 @@ async def process_single_product(
             workspace_id=workspace_id,
             job_id=job_id,
             product=product,
-            product_pages=product_pages,
+            physical_pages=physical_pages,  # ✅ FIXED: Now using physical pages (1-based)
             catalog=catalog,
             pdf_result=pdf_result,
             config=config,
             supabase=supabase,
             logger=logger_instance,
-            product_id=product_db_id,  # ✅ FIX: Pass actual DB ID for chunk linking
-            temp_pdf_path=temp_pdf_path,  # ✅ NEW: Pass temp path
-            layout_regions=layout_regions  # ✅ NEW: Pass layout regions directly
+            product_id=product_db_id,
+            temp_pdf_path=temp_pdf_path,
+            layout_regions=layout_regions
         )
 
         chunks_created = chunk_result.get('chunks_created', 0)
@@ -275,7 +288,7 @@ async def process_single_product(
             workspace_id=workspace_id,
             job_id=job_id,
             product=product,
-            product_pages=product_pages,
+            physical_pages=physical_pages,  # ✅ FIXED: Now using physical pages (1-based)
             catalog=catalog,
             config=config,
             logger=logger_instance
@@ -465,7 +478,7 @@ async def process_single_product(
             product_id=product_db_id,
             product_name=product.name,
             document_id=document_id,
-            product_pages=product_pages,
+            physical_pages=set(physical_pages),  # ✅ FIXED: Using physical_pages (1-based)
             logger=logger_instance
         )
 
@@ -552,7 +565,7 @@ async def cleanup_product_memory(logger_instance: logging.Logger) -> None:
     - config - Processing configuration
 
     CLEANS UP (product-specific data):
-    - product_pages (Set[int]) - Page numbers for this product
+    - physical_pages (List[int]) - Physical page numbers (1-based) for this product
     - pdf_result - Extracted text/images for this product
     - chunks - Text chunks for this product
     - images - Image data for this product

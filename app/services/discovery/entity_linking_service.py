@@ -699,11 +699,13 @@ class EntityLinkingService:
         product_id: str,
         product_name: str,
         document_id: str,
-        product_pages: Set[int],
+        physical_pages: Set[int],  # ✅ RENAMED: Now using physical_pages (1-based)
         logger: logging.Logger
     ) -> Dict[str, int]:
         """
         Link entities for a single product (product-centric pipeline).
+
+        IMPORTANT: Uses PHYSICAL PAGE NUMBERS (1-based) throughout.
 
         Creates relationships for:
         1. Product → Images (on product pages)
@@ -713,7 +715,7 @@ class EntityLinkingService:
             product_id: Database ID of the product
             product_name: Name of the product
             document_id: Document ID
-            product_pages: Set of page numbers for this product
+            physical_pages: Set of physical page numbers (1-based) for this product
             logger: Logger instance
 
         Returns:
@@ -736,13 +738,13 @@ class EntityLinkingService:
                 .execute()
 
             logger.info(f"   📸 Found {len(images_response.data) if images_response.data else 0} total images in document")
-            logger.info(f"   📄 Product pages: {sorted(product_pages)}")
+            logger.info(f"   📄 Physical pages (1-based): {sorted(physical_pages)}")
 
             image_relationships = []
             for img in images_response.data:
                 img_page = img.get('page_number')
                 logger.debug(f"   🔍 Checking image {img['id'][:8]}... on page {img_page}")
-                if img_page in product_pages:
+                if img_page in physical_pages:
                     # Image is on a product page - high relevance
                     relevance = 0.8
                     # ✅ UPDATED: Use image_product_associations schema
@@ -768,7 +770,7 @@ class EntityLinkingService:
                 stats['image_product_links'] = len(image_relationships)
                 logger.info(f"   ✅ Linked {len(image_relationships)} images to product")
             else:
-                logger.warning(f"   ⚠️ No images found on product pages {sorted(product_pages)}")
+                logger.warning(f"   ⚠️ No images found on physical pages {sorted(physical_pages)}")
 
             # 2. Link chunks to this product (chunks on product pages or mentioning product)
             chunks_response = self.supabase.client.table('document_chunks')\
@@ -816,7 +818,7 @@ class EntityLinkingService:
                 relevance = self._calculate_chunk_product_relevance(
                     chunk_original_page=chunk_original_page,
                     chunk_content=chunk.get('content', '').lower(),
-                    product_page_range=list(product_pages),
+                    product_page_range=list(physical_pages),  # ✅ FIXED: Using physical_pages
                     product_name=product_name.lower()
                 )
 
@@ -838,7 +840,7 @@ class EntityLinkingService:
                 stats['chunk_product_links'] = len(chunk_relationships)
                 logger.info(f"   ✅ Linked {len(chunk_relationships)} chunks to product")
             else:
-                logger.warning(f"   ⚠️ No chunks found matching product '{product_name}' on pages {sorted(product_pages)}")
+                logger.warning(f"   ⚠️ No chunks found matching product '{product_name}' on physical pages {sorted(physical_pages)}")
 
             # 3. Count tables linked to this product (already linked via product_id foreign key)
             tables_response = self.supabase.client.table('product_tables')\

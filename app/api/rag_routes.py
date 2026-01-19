@@ -3421,13 +3421,14 @@ async def process_document_with_discovery(
         linking_results = {"relationships_created": total_relationships_created}
 
         # In product-centric pipeline, each product has its own page_range
-        # We need to collect all pages that were processed across all products
-        product_pages = set()
+        # We need to collect all physical pages that were processed across all products
+        # Physical pages are 1-based page numbers that users see in catalogs
+        all_physical_pages = set()
         for product in catalog.products:
             if hasattr(product, 'page_range') and product.page_range:
-                product_pages.update(product.page_range)
+                all_physical_pages.update(product.page_range)
 
-        logger.info(f"📄 Aggregated {len(product_pages)} unique pages from {len(catalog.products)} products")
+        logger.info(f"📄 Aggregated {len(all_physical_pages)} unique physical pages from {len(catalog.products)} products")
 
         # ============================================================================
         # STAGE 5: QUALITY ENHANCEMENT (MODULAR)
@@ -3441,7 +3442,7 @@ async def process_document_with_discovery(
             job_id=job_id,
             workspace_id=workspace_id,
             catalog=catalog,
-            product_pages=product_pages,
+            physical_pages=list(all_physical_pages),  # ✅ FIXED: Now using physical pages
             products_created=products_created,
             images_processed=images_saved_count,
             focused_extraction=focused_extraction,

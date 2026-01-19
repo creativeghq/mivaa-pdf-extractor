@@ -3,6 +3,9 @@ Stage 2: Text Chunking
 
 This module handles text chunking for individual products in the product-centric pipeline.
 Includes metadata-first chunking, context enrichment, and type classification.
+
+IMPORTANT: This module uses PHYSICAL PAGE NUMBERS (1-based) throughout.
+Physical pages are what users see in catalogs.
 """
 
 import logging
@@ -17,18 +20,20 @@ async def process_product_chunking(
     workspace_id: str,
     job_id: str,
     product: Any,
-    product_pages: Set[int],
+    physical_pages: List[int],  # ✅ FIXED: Now using physical pages (1-based)
     catalog: Any,
     pdf_result: Any,
     config: Dict[str, Any],
     supabase: Any,
     logger: logging.Logger,
     product_id: Optional[str] = None,
-    temp_pdf_path: Optional[str] = None,  # ✅ NEW: Reuse existing temp path
-    layout_regions: Optional[List[Any]] = None  # ✅ NEW: Use provided regions
+    temp_pdf_path: Optional[str] = None,
+    layout_regions: Optional[List[Any]] = None
 ) -> Dict[str, Any]:
     """
     Create text chunks for a single product (product-centric pipeline).
+
+    IMPORTANT: Uses PHYSICAL PAGE NUMBERS (1-based) throughout.
 
     This is the single-product version used in the product-centric pipeline.
     It creates chunks ONLY for pages belonging to one product.
@@ -45,7 +50,7 @@ async def process_product_chunking(
         workspace_id: Workspace identifier
         job_id: Job identifier
         product: Single product object
-        product_pages: Set of page numbers for this product
+        physical_pages: List of physical page numbers (1-based) for this product
         catalog: Full catalog (for context)
         pdf_result: PDF extraction result
         config: Processing configuration (chunk_size, chunk_overlap, etc.)
@@ -61,7 +66,10 @@ async def process_product_chunking(
     from app.services.chunking.chunk_type_classification_service import ChunkTypeClassificationService
 
     logger.info(f"📝 Creating chunks for product: {product.name}")
-    logger.info(f"   Initial pages: {sorted(product_pages)}")
+    logger.info(f"   Physical pages (1-based): {sorted(physical_pages)}")
+
+    # Convert list to set for set operations (these are physical pages, 1-based)
+    physical_pages_set = set(physical_pages)
 
     # ========================================================================
     # STEP 1: Metadata-First - Exclude product metadata pages
@@ -76,7 +84,7 @@ async def process_product_chunking(
     )
 
     # Filter pages to chunk (exclude metadata pages to prevent duplication)
-    chunkable_pages = product_pages - excluded_pages
+    chunkable_pages = physical_pages_set - excluded_pages
     logger.info(f"   Chunkable pages: {sorted(chunkable_pages)} ({len(chunkable_pages)} pages)")
     if excluded_pages:
         logger.info(f"   Excluded pages: {sorted(excluded_pages)} ({len(excluded_pages)} metadata pages)")
@@ -135,14 +143,14 @@ async def process_product_chunking(
         # Legacy path: use pre-extracted text
         product_text = pdf_result.markdown_content
     else:
-        # Product-centric path: extract text from specific product pages
-        logger.info(f"   📄 Extracting text from {len(product_pages)} product pages...")
+        # Product-centric path: extract text from physical pages (already 1-based)
+        logger.info(f"   📄 Extracting text from {len(physical_pages)} physical pages...")
         try:
             import pymupdf4llm
             import tempfile
             import os
 
-            # ✅ FIX: Reuse existing temp PDF if provided
+            # Reuse existing temp PDF if provided
             used_temp_path = temp_pdf_path
             created_temp = False
 
@@ -156,24 +164,9 @@ async def process_product_chunking(
                 logger.info(f"      ♻️ Reusing existing temp PDF: {used_temp_path}")
 
             try:
-                # product_pages contains PDF SHEET indices (0-based)
-                # physical_pages contains VISUAL page numbers (1-based)
-                # We should use PHYSICAL pages to ensure we split spreads correctly
-                
-                # Get physical pages for this product from catalog or work it out
-                # In discover_products, we added them to the product/catalog
-                physical_page_list = []
-                if catalog and hasattr(catalog, 'physical_to_pdf_map'):
-                    # Map back: find physical pages that map to our PDF sheets
-                    for phys, (sheet, pos) in catalog.physical_to_pdf_map.items():
-                        if sheet in product_pages:
-                            # Verify this visual page belongs to this specific product's range
-                            if phys in product.page_range:
-                                physical_page_list.append(phys)
-                
-                if not physical_page_list:
-                    # Fallback to simple mapping
-                    physical_page_list = [p + 1 for p in sorted(list(product_pages))]
+                # ✅ SIMPLIFIED: physical_pages already contains 1-based physical page numbers
+                # No conversion needed - use directly
+                physical_page_list = sorted(physical_pages)
 
                 logger.info(f"   📄 Extracting text from physical pages: {physical_page_list}")
                 

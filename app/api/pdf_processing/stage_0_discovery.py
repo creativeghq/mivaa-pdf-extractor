@@ -66,7 +66,7 @@ async def process_stage_0_discovery(
         Dictionary containing:
         - catalog: Discovered catalog with products and entities
         - pdf_result: PDF extraction result with page count and content
-        - product_pages: Set of page numbers containing products
+        - all_physical_pages: Set of physical page numbers (1-based) containing products
         - temp_pdf_path: Path to temporary PDF file (returned existing or new)
     """
     from app.services.discovery.product_discovery_service import ProductDiscoveryService

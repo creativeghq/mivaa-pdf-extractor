@@ -1087,8 +1087,13 @@ class PDFProcessor:
         extracted_images = []
 
         try:
+            self.logger.info(f"   📋 [Job: {job_id}] PyMuPDF: Processing pages {batch_pages} (total doc pages: {len(doc)})")
+
             for page_idx in batch_pages:
                 if page_idx >= len(doc):
+                    self.logger.error(
+                        f"   ❌ [Job: {job_id}] SKIPPING page index {page_idx} - out of bounds (doc has {len(doc)} pages)"
+                    )
                     continue
 
                 # PDF page number (1-based)
@@ -1368,8 +1373,10 @@ class PDFProcessor:
             image_path = img_info.get('path')
             filename = img_info.get('filename')
 
+            self.logger.debug(f"   📦 Image {idx+1}/{len(extracted_images)}: path={image_path}, filename={filename}")
+
             if not image_path or not os.path.exists(image_path):
-                self.logger.warning(f"   ⚠️ Image file not found: {image_path}")
+                self.logger.warning(f"   ⚠️ Image file not found: {image_path} (exists={os.path.exists(image_path) if image_path else 'N/A'})")
                 continue
 
             try:
