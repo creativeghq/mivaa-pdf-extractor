@@ -182,3 +182,163 @@ async def _fetch_visual_metadata_for_product(
     except Exception as e:
         logger.warning(f"   ⚠️ Failed to fetch visual metadata: {e}")
         return {}
+
+
+async def propagate_common_fields_to_products(
+    document_id: str,
+    supabase: Any,
+    logger: logging.Logger,
+    material_category_override: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Propagate common fields (factory, manufacturing, material_category) across all products
+    from the same document. If one product has factory info and others don't, share it.
+
+    Common fields to propagate:
+    - factory_name
+    - factory_group_name
+    - country_of_origin / origin
+    - material_category (from upload settings - ALWAYS applied if provided)
+
+    Args:
+        document_id: Document identifier
+        supabase: Supabase client
+        logger: Logger instance
+        material_category_override: Material category from upload settings (highest priority)
+
+    Returns:
+        Stats about propagation
+    """
+    logger.info(f"🔄 Propagating common fields across products from document {document_id}...")
+
+    stats = {
+        'products_checked': 0,
+        'products_updated': 0,
+        'fields_propagated': []
+    }
+
+    try:
+        # If material_category_override not provided, try to get from document/job metadata
+        if not material_category_override:
+            # Try to get from background_jobs metadata first
+            job_result = supabase.client.table('background_jobs').select('metadata').eq('document_id', document_id).order('created_at', desc=True).limit(1).execute()
+            if job_result.data and len(job_result.data) > 0:
+                job_metadata = job_result.data[0].get('metadata', {})
+                material_category_override = job_metadata.get('material_category')
+
+            # Fallback: try to get from documents metadata
+            if not material_category_override:
+                doc_result = supabase.client.table('documents').select('metadata').eq('id', document_id).execute()
+                if doc_result.data and len(doc_result.data) > 0:
+                    doc_metadata = doc_result.data[0].get('metadata', {})
+                    material_category_override = doc_metadata.get('material_category')
+
+        if material_category_override:
+            logger.info(f"   📦 Using material_category from upload: {material_category_override}")
+
+        # Fetch all products from this document
+        products_response = supabase.client.table('products') \
+            .select('id, name, metadata') \
+            .eq('source_document_id', document_id) \
+            .execute()
+
+        if not products_response.data or len(products_response.data) == 0:
+            logger.info("   ℹ️ No products found for document")
+            return stats
+
+        products = products_response.data
+        stats['products_checked'] = len(products)
+
+        # Fields to propagate (shared across all products from same document)
+        common_fields = [
+            'factory_name',
+            'factory_group_name',
+            'country_of_origin',
+            'origin',
+            'material_category',
+            # Manufacturing details
+            'manufacturing_location',
+            'manufacturing_process',
+            'manufacturing_country',
+        ]
+
+        # Find the best value for each common field (first non-empty value)
+        common_values = {}
+
+        # ALWAYS use material_category from upload if provided
+        if material_category_override and not _is_empty_value(material_category_override):
+            common_values['material_category'] = material_category_override
+            logger.info(f"   ✅ material_category set from upload: {material_category_override}")
+
+        for field in common_fields:
+            # Skip material_category if we already have it from upload
+            if field == 'material_category' and 'material_category' in common_values:
+                continue
+
+            for product in products:
+                metadata = product.get('metadata', {}) or {}
+                value = metadata.get(field)
+
+                # Skip empty/invalid values
+                if value and not _is_empty_value(value):
+                    common_values[field] = value
+                    break  # Use first valid value found
+
+        if not common_values:
+            logger.info("   ℹ️ No common values to propagate")
+            return stats
+
+        logger.info(f"   📦 Found common values: {list(common_values.keys())}")
+
+        # Update products that are missing these common fields
+        for product in products:
+            product_id = product['id']
+            metadata = product.get('metadata', {}) or {}
+            updates_needed = {}
+
+            for field, common_value in common_values.items():
+                current_value = metadata.get(field)
+                # Update if current value is empty but common value exists
+                if _is_empty_value(current_value) and not _is_empty_value(common_value):
+                    updates_needed[field] = common_value
+
+            if updates_needed:
+                # Merge updates into metadata
+                updated_metadata = {**metadata, **updates_needed}
+
+                supabase.client.table('products') \
+                    .update({'metadata': updated_metadata}) \
+                    .eq('id', product_id) \
+                    .execute()
+
+                stats['products_updated'] += 1
+                stats['fields_propagated'].extend(list(updates_needed.keys()))
+                logger.info(f"   ✅ Updated product {product['name']}: {list(updates_needed.keys())}")
+
+        # Deduplicate fields_propagated
+        stats['fields_propagated'] = list(set(stats['fields_propagated']))
+
+        logger.info(f"✅ Propagation complete: {stats['products_updated']}/{stats['products_checked']} products updated")
+        return stats
+
+    except Exception as e:
+        logger.error(f"❌ Failed to propagate common fields: {e}")
+        stats['error'] = str(e)
+        return stats
+
+
+def _is_empty_value(value) -> bool:
+    """Check if a value is empty or a placeholder."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        normalized = value.lower().strip()
+        return normalized in ['', 'n/a', 'not found', 'not explicitly mentioned', 'not mentioned', 'unknown', 'none']
+    if isinstance(value, list):
+        return len(value) == 0
+    if isinstance(value, dict):
+        # Check if it's a {value, confidence} object with empty value
+        if 'value' in value:
+            return _is_empty_value(value['value'])
+        return len(value) == 0
+    return False

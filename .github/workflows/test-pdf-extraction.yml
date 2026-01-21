@@ -1,0 +1,354 @@
+# MIVAA PDF Extraction Test Workflow
+# This workflow validates the COMPLETE PDF extraction pipeline is functioning correctly
+# It runs the test_full_workflow.sh script to verify:
+# - Service health and connectivity
+# - PDF upload from URL
+# - Product discovery with Claude Vision
+# - Image extraction from PDF pages
+# - CLIP embeddings generation
+# - Text chunk creation
+# - Database storage and retrieval
+# - Product-image associations
+
+name: Test PDF Extraction Pipeline
+
+on:
+  # Run on manual trigger
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: 'Run in test mode (single product only for faster validation)'
+        required: false
+        default: 'true'
+        type: boolean
+      skip_cleanup:
+        description: 'Skip cleanup of test data after run'
+        required: false
+        default: 'false'
+        type: boolean
+
+  # Run on schedule - daily at 6 AM UTC
+  schedule:
+    - cron: '0 6 * * *'
+
+  # Run on push to main branch when relevant files change
+  push:
+    branches:
+      - main
+    paths:
+      - 'mivaa-pdf-extractor/app/**'
+      - 'mivaa-pdf-extractor/requirements.txt'
+      - 'mivaa-pdf-extractor/test_full_workflow.sh'
+      - '.github/workflows/test-pdf-extraction.yml'
+
+  # Run on pull requests targeting main
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'mivaa-pdf-extractor/app/**'
+      - 'mivaa-pdf-extractor/requirements.txt'
+      - 'mivaa-pdf-extractor/test_full_workflow.sh'
+
+env:
+  SSH_USER: ${{ secrets.SSH_USER }}
+  SSH_HOST: ${{ secrets.SSH_HOST }}
+  SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+  WORK_DIR: /home/${{ secrets.SSH_USER }}/mivaa-pdf-extractor
+
+jobs:
+  test-pdf-extraction:
+    name: Test PDF Extraction Pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 45  # Allow enough time for full test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Verify SSH connection
+        run: |
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "echo 'SSH connection successful'"
+
+      - name: Check service status
+        id: service_status
+        run: |
+          echo "Checking MIVAA PDF Extractor service status..."
+          SERVICE_STATUS=$(ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "sudo systemctl is-active mivaa-pdf-extractor.service || echo 'inactive'")
+          echo "Service status: $SERVICE_STATUS"
+          echo "service_status=$SERVICE_STATUS" >> $GITHUB_OUTPUT
+
+          if [ "$SERVICE_STATUS" != "active" ]; then
+            echo "::warning::Service is not active. Attempting to start..."
+            ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "sudo systemctl start mivaa-pdf-extractor.service"
+            sleep 10
+            SERVICE_STATUS=$(ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "sudo systemctl is-active mivaa-pdf-extractor.service || echo 'inactive'")
+            if [ "$SERVICE_STATUS" != "active" ]; then
+              echo "::error::Failed to start service"
+              exit 1
+            fi
+          fi
+
+      - name: Check for active processing jobs
+        id: check_jobs
+        run: |
+          echo "Checking for active processing jobs..."
+          ACTIVE_JOBS=$(ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "curl -s http://localhost:8000/api/rag/documents/jobs?limit=10 | jq '[.jobs[] | select(.status == \"processing\" or .status == \"pending\")] | length' 2>/dev/null || echo '0'")
+          echo "Active jobs: $ACTIVE_JOBS"
+          echo "active_jobs=$ACTIVE_JOBS" >> $GITHUB_OUTPUT
+
+          if [ "$ACTIVE_JOBS" != "0" ] && [ "$ACTIVE_JOBS" != "" ]; then
+            echo "::warning::There are $ACTIVE_JOBS active jobs. Waiting for them to complete..."
+            # Wait up to 10 minutes for jobs to complete
+            for i in {1..60}; do
+              sleep 10
+              ACTIVE_JOBS=$(ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "curl -s http://localhost:8000/api/rag/documents/jobs?limit=10 | jq '[.jobs[] | select(.status == \"processing\" or .status == \"pending\")] | length' 2>/dev/null || echo '0'")
+              if [ "$ACTIVE_JOBS" = "0" ] || [ "$ACTIVE_JOBS" = "" ]; then
+                echo "All jobs completed"
+                break
+              fi
+              echo "Still waiting... $ACTIVE_JOBS jobs remaining"
+            done
+
+            if [ "$ACTIVE_JOBS" != "0" ] && [ "$ACTIVE_JOBS" != "" ]; then
+              echo "::error::Jobs still running after timeout. Skipping test to avoid conflicts."
+              exit 1
+            fi
+          fi
+
+      - name: Run PDF extraction test
+        id: run_test
+        run: |
+          echo "Running PDF extraction test..."
+
+          # Determine test mode
+          TEST_FLAG=""
+          if [ "${{ github.event.inputs.test_mode }}" = "true" ] || [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
+            TEST_FLAG="--test"
+            echo "Running in TEST MODE (single product only)"
+          else
+            echo "Running in FULL MODE (all products)"
+          fi
+
+          # Run the test script
+          ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "cd ${{ env.WORK_DIR }} && chmod +x test_full_workflow.sh && ./test_full_workflow.sh $TEST_FLAG" 2>&1 | tee /tmp/test_output.log
+
+          # Check exit code
+          TEST_EXIT_CODE=${PIPESTATUS[0]}
+          echo "test_exit_code=$TEST_EXIT_CODE" >> $GITHUB_OUTPUT
+
+          if [ $TEST_EXIT_CODE -ne 0 ]; then
+            echo "::error::PDF extraction test failed with exit code $TEST_EXIT_CODE"
+            exit $TEST_EXIT_CODE
+          fi
+
+      - name: Extract and validate test results
+        if: always()
+        id: extract_results
+        run: |
+          echo "Extracting test results..."
+
+          # Get the job ID from the test output
+          JOB_ID=$(ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "cat /tmp/job_*_final.json 2>/dev/null | jq -r '.job_id' | head -1" || echo "")
+          echo "Job ID: $JOB_ID"
+          echo "job_id=$JOB_ID" >> $GITHUB_OUTPUT
+
+          if [ -n "$JOB_ID" ] && [ "$JOB_ID" != "null" ]; then
+            # Get detailed results
+            RESULTS=$(ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "curl -s http://localhost:8000/api/rag/documents/job/$JOB_ID")
+
+            STATUS=$(echo "$RESULTS" | jq -r '.status // "unknown"')
+            CHUNKS=$(echo "$RESULTS" | jq -r '.result.chunks_created // 0')
+            IMAGES=$(echo "$RESULTS" | jq -r '.result.images_extracted // 0')
+            CLIP_EMBEDDINGS=$(echo "$RESULTS" | jq -r '.result.clip_embeddings_generated // 0')
+            PRODUCTS=$(echo "$RESULTS" | jq -r '.result.products_discovered // 0')
+
+            echo "status=$STATUS" >> $GITHUB_OUTPUT
+            echo "chunks=$CHUNKS" >> $GITHUB_OUTPUT
+            echo "images=$IMAGES" >> $GITHUB_OUTPUT
+            echo "clip_embeddings=$CLIP_EMBEDDINGS" >> $GITHUB_OUTPUT
+            echo "products=$PRODUCTS" >> $GITHUB_OUTPUT
+
+            # Create summary table
+            echo "## PDF Extraction Test Results" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Metric | Value | Status |" >> $GITHUB_STEP_SUMMARY
+            echo "|--------|-------|--------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Job ID | \`$JOB_ID\` | - |" >> $GITHUB_STEP_SUMMARY
+            echo "| Job Status | $STATUS | $([ \"$STATUS\" = \"completed\" ] && echo '✅' || echo '❌') |" >> $GITHUB_STEP_SUMMARY
+            echo "| Products Discovered | $PRODUCTS | $([ \"$PRODUCTS\" -gt 0 ] && echo '✅' || echo '❌') |" >> $GITHUB_STEP_SUMMARY
+            echo "| Images Extracted | $IMAGES | $([ \"$IMAGES\" -gt 0 ] && echo '✅' || echo '❌') |" >> $GITHUB_STEP_SUMMARY
+            echo "| Text Chunks Created | $CHUNKS | $([ \"$CHUNKS\" -gt 0 ] && echo '✅' || echo '❌') |" >> $GITHUB_STEP_SUMMARY
+            echo "| CLIP Embeddings | $CLIP_EMBEDDINGS | $([ \"$CLIP_EMBEDDINGS\" -gt 0 ] && echo '✅' || echo '❌') |" >> $GITHUB_STEP_SUMMARY
+
+            # Validation checks
+            VALIDATION_FAILED=false
+
+            if [ "$STATUS" != "completed" ]; then
+              echo "::error::Job did not complete successfully (status: $STATUS)"
+              VALIDATION_FAILED=true
+            fi
+
+            if [ "$PRODUCTS" -eq 0 ]; then
+              echo "::error::No products were discovered"
+              VALIDATION_FAILED=true
+            fi
+
+            if [ "$IMAGES" -eq 0 ]; then
+              echo "::error::No images were extracted"
+              VALIDATION_FAILED=true
+            fi
+
+            if [ "$CHUNKS" -eq 0 ]; then
+              echo "::error::No text chunks were created"
+              VALIDATION_FAILED=true
+            fi
+
+            if [ "$CLIP_EMBEDDINGS" -eq 0 ]; then
+              echo "::error::No CLIP embeddings were generated"
+              VALIDATION_FAILED=true
+            fi
+
+            echo "validation_failed=$VALIDATION_FAILED" >> $GITHUB_OUTPUT
+          else
+            echo "::error::Could not retrieve job results"
+            echo "validation_failed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Verify database records
+        if: steps.extract_results.outputs.job_id != '' && steps.extract_results.outputs.job_id != 'null'
+        run: |
+          echo "Verifying database records..."
+
+          # Check products table
+          PRODUCT_COUNT=$(ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "curl -s http://localhost:8000/api/rag/documents/job/${{ steps.extract_results.outputs.job_id }}" | jq -r '.result.products_discovered // 0')
+          echo "Products in database: $PRODUCT_COUNT"
+
+          # Check image associations (via API if available)
+          echo "### Database Verification" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Result |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Products stored | $PRODUCT_COUNT |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Cleanup test data
+        if: always() && github.event.inputs.skip_cleanup != 'true'
+        run: |
+          echo "Cleaning up test artifacts..."
+          ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "rm -f /tmp/job_*.json /tmp/upload_response.json 2>/dev/null || true"
+
+      - name: Get service logs on failure
+        if: failure()
+        run: |
+          echo "::group::Service Logs (last 200 lines)"
+          ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "sudo journalctl -u mivaa-pdf-extractor.service -n 200 --no-pager" || true
+          echo "::endgroup::"
+
+          echo "::group::Error Logs"
+          ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "sudo journalctl -u mivaa-pdf-extractor.service --since '30 minutes ago' --no-pager | grep -E 'Error|Exception|Traceback' | tail -100" || true
+          echo "::endgroup::"
+
+      - name: Report final status
+        if: always()
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ steps.run_test.outputs.test_exit_code }}" = "0" ] && [ "${{ steps.extract_results.outputs.validation_failed }}" != "true" ]; then
+            echo "::notice::PDF Extraction Test PASSED - All pipeline stages working correctly"
+            echo "## ✅ Pipeline Test Passed" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "All PDF extraction stages completed successfully:" >> $GITHUB_STEP_SUMMARY
+            echo "- PDF upload and processing" >> $GITHUB_STEP_SUMMARY
+            echo "- Product discovery" >> $GITHUB_STEP_SUMMARY
+            echo "- Image extraction" >> $GITHUB_STEP_SUMMARY
+            echo "- Text chunk creation" >> $GITHUB_STEP_SUMMARY
+            echo "- Embedding generation" >> $GITHUB_STEP_SUMMARY
+            echo "- Database storage" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "::error::PDF Extraction Test FAILED"
+            echo "## ❌ Pipeline Test Failed" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Check the logs above for details on what failed." >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Workflow:** ${{ github.workflow }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Run:** [#${{ github.run_number }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+          echo "**Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+
+  notify-on-failure:
+    name: Notify on Failure
+    runs-on: ubuntu-latest
+    needs: test-pdf-extraction
+    if: failure() && github.event_name == 'schedule'
+    steps:
+      - name: Create issue on failure
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `PDF Extraction Pipeline Test Failed - ${new Date().toISOString().split('T')[0]}`;
+            const body = `
+            ## Automated Pipeline Test Failure
+
+            The scheduled PDF extraction pipeline test has failed.
+
+            **Workflow Run:** [View Details](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+            **Time:** ${new Date().toISOString()}
+
+            ### What This Tests
+            The pipeline test validates the complete PDF extraction flow:
+            1. Service health and API availability
+            2. PDF upload from URL
+            3. Product discovery using Claude Vision
+            4. Image extraction from PDF pages
+            5. Text chunk creation
+            6. CLIP embedding generation
+            7. Database storage and retrieval
+
+            ### Next Steps
+            1. Check the workflow logs for specific error details
+            2. Verify the MIVAA PDF Extractor service is running on the server
+            3. Check for any recent code changes that may have caused the failure
+            4. Run \`./test_full_workflow.sh --test\` manually to reproduce the issue
+
+            ---
+            *This issue was automatically created by the CI/CD pipeline.*
+            `;
+
+            // Check if a similar issue already exists
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'ci-failure,pdf-extraction'
+            });
+
+            if (issues.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['ci-failure', 'pdf-extraction', 'automated']
+              });
+            } else {
+              // Add a comment to existing issue
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issues[0].number,
+                body: `### Test failed again at ${new Date().toISOString()}\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})`
+              });
+            }

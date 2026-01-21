@@ -285,7 +285,9 @@ class SupabaseClient:
         duplicate_of: Optional[str] = None,
         perceptual_hash: Optional[str] = None,
         vision_provider: Optional[str] = None,
-        vision_model: Optional[str] = None
+        vision_model: Optional[str] = None,
+        # Material category from upload (tiles, heatpump, wood, etc.)
+        material_category: Optional[str] = None
     ) -> Optional[str]:
         """
         Save a single image to document_images table.
@@ -339,26 +341,46 @@ class SupabaseClient:
                     f"Image info keys: {list(image_info.keys())}"
                 )
                 page_num = 1
-            caption = image_info.get('caption') or image_info.get('description') or f"Image from page {page_num}"
 
             # Extract AI classification results if available
             ai_classification = image_info.get('ai_classification', {})
+
+            # Generate caption: Use AI-generated description/reason if available
+            # Priority: explicit caption > explicit description > AI reason > fallback
+            caption = image_info.get('caption') or image_info.get('description')
+            if not caption:
+                # Use AI classification reason as caption if available (it describes what was seen)
+                ai_reason = ai_classification.get('reason')
+                if ai_reason and ai_reason != 'Unknown' and len(ai_reason) > 10:
+                    # Format: "Material image (AI): <reason>"
+                    classification_type = ai_classification.get('classification', 'material')
+                    caption = f"{classification_type.replace('_', ' ').title()}: {ai_reason}"
+                else:
+                    caption = f"Image from page {page_num}"
             is_material = ai_classification.get('is_material', False)
 
-            # Determine category: 'product' for material images, 'general' for non-material
-            # Priority: explicit category > ai_classification > default 'general'
-            if category:
+            # Determine category: use material_category from upload (tiles, heatpump, etc.)
+            # Priority: material_category > explicit category > ai_classification > default 'general'
+            # This ensures images are categorized by their extraction category for proper relevancy search
+            if material_category:
+                final_category = material_category  # e.g., 'tiles', 'heatpump', 'wood'
+            elif category:
                 final_category = category
             elif is_material:
-                final_category = 'product'
+                final_category = 'product'  # Fallback if no material_category provided
             else:
                 final_category = 'general'
+
+            # Determine image_type from AI classification
+            # Priority: AI classification type > fallback to 'material_sample'
+            image_type = ai_classification.get('classification') or 'material_sample'
+            # Valid types: material_closeup, material_in_situ, non_material
 
             # Prepare image entry (same format as batch save)
             image_entry = {
                 'document_id': document_id,
                 'image_url': image_url,
-                'image_type': 'material_sample',
+                'image_type': image_type,
                 'caption': caption,
                 'page_number': page_num,
                 'confidence': 0.95,

@@ -742,7 +742,8 @@ Respond ONLY with this JSON format:
         workspace_id: str,
         idx: int,
         total: int,
-        max_retries: int = 3
+        max_retries: int = 3,
+        material_category: Optional[str] = None
     ) -> Tuple[bool, bool, Optional[str]]:
         """
         Process a single image with retry logic.
@@ -754,6 +755,7 @@ Respond ONLY with this JSON format:
             idx: Image index
             total: Total images
             max_retries: Maximum retry attempts
+            material_category: Material category from upload (tiles, heatpump, wood, etc.)
 
         Returns:
             Tuple of (image_saved, embedding_generated, error_message)
@@ -763,18 +765,19 @@ Respond ONLY with this JSON format:
 
         while retry_count < max_retries:
             try:
-                # Save to database with category='product' for material images
+                # Save to database with material_category for proper categorization
                 # (ai_classification is already in img_data from classify_images)
                 image_id = await self.supabase_client.save_single_image(
                     image_info=img_data,
                     document_id=document_id,
                     workspace_id=workspace_id,
                     image_index=idx,
-                    category='product',  # ✅ All images in this flow are material images
+                    category='product',  # Fallback category if material_category not provided
                     extraction_method=img_data.get('extraction_method', 'pymupdf'),
                     bbox=img_data.get('bbox'),
                     detection_confidence=img_data.get('detection_confidence'),
-                    product_name=img_data.get('product_name')
+                    product_name=img_data.get('product_name'),
+                    material_category=material_category  # Pass material_category for proper categorization
                 )
 
                 if not image_id:
@@ -973,7 +976,8 @@ Respond ONLY with this JSON format:
         document_id: str,
         workspace_id: str,
         batch_size: int = 20,
-        max_retries: int = 3
+        max_retries: int = 3,
+        material_category: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Save images to database and generate CLIP embeddings with batching and retry logic.
@@ -990,6 +994,7 @@ Respond ONLY with this JSON format:
             workspace_id: Workspace ID
             batch_size: Number of images to process per batch (default: 20)
             max_retries: Maximum retry attempts per image (default: 3)
+            material_category: Material category from upload (tiles, heatpump, wood, etc.)
 
         Returns:
             Dict with counts and failed images: {
@@ -1037,7 +1042,8 @@ Respond ONLY with this JSON format:
                     workspace_id=workspace_id,
                     idx=global_idx,
                     total=total_images + checkpoint_index,
-                    max_retries=max_retries
+                    max_retries=max_retries,
+                    material_category=material_category
                 )
 
                 if image_saved:

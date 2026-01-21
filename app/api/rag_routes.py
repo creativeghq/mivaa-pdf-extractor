@@ -3330,6 +3330,29 @@ async def process_document_with_discovery(
         # - processing_config: Configuration settings
         # ========================================================================
 
+        # Fetch material_category from document or job metadata
+        # This is used for proper image categorization (tiles, heatpump, wood, etc.)
+        material_category = None
+        try:
+            # Try to get from background_jobs metadata first
+            job_result = supabase.client.table('background_jobs').select('metadata').eq('id', job_id).execute()
+            if job_result.data and len(job_result.data) > 0:
+                job_metadata = job_result.data[0].get('metadata', {})
+                material_category = job_metadata.get('material_category')
+                if material_category:
+                    logger.info(f"📦 Using material_category from job metadata: {material_category}")
+
+            # Fallback: try to get from documents metadata
+            if not material_category:
+                doc_result = supabase.client.table('documents').select('metadata').eq('id', document_id).execute()
+                if doc_result.data and len(doc_result.data) > 0:
+                    doc_metadata = doc_result.data[0].get('metadata', {})
+                    material_category = doc_metadata.get('material_category')
+                    if material_category:
+                        logger.info(f"📦 Using material_category from document metadata: {material_category}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not fetch material_category: {e}")
+
         # Processing configuration
         processing_config = {
             'chunk_size': chunk_size,
@@ -3337,7 +3360,8 @@ async def process_document_with_discovery(
             'image_analysis_model': image_analysis_model,
             'discovery_model': discovery_model,
             'focused_extraction': focused_extraction,
-            'extract_categories': extract_categories
+            'extract_categories': extract_categories,
+            'material_category': material_category  # For image categorization
         }
 
         # Track overall metrics
@@ -3429,6 +3453,20 @@ async def process_document_with_discovery(
                 all_physical_pages.update(product.page_range)
 
         logger.info(f"📄 Aggregated {len(all_physical_pages)} unique physical pages from {len(catalog.products)} products")
+
+        # ============================================================================
+        # STAGE 4.5: PROPAGATE COMMON FIELDS ACROSS PRODUCTS
+        # ============================================================================
+        # Share factory, manufacturing, and material_category across all products from same document
+        from app.api.pdf_processing.stage_4_products import propagate_common_fields_to_products
+
+        propagation_result = await propagate_common_fields_to_products(
+            document_id=document_id,
+            supabase=supabase,
+            logger=logger,
+            material_category_override=material_category  # From upload settings
+        )
+        logger.info(f"🔄 Field propagation: {propagation_result.get('products_updated', 0)}/{propagation_result.get('products_checked', 0)} products updated")
 
         # ============================================================================
         # STAGE 5: QUALITY ENHANCEMENT (MODULAR)

@@ -291,11 +291,15 @@ async def process_product_images(
     # ========================================================================
     # SAVE TO DATABASE AND GENERATE CLIP EMBEDDINGS
     # ========================================================================
+    # Get material_category from config (passed from upload settings)
+    material_category = config.get('material_category')
     logger.info(f"   💾 DATABASE STAGE: Saving metadata and generating CLIP embeddings...")
+    logger.info(f"      Material category: {material_category or 'not specified'}")
     save_result = await image_service.save_images_and_generate_clips(
         material_images=uploaded_images,
         document_id=document_id,
-        workspace_id=workspace_id
+        workspace_id=workspace_id,
+        material_category=material_category
     )
 
     images_processed = save_result.get('images_saved', 0)

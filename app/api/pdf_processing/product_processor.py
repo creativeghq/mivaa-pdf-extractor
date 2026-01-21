@@ -2,6 +2,7 @@
 Single Product Processor
 
 Handles processing of a single product through all stages in the product-centric pipeline.
+Includes checkpoint creation for recovery and visibility.
 """
 
 import gc
@@ -16,6 +17,7 @@ from app.schemas.product_progress import (
     ProductMetrics
 )
 from app.services.tracking.product_progress_tracker import ProductProgressTracker
+from app.services.tracking.checkpoint_recovery_service import ProcessingStage as CheckpointStage
 from app.utils.memory_monitor import MemoryPressureMonitor
 
 
@@ -145,6 +147,25 @@ async def process_single_product(
             f"✅ Extracted {pages_extracted} physical pages for {product.name}: {physical_pages}"
         )
 
+        # ✅ CHECKPOINT: PDF_EXTRACTED - Stage 1 complete
+        await checkpoint_recovery_service.create_checkpoint(
+            job_id=job_id,
+            stage=CheckpointStage.PDF_EXTRACTED,
+            data={
+                "document_id": document_id,
+                "product_name": product.name,
+                "product_index": product_index,
+                "pages_extracted": pages_extracted,
+                "physical_pages": physical_pages
+            },
+            metadata={
+                "layout_regions_detected": len(layout_regions),
+                "layout_stats": layout_stats,
+                "has_spread_layout": has_spread_layout
+            }
+        )
+        logger_instance.info(f"   📌 Created PDF_EXTRACTED checkpoint for {product.name}")
+
         # ========================================================================
         # STAGE 1.5: YOLO Layout Detection
         # ========================================================================
@@ -268,6 +289,42 @@ async def process_single_product(
             logger_instance.info(f"   📊 Tracker totals: chunks={tracker.chunks_created}, text_embeddings={tracker.text_embeddings_generated}")
         logger_instance.info(f"✅ Created {chunks_created} chunks for {product.name}")
 
+        # ✅ CHECKPOINT: CHUNKS_CREATED - Stage 2 complete
+        await checkpoint_recovery_service.create_checkpoint(
+            job_id=job_id,
+            stage=CheckpointStage.CHUNKS_CREATED,
+            data={
+                "document_id": document_id,
+                "product_name": product.name,
+                "product_index": product_index,
+                "chunks_created": chunks_created
+            },
+            metadata={
+                "text_embeddings_generated": embeddings_generated,
+                "layout_aware": True,
+                "product_db_id": product_db_id
+            }
+        )
+        logger_instance.info(f"   📌 Created CHUNKS_CREATED checkpoint for {product.name}")
+
+        # ✅ CHECKPOINT: TEXT_EMBEDDINGS_GENERATED - Text embeddings complete
+        if embeddings_generated > 0:
+            await checkpoint_recovery_service.create_checkpoint(
+                job_id=job_id,
+                stage=CheckpointStage.TEXT_EMBEDDINGS_GENERATED,
+                data={
+                    "document_id": document_id,
+                    "product_name": product.name,
+                    "product_index": product_index,
+                    "text_embeddings_generated": embeddings_generated
+                },
+                metadata={
+                    "chunks_created": chunks_created,
+                    "product_db_id": product_db_id
+                }
+            )
+            logger_instance.info(f"   📌 Created TEXT_EMBEDDINGS_GENERATED checkpoint for {product.name}")
+
         # ========================================================================
         # STAGE 3: Process Images
         # ========================================================================
@@ -322,6 +379,42 @@ async def process_single_product(
             # Log the actual tracker values to verify sync
             logger_instance.info(f"   📊 Updated tracker: {images_processed} images, {clip_embeddings} CLIP embeddings")
             logger_instance.info(f"   📊 Tracker totals: images_stored={tracker.images_stored}, clip_embeddings={tracker.clip_embeddings_generated}, image_embeddings={tracker.image_embeddings_generated}")
+
+        # ✅ CHECKPOINT: IMAGES_EXTRACTED - Stage 3 complete
+        await checkpoint_recovery_service.create_checkpoint(
+            job_id=job_id,
+            stage=CheckpointStage.IMAGES_EXTRACTED,
+            data={
+                "document_id": document_id,
+                "product_name": product.name,
+                "product_index": product_index,
+                "images_processed": images_processed
+            },
+            metadata={
+                "images_material": image_result.get('images_material', 0),
+                "images_non_material": image_result.get('images_non_material', 0),
+                "product_db_id": product_db_id
+            }
+        )
+        logger_instance.info(f"   📌 Created IMAGES_EXTRACTED checkpoint for {product.name}")
+
+        # ✅ CHECKPOINT: IMAGE_EMBEDDINGS_GENERATED - CLIP embeddings complete
+        if clip_embeddings > 0:
+            await checkpoint_recovery_service.create_checkpoint(
+                job_id=job_id,
+                stage=CheckpointStage.IMAGE_EMBEDDINGS_GENERATED,
+                data={
+                    "document_id": document_id,
+                    "product_name": product.name,
+                    "product_index": product_index,
+                    "clip_embeddings_generated": clip_embeddings
+                },
+                metadata={
+                    "images_processed": images_processed,
+                    "product_db_id": product_db_id
+                }
+            )
+            logger_instance.info(f"   📌 Created IMAGE_EMBEDDINGS_GENERATED checkpoint for {product.name}")
 
         # ========================================================================
         # STAGE 4: Update Product with Extracted Metadata
@@ -440,6 +533,23 @@ async def process_single_product(
         result.product_db_id = product_db_id
         logger_instance.info(f"✅ Product updated in DB: {product_db_id}")
 
+        # ✅ CHECKPOINT: PRODUCTS_CREATED - Stage 4 complete
+        await checkpoint_recovery_service.create_checkpoint(
+            job_id=job_id,
+            stage=CheckpointStage.PRODUCTS_CREATED,
+            data={
+                "document_id": document_id,
+                "product_name": product.name,
+                "product_index": product_index,
+                "product_db_id": product_db_id
+            },
+            metadata={
+                "layout_regions_stored": len(layout_regions) if layout_regions else 0,
+                "tables_extracted": len(table_regions) if 'table_regions' in locals() else 0
+            }
+        )
+        logger_instance.info(f"   📌 Created PRODUCTS_CREATED checkpoint for {product.name}")
+
         # ========================================================================
         # STAGE 4.5: Auto-create KB documents from extracted metadata
         # ========================================================================
@@ -498,6 +608,24 @@ async def process_single_product(
                 sync_to_db=True
             )
             logger_instance.info(f"   📊 Updated tracker: {relationships_created} relationships (total relations={tracker.relations_created})")
+
+        # ✅ CHECKPOINT: RELATIONSHIPS_CREATED - Stage 5 complete
+        await checkpoint_recovery_service.create_checkpoint(
+            job_id=job_id,
+            stage=CheckpointStage.RELATIONSHIPS_CREATED,
+            data={
+                "document_id": document_id,
+                "product_name": product.name,
+                "product_index": product_index,
+                "relationships_created": relationships_created
+            },
+            metadata={
+                "product_db_id": product_db_id,
+                "chunks_linked": linking_result.get('chunks_linked', 0),
+                "images_linked": linking_result.get('images_linked', 0)
+            }
+        )
+        logger_instance.info(f"   📌 Created RELATIONSHIPS_CREATED checkpoint for {product.name}")
 
         # ========================================================================
         # SUCCESS: Mark product as complete
