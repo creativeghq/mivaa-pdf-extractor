@@ -16,6 +16,7 @@ import io
 import base64
 import logging
 import time
+import asyncio
 import httpx
 from typing import List, Dict, Any, Optional, Tuple
 from PIL import Image
@@ -67,7 +68,37 @@ class YoloLayoutDetector:
         )
         
         logger.info(f"✅ YOLO Layout Detector initialized (enabled: {self.enabled})")
-    
+
+    async def _ensure_endpoint_ready(self) -> bool:
+        """
+        Ensure YOLO endpoint is running and ready for inference.
+
+        The endpoint may have auto-paused during long operations like product discovery
+        (which can take several minutes and doesn't use YOLO). This method checks the
+        endpoint status and resumes + warms up if needed.
+
+        Returns:
+            True if endpoint is ready for inference, False otherwise
+        """
+        try:
+            # Run blocking resume_if_needed() in thread pool to avoid blocking event loop
+            is_running = await asyncio.to_thread(self.endpoint_manager.resume_if_needed)
+
+            if not is_running:
+                logger.error("❌ Failed to resume YOLO endpoint")
+                return False
+
+            # If we just resumed, we need to warmup (the endpoint manager tracks this internally)
+            if not self.endpoint_manager.warmup_completed:
+                logger.info("🔥 YOLO endpoint needs warmup after resume...")
+                await asyncio.to_thread(self.endpoint_manager.warmup)
+
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Failed to ensure YOLO endpoint ready: {e}")
+            return False
+
     def convert_pdf_page_to_image(
         self,
         pdf_path: str,
@@ -138,8 +169,12 @@ class YoloLayoutDetector:
         start_time = time.time()
 
         try:
-            # NOTE: Warmup is handled centrally in rag_routes.py at job start
-            # The endpoint should already be running and warmed up
+            # Step 0: Ensure endpoint is running (may have auto-paused during product discovery)
+            # The endpoint has a 60s auto-pause timeout, and product discovery can take several minutes
+            endpoint_ready = await self._ensure_endpoint_ready()
+            if not endpoint_ready:
+                logger.warning(f"⚠️ YOLO endpoint not ready, skipping layout detection for page {page_num}")
+                return LayoutDetectionResult(page_number=page_num, regions=[])
 
             # Step 1: Convert page to image
             logger.info(f"📄 Converting page {page_num} to image...")
