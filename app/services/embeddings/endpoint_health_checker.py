@@ -48,7 +48,7 @@ class EndpointHealthChecker:
 
     def __init__(
         self,
-        max_health_check_attempts: int = 10,
+        max_health_check_attempts: int = 20,
         health_check_interval_seconds: int = 6,
         health_check_timeout_seconds: int = 30
     ):
@@ -56,7 +56,7 @@ class EndpointHealthChecker:
         Initialize health checker.
 
         Args:
-            max_health_check_attempts: Max attempts before giving up (default: 10 = 60s total)
+            max_health_check_attempts: Max attempts before giving up (default: 20 = 120s total)
             health_check_interval_seconds: Seconds between health checks (default: 6)
             health_check_timeout_seconds: Timeout for each health check request (default: 30)
         """
