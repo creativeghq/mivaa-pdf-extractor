@@ -59,6 +59,7 @@ from app.services.utilities.prompt_templates import get_prompt_template_from_db
 # PageConverter removed - using simple PDF page numbers instead
 from app.config import get_settings
 from app.utils.pdf_to_images import analyze_pdf_layout, get_physical_page_text, PDFLayoutAnalysis
+from app.services.discovery.page_content_classifier import refine_product_page_ranges
 
 
 logger = logging.getLogger(__name__)
@@ -1116,6 +1117,15 @@ class ProductDiscoveryService:
             # ✅ STEP 1: Calculate page_range from start_page (primary method)
             # This sets page_range for products that have start_page from INDEX reading
             self._calculate_page_ranges_from_start_pages(catalog.products, pdf_page_count)
+
+            # ✅ STEP 1.5 (PHASE 2): Refine page ranges with content classification
+            # Trims non-product pages (architect intros, decorative) from beginning of ranges
+            if pages_content:
+                refine_product_page_ranges(
+                    products=catalog.products,
+                    pages_content=pages_content,
+                    logger=self.logger
+                )
 
             # Detect pages for ALL products
             # PRIORITY: 1) start_page (calculated above), 2) Claude's page_range, 3) text detection

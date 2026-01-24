@@ -149,8 +149,21 @@ class CheckpointRecoveryService:
                 logger.error(f"❌ Checkpoint validation failed: {failure_reason}")
                 await self._mark_job_failed(job_id, failure_reason)
                 return False
-            elif data.get('chunks_created', 0) == 0 or data.get('products_created', 0) == 0:
-                # Log warning for empty results that are valid (context-aware)
+
+            # Stage-aware warning for legitimately empty results
+            # Only warn if the stage-specific field is empty (not unrelated fields)
+            should_warn = False
+            if stage == ProcessingStage.CHUNKS_CREATED and data.get('chunks_created', 0) == 0:
+                should_warn = True
+            elif stage == ProcessingStage.PRODUCTS_CREATED and data.get('products_created', 0) == 0:
+                should_warn = True
+            elif stage == ProcessingStage.IMAGES_EXTRACTED and data.get('images_extracted', 0) == 0 and data.get('images_processed', 0) == 0:
+                should_warn = True
+            elif stage == ProcessingStage.COMPLETED:
+                if data.get('chunks_created', 0) == 0 and data.get('products_created', 0) == 0 and data.get('images_processed', 0) == 0:
+                    should_warn = True
+
+            if should_warn:
                 logger.warning(f"⚠️ Checkpoint has empty results (valid for context): stage={stage.value}, data={data}, categories={requested_categories}")
 
             checkpoint_data = {
