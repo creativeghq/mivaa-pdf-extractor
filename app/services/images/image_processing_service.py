@@ -30,13 +30,40 @@ logger = logging.getLogger(__name__)
 class ImageProcessingService:
     """Service for handling all image processing operations."""
 
-    def __init__(self):
+    def __init__(self, workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"):
         """Initialize service."""
         self.supabase_client = get_supabase_client()
         self.vecs_service = VecsService()
         self.embedding_service = RealEmbeddingsService()
         self.pdf_processor = PDFProcessor()
         self.settings = get_settings()
+        self.workspace_id = workspace_id
+        self.classification_prompt = None
+        self._load_classification_prompt()
+
+    def _load_classification_prompt(self) -> None:
+        """Load image classification prompt from database."""
+        try:
+            result = self.supabase_client.client.table('prompts')\
+                .select('prompt_text')\
+                .eq('prompt_type', 'classification')\
+                .eq('stage', 'image_analysis')\
+                .eq('category', 'image_classification')\
+                .eq('is_active', True)\
+                .order('version', desc=True)\
+                .limit(1)\
+                .execute()
+
+            if result.data and len(result.data) > 0:
+                self.classification_prompt = result.data[0]['prompt_text']
+                logger.info("✅ Loaded classification prompt from database")
+            else:
+                logger.warning("⚠️ Classification prompt not found in database. Add via /admin/ai-configs - classification will fail!")
+                self.classification_prompt = None
+
+        except Exception as e:
+            logger.error(f"❌ Failed to load classification prompt from database: {e}")
+            self.classification_prompt = None
 
     async def classify_images(
         self,
@@ -44,7 +71,8 @@ class ImageProcessingService:
         confidence_threshold: float = 0.6,  # OPTIMIZED: Lowered from 0.7 to reduce validation calls
         primary_model: str = "Qwen/Qwen3-VL-32B-Instruct",  # PRIMARY: Qwen3-VL-32B (reliable, high accuracy)
         validation_model: str = "claude-sonnet-4-20250514",  # FALLBACK: Claude Sonnet 4.5 (highest quality)
-        batch_size: int = 15  # NEW: Process images in batches to prevent OOM
+        batch_size: int = 15,  # NEW: Process images in batches to prevent OOM
+        job_id: Optional[str] = None  # NEW: Job ID for AI cost tracking
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Classify images as material or non-material using Qwen Vision models.
@@ -65,6 +93,7 @@ class ImageProcessingService:
             primary_model: Primary classification model (default: Qwen3-VL-32B)
             validation_model: Fallback model for failures/low confidence (default: Claude Sonnet 4.5)
             batch_size: Number of images to process per batch (default: 15)
+            job_id: Optional job ID for AI cost tracking/aggregation
 
         Returns:
             Tuple of (material_images, non_material_images)
@@ -144,12 +173,13 @@ class ImageProcessingService:
                         image_base64 = base64.b64encode(image_bytes).decode('utf-8')
                         del image_bytes
 
-                classification_prompt = """Analyze this image and classify it as:
-1. MATERIAL: Shows building/interior materials (tiles, wood, fabric, stone, metal, flooring, wallpaper, etc.) - either close-up texture or in application
-2. NOT_MATERIAL: Faces, logos, charts, diagrams, text, decorative graphics, abstract patterns
-
-Respond ONLY with JSON:
-{"is_material": true/false, "confidence": 0.0-1.0, "reason": "brief explanation"}"""
+                # Use database prompt - NO FALLBACK
+                if self.classification_prompt:
+                    classification_prompt = self.classification_prompt
+                else:
+                    error_msg = "CRITICAL: Classification prompt not found in database. Add via /admin/ai-configs with prompt_type='classification', stage='image_analysis', category='image_classification'"
+                    logger.error(f"❌ {error_msg}")
+                    raise ValueError(error_msg)
 
                 # ✅ Use OpenAI client for HuggingFace endpoint (llamacpp provides OpenAI-compatible API)
                 from openai import AsyncOpenAI
@@ -268,7 +298,8 @@ Respond ONLY with JSON:
                         "consistency": 0.95,
                         "validation": 0.90
                     },
-                    action="use_ai_result"
+                    action="use_ai_result",
+                    job_id=job_id  # Track cost per job
                 )
 
                 return {
@@ -326,18 +357,13 @@ Respond ONLY with JSON:
                         image_base64 = base64.b64encode(image_bytes).decode('utf-8')
                         del image_bytes
 
-                classification_prompt = """Analyze this image and classify it into ONE of these categories:
-
-1. **material_closeup**: Close-up photo showing material texture, surface, pattern, or finish (tiles, wood, fabric, stone, metal, etc.)
-2. **material_in_situ**: Material shown in application/context (bathroom with tiles, furniture with fabric, room with flooring, etc.)
-3. **non_material**: NOT material-related (faces, logos, decorative graphics, charts, diagrams, text, random images)
-
-Respond ONLY with this JSON format:
-{
-    "classification": "material_closeup" | "material_in_situ" | "non_material",
-    "confidence": 0.0-1.0,
-    "reason": "brief explanation"
-}"""
+                # Use database prompt - NO FALLBACK
+                if self.classification_prompt:
+                    classification_prompt = self.classification_prompt
+                else:
+                    error_msg = "CRITICAL: Classification prompt not found in database. Add via /admin/ai-configs with prompt_type='classification', stage='image_analysis', category='image_classification'"
+                    logger.error(f"❌ {error_msg}")
+                    raise ValueError(error_msg)
 
                 response = await ai_service.anthropic_async.messages.create(
                     model="claude-sonnet-4-20250514",
@@ -977,7 +1003,8 @@ Respond ONLY with this JSON format:
         workspace_id: str,
         batch_size: int = 20,
         max_retries: int = 3,
-        material_category: Optional[str] = None
+        material_category: Optional[str] = None,
+        job_id: Optional[str] = None  # NEW: Job ID for AI cost tracking
     ) -> Dict[str, Any]:
         """
         Save images to database and generate CLIP embeddings with batching and retry logic.
@@ -995,6 +1022,7 @@ Respond ONLY with this JSON format:
             batch_size: Number of images to process per batch (default: 20)
             max_retries: Maximum retry attempts per image (default: 3)
             material_category: Material category from upload (tiles, heatpump, wood, etc.)
+            job_id: Optional job ID for AI cost tracking/aggregation
 
         Returns:
             Dict with counts and failed images: {

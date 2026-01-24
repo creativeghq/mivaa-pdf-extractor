@@ -24,9 +24,14 @@ import json
 from app.services.discovery.product_discovery_service import ProductDiscoveryService
 from app.services.core.supabase_client import get_supabase_client
 from app.services.core.async_queue_service import AsyncQueueService
+from app.services.chunking.unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
+from app.services.images.image_download_service import ImageDownloadService
+from app.services.images.image_processing_service import ImageProcessingService
 from app.utils.retry_utils import retry_async
 from app.utils.circuit_breaker import claude_breaker, gpt_breaker, CircuitBreakerError
 from app.utils.timeout_guard import with_timeout, TimeoutError, TimeoutConstants
+from app.services.tracking.web_scraping_stages import WebScrapingStage, get_web_scraping_progress
+import re
 
 # Sentry integration for error tracking and monitoring
 try:
@@ -59,18 +64,117 @@ class WebScrapingService:
     - Circuit breaker for AI API calls
     """
 
-    def __init__(self, model: str = "claude"):
+    # Image URL patterns to extract from markdown
+    IMAGE_URL_PATTERNS = [
+        r'!\[.*?\]\((https?://[^\s\)]+)\)',  # Markdown: ![alt](url)
+        r'<img[^>]+src=["\']?(https?://[^\s"\'>]+)',  # HTML: <img src="url">
+        r'(https?://[^\s<>"\']+\.(?:jpg|jpeg|png|gif|webp|bmp|svg))',  # Direct URLs
+    ]
+
+    def __init__(self, model: str = "claude", workspace_id: str = None):
         """
         Initialize service.
 
         Args:
             model: AI model to use for product discovery ("claude", "gpt")
+            workspace_id: Workspace ID for image processing
         """
         self.logger = logger
         self.model = model
+        self.workspace_id = workspace_id
         self.supabase = get_supabase_client()
         self.discovery_service = ProductDiscoveryService(model=model)
         self.async_queue = AsyncQueueService()
+
+        # ✅ Initialize chunking service for quality scoring and smart chunking
+        self.chunking_service = UnifiedChunkingService(ChunkingConfig(
+            strategy=ChunkingStrategy.HYBRID,
+            max_chunk_size=1000,
+            min_chunk_size=100,
+            overlap_size=100
+        ))
+
+        # ✅ NEW: Initialize image services for full image processing
+        self.image_downloader = ImageDownloadService()
+        self.image_processor = None  # Lazy init with workspace_id
+
+    def _get_image_processor(self, workspace_id: str) -> ImageProcessingService:
+        """Get or create image processor for workspace."""
+        if not self.image_processor or self.image_processor.workspace_id != workspace_id:
+            self.image_processor = ImageProcessingService(workspace_id=workspace_id)
+        return self.image_processor
+
+    async def _log_stage(
+        self,
+        job_id: str,
+        stage: WebScrapingStage,
+        status: str = "started",
+        duration_ms: int = None,
+        items: int = None,
+        error: str = None
+    ) -> None:
+        """
+        Log stage progress with structured format for debugging.
+
+        Args:
+            job_id: Job ID
+            stage: Current processing stage
+            status: 'started', 'completed', or 'failed'
+            duration_ms: Duration in milliseconds (for completed stages)
+            items: Number of items processed (for completed stages)
+            error: Error message (for failed stages)
+        """
+        if status == "started":
+            self.logger.info(f"[{job_id}] Stage: {stage.value} | Status: started")
+        elif status == "completed":
+            msg = f"[{job_id}] Stage: {stage.value} | Status: completed"
+            if duration_ms is not None:
+                msg += f" | Duration: {duration_ms}ms"
+            if items is not None:
+                msg += f" | Items: {items}"
+            self.logger.info(msg)
+        elif status == "failed":
+            self.logger.error(f"[{job_id}] Stage: {stage.value} | Status: failed | Error: {error}")
+
+        # Update background_jobs with current stage and progress
+        try:
+            progress = get_web_scraping_progress(stage)
+            self.supabase.client.table('background_jobs').update({
+                'current_stage': stage.value,
+                'progress': progress,
+                'updated_at': datetime.utcnow().isoformat()
+            }).eq('id', job_id).execute()
+        except Exception as e:
+            self.logger.warning(f"Failed to update job stage: {e}")
+
+    def _extract_image_urls_from_markdown(self, markdown_content: str) -> List[str]:
+        """
+        Extract image URLs from markdown content.
+
+        Handles:
+        - Markdown image syntax: ![alt](url)
+        - HTML img tags: <img src="url">
+        - Direct image URLs: https://...jpg
+
+        Args:
+            markdown_content: Markdown text to scan
+
+        Returns:
+            List of unique image URLs
+        """
+        image_urls = set()
+
+        for pattern in self.IMAGE_URL_PATTERNS:
+            matches = re.findall(pattern, markdown_content, re.IGNORECASE)
+            for match in matches:
+                url = match.strip()
+                # Clean up URL - remove trailing punctuation
+                url = url.rstrip('.,;:!?)')
+                if url and len(url) > 10:  # Basic validation
+                    image_urls.add(url)
+
+        self.logger.info(f"   📷 Extracted {len(image_urls)} unique image URLs from markdown")
+        return list(image_urls)
 
     async def process_scraping_session(
         self,
@@ -128,6 +232,10 @@ class WebScrapingService:
         try:
             self.logger.info(f"🔍 Processing scraping session: {session_id}")
 
+            # ✅ Stage: INITIALIZED
+            if job_id:
+                await self._log_stage(job_id, WebScrapingStage.INITIALIZED, "started")
+
             # Default to products only
             if categories is None:
                 categories = ["products"]
@@ -172,6 +280,10 @@ class WebScrapingService:
 
             self.logger.info(f"   ✅ Retrieved {len(markdown_content):,} characters of markdown")
 
+            # ✅ Stage: PAGES_SCRAPED
+            if job_id:
+                await self._log_stage(job_id, WebScrapingStage.PAGES_SCRAPED, "completed", items=session.get('completed_pages', 1))
+
             # Update job progress: Content fetched
             if job_id:
                 await self.update_job_progress(job_id, progress=30)
@@ -201,6 +313,10 @@ class WebScrapingService:
                 raise WebScrapingTimeoutError(f"Product discovery timed out: {e}") from e
 
             self.logger.info(f"   ✅ Discovered {len(catalog.products)} products")
+
+            # ✅ Stage: PRODUCTS_DISCOVERED
+            if job_id:
+                await self._log_stage(job_id, WebScrapingStage.PRODUCTS_DISCOVERED, "completed", items=len(catalog.products))
 
             # Update job progress: Products discovered
             if job_id:
@@ -255,6 +371,10 @@ class WebScrapingService:
 
             self.logger.info(f"✅ Session processing complete in {processing_time:.0f}ms:")
             self.logger.info(f"   Products created: {len(created_products)}")
+
+            # ✅ Stage: COMPLETED
+            if job_id:
+                await self._log_stage(job_id, WebScrapingStage.COMPLETED, "completed", items=len(created_products))
 
             # Track success metrics in Sentry
             if SENTRY_AVAILABLE and transaction:
@@ -516,14 +636,24 @@ class WebScrapingService:
                     created_products.append(created_product)
                     self.logger.info(f"   ✅ Created product: {product.name} (ID: {product_id})")
 
-                    # Create chunk and queue embedding generation
-                    await self._create_product_chunk_and_embedding(
+                    # Create chunks and queue embedding generation
+                    await self._create_product_chunks_and_embeddings(
                         product_id=product_id,
                         product_name=product.name,
                         description=product.description or "",
                         workspace_id=workspace_id,
                         job_id=job_id
                     )
+
+                    # ✅ NEW: Extract and process images from product description
+                    if product.description:
+                        await self._process_product_images(
+                            product_id=product_id,
+                            product_name=product.name,
+                            content=product.description,
+                            workspace_id=workspace_id,
+                            job_id=job_id
+                        )
                 else:
                     self.logger.warning(f"   ⚠️ Failed to create product: {product.name}")
 
@@ -533,7 +663,7 @@ class WebScrapingService:
             self.logger.error(f"Failed to create products in database: {e}")
             raise
 
-    async def _create_product_chunk_and_embedding(
+    async def _create_product_chunks_and_embeddings(
         self,
         product_id: str,
         product_name: str,
@@ -542,10 +672,10 @@ class WebScrapingService:
         job_id: str = None
     ) -> None:
         """
-        Create document chunk and queue embedding generation for a product.
+        Create document chunks and queue embedding generation for a product.
 
-        This makes scraped products searchable by creating chunks and embeddings
-        similar to PDF and XML imports.
+        ✅ ENHANCED: Uses smart chunking for long descriptions (>1500 chars)
+        to improve retrieval quality with proper semantic boundaries.
 
         Args:
             product_id: Product ID
@@ -560,40 +690,278 @@ class WebScrapingService:
                 self.logger.info(f"   ⏭️ Skipping chunk creation for {product_name} - insufficient content")
                 return
 
-            # Create chunk record
-            chunk_record = {
-                "document_id": product_id,  # ✅ FIXED: Use 'document_id' not 'product_id'
-                "workspace_id": workspace_id,
-                "content": description,
-                "chunk_index": 0,
-                "source_type": "web_scraping",
-                "source_job_id": job_id,
-                "metadata": {
-                    "source": "web_scraping",
-                    "product_id": product_id,  # Store product_id in metadata for reference
-                    "product_name": product_name,
-                    "auto_generated": True
+            chunk_ids = []
+
+            # ✅ NEW: Use smart chunking for long descriptions (>1500 chars)
+            if len(description) > 1500:
+                self.logger.info(f"   📚 Long description ({len(description)} chars) - using smart chunking for {product_name}")
+
+                # Use UnifiedChunkingService for smart chunking
+                chunks = await self.chunking_service.chunk_text(
+                    text=description,
+                    document_id=product_id,
+                    metadata={
+                        "source": "web_scraping",
+                        "product_id": product_id,
+                        "product_name": product_name,
+                        "auto_generated": True
+                    }
+                )
+
+                self.logger.info(f"   📚 Created {len(chunks)} chunks for long description")
+
+                # Insert all chunks
+                for chunk in chunks:
+                    chunk_record = {
+                        "document_id": product_id,
+                        "workspace_id": workspace_id,
+                        "content": chunk.content,
+                        "chunk_index": chunk.chunk_index,
+                        "quality_score": chunk.quality_score,
+                        "source_type": "web_scraping",
+                        "source_job_id": job_id,
+                        "metadata": {
+                            **chunk.metadata,
+                            "quality_score": chunk.quality_score
+                        }
+                    }
+
+                    chunk_response = self.supabase.client.table('document_chunks').insert(chunk_record).execute()
+                    if chunk_response.data:
+                        chunk_ids.append({'id': chunk_response.data[0]['id']})
+            else:
+                # Short description - single chunk (original behavior)
+                chunk_record = {
+                    "document_id": product_id,
+                    "workspace_id": workspace_id,
+                    "content": description,
+                    "chunk_index": 0,
+                    "source_type": "web_scraping",
+                    "source_job_id": job_id,
+                    "metadata": {
+                        "source": "web_scraping",
+                        "product_id": product_id,
+                        "product_name": product_name,
+                        "auto_generated": True
+                    }
                 }
-            }
 
-            chunk_response = self.supabase.client.table('document_chunks').insert(chunk_record).execute()
+                chunk_response = self.supabase.client.table('document_chunks').insert(chunk_record).execute()
 
-            if chunk_response.data:
-                chunk_id = chunk_response.data[0]['id']
-                self.logger.info(f"   ✅ Created chunk {chunk_id} for product {product_name}")
+                if chunk_response.data:
+                    chunk_id = chunk_response.data[0]['id']
+
+                    # Calculate quality score
+                    from app.services.chunking.unified_chunking_service import Chunk
+                    temp_chunk = Chunk(
+                        id=chunk_id,
+                        content=description,
+                        chunk_index=0,
+                        total_chunks=1,
+                        start_position=0,
+                        end_position=len(description),
+                        metadata={}
+                    )
+                    quality_score = self.chunking_service._calculate_chunk_quality(temp_chunk)
+
+                    # Update chunk with quality score
+                    self.supabase.client.table('document_chunks').update({
+                        'quality_score': quality_score,
+                        'metadata': {
+                            **chunk_record['metadata'],
+                            'quality_score': quality_score
+                        }
+                    }).eq('id', chunk_id).execute()
+
+                    chunk_ids.append({'id': chunk_id})
+
+            if chunk_ids:
+                self.logger.info(f"   ✅ Created {len(chunk_ids)} chunks for product {product_name}")
 
                 # Queue for embedding generation (async)
                 async_queue = AsyncQueueService()
                 await async_queue.queue_ai_analysis_jobs(
-                    document_id=product_id,  # Use product_id as document_id
-                    chunks=[{'id': chunk_id}],
+                    document_id=product_id,
+                    chunks=chunk_ids,
                     analysis_type='embedding_generation',
                     priority=0
                 )
 
         except Exception as e:
-            self.logger.error(f"   ❌ Failed to create chunk for product {product_name}: {e}")
+            self.logger.error(f"   ❌ Failed to create chunks for product {product_name}: {e}")
             # Don't raise - product is already created
+
+    async def _process_product_images(
+        self,
+        product_id: str,
+        product_name: str,
+        content: str,
+        workspace_id: str,
+        job_id: str = None
+    ) -> None:
+        """
+        Extract, download, classify, and generate CLIP embeddings for product images.
+
+        ✅ NEW: Full image processing pipeline for scraped products:
+        1. Extract image URLs from markdown content
+        2. Download images to Supabase Storage
+        3. Classify images (material vs non-material) using Qwen/Claude
+        4. Generate CLIP embeddings for ALL images (for search and agent)
+        5. Save to document_images with embeddings
+
+        Args:
+            product_id: Product ID
+            product_name: Product name
+            content: Product description/content with potential image URLs
+            workspace_id: Workspace ID
+            job_id: Job ID for source tracking
+        """
+        try:
+            # Step 1: Extract image URLs from markdown
+            image_urls = self._extract_image_urls_from_markdown(content)
+
+            if not image_urls:
+                self.logger.info(f"   📷 No images found in content for {product_name}")
+                return
+
+            self.logger.info(f"   📷 Found {len(image_urls)} images for {product_name}")
+
+            # Step 2: Download images to Supabase Storage
+            downloaded_images = await self.image_downloader.download_images(
+                urls=image_urls,
+                job_id=job_id or product_id,
+                workspace_id=workspace_id,
+                max_concurrent=5
+            )
+
+            if not downloaded_images:
+                self.logger.warning(f"   ⚠️ No images downloaded for {product_name}")
+                return
+
+            self.logger.info(f"   ✅ Downloaded {len(downloaded_images)} images for {product_name}")
+
+            # Step 3: Get image processor and classify images
+            image_processor = self._get_image_processor(workspace_id)
+
+            # Prepare images for classification (need 'path' key for ImageProcessingService)
+            # Since we downloaded to storage, we need to fetch them temporarily for classification
+            images_for_classification = []
+            for img in downloaded_images:
+                if img.get('success'):
+                    images_for_classification.append({
+                        'storage_url': img.get('storage_url'),
+                        'url': img.get('storage_url'),  # For fallback in classify_images
+                        'public_url': img.get('storage_url'),
+                        'filename': img.get('filename'),
+                        'path': None,  # Will trigger download from storage in classify_images
+                        'content_type': img.get('content_type'),
+                        'size_bytes': img.get('size_bytes'),
+                        'original_url': img.get('original_url'),
+                        'storage_path': img.get('storage_path'),
+                        'product_id': product_id,
+                        'product_name': product_name
+                    })
+
+            if not images_for_classification:
+                return
+
+            # Step 4: Classify images (material vs non-material)
+            # Note: For web scraping, we process ALL images for CLIP embeddings
+            # but still run classification for metadata purposes
+            self.logger.info(f"   🤖 Classifying {len(images_for_classification)} images for {product_name}")
+
+            material_images, non_material_images = await image_processor.classify_images(
+                extracted_images=images_for_classification,
+                confidence_threshold=0.6,
+                job_id=job_id  # Track AI cost per job
+            )
+
+            self.logger.info(f"   ✅ Classification: {len(material_images)} material, {len(non_material_images)} non-material")
+
+            # Step 5: Generate CLIP embeddings for ALL images (as requested)
+            # Even non-material images get embeddings for search and agent responses
+            all_images = material_images + non_material_images
+
+            if all_images:
+                self.logger.info(f"   🎨 Generating CLIP embeddings for ALL {len(all_images)} images")
+
+                result = await image_processor.save_images_and_generate_clips(
+                    material_images=all_images,  # Process all images
+                    document_id=product_id,
+                    workspace_id=workspace_id,
+                    batch_size=10,
+                    max_retries=3,
+                    job_id=job_id  # Track AI cost per job
+                )
+
+                self.logger.info(f"   ✅ Saved {result.get('images_saved', 0)} images with {result.get('clip_embeddings_generated', 0)} CLIP embeddings")
+
+                # Create product-image relationships
+                await self._link_images_to_product(
+                    product_id=product_id,
+                    image_count=result.get('images_saved', 0),
+                    workspace_id=workspace_id,
+                    job_id=job_id
+                )
+
+        except Exception as e:
+            self.logger.error(f"   ❌ Failed to process images for {product_name}: {e}")
+            # Don't raise - product is already created
+
+    async def _link_images_to_product(
+        self,
+        product_id: str,
+        image_count: int,
+        workspace_id: str,
+        job_id: str = None
+    ) -> None:
+        """
+        Create product-image relationships in image_product_associations.
+
+        Args:
+            product_id: Product ID
+            image_count: Number of images saved
+            workspace_id: Workspace ID
+            job_id: Job ID for tracking
+        """
+        try:
+            # Get images that were just saved for this product
+            response = self.supabase.client.table('document_images')\
+                .select('id')\
+                .eq('document_id', product_id)\
+                .order('created_at', desc=True)\
+                .limit(image_count)\
+                .execute()
+
+            if not response.data:
+                return
+
+            # Create associations
+            associations = []
+            for idx, img in enumerate(response.data):
+                score = 1.0 - (idx * 0.05)  # First image gets highest score
+                associations.append({
+                    "product_id": product_id,
+                    "image_id": img['id'],
+                    "spatial_score": 0.0,
+                    "caption_score": 0.0,
+                    "clip_score": 0.0,
+                    "overall_score": score,
+                    "confidence": score,
+                    "reasoning": "web_scraping_extracted",
+                    "metadata": {
+                        "source": "web_scraping",
+                        "job_id": job_id,
+                        "import_index": idx
+                    }
+                })
+
+            if associations:
+                self.supabase.client.table('image_product_associations').insert(associations).execute()
+                self.logger.info(f"   ✅ Created {len(associations)} product-image associations")
+
+        except Exception as e:
+            self.logger.error(f"   ❌ Failed to create product-image associations: {e}")
 
     @retry_async(
         max_attempts=3,

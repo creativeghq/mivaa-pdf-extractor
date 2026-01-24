@@ -129,15 +129,13 @@ class RealImageAnalysisService:
                         self.claude_prompt = prompt
                         logger.info("✅ Using DATABASE prompt for Claude Vision validation")
 
-                # Set fallbacks if not found
+                # Log warnings if prompts not found - will error at runtime
                 if not self.vision_prompt:
-                    logger.warning("⚠️ Vision model prompt not found in database, using hardcoded fallback")
-                    self.vision_prompt = None
+                    logger.warning("⚠️ Vision model prompt (version 3) not found in database. Add via /admin/ai-configs - extraction will fail!")
                 if not self.claude_prompt:
-                    logger.warning("⚠️ Claude Vision prompt not found in database, using hardcoded fallback")
-                    self.claude_prompt = None
+                    logger.warning("⚠️ Claude Vision prompt (version 4) not found in database. Add via /admin/ai-configs - validation will fail!")
             else:
-                logger.warning("⚠️ No image analysis prompts found in database, using hardcoded fallbacks")
+                logger.warning("⚠️ No image analysis prompts found in database. Add via /admin/ai-configs - extraction will fail!")
                 self.vision_prompt = None
                 self.claude_prompt = None
 
@@ -376,28 +374,14 @@ class RealImageAnalysisService:
             if not self.qwen_endpoint_token:
                 raise ValueError("HUGGINGFACE_API_KEY not set - cannot perform vision model analysis")
 
-            # Use database prompt or hardcoded fallback
+            # Use database prompt - NO FALLBACK
             if self.vision_prompt:
                 prompt = self.vision_prompt
                 logger.info("✅ Using DATABASE prompt for vision model analysis")
             else:
-                logger.info("⚠️ Using HARDCODED fallback prompt for vision model analysis")
-                prompt = """Analyze this material/product image and provide detailed analysis in JSON format:
-{
-  "description": "<detailed description of what you see>",
-  "objects_detected": ["<object1>", "<object2>"],
-  "materials_identified": ["<material1>", "<material2>"],
-  "colors": ["<color1>", "<color2>"],
-  "textures": ["<texture1>", "<texture2>"],
-  "confidence": <0.0-1.0>,
-  "properties": {
-    "finish": "<matte/glossy/satin/etc>",
-    "pattern": "<solid/striped/geometric/etc>",
-    "composition": "<estimated composition>"
-  }
-}
-
-Respond ONLY with valid JSON, no additional text."""
+                error_msg = "CRITICAL: Vision model prompt not found in database. Add prompt via /admin/ai-configs with prompt_type='extraction', stage='image_analysis', category='vision_model'"
+                logger.error(f"❌ {error_msg}")
+                raise ValueError(error_msg)
 
             # Resume Qwen endpoint if needed (CRITICAL: Must be called before inference)
             if not self.qwen_manager.resume_if_needed():
@@ -745,33 +729,14 @@ Respond ONLY with valid JSON, no additional text."""
             ai_service = get_ai_client_service()
             client = ai_service.anthropic
 
-            # Use database prompt or hardcoded fallback
+            # Use database prompt - NO FALLBACK
             if self.claude_prompt:
                 prompt = self.claude_prompt
                 logger.info("✅ Using DATABASE prompt for Claude Vision validation")
             else:
-                logger.info("⚠️ Using HARDCODED fallback prompt for Claude Vision validation")
-                prompt = """Validate and analyze this material/product image. Provide response in JSON format:
-{
-  "quality_assessment": {
-    "clarity": <0.0-1.0>,
-    "lighting": <0.0-1.0>,
-    "composition": <0.0-1.0>,
-    "overall_quality": <0.0-1.0>
-  },
-  "material_classification": {
-    "primary_material": "<material>",
-    "secondary_materials": ["<material1>", "<material2>"],
-    "confidence": <0.0-1.0>
-  },
-  "visual_properties": {
-    "surface_finish": "<finish type>",
-    "color_palette": ["<color1>", "<color2>"],
-    "pattern_type": "<pattern>"
-  },
-  "recommendations": ["<recommendation1>", "<recommendation2>"],
-  "confidence": <0.0-1.0>
-}"""
+                error_msg = "CRITICAL: Claude Vision prompt not found in database. Add prompt via /admin/ai-configs with prompt_type='extraction', stage='image_analysis', category='products', version=4"
+                logger.error(f"❌ {error_msg}")
+                raise ValueError(error_msg)
 
             # Call Claude Vision API
             response = client.messages.create(
@@ -927,33 +892,14 @@ Respond ONLY with valid JSON, no additional text."""
             ai_service = get_ai_client_service()
             client = ai_service.anthropic
 
-            # Use database prompt or hardcoded fallback
+            # Use database prompt - NO FALLBACK
             if self.claude_prompt:
                 prompt = self.claude_prompt
                 logger.info("✅ Using DATABASE prompt for Claude Vision validation (base64)")
             else:
-                logger.info("⚠️ Using HARDCODED fallback prompt for Claude Vision validation (base64)")
-                prompt = """Validate and analyze this material/product image. Provide response in JSON format:
-{
-  "quality_assessment": {
-    "clarity": <0.0-1.0>,
-    "lighting": <0.0-1.0>,
-    "composition": <0.0-1.0>,
-    "overall_quality": <0.0-1.0>
-  },
-  "material_classification": {
-    "primary_material": "<material>",
-    "secondary_materials": ["<material1>", "<material2>"],
-    "confidence": <0.0-1.0>
-  },
-  "visual_properties": {
-    "surface_finish": "<finish type>",
-    "color_palette": ["<color1>", "<color2>"],
-    "pattern_type": "<pattern>"
-  },
-  "recommendations": ["<recommendation1>", "<recommendation2>"],
-  "confidence": <0.0-1.0>
-}"""
+                error_msg = "CRITICAL: Claude Vision prompt not found in database. Add prompt via /admin/ai-configs with prompt_type='extraction', stage='image_analysis', category='products', version=4"
+                logger.error(f"❌ {error_msg}")
+                raise ValueError(error_msg)
 
             # Call Claude Vision API with base64 image
             response = client.messages.create(

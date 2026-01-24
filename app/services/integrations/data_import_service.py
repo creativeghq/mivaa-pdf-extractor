@@ -18,7 +18,10 @@ from datetime import datetime
 from app.services.core.supabase_client import get_supabase_client
 from app.services.core.async_queue_service import AsyncQueueService
 from app.services.tracking.checkpoint_recovery_service import checkpoint_recovery_service, ProcessingStage
+from app.services.tracking.xml_import_stages import XmlImportStage, get_xml_import_progress
 from app.services.images.image_download_service import ImageDownloadService
+from app.services.images.image_processing_service import ImageProcessingService
+from app.services.chunking.unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
 import sentry_sdk  # ✅ NEW: Sentry integration
 
 logger = logging.getLogger(__name__)
@@ -27,13 +30,74 @@ logger = logging.getLogger(__name__)
 class DataImportService:
     """Service for processing data import jobs"""
 
-    def __init__(self):
+    def __init__(self, workspace_id: str = None):
         supabase_wrapper = get_supabase_client()
         self.supabase = supabase_wrapper.client
         self.async_queue = AsyncQueueService()
         self.image_downloader = ImageDownloadService()
         self.batch_size = 10  # Process 10 products at a time
         self.max_concurrent_images = 5  # Download 5 images concurrently
+        self.workspace_id = workspace_id
+
+        # ✅ Initialize chunking service for quality scoring and smart chunking
+        self.chunking_service = UnifiedChunkingService(ChunkingConfig(
+            strategy=ChunkingStrategy.HYBRID,
+            max_chunk_size=1000,
+            min_chunk_size=100,
+            overlap_size=100
+        ))
+
+        # ✅ NEW: Image processor for classification and CLIP embeddings (lazy init)
+        self.image_processor = None
+
+    def _get_image_processor(self, workspace_id: str) -> ImageProcessingService:
+        """Get or create image processor for workspace."""
+        if not self.image_processor or self.image_processor.workspace_id != workspace_id:
+            self.image_processor = ImageProcessingService(workspace_id=workspace_id)
+        return self.image_processor
+
+    async def _log_stage(
+        self,
+        job_id: str,
+        stage: XmlImportStage,
+        status: str = "started",
+        duration_ms: int = None,
+        items: int = None,
+        error: str = None
+    ) -> None:
+        """
+        Log stage progress with structured format for debugging.
+
+        Args:
+            job_id: Job ID
+            stage: Current processing stage
+            status: 'started', 'completed', or 'failed'
+            duration_ms: Duration in milliseconds (for completed stages)
+            items: Number of items processed (for completed stages)
+            error: Error message (for failed stages)
+        """
+        if status == "started":
+            logger.info(f"[{job_id}] Stage: {stage.value} | Status: started")
+        elif status == "completed":
+            msg = f"[{job_id}] Stage: {stage.value} | Status: completed"
+            if duration_ms is not None:
+                msg += f" | Duration: {duration_ms}ms"
+            if items is not None:
+                msg += f" | Items: {items}"
+            logger.info(msg)
+        elif status == "failed":
+            logger.error(f"[{job_id}] Stage: {stage.value} | Status: failed | Error: {error}")
+
+        # Update background_jobs with current stage and progress
+        try:
+            progress = get_xml_import_progress(stage)
+            self.supabase.table('background_jobs').update({
+                'current_stage': stage.value,
+                'progress': progress,
+                'updated_at': datetime.utcnow().isoformat()
+            }).eq('id', job_id).execute()
+        except Exception as e:
+            logger.warning(f"Failed to update job stage: {e}")
 
     async def process_import_job(self, job_id: str, workspace_id: str) -> Dict[str, Any]:
         """
@@ -53,6 +117,9 @@ class DataImportService:
 
             try:
                 logger.info(f"🚀 Starting import job processing: {job_id}")
+
+                # ✅ Stage: INITIALIZED
+                await self._log_stage(job_id, XmlImportStage.INITIALIZED, "started")
 
                 # ✅ NEW: Add breadcrumb
                 sentry_sdk.add_breadcrumb(
@@ -76,6 +143,9 @@ class DataImportService:
                 products = job.get('metadata', {}).get('products', [])
                 if not products:
                     raise ValueError(f"No products found in job {job_id}")
+
+                # ✅ Stage: PRODUCTS_PARSED
+                await self._log_stage(job_id, XmlImportStage.PRODUCTS_PARSED, "completed", items=len(products))
 
                 total_products = len(products)
                 logger.info(f"📦 Processing {total_products} products in batches of {self.batch_size}")
@@ -170,6 +240,9 @@ class DataImportService:
                 )
 
                 logger.info(f"🎉 Import job {job_id} completed: {processed_count}/{total_products} products processed")
+
+                # ✅ Stage: COMPLETED
+                await self._log_stage(job_id, XmlImportStage.COMPLETED, "completed", items=processed_count)
 
                 # ✅ NEW: Add completion breadcrumb
                 sentry_sdk.add_breadcrumb(
@@ -460,73 +533,107 @@ class DataImportService:
         """
         Link downloaded images to product in database.
 
+        ✅ ENHANCED: Now includes image classification and CLIP embedding generation.
+
         Args:
             product_id: Product ID
             downloaded_images: List of downloaded image references
             workspace_id: Workspace ID
+            job_id: Job ID for tracking
         """
         try:
-            # Step 1: Create image records in document_images table
-            image_records = []
-            for img in downloaded_images:
-                if not img.get('success'):
-                    continue
+            # Filter successful downloads
+            successful_images = [img for img in downloaded_images if img.get('success')]
 
-                # ✅ FIXED: Map to correct document_images columns
-                image_record = {
-                    "document_id": product_id,  # Use product_id as document_id for XML imports
-                    "workspace_id": workspace_id,
-                    "image_url": img['storage_url'],  # ✅ Use image_url column
-                    "source_type": "xml_import",
-                    "source_job_id": job_id,
-                    "metadata": {
-                        "source": "xml_import",
-                        "index": img['index'],
-                        "storage_path": img['storage_path'],
-                        "original_url": img['original_url'],
-                        "filename": img['filename'],
-                        "content_type": img['content_type'],
-                        "size_bytes": img['size_bytes']
-                    }
-                }
-                image_records.append(image_record)
-
-            if not image_records:
+            if not successful_images:
                 logger.info(f"⏭️ No images to link for product {product_id}")
                 return
 
-            # Insert images into document_images
-            insert_response = self.supabase.client.table('document_images').insert(image_records).execute()
+            logger.info(f"📷 Processing {len(successful_images)} images for product {product_id}")
 
-            if not insert_response.data:
-                logger.warning(f"⚠️ No images were inserted for product {product_id}")
-                return
-
-            logger.info(f"✅ Inserted {len(insert_response.data)} images into document_images")
-
-            # Step 2: Create product-image relationships
-            # ✅ UPDATED: Use image_product_associations schema
-            relationship_records = []
-            for idx, image_data in enumerate(insert_response.data):
-                score = 1.0 - (idx * 0.05)  # First image gets highest score
-                relationship_records.append({
-                    "product_id": product_id,
-                    "image_id": image_data['id'],
-                    "spatial_score": 0.0,
-                    "caption_score": 0.0,
-                    "clip_score": 0.0,
-                    "overall_score": score,
-                    "confidence": score,
-                    "reasoning": "depicts",  # replaces relationship_type
-                    "metadata": {"import_index": idx}
+            # ✅ NEW: Prepare images for classification and CLIP generation
+            images_for_processing = []
+            for img in successful_images:
+                images_for_processing.append({
+                    'storage_url': img.get('storage_url'),
+                    'url': img.get('storage_url'),
+                    'public_url': img.get('storage_url'),
+                    'filename': img.get('filename'),
+                    'path': None,  # Will trigger download from storage
+                    'content_type': img.get('content_type'),
+                    'size_bytes': img.get('size_bytes'),
+                    'original_url': img.get('original_url'),
+                    'storage_path': img.get('storage_path'),
+                    'index': img.get('index'),
+                    'product_id': product_id
                 })
 
-            if relationship_records:
-                self.supabase.client.table('image_product_associations').insert(relationship_records).execute()
-                logger.info(f"✅ Created {len(relationship_records)} product-image relationships")
+            # ✅ NEW: Get image processor and classify images
+            image_processor = self._get_image_processor(workspace_id)
+
+            logger.info(f"   🤖 Classifying {len(images_for_processing)} images")
+
+            # Classify images (material vs non-material) - pass job_id for cost tracking
+            material_images, non_material_images = await image_processor.classify_images(
+                extracted_images=images_for_processing,
+                confidence_threshold=0.6,
+                job_id=job_id  # Track AI cost per job
+            )
+
+            logger.info(f"   ✅ Classification: {len(material_images)} material, {len(non_material_images)} non-material")
+
+            # ✅ NEW: Generate CLIP embeddings for ALL images (as requested)
+            all_images = material_images + non_material_images
+
+            if all_images:
+                logger.info(f"   🎨 Generating CLIP embeddings for ALL {len(all_images)} images")
+
+                result = await image_processor.save_images_and_generate_clips(
+                    material_images=all_images,  # Process all images
+                    document_id=product_id,
+                    workspace_id=workspace_id,
+                    batch_size=10,
+                    max_retries=3,
+                    job_id=job_id  # Track AI cost per job
+                )
+
+                logger.info(f"   ✅ Saved {result.get('images_saved', 0)} images with {result.get('clip_embeddings_generated', 0)} CLIP embeddings")
+
+                # Get saved image IDs for associations
+                saved_response = self.supabase.client.table('document_images')\
+                    .select('id')\
+                    .eq('document_id', product_id)\
+                    .order('created_at', desc=True)\
+                    .limit(len(all_images))\
+                    .execute()
+
+                if saved_response.data:
+                    # Create product-image relationships
+                    relationship_records = []
+                    for idx, image_data in enumerate(saved_response.data):
+                        score = 1.0 - (idx * 0.05)  # First image gets highest score
+                        relationship_records.append({
+                            "product_id": product_id,
+                            "image_id": image_data['id'],
+                            "spatial_score": 0.0,
+                            "caption_score": 0.0,
+                            "clip_score": 0.0,
+                            "overall_score": score,
+                            "confidence": score,
+                            "reasoning": "xml_import_extracted",
+                            "metadata": {
+                                "source": "xml_import",
+                                "job_id": job_id,
+                                "import_index": idx
+                            }
+                        })
+
+                    if relationship_records:
+                        self.supabase.client.table('image_product_associations').insert(relationship_records).execute()
+                        logger.info(f"   ✅ Created {len(relationship_records)} product-image relationships")
 
         except Exception as e:
-            logger.error(f"❌ Failed to link images to product {product_id}: {e}")
+            logger.error(f"❌ Failed to process images for product {product_id}: {e}")
             logger.exception(e)
             # Don't raise - product is already created
 
@@ -540,48 +647,115 @@ class DataImportService:
         """
         Queue product text for async processing (chunking, embeddings).
 
-        This creates chunks and embeddings in the background without blocking
-        the import process.
+        ✅ ENHANCED: Uses smart chunking for long descriptions (>1500 chars)
+        to improve retrieval quality with proper semantic boundaries.
 
         Args:
             product_id: Product ID
             product_data: Product data with text content
             workspace_id: Workspace ID
+            job_id: Job ID for tracking
         """
         try:
-            # Create a text chunk for the product description
             description = product_data.get('description', '')
+            product_name = product_data.get('name', 'Unknown')
 
             if not description or len(description) < 50:
                 logger.info(f"⏭️ Skipping text processing for product {product_id} - insufficient content")
                 return
 
-            # Create chunk record
-            chunk_record = {
-                "document_id": product_id,  # ✅ FIXED: Use 'document_id' not 'product_id'
-                "workspace_id": workspace_id,
-                "content": description,
-                "chunk_index": 0,
-                "source_type": "xml_import",
-                "source_job_id": job_id,
-                "metadata": {
-                    "source": "xml_import",
-                    "product_id": product_id,  # Store product_id in metadata for reference
-                    "product_name": product_data.get('name'),
-                    "auto_generated": True
+            chunk_ids = []
+
+            # ✅ NEW: Use smart chunking for long descriptions (>1500 chars)
+            if len(description) > 1500:
+                logger.info(f"📚 Long description ({len(description)} chars) - using smart chunking for {product_name}")
+
+                # Use UnifiedChunkingService for smart chunking
+                chunks = await self.chunking_service.chunk_text(
+                    text=description,
+                    document_id=product_id,
+                    metadata={
+                        "source": "xml_import",
+                        "product_id": product_id,
+                        "product_name": product_name,
+                        "auto_generated": True
+                    }
+                )
+
+                logger.info(f"   📚 Created {len(chunks)} chunks for long description")
+
+                # Insert all chunks
+                for chunk in chunks:
+                    chunk_record = {
+                        "document_id": product_id,
+                        "workspace_id": workspace_id,
+                        "content": chunk.content,
+                        "chunk_index": chunk.chunk_index,
+                        "quality_score": chunk.quality_score,
+                        "source_type": "xml_import",
+                        "source_job_id": job_id,
+                        "metadata": {
+                            **chunk.metadata,
+                            "quality_score": chunk.quality_score
+                        }
+                    }
+
+                    chunk_response = self.supabase.table('document_chunks').insert(chunk_record).execute()
+                    if chunk_response.data:
+                        chunk_ids.append({'id': chunk_response.data[0]['id']})
+            else:
+                # Short description - single chunk (original behavior)
+                chunk_record = {
+                    "document_id": product_id,
+                    "workspace_id": workspace_id,
+                    "content": description,
+                    "chunk_index": 0,
+                    "source_type": "xml_import",
+                    "source_job_id": job_id,
+                    "metadata": {
+                        "source": "xml_import",
+                        "product_id": product_id,
+                        "product_name": product_name,
+                        "auto_generated": True
+                    }
                 }
-            }
 
-            chunk_response = self.supabase.client.table('document_chunks').insert(chunk_record).execute()
+                chunk_response = self.supabase.table('document_chunks').insert(chunk_record).execute()
 
-            if chunk_response.data:
-                chunk_id = chunk_response.data[0]['id']
-                logger.info(f"✅ Created chunk {chunk_id} for product {product_id}")
+                if chunk_response.data:
+                    chunk_id = chunk_response.data[0]['id']
+
+                    # Calculate quality score
+                    from app.services.chunking.unified_chunking_service import Chunk
+                    temp_chunk = Chunk(
+                        id=chunk_id,
+                        content=description,
+                        chunk_index=0,
+                        total_chunks=1,
+                        start_position=0,
+                        end_position=len(description),
+                        metadata={}
+                    )
+                    quality_score = self.chunking_service._calculate_chunk_quality(temp_chunk)
+
+                    # Update chunk with quality score
+                    self.supabase.table('document_chunks').update({
+                        'quality_score': quality_score,
+                        'metadata': {
+                            **chunk_record['metadata'],
+                            'quality_score': quality_score
+                        }
+                    }).eq('id', chunk_id).execute()
+
+                    chunk_ids.append({'id': chunk_id})
+
+            if chunk_ids:
+                logger.info(f"✅ Created {len(chunk_ids)} chunks for product {product_name}")
 
                 # Queue for embedding generation (async)
                 await self.async_queue.queue_ai_analysis_jobs(
-                    document_id=product_id,  # Use product_id as document_id
-                    chunks=[{'id': chunk_id}],
+                    document_id=product_id,
+                    chunks=chunk_ids,
                     analysis_type='embedding_generation',
                     priority=0
                 )

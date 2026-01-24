@@ -137,84 +137,44 @@ class EnhancedMaterialPropertyExtractor:
         self._setup_property_extractors()
         
     def _setup_property_extractors(self) -> None:
-        """Set up category-specific property extraction patterns and prompts."""
-        # Try to load prompts from database first
-        db_prompts = self._load_prompts_from_database()
+        """Set up property extraction with single prompt for all categories."""
+        # Load the LATEST version prompt from database (single prompt for all categories)
+        self.extraction_prompt = self._load_prompt_from_database()
 
-        # Map database prompts (by version) to PropertyExtractionCategory enums
-        # Version 1 = SLIP_SAFETY_RATINGS, Version 2 = SURFACE_GLOSS_REFLECTIVITY, etc.
-        version_to_category = {
-            1: PropertyExtractionCategory.SLIP_SAFETY_RATINGS,
-            2: PropertyExtractionCategory.SURFACE_GLOSS_REFLECTIVITY,
-            3: PropertyExtractionCategory.MECHANICAL_PROPERTIES_EXTENDED,
-            4: PropertyExtractionCategory.THERMAL_PROPERTIES,
-            5: PropertyExtractionCategory.WATER_MOISTURE_RESISTANCE,
-            6: PropertyExtractionCategory.CHEMICAL_HYGIENE_RESISTANCE,
-            7: PropertyExtractionCategory.ACOUSTIC_ELECTRICAL_PROPERTIES,
-            8: PropertyExtractionCategory.ENVIRONMENTAL_SUSTAINABILITY,
-            9: PropertyExtractionCategory.DIMENSIONAL_AESTHETIC
-        }
+        if self.extraction_prompt:
+            logger.info("✅ Loaded material property extraction prompt from database")
+        else:
+            logger.warning("⚠️ Material property extraction prompt not found in database - extraction will fail!")
 
-        # Build extraction_prompts dict with database prompts or hardcoded fallbacks
-        self.extraction_prompts = {}
-        for version, category in version_to_category.items():
-            if version in db_prompts:
-                self.extraction_prompts[category] = db_prompts[version]
-                logger.info(f"✅ Using DATABASE prompt for {category.value} (version {version})")
-            else:
-                # Fallback to hardcoded prompts
-                logger.info(f"⚠️ Using HARDCODED fallback prompt for {category.value}")
-                if category == PropertyExtractionCategory.SLIP_SAFETY_RATINGS:
-                    self.extraction_prompts[category] = self._create_slip_safety_prompt()
-                elif category == PropertyExtractionCategory.SURFACE_GLOSS_REFLECTIVITY:
-                    self.extraction_prompts[category] = self._create_gloss_prompt()
-                elif category == PropertyExtractionCategory.MECHANICAL_PROPERTIES_EXTENDED:
-                    self.extraction_prompts[category] = self._create_mechanical_prompt()
-                elif category == PropertyExtractionCategory.THERMAL_PROPERTIES:
-                    self.extraction_prompts[category] = self._create_thermal_prompt()
-                elif category == PropertyExtractionCategory.WATER_MOISTURE_RESISTANCE:
-                    self.extraction_prompts[category] = self._create_water_resistance_prompt()
-                elif category == PropertyExtractionCategory.CHEMICAL_HYGIENE_RESISTANCE:
-                    self.extraction_prompts[category] = self._create_chemical_prompt()
-                elif category == PropertyExtractionCategory.ACOUSTIC_ELECTRICAL_PROPERTIES:
-                    self.extraction_prompts[category] = self._create_acoustic_prompt()
-                elif category == PropertyExtractionCategory.ENVIRONMENTAL_SUSTAINABILITY:
-                    self.extraction_prompts[category] = self._create_environmental_prompt()
-                elif category == PropertyExtractionCategory.DIMENSIONAL_AESTHETIC:
-                    self.extraction_prompts[category] = self._create_aesthetic_prompt()
-
-    def _load_prompts_from_database(self) -> Dict[int, str]:
-        """Load all material property prompts from database.
+    def _load_prompt_from_database(self) -> Optional[str]:
+        """Load the latest material property prompt from database.
 
         Returns:
-            Dict mapping version number to prompt template
+            The latest version prompt text, or None if not found
         """
         try:
+            # Get the LATEST version (highest version number)
             result = self.supabase.client.table('prompts')\
-                .select('prompt_text, version')\
+                .select('prompt_text')\
                 .eq('workspace_id', self.workspace_id)\
                 .eq('prompt_type', 'extraction')\
                 .eq('stage', 'entity_creation')\
                 .eq('category', 'material_properties')\
-                .eq('is_custom', False)\
+                .eq('is_active', True)\
+                .order('version', desc=True)\
+                .limit(1)\
                 .execute()
 
             if result.data and len(result.data) > 0:
-                prompts_by_version = {}
-                for row in result.data:
-                    version = row['version']
-                    prompt = row['prompt_text']
-                    prompts_by_version[version] = prompt
-
-                logger.info(f"✅ Loaded {len(prompts_by_version)} material property prompts from database")
-                return prompts_by_version
+                logger.info("✅ Loaded material property prompt from database (latest version)")
+                return result.data[0]['prompt_text']
             else:
-                logger.warning("⚠️ No material property prompts found in database, using hardcoded fallbacks")
-                return {}
+                logger.warning("⚠️ No material property prompts found in database. Add via /admin/ai-configs with prompt_type='extraction', stage='entity_creation', category='material_properties'")
+                return None
 
         except Exception as e:
-            logger.error(f"❌ Failed to load prompts from database: {e}")
-            return {}
+            logger.error(f"❌ Failed to load prompt from database: {e}")
+            return None
         
     def _create_slip_safety_prompt(self) -> str:
         """Create specialized prompt for slip/safety property extraction."""
@@ -488,29 +448,32 @@ class EnhancedMaterialPropertyExtractor:
             raise
             
     async def _extract_category_properties(
-        self, 
+        self,
         category: PropertyExtractionCategory,
-        analysis_text: str, 
+        analysis_text: str,
         context: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Extract properties for a specific category using targeted LLM analysis.
-        
-        This method uses category-specific prompts to guide the LLM toward 
-        extracting relevant technical specifications and properties.
+
+        Uses the single database prompt with category context for extraction.
         """
         try:
-            # Prepare category-specific extraction prompt
-            system_prompt = self.extraction_prompts.get(category)
-            if not system_prompt:
-                logger.warning(f"No extraction prompt found for category: {category.value}")
-                return None
-                
+            # Use database prompt - NO FALLBACK
+            if not self.extraction_prompt:
+                error_msg = "CRITICAL: Material property extraction prompt not found in database. Add via /admin/ai-configs with prompt_type='extraction', stage='entity_creation', category='material_properties'"
+                logger.error(f"❌ {error_msg}")
+                raise ValueError(error_msg)
+
+            # Add category context to the prompt
+            category_context = f"\n\nFOCUS ON EXTRACTING: {category.value} properties specifically."
+            system_prompt = self.extraction_prompt + category_context
+
             # Combine document text with context for comprehensive analysis
             full_context = f"Document Content:\n{analysis_text}"
             if context:
                 full_context += f"\n\nAdditional Context:\n{context}"
-                
+
             # Use TogetherAI for sophisticated semantic analysis
             if self.together_ai_client:
                 extraction_result = await self._llm_property_extraction(
@@ -521,9 +484,9 @@ class EnhancedMaterialPropertyExtractor:
                 extraction_result = self._enhanced_rule_based_extraction(
                     category, analysis_text, context
                 )
-                
+
             return extraction_result
-            
+
         except Exception as e:
             logger.error(f"Category extraction failed for {category.value}: {e}")
             return None
@@ -789,218 +752,7 @@ def convert_to_legacy_format(extraction_result: PropertyExtractionResult) -> Dic
     }
     
     return legacy_format
-            
-    async def _extract_category_properties(
-        self, 
-        category: PropertyExtractionCategory,
-        analysis_text: str, 
-        context: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
-        """Extract properties for a specific category using targeted LLM analysis."""
-        try:
-            # Prepare category-specific extraction prompt
-            system_prompt = self.extraction_prompts.get(category)
-            if not system_prompt:
-                logger.warning(f"No extraction prompt found for category: {category.value}")
-                return None
-                
-            # Combine document text with context for comprehensive analysis
-            full_context = f"Document Content:\n{analysis_text}"
-            if context:
-                full_context += f"\n\nAdditional Context:\n{context}"
-                
-            # Use TogetherAI for sophisticated semantic analysis
-            if self.together_ai_client:
-                extraction_result = await self._llm_property_extraction(
-                    system_prompt, full_context, category
-                )
-            else:
-                # Fallback to enhanced rule-based extraction
-                extraction_result = self._enhanced_rule_based_extraction(
-                    category, analysis_text, context
-                )
-                
-            return extraction_result
-            
-        except Exception as e:
-            logger.error(f"Category extraction failed for {category.value}: {e}")
-            return None
-            
-    async def _llm_property_extraction(
-        self,
-        system_prompt: str,
-        document_content: str,
-        category: PropertyExtractionCategory
-    ) -> Optional[Dict[str, Any]]:
-        """Perform LLM-based property extraction using TogetherAI."""
-        try:
-            # Construct focused analysis prompt
-            analysis_prompt = f"""
-            {system_prompt}
-            
-            DOCUMENT TO ANALYZE:
-            {document_content}
-            
-            IMPORTANT: 
-            - Return ONLY valid JSON as specified above
-            - If a property is not clearly mentioned, omit it from the JSON
-            - Set confidence based on clarity and specificity of found information
-            - Higher confidence (0.8-1.0) for explicit technical specifications
-            - Lower confidence (0.4-0.7) for implied or general mentions
-            - Very low confidence (0.1-0.3) for uncertain or ambiguous references
-            """
-            
-            # Call TogetherAI for semantic analysis
-            if hasattr(self.together_ai_client, 'analyze_semantic_content'):
-                response = await self.together_ai_client.analyze_semantic_content({
-                    "content": analysis_prompt,
-                    "analysis_type": "property_extraction",
-                    "category": category.value
-                })
-                
-                # Parse LLM response into structured format
-                return self._parse_llm_response(response, category)
-            else:
-                logger.warning("TogetherAI client not properly configured for property extraction")
-                return None
-                
-        except Exception as e:
-            logger.error(f"LLM property extraction failed for {category.value}: {e}")
-            return None
-            
-    def _parse_llm_response(
-        self, 
-        llm_response: Any, 
-        category: PropertyExtractionCategory
-    ) -> Optional[Dict[str, Any]]:
-        """Parse LLM response into structured property data."""
-        try:
-            # Handle different response formats from TogetherAI
-            response_text = ""
-            if hasattr(llm_response, 'description'):
-                response_text = llm_response.description
-            elif isinstance(llm_response, dict) and 'content' in llm_response:
-                response_text = llm_response['content']
-            elif isinstance(llm_response, str):
-                response_text = llm_response
-            else:
-                logger.warning(f"Unexpected LLM response format for {category.value}")
-                return None
-                
-            # Extract JSON from LLM response
-            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(0)
-                try:
-                    parsed_data = json.loads(json_str)
-                    
-                    # Validate and sanitize the parsed data
-                    validated_data = self._validate_category_data(parsed_data, category)
-                    return validated_data
-                    
-                except json.JSONDecodeError as e:
-                    logger.error(f"Failed to parse JSON for {category.value}: {e}")
-                    # Fallback to text-based extraction
-                    return self._extract_from_text(response_text, category)
-            else:
-                logger.warning(f"No JSON found in LLM response for {category.value}")
-                return self._extract_from_text(response_text, category)
-                
-        except Exception as e:
-            logger.error(f"LLM response parsing failed for {category.value}: {e}")
-            return None
-            
-    def _validate_category_data(
-        self, 
-        data: Dict[str, Any], 
-        category: PropertyExtractionCategory
-    ) -> Dict[str, Any]:
-        """Validate and sanitize extracted property data for a specific category."""
-        validated = {}
-        confidence = data.get("confidence", 0.5)
-        
-        if category == PropertyExtractionCategory.SLIP_SAFETY_RATINGS:
-            # Validate R-Values
-            if "rValue" in data and isinstance(data["rValue"], list):
-                valid_r_values = [r for r in data["rValue"] if r in ["R9", "R10", "R11", "R12", "R13"]]
-                if valid_r_values:
-                    validated["rValue"] = valid_r_values
-                    
-            # Validate DCOF range
-            if "dcofRange" in data and isinstance(data["dcofRange"], list) and len(data["dcofRange"]) == 2:
-                dcof_min, dcof_max = data["dcofRange"]
-                if 0 <= dcof_min <= dcof_max <= 1:
-                    validated["dcofRange"] = [float(dcof_min), float(dcof_max)]
-                    
-        elif category == PropertyExtractionCategory.MECHANICAL_PROPERTIES_EXTENDED:
-            # Validate Mohs hardness
-            if "mohsHardnessRange" in data and isinstance(data["mohsHardnessRange"], list):
-                mohs_values = data["mohsHardnessRange"]
-                if len(mohs_values) == 2 and 1 <= min(mohs_values) <= max(mohs_values) <= 10:
-                    validated["mohsHardnessRange"] = [float(v) for v in mohs_values]
-                    
-            # Validate PEI ratings
-            if "peiRating" in data and isinstance(data["peiRating"], list):
-                valid_pei = [p for p in data["peiRating"] if isinstance(p, int) and 0 <= p <= 5]
-                if valid_pei:
-                    validated["peiRating"] = valid_pei
-                    
-        # Add validation for other categories as needed...
-        
-        validated["confidence"] = max(0.0, min(1.0, float(confidence)))
-        return validated
-        
-    def _enhanced_rule_based_extraction(
-        self, 
-        category: PropertyExtractionCategory,
-        analysis_text: str, 
-        context: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
-        """Enhanced rule-based extraction as fallback when LLM is unavailable."""
-        text_lower = analysis_text.lower()
-        result = {"confidence": 0.0}
-        
-        if category == PropertyExtractionCategory.SLIP_SAFETY_RATINGS:
-            # Enhanced R-value detection
-            r_pattern = r'r[-\s]?(?:value|rating)?\s*[:\-]?\s*(r?(?:9|10|11|12|13))'
-            r_matches = re.findall(r_pattern, text_lower, re.IGNORECASE)
-            if r_matches:
-                r_values = [f"R{m.replace('r', '')}" for m in r_matches]
-                result["rValue"] = list(set(r_values))  # Remove duplicates
-                result["confidence"] = 0.75
-                
-            # DCOF pattern detection
-            dcof_pattern = r'dcof[:\s]*([0-9]+\.?[0-9]*)'
-            dcof_matches = re.findall(dcof_pattern, text_lower)
-            if dcof_matches:
-                dcof_values = [float(m) for m in dcof_matches if 0 <= float(m) <= 1]
-                if dcof_values:
-                    result["dcofRange"] = [min(dcof_values), max(dcof_values)]
-                    result["confidence"] = max(result["confidence"], 0.7)
-                    
-        elif category == PropertyExtractionCategory.MECHANICAL_PROPERTIES_EXTENDED:
-            # Mohs hardness pattern
-            mohs_pattern = r'mohs[:\s]+(?:hardness[:\s]+)?([0-9]+\.?[0-9]*)'
-            mohs_matches = re.findall(mohs_pattern, text_lower)
-            if mohs_matches:
-                mohs_values = [float(m) for m in mohs_matches if 1 <= float(m) <= 10]
-                if mohs_values:
-                    result["mohsHardnessRange"] = [min(mohs_values), max(mohs_values)]
-                    result["confidence"] = 0.8
-                    
-            # PEI rating pattern
-            pei_pattern = r'pei[:\s]+(?:rating[:\s]+)?(?:class[:\s]+)?([0-5])'
-            pei_matches = re.findall(pei_pattern, text_lower)
-            if pei_matches:
-                pei_values = [int(m) for m in pei_matches if m.isdigit()]
-                if pei_values:
-                    result["peiRating"] = list(set(pei_values))
-                    result["confidence"] = max(result["confidence"], 0.75)
-                    
-        # Add enhanced patterns for other categories as needed...
-        
-        return result if result["confidence"] > 0 else None
-        
+
     def _apply_category_result(
         self, 
         enhanced_properties: EnhancedMaterialProperties,

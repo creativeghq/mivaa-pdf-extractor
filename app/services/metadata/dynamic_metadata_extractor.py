@@ -450,7 +450,7 @@ class DynamicMetadataExtractor:
             # This preserves packaging/compliance/care sections while reducing token usage
             smart_text = self._extract_relevant_sections(pdf_text, max_chars=30000)
 
-            # Step 1: Load prompt from database (with fallback to hardcoded)
+            # Step 1: Load prompt from database - NO FALLBACK
             db_prompt_template = await self._load_prompt_from_database(stage="entity_creation", category="products")
 
             if db_prompt_template:
@@ -459,9 +459,9 @@ class DynamicMetadataExtractor:
                 prompt = db_prompt_template.replace("{category_context}", category_context).replace("{pdf_text}", smart_text)
                 self.logger.info("✅ Using DATABASE prompt for metadata extraction")
             else:
-                # Fallback to hardcoded prompt
-                prompt = get_dynamic_extraction_prompt(smart_text, category_hint)
-                self.logger.info("⚠️ Using HARDCODED fallback prompt for metadata extraction")
+                error_msg = "CRITICAL: Metadata extraction prompt not found in database. Add prompt via /admin/ai-configs with prompt_type='extraction', stage='entity_creation', category='products'"
+                self.logger.error(f"❌ {error_msg}")
+                raise ValueError(error_msg)
 
             # Step 2: Call AI model based on model family
             if "claude" in self.model.lower():

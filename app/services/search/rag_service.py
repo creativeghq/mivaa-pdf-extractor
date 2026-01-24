@@ -79,11 +79,38 @@ class RAGService:
                 timeout_seconds=60
             )
 
+            # Load classification prompt from database
+            self.classification_prompt = self._load_classification_prompt()
+
             self.logger.info("✅ RAG Service initialized")
         except Exception as e:
             self.logger.error(f"❌ RAG Service initialization failed: {e}")
             self._available = False
             raise
+
+    def _load_classification_prompt(self) -> Optional[str]:
+        """Load image classification prompt from database."""
+        try:
+            result = self.supabase_client.client.table('prompts')\
+                .select('prompt_text')\
+                .eq('prompt_type', 'classification')\
+                .eq('stage', 'image_analysis')\
+                .eq('category', 'image_classification')\
+                .eq('is_active', True)\
+                .order('version', desc=True)\
+                .limit(1)\
+                .execute()
+
+            if result.data and len(result.data) > 0:
+                self.logger.info("✅ Loaded classification prompt from database")
+                return result.data[0]['prompt_text']
+            else:
+                self.logger.warning("⚠️ Classification prompt not found in database. Add via /admin/ai-configs - classification will fail!")
+                return None
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to load classification prompt from database: {e}")
+            return None
 
     @property
     def available(self) -> bool:
@@ -319,7 +346,8 @@ class RAGService:
                                 'end_position': chunk.end_position,
                                 'quality_score': chunk.quality_score,
                                 'total_chunks': chunk.total_chunks
-                            }
+                            },
+                            'quality_score': chunk.quality_score  # ✅ NEW: Add quality_score as top-level column for dashboard metrics
                         }
 
                         # Add product_id as top-level field if available in metadata
@@ -1861,16 +1889,13 @@ Respond with JSON:
                 self.logger.warning("HUGGINGFACE_API_KEY not set, skipping classification")
                 return {'is_material': False, 'confidence': 0.0, 'reason': 'API key missing'}
 
-            classification_prompt = """Analyze this image and classify it as:
-1. MATERIAL: Shows building/interior materials (tiles, wood, fabric, stone, metal, flooring, wallpaper, etc.) - either close-up texture or in application
-2. NOT_MATERIAL: Faces, logos, charts, diagrams, text, decorative graphics, abstract patterns
-
-Respond with JSON:
-{
-  "is_material": true/false,
-  "confidence": 0.0-1.0,
-  "reason": "brief explanation"
-}"""
+            # Use database prompt - NO FALLBACK
+            if self.classification_prompt:
+                classification_prompt = self.classification_prompt
+            else:
+                error_msg = "CRITICAL: Classification prompt not found in database. Add via /admin/ai-configs with prompt_type='classification', stage='image_analysis', category='image_classification'"
+                self.logger.error(f"❌ {error_msg}")
+                raise ValueError(error_msg)
 
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(

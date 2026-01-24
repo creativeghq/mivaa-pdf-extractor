@@ -206,40 +206,9 @@ class ProductVisionExtractor:
                 prompt = db_prompt.replace("{context}", context_str)
                 self.logger.info("✅ Using DATABASE prompt for product vision extraction")
             else:
-                # Fallback to hardcoded prompt
-                self.logger.info("⚠️ Using HARDCODED fallback prompt for product vision extraction")
-                prompt = f"""Analyze this product catalog image and extract ALL product information visible. This is a material/design catalog page.{context_str}
-
-Extract and return in JSON format:
-{{
-  "products": [
-    {{
-      "product_name": "<exact product name from image>",
-      "product_code": "<product code/SKU if visible>",
-      "dimensions": {{"width": "<value>", "height": "<value>", "depth": "<value>"}},
-      "colors": ["<color1>", "<color2>"],
-      "materials": ["<material1>", "<material2>"],
-      "finish": "<matte/glossy/satin/textured/etc>",
-      "pattern": "<solid/striped/geometric/etc>",
-      "designer": "<designer name if visible>",
-      "collection": "<collection name if visible>",
-      "description": "<brief description>",
-      "confidence": <0.0-1.0>
-    }}
-  ],
-  "page_type": "<product_page/moodboard/collection_overview/technical_specs>",
-  "layout_type": "<single_product/multi_product/grid/comparison_table>",
-  "text_extracted": ["<any text visible in image>"]
-}}
-
-IMPORTANT:
-- Extract ALL products visible on the page (there may be multiple)
-- Pay special attention to tables, diagrams, and technical specifications
-- Extract dimensions even if they're in tables or diagrams
-- Look for product codes, SKUs, or reference numbers
-- Identify designer/studio names (e.g., "ESTUDI{{H}}AC", "SG NY")
-- Note finish types (matte, glossy, polished, textured, etc.)
-- Respond ONLY with valid JSON, no additional text."""
+                error_msg = "CRITICAL: Product vision extraction prompt not found in database. Add prompt via /admin/ai-configs with prompt_type='extraction', stage='image_analysis', category='products'"
+                self.logger.error(f"❌ {error_msg}")
+                raise ValueError(error_msg)
 
             # NOTE: Warmup is handled centrally in rag_routes.py at job start
             # The endpoint should already be running and warmed up

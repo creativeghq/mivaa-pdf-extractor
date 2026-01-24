@@ -110,17 +110,22 @@ class EndpointRegistry:
                     logger.warning("⚠️ SLIG endpoint not configured")
                     return None
 
-                # Create client with auto-pause DISABLED to prevent re-warmups
-                # The endpoint should be warmed up once at job start via rag_routes.py
+                # ✅ FIX: Pass the pre-warmed manager from registry to the client
+                # This allows the client to check endpoint status before inference
+                # and prevents 400 errors when endpoint is not ready
                 self._slig_client = SLIGClient(
                     endpoint_url=settings.slig_endpoint_url,
                     token=settings.slig_endpoint_token,
                     endpoint_name="mh-siglip2",
                     namespace="basiliskan",
-                    auto_pause=False  # CRITICAL: Disable auto-pause to prevent re-warmups
+                    auto_pause=False,  # Disable auto-pause to prevent re-warmups
+                    endpoint_manager=self._slig_manager  # ✅ Pass pre-warmed manager!
                 )
 
-                logger.info("✅ SLIG client created (singleton, auto-pause disabled)")
+                if self._slig_manager:
+                    logger.info("✅ SLIG client created with pre-warmed manager (singleton)")
+                else:
+                    logger.warning("⚠️ SLIG client created without manager - endpoint status checks disabled")
                 return self._slig_client
 
             except Exception as e:

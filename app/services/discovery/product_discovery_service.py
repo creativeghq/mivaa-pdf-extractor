@@ -936,8 +936,16 @@ class ProductDiscoveryService:
                 for page_str, page_type in page_types_raw.items():
                     page_types[int(page_str)] = page_type
 
-            # Page range is now optional - will be detected later using vision/text search
+            # Page range detection priority:
+            # 1. start_page (calculate end from next product's start)
+            # 2. page_range (fallback from Claude)
+            # 3. text detection (final fallback)
             page_range = p.get("page_range", [])
+            start_page = p.get("start_page")  # Primary: page number from INDEX
+
+            # Store start_page in metadata for later processing
+            if start_page:
+                metadata["_start_page"] = start_page
             product = ProductInfo(
                 name=p.get("name", "Unknown"),
                 page_range=page_range,  # Can be empty - will be filled by vision detection
@@ -1105,16 +1113,21 @@ class ProductDiscoveryService:
             # Get all product names for section boundary detection
             all_product_names = [p.name for p in catalog.products]
 
+            # ✅ STEP 1: Calculate page_range from start_page (primary method)
+            # This sets page_range for products that have start_page from INDEX reading
+            self._calculate_page_ranges_from_start_pages(catalog.products, pdf_page_count)
+
             # Detect pages for ALL products
-            # PRIORITY: Use Claude's page_range if provided, fall back to text search only if empty
+            # PRIORITY: 1) start_page (calculated above), 2) Claude's page_range, 3) text detection
             for i, product in enumerate(catalog.products):
                 try:
-                    # Check if Claude already provided page_range
+                    # Check if page_range is set (from start_page calculation OR Claude's direct page_range)
                     if product.page_range and len(product.page_range) > 0:
-                        # USE CLAUDE'S PAGE RANGE (trust the vision model)
                         detected_pages = product.page_range
+                        # Check source: start_page (calculated) or page_range (Claude)
+                        source = "start_page" if product.metadata and product.metadata.get("_start_page") else "page_range"
                         self.logger.info(
-                            f"   ✅ Using Claude's page_range for '{product.name}': {detected_pages}"
+                            f"   ✅ Using {source} for '{product.name}': {detected_pages}"
                         )
                     else:
                         # FALLBACK: Use text-based section detection
@@ -1698,6 +1711,74 @@ class ProductDiscoveryService:
         # ✅ FIX: Increased from 10000 to 100000 chars to include end-of-document sections
         # (packaging, compliance, care/maintenance info is typically at the end)
         return pdf_text[:100000]
+
+
+    def _calculate_page_ranges_from_start_pages(
+        self,
+        products: List["ProductInfo"],
+        total_pages: int
+    ) -> None:
+        """
+        Calculate page_range for each product based on start_page.
+
+        Uses CONSERVATIVE approach that works for all catalog types:
+        - end_page = next product's start_page - 1 (no content-type assumptions)
+        - May include non-product pages between products (architect pages, etc.)
+        - NEVER cuts off actual product content
+        - Safe for catalogs with any structure between products
+
+        Logic:
+        1. Sort products by start_page
+        2. For each product, end_page = next product's start_page - 1
+        3. For the last product, extend to reasonable limit (start + 10 or end of PDF)
+        4. If start_page not available, leave page_range for fallback detection
+
+        Args:
+            products: List of ProductInfo objects with _start_page in metadata
+            total_pages: Total pages in the PDF
+        """
+        # Get products with start_page
+        products_with_start = []
+        for i, product in enumerate(products):
+            start_page = product.metadata.get("_start_page") if product.metadata else None
+            if start_page:
+                products_with_start.append((i, product.name, start_page))
+
+        if not products_with_start:
+            self.logger.info("   ℹ️ No products have start_page - using fallback detection")
+            return
+
+        # Sort by start_page
+        products_with_start.sort(key=lambda x: x[2])
+
+        self.logger.info(f"   📊 Calculating page ranges for {len(products_with_start)} products with start_page")
+
+        for idx, (product_idx, product_name, start_page) in enumerate(products_with_start):
+            # Find end_page
+            if idx < len(products_with_start) - 1:
+                # Use conservative approach: end at next product's start - 1
+                # This avoids catalog-specific assumptions about content between products
+                # (e.g., architect pages, technical specs, certifications)
+                # May include non-product pages, but never cuts off product content
+                next_start = products_with_start[idx + 1][2]
+                end_page = next_start - 1
+            else:
+                # Last product: extend to reasonable limit
+                end_page = min(start_page + 10, total_pages)
+
+            # Ensure valid range
+            end_page = max(end_page, start_page)
+
+            # Calculate page_range
+            page_range = list(range(start_page, end_page + 1))
+
+            # Update the product
+            products[product_idx].page_range = page_range
+
+            self.logger.info(
+                f"   ✅ {product_name}: pages {start_page}-{end_page} "
+                f"(calculated from start_page)"
+            )
 
 
     # Pre-compiled regex pattern for page markers (compiled once, reused)

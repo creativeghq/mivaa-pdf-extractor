@@ -44,7 +44,8 @@ class SLIGClient:
         endpoint_name: str = "mh-siglip2",
         namespace: str = "basiliskan",
         auto_pause: bool = True,
-        auto_pause_timeout: int = 60
+        auto_pause_timeout: int = 60,
+        endpoint_manager: "SLIGEndpointManager" = None  # ✅ Accept pre-created manager
     ):
         """
         Initialize SLIG client.
@@ -58,6 +59,7 @@ class SLIGClient:
             namespace: HuggingFace namespace/username
             auto_pause: Enable automatic pause/resume (default: True)
             auto_pause_timeout: Seconds of idle time before auto-pause (default: 60)
+            endpoint_manager: Pre-created endpoint manager (for singleton pattern)
         """
         self.endpoint_url = endpoint_url.rstrip('/')
         self.token = token
@@ -70,7 +72,12 @@ class SLIGClient:
 
         # Initialize endpoint manager for pause/resume
         self._endpoint_manager = None
-        if auto_pause:
+
+        # ✅ Use pre-created manager if provided (singleton pattern from registry)
+        if endpoint_manager is not None:
+            self._endpoint_manager = endpoint_manager
+            logger.info("✅ SLIG client using pre-warmed endpoint manager (singleton)")
+        elif auto_pause:
             try:
                 from app.services.embeddings.slig_endpoint_manager import SLIGEndpointManager
                 self._endpoint_manager = SLIGEndpointManager(
@@ -89,10 +96,23 @@ class SLIGClient:
         
     async def _ensure_endpoint_ready(self):
         """Ensure endpoint is running and warmed up before inference."""
-        # NOTE: Warmup is handled centrally in rag_routes.py at job start
-        # The endpoint should already be running and warmed up
-        # This method is kept for interface compatibility but is now a no-op
-        pass
+        # ✅ If we have an endpoint manager, verify the endpoint is ready
+        if self._endpoint_manager:
+            # Check warmup status from the manager
+            if not self._endpoint_manager.warmup_completed:
+                logger.info("⏳ SLIG endpoint not warmed up - checking status...")
+                import asyncio
+
+                # Try to warmup using thread pool (blocking HF API calls)
+                try:
+                    success = await asyncio.to_thread(self._endpoint_manager.warmup)
+                    if success:
+                        logger.info("✅ SLIG endpoint warmed up successfully")
+                    else:
+                        logger.warning("⚠️ SLIG warmup failed - inference may fail")
+                except Exception as e:
+                    logger.warning(f"⚠️ SLIG warmup check failed: {e}")
+        # else: No manager means we trust the endpoint is already running (pre-warmed)
 
     async def _call_endpoint(self, payload: Dict[str, Any]) -> Any:
         """

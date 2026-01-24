@@ -51,10 +51,9 @@ on:
       - 'mivaa-pdf-extractor/test_full_workflow.sh'
 
 env:
-  SSH_USER: ${{ secrets.SSH_USER }}
-  SSH_HOST: ${{ secrets.SSH_HOST }}
-  SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-  WORK_DIR: /home/${{ secrets.SSH_USER }}/mivaa-pdf-extractor
+  # Use same SSH approach as deploy.yml - hardcoded server details
+  SSH_TARGET: root@104.248.68.3
+  WORK_DIR: /var/www/mivaa-pdf-extractor
 
 jobs:
   test-pdf-extraction:
@@ -68,30 +67,28 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Setup SSH key
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
 
       - name: Verify SSH connection
         run: |
-          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "echo 'SSH connection successful'"
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${{ env.SSH_TARGET }} "echo 'SSH connection successful'"
 
       - name: Check service status
         id: service_status
         run: |
           echo "Checking MIVAA PDF Extractor service status..."
-          SERVICE_STATUS=$(ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "sudo systemctl is-active mivaa-pdf-extractor.service || echo 'inactive'")
+          SERVICE_STATUS=$(ssh ${{ env.SSH_TARGET }} "sudo systemctl is-active mivaa-pdf-extractor.service || echo 'inactive'")
           echo "Service status: $SERVICE_STATUS"
           echo "service_status=$SERVICE_STATUS" >> $GITHUB_OUTPUT
 
           if [ "$SERVICE_STATUS" != "active" ]; then
             echo "::warning::Service is not active. Attempting to start..."
-            ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "sudo systemctl start mivaa-pdf-extractor.service"
+            ssh ${{ env.SSH_TARGET }} "sudo systemctl start mivaa-pdf-extractor.service"
             sleep 10
-            SERVICE_STATUS=$(ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "sudo systemctl is-active mivaa-pdf-extractor.service || echo 'inactive'")
+            SERVICE_STATUS=$(ssh ${{ env.SSH_TARGET }} "sudo systemctl is-active mivaa-pdf-extractor.service || echo 'inactive'")
             if [ "$SERVICE_STATUS" != "active" ]; then
               echo "::error::Failed to start service"
               exit 1
@@ -102,7 +99,7 @@ jobs:
         id: check_jobs
         run: |
           echo "Checking for active processing jobs..."
-          ACTIVE_JOBS=$(ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "curl -s http://localhost:8000/api/rag/documents/jobs?limit=10 | jq '[.jobs[] | select(.status == \"processing\" or .status == \"pending\")] | length' 2>/dev/null || echo '0'")
+          ACTIVE_JOBS=$(ssh ${{ env.SSH_TARGET }} "curl -s http://localhost:8000/api/rag/documents/jobs?limit=10 | jq '[.jobs[] | select(.status == \"processing\" or .status == \"pending\")] | length' 2>/dev/null || echo '0'")
           echo "Active jobs: $ACTIVE_JOBS"
           echo "active_jobs=$ACTIVE_JOBS" >> $GITHUB_OUTPUT
 
@@ -111,7 +108,7 @@ jobs:
             # Wait up to 10 minutes for jobs to complete
             for i in {1..60}; do
               sleep 10
-              ACTIVE_JOBS=$(ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "curl -s http://localhost:8000/api/rag/documents/jobs?limit=10 | jq '[.jobs[] | select(.status == \"processing\" or .status == \"pending\")] | length' 2>/dev/null || echo '0'")
+              ACTIVE_JOBS=$(ssh ${{ env.SSH_TARGET }} "curl -s http://localhost:8000/api/rag/documents/jobs?limit=10 | jq '[.jobs[] | select(.status == \"processing\" or .status == \"pending\")] | length' 2>/dev/null || echo '0'")
               if [ "$ACTIVE_JOBS" = "0" ] || [ "$ACTIVE_JOBS" = "" ]; then
                 echo "All jobs completed"
                 break
@@ -140,7 +137,7 @@ jobs:
           fi
 
           # Run the test script
-          ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "cd ${{ env.WORK_DIR }} && chmod +x test_full_workflow.sh && ./test_full_workflow.sh $TEST_FLAG" 2>&1 | tee /tmp/test_output.log
+          ssh ${{ env.SSH_TARGET }} "cd ${{ env.WORK_DIR }} && chmod +x test_full_workflow.sh && ./test_full_workflow.sh $TEST_FLAG" 2>&1 | tee /tmp/test_output.log
 
           # Check exit code
           TEST_EXIT_CODE=${PIPESTATUS[0]}
@@ -158,13 +155,13 @@ jobs:
           echo "Extracting test results..."
 
           # Get the job ID from the test output
-          JOB_ID=$(ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "cat /tmp/job_*_final.json 2>/dev/null | jq -r '.job_id' | head -1" || echo "")
+          JOB_ID=$(ssh ${{ env.SSH_TARGET }} "cat /tmp/job_*_final.json 2>/dev/null | jq -r '.job_id' | head -1" || echo "")
           echo "Job ID: $JOB_ID"
           echo "job_id=$JOB_ID" >> $GITHUB_OUTPUT
 
           if [ -n "$JOB_ID" ] && [ "$JOB_ID" != "null" ]; then
             # Get detailed results
-            RESULTS=$(ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "curl -s http://localhost:8000/api/rag/documents/job/$JOB_ID")
+            RESULTS=$(ssh ${{ env.SSH_TARGET }} "curl -s http://localhost:8000/api/rag/documents/job/$JOB_ID")
 
             STATUS=$(echo "$RESULTS" | jq -r '.status // "unknown"')
             CHUNKS=$(echo "$RESULTS" | jq -r '.result.chunks_created // 0')
@@ -230,7 +227,7 @@ jobs:
           echo "Verifying database records..."
 
           # Check products table
-          PRODUCT_COUNT=$(ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "curl -s http://localhost:8000/api/rag/documents/job/${{ steps.extract_results.outputs.job_id }}" | jq -r '.result.products_discovered // 0')
+          PRODUCT_COUNT=$(ssh ${{ env.SSH_TARGET }} "curl -s http://localhost:8000/api/rag/documents/job/${{ steps.extract_results.outputs.job_id }}" | jq -r '.result.products_discovered // 0')
           echo "Products in database: $PRODUCT_COUNT"
 
           # Check image associations (via API if available)
@@ -244,17 +241,17 @@ jobs:
         if: always() && github.event.inputs.skip_cleanup != 'true'
         run: |
           echo "Cleaning up test artifacts..."
-          ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "rm -f /tmp/job_*.json /tmp/upload_response.json 2>/dev/null || true"
+          ssh ${{ env.SSH_TARGET }} "rm -f /tmp/job_*.json /tmp/upload_response.json 2>/dev/null || true"
 
       - name: Get service logs on failure
         if: failure()
         run: |
           echo "::group::Service Logs (last 200 lines)"
-          ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "sudo journalctl -u mivaa-pdf-extractor.service -n 200 --no-pager" || true
+          ssh ${{ env.SSH_TARGET }} "sudo journalctl -u mivaa-pdf-extractor.service -n 200 --no-pager" || true
           echo "::endgroup::"
 
           echo "::group::Error Logs"
-          ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "sudo journalctl -u mivaa-pdf-extractor.service --since '30 minutes ago' --no-pager | grep -E 'Error|Exception|Traceback' | tail -100" || true
+          ssh ${{ env.SSH_TARGET }} "sudo journalctl -u mivaa-pdf-extractor.service --since '30 minutes ago' --no-pager | grep -E 'Error|Exception|Traceback' | tail -100" || true
           echo "::endgroup::"
 
       - name: Report final status
