@@ -346,7 +346,7 @@ async def lifespan(app: FastAPI):
                 namespace="basiliskan",
                 check_interval_seconds=30,
                 scale_up_threshold=3,
-                max_replicas=3,
+                
                 enabled=True
             )
             asyncio.create_task(auto_scaler.start())
