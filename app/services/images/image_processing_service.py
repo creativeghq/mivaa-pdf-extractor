@@ -30,14 +30,14 @@ logger = logging.getLogger(__name__)
 class ImageProcessingService:
     """Service for handling all image processing operations."""
 
-    def __init__(self, workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"):
+    def __init__(self, workspace_id: str = None):
         """Initialize service."""
         self.supabase_client = get_supabase_client()
         self.vecs_service = VecsService()
         self.embedding_service = RealEmbeddingsService()
         self.pdf_processor = PDFProcessor()
         self.settings = get_settings()
-        self.workspace_id = workspace_id
+        self.workspace_id = workspace_id or self.settings.default_workspace_id
         self.classification_prompt = None
         self._load_classification_prompt()
 

@@ -122,7 +122,7 @@ class EnhancedMaterialPropertyExtractor:
     that leverages TogetherAI's Qwen Vision model for sophisticated document understanding.
     """
     
-    def __init__(self, together_ai_client=None, confidence_threshold: float = 0.7, workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"):
+    def __init__(self, together_ai_client=None, confidence_threshold: float = 0.7, workspace_id: str = None):
         """Initialize the enhanced property extractor.
 
         Args:
@@ -130,9 +130,10 @@ class EnhancedMaterialPropertyExtractor:
             confidence_threshold: Minimum confidence for property extraction
             workspace_id: Workspace ID for loading custom prompts
         """
+        from app.config import get_settings
         self.together_ai_client = together_ai_client
         self.confidence_threshold = confidence_threshold
-        self.workspace_id = workspace_id
+        self.workspace_id = workspace_id or get_settings().default_workspace_id
         self.supabase = get_supabase_client()
         self._setup_property_extractors()
         

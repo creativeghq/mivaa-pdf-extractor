@@ -547,7 +547,7 @@ class OCRService:
     async def extract_icon_metadata(
         self,
         image: Union[str, np.ndarray, Image.Image],
-        workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+        workspace_id: str = None,
         use_ai: bool = True
     ) -> List[IconMetadata]:
         """
@@ -567,6 +567,10 @@ class OCRService:
         Returns:
             List of IconMetadata objects with extracted values
         """
+        # Use default workspace ID from config if not provided
+        from app.config import get_settings
+        workspace_id = workspace_id or get_settings().default_workspace_id
+
         try:
             from app.services.core.supabase_client import get_supabase_client
 

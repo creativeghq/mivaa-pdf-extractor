@@ -26,9 +26,10 @@ class EmbeddingToTextService:
     Uses database prompts for vocabulary and extraction logic.
     """
 
-    def __init__(self, workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"):
+    def __init__(self, workspace_id: str = None):
+        from app.config import get_settings
         self.supabase = get_supabase_client()
-        self.workspace_id = workspace_id
+        self.workspace_id = workspace_id or get_settings().default_workspace_id
         self.ai_logger = AICallLogger()
         self.prompt = None
         self._load_prompt()

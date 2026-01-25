@@ -254,7 +254,7 @@ class GPT5Service:
         analysis_type: str,
         context: Optional[Dict[str, Any]] = None,
         job_id: Optional[str] = None,
-        workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+        workspace_id: str = None,
     ) -> Dict[str, Any]:
         """
         Analyze complex content using GPT-5.
@@ -269,6 +269,10 @@ class GPT5Service:
         Returns:
             Analysis result with structured data
         """
+        # Use default workspace ID from config if not provided
+        from app.config import get_settings
+        workspace_id = workspace_id or get_settings().default_workspace_id
+
         # Fetch system prompt from database - NO FALLBACK
         system_prompt = await self._get_analysis_prompt_from_db(workspace_id, analysis_type)
         

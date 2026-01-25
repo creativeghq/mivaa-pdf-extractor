@@ -61,7 +61,7 @@ class RealImageAnalysisService:
     - CLIP: Visual embeddings for similarity search
     """
     
-    def __init__(self, supabase_client=None, embedding_service=None, workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"):
+    def __init__(self, supabase_client=None, embedding_service=None, workspace_id: str = None):
         self.logger = logger
 
         # Load HuggingFace endpoint configuration from settings
@@ -69,6 +69,7 @@ class RealImageAnalysisService:
         from app.services.embeddings.qwen_endpoint_manager import QwenEndpointManager
 
         settings = get_settings()
+        self.workspace_id = workspace_id or settings.default_workspace_id
         qwen_config = settings.get_qwen_config()
 
         self.qwen_endpoint_url = qwen_config["endpoint_url"]

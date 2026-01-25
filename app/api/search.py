@@ -128,39 +128,8 @@ async def semantic_search(
         # Perform direct vector search using database embeddings
         search_results = []
         try:
-            # Build document filter for SQL query
-            doc_filter = ""
-            if document_ids:
-                doc_ids_str = "', '".join(document_ids)
-                doc_filter = f"AND dv.document_id IN ('{doc_ids_str}')"
-
-            # Convert embedding to PostgreSQL vector format
-            embedding_str = f"[{','.join(map(str, query_embedding))}]"
-
-            # Direct SQL query for vector similarity search using document_vectors table
-            query_sql = f"""
-            SELECT
-                dv.document_id,
-                dv.chunk_id,
-                dv.content,
-                dv.metadata,
-                1 - (dv.embedding <=> '{embedding_str}'::vector) as similarity_score
-            FROM document_vectors dv
-            WHERE dv.embedding IS NOT NULL
-                {doc_filter}
-                AND (1 - (dv.embedding <=> '{embedding_str}'::vector)) >= {request.similarity_threshold}
-            ORDER BY dv.embedding <=> '{embedding_str}'::vector
-            LIMIT {request.max_results}
-            """
-
-            # Execute the query directly
+            # Execute the query using Supabase client's parameterized methods (safe from SQL injection)
             import asyncio
-            from ..services.core.supabase_client import SupabaseClient
-
-            # Use the existing supabase client from dependencies
-            # supabase_client is already available from the function parameter
-
-            # Use table query with select (simpler and more reliable)
             table_result = await asyncio.to_thread(
                 lambda: supabase.client.table('document_vectors')
                 .select('document_id, chunk_id, content, metadata, embedding')

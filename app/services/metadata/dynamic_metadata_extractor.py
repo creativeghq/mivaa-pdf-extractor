@@ -270,7 +270,7 @@ class DynamicMetadataExtractor:
     Extracts metadata dynamically using AI, without hardcoded attribute checks.
     """
 
-    def __init__(self, model: str = "claude", job_id: Optional[str] = None, workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"):
+    def __init__(self, model: str = "claude", job_id: Optional[str] = None, workspace_id: str = None):
         """
         Initialize extractor.
 
@@ -279,8 +279,10 @@ class DynamicMetadataExtractor:
             job_id: Optional job ID for AI call logging
             workspace_id: Workspace ID for loading custom prompts from database
         """
+        from app.config import get_settings
         self.model = model
         self.job_id = job_id
+        self.workspace_id = workspace_id or get_settings().default_workspace_id
         self.workspace_id = workspace_id
         self.logger = logging.getLogger(__name__)
         self.ai_logger = AICallLogger()

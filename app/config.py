@@ -680,8 +680,16 @@ class Settings(BaseSettings):
         env="MATERIAL_KAI_API_KEY"
     )
     material_kai_workspace_id: str = Field(
-        default="",
-        env="MATERIAL_KAI_WORKSPACE_ID"
+        default="ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+        env="MATERIAL_KAI_WORKSPACE_ID",
+        description="Default workspace ID for Material Kai operations"
+    )
+
+    # ✅ Default workspace ID used across all services (can be overridden per-request)
+    default_workspace_id: str = Field(
+        default="ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+        env="DEFAULT_WORKSPACE_ID",
+        description="Default workspace ID used when no workspace is specified"
     )
     material_kai_service_name: str = Field(
         default="mivaa-pdf-extractor",

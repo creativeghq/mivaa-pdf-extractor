@@ -23,6 +23,7 @@ except ImportError:
 from app.services.core.supabase_client import get_supabase_client
 from app.services.tracking.checkpoint_recovery_service import CheckpointRecoveryService
 from app.schemas.jobs import ProcessingStage
+from app.config import get_settings
 
 # Import orchestration functions from centralized module
 # CONSOLIDATED: All jobs now use process_document_with_discovery (removed legacy process_document_background)
@@ -392,7 +393,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
                 document_id=document_id,
                 file_path=file_path,
                 filename=filename,
-                workspace_id=doc_data.get('workspace_id', 'ffafc28b-1b8b-4b0d-b226-9f9a6154004e'),
+                workspace_id=doc_data.get('workspace_id') or get_settings().default_workspace_id,
                 title=doc_data.get('title'),
                 description=doc_data.get('description'),
                 document_tags=doc_data.get('tags', []),

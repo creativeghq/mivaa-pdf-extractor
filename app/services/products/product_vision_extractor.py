@@ -49,15 +49,15 @@ class ProductVisionExtractor:
     enhanced product detection during PDF processing.
     """
     
-    def __init__(self, workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"):
+    def __init__(self, workspace_id: str = None):
         self.logger = logger
-        self.workspace_id = workspace_id
         self.supabase = get_supabase_client()
         # Import here to avoid circular dependencies
         from .real_image_analysis_service import RealImageAnalysisService
         from app.config import get_settings
         from app.services.embeddings.qwen_endpoint_manager import QwenEndpointManager
 
+        self.workspace_id = workspace_id or get_settings().default_workspace_id
         self.vision_service = RealImageAnalysisService()
 
         # Get HuggingFace endpoint configuration from settings

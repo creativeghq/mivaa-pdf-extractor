@@ -293,7 +293,7 @@ class ProductDiscoveryService:
         source_type: str = "web_scraping",
         categories: List[str] = None,
         agent_prompt: Optional[str] = None,
-        workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+        workspace_id: str = None,
         enable_prompt_enhancement: bool = True,
         job_id: Optional[str] = None
     ) -> ProductCatalog:
@@ -340,6 +340,10 @@ class ProductDiscoveryService:
         # Default to products only if not specified
         if categories is None:
             categories = ["products"]
+
+        # Use default workspace ID from config if not provided
+        from app.config import get_settings
+        workspace_id = workspace_id or get_settings().default_workspace_id
 
         try:
             self.logger.info(f"🔍 Starting TEXT-BASED discovery from {source_type.upper()}")
@@ -403,7 +407,7 @@ class ProductDiscoveryService:
         total_pages: int,
         categories: List[str] = None,
         agent_prompt: Optional[str] = None,
-        workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+        workspace_id: str = None,
         enable_prompt_enhancement: bool = True,
         job_id: Optional[str] = None,
         pdf_path: Optional[str] = None,
@@ -442,6 +446,10 @@ class ProductDiscoveryService:
         # Default to products only if not specified
         if categories is None:
             categories = ["products"]
+
+        # Use default workspace ID from config if not provided
+        from app.config import get_settings
+        workspace_id = workspace_id or get_settings().default_workspace_id
 
         try:
             # Store tracker reference for progress updates
@@ -641,7 +649,7 @@ class ProductDiscoveryService:
         total_pages: int,
         categories: List[str],
         agent_prompt: Optional[str] = None,
-        workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+        workspace_id: str = None,
         enable_prompt_enhancement: bool = True
     ) -> str:
         """
@@ -650,6 +658,10 @@ class ProductDiscoveryService:
         Fetches prompt template from database and fills in variables.
         All prompts are managed via /admin/ai-configs.
         """
+        # Use default workspace ID from config if not provided
+        from app.config import get_settings
+        workspace_id = workspace_id or get_settings().default_workspace_id
+
         try:
             # Fetch discovery prompt from database
             prompt_template = await get_prompt_template_from_db(

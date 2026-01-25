@@ -1198,7 +1198,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
                 document_id=document_id,
                 file_path=file_path,
                 filename=filename,
-                workspace_id=doc_data.get('workspace_id', 'ffafc28b-1b8b-4b0d-b226-9f9a6154004e'),
+                workspace_id=doc_data.get('workspace_id') or get_settings().default_workspace_id,
                 title=doc_data.get('title'),
                 description=doc_data.get('description'),
                 document_tags=doc_data.get('tags', []),
@@ -2512,7 +2512,7 @@ async def process_document_background(
                 # Note: asyncio is already imported at the top of the file
                 asyncio.create_task(create_products_background(
                     document_id=document_id,
-                    workspace_id="ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+                    workspace_id=get_settings().default_workspace_id,
                     job_id=job_id
                 ))
                 logger.info("✅ Product creation scheduled in background")
@@ -2642,7 +2642,7 @@ async def process_document_with_discovery(
     extract_categories: List[str],
     chunk_size: int,
     chunk_overlap: int,
-    workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+    workspace_id: str = None,
     agent_prompt: Optional[str] = None,
     enable_prompt_enhancement: bool = True,
     test_single_product: bool = False  # 🧪 TEST MODE: Process only first product
@@ -2674,6 +2674,8 @@ async def process_document_with_discovery(
         extract_categories: List of categories to extract (e.g., ['products'], ['certificates', 'logos']).
                           Categories: 'products', 'certificates', 'logos', 'specifications', 'all'
     """
+    # Use default workspace ID from config if not provided
+    workspace_id = workspace_id or get_settings().default_workspace_id
     start_time = datetime.utcnow()
 
     # Initialize lazy loading for this job

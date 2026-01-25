@@ -21,9 +21,10 @@ class VisualMetadataService:
     Integrates with the image processing pipeline (Stage 3.5).
     """
 
-    def __init__(self, workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"):
-        self.workspace_id = workspace_id
-        self.embedding_to_text = EmbeddingToTextService(workspace_id=workspace_id)
+    def __init__(self, workspace_id: str = None):
+        from app.config import get_settings
+        self.workspace_id = workspace_id or get_settings().default_workspace_id
+        self.embedding_to_text = EmbeddingToTextService(workspace_id=self.workspace_id)
         self.supabase = get_supabase_client()
 
     async def extract_visual_metadata(

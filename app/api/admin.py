@@ -1131,13 +1131,17 @@ async def get_job_products(job_id: str):
 @router.post("/test-product-creation")
 async def test_product_creation(
     document_id: str,
-    workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"
+    workspace_id: str = None
 ):
     """
     ✅ NEW: Test endpoint for enhanced product creation.
     Tests the improved product detection with no limits and better filtering.
     """
     try:
+        # Use default workspace ID from config if not provided
+        from app.config import get_settings
+        workspace_id = workspace_id or get_settings().default_workspace_id
+
         logger.info(f"🧪 Testing enhanced product creation for document: {document_id}")
 
         # Initialize product creation service

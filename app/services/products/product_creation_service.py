@@ -34,7 +34,7 @@ class ProductCreationService:
     async def create_products_from_layout_candidates(
         self,
         document_id: str,
-        workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+        workspace_id: str = None,
         min_confidence: float = 0.5,
         min_quality_score: float = 0.5
     ) -> Dict[str, Any]:
@@ -53,6 +53,10 @@ class ProductCreationService:
             Dictionary with creation statistics
         """
         try:
+            # Use default workspace ID from config if not provided
+            from app.config import get_settings
+            workspace_id = workspace_id or get_settings().default_workspace_id
+
             self.logger.info(f"🎯 Starting layout-based product creation for document {document_id}")
 
             # Get layout analysis results with product candidates
