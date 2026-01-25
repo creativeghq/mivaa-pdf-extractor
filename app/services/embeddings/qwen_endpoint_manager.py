@@ -311,14 +311,37 @@ class QwenEndpointManager:
 
     def force_pause(self) -> bool:
         """
-        Force pause endpoint immediately.
-        Use this after batch processing/job completion to stop billing.
+        Signal job completion - let HuggingFace auto-scale to zero.
+
+        NOTE: We do NOT call endpoint.pause() as it sets state to "paused" which
+        won't auto-resume on requests. Instead, we rely on HuggingFace's automatic
+        scale-to-zero feature which sets state to "scaledToZero" and WILL auto-resume.
+
+        Returns:
+            True always (HF handles scale-to-zero automatically)
+        """
+        logger.info("✅ Qwen job completed - letting HuggingFace auto-scale to zero")
+
+        # Track uptime if we were running
+        if self.last_resume_time:
+            uptime = time.time() - self.last_resume_time
+            self.total_uptime += uptime
+            self.last_resume_time = None
+
+        self.warmup_completed = False
+        return True
+
+    def manual_pause(self) -> bool:
+        """
+        MANUAL PAUSE - Use only if you explicitly want to stop the endpoint.
+        WARNING: This sets state to "paused" which requires explicit resume().
+        Prefer letting HuggingFace auto-scale to "scaledToZero" instead.
 
         Returns:
             True if paused successfully, False if failed
         """
         if not self._can_pause_resume:
-            logger.warning("Pause/resume not available - cannot force pause")
+            logger.warning("Pause/resume not available - cannot manual pause")
             return False
 
         endpoint = self._get_endpoint()
@@ -328,24 +351,23 @@ class QwenEndpointManager:
         try:
             endpoint.fetch()
             if endpoint.status == "running":
-                logger.info("⏸️ Force pausing Qwen endpoint (job completed)")
+                logger.warning("⚠️ MANUAL PAUSE: Qwen endpoint (will require explicit resume)")
                 endpoint.pause()
                 self.pause_count += 1
 
-                # Track uptime
                 if self.last_resume_time:
                     uptime = time.time() - self.last_resume_time
                     self.total_uptime += uptime
 
                 self.warmup_completed = False
-                logger.info("✅ Qwen endpoint paused (no billing)")
+                logger.info("✅ Qwen endpoint manually paused")
                 return True
             else:
                 logger.info(f"Endpoint already not running (status: {endpoint.status})")
                 return True
 
         except Exception as e:
-            logger.error(f"❌ Failed to force pause Qwen endpoint: {e}")
+            logger.error(f"❌ Failed to manual pause Qwen endpoint: {e}")
             return False
 
     async def analyze_image(
