@@ -345,37 +345,19 @@ class ChandraEndpointManager:
 
     def force_pause(self) -> bool:
         """
-        Signal job completion - let HuggingFace auto-scale to zero.
+        Pause endpoint at JOB COMPLETION to stop billing.
 
-        NOTE: We do NOT call endpoint.pause() as it sets state to "paused" which
-        won't auto-resume on requests. Instead, we rely on HuggingFace's automatic
-        scale-to-zero feature which sets state to "scaledToZero" and WILL auto-resume.
+        IMPORTANT: Call this ONLY when the entire job is complete, NOT between
+        batches or processing steps. This puts endpoint in "paused" state which
+        requires explicit resume() - handled by resume_if_needed() and warmup().
 
-        Returns:
-            True always (HF handles scale-to-zero automatically)
-        """
-        logger.info("✅ Chandra job completed - letting HuggingFace auto-scale to zero")
-
-        # Track uptime if we were running
-        if self.last_resume_time:
-            uptime = time.time() - self.last_resume_time
-            self.total_uptime += uptime
-            self.last_resume_time = None
-
-        self.warmup_completed = False
-        return True
-
-    def manual_pause(self) -> bool:
-        """
-        MANUAL PAUSE - Use only if you explicitly want to stop the endpoint.
-        WARNING: This sets state to "paused" which requires explicit resume().
-        Prefer letting HuggingFace auto-scale to "scaledToZero" instead.
+        The endpoint will be resumed automatically when the next job starts.
 
         Returns:
             True if paused successfully, False if failed
         """
         if not self._can_pause_resume:
-            logger.warning("Pause/resume not available - cannot manual pause")
+            logger.warning("Pause/resume not available - cannot pause")
             return False
 
         endpoint = self._get_endpoint()
@@ -385,7 +367,7 @@ class ChandraEndpointManager:
         try:
             endpoint.fetch()
             if endpoint.status == "running":
-                logger.warning("⚠️ MANUAL PAUSE: Chandra endpoint (will require explicit resume)")
+                logger.info("⏸️ Pausing Chandra endpoint (JOB COMPLETED - stopping billing)")
                 endpoint.pause()
                 self.pause_count += 1
 
@@ -394,14 +376,14 @@ class ChandraEndpointManager:
                     self.total_uptime += uptime
 
                 self.warmup_completed = False
-                logger.info("✅ Chandra endpoint manually paused")
+                logger.info("✅ Chandra endpoint paused (no billing until next job)")
                 return True
             else:
                 logger.info(f"Endpoint already not running (status: {endpoint.status})")
                 return True
 
         except Exception as e:
-            logger.error(f"❌ Failed to manual pause Chandra endpoint: {e}")
+            logger.error(f"❌ Failed to pause Chandra endpoint: {e}")
             return False
 
     def mark_used(self):
