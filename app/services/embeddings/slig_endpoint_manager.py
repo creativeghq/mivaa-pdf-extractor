@@ -241,6 +241,20 @@ class SLIGEndpointManager:
             logger.info("✅ SLIG endpoint already warmed up")
             return True
 
+        # Defensive check: ensure endpoint is not paused before warmup
+        if self._can_pause_resume:
+            endpoint = self._get_endpoint()
+            if endpoint:
+                try:
+                    endpoint.fetch()
+                    if endpoint.status in ["paused", "scaledToZero"]:
+                        logger.warning(f"⚠️ SLIG endpoint is {endpoint.status} - triggering resume")
+                        endpoint.resume().wait(timeout=300)
+                        self.resume_count += 1
+                        self.last_resume_time = time.time()
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to check/resume endpoint during warmup: {e}")
+
         logger.info(f"🔥 Warming up SLIG endpoint (max {self.warmup_timeout}s)...")
 
         # Test inference with exponential backoff
@@ -345,14 +359,42 @@ class SLIGEndpointManager:
 
     def force_pause(self) -> bool:
         """
-        DISABLED: Let HuggingFace handle scale-to-zero automatically.
-        Manual pausing causes endpoints to not auto-resume on requests.
+        Force pause endpoint immediately.
+        Use this after batch processing/job completion to stop billing.
 
         Returns:
-            True always (no-op)
+            True if paused successfully, False if failed
         """
-        logger.debug("force_pause() disabled - letting HF handle scale-to-zero automatically")
-        return True
+        if not self._can_pause_resume:
+            logger.warning("Pause/resume not available - cannot force pause")
+            return False
+
+        endpoint = self._get_endpoint()
+        if not endpoint:
+            return False
+
+        try:
+            endpoint.fetch()
+            if endpoint.status == "running":
+                logger.info("⏸️ Force pausing SLIG endpoint (job completed)")
+                endpoint.pause()
+                self.pause_count += 1
+
+                # Track uptime
+                if self.last_resume_time:
+                    uptime = time.time() - self.last_resume_time
+                    self.total_uptime += uptime
+
+                self.warmup_completed = False
+                logger.info("✅ SLIG endpoint paused (no billing)")
+                return True
+            else:
+                logger.info(f"Endpoint already not running (status: {endpoint.status})")
+                return True
+
+        except Exception as e:
+            logger.error(f"❌ Failed to force pause SLIG endpoint: {e}")
+            return False
 
     def mark_used(self):
         """Mark endpoint as recently used (for auto-pause tracking)."""
