@@ -320,85 +320,25 @@ class ChandraEndpointManager:
 
     def pause_if_idle(self) -> bool:
         """
-        Pause endpoint if idle for too long.
-        CRITICAL: This prevents billing when not in use!
+        DISABLED: Let HuggingFace handle scale-to-zero automatically.
+        Manual pausing causes endpoints to not auto-resume on requests.
 
         Returns:
-            True if paused or already paused, False if failed
+            True always (no-op)
         """
-        if not self._can_pause_resume:
-            return False
-
-        if self.last_used is None:
-            return False
-
-        idle_time = time.time() - self.last_used
-
-        if idle_time > self.auto_pause_timeout:
-            endpoint = self._get_endpoint()
-            if not endpoint:
-                return False
-
-            try:
-                endpoint.fetch()
-                if endpoint.status == "running":
-                    logger.info(f"⏸️ Auto-pausing Chandra endpoint (idle for {idle_time:.0f}s)")
-                    endpoint.pause()
-                    self.pause_count += 1
-
-                    # Track uptime
-                    if self.last_resume_time:
-                        uptime = time.time() - self.last_resume_time
-                        self.total_uptime += uptime
-
-                    self.warmup_completed = False  # Reset warmup flag
-                    logger.info(f"✅ Chandra endpoint paused (no billing)")
-                    return True
-
-            except Exception as e:
-                logger.error(f"❌ Failed to pause endpoint: {e}")
-                return False
-
-        return False
+        logger.debug("pause_if_idle() disabled - letting HF handle scale-to-zero automatically")
+        return True
 
     def force_pause(self) -> bool:
         """
-        Force pause endpoint immediately.
-        Use this after batch processing is complete.
+        DISABLED: Let HuggingFace handle scale-to-zero automatically.
+        Manual pausing causes endpoints to not auto-resume on requests.
 
         Returns:
-            True if paused successfully, False if failed
+            True always (no-op)
         """
-        if not self._can_pause_resume:
-            logger.warning("Pause/resume not available - cannot force pause")
-            return False
-
-        endpoint = self._get_endpoint()
-        if not endpoint:
-            return False
-
-        try:
-            endpoint.fetch()
-            if endpoint.status == "running":
-                logger.info("⏸️ Force pausing Chandra endpoint")
-                endpoint.pause()
-                self.pause_count += 1
-
-                # Track uptime
-                if self.last_resume_time:
-                    uptime = time.time() - self.last_resume_time
-                    self.total_uptime += uptime
-
-                self.warmup_completed = False  # Reset warmup flag
-                logger.info(f"✅ Chandra endpoint paused (no billing)")
-                return True
-            else:
-                logger.info(f"Endpoint already paused (status: {endpoint.status})")
-                return True
-
-        except Exception as e:
-            logger.error(f"❌ Failed to force pause endpoint: {e}")
-            return False
+        logger.debug("force_pause() disabled - letting HF handle scale-to-zero automatically")
+        return True
 
     def mark_used(self):
         """Mark endpoint as recently used (for auto-pause tracking)."""

@@ -264,101 +264,47 @@ class QwenEndpointManager:
         """Quick test if Qwen can handle requests."""
         try:
             import requests
+            # Fix URL construction - endpoint_url may already include /v1/
+            base_url = self.endpoint_url.rstrip('/')
+            if base_url.endswith('/v1'):
+                url = f"{base_url}/chat/completions"
+            else:
+                url = f"{base_url}/v1/chat/completions"
+
             response = requests.post(
-                f"{self.endpoint_url.rstrip('/')}/v1/chat/completions",
+                url,
                 headers={"Authorization": f"Bearer {self.endpoint_token}", "Content-Type": "application/json"},
                 json={"model": "Qwen/Qwen3-VL-32B-Instruct", "messages": [{"role": "user", "content": "OK"}], "max_tokens": 2},
                 timeout=15
             )
+            if response.status_code != 200:
+                logger.warning(f"   Qwen warmup test failed: HTTP {response.status_code}")
             return response.status_code == 200
-        except:
+        except Exception as e:
+            logger.warning(f"   Qwen warmup test exception: {e}")
             return False
 
     def pause_if_idle(self) -> bool:
         """
-        Pause endpoint if it's been idle for too long.
-        CRITICAL: This stops billing! Call after batch processing or idle timeout.
+        DISABLED: Let HuggingFace handle scale-to-zero automatically.
+        Manual pausing causes endpoints to not auto-resume on requests.
 
         Returns:
-            True if endpoint is paused or successfully paused, False if failed
+            True always (no-op)
         """
-        if not self._can_pause_resume:
-            return True
-
-        if self.last_used is None:
-            return True
-
-        idle_time = time.time() - self.last_used
-        if idle_time < self.auto_pause_timeout:
-            return True
-
-        endpoint = self._get_endpoint()
-        if not endpoint:
-            return False
-
-        try:
-            endpoint.fetch()
-
-            if endpoint.status in ["paused", "scaledToZero"]:
-                logger.info("✅ Qwen endpoint already paused")
-                return True
-
-            if endpoint.status == "running":
-                logger.info(f"⏸️ Pausing Qwen endpoint (idle for {idle_time:.1f}s)...")
-                endpoint.pause()
-                self.pause_count += 1
-
-                # Update uptime tracking
-                if self.last_resume_time:
-                    self.total_uptime += time.time() - self.last_resume_time
-
-                logger.info("✅ Qwen endpoint paused successfully")
-                return True
-
-            return False
-
-        except Exception as e:
-            logger.error(f"❌ Failed to pause Qwen endpoint: {e}")
-            return False
+        logger.debug("pause_if_idle() disabled - letting HF handle scale-to-zero automatically")
+        return True
 
     def force_pause(self) -> bool:
         """
-        Force pause endpoint immediately.
-        Use this after batch processing is complete to stop billing.
+        DISABLED: Let HuggingFace handle scale-to-zero automatically.
+        Manual pausing causes endpoints to not auto-resume on requests.
 
         Returns:
-            True if paused successfully, False if failed
+            True always (no-op)
         """
-        if not self._can_pause_resume:
-            logger.warning("Pause/resume not available - cannot force pause")
-            return False
-
-        endpoint = self._get_endpoint()
-        if not endpoint:
-            return False
-
-        try:
-            endpoint.fetch()
-            if endpoint.status == "running":
-                logger.info("⏸️ Force pausing Qwen endpoint")
-                endpoint.pause()
-                self.pause_count += 1
-
-                # Track uptime
-                if self.last_resume_time:
-                    uptime = time.time() - self.last_resume_time
-                    self.total_uptime += uptime
-
-                self.warmup_completed = False  # Reset warmup flag
-                logger.info(f"✅ Qwen endpoint paused (no billing)")
-                return True
-            else:
-                logger.info(f"Endpoint already paused (status: {endpoint.status})")
-                return True
-
-        except Exception as e:
-            logger.error(f"❌ Failed to force pause Qwen endpoint: {e}")
-            return False
+        logger.debug("force_pause() disabled - letting HF handle scale-to-zero automatically")
+        return True
 
     async def analyze_image(
         self,
