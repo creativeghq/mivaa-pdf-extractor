@@ -2908,7 +2908,7 @@ async def process_document_with_discovery(
                     manager = SLIGEndpointManager(
                         endpoint_url=slig_config["endpoint_url"],
                         hf_token=slig_config["hf_token"],
-                        endpoint_name=slig_config.get("endpoint_name", "mh-siglip2"),
+                        endpoint_name=slig_config.get("endpoint_name", "mh-slig"),
                         namespace=slig_config.get("namespace", "basiliskan"),
                         enabled=True
                     )

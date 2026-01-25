@@ -233,7 +233,7 @@ class AIPricingConfig:
             "source": "HuggingFace Inference Endpoint",
             "full_name": "SigLIP2 ViT-SO400M (SLIG)",
             "namespace": "basiliskan",
-            "service": "mh-siglip2",
+            "service": "mh-slig",
             "dimensions": 768,
             "note": "Visual embeddings: general, color, texture, style, material"
         },

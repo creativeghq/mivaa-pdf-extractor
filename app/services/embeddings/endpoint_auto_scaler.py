@@ -32,7 +32,7 @@ class EndpointAutoScaler:
     
     Manages all 4 HuggingFace endpoints:
     - mh-qwen332binstruct (Qwen VLM - primary, high priority)
-    - mh-siglip2 (SLIG visual embeddings)
+    - mh-slig (SLIG visual embeddings)
     - mh-chandra (Chandra OCR fallback)
     - mh-yolo (YOLO layout detection)
     """
@@ -63,7 +63,7 @@ class EndpointAutoScaler:
         # All HuggingFace endpoints to manage
         self.managed_endpoints = [
             "mh-qwen332binstruct",  # Qwen VLM - primary workload
-            "mh-siglip2",           # SLIG visual embeddings
+            "mh-slig",           # SLIG visual embeddings
             "mh-chandra",           # Chandra OCR
             "mh-yolo",              # YOLO layout detection
         ]

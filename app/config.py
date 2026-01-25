@@ -463,7 +463,7 @@ class Settings(BaseSettings):
         description="SLIG Inference Endpoint authentication token (HuggingFace token)"
     )
     slig_endpoint_name: str = Field(
-        default="mh-siglip2",
+        default="mh-slig",
         env="SLIG_ENDPOINT_NAME",
         description="SLIG endpoint service name"
     )

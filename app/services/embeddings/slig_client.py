@@ -41,7 +41,7 @@ class SLIGClient:
         token: str,
         timeout: float = 30.0,
         model_name: str = "basiliskan/siglip2",
-        endpoint_name: str = "mh-siglip2",
+        endpoint_name: str = "mh-slig",
         namespace: str = "basiliskan",
         auto_pause: bool = True,
         auto_pause_timeout: int = 60,

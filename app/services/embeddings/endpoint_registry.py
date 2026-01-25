@@ -116,7 +116,7 @@ class EndpointRegistry:
                 self._slig_client = SLIGClient(
                     endpoint_url=settings.slig_endpoint_url,
                     token=settings.slig_endpoint_token,
-                    endpoint_name="mh-siglip2",
+                    endpoint_name="mh-slig",
                     namespace="basiliskan",
                     auto_pause=False,  # Disable auto-pause to prevent re-warmups
                     endpoint_manager=self._slig_manager  # ✅ Pass pre-warmed manager!
@@ -157,7 +157,7 @@ class EndpointRegistry:
                 self._slig_manager = SLIGEndpointManager(
                     endpoint_url=settings.slig_endpoint_url,
                     hf_token=settings.slig_endpoint_token,
-                    endpoint_name="mh-siglip2",
+                    endpoint_name="mh-slig",
                     namespace="basiliskan",
                     auto_pause_timeout=60,
                     warmup_timeout=60

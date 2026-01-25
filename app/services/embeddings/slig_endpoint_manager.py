@@ -49,7 +49,7 @@ class SLIGEndpointManager:
         self,
         endpoint_url: str,
         hf_token: str,
-        endpoint_name: str = "mh-siglip2",
+        endpoint_name: str = "mh-slig",
         namespace: str = "basiliskan",
         auto_pause_timeout: int = 60,
         inference_timeout: int = 30,
@@ -63,7 +63,7 @@ class SLIGEndpointManager:
         Args:
             endpoint_url: Full URL of the SLIG inference endpoint
             hf_token: HuggingFace API token (with write permissions)
-            endpoint_name: Endpoint name for pause/resume (e.g., 'mh-siglip2')
+            endpoint_name: Endpoint name for pause/resume (e.g., 'mh-slig')
             namespace: HuggingFace namespace/username (e.g., 'basiliskan')
             auto_pause_timeout: Seconds of idle time before auto-pause (default: 60)
             inference_timeout: Timeout for inference calls in seconds (default: 30)
