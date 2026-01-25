@@ -437,6 +437,155 @@ class VecsService:
             logger.error(f"❌ Specialized search ({embedding_type}) failed: {e}")
             return []
 
+    async def search_all_collections(
+        self,
+        visual_query_embedding: List[float],
+        specialized_query_embeddings: Optional[Dict[str, List[float]]] = None,
+        limit: int = 20,
+        filters: Optional[Dict[str, Any]] = None,
+        include_metadata: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Search all VECS collections in parallel and return combined results with multi-vector scores.
+
+        This enables true multi-vector search by querying:
+        - image_slig_embeddings (primary visual)
+        - image_color_embeddings
+        - image_texture_embeddings
+        - image_style_embeddings
+        - image_material_embeddings
+
+        Args:
+            visual_query_embedding: Primary 768D visual query embedding
+            specialized_query_embeddings: Optional dict with keys: color, texture, style, material
+                                         If not provided, visual_query_embedding is used for all
+            limit: Maximum results per collection
+            filters: Optional metadata filters
+            include_metadata: Whether to include metadata
+
+        Returns:
+            Dict with:
+            - results: List of combined results with all similarity scores
+            - collection_stats: Stats per collection
+        """
+        import asyncio
+
+        # Use visual embedding for specialized if not provided
+        if specialized_query_embeddings is None:
+            specialized_query_embeddings = {}
+
+        # Define search tasks
+        async def search_visual():
+            return await self.search_similar_images(
+                query_embedding=visual_query_embedding,
+                limit=limit,
+                filters=filters,
+                include_metadata=include_metadata
+            )
+
+        async def search_specialized(embedding_type: str, query_emb: List[float]):
+            return await self.search_specialized_embeddings(
+                query_embedding=query_emb,
+                embedding_type=embedding_type,
+                limit=limit,
+                workspace_id=filters.get('workspace_id', {}).get('$eq') if filters else None,
+                document_id=filters.get('document_id', {}).get('$eq') if filters else None,
+                include_metadata=include_metadata
+            )
+
+        try:
+            # Run all searches in parallel
+            tasks = [search_visual()]
+
+            # Add specialized searches if embeddings provided
+            for emb_type in ['color', 'texture', 'style', 'material']:
+                query_emb = specialized_query_embeddings.get(emb_type, visual_query_embedding)
+                tasks.append(search_specialized(emb_type, query_emb))
+
+            # Execute all searches in parallel
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Parse results
+            visual_results = results[0] if not isinstance(results[0], Exception) else []
+            color_results = results[1] if len(results) > 1 and not isinstance(results[1], Exception) else []
+            texture_results = results[2] if len(results) > 2 and not isinstance(results[2], Exception) else []
+            style_results = results[3] if len(results) > 3 and not isinstance(results[3], Exception) else []
+            material_results = results[4] if len(results) > 4 and not isinstance(results[4], Exception) else []
+
+            # Build lookup maps for specialized scores
+            color_scores = {r['image_id']: r['similarity_score'] for r in color_results}
+            texture_scores = {r['image_id']: r['similarity_score'] for r in texture_results}
+            style_scores = {r['image_id']: r['similarity_score'] for r in style_results}
+            material_scores = {r['image_id']: r['similarity_score'] for r in material_results}
+
+            # Combine results using visual results as base
+            combined_results = []
+            for result in visual_results:
+                image_id = result['image_id']
+
+                # Get specialized scores (default to visual score if not found)
+                visual_score = result.get('similarity_score', 0.0)
+                color_score = color_scores.get(image_id, visual_score * 0.8)
+                texture_score = texture_scores.get(image_id, visual_score * 0.8)
+                style_score = style_scores.get(image_id, visual_score * 0.8)
+                material_score = material_scores.get(image_id, visual_score * 0.8)
+
+                # Calculate weighted combined score
+                # Weights: visual=30%, color=12.5%, texture=12.5%, style=12.5%, material=12.5%, reserved=20%
+                combined_score = (
+                    0.35 * visual_score +
+                    0.1625 * color_score +
+                    0.1625 * texture_score +
+                    0.1625 * style_score +
+                    0.1625 * material_score
+                )
+
+                combined_result = {
+                    'image_id': image_id,
+                    'similarity_score': visual_score,  # Primary visual score
+                    'combined_score': combined_score,
+                    'scores': {
+                        'visual': visual_score,
+                        'color': color_score,
+                        'texture': texture_score,
+                        'style': style_score,
+                        'material': material_score
+                    },
+                    'metadata': result.get('metadata', {})
+                }
+                combined_results.append(combined_result)
+
+            # Sort by combined score
+            combined_results.sort(key=lambda x: x['combined_score'], reverse=True)
+
+            # Stats
+            collection_stats = {
+                'visual_count': len(visual_results),
+                'color_count': len(color_results),
+                'texture_count': len(texture_results),
+                'style_count': len(style_results),
+                'material_count': len(material_results)
+            }
+
+            logger.info(
+                f"✅ Multi-vector search complete: {len(combined_results)} results "
+                f"(visual={len(visual_results)}, color={len(color_results)}, "
+                f"texture={len(texture_results)}, style={len(style_results)}, material={len(material_results)})"
+            )
+
+            return {
+                'results': combined_results,
+                'collection_stats': collection_stats
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Multi-vector search failed: {e}")
+            return {
+                'results': [],
+                'collection_stats': {},
+                'error': str(e)
+            }
+
     async def delete_image_embedding(self, image_id: str) -> bool:
         """
         Delete an image embedding from the collection.

@@ -513,6 +513,8 @@ class MaterialVisualSearchService:
 
             # ✅ Step 1: Generate CLIP embedding from query image
             query_embedding = None
+            specialized_embeddings = None  # For multi-vector search (color, texture, style, material)
+
             if request.query_embedding:
                 query_embedding = request.query_embedding
             elif request.query_image:
@@ -547,8 +549,31 @@ class MaterialVisualSearchService:
                 if slig_client:
                     query_embedding = await slig_client.get_text_embedding(request.query_text)
                     logger.info(f"✅ Generated text CLIP embedding via SLIG: {len(query_embedding) if query_embedding else 0} dims")
+
+                    # ✅ NEW: Generate specialized embeddings for multi-vector search
+                    # These help find images by color, texture, style, and material attributes
+                    try:
+                        import asyncio
+                        color_emb, texture_emb, style_emb, material_emb = await asyncio.gather(
+                            slig_client.get_text_embedding(f"color palette: {request.query_text}"),
+                            slig_client.get_text_embedding(f"texture pattern: {request.query_text}"),
+                            slig_client.get_text_embedding(f"design style: {request.query_text}"),
+                            slig_client.get_text_embedding(f"material type: {request.query_text}"),
+                            return_exceptions=True
+                        )
+                        specialized_embeddings = {
+                            'color': color_emb if not isinstance(color_emb, Exception) else None,
+                            'texture': texture_emb if not isinstance(texture_emb, Exception) else None,
+                            'style': style_emb if not isinstance(style_emb, Exception) else None,
+                            'material': material_emb if not isinstance(material_emb, Exception) else None
+                        }
+                        logger.info("✅ Generated specialized text embeddings for multi-vector search")
+                    except Exception as spec_err:
+                        logger.warning(f"⚠️ Failed to generate specialized embeddings: {spec_err}")
+                        specialized_embeddings = None
                 else:
                     logger.error("❌ SLIG client not available for text embedding generation")
+                    specialized_embeddings = None
 
             if not query_embedding:
                 return MaterialSearchResponse(
@@ -561,8 +586,9 @@ class MaterialVisualSearchService:
                     }
                 )
 
-            # ✅ Step 2: Search VECS for similar images with HNSW indexing
+            # ✅ Step 2: Search ALL VECS collections for similar images with HNSW indexing
             # Note: SLIG endpoint now returns 768D embeddings (using siglip2-base-patch16-512)
+            # Multi-vector search queries: visual, color, texture, style, and material collections
 
             vecs_service = get_vecs_service()
 
@@ -573,13 +599,19 @@ class MaterialVisualSearchService:
                 # if we know which documents belong to the workspace
                 pass
 
-            # Search VECS collection
-            vecs_results = await vecs_service.search_similar_images(
-                query_embedding=query_embedding,
+            # ✅ NEW: Use multi-collection search for true multi-vector scoring
+            # This queries all 5 VECS collections in parallel and combines scores
+            multi_vector_results = await vecs_service.search_all_collections(
+                visual_query_embedding=query_embedding,
+                specialized_query_embeddings=specialized_embeddings,
                 limit=request.limit * 2,  # Get more results to filter
                 filters=filters,
                 include_metadata=True
             )
+
+            vecs_results = multi_vector_results.get('results', [])
+            collection_stats = multi_vector_results.get('collection_stats', {})
+            logger.info(f"✅ Multi-vector search: {len(vecs_results)} results, stats: {collection_stats}")
 
             # ✅ FALLBACK: If VECS returns no results, use direct pgvector database search
             if not vecs_results:
@@ -671,11 +703,14 @@ class MaterialVisualSearchService:
                 except Exception as db_err:
                     logger.error(f"❌ Direct DB search failed: {db_err}")
 
-            # Filter by similarity threshold
+            # Filter by similarity threshold (use combined_score if available from multi-vector search)
             filtered_results = [
                 r for r in vecs_results
-                if r.get('similarity_score', 0) >= request.similarity_threshold
-            ][:request.limit]
+                if r.get('combined_score', r.get('similarity_score', 0)) >= request.similarity_threshold
+            ]
+            # Sort by combined_score for multi-vector ranking
+            filtered_results.sort(key=lambda x: x.get('combined_score', x.get('similarity_score', 0)), reverse=True)
+            filtered_results = filtered_results[:request.limit]
 
             # ✅ Step 2.5: Text-based search on product descriptions and image captions
             # When query_text is provided, also search for matching products by description
@@ -698,8 +733,8 @@ class MaterialVisualSearchService:
                                 filtered_results.append(match)
                                 existing_image_ids.add(match.get('image_id'))
 
-                        # Re-sort by combined score
-                        filtered_results.sort(key=lambda x: x.get('similarity_score', 0), reverse=True)
+                        # Re-sort by combined score (multi-vector if available)
+                        filtered_results.sort(key=lambda x: x.get('combined_score', x.get('similarity_score', 0)), reverse=True)
                         filtered_results = filtered_results[:request.limit]
 
                 except Exception as text_err:
@@ -724,20 +759,34 @@ class MaterialVisualSearchService:
                 # Use first related product as primary material
                 primary_product = related_products[0] if related_products else None
 
+                # ✅ Get multi-vector scores if available
+                multi_vector_scores = item.get('scores', {})
+                visual_score = item.get('similarity_score', 0.0)
+                multi_combined = item.get('combined_score', visual_score)
+
+                # Calculate final combined score: multi-vector (65%) + product relevance (35%)
+                product_relevance = primary_product.get('relevance_score', 0.0) if primary_product else 0.0
+                final_combined = multi_combined * 0.65 + product_relevance * 0.35
+
                 search_results.append(MaterialSearchResult(
                     material_id=primary_product.get('product_id', item.get('image_id', '')) if primary_product else item.get('image_id', ''),
                     material_name=primary_product.get('name', 'Unknown Material') if primary_product else 'Image Result',
                     material_type=primary_product.get('metadata', {}).get('type', 'unknown') if primary_product else 'image',
-                    visual_similarity_score=item.get('similarity_score', 0.0),
-                    semantic_relevance_score=primary_product.get('relevance_score', 0.0) if primary_product else 0.0,
+                    visual_similarity_score=visual_score,
+                    semantic_relevance_score=product_relevance,
                     material_property_score=metadata.get('quality_score', 0.0),
-                    combined_score=(item.get('similarity_score', 0.0) * 0.6 +
-                                  (primary_product.get('relevance_score', 0.0) if primary_product else 0.0) * 0.4),
+                    combined_score=final_combined,
                     confidence_score=metadata.get('confidence_score', 0.8),
                     visual_analysis={
                         "image_url": metadata.get('image_url'),
                         "page_number": metadata.get('page_number'),
-                        "quality_score": metadata.get('quality_score')
+                        "quality_score": metadata.get('quality_score'),
+                        # ✅ NEW: Include multi-vector score breakdown
+                        "multi_vector_scores": multi_vector_scores if multi_vector_scores else None,
+                        "color_score": multi_vector_scores.get('color'),
+                        "texture_score": multi_vector_scores.get('texture'),
+                        "style_score": multi_vector_scores.get('style'),
+                        "material_score": multi_vector_scores.get('material')
                     },
                     material_properties=metadata.get('material_properties', {}),
                     clip_embedding=None if not request.include_embeddings else query_embedding,

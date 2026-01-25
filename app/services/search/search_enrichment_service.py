@@ -96,16 +96,21 @@ class SearchEnrichmentService:
                         # Use highest product relevance score for re-ranking
                         max_product_relevance = max(p.get('relevance_score', 0.0) for p in products)
 
-                        # Get all similarity scores from metadata
+                        # Get all similarity scores from result
+                        # ✅ UPDATED: Check both 'scores' (from multi-collection search) and metadata.embedding_scores
+                        scores = image_result.get('scores', {})
                         metadata = image_result.get('metadata', {})
                         embedding_scores = metadata.get('embedding_scores', {})
 
-                        # Extract individual scores (fallback to similarity_score if not in metadata)
-                        visual_sim = embedding_scores.get('visual', image_result.get('similarity_score', 0.0))
-                        color_sim = embedding_scores.get('color', 0.0)
-                        texture_sim = embedding_scores.get('texture', 0.0)
-                        style_sim = embedding_scores.get('style', 0.0)
-                        material_sim = embedding_scores.get('material', 0.0)
+                        # Merge scores - prefer direct scores over metadata
+                        merged_scores = {**embedding_scores, **scores}
+
+                        # Extract individual scores (fallback to similarity_score if not available)
+                        visual_sim = merged_scores.get('visual', image_result.get('similarity_score', 0.0))
+                        color_sim = merged_scores.get('color', visual_sim * 0.8)  # Fallback to 80% of visual
+                        texture_sim = merged_scores.get('texture', visual_sim * 0.8)
+                        style_sim = merged_scores.get('style', visual_sim * 0.8)
+                        material_sim = merged_scores.get('material', visual_sim * 0.8)
 
                         # Combined score: weighted average of ALL embedding types + product relevance
                         combined_score = (
