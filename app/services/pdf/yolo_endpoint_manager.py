@@ -127,7 +127,13 @@ class YoloEndpointManager:
 
     def resume_if_needed(self) -> bool:
         """
-        Resume endpoint if it's paused.
+        Resume endpoint if it's paused or wait if initializing.
+
+        Handles all HuggingFace endpoint states:
+        - running: Ready to use
+        - paused/scaledToZero: Needs resume
+        - initializing: Needs polling until ready
+
         CRITICAL: This starts billing! Only call when layout detection is needed.
 
         Returns:
@@ -149,6 +155,11 @@ class YoloEndpointManager:
                 logger.info("✅ YOLO endpoint already running")
                 return True
 
+            # Handle "initializing" state - poll until ready
+            if endpoint.status == "initializing":
+                logger.info(f"⏳ YOLO endpoint initializing, waiting for it to be ready...")
+                return self._wait_for_running(endpoint)
+
             if endpoint.status in ["paused", "scaledToZero"]:
                 logger.info(f"🔄 Resuming YOLO endpoint (status: {endpoint.status})...")
 
@@ -160,6 +171,11 @@ class YoloEndpointManager:
                         self.last_resume_time = time.time()
                         self.warmup_completed = False  # Reset warmup flag
                         logger.info(f"✅ YOLO endpoint resumed (attempt {attempt + 1}/{self.max_resume_retries})")
+
+                        # Warmup after resume
+                        if not self.warmup():
+                            logger.error("❌ YOLO endpoint warmup failed")
+                            return False
                         return True
                     except Exception as e:
                         logger.warning(f"⚠️ Resume attempt {attempt + 1} failed: {e}")
@@ -174,6 +190,49 @@ class YoloEndpointManager:
         except Exception as e:
             logger.error(f"❌ Failed to resume endpoint: {e}")
             return False
+
+    def _wait_for_running(self, endpoint) -> bool:
+        """
+        Wait for endpoint to transition from initializing to running.
+
+        Args:
+            endpoint: HuggingFace endpoint instance
+
+        Returns:
+            True if endpoint becomes running, False on timeout
+        """
+        start_time = time.time()
+        poll_interval = 5  # Check every 5 seconds
+        max_wait = self.warmup_timeout
+
+        while (time.time() - start_time) < max_wait:
+            try:
+                endpoint.fetch()
+
+                if endpoint.status == "running":
+                    elapsed = time.time() - start_time
+                    logger.info(f"✅ YOLO endpoint ready after {elapsed:.1f}s")
+                    self.last_resume_time = time.time()
+
+                    # Warmup after becoming ready
+                    if not self.warmup():
+                        logger.error("❌ YOLO endpoint warmup failed")
+                        return False
+                    return True
+
+                if endpoint.status in ["failed", "error"]:
+                    logger.error(f"❌ Endpoint failed: {endpoint.status}")
+                    return False
+
+                logger.info(f"   ⏳ Still {endpoint.status}, waiting... ({time.time() - start_time:.0f}s)")
+                time.sleep(poll_interval)
+
+            except Exception as e:
+                logger.warning(f"⚠️ Error checking status: {e}")
+                time.sleep(poll_interval)
+
+        logger.error(f"❌ Timeout waiting for endpoint (max {max_wait}s)")
+        return False
 
     def warmup(self) -> bool:
         """

@@ -399,13 +399,30 @@ class CheckpointRecoveryService:
                 # Verify chunks exist in database
                 chunk_ids = data.get("chunk_ids", [])
                 chunks_created = data.get("chunks_created", 0)
+                document_id = data.get("document_id")
 
                 # Allow empty chunk_ids if chunks_created is 0 (focused extraction may skip chunking)
                 if chunks_created == 0 and not chunk_ids:
                     logger.info(f"✅ Checkpoint valid: no chunks created (focused extraction)")
                     return True
 
+                # FIXED: If no chunk_ids but we have document_id, verify by document_id instead
+                if not chunk_ids and document_id:
+                    result = self.supabase_client.client.table("document_chunks")\
+                        .select("id", count="exact")\
+                        .eq("document_id", document_id)\
+                        .execute()
+
+                    found_count = result.count if result.count is not None else len(result.data or [])
+                    if found_count > 0:
+                        logger.info(f"✅ Checkpoint valid: found {found_count} chunks for document {document_id}")
+                        return True
+                    else:
+                        logger.warning(f"⚠️ No chunks found for document {document_id}")
+                        return False
+
                 if not chunk_ids:
+                    logger.warning(f"⚠️ No chunk_ids and no document_id in checkpoint")
                     return False
 
                 result = self.supabase_client.client.table("document_chunks")\
@@ -424,7 +441,30 @@ class CheckpointRecoveryService:
                 # Verify embeddings exist in document_chunks.text_embedding column
                 # Note: Embeddings are stored directly in document_chunks, not a separate embeddings table
                 chunk_ids = data.get("chunk_ids", [])
+                document_id = data.get("document_id")
+                chunks_created = data.get("chunks_created", 0)
+
+                # FIXED: If no chunk_ids but we have document_id, verify by document_id instead
+                if not chunk_ids and document_id:
+                    # Query document_chunks where text_embedding is not null for this document
+                    result = self.supabase_client.client.table("document_chunks")\
+                        .select("id", count="exact")\
+                        .eq("document_id", document_id)\
+                        .not_.is_("text_embedding", "null")\
+                        .execute()
+
+                    found_count = result.count if result.count is not None else len(result.data or [])
+
+                    # Allow if we have some embeddings (might not have created chunks yet at this stage)
+                    if found_count > 0 or chunks_created == 0:
+                        logger.info(f"✅ Checkpoint valid: found {found_count} embeddings for document {document_id}")
+                        return True
+                    else:
+                        logger.warning(f"⚠️ No embeddings found for document {document_id}")
+                        return False
+
                 if not chunk_ids:
+                    logger.warning(f"⚠️ No chunk_ids and no document_id in checkpoint for TEXT_EMBEDDINGS_GENERATED")
                     return False
 
                 # Query document_chunks where text_embedding is not null

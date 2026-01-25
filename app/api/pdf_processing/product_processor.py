@@ -437,14 +437,44 @@ async def process_single_product(
             raise Exception(f"Product DB ID not found for {product.name} - product should have been created in Stage 0")
 
         # Update product with extracted metadata from Stage 1
+        # FIXED: MERGE with existing metadata instead of REPLACING
         extracted_metadata = extraction_result.get('metadata', {})
         if extracted_metadata:
             try:
+                # First fetch existing metadata to merge (preserves discovery metadata)
+                existing_product = supabase.client.table('products')\
+                    .select('metadata')\
+                    .eq('id', product_db_id)\
+                    .single()\
+                    .execute()
+
+                existing_metadata = existing_product.data.get('metadata', {}) if existing_product.data else {}
+                if existing_metadata is None:
+                    existing_metadata = {}
+
+                # Deep merge: extracted_metadata takes priority but preserves existing fields
+                merged_metadata = {**existing_metadata}
+                for key, value in extracted_metadata.items():
+                    if value is not None:  # Only update if new value is not None
+                        if key in merged_metadata and isinstance(merged_metadata[key], dict) and isinstance(value, dict):
+                            # Merge nested dicts
+                            merged_metadata[key] = {**merged_metadata[key], **value}
+                        elif key in merged_metadata and isinstance(merged_metadata[key], list) and isinstance(value, list):
+                            # Merge lists (deduplicate)
+                            existing_set = set(merged_metadata[key]) if all(isinstance(x, (str, int, float)) for x in merged_metadata[key]) else merged_metadata[key]
+                            new_set = set(value) if all(isinstance(x, (str, int, float)) for x in value) else value
+                            if isinstance(existing_set, set) and isinstance(new_set, set):
+                                merged_metadata[key] = sorted(list(existing_set | new_set))
+                            else:
+                                merged_metadata[key] = merged_metadata[key] + [v for v in value if v not in merged_metadata[key]]
+                        else:
+                            merged_metadata[key] = value
+
                 supabase.client.table('products')\
-                    .update({'metadata': extracted_metadata})\
+                    .update({'metadata': merged_metadata})\
                     .eq('id', product_db_id)\
                     .execute()
-                logger_instance.info(f"✅ Updated product metadata in DB: {product_db_id}")
+                logger_instance.info(f"✅ Merged and updated product metadata in DB: {product_db_id} ({len(merged_metadata)} fields)")
             except Exception as e:
                 logger_instance.error(f"❌ Failed to update product metadata: {e}")
 

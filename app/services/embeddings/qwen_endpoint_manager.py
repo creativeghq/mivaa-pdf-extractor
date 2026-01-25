@@ -122,37 +122,49 @@ class QwenEndpointManager:
     
     def resume_if_needed(self) -> bool:
         """
-        Resume endpoint if it's paused.
+        Resume endpoint if it's paused or wait if initializing.
+
+        Handles all HuggingFace endpoint states:
+        - running: Ready to use
+        - paused/scaledToZero: Needs resume
+        - initializing: Needs polling until ready
+
         CRITICAL: This starts billing! Only call when vision analysis is needed.
-        
+
         Returns:
             True if endpoint is running or successfully resumed, False if failed
         """
         if not self._can_pause_resume:
             logger.info("Pause/resume not available - assuming endpoint is running")
             return True
-        
+
         endpoint = self._get_endpoint()
         if not endpoint:
             return False
-        
+
         try:
             # Fetch current status
             endpoint.fetch()
-            
+
             if endpoint.status == "running":
                 logger.info("✅ Qwen endpoint already running")
                 return True
-            
+
+            # Handle "initializing" state - poll until ready
+            if endpoint.status == "initializing":
+                logger.info(f"⏳ Qwen endpoint initializing, waiting for it to be ready...")
+                return self._wait_for_running(endpoint)
+
             if endpoint.status in ["paused", "scaledToZero"]:
                 logger.info(f"🔄 Resuming Qwen endpoint (status: {endpoint.status})...")
 
-                # Resume with retries
+                # Resume with retries - FIXED: Added .wait() to block until running
                 for attempt in range(self.max_resume_retries):
                     try:
-                        endpoint.resume()
+                        endpoint.resume().wait(timeout=300)  # Wait up to 5 minutes
                         self.resume_count += 1
                         self.last_resume_time = time.time()
+                        self.warmup_completed = False  # Reset warmup flag
                         logger.info(f"✅ Qwen endpoint resumed (attempt {attempt + 1}/{self.max_resume_retries})")
 
                         # Smart polling-based warmup (calls self.warmup())
@@ -164,7 +176,7 @@ class QwenEndpointManager:
                     except Exception as e:
                         logger.error(f"❌ Resume attempt {attempt + 1} failed: {e}")
                         if attempt < self.max_resume_retries - 1:
-                            time.sleep(5)  # Wait before retry
+                            time.sleep(2 ** attempt)  # Exponential backoff
                         else:
                             return False
 
@@ -174,6 +186,49 @@ class QwenEndpointManager:
         except Exception as e:
             logger.error(f"❌ Failed to check/resume Qwen endpoint: {e}")
             return False
+
+    def _wait_for_running(self, endpoint) -> bool:
+        """
+        Wait for endpoint to transition from initializing to running.
+
+        Args:
+            endpoint: HuggingFace endpoint instance
+
+        Returns:
+            True if endpoint becomes running, False on timeout
+        """
+        start_time = time.time()
+        poll_interval = 5  # Check every 5 seconds
+        max_wait = self.warmup_timeout
+
+        while (time.time() - start_time) < max_wait:
+            try:
+                endpoint.fetch()
+
+                if endpoint.status == "running":
+                    elapsed = time.time() - start_time
+                    logger.info(f"✅ Qwen endpoint ready after {elapsed:.1f}s")
+                    self.last_resume_time = time.time()
+
+                    # Warmup after becoming ready
+                    if not self.warmup():
+                        logger.error("❌ Qwen endpoint warmup failed")
+                        return False
+                    return True
+
+                if endpoint.status in ["failed", "error"]:
+                    logger.error(f"❌ Endpoint failed: {endpoint.status}")
+                    return False
+
+                logger.info(f"   ⏳ Still {endpoint.status}, waiting... ({time.time() - start_time:.0f}s)")
+                time.sleep(poll_interval)
+
+            except Exception as e:
+                logger.warning(f"⚠️ Error checking status: {e}")
+                time.sleep(poll_interval)
+
+        logger.error(f"❌ Timeout waiting for endpoint (max {max_wait}s)")
+        return False
 
 
     def warmup(self) -> bool:

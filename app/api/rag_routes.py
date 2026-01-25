@@ -2866,6 +2866,7 @@ async def process_document_with_discovery(
                         endpoint_token=qwen_config.get("endpoint_token", qwen_config.get("hf_token", "")),
                         endpoint_name=qwen_config.get("endpoint_name", "mh-qwen332binstruct"),
                         namespace=qwen_config.get("namespace", "basiliskan"),
+                        warmup_timeout=qwen_config.get("warmup_timeout", 360),  # FIXED: Use config value, default 360s
                         enabled=True
                     )
                     endpoint_managers['qwen'] = manager
