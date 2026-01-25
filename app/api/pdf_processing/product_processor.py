@@ -348,7 +348,8 @@ async def process_single_product(
             physical_pages=physical_pages,  # ✅ FIXED: Now using physical pages (1-based)
             catalog=catalog,
             config=config,
-            logger=logger_instance
+            logger=logger_instance,
+            layout_regions=layout_regions  # ✅ NEW: Pass YOLO layout regions for bbox data
         )
 
         images_processed = image_result.get('images_processed', 0)

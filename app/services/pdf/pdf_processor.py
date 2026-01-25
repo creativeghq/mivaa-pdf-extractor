@@ -945,8 +945,9 @@ class PDFProcessor:
                         dpi=150
                     )
 
-                    # Get IMAGE regions only
+                    # Get IMAGE and CAPTION regions
                     image_regions = layout_result.get_regions_by_type("IMAGE")
+                    caption_regions = layout_result.get_regions_by_type("CAPTION")
 
                     if not image_regions:
                         self.logger.info(
@@ -955,7 +956,7 @@ class PDFProcessor:
                         continue
 
                     self.logger.info(
-                        f"   ✅ [Job: {job_id}] Found {len(image_regions)} IMAGE regions on PDF page {pdf_page}"
+                        f"   ✅ [Job: {job_id}] Found {len(image_regions)} IMAGE regions and {len(caption_regions)} CAPTION regions on PDF page {pdf_page}"
                     )
 
                     # Render full page for cropping - use try/finally to ensure cleanup
@@ -999,6 +1000,55 @@ class PDFProcessor:
                                 # Get image dimensions
                                 width, height = cropped_image.size
 
+                                # Find nearby caption for this image region
+                                caption_text = None
+                                if caption_regions:
+                                    # Find caption within 15% of page height
+                                    threshold_px = full_page_image.height * 0.15
+                                    best_caption = None
+                                    best_distance = float('inf')
+
+                                    for cap_region in caption_regions:
+                                        cap_bbox = cap_region.bbox
+
+                                        # Check horizontal overlap (at least 30% of image width)
+                                        img_left, img_right = bbox.x, bbox.x2
+                                        cap_left, cap_right = cap_bbox.x, cap_bbox.x2
+                                        overlap = max(0, min(img_right, cap_right) - max(img_left, cap_left))
+
+                                        if overlap < (img_right - img_left) * 0.3:
+                                            continue
+
+                                        # Calculate vertical distance
+                                        if cap_bbox.y > bbox.y2:  # Caption below
+                                            dist = cap_bbox.y - bbox.y2
+                                        elif cap_bbox.y2 < bbox.y:  # Caption above
+                                            dist = bbox.y - cap_bbox.y2
+                                        else:  # Overlapping
+                                            dist = 0
+
+                                        if dist <= threshold_px and dist < best_distance:
+                                            best_distance = dist
+                                            best_caption = cap_region
+
+                                    # Extract text from the best caption region
+                                    if best_caption:
+                                        try:
+                                            cap_bbox = best_caption.bbox
+                                            zoom = 150 / 72  # Same DPI used for rendering
+                                            pdf_rect = fitz.Rect(
+                                                cap_bbox.x / zoom,
+                                                cap_bbox.y / zoom,
+                                                cap_bbox.x2 / zoom,
+                                                cap_bbox.y2 / zoom
+                                            )
+                                            page = doc[page_idx]
+                                            caption_text = page.get_text("text", clip=pdf_rect).strip()
+                                            if caption_text:
+                                                self.logger.debug(f"   📝 Found caption for image: '{caption_text[:50]}...'")
+                                        except Exception as cap_err:
+                                            self.logger.debug(f"   ⚠️ Failed to extract caption text: {cap_err}")
+
                                 # Create image metadata (using PDF page number)
                                 image_info = {
                                     'path': image_path,
@@ -1012,6 +1062,7 @@ class PDFProcessor:
                                     'yolo_confidence': region.confidence,
                                     'yolo_region_type': region.type,
                                     'yolo_reading_order': region.reading_order,
+                                    'caption': caption_text,  # Associated caption text
                                     'bbox': [
                                         bbox.x / full_page_image.width,  # x normalized
                                         bbox.y / full_page_image.height,  # y normalized
@@ -1133,6 +1184,23 @@ class PDFProcessor:
                             with open(image_path, "wb") as img_file:
                                 img_file.write(image_bytes)
 
+                            # ✅ FIX: Get bounding box for image placement on page
+                            # This is critical for spread layout detection (left vs right page)
+                            bbox = None
+                            try:
+                                img_rects = page.get_image_rects(xref)
+                                if img_rects:
+                                    # Use first rect (images typically have one placement)
+                                    rect = img_rects[0]
+                                    # bbox format: [x, y, width, height] - matches expected format
+                                    bbox = [rect.x0, rect.y0, rect.width, rect.height]
+                                    self.logger.debug(
+                                        f"   📐 [Job: {job_id}] Image {img_idx} bbox: x={rect.x0:.1f}, y={rect.y0:.1f}, "
+                                        f"w={rect.width:.1f}, h={rect.height:.1f}"
+                                    )
+                            except Exception as bbox_err:
+                                self.logger.warning(f"   ⚠️ Failed to get bbox for image {img_idx}: {bbox_err}")
+
                             # Populate image metadata with Layer 1 information (using PDF page number)
                             extracted_images.append({
                                 'path': image_path,
@@ -1144,7 +1212,8 @@ class PDFProcessor:
                                 'format': image_ext,
                                 'size_bytes': len(image_bytes),
                                 'width': base_image.get('width'),
-                                'height': base_image.get('height')
+                                'height': base_image.get('height'),
+                                'bbox': bbox  # ✅ NEW: Bounding box for spread layout detection
                             })
 
                             # Immediately free memory
@@ -2065,39 +2134,57 @@ class PDFProcessor:
                             self.logger.warning("⚠️ SLIG client not available from registry")
                             return {'should_process': True, 'reason': 'slig_not_available', 'confidence': 0.5}
 
-            # ✅ Define candidate labels for zero-shot classification
-            # Simplified labels for better classification accuracy
-            candidate_labels = [
-                "technical specification with text and measurements",
-                "decorative image without technical content"
-            ]
-
-            # ✅ Use SLIG zero_shot mode for efficient classification
-            # This is more efficient than similarity mode for binary classification
+            # ✅ Use SLIG similarity mode for classification
+            # Note: zero_shot mode has issues with batched text inputs on HF endpoints
+            # Using two sequential similarity calls for reliable comparison
             import asyncio
 
-            classification_result = await self._slig_client_for_ocr.zero_shot_classification(
-                image=image,
-                candidate_labels=candidate_labels
-            )
+            # Define descriptions for classification
+            # For ALL material catalogs: KEEP all product images (including showcases, room layouts)
+            # ONLY SKIP: human portraits, logos, certificates - NOT product/material images
+            product_description = "product image tiles materials ceramics porcelain interior design room layout floor wall bathroom kitchen living room specifications furniture textile fabric stone wood metal glass concrete natural materials"
+            skip_description = "human portrait person face designer photo company logo brand mark certification seal certificate document award badge"
 
-            # Extract top prediction
-            top_prediction = classification_result[0]  # Highest scoring label
-            label = top_prediction['label']
-            score = top_prediction['score']
+            try:
+                # Calculate similarity to both descriptions sequentially (avoids batch text issue)
+                product_result = await self._slig_client_for_ocr.calculate_similarity(
+                    images=image,
+                    texts=product_description
+                )
+                skip_result = await self._slig_client_for_ocr.calculate_similarity(
+                    images=image,
+                    texts=skip_description
+                )
 
-            # Decision logic based on zero-shot classification
-            # If top label is "technical specification" with high confidence, process with OCR
-            if "technical" in label.lower() and score > PDF_CONSTANTS.OCR_TECHNICAL_CONFIDENCE_THRESHOLD:
-                # Image likely contains technical/specification content
-                should_process = True
-                reason = f"technical_content (confidence: {score:.3f})"
+                # Extract scores (single image, single text each)
+                product_score = product_result['similarity_scores'][0][0]
+                skip_score = skip_result['similarity_scores'][0][0]
+
+                # Compare scores to determine classification
+                # KEEP: product/material images, room layouts, showcases
+                # SKIP: only human portraits, logos, certificates
+                if skip_score > product_score and skip_score > 0.25:
+                    # Only skip if clearly a human/logo/certificate with high confidence
+                    should_process = False
+                    label = "non-product image (human/logo/certificate)"
+                    score = skip_score / (product_score + skip_score)
+                    reason = f"skip_content (skip:{skip_score:.4f} > product:{product_score:.4f})"
+                else:
+                    should_process = True
+                    label = "product-related image (materials/showcase)"
+                    score = product_score / (product_score + skip_score)
+                    reason = f"product_content (product:{product_score:.4f} vs skip:{skip_score:.4f})"
+
                 confidence = score
-            else:
-                # Image is likely decorative/historical
-                should_process = False
-                reason = f"decorative_content (confidence: {score:.3f})"
-                confidence = score
+
+            except Exception as slig_error:
+                self.logger.warning(f"SLIG similarity failed: {slig_error}, using fallback")
+                # Fallback to processing if SLIG fails
+                return {
+                    'should_process': True,
+                    'reason': f'slig_similarity_error: {str(slig_error)}',
+                    'confidence': 0.5
+                }
 
             self.logger.debug(f"OCR classification for {os.path.basename(image_path)}: {label} ({score:.3f})")
 
@@ -2137,7 +2224,22 @@ class PDFProcessor:
             Tuple of (combined_ocr_text, ocr_results_list)
         """
         try:
-            ocr_service = get_ocr_service(OCRConfig(languages=ocr_languages))
+            # Get Chandra settings from app config to enable OCR fallback
+            from app.config import get_settings
+            settings = get_settings()
+
+            ocr_service = get_ocr_service(OCRConfig(
+                languages=ocr_languages,
+                chandra_enabled=settings.chandra_enabled,
+                chandra_endpoint_url=settings.chandra_endpoint_url,
+                chandra_hf_token=settings.huggingface_api_key,
+                chandra_endpoint_name=settings.chandra_endpoint_name,
+                chandra_namespace=settings.chandra_namespace,
+                chandra_confidence_threshold=settings.chandra_confidence_threshold,
+                chandra_auto_pause_timeout=settings.chandra_auto_pause_timeout,
+                chandra_inference_timeout=settings.chandra_inference_timeout,
+                chandra_max_resume_retries=settings.chandra_max_resume_retries
+            ))
 
             combined_ocr_text = ""
             ocr_results = []
@@ -2228,8 +2330,8 @@ class PDFProcessor:
             images_skipped = opencv_skipped + clip_skipped
             
             self.logger.info(
-                f"🎯 Phase 2 Results: {len(images_to_process)} technical images, "
-                f"{len(clip_skipped)} decorative images skipped"
+                f"🎯 Phase 2 Results: {len(images_to_process)} product images, "
+                f"{len(clip_skipped)} non-product images skipped"
             )
             self.logger.info(
                 f"📊 Total Filtering: {len(images_to_process)}/{total_images} images will be processed with OCR "

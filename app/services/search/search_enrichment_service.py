@@ -73,12 +73,22 @@ class SearchEnrichmentService:
                 enriched = {
                     **image_result,
                     'related_products': [],
-                    'related_chunks': []
+                    'related_chunks': [],
+                    'image_details': {}
                 }
 
-                # Get related products
+                # ✅ NEW: Get image details including caption (actual description)
+                image_details = await self.get_image_details(image_id)
+                enriched['image_details'] = image_details
+
+                # ✅ NEW: Use caption as description if available
+                if image_details.get('caption'):
+                    enriched['image_description'] = image_details['caption']
+
+                # Get related products (pass image caption as fallback for empty descriptions)
                 if include_products:
-                    products = await self.get_related_products(image_id, min_relevance)
+                    image_caption = image_details.get('caption') if image_details else None
+                    products = await self.get_related_products(image_id, min_relevance, image_caption)
                     enriched['related_products'] = products
 
                     # ✅ UPDATED: Multi-vector combined score with all 6 embedding types
@@ -166,15 +176,18 @@ class SearchEnrichmentService:
     async def get_related_products(
         self,
         image_id: str,
-        min_relevance: float = 0.0
+        min_relevance: float = 0.0,
+        image_caption: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Get products related to an image via image_product_associations.
         ✅ UPDATED: Now uses image_product_associations table
+        ✅ UPDATED: Falls back to image_caption when products.description is empty
 
         Args:
             image_id: Image UUID
             min_relevance: Minimum relevance score
+            image_caption: Optional image caption to use as fallback description
 
         Returns:
             List of related products with relevance scores
@@ -193,17 +206,23 @@ class SearchEnrichmentService:
                 for rel in response.data:
                     product_data = rel.get('products')
                     if product_data:
+                        # ✅ NEW: Use image_caption as fallback if description is empty
+                        product_description = product_data.get('description') or ''
+                        if not product_description.strip() and image_caption:
+                            product_description = image_caption
+
                         products.append({
                             'product_id': rel['product_id'],
                             'name': product_data.get('name'),
-                            'description': product_data.get('description'),
+                            'description': product_description,
                             'metadata': product_data.get('metadata', {}),
                             'relevance_score': rel['overall_score'],  # ✅ UPDATED: Use overall_score
-                            'relationship_type': rel['reasoning']  # ✅ UPDATED: Use reasoning
+                            'relationship_type': rel['reasoning'],  # ✅ UPDATED: Use reasoning
+                            'description_source': 'product' if product_data.get('description', '').strip() else 'image_caption'
                         })
-            
+
             return products
-            
+
         except Exception as e:
             self.logger.error(f"❌ Failed to get related products for image {image_id}: {e}")
             return []
@@ -215,11 +234,11 @@ class SearchEnrichmentService:
     ) -> List[Dict[str, Any]]:
         """
         Get chunks related to an image via chunk_image_relationships.
-        
+
         Args:
             image_id: Image UUID
             min_relevance: Minimum relevance score
-            
+
         Returns:
             List of related chunks with relevance scores
         """
@@ -231,7 +250,7 @@ class SearchEnrichmentService:
                 .gte('relevance_score', min_relevance)\
                 .order('relevance_score', desc=True)\
                 .execute()
-            
+
             chunks = []
             if response.data:
                 for rel in response.data:
@@ -244,11 +263,47 @@ class SearchEnrichmentService:
                             'relevance_score': rel['relevance_score'],
                             'relationship_type': rel['relationship_type']
                         })
-            
+
             return chunks
-            
+
         except Exception as e:
             self.logger.error(f"❌ Failed to get related chunks for image {image_id}: {e}")
             return []
+
+    async def get_image_details(self, image_id: str) -> Dict[str, Any]:
+        """
+        Get image details including caption from document_images.
+
+        ✅ NEW: Retrieves image caption and product_name which contain
+        the actual descriptions (since products.description is often empty).
+
+        Args:
+            image_id: Image UUID
+
+        Returns:
+            Dict with image details including caption, product_name, etc.
+        """
+        try:
+            response = self.supabase.client.table('document_images')\
+                .select('id, caption, product_name, contextual_name, image_url, image_type, category')\
+                .eq('id', image_id)\
+                .single()\
+                .execute()
+
+            if response.data:
+                return {
+                    'image_id': response.data.get('id'),
+                    'caption': response.data.get('caption'),
+                    'product_name': response.data.get('product_name'),
+                    'contextual_name': response.data.get('contextual_name'),
+                    'image_url': response.data.get('image_url'),
+                    'image_type': response.data.get('image_type'),
+                    'category': response.data.get('category')
+                }
+            return {}
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get image details for {image_id}: {e}")
+            return {}
 
 

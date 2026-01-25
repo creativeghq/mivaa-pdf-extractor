@@ -267,6 +267,79 @@ class EndpointHealthChecker:
         self._health_results["yolo"] = result
         return result
 
+    async def check_chandra_health(self, endpoint_url: str, token: str) -> HealthCheckResult:
+        """
+        Check Chandra OCR endpoint health.
+
+        Chandra is a HuggingFace Inference Endpoint that may be paused.
+        A 400 error during warmup indicates the model is loading.
+        We wait until we get a proper response (even an error response is fine).
+
+        Args:
+            endpoint_url: Chandra endpoint URL
+            token: HuggingFace API token
+
+        Returns:
+            HealthCheckResult with status and timing
+        """
+        import httpx
+
+        for attempt in range(1, self.max_health_check_attempts + 1):
+            start_time = time.time()
+            try:
+                async with httpx.AsyncClient(timeout=self.health_check_timeout_seconds) as client:
+                    # Simple health check - send minimal request to see if endpoint responds
+                    # Chandra expects POST with image data, but for health check we just
+                    # verify the endpoint is responding (even a 400 is fine - means it's running)
+                    response = await client.post(
+                        endpoint_url,
+                        headers={
+                            "Authorization": f"Bearer {token}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "inputs": "00",  # Minimal hex payload - will fail but endpoint responds
+                            "parameters": {}
+                        }
+                    )
+
+                    response_time_ms = (time.time() - start_time) * 1000
+
+                    # 200 = success, 400 = endpoint running but bad input (healthy!)
+                    # Both indicate the endpoint is up and ready
+                    if response.status_code in [200, 400, 422]:
+                        result = HealthCheckResult(
+                            endpoint_name="chandra",
+                            status=EndpointStatus.HEALTHY,
+                            response_time_ms=response_time_ms,
+                            attempts=attempt
+                        )
+                        self._health_results["chandra"] = result
+                        logger.info(f"✅ Chandra health check passed (attempt {attempt}, {response_time_ms:.0f}ms, HTTP {response.status_code})")
+                        return result
+                    elif response.status_code == 503:
+                        logger.info(f"⏳ Chandra still warming up (attempt {attempt}/{self.max_health_check_attempts})")
+                    else:
+                        logger.warning(f"⚠️ Chandra health check failed: HTTP {response.status_code}")
+
+            except httpx.TimeoutException:
+                logger.info(f"⏳ Chandra health check timeout (attempt {attempt}/{self.max_health_check_attempts})")
+            except Exception as e:
+                logger.warning(f"⚠️ Chandra health check error (attempt {attempt}): {e}")
+
+            if attempt < self.max_health_check_attempts:
+                await asyncio.sleep(self.health_check_interval_seconds)
+
+        # All attempts failed
+        result = HealthCheckResult(
+            endpoint_name="chandra",
+            status=EndpointStatus.UNHEALTHY,
+            error_message=f"Failed after {self.max_health_check_attempts} attempts",
+            attempts=self.max_health_check_attempts
+        )
+        self._health_results["chandra"] = result
+        return result
+
     async def check_all_endpoints(
         self,
         endpoints_config: Dict[str, Dict[str, str]],
@@ -305,6 +378,11 @@ class EndpointHealthChecker:
             cfg = endpoints_config["yolo"]
             tasks.append(self.check_yolo_health(cfg["url"], cfg["token"]))
             endpoint_names.append("yolo")
+
+        if "chandra" in endpoints_config:
+            cfg = endpoints_config["chandra"]
+            tasks.append(self.check_chandra_health(cfg["url"], cfg["token"]))
+            endpoint_names.append("chandra")
 
         # Run all health checks in parallel
         if tasks:

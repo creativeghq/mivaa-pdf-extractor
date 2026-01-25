@@ -67,7 +67,8 @@ async def process_product_images(
     physical_pages: List[int],  # ✅ NOW USING PHYSICAL PAGES (1-based)
     catalog: Any,
     config: Dict[str, Any],
-    logger: logging.Logger
+    logger: logging.Logger,
+    layout_regions: Optional[List[Any]] = None  # ✅ NEW: YOLO layout regions with bbox data
 ) -> Dict[str, Any]:
     """
     Process images for a single product (product-centric pipeline).
@@ -85,6 +86,7 @@ async def process_product_images(
         catalog: Full catalog (for spread layout info)
         config: Processing configuration
         logger: Logger instance
+        layout_regions: Optional YOLO layout regions with bbox data for accurate positioning
 
     Returns:
         Dictionary with images_processed, images_material, images_non_material counts
@@ -100,6 +102,19 @@ async def process_product_images(
 
     if has_spread_layout:
         logger.info(f"   📐 Spread layout detected")
+
+    # ✅ NEW: Build YOLO region lookup by physical page for better bbox data
+    yolo_regions_by_page: Dict[int, List[Any]] = {}
+    if layout_regions:
+        logger.info(f"   🎯 YOLO layout regions available: {len(layout_regions)} regions")
+        for region in layout_regions:
+            # Get physical page from region (set in product_processor.py)
+            page_num = getattr(region.bbox, 'page', None) if hasattr(region, 'bbox') else None
+            if page_num:
+                if page_num not in yolo_regions_by_page:
+                    yolo_regions_by_page[page_num] = []
+                yolo_regions_by_page[page_num].append(region)
+        logger.info(f"   📍 YOLO regions by page: {dict((k, len(v)) for k, v in yolo_regions_by_page.items())}")
 
     # ✅ Use singleton PDFProcessor to prevent repeated initialization
     pdf_processor = get_pdf_processor()
@@ -176,28 +191,102 @@ async def process_product_images(
             left_phys = min(sheet_physical_pages)
             right_phys = max(sheet_physical_pages)
 
-            for img in page_result.extracted_images:
-                bbox = img.get('bbox', [0, 0, 0, 0])
-                img_width = bbox[2] if len(bbox) > 2 else 0
-                center_x = bbox[0] + (img_width / 2) if len(bbox) > 0 else 0
+            # Track images without valid bbox for fallback assignment
+            images_without_bbox = []
 
-                # Scene detection: wide image spanning both pages
-                spans_middle = len(bbox) >= 3 and (bbox[0] < mid_x) and (bbox[0] + img_width > mid_x)
-                is_scene = spans_middle and (img_width > sheet_width * 0.45)
+            for img_idx, img in enumerate(page_result.extracted_images):
+                bbox = img.get('bbox')
 
-                if is_scene:
-                    # Scene spans both pages - assign to left page with scene flag
-                    img['page_number'] = left_phys  # Physical page (1-based)
-                    img['physical_side'] = 'spread'
-                    img['is_scene'] = True
-                    logger.info(f"      🎞️ Scene image detected spanning pages {left_phys}-{right_phys}")
+                # ✅ FIX: Properly handle None or invalid bbox
+                has_valid_bbox = (
+                    bbox is not None and
+                    isinstance(bbox, (list, tuple)) and
+                    len(bbox) >= 3 and
+                    (bbox[2] > 0 or bbox[0] > 0)  # Has actual position/size data
+                )
+
+                if has_valid_bbox:
+                    img_width = bbox[2] if len(bbox) > 2 else 0
+                    center_x = bbox[0] + (img_width / 2)
+
+                    # Scene detection: wide image spanning both pages
+                    spans_middle = (bbox[0] < mid_x) and (bbox[0] + img_width > mid_x)
+                    is_scene = spans_middle and (img_width > sheet_width * 0.45)
+
+                    if is_scene:
+                        # Scene spans both pages - assign to left page with scene flag
+                        img['page_number'] = left_phys  # Physical page (1-based)
+                        img['physical_side'] = 'spread'
+                        img['is_scene'] = True
+                        logger.info(f"      🎞️ Scene image detected spanning pages {left_phys}-{right_phys}")
+                    else:
+                        # Normal image - assign to left or right physical page
+                        is_left = center_x < mid_x
+                        img['page_number'] = left_phys if is_left else right_phys  # Physical page (1-based)
+                        img['physical_side'] = 'left' if is_left else 'right'
+                        logger.debug(f"      📍 Image {img_idx} assigned to {'left' if is_left else 'right'} page (center_x={center_x:.1f}, mid_x={mid_x:.1f})")
                 else:
-                    # Normal image - assign to left or right physical page
-                    is_left = center_x < mid_x
-                    img['page_number'] = left_phys if is_left else right_phys  # Physical page (1-based)
-                    img['physical_side'] = 'left' if is_left else 'right'
+                    # ✅ FIX: Track images without bbox for fallback assignment
+                    images_without_bbox.append((img_idx, img))
+                    continue  # Will assign after loop
 
                 extracted_images_list.append(img)
+
+            # ✅ FIX: Fallback for images without valid bbox
+            # Try YOLO regions first, then distribute evenly
+            if images_without_bbox:
+                logger.warning(f"      ⚠️ {len(images_without_bbox)} images without valid PyMuPDF bbox")
+
+                # ✅ NEW: Try to match images with YOLO regions by filename pattern
+                yolo_left_regions = yolo_regions_by_page.get(left_phys, [])
+                yolo_right_regions = yolo_regions_by_page.get(right_phys, [])
+
+                if yolo_left_regions or yolo_right_regions:
+                    logger.info(f"      🎯 Using YOLO regions: {len(yolo_left_regions)} left, {len(yolo_right_regions)} right")
+
+                for fallback_idx, (img_idx, img) in enumerate(images_without_bbox):
+                    filename = img.get('filename', '')
+                    assigned = False
+
+                    # ✅ Check if this is a YOLO region image (filename contains 'yolo_region')
+                    if 'yolo_region' in filename:
+                        # YOLO images already have physical page from YOLO detection
+                        # Try to match by region index in filename
+                        import re
+                        region_match = re.search(r'yolo_region_(\d+)', filename)
+                        if region_match:
+                            region_idx = int(region_match.group(1))
+                            # Check if this region was detected on left or right page
+                            for region in yolo_left_regions:
+                                if hasattr(region, 'bbox') and region.bbox:
+                                    bbox = region.bbox
+                                    center = bbox.x + (bbox.width / 2) if hasattr(bbox, 'x') else 0
+                                    if center < mid_x:
+                                        img['page_number'] = left_phys
+                                        img['physical_side'] = 'left'
+                                        img['yolo_assisted'] = True
+                                        assigned = True
+                                        logger.debug(f"      📍 YOLO image {filename} assigned to left page via YOLO bbox")
+                                        break
+                            if not assigned:
+                                for region in yolo_right_regions:
+                                    if hasattr(region, 'bbox') and region.bbox:
+                                        img['page_number'] = right_phys
+                                        img['physical_side'] = 'right'
+                                        img['yolo_assisted'] = True
+                                        assigned = True
+                                        logger.debug(f"      📍 YOLO image {filename} assigned to right page via YOLO bbox")
+                                        break
+
+                    # ✅ Final fallback: alternate between left and right
+                    if not assigned:
+                        is_left = (fallback_idx % 2 == 0)
+                        img['page_number'] = left_phys if is_left else right_phys
+                        img['physical_side'] = 'left' if is_left else 'right'
+                        img['bbox_fallback'] = True
+                        logger.debug(f"      📍 Image {img_idx} ({filename}) fallback assigned to {'left' if is_left else 'right'} page")
+
+                    extracted_images_list.append(img)
         else:
             # Single page or non-spread: all images go to the physical page
             target_physical_page = sheet_physical_pages[0]

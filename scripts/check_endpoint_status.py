@@ -33,7 +33,7 @@ ENDPOINTS = [
         "name": "mh-siglip2",
         "description": "SLIG/SigLIP2",
         "purpose": "Visual embeddings (768D)",
-        "url": "https://myu36o511sw1rs2a.us-east-1.aws.endpoints.huggingface.cloud"
+        "url": "https://f4kbl5do4tz6svct.us-east-1.aws.endpoints.huggingface.cloud"
     },
     {
         "name": "mh-yolo",

@@ -3153,6 +3153,12 @@ async def process_document_with_discovery(
                 'url': yolo_config['endpoint_url'],
                 'token': yolo_config.get('hf_token', '')
             }
+        if 'chandra' in endpoint_managers:
+            chandra_config = settings.get_chandra_config()
+            endpoints_config['chandra'] = {
+                'url': chandra_config['endpoint_url'],
+                'token': chandra_config.get('hf_token', '')
+            }
 
         # SLIG is required for CLIP embeddings
         # Qwen is only required if NOT using Claude Vision for discovery

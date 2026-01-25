@@ -98,11 +98,35 @@ async def create_single_product(
         if is_not_found(metadata.get(key)):
             metadata[key] = None
 
+    # ✅ FIX: Extract description from multiple sources if product.description is empty
+    description = product.description or ''
+    if not description.strip():
+        # Try metadata.design.philosophy.value first (most common source)
+        design = metadata.get('design', {})
+        if isinstance(design, dict):
+            philosophy = design.get('philosophy', {})
+            if isinstance(philosophy, dict) and philosophy.get('value'):
+                description = philosophy['value']
+                logger.info(f"   📝 Extracted description from design.philosophy: {description[:50]}...")
+            elif design.get('inspiration', {}).get('value'):
+                description = design['inspiration']['value']
+                logger.info(f"   📝 Extracted description from design.inspiration: {description[:50]}...")
+
+        # Try metadata.description directly
+        if not description.strip() and metadata.get('description'):
+            meta_desc = metadata.get('description')
+            if isinstance(meta_desc, dict) and meta_desc.get('value'):
+                description = meta_desc['value']
+            elif isinstance(meta_desc, str):
+                description = meta_desc
+            if description:
+                logger.info(f"   📝 Extracted description from metadata.description: {description[:50]}...")
+
     product_data = {
         'source_document_id': document_id,
         'workspace_id': workspace_id,
         'name': product.name,
-        'description': product.description or '',
+        'description': description,
         'metadata': metadata,
         'source_type': 'pdf_processing',
         'source_job_id': job_id

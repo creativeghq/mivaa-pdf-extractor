@@ -516,24 +516,39 @@ class MaterialVisualSearchService:
             if request.query_embedding:
                 query_embedding = request.query_embedding
             elif request.query_image:
-                # Generate CLIP embedding from image
-                from app.services.search.rag_service import RAGService
-                rag_service = RAGService()
-
-                # Load image and generate embedding
+                # Generate CLIP embedding from image using SLIG client
+                from app.services.embeddings.endpoint_registry import endpoint_registry
                 import base64
                 import requests
                 from io import BytesIO
                 from PIL import Image
 
+                # Load image
                 if request.query_image.startswith('http'):
-                    response = requests.get(request.query_image)
+                    response = requests.get(request.query_image, timeout=30)
                     image = Image.open(BytesIO(response.content))
                 else:
                     image_data = base64.b64decode(request.query_image)
                     image = Image.open(BytesIO(image_data))
 
-                query_embedding = await rag_service._generate_clip_embedding(image)
+                # Get SLIG client and generate embedding
+                slig_client = endpoint_registry.get_slig_client()
+                if slig_client:
+                    query_embedding = await slig_client.get_image_embedding(image)
+                    logger.info(f"✅ Generated CLIP embedding via SLIG: {len(query_embedding) if query_embedding else 0} dims")
+                else:
+                    logger.error("❌ SLIG client not available for embedding generation")
+
+            elif request.query_text:
+                # Generate CLIP text embedding using SLIG client
+                from app.services.embeddings.endpoint_registry import endpoint_registry
+
+                slig_client = endpoint_registry.get_slig_client()
+                if slig_client:
+                    query_embedding = await slig_client.get_text_embedding(request.query_text)
+                    logger.info(f"✅ Generated text CLIP embedding via SLIG: {len(query_embedding) if query_embedding else 0} dims")
+                else:
+                    logger.error("❌ SLIG client not available for text embedding generation")
 
             if not query_embedding:
                 return MaterialSearchResponse(
@@ -547,6 +562,8 @@ class MaterialVisualSearchService:
                 )
 
             # ✅ Step 2: Search VECS for similar images with HNSW indexing
+            # Note: SLIG endpoint now returns 768D embeddings (using siglip2-base-patch16-512)
+
             vecs_service = get_vecs_service()
 
             # Build metadata filters
@@ -564,11 +581,129 @@ class MaterialVisualSearchService:
                 include_metadata=True
             )
 
+            # ✅ FALLBACK: If VECS returns no results, use direct pgvector database search
+            if not vecs_results:
+                logger.info("🔄 VECS returned no results, falling back to direct pgvector search")
+                try:
+                    supabase = get_supabase_client()
+
+                    # Convert embedding to pgvector format
+                    embedding_str = '[' + ','.join(str(x) for x in query_embedding) + ']'
+
+                    # Direct pgvector similarity search on document_images
+                    query_sql = f"""
+                    SELECT
+                        di.id::text as image_id,
+                        di.image_url,
+                        di.page_number,
+                        di.product_name,
+                        di.category,
+                        di.document_id::text,
+                        1 - (di.visual_clip_embedding_512 <=> '{embedding_str}'::vector) as similarity_score
+                    FROM document_images di
+                    WHERE di.visual_clip_embedding_512 IS NOT NULL
+                    ORDER BY di.visual_clip_embedding_512 <=> '{embedding_str}'::vector
+                    LIMIT {request.limit * 2}
+                    """
+
+                    import asyncio
+                    result = await asyncio.to_thread(
+                        lambda: supabase.client.rpc('exec_sql', {'query': query_sql}).execute()
+                    )
+
+                    # If RPC doesn't work, try direct table query with Python-side similarity
+                    if not result.data:
+                        logger.info("🔄 RPC failed, using Python-side similarity calculation")
+                        table_result = await asyncio.to_thread(
+                            lambda: supabase.client.table('document_images')
+                            .select('id, image_url, page_number, product_name, category, document_id, visual_clip_embedding_512')
+                            .not_.is_('visual_clip_embedding_512', 'null')
+                            .limit(200)
+                            .execute()
+                        )
+
+                        if table_result.data:
+                            import numpy as np
+                            query_vec = np.array(query_embedding)
+
+                            for row in table_result.data:
+                                embedding = row.get('visual_clip_embedding_512')
+                                if embedding:
+                                    if isinstance(embedding, str):
+                                        embedding = [float(x) for x in embedding.strip('[]').split(',')]
+
+                                    if len(embedding) == 768:
+                                        img_vec = np.array(embedding)
+                                        similarity = float(np.dot(query_vec, img_vec) / (np.linalg.norm(query_vec) * np.linalg.norm(img_vec)))
+
+                                        vecs_results.append({
+                                            'image_id': str(row.get('id')),
+                                            'similarity_score': similarity,
+                                            'metadata': {
+                                                'image_url': row.get('image_url'),
+                                                'page_number': row.get('page_number'),
+                                                'product_name': row.get('product_name'),
+                                                'category': row.get('category'),
+                                                'document_id': str(row.get('document_id'))
+                                            }
+                                        })
+
+                            # Sort by similarity
+                            vecs_results.sort(key=lambda x: x['similarity_score'], reverse=True)
+                            vecs_results = vecs_results[:request.limit * 2]
+                            logger.info(f"✅ Direct DB search found {len(vecs_results)} results")
+                    else:
+                        # Parse RPC results
+                        for row in result.data:
+                            vecs_results.append({
+                                'image_id': row.get('image_id'),
+                                'similarity_score': row.get('similarity_score', 0),
+                                'metadata': {
+                                    'image_url': row.get('image_url'),
+                                    'page_number': row.get('page_number'),
+                                    'product_name': row.get('product_name'),
+                                    'category': row.get('category'),
+                                    'document_id': row.get('document_id')
+                                }
+                            })
+                        logger.info(f"✅ RPC search found {len(vecs_results)} results")
+
+                except Exception as db_err:
+                    logger.error(f"❌ Direct DB search failed: {db_err}")
+
             # Filter by similarity threshold
             filtered_results = [
                 r for r in vecs_results
                 if r.get('similarity_score', 0) >= request.similarity_threshold
             ][:request.limit]
+
+            # ✅ Step 2.5: Text-based search on product descriptions and image captions
+            # When query_text is provided, also search for matching products by description
+            if request.query_text:
+                try:
+                    logger.info(f"🔍 Searching product descriptions and image captions for: {request.query_text[:50]}...")
+                    text_matches = await self._search_by_text_description(
+                        query_text=request.query_text,
+                        limit=request.limit,
+                        supabase=get_supabase_client()
+                    )
+
+                    if text_matches:
+                        logger.info(f"✅ Found {len(text_matches)} text matches from descriptions/captions")
+
+                        # Merge text matches with visual results (avoid duplicates)
+                        existing_image_ids = {r.get('image_id') for r in filtered_results}
+                        for match in text_matches:
+                            if match.get('image_id') not in existing_image_ids:
+                                filtered_results.append(match)
+                                existing_image_ids.add(match.get('image_id'))
+
+                        # Re-sort by combined score
+                        filtered_results.sort(key=lambda x: x.get('similarity_score', 0), reverse=True)
+                        filtered_results = filtered_results[:request.limit]
+
+                except Exception as text_err:
+                    logger.warning(f"⚠️ Text-based search failed (continuing with visual results): {text_err}")
 
             # ✅ Step 3: Enrich results with relationship data
             enrichment_service = SearchEnrichmentService()
@@ -590,7 +725,7 @@ class MaterialVisualSearchService:
                 primary_product = related_products[0] if related_products else None
 
                 search_results.append(MaterialSearchResult(
-                    material_id=primary_product.get('product_id', item.get('image_id', '')),
+                    material_id=primary_product.get('product_id', item.get('image_id', '')) if primary_product else item.get('image_id', ''),
                     material_name=primary_product.get('name', 'Unknown Material') if primary_product else 'Image Result',
                     material_type=primary_product.get('metadata', {}).get('type', 'unknown') if primary_product else 'image',
                     visual_similarity_score=item.get('similarity_score', 0.0),
@@ -860,6 +995,125 @@ class MaterialVisualSearchService:
                 "error": str(e)
             }
     
+    async def _search_by_text_description(
+        self,
+        query_text: str,
+        limit: int,
+        supabase: Any
+    ) -> List[Dict[str, Any]]:
+        """
+        Search for products and images by text description matching.
+
+        ✅ NEW: This searches products.description, document_images.caption,
+        and document_chunks.content for text matches.
+
+        Args:
+            query_text: Text query to search for
+            limit: Maximum results to return
+            supabase: Supabase client
+
+        Returns:
+            List of matching results with similarity scores
+        """
+        results = []
+        seen_product_ids = set()
+
+        try:
+            # Search 1a: Products by description (ILIKE search)
+            products_by_desc = supabase.client.table('products')\
+                .select('id, name, description, metadata')\
+                .ilike('description', f'%{query_text}%')\
+                .limit(limit)\
+                .execute()
+
+            # Search 1b: Products by name (ILIKE search)
+            products_by_name = supabase.client.table('products')\
+                .select('id, name, description, metadata')\
+                .ilike('name', f'%{query_text}%')\
+                .limit(limit)\
+                .execute()
+
+            # Merge product results (deduplicate by ID)
+            all_products = []
+            if products_by_desc.data:
+                for p in products_by_desc.data:
+                    if p['id'] not in seen_product_ids:
+                        seen_product_ids.add(p['id'])
+                        all_products.append(p)
+            if products_by_name.data:
+                for p in products_by_name.data:
+                    if p['id'] not in seen_product_ids:
+                        seen_product_ids.add(p['id'])
+                        all_products.append(p)
+
+            products_response_data = all_products
+
+            if products_response_data:
+                for product in products_response_data:
+                    # Get associated images for this product
+                    images_response = supabase.client.table('image_product_associations')\
+                        .select('image_id, overall_score, document_images(id, image_url, caption, page_number)')\
+                        .eq('product_id', product['id'])\
+                        .limit(3)\
+                        .execute()
+
+                    if images_response.data:
+                        for assoc in images_response.data:
+                            image_data = assoc.get('document_images', {})
+                            if image_data and image_data.get('id'):
+                                # Calculate text match score (simple keyword match)
+                                desc_lower = (product.get('description') or '').lower()
+                                query_lower = query_text.lower()
+                                text_score = 0.8 if query_lower in desc_lower else 0.6
+
+                                results.append({
+                                    'image_id': image_data['id'],
+                                    'similarity_score': text_score,
+                                    'metadata': {
+                                        'image_url': image_data.get('image_url'),
+                                        'page_number': image_data.get('page_number'),
+                                        'product_name': product.get('name'),
+                                        'product_description': product.get('description'),
+                                        'caption': image_data.get('caption'),
+                                        'match_source': 'product_description'
+                                    }
+                                })
+
+            # Search 2: Images by caption
+            images_response = supabase.client.table('document_images')\
+                .select('id, image_url, caption, page_number, product_name')\
+                .ilike('caption', f'%{query_text}%')\
+                .limit(limit)\
+                .execute()
+
+            if images_response.data:
+                existing_ids = {r['image_id'] for r in results}
+                for image in images_response.data:
+                    if image['id'] not in existing_ids:
+                        caption_lower = (image.get('caption') or '').lower()
+                        query_lower = query_text.lower()
+                        text_score = 0.75 if query_lower in caption_lower else 0.55
+
+                        results.append({
+                            'image_id': image['id'],
+                            'similarity_score': text_score,
+                            'metadata': {
+                                'image_url': image.get('image_url'),
+                                'page_number': image.get('page_number'),
+                                'product_name': image.get('product_name'),
+                                'caption': image.get('caption'),
+                                'match_source': 'image_caption'
+                            }
+                        })
+
+            # Sort by score and limit
+            results.sort(key=lambda x: x.get('similarity_score', 0), reverse=True)
+            return results[:limit]
+
+        except Exception as e:
+            logger.error(f"❌ Text description search failed: {e}")
+            return []
+
     async def health_check(self) -> Dict[str, Any]:
         """Check health of material visual search service."""
         try:

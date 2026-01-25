@@ -453,7 +453,7 @@ class Settings(BaseSettings):
     # ============================================================================
     # All visual embeddings are generated via cloud endpoint (no local models)
     slig_endpoint_url: str = Field(
-        default="https://myu36o511sw1rs2a.us-east-1.aws.endpoints.huggingface.cloud",
+        default="https://f4kbl5do4tz6svct.us-east-1.aws.endpoints.huggingface.cloud",
         env="SLIG_ENDPOINT_URL",
         description="SLIG (SigLIP2) Inference Endpoint URL"
     )
@@ -518,7 +518,7 @@ class Settings(BaseSettings):
     # ============================================================================
     # Advanced OCR fallback for low-confidence EasyOCR results
     chandra_endpoint_url: str = Field(
-        default="https://kgvlceo5zrww8a6m.us-east-1.aws.endpoints.huggingface.cloud",
+        default="https://vxbychbp9yeoegtc.us-east-1.aws.endpoints.huggingface.cloud",
         env="CHANDRA_ENDPOINT_URL",
         description="Chandra OCR Inference Endpoint URL"
     )
