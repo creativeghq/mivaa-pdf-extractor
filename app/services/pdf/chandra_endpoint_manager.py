@@ -247,33 +247,23 @@ class ChandraEndpointManager:
             logger.error(f"❌ Failed to force pause endpoint: {e}")
             return False
 
-    def run_inference(self, image_input: Any, parameters: Optional[Dict] = None) -> Dict[str, Any]:
+    def run_inference(self, image_input: Any, parameters: Optional[Dict] = None, prompt: str = "Extract all text from this image. Return only the extracted text.") -> Dict[str, Any]:
         """
-        Run OCR inference on image using Chandra endpoint.
-
-        This method:
-        1. Resumes endpoint if paused (start billing)
-        2. Calls the endpoint API for inference
-        3. Tracks usage time for cost monitoring
-        4. Marks as used (for auto-pause)
-        5. Returns OCR result
-
-        Note: Endpoint will auto-pause after idle timeout
+        Run OCR inference on image using Chandra endpoint (OpenAI-compatible format).
 
         Args:
             image_input: Image data (bytes, PIL Image, or file path)
             parameters: Optional inference parameters
+            prompt: OCR prompt (default: extract text)
 
         Returns:
             Dict with OCR result: {'generated_text': str, 'confidence': float}
-
-        Raises:
-            Exception: If inference fails
         """
+        import base64
+        
         if not self.enabled:
             raise Exception("Chandra endpoint is disabled")
 
-        # Step 1: Resume endpoint if needed
         if self._can_pause_resume:
             if not self.resume_if_needed():
                 raise Exception("Failed to resume Chandra endpoint")
@@ -281,37 +271,51 @@ class ChandraEndpointManager:
         start_time = time.time()
         
         try:
-            # Prepare image data
+            # Convert image to base64
             if isinstance(image_input, str):
-                # File path
                 with open(image_input, 'rb') as f:
                     image_bytes = f.read()
             elif isinstance(image_input, bytes):
-                # Already bytes
                 image_bytes = image_input
             else:
-                # Assume PIL Image
                 from io import BytesIO
                 buffer = BytesIO()
                 image_input.save(buffer, format='PNG')
                 image_bytes = buffer.getvalue()
             
-            # Prepare request
+            image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+            
+            # OpenAI-compatible chat completions format
             headers = {
-                "Accept": "application/json",
                 "Authorization": f"Bearer {self.hf_token}",
                 "Content-Type": "application/json"
             }
             
+            # Use /v1/chat/completions endpoint
+            api_url = self.endpoint_url.rstrip('/') + '/v1/chat/completions'
+            
             payload = {
-                "inputs": image_bytes.hex(),  # Send as hex string
-                "parameters": parameters or {}
+                "model": "prithivMLmods/chandra-OCR-GGUF",
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{image_base64}"}
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt
+                        }
+                    ]
+                }],
+                "stream": False,
+                "max_tokens": parameters.get('max_tokens', 2000) if parameters else 2000
             }
             
-            # Make inference request
-            logger.info(f"Calling Chandra endpoint: {self.endpoint_url}")
+            logger.info(f"Calling Chandra endpoint: {api_url}")
             response = requests.post(
-                self.endpoint_url,
+                api_url,
                 headers=headers,
                 json=payload,
                 timeout=self.inference_timeout
@@ -320,18 +324,23 @@ class ChandraEndpointManager:
             response.raise_for_status()
             result = response.json()
             
-            # Track usage
+            # Extract text from OpenAI format response
+            generated_text = ""
+            if "choices" in result and len(result["choices"]) > 0:
+                generated_text = result["choices"][0].get("message", {}).get("content", "")
+            
             inference_time = time.time() - start_time
             self.last_used = time.time()
             self.inference_count += 1
             self.total_uptime += inference_time
             
-            logger.info(
-                f"✅ Chandra inference successful: "
-                f"time={inference_time:.2f}s, total_calls={self.inference_count}"
-            )
+            logger.info(f"✅ Chandra OCR successful: {len(generated_text)} chars in {inference_time:.2f}s")
             
-            return result
+            return {
+                "generated_text": generated_text,
+                "confidence": 0.85,
+                "raw_response": result
+            }
             
         except Exception as e:
             logger.error(f"❌ Chandra inference failed: {e}")

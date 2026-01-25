@@ -9,6 +9,7 @@ Deployment trigger: 2025-10-25 - Testing deployment after SSH issue
 """
 
 import logging
+import os
 import sys
 import signal
 import asyncio
@@ -332,6 +333,31 @@ async def lifespan(app: FastAPI):
         logger.info("✅ Job monitor service started - monitoring every 60 seconds")
     except Exception as e:
         logger.error(f"❌ Failed to start job monitor service: {e}", exc_info=True)
+
+    # Initialize and start HuggingFace endpoint auto-scaler
+    try:
+        from app.services.embeddings.endpoint_auto_scaler import EndpointAutoScaler
+        settings = get_settings()
+        hf_token = settings.huggingface_api_key or os.environ.get('HF_TOKEN', '')
+        
+        if hf_token:
+            auto_scaler = EndpointAutoScaler(
+                hf_token=hf_token,
+                namespace="basiliskan",
+                check_interval_seconds=30,
+                scale_up_threshold=3,
+                max_replicas=3,
+                enabled=True
+            )
+            asyncio.create_task(auto_scaler.start())
+            app.state.endpoint_auto_scaler = auto_scaler
+            logger.info("✅ HuggingFace endpoint auto-scaler started")
+        else:
+            logger.warning("⚠️ HF_TOKEN not configured - endpoint auto-scaling disabled")
+            app.state.endpoint_auto_scaler = None
+    except Exception as e:
+        logger.error(f"❌ Failed to start endpoint auto-scaler: {e}", exc_info=True)
+        app.state.endpoint_auto_scaler = None
 
     yield
 

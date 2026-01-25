@@ -1192,8 +1192,13 @@ class PDFProcessor:
                                 if img_rects:
                                     # Use first rect (images typically have one placement)
                                     rect = img_rects[0]
-                                    # bbox format: [x, y, width, height] - matches expected format
-                                    bbox = [rect.x0, rect.y0, rect.width, rect.height]
+                                    # bbox format: [x, y, width, height] - NORMALIZED (0-1) for database constraint
+                                    bbox = [
+                                        rect.x0 / page.rect.width,  # x normalized
+                                        rect.y0 / page.rect.height,  # y normalized
+                                        rect.width / page.rect.width,  # width normalized
+                                        rect.height / page.rect.height  # height normalized
+                                    ]
                                     self.logger.debug(
                                         f"   📐 [Job: {job_id}] Image {img_idx} bbox: x={rect.x0:.1f}, y={rect.y0:.1f}, "
                                         f"w={rect.width:.1f}, h={rect.height:.1f}"

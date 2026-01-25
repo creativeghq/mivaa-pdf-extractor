@@ -3130,7 +3130,7 @@ async def process_document_with_discovery(
         logger.info("=" * 80)
 
         health_checker = EndpointHealthChecker(
-            max_health_check_attempts=10,  # 10 attempts × 6 seconds = 60s max
+            max_health_check_attempts=30,  # 30 attempts × 6 seconds = 180s max
             health_check_interval_seconds=6,
             health_check_timeout_seconds=30
         )
@@ -3299,7 +3299,8 @@ async def process_document_with_discovery(
             tracker=tracker,
             checkpoint_recovery_service=checkpoint_recovery_service,
             logger=logger,
-            temp_pdf_path=file_path  # 
+            temp_pdf_path=file_path,  # Use existing temp path
+            test_single_product=test_single_product  # 🧪 TEST MODE flag
         )
 
         catalog = stage_0_result["catalog"]

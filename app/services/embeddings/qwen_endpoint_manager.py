@@ -155,10 +155,10 @@ class QwenEndpointManager:
                         self.last_resume_time = time.time()
                         logger.info(f"✅ Qwen endpoint resumed (attempt {attempt + 1}/{self.max_resume_retries})")
 
-                        # Wait for warmup
-                        logger.info(f"⏳ Waiting {self.warmup_timeout}s for Qwen endpoint warmup...")
-                        time.sleep(self.warmup_timeout)
-                        self.warmup_completed = True
+                        # Smart polling-based warmup (calls self.warmup())
+                        if not self.warmup():
+                            logger.error("❌ Qwen endpoint warmup failed after polling")
+                            return False
 
                         return True
                     except Exception as e:
@@ -173,6 +173,50 @@ class QwenEndpointManager:
 
         except Exception as e:
             logger.error(f"❌ Failed to check/resume Qwen endpoint: {e}")
+            return False
+
+
+    def warmup(self) -> bool:
+        """Smart polling-based warmup - stops as soon as endpoint responds."""
+        if self.warmup_completed:
+            logger.info("✅ Qwen endpoint already warmed up")
+            return True
+        
+        logger.info(f"🔥 Warming up Qwen endpoint (max {self.warmup_timeout}s)...")
+        start_time = time.time()
+        attempt = 0
+        
+        while (time.time() - start_time) < self.warmup_timeout:
+            attempt += 1
+            if self._test_inference():
+                elapsed = time.time() - start_time
+                logger.info(f"✅ Qwen warmed up in {elapsed:.1f}s ({attempt} attempts)")
+                self.warmup_completed = True
+                return True
+            
+            delay = min(2 * (2 ** (attempt - 1)), 15)
+            remaining = self.warmup_timeout - (time.time() - start_time)
+            if remaining > delay:
+                logger.info(f"   ⏳ Attempt {attempt} - retrying in {delay}s...")
+                time.sleep(delay)
+            else:
+                time.sleep(min(2, remaining))
+        
+        logger.error(f"❌ Qwen warmup timed out after {self.warmup_timeout}s")
+        return False
+    
+    def _test_inference(self) -> bool:
+        """Quick test if Qwen can handle requests."""
+        try:
+            import requests
+            response = requests.post(
+                f"{self.endpoint_url.rstrip('/')}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {self.endpoint_token}", "Content-Type": "application/json"},
+                json={"model": "Qwen/Qwen3-VL-32B-Instruct", "messages": [{"role": "user", "content": "OK"}], "max_tokens": 2},
+                timeout=15
+            )
+            return response.status_code == 200
+        except:
             return False
 
     def pause_if_idle(self) -> bool:

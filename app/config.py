@@ -244,7 +244,7 @@ class Settings(BaseSettings):
         env="MULTIMODAL_BATCH_SIZE"
     )
     multimodal_timeout: int = Field(
-        default=60,
+        default=300,  # Increased from 60s to prevent re-warmup during jobs
         env="MULTIMODAL_TIMEOUT"
     )
     
@@ -390,7 +390,7 @@ class Settings(BaseSettings):
         env="ANTHROPIC_TEMPERATURE"
     )
     anthropic_timeout: int = Field(
-        default=60,
+        default=300,  # Increased from 60s to prevent re-warmup during jobs
         env="ANTHROPIC_TIMEOUT"
     )
     anthropic_enabled: bool = Field(
@@ -488,7 +488,7 @@ class Settings(BaseSettings):
         description="Enable SLIG visual embeddings"
     )
     slig_timeout: int = Field(
-        default=60,
+        default=300,  # Increased from 60s to prevent re-warmup during jobs
         env="SLIG_TIMEOUT",
         description="Timeout for SLIG endpoint requests (seconds)"
     )
@@ -543,7 +543,7 @@ class Settings(BaseSettings):
         description="EasyOCR confidence threshold - use Chandra if below this value"
     )
     chandra_auto_pause_timeout: int = Field(
-        default=60,
+        default=300,  # Increased from 60s to prevent re-warmup during jobs
         env="CHANDRA_AUTO_PAUSE_TIMEOUT",
         description="Seconds of idle time before auto-pausing endpoint (to prevent billing)"
     )
@@ -599,7 +599,7 @@ class Settings(BaseSettings):
         description="Minimum confidence threshold for layout region detection (0.0-1.0)"
     )
     yolo_auto_pause_timeout: int = Field(
-        default=60,
+        default=300,  # Increased from 60s to prevent re-warmup during jobs
         env="YOLO_AUTO_PAUSE_TIMEOUT",
         description="Seconds of idle time before auto-pausing YOLO endpoint (to prevent billing)"
     )
@@ -619,7 +619,7 @@ class Settings(BaseSettings):
         description="Timeout in seconds for YOLO layout detection inference calls"
     )
     yolo_warmup_timeout: int = Field(
-        default=60,
+        default=300,  # Increased from 60s to prevent re-warmup during jobs
         env="YOLO_WARMUP_TIMEOUT",
         description="Warmup time in seconds for YOLO endpoint (required before first inference)"
     )

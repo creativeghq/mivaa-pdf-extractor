@@ -177,21 +177,58 @@ class YoloEndpointManager:
 
     def warmup(self) -> bool:
         """
-        Warmup the YOLO endpoint after resume.
-        CRITICAL: YOLO requires 60 seconds warmup before first inference!
+        Smart polling-based warmup for YOLO endpoint.
+        
+        Uses exponential backoff to poll the endpoint until it responds,
+        stopping as soon as ready instead of fixed 60s wait.
 
         Returns:
-            True if warmup successful, False if failed
+            True if warmup successful, False if timeout
         """
         if self.warmup_completed:
             logger.info("✅ YOLO endpoint already warmed up")
             return True
 
-        logger.info(f"🔥 Warming up YOLO endpoint ({self.warmup_timeout}s)...")
-        time.sleep(self.warmup_timeout)
-        self.warmup_completed = True
-        logger.info("✅ YOLO endpoint warmup complete")
-        return True
+        logger.info(f"🔥 Warming up YOLO endpoint (max {self.warmup_timeout}s)...")
+        
+        start_time = time.time()
+        attempt = 0
+        base_delay = 2
+        max_delay = 15
+        
+        while (time.time() - start_time) < self.warmup_timeout:
+            attempt += 1
+            
+            if self._test_inference():
+                elapsed = time.time() - start_time
+                logger.info(f"✅ YOLO endpoint warmed up in {elapsed:.1f}s ({attempt} attempts)")
+                self.warmup_completed = True
+                return True
+            
+            delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
+            remaining = self.warmup_timeout - (time.time() - start_time)
+            
+            if remaining > delay:
+                logger.info(f"   ⏳ Warmup attempt {attempt} - not ready, retrying in {delay}s...")
+                time.sleep(delay)
+            else:
+                time.sleep(min(2, remaining))
+        
+        logger.error(f"❌ YOLO warmup failed after {time.time() - start_time:.1f}s")
+        return False
+
+    def _test_inference(self) -> bool:
+        """Test if YOLO endpoint can handle requests."""
+        try:
+            response = requests.get(
+                f"{self.endpoint_url.rstrip('/')}/health",
+                headers={"Authorization": f"Bearer {self.hf_token}"},
+                timeout=10
+            )
+            # Accept 200 or 404 (no /health route but endpoint responding)
+            return response.status_code in [200, 404]
+        except:
+            return False
 
     def pause_if_idle(self) -> bool:
         """

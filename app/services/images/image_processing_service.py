@@ -199,29 +199,49 @@ class ImageProcessingService:
                     timeout=90.0
                 )
 
-                # ✅ Call endpoint using OpenAI format (as per your working example)
-                response = await client.chat.completions.create(
-                    model=model,  # unsloth/Qwen3-VL-32B-Instruct-GGUF
-                    messages=[{
-                        "role": "user",
-                        "content": [
-                            # ✅ Image first, then text (as per your working example)
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{image_base64}"
-                                }
-                            },
-                            {
-                                "type": "text",
-                                "text": classification_prompt
-                            }
-                        ]
-                    }],
-                    max_tokens=512,
-                    temperature=0.1,
-                    stream=False  # ✅ Disable streaming for simpler response handling
-                )
+                # ✅ Call endpoint with retry logic for 503 errors
+                import random
+                max_retries = 3
+                response = None
+                
+                for retry_attempt in range(max_retries):
+                    try:
+                        response = await client.chat.completions.create(
+                            model=model,
+                            messages=[{
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:image/jpeg;base64,{image_base64}"
+                                        }
+                                    },
+                                    {
+                                        "type": "text",
+                                        "text": classification_prompt
+                                    }
+                                ]
+                            }],
+                            max_tokens=512,
+                            temperature=0.1,
+                            stream=False
+                        )
+                        break  # Success, exit retry loop
+                    except Exception as retry_e:
+                        error_str = str(retry_e)
+                        # Retry on 503 Service Unavailable
+                        if '503' in error_str or 'Service Unavailable' in error_str:
+                            if retry_attempt < max_retries - 1:
+                                delay = min(2 ** retry_attempt + random.uniform(0, 1), 15)
+                                logger.warning(f"⏳ Qwen 503 error, retrying in {delay:.1f}s (attempt {retry_attempt + 1}/{max_retries})")
+                                import asyncio
+                                await asyncio.sleep(delay)
+                                continue
+                        raise  # Re-raise if not 503 or last attempt
+                
+                if response is None:
+                    raise Exception("Qwen request failed after all retries")
 
                 # ✅ Parse response from OpenAI format
                 result_text = response.choices[0].message.content

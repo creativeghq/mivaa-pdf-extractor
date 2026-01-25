@@ -39,7 +39,8 @@ async def process_stage_0_discovery(
     tracker: Any,
     checkpoint_recovery_service: Any,
     logger: Any,
-    temp_pdf_path: Optional[str] = None  # ✅ NEW: Optional existing temp path
+    temp_pdf_path: Optional[str] = None,  # ✅ NEW: Optional existing temp path
+    test_single_product: bool = False  # 🧪 TEST MODE: Process only first product
 ) -> Dict[str, Any]:
     """
     Stage 0: Product Discovery
@@ -475,12 +476,23 @@ async def process_stage_0_discovery(
         from app.schemas.product_progress import ProductStatus
         from app.api.pdf_processing.stage_4_products import create_single_product
 
+        # 🧪 TEST MODE: Only create first product in DB if test_single_product=True
+        if test_single_product:
+            logger.warning("=" * 80)
+            logger.warning("🧪 TEST MODE ENABLED: Creating ONLY the first product in database")
+            logger.warning("   This is for testing/debugging purposes only")
+            logger.warning("   Set test_single_product=False to create all products")
+            logger.warning("=" * 80)
+            products_to_create = catalog.products[:1]  # Only first product
+        else:
+            products_to_create = catalog.products  # All products
+
         product_tracker = ProductProgressTracker(job_id=job_id)
-        logger.info(f"🏭 Creating {len(catalog.products)} products in database...")
+        logger.info(f"🏭 Creating {len(products_to_create)} products in database (discovered: {len(catalog.products)})...")
 
         product_db_ids = []  # Store created product IDs
 
-        for i, product in enumerate(catalog.products, start=1):
+        for i, product in enumerate(products_to_create, start=1):
             try:
                 # Generate product_id (same format as in product_processor.py)
                 product_id = f"product_{i}_{product.name.replace(' ', '_')}"
