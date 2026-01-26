@@ -27,6 +27,38 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 
+# ============================================================================
+# IMAGE CLASSIFICATION CATEGORY MAPPING
+# ============================================================================
+# The Qwen vision model returns these categories:
+#   - PRODUCT_IMAGE: Clear shot of a material/product (KEEP)
+#   - MIXED: Product with context/environment (KEEP)
+#   - DECORATIVE: Lifestyle/artistic images without clear product (FILTER)
+#   - TECHNICAL_DIAGRAM: Charts, graphs, technical drawings (FILTER)
+#
+# We map these to is_material=True/False for downstream processing
+# ============================================================================
+
+MATERIAL_CATEGORIES = {'PRODUCT_IMAGE', 'MIXED'}  # These ARE material images
+NON_MATERIAL_CATEGORIES = {'DECORATIVE', 'TECHNICAL_DIAGRAM'}  # These are NOT
+
+
+def is_material_classification(classification: str) -> bool:
+    """
+    Check if a classification indicates a material image.
+
+    Args:
+        classification: The classification string from Qwen (e.g., 'PRODUCT_IMAGE', 'DECORATIVE')
+
+    Returns:
+        True if this is a material image, False otherwise
+    """
+    if not classification:
+        return False
+    category = classification.upper().strip()
+    return category in MATERIAL_CATEGORIES
+
+
 class ImageProcessingService:
     """Service for handling all image processing operations."""
 
@@ -131,15 +163,34 @@ class ImageProcessingService:
             logger.error("   Image classification will fail. Please set HUGGINGFACE_API_KEY.")
             raise ValueError("HUGGINGFACE_API_KEY not configured")
 
-        # Initialize Qwen endpoint manager
-        # NOTE: Warmup is handled centrally in rag_routes.py at job start
-        qwen_manager = QwenEndpointManager(
-            endpoint_url=qwen_endpoint_url,
-            endpoint_name=qwen_config["endpoint_name"],
-            namespace=qwen_config["namespace"],
-            endpoint_token=huggingface_api_key,
-            enabled=qwen_config["enabled"]
-        )
+        # Initialize Qwen endpoint manager - prefer warmed-up manager from registry
+        qwen_manager = None
+        try:
+            from app.services.embeddings.endpoint_registry import endpoint_registry
+            registry_qwen = endpoint_registry.get_qwen_manager()
+            if registry_qwen is not None:
+                qwen_manager = registry_qwen
+                logger.info("✅ Using warmed-up Qwen manager from registry")
+                # Scale to max replicas for batch image processing
+                if hasattr(qwen_manager, 'scale_to_max'):
+                    try:
+                        qwen_manager.scale_to_max()
+                        logger.info("📈 Scaled Qwen to max replicas for batch processing")
+                    except Exception as scale_err:
+                        logger.warning(f"⚠️ Could not scale Qwen to max: {scale_err}")
+        except Exception as e:
+            logger.debug(f"Registry Qwen manager not available: {e}")
+
+        # Fallback: Create new manager if registry not available
+        if qwen_manager is None:
+            qwen_manager = QwenEndpointManager(
+                endpoint_url=qwen_endpoint_url,
+                endpoint_name=qwen_config["endpoint_name"],
+                namespace=qwen_config["namespace"],
+                endpoint_token=huggingface_api_key,
+                enabled=qwen_config["enabled"]
+            )
+            logger.info("ℹ️ Created new Qwen manager (registry not available)")
 
         # Check if Qwen is enabled and assume it's ready (warmup done at job start)
         qwen_endpoint_available = qwen_config["enabled"]
@@ -322,10 +373,21 @@ class ImageProcessingService:
                     job_id=job_id  # Track cost per job
                 )
 
+                # Determine is_material using category mapping
+                # The prompt returns classification categories like PRODUCT_IMAGE, DECORATIVE, etc.
+                # We map these to is_material boolean using the module-level mapping
+                classification_category = result.get('classification', '')
+                if classification_category:
+                    is_material = is_material_classification(classification_category)
+                else:
+                    # Fallback to direct is_material field if no classification category
+                    is_material = result.get('is_material', False)
+
                 return {
-                    'is_material': result.get('is_material', False),
+                    'is_material': is_material,
                     'confidence': result.get('confidence', 0.5),
                     'reason': result.get('reason', 'Unknown'),
+                    'classification': classification_category,  # Include category for debugging
                     'model': model_short
                 }
 
@@ -400,7 +462,8 @@ class ImageProcessingService:
                 result_text = response.content[0].text
                 result = json.loads(result_text)
 
-                is_material = result['classification'] in ['material_closeup', 'material_in_situ']
+                # Use the category mapping function for consistent classification
+                is_material = is_material_classification(result.get('classification', ''))
 
                 return {
                     'is_material': is_material,

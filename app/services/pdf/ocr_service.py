@@ -20,6 +20,13 @@ from dataclasses import dataclass
 
 from app.services.pdf.chandra_endpoint_manager import ChandraEndpointManager
 
+# Import endpoint registry for using warmed-up managers
+try:
+    from app.services.embeddings.endpoint_registry import endpoint_registry
+    REGISTRY_AVAILABLE = True
+except ImportError:
+    REGISTRY_AVAILABLE = False
+
 # Fix for Pillow 10.0+ compatibility with EasyOCR
 if not hasattr(Image, 'ANTIALIAS'):
     Image.ANTIALIAS = Image.LANCZOS
@@ -178,24 +185,36 @@ class OCRService:
         self._easyocr_reader: Optional[easyocr.Reader] = None
         self._initialized = False
 
-        # Initialize Chandra Endpoint Manager if enabled
+        # Initialize Chandra Endpoint Manager - prefer warmed-up manager from registry
         self.chandra_manager: Optional[ChandraEndpointManager] = None
-        if self.config.chandra_enabled and self.config.chandra_endpoint_url and self.config.chandra_hf_token:
-            try:
-                self.chandra_manager = ChandraEndpointManager(
-                    endpoint_url=self.config.chandra_endpoint_url,
-                    hf_token=self.config.chandra_hf_token,
-                    endpoint_name=self.config.chandra_endpoint_name,
-                    namespace=self.config.chandra_namespace,
-                    auto_pause_timeout=self.config.chandra_auto_pause_timeout,
-                    inference_timeout=self.config.chandra_inference_timeout,
-                    max_resume_retries=self.config.chandra_max_resume_retries,
-                    enabled=self.config.chandra_enabled
-                )
-                logger.info("✅ Chandra OCR endpoint manager initialized")
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to initialize Chandra endpoint manager: {e}")
-                self.chandra_manager = None
+        if self.config.chandra_enabled:
+            # Try registry first for warmed-up manager
+            if REGISTRY_AVAILABLE:
+                try:
+                    registry_manager = endpoint_registry.get_chandra_manager()
+                    if registry_manager is not None:
+                        self.chandra_manager = registry_manager
+                        logger.info("✅ Using warmed-up Chandra manager from registry")
+                except Exception as e:
+                    logger.debug(f"Registry Chandra manager not available: {e}")
+
+            # Fallback: Create new manager if registry not available
+            if self.chandra_manager is None and self.config.chandra_endpoint_url and self.config.chandra_hf_token:
+                try:
+                    self.chandra_manager = ChandraEndpointManager(
+                        endpoint_url=self.config.chandra_endpoint_url,
+                        hf_token=self.config.chandra_hf_token,
+                        endpoint_name=self.config.chandra_endpoint_name,
+                        namespace=self.config.chandra_namespace,
+                        auto_pause_timeout=self.config.chandra_auto_pause_timeout,
+                        inference_timeout=self.config.chandra_inference_timeout,
+                        max_resume_retries=self.config.chandra_max_resume_retries,
+                        enabled=self.config.chandra_enabled
+                    )
+                    logger.info("ℹ️ Created new Chandra manager (registry not available)")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to initialize Chandra endpoint manager: {e}")
+                    self.chandra_manager = None
 
         logger.info(f"OCR Service initialized with languages: {self.config.languages}")
     
