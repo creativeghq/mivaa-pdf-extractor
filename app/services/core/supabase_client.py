@@ -376,6 +376,27 @@ class SupabaseClient:
             image_type = ai_classification.get('classification') or 'material_sample'
             # Valid types: material_closeup, material_in_situ, non_material
 
+            # ✅ FIX: Validate bbox before saving to prevent constraint violations
+            # bbox must be None OR [x, y, width, height] with values 0-1
+            validated_bbox = None
+            if bbox is not None:
+                if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+                    # Check all values are between 0 and 1
+                    try:
+                        all_valid = all(0 <= float(v) <= 1 for v in bbox)
+                        if all_valid:
+                            validated_bbox = list(bbox)
+                        else:
+                            logger.warning(f"⚠️ bbox values out of range (0-1): {bbox[:4]}, setting to None")
+                    except (TypeError, ValueError) as e:
+                        logger.warning(f"⚠️ bbox has non-numeric values: {e}, setting to None")
+                else:
+                    # Log detailed error for debugging (includes embedding detection)
+                    bbox_len = len(bbox) if isinstance(bbox, (list, tuple)) else 'N/A'
+                    logger.error(f"❌ CRITICAL: Invalid bbox - expected 4 elements, got {bbox_len}. First 5 values: {bbox[:5] if isinstance(bbox, (list, tuple)) else bbox}")
+                    logger.error(f"   This may indicate an embedding was incorrectly assigned to bbox")
+            bbox = validated_bbox
+
             # Prepare image entry (same format as batch save)
             image_entry = {
                 'document_id': document_id,

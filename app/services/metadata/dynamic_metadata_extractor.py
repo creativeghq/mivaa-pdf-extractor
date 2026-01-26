@@ -283,7 +283,6 @@ class DynamicMetadataExtractor:
         self.model = model
         self.job_id = job_id
         self.workspace_id = workspace_id or get_settings().default_workspace_id
-        self.workspace_id = workspace_id
         self.logger = logging.getLogger(__name__)
         self.ai_logger = AICallLogger()
         self.supabase = get_supabase_client()

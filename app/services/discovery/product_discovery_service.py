@@ -615,12 +615,13 @@ class ProductDiscoveryService:
                     pdf_path,
                     pdf_text=pdf_text,
                     job_id=job_id,
-                    tracker=tracker
+                    tracker=tracker,
+                    workspace_id=workspace_id
                 )
             elif "products" in categories and catalog.products:
                 # Fallback: Use full PDF text if pdf_path not provided
                 self.logger.warning("⚠️ pdf_path not provided, using fallback metadata extraction")
-                catalog = await self._enrich_products_with_metadata(catalog, pdf_text, job_id)
+                catalog = await self._enrich_products_with_metadata(catalog, pdf_text, job_id, workspace_id=workspace_id)
 
             processing_time = (datetime.now() - start_time).total_seconds() * 1000
             catalog.processing_time_ms = processing_time
@@ -1052,7 +1053,8 @@ class ProductDiscoveryService:
         pdf_path: str,
         pdf_text: Optional[str] = None,
         job_id: Optional[str] = None,
-        tracker: Optional[Any] = None
+        tracker: Optional[Any] = None,
+        workspace_id: Optional[str] = None
     ) -> ProductCatalog:
         """
         STAGE 0B: Deterministic page detection + detailed metadata extraction.
@@ -1078,8 +1080,8 @@ class ProductDiscoveryService:
             from app.core.extractor import extract_pdf_to_markdown
             import pymupdf4llm
 
-            # Initialize metadata extractor
-            metadata_extractor = DynamicMetadataExtractor(model=self.model, job_id=job_id)
+            # Initialize metadata extractor with workspace_id for custom prompts
+            metadata_extractor = DynamicMetadataExtractor(model=self.model, job_id=job_id, workspace_id=workspace_id)
 
             # Store tracker for heartbeat updates
             self.tracker = tracker
@@ -1458,7 +1460,8 @@ class ProductDiscoveryService:
         self,
         catalog: ProductCatalog,
         pdf_text: str,
-        job_id: Optional[str] = None
+        job_id: Optional[str] = None,
+        workspace_id: Optional[str] = None
     ) -> ProductCatalog:
         """
         FALLBACK: Enrich products with metadata using full PDF text.
@@ -1475,8 +1478,8 @@ class ProductDiscoveryService:
             Catalog with enriched product metadata
         """
         try:
-            # Initialize metadata extractor with same model as discovery
-            metadata_extractor = DynamicMetadataExtractor(model=self.model, job_id=job_id)
+            # Initialize metadata extractor with same model as discovery and workspace_id
+            metadata_extractor = DynamicMetadataExtractor(model=self.model, job_id=job_id, workspace_id=workspace_id)
 
             enriched_products = []
 
