@@ -1073,6 +1073,12 @@ class PDFProcessor:
 
                                 extracted_images.append(image_info)
 
+                                # 🔍 BBOX TRACE: Log bbox at extraction point
+                                self.logger.info(
+                                    f"   🔍 [BBOX TRACE] YOLO extraction - {image_filename}: "
+                                    f"bbox={image_info.get('bbox')}, id(img_info)={id(image_info)}"
+                                )
+
                                 self.logger.debug(
                                     f"   ✅ [Job: {job_id}] Extracted YOLO region {region_idx} "
                                     f"from PDF page {pdf_page} (confidence: {region.confidence:.2f})"
@@ -1223,6 +1229,12 @@ class PDFProcessor:
 
                             # Immediately free memory
                             del image_bytes, base_image
+
+                            # 🔍 BBOX TRACE: Log bbox at extraction point
+                            self.logger.info(
+                                f"   🔍 [BBOX TRACE] PyMuPDF extraction - {image_filename}: "
+                                f"bbox={extracted_images[-1].get('bbox')}, id(img)={id(extracted_images[-1])}"
+                            )
 
                             self.logger.info(
                                 f"   ✅ [Job: {job_id}] Extracted image {img_idx + 1}/{len(image_list)}: {image_filename} "

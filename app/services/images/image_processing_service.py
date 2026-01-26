@@ -811,6 +811,23 @@ class ImageProcessingService:
 
         while retry_count < max_retries:
             try:
+                # 🔍 BBOX TRACE: Log bbox right before save_single_image
+                bbox_value = img_data.get('bbox')
+                bbox_len = len(bbox_value) if isinstance(bbox_value, (list, tuple)) else 'N/A'
+                logger.info(
+                    f"   🔍 [BBOX TRACE] Before save_single_image - {img_data.get('filename')}: "
+                    f"bbox_len={bbox_len}, bbox={bbox_value[:5] if isinstance(bbox_value, (list, tuple)) and len(bbox_value) >= 5 else bbox_value}, "
+                    f"id(img_data)={id(img_data)}"
+                )
+                # Check if bbox looks like an embedding (768 elements)
+                if isinstance(bbox_value, (list, tuple)) and len(bbox_value) > 10:
+                    logger.error(
+                        f"   ❌ [BBOX TRACE] CORRUPTION DETECTED! bbox has {len(bbox_value)} elements "
+                        f"(expected 4). First 5: {bbox_value[:5]}"
+                    )
+                    # Log all keys in img_data to find where corruption came from
+                    logger.error(f"   ❌ [BBOX TRACE] img_data keys: {list(img_data.keys())}")
+
                 # Save to database with material_category for proper categorization
                 # (ai_classification is already in img_data from classify_images)
                 image_id = await self.supabase_client.save_single_image(
@@ -868,6 +885,16 @@ class ImageProcessingService:
 
                 embeddings = embedding_result.get('embeddings', {})
                 model_used = embedding_result.get('model_used', 'unknown')
+
+                # 🔍 BBOX TRACE: Check if bbox changed after embedding generation
+                bbox_after = img_data.get('bbox')
+                bbox_after_len = len(bbox_after) if isinstance(bbox_after, (list, tuple)) else 'N/A'
+                if isinstance(bbox_after, (list, tuple)) and len(bbox_after) > 10:
+                    logger.error(
+                        f"   ❌ [BBOX TRACE] CORRUPTION AFTER EMBEDDING! bbox has {len(bbox_after)} elements. "
+                        f"This suggests embedding_service modified img_data!"
+                    )
+                    logger.error(f"   ❌ [BBOX TRACE] embeddings keys: {list(embeddings.keys())}")
 
                 # Save visual CLIP embedding (768D from SigLIP2)
                 # ✅ FIXED: Changed from 'visual_512' to 'visual_768' to match real_embeddings_service output

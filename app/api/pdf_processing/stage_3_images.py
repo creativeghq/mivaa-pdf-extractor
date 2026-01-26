@@ -346,6 +346,13 @@ async def process_product_images(
     # ========================================================================
     image_service = ImageProcessingService()
 
+    # 🔍 BBOX TRACE: Log bbox before classification
+    logger.info(f"   🔍 [BBOX TRACE] Before classification - checking {len(extracted_images_list)} images:")
+    for i, img in enumerate(extracted_images_list[:5]):  # Log first 5
+        bbox = img.get('bbox')
+        bbox_len = len(bbox) if isinstance(bbox, (list, tuple)) else 'N/A'
+        logger.info(f"      Image {i}: {img.get('filename')}, bbox_len={bbox_len}, bbox={bbox[:4] if isinstance(bbox, (list, tuple)) and len(bbox) >= 4 else bbox}, id={id(img)}")
+
     logger.info(f"   🤖 Starting AI classification of {total_images} images...")
 
     try:
@@ -366,6 +373,13 @@ async def process_product_images(
     logger.info(f"      Material images: {len(material_images)}")
     logger.info(f"      Non-material images: {non_material_count}")
 
+    # 🔍 BBOX TRACE: Log bbox after classification
+    logger.info(f"   🔍 [BBOX TRACE] After classification - checking {len(material_images)} material images:")
+    for i, img in enumerate(material_images[:5]):  # Log first 5
+        bbox = img.get('bbox')
+        bbox_len = len(bbox) if isinstance(bbox, (list, tuple)) else 'N/A'
+        logger.info(f"      Image {i}: {img.get('filename')}, bbox_len={bbox_len}, bbox={bbox[:4] if isinstance(bbox, (list, tuple)) and len(bbox) >= 4 else bbox}, id={id(img)}")
+
     # ========================================================================
     # UPLOAD MATERIAL IMAGES TO STORAGE
     # ========================================================================
@@ -376,6 +390,13 @@ async def process_product_images(
     )
 
     logger.info(f"      Successfully uploaded: {len(uploaded_images)}/{len(material_images)}")
+
+    # 🔍 BBOX TRACE: Log bbox after upload
+    logger.info(f"   🔍 [BBOX TRACE] After upload - checking {len(uploaded_images)} uploaded images:")
+    for i, img in enumerate(uploaded_images[:5]):  # Log first 5
+        bbox = img.get('bbox')
+        bbox_len = len(bbox) if isinstance(bbox, (list, tuple)) else 'N/A'
+        logger.info(f"      Image {i}: {img.get('filename')}, bbox_len={bbox_len}, bbox={bbox[:4] if isinstance(bbox, (list, tuple)) and len(bbox) >= 4 else bbox}, id={id(img)}")
 
     # ========================================================================
     # SAVE TO DATABASE AND GENERATE CLIP EMBEDDINGS
