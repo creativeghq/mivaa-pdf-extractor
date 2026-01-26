@@ -357,6 +357,53 @@ class YoloEndpointManager:
             logger.error(f"❌ Failed to pause YOLO endpoint: {e}")
             return False
 
+    def scale_to_zero(self) -> bool:
+        """
+        Scale endpoint to zero replicas at JOB COMPLETION.
+
+        Unlike force_pause(), this sets min_replica=0 which allows HuggingFace
+        to auto-scale based on demand. The endpoint will auto-resume when
+        the next request arrives.
+
+        This is the PREFERRED method for job completion cleanup.
+
+        Returns:
+            True if scaled successfully, False if failed
+        """
+        if not self._can_pause_resume:
+            logger.warning("Endpoint management not available - cannot scale to zero")
+            return False
+
+        endpoint = self._get_endpoint()
+        if not endpoint:
+            return False
+
+        try:
+            endpoint.fetch()
+            current_status = endpoint.status
+
+            # Get current max_replica to preserve it
+            raw = getattr(endpoint, 'raw', {})
+            if 'compute' in raw and 'scaling' in raw['compute']:
+                max_rep = raw['compute']['scaling'].get('maxReplica', 2)
+            else:
+                max_rep = 2
+
+            logger.info(f"📉 Scaling YOLO endpoint to 0 replicas (JOB COMPLETED - will auto-resume on demand)")
+            endpoint.update(min_replica=0, max_replica=max_rep)
+
+            if self.last_resume_time:
+                uptime = time.time() - self.last_resume_time
+                self.total_uptime += uptime
+
+            self.warmup_completed = False
+            logger.info(f"✅ YOLO endpoint scaled to 0 (was: {current_status}, max: {max_rep})")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Failed to scale YOLO endpoint to zero: {e}")
+            return False
+
     def get_stats(self) -> Dict[str, Any]:
         """
         Get endpoint usage statistics.

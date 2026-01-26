@@ -3667,23 +3667,24 @@ async def process_document_with_discovery(
         except Exception as cleanup_error:
             logger.warning(f"   ⚠️ Resource cleanup failed: {cleanup_error}")
 
-        # 4. Pause HuggingFace endpoints (Stop billing) - SINGLE LOCATION for all endpoint pausing
-        logger.info("🛑 [CLEANUP] Pausing AI endpoints...")
-        endpoints_to_pause = ['qwen', 'slig', 'yolo', 'chandra']
-        paused_count = 0
+        # 4. Scale HuggingFace endpoints to zero (Stop billing) - SINGLE LOCATION for all endpoint scaling
+        # NOTE: Using scale_to_zero() instead of force_pause() allows auto-resume on next request
+        logger.info("📉 [CLEANUP] Scaling AI endpoints to zero...")
+        endpoints_to_scale = ['qwen', 'slig', 'yolo', 'chandra']
+        scaled_count = 0
 
         # Only process if endpoint_managers exists (may not if job failed early)
         if 'endpoint_managers' not in locals():
             endpoint_managers = {}
-            
-        for name in endpoints_to_pause:
+
+        for name in endpoints_to_scale:
             if name in endpoint_managers:
                 try:
-                    if endpoint_managers[name].force_pause():
-                        paused_count += 1
-                        logger.info(f"   ✅ {name.upper()} endpoint paused")
-                except Exception as pause_error:
-                    logger.warning(f"   ⚠️ Failed to pause {name} endpoint: {pause_error}")
+                    if endpoint_managers[name].scale_to_zero():
+                        scaled_count += 1
+                        logger.info(f"   ✅ {name.upper()} endpoint scaled to zero")
+                except Exception as scale_error:
+                    logger.warning(f"   ⚠️ Failed to scale {name} endpoint to zero: {scale_error}")
 
         # 5. Clear endpoint registry (cleanup singleton state)
         try:
@@ -3694,7 +3695,7 @@ async def process_document_with_discovery(
 
         # 6. Final Garbage Collection
         gc.collect()
-        logger.info(f"✨ [CLEANUP] Finished. Endpoints paused: {paused_count}")
+        logger.info(f"✨ [CLEANUP] Finished. Endpoints scaled to zero: {scaled_count}")
 
 
 @router.post("/query", response_model=QueryResponse)
