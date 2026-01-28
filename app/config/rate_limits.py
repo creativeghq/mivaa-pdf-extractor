@@ -115,10 +115,11 @@ def get_vision_concurrency_limit() -> int:
     """
     tier = get_current_tier()
 
-    # CONSERVATIVE: Use lower concurrency for Tier 1 to avoid 503 errors
-    # Qwen3-VL-32B has capacity constraints that cause 503s at higher concurrency
+    # NOTE: For HuggingFace Qwen endpoints, we can use higher concurrency
+    # The original limit of 5 was for TogetherAI which had 503 issues
+    # HuggingFace dedicated endpoints handle 10 concurrent requests well
     if tier.tier == 1:
-        return 5  # Conservative limit for Tier 1 to prevent TogetherAI 503 errors
+        return 10  # Increased from 5 for HuggingFace Qwen endpoints
 
     # Use 60% of available RPM to leave headroom for higher tiers
     # Convert to concurrent requests assuming ~2s average response time
@@ -193,7 +194,7 @@ Vision Concurrency Formula:
 - Clamped between 2 and 20
 
 Examples by tier:
-- Tier 1 (600 RPM):  (600 * 0.6 / 60) * 2 = 12 concurrent
+- Tier 1 (600 RPM):  10 concurrent (hardcoded for HuggingFace Qwen endpoints)
 - Tier 2 (1800 RPM): (1800 * 0.6 / 60) * 2 = 20 concurrent (capped)
 - Tier 3 (3000 RPM): (3000 * 0.6 / 60) * 2 = 20 concurrent (capped)
 - Tier 4 (4500 RPM): (4500 * 0.6 / 60) * 2 = 20 concurrent (capped)

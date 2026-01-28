@@ -89,7 +89,7 @@ class CLIPEmbeddingJobService:
         document_id: str,
         workspace_id: str,
         batch_size: int = 10,
-        max_concurrent: int = 3
+        max_concurrent: int = 5  # Increased from 3 for faster embedding generation
     ) -> Dict[str, Any]:
         """
         Process CLIP embedding generation for all images in a document.

@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ParallelProcessingConfig:
     """Configuration for parallel product processing."""
-    max_concurrent: int = 2  # Max products to process concurrently (2-3 recommended)
+    max_concurrent: int = 3  # Max products to process concurrently (increased from 2)
     batch_size: int = 5  # Products to batch before memory cleanup
     enable_parallel: bool = True  # Enable/disable parallel processing
     memory_threshold_mb: float = 4000  # Pause if memory exceeds this
