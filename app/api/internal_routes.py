@@ -971,7 +971,8 @@ async def regenerate_image_embeddings(
     1. Fetches existing images from document_images table
     2. Downloads images from Supabase Storage
     3. Generates 5 CLIP embeddings per image (visual, color, texture, style, material)
-    4. Saves embeddings to VECS collections
+    4. Generates understanding embedding (1024D) if vision_analysis exists
+    5. Saves embeddings to VECS collections
 
     **Use Cases:**
     - Fix missing embeddings from old PDF processing
@@ -1002,8 +1003,8 @@ async def regenerate_image_embeddings(
 
         logger.info(f"🎨 Starting image embedding regeneration for workspace: {request.workspace_id}")
 
-        # Build query to find images
-        query = supabase.client.table('document_images').select('id, image_url, document_id, page_number, workspace_id')
+        # Build query to find images (include vision_analysis for understanding embedding)
+        query = supabase.client.table('document_images').select('id, image_url, document_id, page_number, workspace_id, vision_analysis, material_properties')
 
         # Apply filters
         query = query.eq('workspace_id', request.workspace_id)
@@ -1090,14 +1091,15 @@ async def regenerate_image_embeddings(
                         image_bytes = await response.read()
                         image_base64 = f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('utf-8')}"
 
-                # Generate all embeddings (visual, color, texture, style, material)
+                # Generate all embeddings (visual, color, texture, style, material, understanding)
                 logger.info(f"   🎨 Generating embeddings for image {image_id}...")
                 embedding_result = await embeddings_service.generate_all_embeddings(
                     entity_id=image_id,
                     entity_type="image",
                     text_content="",
                     image_data=image_base64,
-                    material_properties={}
+                    material_properties=image.get('material_properties') or {},
+                    vision_analysis=image.get('vision_analysis')
                 )
 
                 if not embedding_result or not embedding_result.get('success'):
@@ -1140,8 +1142,23 @@ async def regenerate_image_embeddings(
                     )
                     embeddings_generated += len(specialized_embeddings)
 
+                # Save understanding embedding to VECS (1024D from Voyage AI)
+                understanding_embedding = embeddings.get('understanding_1024')
+                if understanding_embedding:
+                    await vecs_service.upsert_understanding_embedding(
+                        image_id=image_id,
+                        embedding=understanding_embedding,
+                        metadata={
+                            'document_id': image.get('document_id'),
+                            'workspace_id': image.get('workspace_id'),
+                            'page_number': image.get('page_number', 1)
+                        }
+                    )
+                    embeddings_generated += 1
+
                 images_processed += 1
-                logger.info(f"   ✅ Generated {1 + len(specialized_embeddings)} embeddings for image {image_id}")
+                total_emb = 1 + len(specialized_embeddings) + (1 if understanding_embedding else 0)
+                logger.info(f"   ✅ Generated {total_emb} embeddings for image {image_id}")
 
                 # ✅ Update progress after each image (if job_id provided)
                 if request.job_id:

@@ -99,6 +99,10 @@ class Settings(BaseSettings):
     # Multi-Query Expansion
     multi_query_variations: int = Field(default=3, env="MULTI_QUERY_VARIATIONS")
 
+    # Understanding Embeddings (Qwen vision_analysis → Voyage AI text embedding)
+    enable_understanding_embeddings: bool = Field(default=True, env="ENABLE_UNDERSTANDING_EMBEDDINGS")
+    understanding_embedding_dimension: int = Field(default=1024, env="UNDERSTANDING_EMBEDDING_DIMENSION")
+
     # Embedding Cache
     embedding_cache_ttl: int = Field(default=86400, env="EMBEDDING_CACHE_TTL")  # 24 hours
     embedding_cache_max_size: int = Field(default=10000, env="EMBEDDING_CACHE_MAX_SIZE")

@@ -580,14 +580,15 @@ class RAGService:
 
             # Default weights (can be overridden)
             default_weights = {
-                'visual': 0.25,    # Visual CLIP embeddings
-                'chunk': 0.25,     # Text chunks (NEW!)
-                'product': 0.20,   # Direct product embeddings (NEW!)
-                'keyword': 0.15,   # Keyword matching
-                'color': 0.05,     # Color CLIP
-                'texture': 0.05,   # Texture CLIP
-                'style': 0.03,     # Style CLIP
-                'material': 0.02   # Material CLIP
+                'visual': 0.20,         # Visual SLIG embeddings
+                'chunk': 0.20,          # Text chunks
+                'understanding': 0.15,  # Vision-understanding (Qwen → Voyage AI)
+                'product': 0.15,        # Direct product embeddings
+                'keyword': 0.12,        # Keyword matching
+                'color': 0.05,          # Color SLIG
+                'texture': 0.05,        # Texture SLIG
+                'style': 0.04,          # Style SLIG
+                'material': 0.04        # Material SLIG
             }
             embedding_weights = config.get('weights', default_weights)
 
@@ -617,8 +618,15 @@ class RAGService:
                 else:
                     self.logger.warning("⚠️ Text embedding generation failed")
 
+            # Generate understanding query embedding (for vision-understanding search)
+            understanding_embedding = None
+            understanding_result = await self.embeddings_service.generate_understanding_query_embedding(query)
+            if understanding_result.get("success"):
+                understanding_embedding = understanding_result.get("embedding", [])
+                self.logger.info(f"✅ Understanding embedding: {len(understanding_embedding)}D")
+
             # ============================================================================
-            # STEP 2A: Search VISUAL embeddings (5 VECS collections)
+            # STEP 2A: Search VISUAL + UNDERSTANDING embeddings (6 VECS collections)
             # ============================================================================
             image_scores = {}  # Maps image_id -> {embedding_type: score}
 
@@ -636,7 +644,19 @@ class RAGService:
                     )
                     search_tasks.append(task)
 
-                self.logger.info(f"🚀 Searching {len(embedding_types)} visual embeddings...")
+                # Add understanding search in parallel with visual searches
+                if understanding_embedding:
+                    search_tasks.append(
+                        self.vecs_service.search_understanding_embeddings(
+                            query_embedding=understanding_embedding,
+                            limit=top_k * 3,
+                            workspace_id=workspace_id,
+                            include_metadata=True
+                        )
+                    )
+                    embedding_types = embedding_types + ['understanding']
+
+                self.logger.info(f"🚀 Searching {len(embedding_types)} embeddings...")
                 search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
 
                 for emb_type, results in zip(embedding_types, search_results):

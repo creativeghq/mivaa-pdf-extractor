@@ -1,10 +1,11 @@
 """
 Real Embeddings Service - Step 4 Implementation (Updated for Voyage AI)
 
-Generates 3 real embedding types using AI models:
+Generates embedding types using AI models:
 1. Text (1024D) - Voyage AI voyage-3.5 (primary) with OpenAI fallback (both 1024D)
 2. Visual Embeddings (768D) - SLIG (SigLIP2) via HuggingFace Cloud Endpoint
-3. Multimodal Fusion (1792D) - Combined text+visual (1024D + 768D = 1792D)
+3. Understanding (1024D) - Qwen vision_analysis JSON → Voyage AI text embedding
+4. Multimodal Fusion (1792D) - Combined text+visual (1024D + 768D = 1792D)
 
 Text Embedding Strategy:
 - Primary: Voyage AI voyage-3.5 (1024D default, supports 256/512/1024/2048)
@@ -14,6 +15,10 @@ Text Embedding Strategy:
 Visual Embedding Strategy:
 - Uses SLIG cloud endpoint exclusively (768D embeddings)
 - Cloud-only architecture - no local model loading
+
+Understanding Embedding Strategy:
+- Embeds Qwen3-VL's structured vision_analysis JSON as descriptive text via Voyage AI (1024D)
+- Enables spec-based search (e.g., "porcelain tile 60x120cm", "R10 slip rating")
 """
 
 import logging
@@ -40,21 +45,18 @@ MIVAA_GATEWAY_URL = os.getenv("MIVAA_GATEWAY_URL", "http://localhost:3000")
 
 class RealEmbeddingsService:
     """
-    Generates 3 real embedding types using AI models.
+    Generates embedding types using AI models.
 
     This service provides:
-    - Text embeddings via Voyage AI (1024D primary) with OpenAI fallback (1024D) - matches DB schema
+    - Text embeddings via Voyage AI (1024D primary) with OpenAI fallback (1024D)
     - Visual embeddings (768D) - SLIG (SigLIP2) via HuggingFace Cloud Endpoint
+    - Understanding embeddings (1024D) - Qwen vision_analysis → Voyage AI text embedding
     - Multimodal fusion (1792D) - combined text+visual (1024D + 768D = 1792D)
 
-    Text Embedding Strategy:
-    - Primary: Voyage AI voyage-3.5 (1024D default, supports 256/512/1024/2048)
-    - Supports input_type: "document" for indexing, "query" for search
-    - Fallback: OpenAI text-embedding-3-small (1024D) if Voyage fails - matches DB vector(1024)
-
-    Visual Embedding Strategy:
-    - Uses SLIG cloud endpoint exclusively for all visual embeddings (768D)
-    - Cloud-only architecture - no local model loading
+    Understanding Embedding Strategy:
+    - Converts Qwen3-VL vision_analysis JSON into descriptive text
+    - Embeds via Voyage AI (1024D) with input_type="document"
+    - Enables spec-based search (dimensions, slip ratings, material properties)
     """
 
     def __init__(self, supabase_client=None, config=None):
@@ -128,11 +130,12 @@ class RealEmbeddingsService:
         text_content: str,
         image_url: Optional[str] = None,
         material_properties: Optional[Dict[str, Any]] = None,
-        image_data: Optional[str] = None  # base64 encoded
+        image_data: Optional[str] = None,  # base64 encoded
+        vision_analysis: Optional[Dict[str, Any]] = None  # Qwen3-VL analysis JSON
     ) -> Dict[str, Any]:
         """
-        Generate all 6 embedding types for an entity.
-        
+        Generate all embedding types for an entity.
+
         Args:
             entity_id: ID of entity to embed
             entity_type: Type of entity (product, chunk, image)
@@ -140,7 +143,8 @@ class RealEmbeddingsService:
             image_url: URL of image (optional)
             material_properties: Material properties dict (optional)
             image_data: Base64 encoded image data (optional)
-            
+            vision_analysis: Qwen3-VL vision_analysis JSON for understanding embedding (optional)
+
         Returns:
             Dictionary with all embedding types
         """
@@ -170,7 +174,7 @@ class RealEmbeddingsService:
                 input_type=input_type
             )
             if text_embedding:
-                embeddings["embeddings"]["text_1536"] = text_embedding
+                embeddings["embeddings"]["text_1024"] = text_embedding
                 embeddings["metadata"]["model_versions"]["text"] = "voyage-3.5" if self.voyage_enabled else "text-embedding-3-small"
                 embeddings["metadata"]["confidence_scores"]["text"] = 0.95
                 self.logger.info(f"✅ Text embedding generated (1024D, input_type={input_type})")
@@ -210,7 +214,19 @@ class RealEmbeddingsService:
                     except:
                         pass
 
-            # 3. Multimodal Fusion Embedding (1792D) - REAL (1024D text + 768D visual)
+            # 3. Understanding Embedding (1024D) - Qwen vision_analysis → Voyage AI
+            if vision_analysis:
+                understanding_embedding = await self.generate_understanding_embedding(
+                    vision_analysis=vision_analysis,
+                    material_properties=material_properties
+                )
+                if understanding_embedding:
+                    embeddings["embeddings"]["understanding_1024"] = understanding_embedding
+                    embeddings["metadata"]["model_versions"]["understanding"] = "voyage-3.5"
+                    embeddings["metadata"]["confidence_scores"]["understanding"] = 0.93
+                    self.logger.info("✅ Understanding embedding generated (1024D)")
+
+            # 4. Multimodal Fusion Embedding (1792D) - REAL (1024D text + 768D visual)
             if embeddings["embeddings"].get("text_1024") and embeddings["embeddings"].get("visual_768"):
                 multimodal_embedding = self._generate_multimodal_fusion(
                     embeddings["embeddings"]["text_1024"],
@@ -219,7 +235,7 @@ class RealEmbeddingsService:
                 embeddings["embeddings"]["multimodal_1792"] = multimodal_embedding
                 embeddings["metadata"]["model_versions"]["multimodal"] = "fusion-v1"
                 embeddings["metadata"]["confidence_scores"]["multimodal"] = 0.92
-                self.logger.info("✅ Multimodal fusion embedding generated (2688D)")
+                self.logger.info("✅ Multimodal fusion embedding generated (1792D)")
             
             # Removed fake embeddings (color, texture, application)
             # They were just downsampled text embeddings - redundant!
@@ -255,6 +271,259 @@ class RealEmbeddingsService:
             List of floats representing the embedding, or None if failed
         """
         return await self._generate_text_embedding(text=text, dimensions=dimensions)
+
+    async def generate_text_embedding(
+        self,
+        query: str,
+        dimensions: int = 1024
+    ) -> Dict[str, Any]:
+        """
+        Public method to generate a text embedding for search queries.
+
+        Returns dict with {"success": bool, "embedding": list} format
+        expected by RAG service.
+
+        Args:
+            query: Text query to embed
+            dimensions: Embedding dimensions (default 1024)
+
+        Returns:
+            Dict with success status and embedding vector
+        """
+        try:
+            embedding = await self._generate_text_embedding(text=query, dimensions=dimensions)
+            if embedding:
+                return {"success": True, "embedding": embedding}
+            return {"success": False, "error": "Text embedding generation returned None"}
+        except Exception as e:
+            self.logger.error(f"❌ generate_text_embedding failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def generate_visual_embedding(
+        self,
+        query: str
+    ) -> Dict[str, Any]:
+        """
+        Public method to generate a visual-space embedding from text query.
+
+        Uses SLIG (SigLIP2) cloud endpoint to convert text into the visual
+        embedding space (768D), enabling text-to-image search across visual,
+        color, texture, style, and material embeddings.
+
+        Args:
+            query: Text query to convert to visual embedding space
+
+        Returns:
+            Dict with {"success": bool, "embedding": list} format
+        """
+        try:
+            # Initialize SLIG client if needed
+            if self._slig_client is None:
+                if not self.slig_enabled or not self.slig_endpoint_url or not self.slig_endpoint_token:
+                    self.logger.warning("⚠️ SLIG not configured, cannot generate visual embedding from text")
+                    return {"success": False, "error": "SLIG visual embedding service not configured"}
+
+                from app.services.embeddings.slig_client import SLIGClient
+                self._slig_client = SLIGClient(
+                    endpoint_url=self.slig_endpoint_url,
+                    api_token=self.slig_endpoint_token,
+                    timeout=self.slig_timeout,
+                    max_retries=self.slig_max_retries
+                )
+
+            # Use SLIG's text embedding to map text into visual space (768D)
+            embedding = await self._slig_client.get_text_embedding(query)
+            if embedding:
+                self.logger.info(f"✅ Visual embedding from text: {len(embedding)}D via SLIG")
+                return {"success": True, "embedding": embedding}
+
+            return {"success": False, "error": "SLIG text-to-visual embedding returned None"}
+        except Exception as e:
+            self.logger.error(f"❌ generate_visual_embedding failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def generate_understanding_embedding(
+        self,
+        vision_analysis: Dict[str, Any],
+        material_properties: Optional[Dict[str, Any]] = None,
+        job_id: Optional[str] = None
+    ) -> Optional[List[float]]:
+        """
+        Generate understanding embedding from Qwen3-VL vision_analysis JSON.
+
+        Converts structured vision analysis into descriptive text, then embeds
+        via Voyage AI (1024D) to enable spec-based search queries like
+        "porcelain tile 60x120cm" or "R10 slip rating".
+
+        Args:
+            vision_analysis: Qwen3-VL analysis JSON with material_type, colors, textures, etc.
+            material_properties: Optional additional material properties
+            job_id: Optional job ID for logging
+
+        Returns:
+            1024D embedding vector or None if failed
+        """
+        try:
+            # Convert vision_analysis JSON to descriptive text
+            text = self._vision_analysis_to_text(vision_analysis, material_properties)
+
+            if not text or not text.strip():
+                self.logger.warning("⚠️ Empty text from vision_analysis conversion, skipping understanding embedding")
+                return None
+
+            self.logger.debug(f"📝 Understanding embedding text ({len(text)} chars): {text[:200]}...")
+
+            # Embed via Voyage AI with input_type="document" for optimal retrieval
+            embedding = await self._generate_text_embedding(
+                text=text,
+                input_type="document",
+                job_id=job_id
+            )
+
+            if embedding:
+                self.logger.info(f"✅ Understanding embedding generated ({len(embedding)}D)")
+            return embedding
+
+        except Exception as e:
+            self.logger.error(f"❌ Understanding embedding generation failed: {e}")
+            return None
+
+    def _vision_analysis_to_text(
+        self,
+        vision_analysis: Dict[str, Any],
+        material_properties: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Convert Qwen3-VL vision_analysis JSON into descriptive text for embedding.
+
+        Extracts all structured fields and combines into a searchable text representation.
+
+        Args:
+            vision_analysis: Qwen3-VL analysis JSON
+            material_properties: Optional additional material properties
+
+        Returns:
+            Descriptive text string for embedding
+        """
+        parts = []
+
+        # Material type
+        material_type = vision_analysis.get('material_type') or vision_analysis.get('type')
+        if material_type:
+            parts.append(f"Material: {material_type}.")
+
+        # Category / subcategory
+        category = vision_analysis.get('category')
+        subcategory = vision_analysis.get('subcategory')
+        if category:
+            cat_str = f"Category: {category}"
+            if subcategory:
+                cat_str += f", {subcategory}"
+            parts.append(cat_str + ".")
+
+        # Colors
+        colors = vision_analysis.get('colors') or vision_analysis.get('color_palette') or vision_analysis.get('dominant_colors')
+        if colors:
+            if isinstance(colors, list):
+                parts.append(f"Colors: {', '.join(str(c) for c in colors)}.")
+            elif isinstance(colors, dict):
+                color_items = [f"{k}: {v}" for k, v in colors.items()]
+                parts.append(f"Colors: {', '.join(color_items)}.")
+            else:
+                parts.append(f"Colors: {colors}.")
+
+        # Textures
+        textures = vision_analysis.get('textures') or vision_analysis.get('texture') or vision_analysis.get('surface_texture')
+        if textures:
+            if isinstance(textures, list):
+                parts.append(f"Textures: {', '.join(str(t) for t in textures)}.")
+            else:
+                parts.append(f"Texture: {textures}.")
+
+        # Finish
+        finish = vision_analysis.get('finish') or vision_analysis.get('surface_finish')
+        if finish:
+            parts.append(f"Finish: {finish}.")
+
+        # Pattern
+        pattern = vision_analysis.get('pattern') or vision_analysis.get('pattern_type')
+        if pattern:
+            parts.append(f"Pattern: {pattern}.")
+
+        # Description
+        description = vision_analysis.get('description') or vision_analysis.get('visual_description')
+        if description:
+            parts.append(f"Description: {description}.")
+
+        # Applications / usage
+        applications = vision_analysis.get('applications') or vision_analysis.get('suitable_for') or vision_analysis.get('usage')
+        if applications:
+            if isinstance(applications, list):
+                parts.append(f"Applications: {', '.join(str(a) for a in applications)}.")
+            else:
+                parts.append(f"Applications: {applications}.")
+
+        # Dimensions / size
+        dimensions = vision_analysis.get('dimensions') or vision_analysis.get('size')
+        if dimensions:
+            parts.append(f"Dimensions: {dimensions}.")
+
+        # Properties (from vision_analysis)
+        properties = vision_analysis.get('properties') or vision_analysis.get('characteristics')
+        if properties:
+            if isinstance(properties, dict):
+                prop_items = [f"{k}: {v}" for k, v in properties.items() if v]
+                if prop_items:
+                    parts.append(f"Properties: {', '.join(prop_items)}.")
+            elif isinstance(properties, list):
+                parts.append(f"Properties: {', '.join(str(p) for p in properties)}.")
+
+        # OCR text detected in image
+        ocr_text = vision_analysis.get('ocr_text') or vision_analysis.get('detected_text') or vision_analysis.get('text_content')
+        if ocr_text:
+            if isinstance(ocr_text, list):
+                parts.append(f"Text detected: {' '.join(ocr_text)}.")
+            else:
+                parts.append(f"Text detected: {ocr_text}.")
+
+        # Additional material_properties if provided
+        if material_properties:
+            mp_parts = []
+            for key, value in material_properties.items():
+                if value and key not in ('id', 'created_at', 'updated_at', 'document_id', 'image_id'):
+                    mp_parts.append(f"{key}: {value}")
+            if mp_parts:
+                parts.append(f"Material properties: {', '.join(mp_parts)}.")
+
+        return " ".join(parts)
+
+    async def generate_understanding_query_embedding(
+        self,
+        query: str
+    ) -> Dict[str, Any]:
+        """
+        Generate understanding-space embedding from a text query for search.
+
+        Uses Voyage AI with input_type="query" to create an embedding in the
+        same space as understanding embeddings for similarity search.
+
+        Args:
+            query: Text query to embed for understanding search
+
+        Returns:
+            Dict with {"success": bool, "embedding": list} format
+        """
+        try:
+            embedding = await self._generate_text_embedding(
+                text=query,
+                input_type="query"
+            )
+            if embedding:
+                return {"success": True, "embedding": embedding}
+            return {"success": False, "error": "Understanding query embedding returned None"}
+        except Exception as e:
+            self.logger.error(f"❌ generate_understanding_query_embedding failed: {e}")
+            return {"success": False, "error": str(e)}
 
     async def generate_batch_embeddings(
         self,
@@ -1022,7 +1291,8 @@ class RealEmbeddingsService:
     # - _generate_texture_embedding (was just downsampled text embedding)
     # - _generate_application_embedding (was just downsampled text embedding)
     #
-    # These were redundant - text_embedding_1536 already contains all this information!
+    # Replaced by SLIG text-guided specialized embeddings (color, texture, style, material)
+    # stored in VECS collections at 1152D each.
 
 
 

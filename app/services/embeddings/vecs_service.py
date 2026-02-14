@@ -3,6 +3,7 @@ VECS Service for managing vector embeddings with Supabase.
 
 This service uses the vecs library (Supabase's recommended approach) for:
 - Storing SLIG image embeddings (768D)
+- Storing understanding embeddings (1024D) from Voyage AI
 - Fast similarity search with automatic indexing
 - Metadata filtering
 - Batch operations
@@ -237,6 +238,114 @@ class VecsService:
 
         return results
 
+    async def upsert_understanding_embedding(
+        self,
+        image_id: str,
+        embedding: List[float],
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """
+        Upsert a vision-understanding embedding (Qwen analysis → Voyage AI 1024D).
+
+        Args:
+            image_id: Image UUID
+            embedding: 1024D understanding embedding from Voyage AI
+            metadata: Optional metadata (document_id, workspace_id, page_number, etc.)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            collection = self.get_or_create_collection(
+                name="image_understanding_embeddings",
+                dimension=1024
+            )
+
+            meta = metadata or {}
+
+            collection.upsert(
+                records=[(image_id, embedding, meta)]
+            )
+
+            logger.debug(f"✅ Upserted understanding embedding for image {image_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Failed to upsert understanding embedding for image {image_id}: {e}")
+            return False
+
+    async def search_understanding_embeddings(
+        self,
+        query_embedding: List[float],
+        limit: int = 10,
+        workspace_id: Optional[str] = None,
+        document_id: Optional[str] = None,
+        include_metadata: bool = True
+    ) -> List[Dict[str, Any]]:
+        """
+        Search for similar images using vision-understanding embeddings (1024D).
+
+        Args:
+            query_embedding: 1024D query embedding from Voyage AI
+            limit: Maximum number of results
+            workspace_id: Optional workspace ID filter
+            document_id: Optional document ID filter
+            include_metadata: Whether to include metadata in results
+
+        Returns:
+            List of similar images with similarity scores
+        """
+        try:
+            collection = self.get_or_create_collection(
+                name="image_understanding_embeddings",
+                dimension=1024
+            )
+
+            # Build filters
+            filters = None
+            if workspace_id:
+                filters = {"workspace_id": {"$eq": workspace_id}}
+                if document_id:
+                    filters["document_id"] = {"$eq": document_id}
+            elif document_id:
+                filters = {"document_id": {"$eq": document_id}}
+
+            # Run in thread pool for true async parallelism
+            import asyncio
+            results = await asyncio.to_thread(
+                collection.query,
+                data=query_embedding,
+                limit=limit,
+                filters=filters,
+                include_value=True,
+                include_metadata=include_metadata
+            )
+
+            formatted_results = []
+            for result_tuple in results:
+                if include_metadata:
+                    image_id, distance, metadata = result_tuple
+                else:
+                    image_id, distance = result_tuple
+                    metadata = None
+
+                result = {
+                    "image_id": image_id,
+                    "similarity_score": 1 - distance,
+                    "distance": distance,
+                    "search_type": "understanding_similarity"
+                }
+                if include_metadata and metadata:
+                    result["metadata"] = metadata
+                formatted_results.append(result)
+
+            logger.info(f"✅ Found {len(formatted_results)} similar images using understanding embeddings")
+            return formatted_results
+
+        except Exception as e:
+            logger.error(f"❌ Understanding embedding search failed: {e}")
+            return []
+
     async def search_similar_images(
         self,
         query_embedding: List[float],
@@ -441,6 +550,7 @@ class VecsService:
         self,
         visual_query_embedding: List[float],
         specialized_query_embeddings: Optional[Dict[str, List[float]]] = None,
+        understanding_query_embedding: Optional[List[float]] = None,
         limit: int = 20,
         filters: Optional[Dict[str, Any]] = None,
         include_metadata: bool = True
@@ -449,16 +559,18 @@ class VecsService:
         Search all VECS collections in parallel and return combined results with multi-vector scores.
 
         This enables true multi-vector search by querying:
-        - image_slig_embeddings (primary visual)
-        - image_color_embeddings
-        - image_texture_embeddings
-        - image_style_embeddings
-        - image_material_embeddings
+        - image_slig_embeddings (primary visual, 768D)
+        - image_understanding_embeddings (vision-understanding, 1024D)
+        - image_color_embeddings (768D)
+        - image_texture_embeddings (768D)
+        - image_style_embeddings (768D)
+        - image_material_embeddings (768D)
 
         Args:
             visual_query_embedding: Primary 768D visual query embedding
             specialized_query_embeddings: Optional dict with keys: color, texture, style, material
                                          If not provided, visual_query_embedding is used for all
+            understanding_query_embedding: Optional 1024D understanding query embedding from Voyage AI
             limit: Maximum results per collection
             filters: Optional metadata filters
             include_metadata: Whether to include metadata
@@ -483,6 +595,17 @@ class VecsService:
                 include_metadata=include_metadata
             )
 
+        async def search_understanding():
+            if understanding_query_embedding is None:
+                return []
+            return await self.search_understanding_embeddings(
+                query_embedding=understanding_query_embedding,
+                limit=limit,
+                workspace_id=filters.get('workspace_id', {}).get('$eq') if filters else None,
+                document_id=filters.get('document_id', {}).get('$eq') if filters else None,
+                include_metadata=include_metadata
+            )
+
         async def search_specialized(embedding_type: str, query_emb: List[float]):
             return await self.search_specialized_embeddings(
                 query_embedding=query_emb,
@@ -495,7 +618,7 @@ class VecsService:
 
         try:
             # Run all searches in parallel
-            tasks = [search_visual()]
+            tasks = [search_visual(), search_understanding()]
 
             # Add specialized searches if embeddings provided
             for emb_type in ['color', 'texture', 'style', 'material']:
@@ -507,60 +630,97 @@ class VecsService:
 
             # Parse results
             visual_results = results[0] if not isinstance(results[0], Exception) else []
-            color_results = results[1] if len(results) > 1 and not isinstance(results[1], Exception) else []
-            texture_results = results[2] if len(results) > 2 and not isinstance(results[2], Exception) else []
-            style_results = results[3] if len(results) > 3 and not isinstance(results[3], Exception) else []
-            material_results = results[4] if len(results) > 4 and not isinstance(results[4], Exception) else []
+            understanding_results = results[1] if not isinstance(results[1], Exception) else []
+            color_results = results[2] if len(results) > 2 and not isinstance(results[2], Exception) else []
+            texture_results = results[3] if len(results) > 3 and not isinstance(results[3], Exception) else []
+            style_results = results[4] if len(results) > 4 and not isinstance(results[4], Exception) else []
+            material_results = results[5] if len(results) > 5 and not isinstance(results[5], Exception) else []
 
-            # Build lookup maps for specialized scores
+            # Build lookup maps for all scores
+            understanding_scores = {r['image_id']: r['similarity_score'] for r in understanding_results}
             color_scores = {r['image_id']: r['similarity_score'] for r in color_results}
             texture_scores = {r['image_id']: r['similarity_score'] for r in texture_results}
             style_scores = {r['image_id']: r['similarity_score'] for r in style_results}
             material_scores = {r['image_id']: r['similarity_score'] for r in material_results}
 
-            # Combine results using visual results as base
-            combined_results = []
+            # Collect all unique image IDs from all collections
+            all_image_ids = set()
             for result in visual_results:
-                image_id = result['image_id']
+                all_image_ids.add(result['image_id'])
+            for score_map in [understanding_scores, color_scores, texture_scores, style_scores, material_scores]:
+                all_image_ids.update(score_map.keys())
 
-                # Get specialized scores (default to visual score if not found)
-                visual_score = result.get('similarity_score', 0.0)
-                color_score = color_scores.get(image_id, visual_score * 0.8)
-                texture_score = texture_scores.get(image_id, visual_score * 0.8)
-                style_score = style_scores.get(image_id, visual_score * 0.8)
-                material_score = material_scores.get(image_id, visual_score * 0.8)
+            # Build visual score lookup
+            visual_scores_map = {r['image_id']: r for r in visual_results}
 
-                # Calculate weighted combined score
-                # Weights: visual=30%, color=12.5%, texture=12.5%, style=12.5%, material=12.5%, reserved=20%
+            # Determine weights based on whether understanding embeddings are available
+            has_understanding = bool(understanding_query_embedding and understanding_results)
+
+            if has_understanding:
+                # 6-vector weights: visual=25%, understanding=20%, color=14%, texture=14%, style=14%, material=13%
+                w_visual = 0.25
+                w_understanding = 0.20
+                w_color = 0.14
+                w_texture = 0.14
+                w_style = 0.14
+                w_material = 0.13
+            else:
+                # Fallback to 5-vector weights when no understanding embedding
+                w_visual = 0.35
+                w_understanding = 0.0
+                w_color = 0.1625
+                w_texture = 0.1625
+                w_style = 0.1625
+                w_material = 0.1625
+
+            # Combine results from all collections
+            combined_results = []
+            for image_id in all_image_ids:
+                visual_data = visual_scores_map.get(image_id)
+                visual_score = visual_data.get('similarity_score', 0.0) if visual_data else 0.0
+                fallback = visual_score * 0.8
+
+                understanding_score = understanding_scores.get(image_id, 0.0)
+                color_score = color_scores.get(image_id, fallback)
+                texture_score = texture_scores.get(image_id, fallback)
+                style_score = style_scores.get(image_id, fallback)
+                material_score = material_scores.get(image_id, fallback)
+
                 combined_score = (
-                    0.35 * visual_score +
-                    0.1625 * color_score +
-                    0.1625 * texture_score +
-                    0.1625 * style_score +
-                    0.1625 * material_score
+                    w_visual * visual_score +
+                    w_understanding * understanding_score +
+                    w_color * color_score +
+                    w_texture * texture_score +
+                    w_style * style_score +
+                    w_material * material_score
                 )
 
                 combined_result = {
                     'image_id': image_id,
-                    'similarity_score': visual_score,  # Primary visual score
+                    'similarity_score': visual_score,
                     'combined_score': combined_score,
                     'scores': {
                         'visual': visual_score,
+                        'understanding': understanding_score,
                         'color': color_score,
                         'texture': texture_score,
                         'style': style_score,
                         'material': material_score
                     },
-                    'metadata': result.get('metadata', {})
+                    'metadata': visual_data.get('metadata', {}) if visual_data else {}
                 }
                 combined_results.append(combined_result)
 
             # Sort by combined score
             combined_results.sort(key=lambda x: x['combined_score'], reverse=True)
 
+            # Trim to limit
+            combined_results = combined_results[:limit]
+
             # Stats
             collection_stats = {
                 'visual_count': len(visual_results),
+                'understanding_count': len(understanding_results),
                 'color_count': len(color_results),
                 'texture_count': len(texture_results),
                 'style_count': len(style_results),
@@ -569,8 +729,9 @@ class VecsService:
 
             logger.info(
                 f"✅ Multi-vector search complete: {len(combined_results)} results "
-                f"(visual={len(visual_results)}, color={len(color_results)}, "
-                f"texture={len(texture_results)}, style={len(style_results)}, material={len(material_results)})"
+                f"(visual={len(visual_results)}, understanding={len(understanding_results)}, "
+                f"color={len(color_results)}, texture={len(texture_results)}, "
+                f"style={len(style_results)}, material={len(material_results)})"
             )
 
             return {
@@ -588,7 +749,7 @@ class VecsService:
 
     async def delete_image_embedding(self, image_id: str) -> bool:
         """
-        Delete an image embedding from the collection.
+        Delete an image embedding from all collections (visual, understanding, specialized).
 
         Args:
             image_id: Image UUID to delete
@@ -597,14 +758,37 @@ class VecsService:
             True if successful, False otherwise
         """
         try:
+            # Delete from primary visual collection
             collection = self.get_or_create_collection(
                 name="image_slig_embeddings",
                 dimension=768
             )
-
             collection.delete(ids=[image_id])
 
-            logger.debug(f"✅ Deleted embedding for image {image_id}")
+            # Delete from understanding collection
+            try:
+                understanding_col = self.get_or_create_collection(
+                    name="image_understanding_embeddings",
+                    dimension=1024
+                )
+                understanding_col.delete(ids=[image_id])
+            except Exception:
+                pass  # Collection may not exist yet
+
+            # Delete from specialized collections
+            for col_name, dim in [
+                ("image_color_embeddings", 768),
+                ("image_texture_embeddings", 768),
+                ("image_style_embeddings", 768),
+                ("image_material_embeddings", 768),
+            ]:
+                try:
+                    col = self.get_or_create_collection(name=col_name, dimension=dim)
+                    col.delete(ids=[image_id])
+                except Exception:
+                    pass
+
+            logger.debug(f"✅ Deleted embeddings for image {image_id} from all collections")
             return True
 
         except Exception as e:
@@ -613,13 +797,13 @@ class VecsService:
 
     async def delete_document_embeddings(self, document_id: str) -> int:
         """
-        Delete all image embeddings for a document.
+        Delete all image embeddings for a document from all collections.
 
         Args:
             document_id: Document UUID
 
         Returns:
-            Number of embeddings deleted
+            Number of embeddings deleted from the primary collection
         """
         try:
             collection = self.get_or_create_collection(
@@ -641,7 +825,31 @@ class VecsService:
 
             if image_ids:
                 collection.delete(ids=image_ids)
-                logger.info(f"✅ Deleted {len(image_ids)} embeddings for document {document_id}")
+
+                # Also delete from understanding collection
+                try:
+                    understanding_col = self.get_or_create_collection(
+                        name="image_understanding_embeddings",
+                        dimension=1024
+                    )
+                    understanding_col.delete(ids=image_ids)
+                except Exception:
+                    pass
+
+                # Delete from specialized collections
+                for col_name, dim in [
+                    ("image_color_embeddings", 768),
+                    ("image_texture_embeddings", 768),
+                    ("image_style_embeddings", 768),
+                    ("image_material_embeddings", 768),
+                ]:
+                    try:
+                        col = self.get_or_create_collection(name=col_name, dimension=dim)
+                        col.delete(ids=image_ids)
+                    except Exception:
+                        pass
+
+                logger.info(f"✅ Deleted {len(image_ids)} embeddings for document {document_id} from all collections")
                 return len(image_ids)
             else:
                 logger.info(f"No embeddings found for document {document_id}")

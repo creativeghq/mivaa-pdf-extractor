@@ -1021,6 +1021,23 @@ class ImageProcessingService:
                 if embeddings.get('application_512'):
                     specialized_embeddings['application'] = embeddings.get('application_512')
 
+                # Save understanding embedding to VECS if present (1024D from Voyage AI)
+                understanding_embedding = embeddings.get('understanding_1024')
+                if understanding_embedding:
+                    try:
+                        await self.vecs_service.upsert_understanding_embedding(
+                            image_id=image_id,
+                            embedding=understanding_embedding,
+                            metadata={
+                                'document_id': document_id,
+                                'workspace_id': workspace_id,
+                                'page_number': img_data.get('page_number', 1)
+                            }
+                        )
+                        logger.debug(f"   ✅ Saved understanding embedding (1024D) to VECS for {image_id}")
+                    except Exception as understanding_error:
+                        logger.warning(f"   ⚠️ Failed to save understanding embedding to VECS: {understanding_error}")
+
                 if specialized_embeddings:
                     # Save to VECS collections
                     await self.vecs_service.upsert_specialized_embeddings(

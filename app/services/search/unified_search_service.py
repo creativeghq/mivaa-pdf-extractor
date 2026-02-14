@@ -30,7 +30,8 @@ class SearchStrategy(str, Enum):
     HYBRID = "hybrid"
     MATERIAL = "material"
     KEYWORD = "keyword"
-    # ✅ NEW: Specialized CLIP embedding strategies
+    UNDERSTANDING = "understanding"
+    # Specialized CLIP embedding strategies
     COLOR = "color"
     TEXTURE = "texture"
     STYLE = "style"
@@ -72,11 +73,45 @@ class SearchResponse:
     metadata: Dict[str, Any]
 
 
+# Dynamic weight profiles keyed by query intent type (all sum to 1.0)
+WEIGHT_PROFILES: Dict[str, Dict[str, float]] = {
+    "product_name": {
+        "text": 0.40, "visual": 0.25, "understanding": 0.15,
+        "color": 0.05, "texture": 0.05, "style": 0.05, "material": 0.05
+    },
+    "color_finish": {
+        "text": 0.10, "visual": 0.20, "understanding": 0.15,
+        "color": 0.30, "texture": 0.05, "style": 0.15, "material": 0.05
+    },
+    "specification": {
+        "text": 0.25, "visual": 0.10, "understanding": 0.40,
+        "color": 0.05, "texture": 0.05, "style": 0.05, "material": 0.10
+    },
+    "texture_pattern": {
+        "text": 0.10, "visual": 0.25, "understanding": 0.15,
+        "color": 0.05, "texture": 0.30, "style": 0.10, "material": 0.05
+    },
+    "style_aesthetic": {
+        "text": 0.10, "visual": 0.25, "understanding": 0.15,
+        "color": 0.10, "texture": 0.10, "style": 0.25, "material": 0.05
+    },
+    "material_search": {
+        "text": 0.15, "visual": 0.15, "understanding": 0.25,
+        "color": 0.05, "texture": 0.10, "style": 0.05, "material": 0.25
+    },
+    "balanced": {
+        "text": 0.15, "visual": 0.15, "understanding": 0.20,
+        "color": 0.125, "texture": 0.125, "style": 0.125, "material": 0.125
+    },
+}
+
+
 class UnifiedSearchService:
     """
     Unified search service that consolidates all search strategies.
 
     NEW: Runs all strategies in parallel and merges results for comprehensive coverage.
+    Uses dynamic weight profiles selected by query intent from query understanding.
 
     This service provides:
     - Semantic search using text embeddings
@@ -92,6 +127,42 @@ class UnifiedSearchService:
         self.config = config or SearchConfig()
         self.supabase = supabase_client
         self.logger = logger
+
+    def _select_weight_profile(self, parsed_data: Dict[str, Any]) -> Tuple[str, Dict[str, float]]:
+        """
+        Select weight profile based on parsed query fields from query understanding.
+
+        Maps detected query intent (colors, finish, pattern, etc.) to a weight profile
+        that upweights the most relevant embedding types for that query.
+
+        Returns:
+            Tuple of (profile_name, weights_dict)
+        """
+        # Product name search → heavy text weight
+        if parsed_data.get("is_product_name") or parsed_data.get("product_name"):
+            return "product_name", WEIGHT_PROFILES["product_name"]
+
+        has_colors = bool(parsed_data.get("colors"))
+        has_finish = bool(parsed_data.get("finish"))
+        has_pattern = bool(parsed_data.get("pattern"))
+        has_style = bool(parsed_data.get("style"))
+        has_dimensions = bool(parsed_data.get("dimensions"))
+        has_material = parsed_data.get("material_type_explicit", False)
+        has_application = bool(parsed_data.get("application"))
+
+        # Priority-based selection (strongest signal wins)
+        if has_dimensions:
+            return "specification", WEIGHT_PROFILES["specification"]
+        if has_colors or has_finish:
+            return "color_finish", WEIGHT_PROFILES["color_finish"]
+        if has_pattern:
+            return "texture_pattern", WEIGHT_PROFILES["texture_pattern"]
+        if has_material:
+            return "material_search", WEIGHT_PROFILES["material_search"]
+        if has_style or has_application:
+            return "style_aesthetic", WEIGHT_PROFILES["style_aesthetic"]
+
+        return "balanced", WEIGHT_PROFILES["balanced"]
 
     async def search(
         self,
@@ -118,14 +189,16 @@ class UnifiedSearchService:
         """
         try:
             # 🧠 STEP 1: Query Understanding (if enabled)
-            # Parse natural language query into structured filters BEFORE multi-strategy search
+            # Parse natural language query into structured filters + dynamic weight profile
+            weight_profile = "balanced"
+            dynamic_weights = WEIGHT_PROFILES["balanced"]
+
             if enable_query_understanding:
-                parsed_query, parsed_filters = await self._parse_query_with_ai(query)
+                parsed_query, parsed_filters, weight_profile, dynamic_weights = await self._parse_query_with_ai(query)
 
                 # Merge parsed filters with user-provided filters (user filters take precedence)
                 if parsed_filters:
                     if filters:
-                        # User-provided filters override AI-parsed filters
                         merged_filters = {**parsed_filters, **filters}
                     else:
                         merged_filters = parsed_filters
@@ -135,22 +208,22 @@ class UnifiedSearchService:
                     # Use visual query for embedding (not full query)
                     query = parsed_query
 
-                    self.logger.info(f"🧠 Query understanding enabled: parsed_query='{parsed_query}', filters={parsed_filters}")
+                    self.logger.info(f"🧠 Query understanding: parsed_query='{parsed_query}', profile='{weight_profile}', filters={parsed_filters}")
 
             # 🔍 STEP 2: Multi-Strategy Search (existing logic)
-            # All 10 strategies now use the parsed query + extracted filters
+            # All strategies now use the parsed query + extracted filters + dynamic weights
             start_time = datetime.utcnow()
 
             # If run_all_strategies is True, execute all strategies in parallel
             if run_all_strategies:
                 results, strategy_metadata = await self._search_all_strategies(
-                    query, filters, workspace_id
+                    query, filters, workspace_id, weight_overrides=dynamic_weights
                 )
                 search_strategy = "all_strategies"
             else:
                 search_strategy = strategy or self.config.strategy
                 results = await self._search_single_strategy(
-                    search_strategy, query, filters, workspace_id
+                    search_strategy, query, filters, workspace_id, weight_overrides=dynamic_weights
                 )
                 strategy_metadata = {"strategies_used": [search_strategy.value]}
 
@@ -161,7 +234,7 @@ class UnifiedSearchService:
             # Calculate search time
             search_time_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
 
-            self.logger.info(f"✅ Search completed: {len(limited_results)} results found in {search_time_ms:.2f}ms")
+            self.logger.info(f"✅ Search completed: {len(limited_results)} results in {search_time_ms:.2f}ms (profile={weight_profile})")
 
             return SearchResponse(
                 success=True,
@@ -175,6 +248,8 @@ class UnifiedSearchService:
                     "max_results": self.config.max_results,
                     "include_metadata": self.config.include_metadata,
                     "workspace_id": workspace_id,
+                    "weight_profile": weight_profile,
+                    "dynamic_weights": dynamic_weights,
                     **strategy_metadata
                 }
             )
@@ -196,7 +271,8 @@ class UnifiedSearchService:
         strategy: SearchStrategy,
         query: str,
         filters: Optional[Dict[str, Any]],
-        workspace_id: Optional[str]
+        workspace_id: Optional[str],
+        weight_overrides: Optional[Dict[str, float]] = None
     ) -> List[SearchResult]:
         """Execute a single search strategy."""
         if strategy == SearchStrategy.SEMANTIC:
@@ -204,7 +280,7 @@ class UnifiedSearchService:
         elif strategy == SearchStrategy.VISUAL:
             return await self._search_visual(query, filters, workspace_id)
         elif strategy == SearchStrategy.MULTI_VECTOR:
-            return await self._search_multi_vector(query, filters, workspace_id)
+            return await self._search_multi_vector(query, filters, workspace_id, weight_overrides=weight_overrides)
         elif strategy == SearchStrategy.HYBRID:
             return await self._search_hybrid(query, filters, workspace_id)
         elif strategy == SearchStrategy.MATERIAL:
@@ -227,7 +303,8 @@ class UnifiedSearchService:
         self,
         query: str,
         filters: Optional[Dict[str, Any]],
-        workspace_id: Optional[str]
+        workspace_id: Optional[str],
+        weight_overrides: Optional[Dict[str, float]] = None
     ) -> Tuple[List[SearchResult], Dict[str, Any]]:
         """
         Run all search strategies in parallel and merge results.
@@ -241,18 +318,18 @@ class UnifiedSearchService:
         tasks = [
             self._search_semantic(query, filters, workspace_id),
             self._search_visual(query, filters, workspace_id),
-            self._search_multi_vector(query, filters, workspace_id),
+            self._search_understanding(query, filters, workspace_id),
+            self._search_multi_vector(query, filters, workspace_id, weight_overrides=weight_overrides),
             self._search_hybrid(query, filters, workspace_id),
             self._search_material(query, filters, workspace_id),
             self._search_keyword(query, filters, workspace_id),
-            # ✅ NEW: Add specialized CLIP embedding searches
             self._search_color(query, filters, workspace_id),
             self._search_texture(query, filters, workspace_id),
             self._search_style(query, filters, workspace_id),
             self._search_material_type(query, filters, workspace_id),
         ]
 
-        strategy_names = ["semantic", "visual", "multi_vector", "hybrid", "material", "keyword", "color", "texture", "style", "material_type"]
+        strategy_names = ["semantic", "visual", "understanding", "multi_vector", "hybrid", "material", "keyword", "color", "texture", "style", "material_type"]
 
         # Execute all tasks in parallel
         results_list = await asyncio.gather(*tasks, return_exceptions=True)
@@ -449,12 +526,14 @@ class UnifiedSearchService:
         self,
         query: str,
         filters: Optional[Dict[str, Any]] = None,
-        workspace_id: Optional[str] = None
+        workspace_id: Optional[str] = None,
+        weight_overrides: Optional[Dict[str, float]] = None
     ) -> List[SearchResult]:
         """
         Multi-vector search combining all embedding types.
-        
-        Searches using text, visual, multimodal, color, texture, and application embeddings.
+
+        Searches using text, visual, understanding, color, texture, style, and material embeddings.
+        Weights can be dynamically overridden based on query intent.
         """
         try:
             # Generate all embedding types
@@ -476,10 +555,11 @@ class UnifiedSearchService:
             # Search using all embedding types with weights
             results_by_id = {}
             
-            # ✅ UPDATED: Run all 6 embedding searches in parallel for better performance
+            # Run all 7 embedding searches in parallel (text, visual, understanding, color, texture, style, material)
             tasks = [
                 self._search_semantic(query, filters, workspace_id),
                 self._search_visual(query, filters, workspace_id),
+                self._search_understanding(query, filters, workspace_id),
                 self._search_color(query, filters, workspace_id),
                 self._search_texture(query, filters, workspace_id),
                 self._search_style(query, filters, workspace_id),
@@ -488,9 +568,12 @@ class UnifiedSearchService:
 
             results_list = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Define weights for each embedding type (total = 1.0)
-            weights = [0.20, 0.20, 0.15, 0.15, 0.15, 0.15]
-            strategy_names = ["text", "visual", "color", "texture", "style", "material"]
+            # 7-vector fusion weights — use dynamic overrides if provided, else balanced defaults
+            strategy_names = ["text", "visual", "understanding", "color", "texture", "style", "material"]
+            if weight_overrides:
+                weights = [weight_overrides.get(n, 0.125) for n in strategy_names]
+            else:
+                weights = [WEIGHT_PROFILES["balanced"][n] for n in strategy_names]
 
             # Combine results with weights
             for i, (results, weight, name) in enumerate(zip(results_list, weights, strategy_names)):
@@ -520,7 +603,7 @@ class UnifiedSearchService:
                 reverse=True
             )
 
-            self.logger.info(f"✅ Multi-vector search combined {len(results_by_id)} unique results from 6 embedding types")
+            self.logger.info(f"✅ Multi-vector search combined {len(results_by_id)} unique results from 7 embedding types")
 
             return sorted_results[:self.config.max_results]
             
@@ -697,6 +780,57 @@ class UnifiedSearchService:
             return []
 
     # ✅ NEW: Specialized CLIP embedding search methods
+
+    async def _search_understanding(
+        self,
+        query: str,
+        filters: Optional[Dict[str, Any]] = None,
+        workspace_id: Optional[str] = None
+    ) -> List[SearchResult]:
+        """
+        Understanding search using Qwen vision_analysis → Voyage AI embeddings (1024D).
+
+        Enables spec-based search (e.g., "porcelain tile 60x120cm", "R10 slip rating").
+        """
+        try:
+            from app.services.embeddings.vecs_service import get_vecs_service
+            from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+
+            embeddings_service = RealEmbeddingsService()
+
+            # Generate understanding query embedding via Voyage AI (same embedding space)
+            embedding_result = await embeddings_service.generate_understanding_query_embedding(query)
+            if not embedding_result.get("success"):
+                self.logger.warning("Failed to generate understanding query embedding")
+                return []
+
+            query_embedding = embedding_result.get("embedding", [])
+
+            # Search VECS understanding collection
+            vecs_service = get_vecs_service()
+            results = await vecs_service.search_understanding_embeddings(
+                query_embedding=query_embedding,
+                limit=self.config.max_results,
+                workspace_id=workspace_id,
+                include_metadata=True
+            )
+
+            search_results = []
+            for item in results:
+                search_results.append(SearchResult(
+                    id=item.get('image_id'),
+                    content=item.get('metadata', {}).get('image_url', ''),
+                    similarity_score=item.get('similarity_score', 0.0),
+                    metadata=item.get('metadata', {}),
+                    embedding_type="understanding",
+                    source_type="image"
+                ))
+
+            return search_results
+
+        except Exception as e:
+            self.logger.error(f"Understanding search failed: {e}")
+            return []
 
     async def _search_color(
         self,
@@ -914,9 +1048,10 @@ class UnifiedSearchService:
             self.logger.error(f"Material type search failed: {e}")
             return []
 
-    async def _parse_query_with_ai(self, query: str) -> tuple[str, Dict[str, Any]]:
+    async def _parse_query_with_ai(self, query: str) -> tuple[str, Dict[str, Any], str, Dict[str, float]]:
         """
-        🧠 Parse natural language query using GPT-4o-mini to extract structured filters.
+        🧠 Parse natural language query using GPT-4o-mini to extract structured filters
+        and select dynamic weight profile based on detected query intent.
 
         This is the PREPROCESSING step that runs BEFORE multi-strategy search.
 
@@ -924,9 +1059,11 @@ class UnifiedSearchService:
             query: Natural language query (e.g., "waterproof ceramic tiles for outdoor patio, matte finish, light beige")
 
         Returns:
-            Tuple of (visual_query, filters):
+            Tuple of (visual_query, filters, weight_profile, dynamic_weights):
             - visual_query: Core visual concept for embedding (e.g., "ceramic tiles matte")
-            - filters: Extracted structured filters (e.g., {"material_type": "ceramic tiles", "properties": ["waterproof", "outdoor"], ...})
+            - filters: Extracted structured filters (e.g., {"material_type": "ceramic tiles", ...})
+            - weight_profile: Name of selected weight profile (e.g., "color_finish")
+            - dynamic_weights: Dict of 7-vector weights for multi-vector fusion
 
         Cost: ~$0.0001 per query (GPT-4o-mini)
         """
@@ -999,6 +1136,9 @@ Return ONLY valid JSON. Use null for missing fields."""
             cost = (input_tokens / 1_000_000) * 0.15 + (output_tokens / 1_000_000) * 0.60
             latency_ms = int((time.time() - start_time) * 1000)
 
+            # Select dynamic weight profile based on parsed query intent
+            profile_name, dynamic_weights = self._select_weight_profile(parsed_data)
+
             await ai_logger.log_gpt_call(
                 task="query_understanding",
                 model="gpt-4o-mini",
@@ -1011,14 +1151,20 @@ Return ONLY valid JSON. Use null for missing fields."""
                     "consistency": 0.88,
                     "validation": 0.85
                 },
-                action="use_ai_result"
+                action="use_ai_result",
+                request_data={
+                    "query": query,
+                    "weight_profile": profile_name,
+                    "dynamic_weights": dynamic_weights,
+                    "parsed_fields": {k: v for k, v in parsed_data.items() if v is not None and v != [] and v != ""}
+                }
             )
 
             # Check if this is a product name search
             if parsed_data.get("is_product_name") or parsed_data.get("product_name"):
                 # For product name searches, return the original query unchanged
-                self.logger.info(f"🧠 Query identified as PRODUCT NAME: '{query}' → passing through unchanged")
-                return query, {}
+                self.logger.info(f"🧠 Query identified as PRODUCT NAME: '{query}' → profile='{profile_name}'")
+                return query, {}, profile_name, dynamic_weights
 
             # Build visual query (core concept for embedding)
             visual_parts = []
@@ -1078,13 +1224,13 @@ Return ONLY valid JSON. Use null for missing fields."""
                     else:
                         filters[db_key] = value
 
-            self.logger.info(f"🧠 Query parsed: '{query}' → visual_query='{visual_query}', filters={filters}")
+            self.logger.info(f"🧠 Query parsed: '{query}' → visual_query='{visual_query}', profile='{profile_name}', filters={filters}")
 
-            return visual_query, filters
+            return visual_query, filters, profile_name, dynamic_weights
 
         except Exception as e:
             self.logger.error(f"Query parsing failed: {e}, using original query")
-            # Fallback: return original query with no filters
-            return query, {}
+            # Fallback: return original query with no filters and balanced weights
+            return query, {}, "balanced", WEIGHT_PROFILES["balanced"]
 
 

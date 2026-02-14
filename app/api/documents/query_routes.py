@@ -407,14 +407,15 @@ async def search_documents(
     ## 🎯 Supported Search Strategies
 
     ### Multi-Vector Search (`strategy="multi_vector"`) - ⭐ DEFAULT & RECOMMENDED ✅
-    - 🎯 **ENHANCED**: Combines 6 specialized CLIP embeddings + JSONB metadata filtering
+    - 🎯 **ENHANCED**: 7-vector fusion search + JSONB metadata filtering
     - **Embeddings Combined:**
-      - text_embedding_1536 (20%) - Semantic understanding
-      - visual_clip_embedding_512 (20%) - Visual similarity
-      - color_clip_embedding_512 (15%) - Color palette matching
-      - texture_clip_embedding_512 (15%) - Texture pattern matching
-      - style_clip_embedding_512 (15%) - Design style matching
-      - material_clip_embedding_512 (15%) - Material type matching
+      - Text (15%) - Voyage AI 1024D semantic understanding
+      - Visual (15%) - SLIG 768D visual similarity
+      - Understanding (20%) - Voyage AI 1024D from Qwen3-VL vision analysis
+      - Color (12.5%) - SLIG 1152D color palette matching
+      - Texture (12.5%) - SLIG 1152D texture pattern matching
+      - Style (12.5%) - SLIG 1152D design style matching
+      - Material (12.5%) - SLIG 1152D material type matching
     - **+ JSONB Metadata Filtering**: Supports `material_filters` for property-based filtering
     - **+ Query Understanding**: ✅ **ENABLED BY DEFAULT** - Auto-extracts filters from natural language
     - **Performance**: Fast (~250-350ms with query understanding, ~200-300ms without)
@@ -571,15 +572,17 @@ async def search_documents(
                 prompts_applied.extend(enhancement_result.get('prompts_applied', []))
 
         # 🧠 STEP 1: Query Understanding (if enabled)
-        # Parse natural language query to extract structured filters BEFORE multi-strategy search
+        # Parse natural language query to extract structured filters + dynamic weight profile
         parsed_filters = {}
+        dynamic_weights = None
+        weight_profile = "balanced"
         if enable_query_understanding:
             try:
                 from app.services.search.unified_search_service import UnifiedSearchService
 
                 # Create temporary service instance for query parsing
                 unified_service = UnifiedSearchService()
-                visual_query, parsed_filters = await unified_service._parse_query_with_ai(query_to_use)
+                visual_query, parsed_filters, weight_profile, dynamic_weights = await unified_service._parse_query_with_ai(query_to_use)
 
                 # Update query to use visual query (core concept for embedding)
                 query_to_use = visual_query
@@ -596,23 +599,39 @@ async def search_documents(
                 if merged_filters:
                     request.material_filters = merged_filters
 
-                logger.info(f"🧠 Query understanding: '{request.query}' → visual_query='{visual_query}', filters={parsed_filters}")
+                logger.info(f"🧠 Query understanding: '{request.query}' → visual_query='{visual_query}', profile='{weight_profile}', filters={parsed_filters}")
 
             except Exception as e:
                 logger.error(f"Query understanding failed: {e}, continuing with original query")
                 # Continue with original query if parsing fails
 
         # 🔍 STEP 2: Route to appropriate search method based on strategy
-        # All strategies now use the parsed query + extracted filters
+        # All strategies now use the parsed query + extracted filters + dynamic weights
         if strategy == "multi_vector":
-            # 🎯 Enhanced multi-vector search combining 6 specialized CLIP embeddings + metadata filtering
-            # text (20%), visual (20%), color (15%), texture (15%), style (15%), material (15%)
+            # 🎯 Enhanced multi-vector search with dynamic weight profiles
+            # Map 7-vector profile to RAG service's 9-source format
+            # The "text" weight is distributed across chunk, product, and keyword sources
+            rag_weights = None
+            if dynamic_weights:
+                text_w = dynamic_weights.get("text", 0.15)
+                rag_weights = {
+                    "visual": dynamic_weights.get("visual", 0.15),
+                    "chunk": text_w * 0.40,            # 40% of text weight → chunk search
+                    "understanding": dynamic_weights.get("understanding", 0.20),
+                    "product": text_w * 0.35,           # 35% of text weight → product search
+                    "keyword": text_w * 0.25,           # 25% of text weight → keyword search
+                    "color": dynamic_weights.get("color", 0.125),
+                    "texture": dynamic_weights.get("texture", 0.125),
+                    "style": dynamic_weights.get("style", 0.125),
+                    "material": dynamic_weights.get("material", 0.125),
+                }
             material_filters = getattr(request, 'material_filters', None)
             results = await rag_service.multi_vector_search(
                 query=query_to_use,
                 workspace_id=request.workspace_id,
                 top_k=request.top_k,
-                material_filters=material_filters
+                material_filters=material_filters,
+                search_config={"weights": rag_weights} if rag_weights else None
             )
 
         elif strategy == "material":
@@ -683,7 +702,9 @@ async def search_documents(
         search_metadata = {
             'prompts_applied': prompts_applied,
             'prompts_enabled': request.use_search_prompts,
-            'related_products_included': request.include_related_products
+            'related_products_included': request.include_related_products,
+            'weight_profile': weight_profile,
+            'dynamic_weights': dynamic_weights,
         }
 
         # Add parallel execution metadata for 'all' strategy
@@ -725,13 +746,14 @@ async def search_knowledge_base(
     """
     🔍 Search existing knowledge base without uploading a PDF.
 
-    Uses the same **multi-vector search** as the main search endpoint, combining:
-    - text_embedding_1536 (20%) - Semantic understanding
-    - visual_clip_embedding_512 (20%) - Visual similarity
-    - color_clip_embedding_512 (15%) - Color palette matching
-    - texture_clip_embedding_512 (15%) - Texture pattern matching
-    - style_clip_embedding_512 (15%) - Design style matching
-    - material_clip_embedding_512 (15%) - Material type matching
+    Uses the same **7-vector fusion search** as the main search endpoint, combining:
+    - Text (15%) - Voyage AI 1024D semantic understanding
+    - Visual (15%) - SLIG 768D visual similarity
+    - Understanding (20%) - Voyage AI 1024D from Qwen3-VL analysis
+    - Color (12.5%) - SLIG 1152D color palette matching
+    - Texture (12.5%) - SLIG 1152D texture pattern matching
+    - Style (12.5%) - SLIG 1152D design style matching
+    - Material (12.5%) - SLIG 1152D material type matching
 
     Performs unified semantic search across:
     - **Products** (with all metadata, embeddings, and material properties)
@@ -793,12 +815,9 @@ async def search_knowledge_base(
                             "relevance_score": result.get('weighted_score', 0.0),
                             "type": "product",
                             "embeddings": {
-                                "text": bool(result.get('text_embedding_1536')),
+                                "text": bool(result.get('text_embedding_1024')),
                                 "visual": bool(result.get('visual_clip_embedding_512')),
-                                "color": bool(result.get('color_clip_embedding_512')),
-                                "texture": bool(result.get('texture_clip_embedding_512')),
-                                "style": bool(result.get('style_clip_embedding_512')),
-                                "material": bool(result.get('material_clip_embedding_512'))
+                                "understanding": bool(result.get('vision_analysis')),
                             }
                         })
 

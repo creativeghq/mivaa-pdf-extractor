@@ -662,12 +662,14 @@ async def get_document_content(
 
         # Count embeddings
         text_embeddings = sum(1 for chunk in result['chunks'] if chunk.get('embeddings'))
-        clip_embeddings = sum(1 for img in result['images'] if img.get('visual_clip_embedding_512'))
+        visual_embeddings = sum(1 for img in result['images'] if img.get('visual_clip_embedding_512'))
         vision_analysis = sum(1 for img in result['images'] if img.get('vision_analysis'))
         claude_validation = sum(1 for img in result['images'] if img.get('claude_validation'))
-        color_embeddings = sum(1 for img in result['images'] if img.get('color_embedding_256'))
-        texture_embeddings = sum(1 for img in result['images'] if img.get('texture_embedding_256'))
-        application_embeddings = sum(1 for img in result['images'] if img.get('application_embedding_512'))
+        # Understanding embeddings are stored in VECS (not document_images columns)
+        # Images with vision_analysis have understanding embeddings generated
+        understanding_embeddings = vision_analysis
+        # Specialized embeddings (color, texture, style, material) are stored in VECS collections
+        # Visual embedding count serves as proxy for SLIG specialized embeddings
 
         result['statistics'] = {
             "chunks_count": chunks_count,
@@ -677,19 +679,18 @@ async def get_document_content(
                 "openai_calls": text_embeddings,
                 "vision_calls": vision_analysis,
                 "claude_calls": claude_validation,
-                "clip_embeddings": clip_embeddings
+                "visual_embeddings": visual_embeddings
             },
             "embeddings_generated": {
                 "text": text_embeddings,
-                "visual": clip_embeddings,
-                "color": color_embeddings,
-                "texture": texture_embeddings,
-                "application": application_embeddings,
-                "total": text_embeddings + clip_embeddings + color_embeddings + texture_embeddings + application_embeddings
+                "visual": visual_embeddings,
+                "understanding": understanding_embeddings,
+                "specialized_slig": visual_embeddings,
+                "total": text_embeddings + visual_embeddings + understanding_embeddings
             },
             "completion_rates": {
                 "text_embeddings": f"{(text_embeddings / chunks_count * 100) if chunks_count > 0 else 0:.1f}%",
-                "image_analysis": f"{(clip_embeddings / images_count * 100) if images_count > 0 else 0:.1f}%"
+                "image_analysis": f"{(visual_embeddings / images_count * 100) if images_count > 0 else 0:.1f}%"
             }
         }
 

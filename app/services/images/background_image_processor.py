@@ -8,6 +8,7 @@ Features:
 - CLIP visual embeddings (512D)
 - Qwen3-VL 17B Vision analysis
 - Claude Sonnet 4.5 Vision validation
+- Understanding embeddings (1024D) - Qwen vision_analysis → Voyage AI
 - Color embeddings (256D)
 - Texture embeddings (256D)
 - Application embeddings (512D)
@@ -194,15 +195,42 @@ class BackgroundImageProcessor:
 
             # Update image record with all data
             self.supabase.client.table('document_images').update(update_data).eq('id', image_id).execute()
-            
+
+            # Generate understanding embedding from vision analysis (Qwen → Voyage AI 1024D)
+            has_understanding = False
+            vision_analysis_data = analysis_result.get('vision_analysis')
+            if vision_analysis_data:
+                try:
+                    understanding_embedding = await embeddings_service.generate_understanding_embedding(
+                        vision_analysis=vision_analysis_data,
+                        material_properties=analysis_result.get('material_properties')
+                    )
+                    if understanding_embedding:
+                        from app.services.embeddings.vecs_service import get_vecs_service
+                        vecs = get_vecs_service()
+                        await vecs.upsert_understanding_embedding(
+                            image_id=image_id,
+                            embedding=understanding_embedding,
+                            metadata={
+                                'document_id': image.get('document_id'),
+                                'workspace_id': image.get('workspace_id'),
+                                'page_number': image.get('page_number', 1)
+                            }
+                        )
+                        has_understanding = True
+                        self.logger.info(f"✅ Understanding embedding generated and stored for {image_id}")
+                except Exception as understanding_error:
+                    self.logger.warning(f"⚠️ Understanding embedding failed for {image_id} (non-critical): {understanding_error}")
+
             self.logger.info(f"✅ Image {image_id} processed successfully")
-            
+
             return {
                 "success": True,
                 "image_id": image_id,
                 "has_vision": bool(analysis_result.get('vision_analysis')),
                 "has_claude": bool(analysis_result.get('claude_validation')),
                 "has_clip": bool(analysis_result.get('clip_embedding')),
+                "has_understanding": has_understanding,
                 "has_color": bool(embeddings_result.get('color_embedding')),
                 "has_texture": bool(embeddings_result.get('texture_embedding')),
                 "has_application": bool(embeddings_result.get('application_embedding'))

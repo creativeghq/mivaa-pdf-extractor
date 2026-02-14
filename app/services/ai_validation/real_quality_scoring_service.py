@@ -348,10 +348,13 @@ class RealQualityScoringService:
             return 0.5
     
     def _calculate_embedding_coverage(self, image_data: Dict[str, Any]) -> float:
-        """Calculate embedding coverage for images."""
+        """Calculate embedding coverage for images (visual + understanding)."""
         coverage = 0.0
-        if image_data.get('clip_embedding'):
-            coverage += 1.0
+        if image_data.get('clip_embedding') or image_data.get('visual_clip_embedding_512'):
+            coverage += 0.6
+        if image_data.get('vision_analysis'):
+            # Understanding embedding is generated from vision_analysis
+            coverage += 0.4
         return min(1.0, coverage)
     
     def _calculate_product_embedding_coverage(self, product_data: Dict[str, Any]) -> float:

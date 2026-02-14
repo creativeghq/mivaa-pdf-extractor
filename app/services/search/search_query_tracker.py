@@ -36,10 +36,13 @@ class SearchQueryTracker:
         search_type: str = "multi_vector",
         result_count: int = 0,
         response_time_ms: int = 0,
-        user_id: Optional[str] = None
+        user_id: Optional[str] = None,
+        weight_profile: str = "balanced",
+        dynamic_weights: Optional[Dict[str, float]] = None,
+        weight_profile_source: str = "default"
     ):
         """Track a search query and analyze for missing prototypes.
-        
+
         Args:
             workspace_id: Workspace performing the search
             query_text: Natural language query
@@ -48,6 +51,9 @@ class SearchQueryTracker:
             result_count: Number of results returned
             response_time_ms: Query execution time
             user_id: Optional user ID
+            weight_profile: Selected weight profile name (e.g., "color_finish", "product_name")
+            dynamic_weights: Actual 7-vector weights applied
+            weight_profile_source: How profile was selected ("default", "query_understanding", "manual_override")
         """
         try:
             # Extract terms from query
@@ -99,6 +105,9 @@ class SearchQueryTracker:
                 'validation_attempted': len(validation_results) > 0,
                 'validation_results': validation_results,
                 'response_time_ms': response_time_ms,
+                'weight_profile': weight_profile,
+                'dynamic_weights': dynamic_weights,
+                'weight_profile_source': weight_profile_source,
                 'timestamp': datetime.utcnow().isoformat()
             }).execute()
             

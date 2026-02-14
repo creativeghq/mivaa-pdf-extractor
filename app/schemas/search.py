@@ -550,6 +550,7 @@ class ImageSearchResult(BaseModel):
     material_analysis: Optional[Dict[str, Any]] = Field(None, description="Material property analysis results")
     clip_embedding: Optional[List[float]] = Field(None, description="CLIP embedding vector for visual similarity")
     vision_analysis: Optional[Dict[str, Any]] = Field(None, description="Vision model material analysis")
+    understanding_score: Optional[float] = Field(None, description="Vision-understanding embedding similarity score")
     
     # Material properties
     material_type: Optional[str] = Field(None, description="Identified material type")

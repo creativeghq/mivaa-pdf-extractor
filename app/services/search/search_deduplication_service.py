@@ -153,7 +153,7 @@ Rules:
         except Exception as e:
             print(f"Error generating embedding: {e}")
             # Return zero vector as fallback
-            return [0.0] * 1536
+            return [0.0] * 1024
     
     def _normalize_query(self, query: str) -> str:
         """Normalize query for exact matching."""

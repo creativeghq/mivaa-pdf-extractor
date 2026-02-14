@@ -113,7 +113,7 @@ async def create_kb_document(
         embedding_error = None
         
         if embedding_result.get("success"):
-            text_embedding = embedding_result.get("embeddings", {}).get("text_1536")
+            text_embedding = embedding_result.get("embeddings", {}).get("text_1024")
             embedding_status = "success"
         else:
             embedding_error = embedding_result.get("error", "Unknown error")
@@ -233,7 +233,7 @@ async def update_kb_document(
             )
             
             if embedding_result.get("success"):
-                update_data["text_embedding"] = embedding_result.get("embeddings", {}).get("text_1536")
+                update_data["text_embedding"] = embedding_result.get("embeddings", {}).get("text_1024")
                 update_data["embedding_status"] = "success"
                 update_data["embedding_generated_at"] = datetime.utcnow().isoformat()
             else:
@@ -613,7 +613,7 @@ async def search_kb_documents(
                     detail=f"Failed to generate query embedding: {embedding_result.get('error')}"
                 )
 
-            query_embedding = embedding_result.get("embeddings", {}).get("text_1536")
+            query_embedding = embedding_result.get("embeddings", {}).get("text_1024")
             if not query_embedding:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

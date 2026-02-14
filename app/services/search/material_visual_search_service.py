@@ -128,10 +128,11 @@ class MaterialVisualSearchService:
 
         # Search configuration
         self.default_fusion_weights = {
-            "visual_similarity": 0.4,
-            "semantic_relevance": 0.3,
-            "material_properties": 0.2,
-            "vision_confidence": 0.1
+            "visual_similarity": 0.30,
+            "understanding_relevance": 0.20,
+            "semantic_relevance": 0.25,
+            "material_properties": 0.15,
+            "vision_confidence": 0.10
         }
 
         # Processing configuration
@@ -599,11 +600,25 @@ class MaterialVisualSearchService:
                 # if we know which documents belong to the workspace
                 pass
 
-            # ✅ NEW: Use multi-collection search for true multi-vector scoring
-            # This queries all 5 VECS collections in parallel and combines scores
+            # Generate understanding query embedding for spec-based search
+            understanding_query_embedding = None
+            try:
+                from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+                understanding_service = RealEmbeddingsService()
+                understanding_result = await understanding_service.generate_understanding_query_embedding(
+                    query=request.query if hasattr(request, 'query') and request.query else ""
+                )
+                if understanding_result.get("success"):
+                    understanding_query_embedding = understanding_result.get("embedding")
+            except Exception as understanding_err:
+                logger.warning(f"⚠️ Understanding query embedding failed (non-critical): {understanding_err}")
+
+            # Use multi-collection search for true multi-vector scoring
+            # Queries all 6 VECS collections in parallel and combines scores
             multi_vector_results = await vecs_service.search_all_collections(
                 visual_query_embedding=query_embedding,
                 specialized_query_embeddings=specialized_embeddings,
+                understanding_query_embedding=understanding_query_embedding,
                 limit=request.limit * 2,  # Get more results to filter
                 filters=filters,
                 include_metadata=True
@@ -781,12 +796,12 @@ class MaterialVisualSearchService:
                         "image_url": metadata.get('image_url'),
                         "page_number": metadata.get('page_number'),
                         "quality_score": metadata.get('quality_score'),
-                        # ✅ NEW: Include multi-vector score breakdown
                         "multi_vector_scores": multi_vector_scores if multi_vector_scores else None,
-                        "color_score": multi_vector_scores.get('color'),
-                        "texture_score": multi_vector_scores.get('texture'),
-                        "style_score": multi_vector_scores.get('style'),
-                        "material_score": multi_vector_scores.get('material')
+                        "understanding_score": multi_vector_scores.get('understanding') if multi_vector_scores else None,
+                        "color_score": multi_vector_scores.get('color') if multi_vector_scores else None,
+                        "texture_score": multi_vector_scores.get('texture') if multi_vector_scores else None,
+                        "style_score": multi_vector_scores.get('style') if multi_vector_scores else None,
+                        "material_score": multi_vector_scores.get('material') if multi_vector_scores else None
                     },
                     material_properties=metadata.get('material_properties', {}),
                     clip_embedding=None if not request.include_embeddings else query_embedding,

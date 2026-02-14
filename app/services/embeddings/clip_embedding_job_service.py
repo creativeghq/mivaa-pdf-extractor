@@ -12,6 +12,7 @@ Architecture:
 - Main pipeline saves images to database
 - Background job picks up images without CLIP embeddings
 - Generates all 5 CLIP embedding types (visual, color, texture, style, material)
+- Generates understanding embedding (1024D) if vision_analysis exists
 - Saves to VECS collections and document_images table
 """
 
@@ -382,7 +383,36 @@ class CLIPEmbeddingJobService:
                 except Exception as visual_meta_error:
                     logger.warning(f"⚠️ Visual metadata extraction failed (non-critical): {visual_meta_error}")
 
-            logger.info(f"✅ Generated {embeddings_count} CLIP embeddings for image {image_id}")
+            # Generate understanding embedding if vision_analysis exists in DB
+            try:
+                vision_result = self.supabase.client.table('document_images')\
+                    .select('vision_analysis, material_properties')\
+                    .eq('id', image_id)\
+                    .single()\
+                    .execute()
+
+                if vision_result.data and vision_result.data.get('vision_analysis'):
+                    understanding_embedding = await self.embedding_service.generate_understanding_embedding(
+                        vision_analysis=vision_result.data['vision_analysis'],
+                        material_properties=vision_result.data.get('material_properties')
+                    )
+                    if understanding_embedding:
+                        metadata = {
+                            'document_id': document_id,
+                            'workspace_id': workspace_id,
+                            'page_number': image.get('page_number')
+                        }
+                        await self.vecs_service.upsert_understanding_embedding(
+                            image_id=image_id,
+                            embedding=understanding_embedding,
+                            metadata=metadata
+                        )
+                        embeddings_count += 1
+                        logger.debug(f"✅ Generated understanding embedding for image {image_id}")
+            except Exception as understanding_error:
+                logger.warning(f"⚠️ Understanding embedding failed for {image_id} (non-critical): {understanding_error}")
+
+            logger.info(f"✅ Generated {embeddings_count} embeddings for image {image_id}")
 
             return {
                 'success': True,

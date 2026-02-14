@@ -355,12 +355,12 @@ class DuplicateDetectionService:
             embeddings_service = RealEmbeddingsService()
 
             # Generate embeddings for both descriptions
-            result1 = await embeddings_service.generate_embeddings(text=desc1)
-            result2 = await embeddings_service.generate_embeddings(text=desc2)
+            result1 = await embeddings_service.generate_all_embeddings(text_content=desc1)
+            result2 = await embeddings_service.generate_all_embeddings(text_content=desc2)
 
             if result1.get("success") and result2.get("success"):
-                emb1 = result1["embeddings"].get("text_1536")
-                emb2 = result2["embeddings"].get("text_1536")
+                emb1 = result1["embeddings"].get("text_1024")
+                emb2 = result2["embeddings"].get("text_1024")
 
                 if emb1 and emb2:
                     # Calculate cosine similarity

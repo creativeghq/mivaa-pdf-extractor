@@ -31,13 +31,14 @@ class SearchEnrichmentService:
         include_chunks: bool = True,
         min_relevance: float = 0.0,
         rerank: bool = True,
-        # ✅ UPDATED: Support multi-vector scoring with all 6 embedding types
-        visual_weight: float = 0.30,
-        relevance_weight: float = 0.20,
-        color_weight: float = 0.125,
-        texture_weight: float = 0.125,
-        style_weight: float = 0.125,
-        material_weight: float = 0.125
+        # 7-vector scoring with all embedding types
+        visual_weight: float = 0.22,
+        understanding_weight: float = 0.18,
+        relevance_weight: float = 0.15,
+        color_weight: float = 0.1125,
+        texture_weight: float = 0.1125,
+        style_weight: float = 0.1125,
+        material_weight: float = 0.1125
     ) -> List[Dict[str, Any]]:
         """
         Enrich image search results with related products and chunks.
@@ -49,18 +50,19 @@ class SearchEnrichmentService:
             include_chunks: Whether to include related chunks
             min_relevance: Minimum relevance score to include (0.0-1.0)
             rerank: Whether to re-rank results by combined score (default: True)
-            visual_weight: Weight for visual similarity score (default: 0.30)
-            relevance_weight: Weight for relationship relevance score (default: 0.20)
-            color_weight: Weight for color similarity score (default: 0.125)
-            texture_weight: Weight for texture similarity score (default: 0.125)
-            style_weight: Weight for style similarity score (default: 0.125)
-            material_weight: Weight for material similarity score (default: 0.125)
+            visual_weight: Weight for visual similarity score (default: 0.22)
+            understanding_weight: Weight for understanding similarity (default: 0.18)
+            relevance_weight: Weight for relationship relevance score (default: 0.15)
+            color_weight: Weight for color similarity score (default: 0.1125)
+            texture_weight: Weight for texture similarity score (default: 0.1125)
+            style_weight: Weight for style similarity score (default: 0.1125)
+            material_weight: Weight for material similarity score (default: 0.1125)
 
         Returns:
             Enriched results with products and chunks, optionally re-ranked
 
         Note:
-            Total weights = 1.0 (30% visual + 20% relevance + 50% specialized embeddings)
+            Total weights = 1.0 (22% visual + 18% understanding + 15% relevance + 45% specialized)
         """
         try:
             enriched_results = []
@@ -107,7 +109,8 @@ class SearchEnrichmentService:
 
                         # Extract individual scores (fallback to similarity_score if not available)
                         visual_sim = merged_scores.get('visual', image_result.get('similarity_score', 0.0))
-                        color_sim = merged_scores.get('color', visual_sim * 0.8)  # Fallback to 80% of visual
+                        understanding_sim = merged_scores.get('understanding', 0.0)
+                        color_sim = merged_scores.get('color', visual_sim * 0.8)
                         texture_sim = merged_scores.get('texture', visual_sim * 0.8)
                         style_sim = merged_scores.get('style', visual_sim * 0.8)
                         material_sim = merged_scores.get('material', visual_sim * 0.8)
@@ -115,6 +118,7 @@ class SearchEnrichmentService:
                         # Combined score: weighted average of ALL embedding types + product relevance
                         combined_score = (
                             visual_weight * visual_sim +
+                            understanding_weight * understanding_sim +
                             relevance_weight * max_product_relevance +
                             color_weight * color_sim +
                             texture_weight * texture_sim +
@@ -125,9 +129,9 @@ class SearchEnrichmentService:
                         enriched['combined_score'] = combined_score
                         enriched['max_product_relevance'] = max_product_relevance
 
-                        # ✅ NEW: Add score breakdown for debugging and transparency
                         enriched['score_breakdown'] = {
                             'visual': visual_sim,
+                            'understanding': understanding_sim,
                             'relevance': max_product_relevance,
                             'color': color_sim,
                             'texture': texture_sim,
@@ -135,6 +139,7 @@ class SearchEnrichmentService:
                             'material': material_sim,
                             'weights': {
                                 'visual': visual_weight,
+                                'understanding': understanding_weight,
                                 'relevance': relevance_weight,
                                 'color': color_weight,
                                 'texture': texture_weight,
@@ -148,6 +153,7 @@ class SearchEnrichmentService:
                         enriched['max_product_relevance'] = 0.0
                         enriched['score_breakdown'] = {
                             'visual': image_result.get('similarity_score', 0.0),
+                            'understanding': 0.0,
                             'relevance': 0.0,
                             'color': 0.0,
                             'texture': 0.0,
