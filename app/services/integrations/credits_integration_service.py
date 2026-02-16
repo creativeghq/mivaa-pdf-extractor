@@ -418,6 +418,124 @@ class CreditsIntegrationService:
                 'error': str(e)
             }
 
+    async def debit_credits_for_external_service(
+        self,
+        user_id: str,
+        workspace_id: Optional[str],
+        operation_type: str,
+        service_name: str,
+        units: int = 1,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Debit credits for external (non-AI) service operations.
+
+        Generic method for per-unit services: Twilio, Perplexity, Apollo,
+        Hunter.io, ZeroBounce, and Firecrawl (edge function variant).
+
+        Args:
+            user_id: User ID who initiated the operation
+            workspace_id: Workspace ID (optional)
+            operation_type: Type of operation (e.g., 'b2b_manufacturer_search')
+            service_name: Service pricing key (e.g., 'perplexity-sonar', 'twilio-sms')
+            units: Number of operations performed (default: 1)
+            metadata: Additional metadata to store
+
+        Returns:
+            Dict with success status, new balance, and transaction details
+        """
+        try:
+            costs = AIPricingConfig.calculate_external_service_cost(
+                service_name=service_name,
+                units=units,
+                include_markup=True
+            )
+
+            credits_to_debit = round(float(costs['credits_to_debit']), 2)
+
+            if credits_to_debit <= 0:
+                return {'success': True, 'credits_debited': 0, 'raw_cost_usd': 0, 'billed_cost_usd': 0}
+
+            # Debit credits using database function
+            response = self.supabase.client.rpc(
+                'debit_user_credits',
+                {
+                    'p_user_id': user_id,
+                    'p_amount': credits_to_debit,
+                    'p_operation_type': operation_type,
+                    'p_description': f"{service_name} {operation_type} ({units} {costs['unit_type']}{'s' if units != 1 else ''})",
+                    'p_metadata': {
+                        **(metadata or {}),
+                        'service': service_name,
+                        'units': units,
+                        'unit_type': str(costs['unit_type']),
+                    }
+                }
+            ).execute()
+
+            debit_result = response.data[0] if response.data else None
+
+            if not debit_result or not debit_result.get('success'):
+                error_msg = debit_result.get('error_message', 'Unknown error') if debit_result else 'No response from database'
+                self.logger.error(f"❌ External service credit debit failed for user {user_id}: {error_msg}")
+                return {
+                    'success': False,
+                    'error': error_msg,
+                    'credits_required': credits_to_debit
+                }
+
+            # Log usage to ai_usage_logs
+            usage_log = {
+                'user_id': user_id,
+                'workspace_id': workspace_id,
+                'operation_type': operation_type,
+                'model_name': service_name,
+                'api_provider': service_name.split('-')[0],  # twilio, perplexity, apollo, etc.
+                'input_tokens': 0,
+                'output_tokens': 0,
+                'input_cost_usd': 0,
+                'output_cost_usd': 0,
+                'raw_cost_usd': round(float(costs['raw_cost_usd']), 8),
+                'markup_multiplier': float(costs['markup_multiplier']),
+                'billed_cost_usd': round(float(costs['billed_cost_usd']), 8),
+                'total_cost_usd': round(float(costs['billed_cost_usd']), 6),
+                'credits_debited': credits_to_debit,
+                'metadata': {
+                    **(metadata or {}),
+                    'billing_type': 'per_unit',
+                    'service': service_name,
+                    'units': units,
+                    'unit_type': str(costs['unit_type']),
+                    'cost_per_unit': float(costs['cost_per_unit']),
+                },
+                'created_at': datetime.utcnow().isoformat()
+            }
+
+            self.supabase.client.table('ai_usage_logs').insert(usage_log).execute()
+
+            self.logger.info(
+                f"✅ Debited {credits_to_debit:.2f} credits from user {user_id} "
+                f"for {service_name} ({units} {costs['unit_type']}{'s' if units != 1 else ''}). "
+                f"Raw: ${float(costs['raw_cost_usd']):.6f}, Billed: ${float(costs['billed_cost_usd']):.6f} (50% markup). "
+                f"New balance: {debit_result['new_balance']:.2f}"
+            )
+
+            return {
+                'success': True,
+                'credits_debited': credits_to_debit,
+                'raw_cost_usd': float(costs['raw_cost_usd']),
+                'billed_cost_usd': float(costs['billed_cost_usd']),
+                'new_balance': debit_result['new_balance'],
+                'transaction_id': debit_result['transaction_id'],
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ Error debiting external service credits ({service_name}): {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
     async def debit_credits_for_replicate(
         self,
         user_id: str,

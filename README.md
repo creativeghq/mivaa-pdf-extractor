@@ -214,7 +214,7 @@ The service now provides:
 - **JWT Authentication** for secure access
 - **Performance Monitoring** with built-in metrics
 - **RAG Integration** with direct vector database
-- **AI Analysis** with TogetherAI and Qwen Vision
+- **AI Analysis** with Qwen Vision models (HuggingFace)
 - **Vector Search** with optimized embeddings
 - **Multi-modal Processing** for text, images, and structured data
 

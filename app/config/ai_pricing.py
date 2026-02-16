@@ -377,6 +377,71 @@ class AIPricingConfig:
             "note": "Firecrawl API - pricing varies by plan. This is an estimate for tracking."
         }
     }
+
+    # ==========================================================================
+    # EXTERNAL SERVICE PRICING - PER-UNIT (non-AI third-party APIs)
+    # Cost per single operation (message, query, enrichment, etc.)
+    # Kept in sync with supabase/functions/_shared/credit-utils.ts
+    # ==========================================================================
+
+    EXTERNAL_SERVICE_PRICING = {
+        "twilio-sms": {
+            "cost_per_unit": Decimal("0.0079"),
+            "unit": "message",
+            "last_verified": "2026-02-14",
+            "source": "https://www.twilio.com/en-us/sms/pricing/us",
+            "note": "US domestic SMS, varies by country"
+        },
+        "twilio-whatsapp": {
+            "cost_per_unit": Decimal("0.005"),
+            "unit": "message",
+            "last_verified": "2026-02-14",
+            "source": "https://www.twilio.com/en-us/whatsapp/pricing",
+            "note": "WhatsApp utility conversation, varies by template type"
+        },
+        "perplexity-sonar": {
+            "cost_per_unit": Decimal("0.005"),
+            "unit": "query",
+            "last_verified": "2026-02-14",
+            "source": "https://docs.perplexity.ai/guides/pricing",
+            "note": "Perplexity sonar model, per search query"
+        },
+        "apollo-enrich": {
+            "cost_per_unit": Decimal("0.05"),
+            "unit": "enrichment",
+            "last_verified": "2026-02-14",
+            "source": "https://www.apollo.io/pricing",
+            "note": "Company enrichment API call"
+        },
+        "apollo-people-match": {
+            "cost_per_unit": Decimal("0.03"),
+            "unit": "lookup",
+            "last_verified": "2026-02-14",
+            "source": "https://www.apollo.io/pricing",
+            "note": "People match/email finder fallback"
+        },
+        "hunter-email-finder": {
+            "cost_per_unit": Decimal("0.01"),
+            "unit": "search",
+            "last_verified": "2026-02-14",
+            "source": "https://hunter.io/pricing",
+            "note": "Single email finder"
+        },
+        "hunter-domain-search": {
+            "cost_per_unit": Decimal("0.01"),
+            "unit": "search",
+            "last_verified": "2026-02-14",
+            "source": "https://hunter.io/pricing",
+            "note": "Domain-wide contact discovery"
+        },
+        "zerobounce-validate": {
+            "cost_per_unit": Decimal("0.008"),
+            "unit": "validation",
+            "last_verified": "2026-02-14",
+            "source": "https://www.zerobounce.net/email-validation-pricing",
+            "note": "Single email validation"
+        },
+    }
     
     @classmethod
     def get_all_pricing(cls) -> Dict[str, Dict]:
@@ -392,7 +457,8 @@ class AIPricingConfig:
             **cls.YOLO_PRICING,
             **cls.OCR_PRICING,
             **cls.REPLICATE_PRICING,
-            **cls.FIRECRAWL_PRICING
+            **cls.FIRECRAWL_PRICING,
+            **cls.EXTERNAL_SERVICE_PRICING,
         }
 
     @classmethod
@@ -498,6 +564,50 @@ class AIPricingConfig:
         cost_per_credit = pricing.get("cost_per_credit", Decimal("0.001"))
 
         return Decimal(credits_used) * cost_per_credit
+
+    @classmethod
+    def calculate_external_service_cost(
+        cls,
+        service_name: str,
+        units: int = 1,
+        include_markup: bool = True
+    ) -> Dict[str, Decimal]:
+        """
+        Calculate cost for external (non-AI) service operations.
+
+        Args:
+            service_name: Service identifier (e.g., 'twilio-sms', 'apollo-enrich')
+            units: Number of operations performed
+            include_markup: If True, applies 50% markup (default: True)
+
+        Returns:
+            Dict with raw_cost_usd, billed_cost_usd, credits_to_debit, units, unit_type
+
+        Raises:
+            ValueError: If service_name not found in EXTERNAL_SERVICE_PRICING
+        """
+        pricing = cls.EXTERNAL_SERVICE_PRICING.get(service_name)
+        if not pricing:
+            raise ValueError(
+                f"Service {service_name} not found in EXTERNAL_SERVICE_PRICING. "
+                f"Available: {list(cls.EXTERNAL_SERVICE_PRICING.keys())}"
+            )
+
+        cost_per_unit = pricing["cost_per_unit"]
+        raw_cost = cost_per_unit * Decimal(units)
+
+        billed_cost = raw_cost * cls.MARKUP_MULTIPLIER if include_markup else raw_cost
+        credits_to_debit = billed_cost * Decimal("100")
+
+        return {
+            "raw_cost_usd": raw_cost,
+            "billed_cost_usd": billed_cost,
+            "markup_multiplier": cls.MARKUP_MULTIPLIER,
+            "credits_to_debit": credits_to_debit,
+            "units": units,
+            "unit_type": pricing["unit"],
+            "cost_per_unit": cost_per_unit,
+        }
 
     @classmethod
     def calculate_time_based_cost(

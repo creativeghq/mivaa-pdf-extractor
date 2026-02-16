@@ -285,7 +285,7 @@ Respond ONLY with valid JSON, no additional text."""
                     0.15 * confidence_breakdown["validation"]
                 )
 
-                await self.ai_logger.log_together_call(
+                await self.ai_logger.log_qwen_call(
                     task="material_classification",
                     model="qwen3-vl-8b",
                     response=result,

@@ -357,7 +357,7 @@ class ImageProcessingService:
                     'usage': {'prompt_tokens': input_tokens, 'completion_tokens': output_tokens}
                 }
 
-                await ai_logger.log_together_call(
+                await ai_logger.log_qwen_call(
                     task="image_classification",
                     model=model_short,
                     response=response_dict,
@@ -486,18 +486,17 @@ class ImageProcessingService:
                 if not base64_data and image_base64 is not None:
                     del image_base64
 
-        # ✅ TIER-BASED RATE LIMITING: Dynamically adjust based on TogetherAI tier
-        # Import rate limit configuration
+        # ✅ TIER-BASED RATE LIMITING: Dynamically adjust based on vision model tier
         from app.config.rate_limits import VISION_CONCURRENCY, CLAUDE_CONCURRENCY, CURRENT_TIER
 
         logger.info(f"🎯 Rate Limiting Configuration:")
-        logger.info(f"   TogetherAI Tier: {CURRENT_TIER.tier} (${CURRENT_TIER.total_spend} spent)")
+        logger.info(f"   Vision Tier: {CURRENT_TIER.tier} (${CURRENT_TIER.total_spend} spent)")
         logger.info(f"   LLM Rate Limit: {CURRENT_TIER.llm_rpm} RPM ({CURRENT_TIER.llm_rps:.1f} RPS)")
         logger.info(f"   Vision Concurrency: {VISION_CONCURRENCY} concurrent requests")
         logger.info(f"   Claude Concurrency: {CLAUDE_CONCURRENCY} concurrent requests")
 
         # Two-stage classification with tier-based semaphores for rate limiting
-        together_semaphore = Semaphore(VISION_CONCURRENCY)  # Dynamic based on tier
+        vision_semaphore = Semaphore(VISION_CONCURRENCY)  # Dynamic based on tier
         claude_semaphore = Semaphore(CLAUDE_CONCURRENCY)  # Conservative for Claude
 
         async def classify_with_two_stage(img_data):
@@ -532,7 +531,7 @@ class ImageProcessingService:
                     return None
 
             # STAGE 1: Fast primary model classification with retry logic
-            async with together_semaphore:
+            async with vision_semaphore:
                 primary_result = None
                 max_retries = 3
                 retry_delay = 1.0  # Start with 1 second

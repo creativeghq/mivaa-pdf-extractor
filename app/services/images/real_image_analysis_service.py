@@ -581,7 +581,7 @@ class RealImageAnalysisService:
                             0.15 * confidence_breakdown["validation"]
                         )
 
-                        await self.ai_logger.log_together_call(
+                        await self.ai_logger.log_qwen_call(
                             task="image_vision_analysis",
                             model="qwen3-vl-8b",
                             response=result,

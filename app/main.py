@@ -1163,10 +1163,6 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
           "status": "healthy",
           "message": "GPT-5 available"
         },
-        "together_ai": {
-          "status": "healthy",
-          "message": "Qwen3-VL models available"
-        },
         "rag": {
           "status": "healthy",
           "message": "RAG service operational with Qwen vision models"
@@ -2177,7 +2173,7 @@ def custom_openapi():
         "jobs_routes": "/api/jobs/* (7 endpoints) - Job progress, statistics, status tracking",
         "document_entities_routes": "/api/document-entities/* (5 endpoints) - Certificates, logos, specifications",
         "embeddings_routes": "/api/embeddings/* (4 endpoints) - CLIP text/image, material embeddings",
-        "ai_analysis_routes": "/api/semantic-analysis, /api/analyze/* (4 endpoints) - TogetherAI, multimodal analysis",
+        "ai_analysis_routes": "/api/semantic-analysis, /api/analyze/* (4 endpoints) - Qwen vision, multimodal analysis",
         "anthropic_routes": "/api/v1/anthropic/* (3 endpoints) - Claude image validation, product enrichment",
         "products_routes": "/api/products/* (3 endpoints) - Product creation from chunks/layout",
         "monitoring_routes": "/, /metrics, /performance/summary (3 endpoints)",

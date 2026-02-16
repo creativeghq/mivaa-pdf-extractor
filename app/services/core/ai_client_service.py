@@ -3,7 +3,7 @@ from __future__ import annotations
 """
 Centralized AI Client Service
 
-Provides singleton instances of AI API clients (Anthropic, OpenAI, TogetherAI)
+Provides singleton instances of AI API clients (Anthropic, OpenAI, HuggingFace)
 with proper connection pooling, configuration management, and logging.
 
 This service eliminates the need to create new clients in every function,
@@ -127,7 +127,7 @@ class AIClientService:
     
     @property
     def httpx(self) -> httpx.AsyncClient:
-        """Get shared httpx async client for TogetherAI and other HTTP APIs.
+        """Get shared httpx async client for HuggingFace and other HTTP APIs.
 
         ✅ FIX: Increased timeout to 200s for Qwen3-VL-32B model (large vision model needs more time)
 

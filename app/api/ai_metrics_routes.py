@@ -393,6 +393,117 @@ async def get_ai_metrics_summary(
         )
 
 
+@router.get(
+    "/external-service-usage",
+    summary="Get external service usage and credit consumption",
+    description="Returns usage, cost, and credit data for external services (Twilio, Apollo, Hunter, ZeroBounce, Perplexity, Firecrawl) from ai_usage_logs.",
+)
+async def get_external_service_usage(
+    time_period: str = Query("24h", description="Time period: 1h, 24h, 7d, 30d, all"),
+    supabase: SupabaseClient = Depends(get_supabase_client)
+):
+    """Get external service usage metrics for admin dashboard."""
+    try:
+        now = datetime.utcnow()
+        if time_period == "1h":
+            start_time = now - timedelta(hours=1)
+        elif time_period == "24h":
+            start_time = now - timedelta(hours=24)
+        elif time_period == "7d":
+            start_time = now - timedelta(days=7)
+        elif time_period == "30d":
+            start_time = now - timedelta(days=30)
+        else:
+            start_time = datetime(2020, 1, 1)
+
+        # External service providers to filter on
+        ext_providers = ['twilio', 'perplexity', 'apollo', 'hunter', 'zerobounce', 'firecrawl']
+
+        query = supabase.client.table("ai_usage_logs").select(
+            "id, user_id, operation_type, model_name, api_provider, "
+            "total_cost_usd, billed_cost_usd, raw_cost_usd, credits_debited, "
+            "metadata, created_at"
+        )
+
+        if time_period != "all":
+            query = query.gte("created_at", start_time.isoformat())
+
+        # Filter to external services only (api_provider in ext_providers)
+        query = query.in_("api_provider", ext_providers)
+        query = query.order("created_at", desc=True)
+
+        response = query.execute()
+        logs = response.data if response.data else []
+
+        # Summary
+        total_credits = sum(float(log.get("credits_debited", 0) or 0) for log in logs)
+        total_cost = sum(float(log.get("billed_cost_usd", 0) or log.get("total_cost_usd", 0) or 0) for log in logs)
+
+        # By service
+        service_stats: Dict[str, Dict[str, Any]] = {}
+        for log in logs:
+            svc = log.get("model_name") or log.get("api_provider") or "unknown"
+            if svc not in service_stats:
+                service_stats[svc] = {"operations": 0, "credits": 0.0, "cost_usd": 0.0}
+            service_stats[svc]["operations"] += 1
+            service_stats[svc]["credits"] += float(log.get("credits_debited", 0) or 0)
+            service_stats[svc]["cost_usd"] += float(log.get("billed_cost_usd", 0) or log.get("total_cost_usd", 0) or 0)
+
+        by_service = [
+            {"service": svc, **stats}
+            for svc, stats in sorted(service_stats.items(), key=lambda x: x[1]["credits"], reverse=True)
+        ]
+
+        # By user (top 20)
+        user_stats: Dict[str, Dict[str, Any]] = {}
+        for log in logs:
+            uid = log.get("user_id") or "unknown"
+            if uid not in user_stats:
+                user_stats[uid] = {"total_credits": 0.0, "operations": 0}
+            user_stats[uid]["total_credits"] += float(log.get("credits_debited", 0) or 0)
+            user_stats[uid]["operations"] += 1
+
+        by_user = [
+            {"user_id": uid, **stats}
+            for uid, stats in sorted(user_stats.items(), key=lambda x: x[1]["total_credits"], reverse=True)[:20]
+        ]
+
+        # Timeline (daily aggregation)
+        daily_stats: Dict[str, Dict[str, Any]] = {}
+        for log in logs:
+            day = (log.get("created_at") or "")[:10]
+            if not day:
+                continue
+            if day not in daily_stats:
+                daily_stats[day] = {"credits": 0.0, "operations": 0}
+            daily_stats[day]["credits"] += float(log.get("credits_debited", 0) or 0)
+            daily_stats[day]["operations"] += 1
+
+        timeline = [
+            {"date": day, **stats}
+            for day, stats in sorted(daily_stats.items())
+        ]
+
+        return {
+            "summary": {
+                "total_credits": round(total_credits, 2),
+                "total_cost_usd": round(total_cost, 4),
+                "total_operations": len(logs),
+            },
+            "by_service": by_service,
+            "by_user": by_user,
+            "timeline": timeline,
+            "time_period": time_period,
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get external service usage: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get external service usage: {str(e)}"
+        )
+
+
 @router.get("/job/{job_id}")
 async def get_job_ai_metrics(
     job_id: str,

@@ -15,6 +15,7 @@ from datetime import datetime
 import uuid
 import io
 from app.services.core.supabase_client import get_supabase_client
+from app.services.integrations.credits_integration_service import get_credits_service
 
 router = APIRouter(prefix="/api", tags=["interior-design"])
 
@@ -262,10 +263,28 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
                     # Download and upload to Supabase Storage for permanent storage
                     permanent_url = await download_and_upload_to_supabase(temp_image_url, job_id, model['id'])
 
-                    # Calculate cost
-                    cost = model.get('cost_per_generation', 0.0)
+                    # Debit credits via shared layer (per-model, with markup + ai_usage_logs)
+                    credits_service = get_credits_service()
+                    debit_result = await credits_service.debit_credits_for_replicate(
+                        user_id=request.user_id,
+                        workspace_id=request.workspace_id,
+                        operation_type="interior_design",
+                        model_name=model['id'],
+                        num_generations=1,
+                        job_id=job_id,
+                        metadata={
+                            'room_type': request.room_type,
+                            'style': request.style,
+                            'model_display_name': model['name'],
+                        }
+                    )
 
-                    print(f"✅ {model['name']} completed successfully (cost: ${cost:.3f})")
+                    cost = debit_result.get('billed_cost_usd', model.get('cost_per_generation', 0.0))
+                    if debit_result.get('success'):
+                        print(f"✅ {model['name']} completed + credits debited (${cost:.3f}, {debit_result.get('credits_debited', 0):.1f} credits)")
+                    else:
+                        print(f"⚠️ {model['name']} completed but credit debit failed: {debit_result.get('error')}")
+
                     await atomic_update_model_result(job_id, model['id'], True, permanent_url, cost, None)
                 except Exception as e:
                     print(f"❌ {model['name']} failed: {e}")
@@ -278,19 +297,7 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
             timeout=600  # 10 minutes
         )
 
-        print(f"✅ Job {job_id} completed")
-
-        # Deduct credits from user account
-        try:
-            supabase = get_supabase_client()
-            result = supabase.client.rpc('deduct_generation_credits', {'p_job_id': job_id}).execute()
-            if result.data:
-                credit_info = result.data[0] if isinstance(result.data, list) else result.data
-                print(f"💳 Credits deducted: {credit_info.get('credits_deducted')} (${credit_info.get('cost_usd'):.3f})")
-                print(f"💰 New balance: {credit_info.get('new_balance')} credits")
-        except Exception as e:
-            print(f"⚠️ Warning: Failed to deduct credits: {e}")
-            # Don't fail the job if credit deduction fails - log it for manual review
+        print(f"✅ Job {job_id} completed (credits debited per-model via shared layer)")
 
     except asyncio.TimeoutError:
         print(f"⏰ Job {job_id} timed out after 10 minutes")

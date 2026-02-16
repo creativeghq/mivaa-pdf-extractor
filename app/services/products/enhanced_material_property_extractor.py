@@ -6,7 +6,7 @@ material functional properties to match frontend capabilities (60+ properties
 across 9 categories), replacing basic keyword matching with semantic analysis.
 
 Key Features:
-- LLM-powered semantic understanding using TogetherAI Qwen Vision
+- LLM-powered semantic understanding using Qwen Vision models
 - Comprehensive property extraction across 9 functional categories
 - Structured output matching frontend filter system requirements
 - Confidence scoring based on extraction quality
@@ -117,21 +117,21 @@ class PropertyExtractionResult:
 class EnhancedMaterialPropertyExtractor:
     """
     Enhanced material property extractor using sophisticated LLM-based semantic analysis.
-    
+
     This class replaces basic keyword matching with comprehensive property extraction
-    that leverages TogetherAI's Qwen Vision model for sophisticated document understanding.
+    that leverages Qwen Vision models for sophisticated document understanding.
     """
     
-    def __init__(self, together_ai_client=None, confidence_threshold: float = 0.7, workspace_id: str = None):
+    def __init__(self, llm_client=None, confidence_threshold: float = 0.7, workspace_id: str = None):
         """Initialize the enhanced property extractor.
 
         Args:
-            together_ai_client: TogetherAI service client
+            llm_client: LLM service client for semantic analysis
             confidence_threshold: Minimum confidence for property extraction
             workspace_id: Workspace ID for loading custom prompts
         """
         from app.config import get_settings
-        self.together_ai_client = together_ai_client
+        self.llm_client = llm_client
         self.confidence_threshold = confidence_threshold
         self.workspace_id = workspace_id or get_settings().default_workspace_id
         self.supabase = get_supabase_client()
@@ -475,8 +475,8 @@ class EnhancedMaterialPropertyExtractor:
             if context:
                 full_context += f"\n\nAdditional Context:\n{context}"
 
-            # Use TogetherAI for sophisticated semantic analysis
-            if self.together_ai_client:
+            # Use LLM client for sophisticated semantic analysis
+            if self.llm_client:
                 extraction_result = await self._llm_property_extraction(
                     system_prompt, full_context, category
                 )
@@ -499,9 +499,9 @@ class EnhancedMaterialPropertyExtractor:
         category: PropertyExtractionCategory
     ) -> Optional[Dict[str, Any]]:
         """
-        Perform LLM-based property extraction using TogetherAI.
+        Perform LLM-based property extraction.
         
-        This method leverages the Qwen Vision model for sophisticated
+        This method leverages Qwen Vision models for sophisticated
         semantic understanding of technical material specifications.
         """
         try:
@@ -521,9 +521,9 @@ class EnhancedMaterialPropertyExtractor:
             - Very low confidence (0.1-0.3) for uncertain or ambiguous references
             """
             
-            # Call TogetherAI for semantic analysis
-            if hasattr(self.together_ai_client, 'analyze_semantic_content'):
-                response = await self.together_ai_client.analyze_semantic_content({
+            # Call LLM for semantic analysis
+            if hasattr(self.llm_client, 'analyze_semantic_content'):
+                response = await self.llm_client.analyze_semantic_content({
                     "content": analysis_prompt,
                     "analysis_type": "property_extraction",
                     "category": category.value
@@ -532,7 +532,7 @@ class EnhancedMaterialPropertyExtractor:
                 # Parse LLM response into structured format
                 return self._parse_llm_response(response, category)
             else:
-                logger.warning("TogetherAI client not properly configured for property extraction")
+                logger.warning("LLM client not properly configured for property extraction")
                 return None
                 
         except Exception as e:
@@ -551,7 +551,7 @@ class EnhancedMaterialPropertyExtractor:
         property format expected by the frontend filtering system.
         """
         try:
-            # Handle different response formats from TogetherAI
+            # Handle different response formats from LLM
             response_text = ""
             if hasattr(llm_response, 'description'):
                 response_text = llm_response.description
@@ -690,26 +690,26 @@ class EnhancedMaterialPropertyExtractor:
 
 # Utility functions for integration with existing MIVAA services
 
-def create_enhanced_extractor(together_ai_client=None) -> EnhancedMaterialPropertyExtractor:
+def create_enhanced_extractor(llm_client=None) -> EnhancedMaterialPropertyExtractor:
     """Factory function to create an enhanced material property extractor."""
     return EnhancedMaterialPropertyExtractor(
-        together_ai_client=together_ai_client,
+        llm_client=llm_client,
         confidence_threshold=0.7
     )
 
 
 async def extract_enhanced_properties_from_analysis(
     analysis_text: str,
-    together_ai_client=None,
+    llm_client=None,
     document_context: Optional[str] = None
 ) -> PropertyExtractionResult:
     """
     Convenience function for extracting enhanced properties from analysis text.
-    
-    This provides a simple interface for integrating enhanced property 
+
+    This provides a simple interface for integrating enhanced property
     extraction into existing MIVAA workflows.
     """
-    extractor = create_enhanced_extractor(together_ai_client)
+    extractor = create_enhanced_extractor(llm_client)
     return await extractor.extract_comprehensive_properties(
         analysis_text=analysis_text,
         document_context=document_context

@@ -163,24 +163,18 @@ class SupabaseClient:
                     "pool_utilization_percent": 0
                 }
 
-            # Access httpx connection pool stats
-            # Note: httpx doesn't expose pool stats directly, so we track via limits
-            limits = self._httpx_client._limits
-
-            # Calculate pool utilization (estimate based on configuration)
-            max_connections = limits.max_connections or 50
-            max_keepalive = limits.max_keepalive_connections or 20
-
-            # Since httpx doesn't expose active connection count,
-            # we provide configuration info and health status
+            # httpx doesn't expose pool internals — return configured values
+            # Note: Don't call health_check() here to avoid triggering supabase-py
+            # internal httpx attribute access errors. Health is checked separately
+            # by database_health_service.
             return {
-                "status": "healthy" if self.health_check() else "unhealthy",
-                "max_connections": max_connections,
-                "max_keepalive": max_keepalive,
+                "status": "configured",
+                "max_connections": 50,
+                "max_keepalive": 20,
                 "keepalive_expiry_seconds": 30.0,
                 "pool_timeout_seconds": 5.0,
                 "http2_enabled": True,
-                "pool_utilization_percent": 0,  # Not available in httpx
+                "pool_utilization_percent": 0,
                 "note": "httpx does not expose active connection count"
             }
         except Exception as e:

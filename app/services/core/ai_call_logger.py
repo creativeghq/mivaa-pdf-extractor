@@ -278,7 +278,7 @@ class AICallLogger:
             self.logger.error(f"❌ Failed to log GPT call: {e}")
             return False
     
-    async def log_together_call(
+    async def log_qwen_call(
         self,
         task: str,
         model: str,
@@ -294,12 +294,12 @@ class AICallLogger:
         workspace_id: Optional[str] = None
     ) -> bool:
         """
-        Log a Qwen (TogetherAI/HuggingFace) API call and debit credits.
+        Log a Qwen (HuggingFace) API call and debit credits.
 
         Args:
             task: Type of task
             model: Qwen model (qwen3-vl-32b, etc.)
-            response: TogetherAI/HuggingFace API response dict
+            response: HuggingFace API response dict
             latency_ms: Latency in milliseconds
             confidence_score: Calculated confidence score
             confidence_breakdown: Confidence breakdown dict
@@ -314,13 +314,13 @@ class AICallLogger:
             bool: True if logged successfully
         """
         try:
-            # Extract token usage from TogetherAI/HuggingFace response
+            # Extract token usage from HuggingFace response
             usage = response.get('usage', {})
             input_tokens = usage.get('prompt_tokens', 0)
             output_tokens = usage.get('completion_tokens', 0)
 
             # Calculate cost based on model
-            cost = self._calculate_together_cost(model, input_tokens, output_tokens)
+            cost = self._calculate_qwen_cost(model, input_tokens, output_tokens)
 
             # Debit credits if user_id provided (with job_id for cost aggregation)
             if user_id:
@@ -356,7 +356,7 @@ class AICallLogger:
             )
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to log TogetherAI call: {e}")
+            self.logger.error(f"❌ Failed to log Qwen call: {e}")
             return False
     
     def _calculate_claude_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
@@ -369,8 +369,8 @@ class AICallLogger:
         cost_data = ai_pricing.calculate_cost(model, input_tokens, output_tokens, provider="openai")
         return float(cost_data['billed_cost_usd'])
 
-    def _calculate_together_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
-        """Calculate cost for TogetherAI (Qwen) API call using centralized pricing (returns billed cost with markup)"""
+    def _calculate_qwen_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
+        """Calculate cost for Qwen (HuggingFace) API call using centralized pricing (returns billed cost with markup)"""
         cost_data = ai_pricing.calculate_cost(model, input_tokens, output_tokens, provider="together")
         return float(cost_data['billed_cost_usd'])
 
