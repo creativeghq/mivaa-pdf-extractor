@@ -49,7 +49,6 @@ import anthropic
 import openai
 from PIL import Image
 import io
-import json
 
 from app.schemas.jobs import ProcessingStage
 from app.services.core.ai_call_logger import AICallLogger

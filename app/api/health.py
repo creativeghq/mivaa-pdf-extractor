@@ -300,11 +300,11 @@ async def circuit_breaker_status() -> Dict[str, CircuitBreakerState]:
     Status is derived from database health metrics.
     """
     # Get database health to determine circuit breaker status
-    db_health = await database_health_service.get_health()
+    db_health = database_health_service.get_health_status()
 
     return {
         "job_monitor_db": {
-            "state": "closed" if db_health["healthy"] else "open",
+            "state": "closed" if db_health.get("healthy", False) else "open",
             "failure_count": db_health.get("consecutive_failures", 0)
         }
     }

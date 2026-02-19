@@ -34,7 +34,7 @@ from app.monitoring import global_performance_monitor
 
 # Initialize Sentry for error tracking and monitoring
 sentry_sdk.init(
-    dsn="https://73f48f6581b882c707ded429e384fb8a@o4509716458045440.ingest.de.sentry.io/4510132019658832",
+    dsn=os.environ.get("SENTRY_DSN", "https://73f48f6581b882c707ded429e384fb8a@o4509716458045440.ingest.de.sentry.io/4510132019658832"),
     # Add data like request headers and IP for users
     send_default_pii=True,
     # Set traces_sample_rate to 1.0 to capture 100% of transactions for performance monitoring
