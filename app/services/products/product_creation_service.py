@@ -608,11 +608,11 @@ class ProductCreationService:
         if len(content) > 200:
             description += "..."
 
-        # Use full content as long description (up to 1000 chars)
-        long_description = content[:1000].strip()
-        if len(content) > 1000:
+        # Use full content as long description (up to 5000 chars)
+        long_description = content[:5000].strip()
+        if len(content) > 5000:
             long_description += "..."
-        
+
         # Build product data
         product_data = {
             "name": product_name,
@@ -811,9 +811,9 @@ class ProductCreationService:
         if len(combined_content) > 200:
             description += "..."
 
-        # Use full content as long description (up to 1000 chars)
-        long_description = combined_content[:1000].strip()
-        if len(combined_content) > 1000:
+        # Use full content as long description (up to 5000 chars)
+        long_description = combined_content[:5000].strip()
+        if len(combined_content) > 5000:
             long_description += "..."
 
         # Build enhanced properties with extracted data
@@ -1892,7 +1892,7 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
             product_data = {
                 "name": product_name,
                 "description": description,
-                "long_description": content[:1000] if len(content) > 200 else description,
+                "long_description": content[:5000] if len(content) > 200 else description,
                 "source_document_id": document_id,
                 "source_chunks": [chunk_id] if chunk_id else [],
                 "properties": {

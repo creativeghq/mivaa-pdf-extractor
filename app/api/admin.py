@@ -297,6 +297,20 @@ async def get_job_statistics():
 
 # Bulk Operations
 
+@router.get("/jobs/health")
+async def jobs_health_check():
+    """
+    Health check endpoint for the jobs subsystem.
+    Prevents /jobs/{job_id} from catching health-check probes that hit /api/jobs/health.
+    """
+    return {
+        "status": "healthy",
+        "service": "jobs",
+        "active_jobs": len(active_jobs),
+        "job_history_size": len(job_history),
+    }
+
+
 @router.get("/jobs/{job_id}", response_model=JobStatusResponse)
 async def get_job_status(
     job_id: str,

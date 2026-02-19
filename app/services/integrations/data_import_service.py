@@ -464,7 +464,7 @@ class DataImportService:
             product_record = {
                 "name": product_name,
                 "description": product_data.get('description', '')[:200],
-                "long_description": product_data.get('description', '')[:1000],
+                "long_description": product_data.get('description', '')[:5000],
                 "workspace_id": workspace_id,
                 "properties": {
                     "factory_name": product_data.get('factory_name'),

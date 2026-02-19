@@ -676,7 +676,7 @@ class ProductDiscoveryService:
             # Replace template variables
             prompt = prompt_template.replace("{total_pages}", str(total_pages))
             prompt = prompt.replace("{categories}", ", ".join(categories))
-            prompt = prompt.replace("{pdf_text}", pdf_text[:200000])
+            prompt = prompt.replace("{pdf_text}", pdf_text[:500000])
 
             if agent_prompt:
                 prompt = prompt.replace("{agent_prompt}", agent_prompt)
@@ -1301,6 +1301,36 @@ class ProductDiscoveryService:
                 self.logger.warning("   ⚠️ No valid pages found for any products")
                 page_types = {}
 
+            # ============================================================
+            # SUPPLEMENTARY PAGES: Collect non-product pages (packaging, care, compliance)
+            # These pages are not assigned to any product but contain shared metadata
+            # (packaging tables, care instructions, compliance info, etc.)
+            # We extract them ONCE and append to each product's text for metadata extraction.
+            # ============================================================
+            supplementary_text = ""
+            all_pdf_page_indices = set(range(pdf_page_count))
+            supplementary_page_indices = sorted(all_pdf_page_indices - all_product_pages)
+
+            if supplementary_page_indices:
+                self.logger.info(
+                    f"   📋 Found {len(supplementary_page_indices)} supplementary pages "
+                    f"(not assigned to any product): {supplementary_page_indices[:20]}{'...' if len(supplementary_page_indices) > 20 else ''}"
+                )
+                try:
+                    supp_markdown = pymupdf4llm.to_markdown(pdf_path, pages=supplementary_page_indices)
+                    if supp_markdown and supp_markdown.strip():
+                        supplementary_text = supp_markdown.strip()
+                        self.logger.info(
+                            f"   ✅ Extracted {len(supplementary_text):,} chars from supplementary pages "
+                            f"(packaging, care, compliance content available for all products)"
+                        )
+                    else:
+                        self.logger.info("   ℹ️ Supplementary pages had no extractable text")
+                except Exception as e:
+                    self.logger.warning(f"   ⚠️ Failed to extract supplementary pages: {e}")
+            else:
+                self.logger.info("   ℹ️ No supplementary pages found (all pages assigned to products)")
+
             # Now process each product - extract text per-product to minimize memory
             for i, product in enumerate(catalog.products):
                 try:
@@ -1377,7 +1407,12 @@ class ProductDiscoveryService:
                         for page_idx in page_indices
                     )
 
-                    self.logger.info(f"      Using {len(product_text)} characters from {len(page_indices)} pages")
+                    # Append supplementary pages text (packaging, care, compliance)
+                    # so metadata extraction can find shared catalog metadata
+                    if supplementary_text:
+                        product_text += "\n\n--- SUPPLEMENTARY CATALOG PAGES (packaging, compliance, care) ---\n\n" + supplementary_text
+
+                    self.logger.info(f"      Using {len(product_text):,} characters ({len(page_indices)} product pages + supplementary)")
 
                     # Get category hint from existing metadata
                     category_hint = product.metadata.get("category") or product.metadata.get("material")
@@ -1431,6 +1466,12 @@ class ProductDiscoveryService:
                     # Cleanup even on error
                     import gc
                     gc.collect()
+
+            # Cleanup supplementary text after all products processed
+            if supplementary_text:
+                del supplementary_text
+                import gc
+                gc.collect()
 
             # ✅ UPDATE PROGRESS: Mark Stage 0B complete (10% progress)
             if self.tracker:
@@ -1724,12 +1765,10 @@ class ProductDiscoveryService:
         Returns:
             Text content for the product pages
         """
-        # For now, return full PDF text
-        # TODO: Implement page-specific text extraction if needed
-        # This would require storing page boundaries during PDF extraction
-        # ✅ FIX: Increased from 10000 to 100000 chars to include end-of-document sections
-        # (packaging, compliance, care/maintenance info is typically at the end)
-        return pdf_text[:100000]
+        # Fallback: return a large chunk of PDF text when page-specific extraction is unavailable.
+        # The focused extraction path (_enrich_products_with_focused_extraction) extracts
+        # per-product pages directly — this fallback is only used when pdf_path is not provided.
+        return pdf_text[:300000]
 
 
     def _calculate_page_ranges_from_start_pages(

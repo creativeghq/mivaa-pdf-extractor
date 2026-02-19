@@ -347,21 +347,22 @@ class DynamicMetadataExtractor:
             self.logger.error(f"❌ Failed to load prompt from database: {e}")
             return None
     
-    def _extract_relevant_sections(self, pdf_text: str, max_chars: int = 30000) -> str:
+    def _extract_relevant_sections(self, pdf_text: str, max_chars: int = 100000) -> str:
         """
         Smart extraction: Find and extract only relevant sections from PDF.
 
-        This reduces token usage by 70-90% while preserving critical information.
+        This reduces token usage while preserving critical information.
 
         Strategy:
-        1. Always include first 8000 chars (product name, description, basic specs)
+        1. Always include first 12000 chars (product name, description, basic specs)
         2. Search for section headers (Packaging, Compliance, Care, Technical, etc.)
-        3. Extract 2000 chars around each relevant section
-        4. Always include last 5000 chars (often contains packaging/compliance)
+           in multiple languages (EN, IT, FR, ES, DE, EL)
+        3. Extract 6000 chars around each relevant section (3000 before + 3000 after)
+        4. Always include last 8000 chars (often contains packaging/compliance)
 
         Args:
             pdf_text: Full PDF text
-            max_chars: Maximum characters to return (default: 30000)
+            max_chars: Maximum characters to return (default: 100000)
 
         Returns:
             Intelligently extracted text with relevant sections
@@ -370,27 +371,28 @@ class DynamicMetadataExtractor:
             return pdf_text  # No need to extract if already small
 
         # Section keywords to search for (case-insensitive)
+        # Multilingual: English, Italian, French, Spanish, German, Greek
         section_keywords = [
-            # Packaging
-            r'\b(packaging|packing|iconography|box|pallet|pieces per box|coverage)\b',
-            # Compliance & Safety
-            r'\b(regulation|compliance|certification|standard|safety|eco.?friendly|sustainability|voc|leed|iso)\b',
-            # Care & Maintenance
-            r'\b(care|maintenance|cleaning|handling|installation|recommended use)\b',
-            # Technical specs
-            r'\b(technical|specification|properties|performance|dimensions|weight|thickness)\b',
+            # Packaging (EN + multilingual)
+            r'\b(packaging|packing|iconography|box|pallet|pieces per box|coverage|confezionamento|imballaggio|emballage|conditionnement|embalaje|empaque|verpackung|συσκευασία)\b',
+            # Compliance & Safety (EN + multilingual)
+            r'\b(regulation|compliance|certification|standard|safety|eco.?friendly|sustainability|voc|leed|iso|regolamento|certificazione|réglementation|certification|regulación|certificación|zertifizierung|vorschriften|πιστοποίηση)\b',
+            # Care & Maintenance (EN + multilingual)
+            r'\b(care|maintenance|cleaning|handling|installation|recommended use|manutenzione|pulizia|entretien|nettoyage|mantenimiento|limpieza|reinigung|pflege|wartung|καθαρισμός|συντήρηση)\b',
+            # Technical specs (EN + multilingual)
+            r'\b(technical|specification|properties|performance|dimensions|weight|thickness|specifiche tecniche|spécifications|especificaciones|technische daten|τεχνικά)\b',
         ]
 
         extracted_sections = []
 
         # 1. Always include beginning (product name, description, basic info)
-        extracted_sections.append(("START", pdf_text[:8000]))
+        extracted_sections.append(("START", pdf_text[:12000]))
 
         # 1.5. Include index/TOC pages (usually pages 8-20) for dimension data
         # Index pages often contain product dimensions in table format
         import re
-        index_start = 8000  # Approximate start of index pages
-        index_end = min(25000, len(pdf_text))  # Include up to ~page 20
+        index_start = 12000  # Approximate start of index pages
+        index_end = min(35000, len(pdf_text))  # Include up to ~page 25
         if len(pdf_text) > index_end:
             # Look for dimension patterns in index area
             index_area = pdf_text[index_start:index_end]
@@ -401,13 +403,13 @@ class DynamicMetadataExtractor:
         # 2. Search for relevant sections
         for keyword_pattern in section_keywords:
             for match in re.finditer(keyword_pattern, pdf_text, re.IGNORECASE):
-                start = max(0, match.start() - 1000)  # 1000 chars before
-                end = min(len(pdf_text), match.end() + 1000)  # 1000 chars after
+                start = max(0, match.start() - 3000)  # 3000 chars before
+                end = min(len(pdf_text), match.end() + 3000)  # 3000 chars after
                 section_text = pdf_text[start:end]
                 extracted_sections.append((f"SECTION@{match.start()}", section_text))
 
         # 3. Always include end (often has packaging/compliance tables)
-        extracted_sections.append(("END", pdf_text[-5000:]))
+        extracted_sections.append(("END", pdf_text[-8000:]))
 
         # 4. Combine sections and deduplicate
         combined_text = "\n\n---\n\n".join([text for _, text in extracted_sections])
@@ -449,7 +451,7 @@ class DynamicMetadataExtractor:
         try:
             # ✅ SMART EXTRACTION: Extract only relevant sections instead of truncating
             # This preserves packaging/compliance/care sections while reducing token usage
-            smart_text = self._extract_relevant_sections(pdf_text, max_chars=30000)
+            smart_text = self._extract_relevant_sections(pdf_text, max_chars=100000)
 
             # Step 1: Load prompt from database - NO FALLBACK
             db_prompt_template = await self._load_prompt_from_database(stage="entity_creation", category="products")
@@ -567,7 +569,7 @@ class DynamicMetadataExtractor:
 
             response = client.messages.create(
                 model="claude-sonnet-4-5",
-                max_tokens=8000,
+                max_tokens=16000,
                 temperature=0.1,  # Low temperature for consistent extraction
                 messages=[
                     {
@@ -620,7 +622,7 @@ class DynamicMetadataExtractor:
                     }
                 ],
                 temperature=0.1,
-                max_tokens=8000
+                max_tokens=16000
             )
 
             content = response.choices[0].message.content
