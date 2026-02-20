@@ -1263,7 +1263,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                     # Minimal test: just check if we can authenticate
                     # Using a very small request to minimize cost
                     response = client.messages.create(
-                        model="claude-3-5-haiku-20241022",  # Cheapest model
+                        model="claude-haiku-4-5-20251001",  # Cheapest model
                         max_tokens=1,
                         messages=[{"role": "user", "content": "hi"}]
                     )

@@ -508,7 +508,7 @@ Focus on materials, textures, colors, patterns, and applications.
 Return as JSON: {{"related": [], "broader": [], "narrower": []}}"""
 
                     response = await ai_service.anthropic_async.messages.create(
-                        model="claude-3-5-haiku-20241022",  # Fast, cheap model
+                        model="claude-haiku-4-5-20251001",  # Fast, cheap model
                         max_tokens=500,
                         temperature=0.3,
                         messages=[{"role": "user", "content": prompt}]
