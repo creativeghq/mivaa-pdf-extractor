@@ -6,7 +6,7 @@ material placement, and accessibility analysis.
 """
 
 from fastapi import APIRouter, HTTPException, Depends, status
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, model_validator
 from typing import List, Dict, Any, Optional
 import logging
 
@@ -82,20 +82,17 @@ class SpaceformerRequest(BaseModel):
     workspace_id: Optional[str] = Field(None, description="Workspace ID (passed by internal callers)")
     user_id: Optional[str] = Field(None, description="User ID (passed by internal callers)")
 
-    @validator("analysis_type")
-    def validate_analysis_type(cls, v):
-        """Validate analysis type"""
+    @model_validator(mode="after")
+    def validate_request(self) -> "SpaceformerRequest":
+        """Validate analysis type and ensure at least one image input is provided"""
         allowed_types = ["full", "layout", "materials", "accessibility"]
-        if v not in allowed_types:
+        if self.analysis_type not in allowed_types:
             raise ValueError(f"analysis_type must be one of: {allowed_types}")
-        return v
 
-    @validator("image_url", "image_data", always=True)
-    def validate_image_input(cls, v, values):
-        """Ensure at least one image input is provided"""
-        if not values.get("image_url") and not values.get("image_data"):
+        if not self.image_url and not self.image_data:
             raise ValueError("Either image_url or image_data must be provided")
-        return v
+
+        return self
 
 
 class SpaceformerResponse(BaseModel):
