@@ -283,14 +283,30 @@ async def _store_layout_regions(
         # Prepare region data for insertion
         region_data = []
         for region in regions:
+            # Normalize pixel coords to 0-1 using image_size from YOLO metadata
+            img_size = region.metadata.get('image_size') if region.metadata else None
+            if isinstance(img_size, (tuple, list)) and len(img_size) == 2:
+                img_w = float(img_size[0]) or 1.0
+                img_h = float(img_size[1]) or 1.0
+            else:
+                img_w = img_h = 1.0  # already normalized or unknown
+
+            def _clamp01(v: float) -> float:
+                return min(1.0, max(0.0, v))
+
+            bbox_x = _clamp01(region.bbox.x / img_w) if img_w > 1.0 else _clamp01(region.bbox.x)
+            bbox_y = _clamp01(region.bbox.y / img_h) if img_h > 1.0 else _clamp01(region.bbox.y)
+            bbox_w = _clamp01(region.bbox.width / img_w) if img_w > 1.0 else _clamp01(region.bbox.width)
+            bbox_h = _clamp01(region.bbox.height / img_h) if img_h > 1.0 else _clamp01(region.bbox.height)
+
             region_data.append({
                 'product_id': product_id,
                 'page_number': region.bbox.page,
                 'region_type': region.type,
-                'bbox_x': region.bbox.x,
-                'bbox_y': region.bbox.y,
-                'bbox_width': region.bbox.width,
-                'bbox_height': region.bbox.height,
+                'bbox_x': bbox_x,
+                'bbox_y': bbox_y,
+                'bbox_width': bbox_w,
+                'bbox_height': bbox_h,
                 'confidence': region.confidence,
                 'reading_order': region.reading_order,
                 'text_content': getattr(region, 'text_content', None),

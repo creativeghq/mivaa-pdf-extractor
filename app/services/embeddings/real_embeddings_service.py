@@ -1200,7 +1200,7 @@ class RealEmbeddingsService:
             )
 
             if not image_embedding_result or "embedding" not in image_embedding_result:
-                self.logger.error("❌ Failed to get base image embedding for specialized embeddings")
+                self.logger.warning("⚠️ Failed to get base image embedding for specialized embeddings — skipping specialized embeddings")
                 return None, pil_image
 
             base_image_embedding = image_embedding_result["embedding"]

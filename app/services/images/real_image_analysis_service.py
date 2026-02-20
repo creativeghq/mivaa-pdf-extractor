@@ -105,10 +105,15 @@ class RealImageAnalysisService:
         - Version 4: Claude Vision validation prompt
         """
         try:
-            result = self.supabase.client.table('prompts')\
+            query = self.supabase.client.table('prompts')\
                 .select('prompt_text, version')\
-                .eq('workspace_id', self.workspace_id)\
                 .eq('prompt_type', 'extraction')\
+
+            # Only filter by workspace_id if it's a valid non-None value
+            if self.workspace_id and self.workspace_id != "None":
+                query = query.eq('workspace_id', self.workspace_id)
+
+            result = query\
                 .eq('stage', 'image_analysis')\
                 .eq('category', 'products')\
                 .eq('is_custom', False)\

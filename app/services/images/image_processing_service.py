@@ -27,6 +27,22 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 
+def _detect_image_media_type(image_bytes: bytes, file_path: str = "") -> str:
+    """Detect actual image media type from magic bytes, falling back to file extension."""
+    if image_bytes[:8] == b'\x89PNG\r\n\x1a\n':
+        return "image/png"
+    if image_bytes[:3] == b'\xff\xd8\xff':
+        return "image/jpeg"
+    if image_bytes[:4] == b'GIF8':
+        return "image/gif"
+    if image_bytes[:4] == b'RIFF' and image_bytes[8:12] == b'WEBP':
+        return "image/webp"
+    # Fall back to file extension
+    ext = file_path.lower().rsplit('.', 1)[-1] if '.' in file_path else ''
+    return {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+            "gif": "image/gif", "webp": "image/webp"}.get(ext, "image/jpeg")
+
+
 # ============================================================================
 # IMAGE CLASSIFICATION CATEGORY MAPPING
 # ============================================================================
@@ -289,8 +305,17 @@ class ImageProcessingService:
                                 import asyncio
                                 await asyncio.sleep(delay)
                                 continue
-                        raise  # Re-raise if not 503 or last attempt
-                
+                            # All retries exhausted for 503 — return graceful fallback (no Sentry noise)
+                            logger.warning(f"⚠️ Qwen 503 persists after {max_retries} retries for {image_path} — falling back to Claude")
+                            return {
+                                'is_material': False,
+                                'confidence': 0.0,
+                                'reason': f'Qwen endpoint unavailable (503) after {max_retries} retries',
+                                'model': f'{model.split("/")[-1]}_503_fallback',
+                                'error': error_str
+                            }
+                        raise  # Re-raise for non-503 errors
+
                 if response is None:
                     raise Exception("Qwen request failed after all retries")
 
@@ -392,30 +417,15 @@ class ImageProcessingService:
                 }
 
             except Exception as e:
-                # ✅ FIX 2: Enhanced error logging with full details
                 model_short = model.split('/')[-1] if '/' in model else model
-                logger.error(f"❌ CLASSIFICATION FAILED for {image_path}")
-                logger.error(f"   Model: {model}")
-                logger.error(f"   Error Type: {type(e).__name__}")
-                logger.error(f"   Error Message: {str(e)}")
-
-                # ✅ NEW: Log response_data if available (for debugging empty responses)
-                try:
-                    if 'response_data' in locals():
-                        logger.error(f"   Response Data: {json.dumps(response_data, indent=2)[:500]}")
-                        if 'choices' in response_data and len(response_data['choices']) > 0:
-                            content = response_data['choices'][0].get('message', {}).get('content', '')
-                            logger.error(f"   Content Length: {len(content)} chars")
-                            logger.error(f"   Content Preview: {content[:200]}")
-                except Exception as log_err:
-                    logger.error(f"   Could not log response data: {log_err}")
-
-                logger.error(f"   Stack Trace:\n{traceback.format_exc()}")
-
-                # Check if it's an API error
-                if hasattr(e, 'response'):
-                    logger.error(f"   API Response Status: {getattr(e.response, 'status_code', 'N/A')}")
-                    logger.error(f"   API Response Body: {getattr(e.response, 'text', 'N/A')[:500]}")
+                error_str = str(e)
+                api_status = getattr(getattr(e, 'response', None), 'status_code', None)
+                api_body = getattr(getattr(e, 'response', None), 'text', '')[:300] if hasattr(e, 'response') else ''
+                logger.error(
+                    f"❌ CLASSIFICATION FAILED for {image_path} | model={model_short} "
+                    f"| {type(e).__name__}: {error_str[:200]}"
+                    + (f" | HTTP {api_status}: {api_body}" if api_status else "")
+                )
 
                 return {
                     'is_material': False,
@@ -432,12 +442,21 @@ class ImageProcessingService:
         async def validate_with_claude(image_path: str, base64_data: str = None) -> Dict[str, Any]:
             """Validate uncertain cases with Claude Sonnet."""
             image_base64 = base64_data
+            detected_media_type = "image/jpeg"
             try:
                 if not image_base64:
                     with open(image_path, 'rb') as f:
                         image_bytes = f.read()
+                        detected_media_type = _detect_image_media_type(image_bytes, image_path)
                         image_base64 = base64.b64encode(image_bytes).decode('utf-8')
                         del image_bytes
+                else:
+                    # Detect from decoded base64 when data already provided
+                    try:
+                        sample = base64.b64decode(image_base64[:64])
+                        detected_media_type = _detect_image_media_type(sample, image_path)
+                    except Exception:
+                        pass
 
                 # Use database prompt - NO FALLBACK
                 if self.classification_prompt:
@@ -453,7 +472,7 @@ class ImageProcessingService:
                     messages=[{
                         "role": "user",
                         "content": [
-                            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_base64}},
+                            {"type": "image", "source": {"type": "base64", "media_type": detected_media_type, "data": image_base64}},
                             {"type": "text", "text": classification_prompt}
                         ]
                     }]
@@ -553,12 +572,14 @@ class ImageProcessingService:
                     logger.warning(f"   🔄 Retrying classification for {filename} (attempt {attempt + 2}/{max_retries}) after {wait_time:.1f}s...")
                     await asyncio.sleep(wait_time)
 
-            # ✅ NEW: Check if primary model failed (invalid response)
+            # ✅ NEW: Check if primary model failed (invalid response or exception)
             primary_failed = (
                 '_invalid_response' in primary_result.get('model', '') or
                 '_not_json' in primary_result.get('model', '') or
                 '_empty_response' in primary_result.get('model', '') or
-                '_api_error' in primary_result.get('model', '')
+                '_api_error' in primary_result.get('model', '') or
+                '_failed' in primary_result.get('model', '') or
+                '_503_fallback' in primary_result.get('model', '')
             )
 
             # STAGE 2: If confidence is low OR primary failed, validate with secondary model

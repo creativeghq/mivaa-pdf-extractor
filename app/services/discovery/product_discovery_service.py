@@ -1481,12 +1481,6 @@ class ProductDiscoveryService:
             # Update catalog with enriched products
             catalog.products = enriched_products
 
-            # Store spread layout info in catalog for downstream use
-            catalog.total_pages = pdf_layout.total_physical_pages
-            catalog.total_pdf_pages = pdf_layout.total_pdf_pages
-            catalog.has_spread_layout = pdf_layout.has_spread_layout
-            catalog.physical_to_pdf_map = pdf_layout.physical_to_pdf_map
-
             self.logger.info(f"   📐 Catalog layout info: {catalog.total_pdf_pages} PDF pages -> {catalog.total_pages} physical pages")
 
             return catalog

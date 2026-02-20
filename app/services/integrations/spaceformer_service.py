@@ -268,15 +268,17 @@ IMPORTANT: Respond ONLY with valid JSON. No markdown, no code blocks, just pure 
                 })
             elif image_data:
                 # Handle base64 data
+                detected_media_type = "image/jpeg"
                 if image_data.startswith("data:image"):
-                    # Extract base64 part
-                    image_data = image_data.split(",")[1]
+                    # Extract media type and base64 data from data URL
+                    header, image_data = image_data.split(",", 1)
+                    detected_media_type = header.split(":")[1].split(";")[0]
 
                 content.append({
                     "type": "image",
                     "source": {
                         "type": "base64",
-                        "media_type": "image/jpeg",
+                        "media_type": detected_media_type,
                         "data": image_data
                     }
                 })
