@@ -11,8 +11,6 @@ from typing import List, Dict, Any, Optional
 import logging
 
 from app.services.integrations.spaceformer_service import SpaceformerService, get_spaceformer_service
-from app.dependencies import get_current_user, get_workspace_context
-from app.schemas.auth import WorkspaceContext, User
 from app.schemas.common import BaseResponse, ErrorResponse
 
 # Configure logging
@@ -81,6 +79,8 @@ class SpaceformerRequest(BaseModel):
     user_preferences: Optional[Dict[str, Any]] = Field(None, description="User preferences for analysis")
     constraints: Optional[Dict[str, Any]] = Field(None, description="Analysis constraints")
     analysis_type: str = Field(default="full", description="Type of analysis (full, layout, materials, accessibility)")
+    workspace_id: Optional[str] = Field(None, description="Workspace ID (passed by internal callers)")
+    user_id: Optional[str] = Field(None, description="User ID (passed by internal callers)")
 
     @validator("analysis_type")
     def validate_analysis_type(cls, v):
@@ -120,8 +120,6 @@ class SpaceformerResponse(BaseModel):
 async def analyze_spatial_context(
     request: SpaceformerRequest,
     spaceformer: SpaceformerService = Depends(get_spaceformer_service),
-    user: User = Depends(get_current_user),
-    workspace: WorkspaceContext = Depends(get_workspace_context)
 ) -> SpaceformerResponse:
     """
     **🏠 Spatial Analysis - AI-Powered Room Understanding**
@@ -170,7 +168,7 @@ async def analyze_spatial_context(
     - Detailed reasoning explanations
     """
     try:
-        logger.info(f"Starting spatial analysis for user {user.id}, room_type: {request.room_type}")
+        logger.info(f"Starting spatial analysis for workspace={request.workspace_id}, room_type: {request.room_type}")
 
         # Perform spatial analysis
         result = await spaceformer.analyze_space(
@@ -181,8 +179,8 @@ async def analyze_spatial_context(
             user_preferences=request.user_preferences,
             constraints=request.constraints,
             analysis_type=request.analysis_type,
-            user_id=user.id,
-            workspace_id=workspace.workspace_id
+            user_id=request.user_id,
+            workspace_id=request.workspace_id
         )
 
         logger.info(f"Spatial analysis completed: {result['analysis_id']}")

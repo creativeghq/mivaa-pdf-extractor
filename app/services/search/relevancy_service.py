@@ -83,7 +83,7 @@ class RelevancyService:
         
         # Create relationships based on similarity
         for chunk in chunks:
-            chunk_embedding = chunk['embedding']
+            chunk_embedding = chunk['text_embedding']
             
             for image in images:
                 image_embedding = image['visual_clip_embedding_512']

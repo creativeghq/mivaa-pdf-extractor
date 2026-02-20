@@ -284,35 +284,6 @@ class EntityLinkingService:
         total_score = page_overlap_score + visual_similarity_score + detection_score
         return min(1.0, max(0.0, total_score))
 
-    def _calculate_image_chunk_relevance(
-        self,
-        image_page: int,
-        chunk_page: int
-    ) -> float:
-        """
-        Calculate relevance score for image-chunk relationship.
-
-        Algorithm: same_page(50%) + visual_text_similarity(30%) + spatial_proximity(20%)
-
-        Args:
-            image_page: Page number of the image
-            chunk_page: Page number of the chunk
-
-        Returns:
-            Relevance score (0.0-1.0)
-        """
-        # Same page component (50%)
-        same_page_score = 0.5 if image_page == chunk_page else 0.0
-
-        # Visual-text similarity (30%) - default medium relevance
-        visual_text_score = 0.15 if image_page == chunk_page else 0.0
-
-        # Spatial proximity (20%) - default medium relevance
-        spatial_score = 0.1 if image_page == chunk_page else 0.0
-
-        total_score = same_page_score + visual_text_score + spatial_score
-        return min(1.0, max(0.0, total_score))
-
     def _find_product_by_page(
         self,
         page_number: int,
@@ -329,12 +300,11 @@ class EntityLinkingService:
         document_id: str
     ) -> int:
         """
-        Link images to chunks using relationship table with relevance scores.
+        Link images to chunks based on shared product page ranges.
 
-        Relevance Algorithm:
-        - same_page(50%): Images and chunks on same page
-        - visual_text_similarity(30%): Default medium relevance
-        - spatial_proximity(20%): Default medium relevance
+        Each chunk carries a product_pages list (actual PDF page numbers for its product).
+        Any image whose page_number falls within that list is considered related to the chunk.
+        relevance_score is set to 1.0 for all product-level page associations.
 
         Args:
             document_id: Document ID
@@ -363,44 +333,57 @@ class EntityLinkingService:
 
             relationships = []
 
-            # Create page-to-chunks mapping
-            page_to_chunks = {}
-            chunk_pages = {}
+            # Build page-to-chunks mapping.
+            # Each chunk belongs to a product whose product_pages lists every actual PDF
+            # page that product spans.  Because all chunks for a product share the same
+            # product_pages array (and page_number is unreliably always 1), we register
+            # each chunk against EVERY page in its product's page range.  This ensures
+            # images on any page of the product are linked to the product's chunks.
+            page_to_chunks: Dict[int, List[str]] = {}
             for chunk in chunks_response.data:
-                metadata = chunk.get('metadata', {})
-                # Chunks use 'page_label' (string) not 'page_number'
-                page_label = metadata.get('page_label')
+                metadata = chunk.get('metadata', {}) or {}
+                product_pages = metadata.get('product_pages', [])
 
-                if page_label:
+                if not product_pages or not isinstance(product_pages, list):
+                    # Fallback: use page_number directly as the actual page
+                    page_num = metadata.get('page_number')
+                    if page_num is None:
+                        continue
                     try:
-                        page_number = int(page_label)
-                        if page_number not in page_to_chunks:
-                            page_to_chunks[page_number] = []
-                        page_to_chunks[page_number].append(chunk['id'])
-                        chunk_pages[chunk['id']] = page_number
+                        product_pages = [int(page_num)]
                     except (ValueError, TypeError):
-                        self.logger.warning(f"Invalid page_label '{page_label}' for chunk {chunk['id']}")
+                        continue
 
-            # Link images to chunks on same page
+                chunk_id = chunk['id']
+                for actual_page in product_pages:
+                    try:
+                        actual_page = int(actual_page)
+                    except (ValueError, TypeError):
+                        continue
+                    if actual_page not in page_to_chunks:
+                        page_to_chunks[actual_page] = []
+                    if chunk_id not in page_to_chunks[actual_page]:
+                        page_to_chunks[actual_page].append(chunk_id)
+
+            # Link images to all chunks whose product spans the image's page.
+            # De-duplicate pairs in case multiple chunks map to the same page.
+            seen_pairs: set = set()
             for image in images_response.data:
                 image_page = image['page_number']
                 chunk_ids = page_to_chunks.get(image_page, [])
 
                 for chunk_id in chunk_ids:
-                    chunk_page = chunk_pages.get(chunk_id, image_page)
-
-                    # Calculate relevance score
-                    relevance_score = self._calculate_image_chunk_relevance(
-                        image_page=image_page,
-                        chunk_page=chunk_page
-                    )
+                    pair = (chunk_id, image['id'])
+                    if pair in seen_pairs:
+                        continue
+                    seen_pairs.add(pair)
 
                     # Create relationship entry (matching frontend schema)
                     relationships.append({
                         'id': str(uuid.uuid4()),
                         'chunk_id': chunk_id,
                         'image_id': image['id'],
-                        'relevance_score': relevance_score,
+                        'relevance_score': 1.0,
                         'relationship_type': 'page_proximity',
                         'created_at': datetime.utcnow().isoformat()
                     })
@@ -829,6 +812,7 @@ class EntityLinkingService:
                         'id': str(uuid.uuid4()),
                         'chunk_id': chunk['id'],
                         'product_id': product_id,
+                        'relationship_type': 'source',
                         'relevance_score': relevance,
                         'created_at': datetime.utcnow().isoformat()
                     })

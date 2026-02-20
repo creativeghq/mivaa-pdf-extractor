@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from app.schemas.product_progress import ProductProcessingResult
 from app.services.tracking.product_progress_tracker import ProductProgressTracker
 from app.api.pdf_processing.product_processor import process_single_product
+from app.services.discovery.entity_linking_service import EntityLinkingService
 
 
 logger = logging.getLogger(__name__)
@@ -247,6 +248,17 @@ async def process_products_parallel(
     result.total_relationships_created = metrics['relationships']
     result.total_clip_embeddings = metrics['clip_embeddings']
 
+    # Link images to chunks once per document — this is a document-level operation that must
+    # run after all products are processed, not per-product (avoids duplicate constraint errors)
+    try:
+        logger_instance.info(f"🔗 Linking chunk-image relationships for document {document_id}...")
+        entity_linking_service = EntityLinkingService(supabase)
+        chunk_image_count = await entity_linking_service.link_images_to_chunks(document_id=document_id)
+        result.total_relationships_created += chunk_image_count
+        logger_instance.info(f"   ✅ Created {chunk_image_count} chunk-image relationships")
+    except Exception as e:
+        logger_instance.error(f"   ❌ Failed to link chunk-image relationships: {e}", exc_info=True)
+
     # Log summary
     logger_instance.info(f"\n{'='*80}")
     logger_instance.info(f"🚀 PARALLEL PROCESSING COMPLETE")
@@ -358,6 +370,16 @@ async def _process_products_sequential(
             })
             logger_instance.error(f"❌ Failed to process product {product.name}: {e}", exc_info=True)
             continue
+
+    # Link images to chunks once per document — document-level operation, runs after all products
+    try:
+        logger_instance.info(f"🔗 Linking chunk-image relationships for document {document_id}...")
+        entity_linking_service = EntityLinkingService(supabase)
+        chunk_image_count = await entity_linking_service.link_images_to_chunks(document_id=document_id)
+        result.total_relationships_created += chunk_image_count
+        logger_instance.info(f"   ✅ Created {chunk_image_count} chunk-image relationships")
+    except Exception as e:
+        logger_instance.error(f"   ❌ Failed to link chunk-image relationships: {e}", exc_info=True)
 
     end_time = datetime.utcnow()
     result.processing_time_seconds = (end_time - start_time).total_seconds()

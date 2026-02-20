@@ -111,6 +111,9 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             "/api/bulk/process",
             "/api/analyze/multimodal",
             "/api/query/multimodal",
+            "/api/interior",        # Interior design — called by edge function (no user JWT)
+            "/api/spaceformer",     # Spatial analysis — called by edge function (no user JWT)
+            "/api/rag",             # RAG search — called by edge function (no user JWT)
             "/"
         ]
         
