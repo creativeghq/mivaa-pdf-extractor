@@ -15,10 +15,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Depends, Query, status
 
-try:
-    from pydantic import BaseModel, Field, field_validator as validator
-except ImportError:
-    from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 from app.services.search.rag_service import RAGService
 from app.services.products.product_relationship_service import ProductRelationshipService

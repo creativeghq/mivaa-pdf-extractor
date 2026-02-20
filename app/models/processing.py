@@ -9,7 +9,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, field_validator as validator
+from pydantic import BaseModel, Field, field_validator, ValidationInfo
 
 
 class ImageFormat(str, Enum):
@@ -93,7 +93,8 @@ class ProcessingOptions(BaseModel):
         le=300
     )
     
-    @validator('pages')
+    @field_validator('pages')
+    @classmethod
     def validate_pages(cls, v):
         """Validate page numbers are positive."""
         if v is not None:
@@ -101,11 +102,12 @@ class ProcessingOptions(BaseModel):
                 if page < 1:
                     raise ValueError("Page numbers must be positive")
         return v
-    
-    @validator('max_image_size')
-    def validate_image_size_range(cls, v, values):
+
+    @field_validator('max_image_size')
+    @classmethod
+    def validate_image_size_range(cls, v: int, info: ValidationInfo) -> int:
         """Ensure max_image_size is greater than min_image_size."""
-        min_size = values.get('min_image_size', 100)
+        min_size = info.data.get('min_image_size', 100)
         if v <= min_size:
             raise ValueError("max_image_size must be greater than min_image_size")
         return v
@@ -127,7 +129,8 @@ class PDFProcessingRequest(BaseModel):
         description="Processing configuration options"
     )
     
-    @validator('pdf_url')
+    @field_validator('pdf_url')
+    @classmethod
     def validate_pdf_url(cls, v):
         """Basic URL validation for PDF URLs."""
         if v is not None:

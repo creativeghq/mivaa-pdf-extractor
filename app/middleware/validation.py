@@ -29,7 +29,7 @@ from fastapi import Request, Response, HTTPException, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
-from pydantic import BaseModel, ValidationError, validator
+from pydantic import BaseModel, ValidationError, field_validator
 
 from app.schemas.common import BaseResponse, ErrorResponse
 from app.config import settings
@@ -104,7 +104,8 @@ class ValidationConfig(BaseModel):
     include_error_details: bool = False  # Set to False in production
     max_error_message_length: int = 500
     
-    @validator('blocked_patterns')
+    @field_validator('blocked_patterns')
+    @classmethod
     def compile_patterns(cls, v):
         """Compile regex patterns for better performance."""
         return [re.compile(pattern, re.IGNORECASE) for pattern in v]

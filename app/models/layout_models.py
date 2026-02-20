@@ -5,7 +5,7 @@ Pydantic models for YOLO DocParser layout detection results.
 Supports detection of TEXT, IMAGE, TABLE, TITLE, and CAPTION regions.
 """
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Dict, Any, Optional, Literal
 from datetime import datetime
 from uuid import UUID
@@ -71,7 +71,8 @@ class LayoutRegion(BaseModel):
     # Metadata
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
     
-    @validator('type')
+    @field_validator('type')
+    @classmethod
     def validate_type(cls, v):
         """Validate region type."""
         allowed = ['TEXT', 'IMAGE', 'TABLE', 'TITLE', 'CAPTION']

@@ -10,7 +10,7 @@ from typing import Dict, List, Set, Optional, Any
 from functools import lru_cache
 import re
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from app.config import settings
 
 
@@ -73,7 +73,8 @@ class SecurityConfig(BaseModel):
         description="Maximum array length in JSON"
     )
     
-    @validator('blocked_patterns')
+    @field_validator('blocked_patterns')
+    @classmethod
     def compile_patterns(cls, v):
         """Compile regex patterns for better performance."""
         compiled_patterns = []
@@ -267,15 +268,17 @@ class ValidationConfig(BaseModel):
         description="Allow requests to endpoints without registered schemas"
     )
     
-    @validator('environment')
+    @field_validator('environment')
+    @classmethod
     def validate_environment(cls, v):
         """Validate environment setting."""
         allowed_environments = {'development', 'staging', 'production'}
         if v.lower() not in allowed_environments:
             raise ValueError(f"Environment must be one of: {allowed_environments}")
         return v.lower()
-    
-    @validator('endpoint_overrides')
+
+    @field_validator('endpoint_overrides')
+    @classmethod
     def validate_endpoint_overrides(cls, v):
         """Validate endpoint override format."""
         for endpoint, overrides in v.items():

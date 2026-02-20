@@ -7,7 +7,7 @@ Data models for tracking individual product processing in the product-centric pi
 from enum import Enum
 from typing import Optional, List, Dict, Any
 from datetime import datetime
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class ProductStage(str, Enum):
@@ -83,7 +83,8 @@ class ProductProgress(BaseModel):
     # Additional metadata
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
     
-    @validator('product_index')
+    @field_validator('product_index')
+    @classmethod
     def validate_product_index(cls, v):
         if v < 1:
             raise ValueError('product_index must be >= 1')

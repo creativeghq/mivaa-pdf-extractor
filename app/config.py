@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, field_validator, validator
+from pydantic import Field, field_validator
 
 
 class Settings(BaseSettings):
@@ -778,7 +778,7 @@ class Settings(BaseSettings):
         env="SENTRY_SERVER_NAME"
     )
     
-    @validator("cors_origins", "cors_methods", "cors_headers", "allowed_extensions", pre=True)
+    @field_validator("cors_origins", "cors_methods", "cors_headers", "allowed_extensions", mode='before')
     @classmethod
     def parse_list_from_string(cls, v):
         """Parse comma-separated string into list."""
@@ -786,16 +786,16 @@ class Settings(BaseSettings):
             return [item.strip() for item in v.split(",") if item.strip()]
         return v
 
-    @validator("log_level")
+    @field_validator("log_level")
     @classmethod
     def validate_log_level(cls, v):
-            """Validate log level."""
-            valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
-            if v.upper() not in valid_levels:
-                raise ValueError(f"Log level must be one of: {valid_levels}")
-            return v.upper()
+        """Validate log level."""
+        valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+        if v.upper() not in valid_levels:
+            raise ValueError(f"Log level must be one of: {valid_levels}")
+        return v.upper()
 
-    @validator("default_image_format")
+    @field_validator("default_image_format")
     @classmethod
     def validate_image_format(cls, v):
         """Validate image format."""
@@ -804,7 +804,7 @@ class Settings(BaseSettings):
             raise ValueError(f"Image format must be one of: {valid_formats}")
         return v.lower()
 
-    @validator("default_table_strategy")
+    @field_validator("default_table_strategy")
     @classmethod
     def validate_table_strategy(cls, v):
         """Validate table extraction strategy."""
@@ -813,7 +813,7 @@ class Settings(BaseSettings):
             raise ValueError(f"Table strategy must be one of: {valid_strategies}")
         return v.lower()
 
-    @validator("multimodal_image_detail")
+    @field_validator("multimodal_image_detail")
     @classmethod
     def validate_multimodal_image_detail(cls, v):
         """Validate multi-modal image detail level."""
@@ -822,7 +822,7 @@ class Settings(BaseSettings):
             raise ValueError(f"Multi-modal image detail must be one of: {valid_details}")
         return v.lower()
 
-    @validator("ocr_engine")
+    @field_validator("ocr_engine")
     @classmethod
     def validate_ocr_engine(cls, v):
         """Validate OCR engine selection."""
@@ -831,11 +831,10 @@ class Settings(BaseSettings):
             raise ValueError(f"OCR engine must be one of: {valid_engines}")
         return v.lower()
 
-    @validator("ocr_language")
+    @field_validator("ocr_language")
     @classmethod
     def validate_ocr_language(cls, v):
         """Validate OCR language code."""
-        # Common language codes - can be extended as needed
         valid_languages = [
             "en", "es", "fr", "de", "it", "pt", "ru", "ja", "ko", "zh",
             "ar", "hi", "th", "vi", "tr", "pl", "nl", "sv", "da", "no"
@@ -844,7 +843,7 @@ class Settings(BaseSettings):
             raise ValueError(f"OCR language must be one of: {valid_languages}")
         return v.lower()
 
-    @validator("image_format_conversion")
+    @field_validator("image_format_conversion")
     @classmethod
     def validate_image_format_conversion(cls, v):
         """Validate image format for conversion."""
@@ -853,7 +852,7 @@ class Settings(BaseSettings):
             raise ValueError(f"Image format conversion must be one of: {valid_formats}")
         return v.upper()
 
-    @validator("temp_dir", pre=True)
+    @field_validator("temp_dir", mode='before')
     @classmethod
     def set_temp_dir(cls, v):
         """Set default temp directory if not provided."""
