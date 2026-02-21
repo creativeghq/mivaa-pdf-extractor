@@ -3467,8 +3467,21 @@ async def process_document_with_discovery(
         # ============================================================================
         # STAGE 4.5: PROPAGATE COMMON FIELDS ACROSS PRODUCTS
         # ============================================================================
-        # Share factory, manufacturing, and material_category across all products from same document
-        from app.api.pdf_processing.stage_4_products import propagate_common_fields_to_products
+        # Shares factory, manufacturing, material_category, available_sizes, and nested
+        # material_properties fields (thickness, body_type, composition) across all
+        # products from the same catalog PDF.
+        progress_monitor.update_stage("field_propagation", {
+            "products_created": products_created,
+            "description": "Propagating shared fields across catalog siblings"
+        })
+        await tracker.update_progress(70, {
+            "current_step": "Propagating common fields across catalog siblings"
+        })
+
+        from app.api.pdf_processing.stage_4_products import (
+            propagate_common_fields_to_products,
+            extract_dimensions_from_document_chunks,
+        )
 
         propagation_result = await propagate_common_fields_to_products(
             document_id=document_id,
@@ -3476,7 +3489,50 @@ async def process_document_with_discovery(
             logger=logger,
             material_category_override=material_category  # From upload settings
         )
-        logger.info(f"🔄 Field propagation: {propagation_result.get('products_updated', 0)}/{propagation_result.get('products_checked', 0)} products updated")
+        logger.info(
+            f"🔄 Field propagation: "
+            f"{propagation_result.get('products_updated', 0)}/{propagation_result.get('products_checked', 0)} "
+            f"products updated — fields: {propagation_result.get('fields_propagated', [])}"
+        )
+
+        await tracker.update_progress(72, {
+            "current_step": (
+                f"Field propagation done — "
+                f"{propagation_result.get('products_updated', 0)} products updated"
+            )
+        })
+
+        # ============================================================================
+        # STAGE 4.6: EXTRACT DIMENSIONS FROM DOCUMENT TEXT CHUNKS
+        # ============================================================================
+        # For products still missing sizes / thickness after sibling propagation,
+        # scan the already-extracted text chunks for dimension patterns (regex, no AI call).
+        progress_monitor.update_stage("dimension_extraction", {
+            "products_checked": propagation_result.get('products_checked', 0),
+            "description": "Scanning text chunks for tile sizes and thickness"
+        })
+        await tracker.update_progress(74, {
+            "current_step": "Extracting dimensions from catalog text chunks"
+        })
+
+        dimension_result = await extract_dimensions_from_document_chunks(
+            document_id=document_id,
+            supabase=supabase,
+            logger=logger,
+        )
+        logger.info(
+            f"📐 Dimension extraction from text: "
+            f"{dimension_result.get('products_updated', 0)}/{dimension_result.get('products_checked', 0)} "
+            f"products updated — values: {dimension_result.get('dimensions_found', [])}"
+        )
+
+        await tracker.update_progress(76, {
+            "current_step": (
+                f"Dimension extraction done — "
+                f"{dimension_result.get('products_updated', 0)} products updated"
+            )
+        })
+        await tracker._sync_to_database(stage="dimension_extraction")
 
         # ============================================================================
         # STAGE 5: QUALITY ENHANCEMENT (MODULAR)

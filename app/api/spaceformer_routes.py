@@ -6,6 +6,7 @@ material placement, and accessibility analysis.
 """
 
 from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 from typing import List, Dict, Any, Optional
 import logging
@@ -113,11 +114,11 @@ class SpaceformerResponse(BaseModel):
 # API Endpoints
 # ============================================================================
 
-@router.post("/analyze", response_model=SpaceformerResponse, status_code=status.HTTP_200_OK)
+@router.post("/analyze", status_code=status.HTTP_200_OK)
 async def analyze_spatial_context(
     request: SpaceformerRequest,
     spaceformer: SpaceformerService = Depends(get_spaceformer_service),
-) -> SpaceformerResponse:
+) -> JSONResponse:
     """
     **🏠 Spatial Analysis - AI-Powered Room Understanding**
 
@@ -181,7 +182,10 @@ async def analyze_spatial_context(
         )
 
         logger.info(f"Spatial analysis completed: {result['analysis_id']}")
-        return SpaceformerResponse(**result)
+        # Return raw Claude result — the Pydantic SpaceformerResponse model is kept
+        # for documentation purposes but the actual response shape is richer (includes
+        # room_analysis, detected_items, etc.) and must not be filtered by a strict model.
+        return JSONResponse(content=result)
 
     except ValueError as e:
         logger.error(f"Validation error in spatial analysis: {e}")

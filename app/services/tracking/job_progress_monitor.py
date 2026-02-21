@@ -28,6 +28,9 @@ STAGE_TIMEOUTS = {
     "storing_chunks": 900,           # 15 minutes - database operations (was 10min)
     "image_processing": 1800,        # 30 minutes - same as extracting_images (was 20min - fixes MIVAA-7X)
     "metadata_extraction": 1200,     # 20 minutes - metadata processing (was 15min)
+    "field_propagation": 120,        # 2 minutes  - sibling field propagation (DB reads/writes only)
+    "dimension_extraction": 120,     # 2 minutes  - regex scan of text chunks for sizes/thickness
+    "quality_enhancement": 1800,     # 30 minutes - Stage 5 quality validation
     "default": 900                   # 15 minutes - fallback for unknown stages (was 10min)
 }
 

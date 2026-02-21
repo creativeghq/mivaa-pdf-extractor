@@ -273,7 +273,7 @@ async def propagate_common_fields_to_products(
         products = products_response.data
         stats['products_checked'] = len(products)
 
-        # Fields to propagate (shared across all products from same document)
+        # Top-level fields to propagate (shared across all products from same document)
         common_fields = [
             'factory_name',
             'factory_group_name',
@@ -284,6 +284,16 @@ async def propagate_common_fields_to_products(
             'manufacturing_location',
             'manufacturing_process',
             'manufacturing_country',
+            # Dimensions — catalog siblings share the same size options
+            'available_sizes',
+        ]
+
+        # Nested fields to propagate: (parent_key, child_key)
+        # Tiles/stones from the same catalog series share these material-level properties.
+        nested_fields = [
+            ('material_properties', 'thickness'),
+            ('material_properties', 'body_type'),
+            ('material_properties', 'composition'),
         ]
 
         # Find the best value for each common field (first non-empty value)
@@ -308,27 +318,54 @@ async def propagate_common_fields_to_products(
                     common_values[field] = value
                     break  # Use first valid value found
 
-        if not common_values:
+        # Find the best nested field values (first non-empty across all products)
+        nested_common_values = {}
+        for parent_key, child_key in nested_fields:
+            for product in products:
+                metadata = product.get('metadata', {}) or {}
+                parent = metadata.get(parent_key) or {}
+                if not isinstance(parent, dict):
+                    continue
+                value = parent.get(child_key)
+                if value and not _is_empty_value(value):
+                    nested_common_values[(parent_key, child_key)] = value
+                    break
+
+        if not common_values and not nested_common_values:
             logger.info("   ℹ️ No common values to propagate")
             return stats
 
-        logger.info(f"   📦 Found common values: {list(common_values.keys())}")
+        all_found = list(common_values.keys()) + [f"{pk}.{ck}" for pk, ck in nested_common_values.keys()]
+        logger.info(f"   📦 Found common values: {all_found}")
 
-        # Update products that are missing these common fields
+        # Update products that are missing these common fields (one DB write per product)
         for product in products:
             product_id = product['id']
             metadata = product.get('metadata', {}) or {}
             updates_needed = {}
+            nested_updates = {}
 
             for field, common_value in common_values.items():
                 current_value = metadata.get(field)
-                # Update if current value is empty but common value exists
                 if _is_empty_value(current_value) and not _is_empty_value(common_value):
                     updates_needed[field] = common_value
 
-            if updates_needed:
-                # Merge updates into metadata
+            for (parent_key, child_key), common_value in nested_common_values.items():
+                parent = metadata.get(parent_key) or {}
+                if not isinstance(parent, dict):
+                    continue
+                current_value = parent.get(child_key)
+                if _is_empty_value(current_value) and not _is_empty_value(common_value):
+                    nested_updates[(parent_key, child_key)] = common_value
+
+            if updates_needed or nested_updates:
                 updated_metadata = {**metadata, **updates_needed}
+
+                # Apply one-level-deep nested updates
+                for (parent_key, child_key), value in nested_updates.items():
+                    parent = dict(updated_metadata.get(parent_key) or {})
+                    parent[child_key] = value
+                    updated_metadata[parent_key] = parent
 
                 supabase.client.table('products') \
                     .update({'metadata': updated_metadata}) \
@@ -336,8 +373,9 @@ async def propagate_common_fields_to_products(
                     .execute()
 
                 stats['products_updated'] += 1
-                stats['fields_propagated'].extend(list(updates_needed.keys()))
-                logger.info(f"   ✅ Updated product {product['name']}: {list(updates_needed.keys())}")
+                propagated = list(updates_needed.keys()) + [f"{pk}.{ck}" for pk, ck in nested_updates.keys()]
+                stats['fields_propagated'].extend(propagated)
+                logger.info(f"   ✅ Updated product {product['name']}: {propagated}")
 
         # Deduplicate fields_propagated
         stats['fields_propagated'] = list(set(stats['fields_propagated']))
@@ -347,6 +385,130 @@ async def propagate_common_fields_to_products(
 
     except Exception as e:
         logger.error(f"❌ Failed to propagate common fields: {e}")
+        stats['error'] = str(e)
+        return stats
+
+
+async def extract_dimensions_from_document_chunks(
+    document_id: str,
+    supabase: Any,
+    logger: logging.Logger,
+) -> Dict[str, Any]:
+    """
+    Stage 4.6: scan all text chunks belonging to this document for dimension patterns
+    (tile sizes like "10×45 cm", thickness like "6.9 mm") and fill in any products
+    that are still missing those fields after Stage 4.5 propagation.
+
+    Runs entirely on already-extracted text — no extra AI calls needed.
+
+    Returns:
+        Stats dict: products_checked, products_updated, dimensions_found
+    """
+    import re
+
+    stats: Dict[str, Any] = {
+        'products_checked': 0,
+        'products_updated': 0,
+        'dimensions_found': [],
+    }
+
+    try:
+        # ── 1. Fetch all text chunks for this document ──────────────────────
+        chunks_resp = supabase.client.table('document_chunks') \
+            .select('content') \
+            .eq('document_id', document_id) \
+            .execute()
+        chunks = chunks_resp.data or []
+
+        if not chunks:
+            logger.info("   ℹ️ No text chunks found for dimension scan")
+            return stats
+
+        # Merge all chunk content for scanning
+        combined_text = ' '.join(c.get('content', '') for c in chunks if c.get('content'))
+
+        # ── 2. Extract size patterns: 10×45 cm, 15 x 38, 20X60 ────────────
+        size_re = re.compile(r'(\d{1,4})\s*[×xX]\s*(\d{1,4})(?:\s*cm)?', re.IGNORECASE)
+        found_sizes = []
+        for m in size_re.finditer(combined_text):
+            w, h = int(m.group(1)), int(m.group(2))
+            if 5 <= w <= 300 and 5 <= h <= 300:
+                found_sizes.append(f"{w}×{h} cm")
+        found_sizes = list(dict.fromkeys(found_sizes))  # dedup, preserve order
+
+        # ── 3. Extract thickness near keyword ─────────────────────────────
+        thickness_value: Optional[str] = None
+        thick_re = re.compile(
+            r'(?:thickness|spessore|epaisseur|st[aä]rke|dikte)[^\n]{0,80}?(\d+[\.,]?\d*)\s*mm',
+            re.IGNORECASE,
+        )
+        m = thick_re.search(combined_text)
+        if m:
+            thickness_value = f"{m.group(1).replace(',', '.')}mm"
+        else:
+            bare_mm = re.findall(r'\b(\d+[\.,]\d+)\s*mm\b', combined_text, re.IGNORECASE)
+            if bare_mm:
+                thickness_value = f"{bare_mm[0].replace(',', '.')}mm"
+
+        if not found_sizes and not thickness_value:
+            logger.info("   ℹ️ No dimension patterns found in text chunks")
+            return stats
+
+        logger.info(
+            f"   📐 Dimension patterns found in text: sizes={found_sizes}, thickness={thickness_value}"
+        )
+        if found_sizes:
+            stats['dimensions_found'].extend(found_sizes)
+        if thickness_value:
+            stats['dimensions_found'].append(thickness_value)
+
+        # ── 4. Fetch products for this document ───────────────────────────
+        products_resp = supabase.client.table('products') \
+            .select('id, name, metadata') \
+            .eq('source_document_id', document_id) \
+            .execute()
+        products = products_resp.data or []
+        stats['products_checked'] = len(products)
+
+        # ── 5. Fill products that are still missing the fields ────────────
+        for product in products:
+            product_id = product['id']
+            existing_metadata = product.get('metadata') or {}
+            updated_metadata = {**existing_metadata}
+            changed = False
+
+            if found_sizes and _is_empty_value(existing_metadata.get('available_sizes')):
+                updated_metadata['available_sizes'] = found_sizes
+                changed = True
+
+            if thickness_value:
+                mat_props = dict(existing_metadata.get('material_properties') or {})
+                if _is_empty_value(mat_props.get('thickness')):
+                    mat_props['thickness'] = {
+                        'value': thickness_value,
+                        'confidence': 0.65,
+                        'source': 'document_text',
+                    }
+                    updated_metadata['material_properties'] = mat_props
+                    changed = True
+
+            if changed:
+                supabase.client.table('products') \
+                    .update({'metadata': updated_metadata}) \
+                    .eq('id', product_id) \
+                    .execute()
+                stats['products_updated'] += 1
+                logger.info(
+                    f"   ✅ Filled dimensions for product '{product['name']}' from text chunks"
+                )
+
+        logger.info(
+            f"✅ Dimension extraction complete: {stats['products_updated']}/{stats['products_checked']} products updated"
+        )
+        return stats
+
+    except Exception as e:
+        logger.error(f"❌ Dimension extraction from text chunks failed: {e}")
         stats['error'] = str(e)
         return stats
 

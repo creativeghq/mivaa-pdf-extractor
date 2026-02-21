@@ -374,18 +374,35 @@ CRITICAL RULES:
                 user_id=user_id
             )
 
-            # Parse JSON response
+            # Parse JSON response — Claude sometimes wraps in markdown despite instructions
             try:
                 result = json.loads(response_text)
             except json.JSONDecodeError:
-                # Try to extract JSON from markdown code blocks
-                if "```json" in response_text:
-                    json_start = response_text.find("```json") + 7
-                    json_end = response_text.find("```", json_start)
-                    response_text = response_text[json_start:json_end].strip()
-                    result = json.loads(response_text)
-                else:
-                    raise ValueError(f"Invalid JSON response from Claude: {response_text[:200]}")
+                import re as _re
+                result = None
+
+                # 1. Try ```json ... ``` or ``` ... ``` code blocks
+                code_block = _re.search(r'```(?:json)?\s*([\s\S]*?)```', response_text)
+                if code_block:
+                    try:
+                        result = json.loads(code_block.group(1).strip())
+                        logger.debug("Extracted JSON from markdown code block")
+                    except json.JSONDecodeError:
+                        pass
+
+                # 2. Last resort: find the outermost { ... } object in the full text
+                if result is None:
+                    obj_match = _re.search(r'\{[\s\S]*\}', response_text)
+                    if obj_match:
+                        try:
+                            result = json.loads(obj_match.group(0))
+                            logger.debug("Extracted JSON object from mixed-text response")
+                        except json.JSONDecodeError:
+                            pass
+
+                if result is None:
+                    logger.error(f"Claude returned non-JSON. Preview: {response_text[:300]}")
+                    raise RuntimeError(f"AI returned non-JSON response: {response_text[:200]}")
 
             logger.info(f"Claude Vision analysis completed for {analysis_id}")
             return result
