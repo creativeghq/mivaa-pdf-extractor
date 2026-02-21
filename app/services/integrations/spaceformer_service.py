@@ -111,132 +111,187 @@ class SpaceformerService:
         constraints: Optional[Dict[str, Any]],
         analysis_type: str
     ) -> str:
-        """Build comprehensive analysis prompt for Claude Vision"""
+        """Build comprehensive per-item analysis prompt for Claude Vision"""
 
-        base_prompt = f"""Analyze this {room_type} image and provide comprehensive spatial analysis.
+        base_prompt = f"""You are an expert interior design analyst with deep knowledge of furniture, materials, dimensions, and product sourcing. Analyze this room image with extreme detail.
 
 Room Type: {room_type}
 """
 
         if room_dimensions:
-            base_prompt += f"""Room Dimensions: {room_dimensions['width']}m × {room_dimensions['depth']}m × {room_dimensions['height']}m
+            base_prompt += f"""Known Room Dimensions: {room_dimensions['width']}m wide × {room_dimensions['depth']}m deep × {room_dimensions['height']}m high
 """
 
         if user_preferences:
             base_prompt += f"""User Preferences: {json.dumps(user_preferences, indent=2)}
 """
 
-        if constraints:
-            base_prompt += f"""Constraints: {json.dumps(constraints, indent=2)}
-"""
-
-        # Add analysis-specific instructions
-        if analysis_type == "full":
-            analysis_instructions = """
-Provide COMPLETE analysis including:
-1. Spatial Features (windows, doors, furniture, fixtures)
-2. Layout Suggestions (furniture placement, room organization)
-3. Material Placements (flooring, walls, surfaces)
-4. Accessibility Analysis (ADA compliance, barrier-free paths)
-5. Flow Optimization (traffic patterns, bottlenecks)
-"""
-        elif analysis_type == "layout":
-            analysis_instructions = """
-Focus on LAYOUT OPTIMIZATION:
-1. Spatial Features (existing furniture, fixtures)
-2. Layout Suggestions (optimal furniture placement)
-3. Flow Optimization (traffic patterns)
-"""
-        elif analysis_type == "materials":
-            analysis_instructions = """
-Focus on MATERIAL RECOMMENDATIONS:
-1. Surface Analysis (walls, floors, ceilings)
-2. Material Placements (optimal material selection)
-3. Application Methods (installation recommendations)
-"""
-        elif analysis_type == "accessibility":
-            analysis_instructions = """
-Focus on ACCESSIBILITY COMPLIANCE:
-1. Accessibility Features (ramps, grab bars, clearances)
-2. Barrier-Free Paths (wheelchair accessibility)
-3. ADA Compliance (compliance score and recommendations)
-"""
-        else:
-            analysis_instructions = "Provide general spatial analysis."
-
-        base_prompt += analysis_instructions
-
-        # Add JSON response format
         base_prompt += """
+Your task is to produce TWO levels of analysis:
 
+LEVEL 1 — ROOM-LEVEL ANALYSIS
+Analyse the overall room: its type, estimated dimensions, architectural style, surfaces (floor, walls, ceiling), lighting, and condition.
+
+LEVEL 2 — ITEM-BY-ITEM INVENTORY
+Identify and analyse EVERY visible item in the room individually — every piece of furniture, every light fixture, every decorative object, every rug, every plant, every cushion, every artwork. Do not group items. List each one separately.
+
+For each item provide:
+- Precise name (e.g. "3-seat sofa", not just "sofa")
+- Category + subcategory
+- Where it sits in the room (plain English description)
+- Estimated real-world dimensions in centimetres (width × height × depth). Use visual cues, proportions, standard sizes as reference. State your confidence (low/medium/high).
+- Primary colour and any secondary colours
+- Material and finish (e.g. "solid oak with matte lacquer", "chrome-plated steel", "linen upholstery")
+- Style (e.g. mid-century modern, Scandinavian, industrial, contemporary, traditional)
+- Visible condition (excellent / good / fair / worn)
+- Quantity (if multiple identical items)
+- 5–8 product search keywords optimised for finding this exact item in a product catalogue
+- Any notable features, brand clues, or distinguishing details
+
+"""
+
+        base_prompt += """
 Respond with VALID JSON in this exact format:
 {
   "success": true,
+  "room_analysis": {
+    "room_type": "living room",
+    "estimated_dimensions": {
+      "width_m": 5.5,
+      "length_m": 7.0,
+      "height_m": 2.7,
+      "total_area_sqm": 38.5
+    },
+    "architectural_style": "contemporary",
+    "lighting": {
+      "natural_light": "high|medium|low",
+      "artificial_light": "description of light fixtures",
+      "light_direction": "e.g. south-facing, north-east"
+    },
+    "flooring": {
+      "type": "hardwood|tile|carpet|concrete|laminate|vinyl|stone|other",
+      "color": "color description",
+      "pattern": "e.g. straight planks, herringbone, solid, geometric",
+      "condition": "excellent|good|fair|worn",
+      "estimated_area_sqm": 0.0
+    },
+    "walls": {
+      "primary_color": "color",
+      "material": "painted drywall|brick|concrete|wood panelling|wallpaper|stone|other",
+      "finish": "matte|satin|gloss|textured|other",
+      "special_features": ["e.g. feature wall", "built-in shelving", "wainscoting"]
+    },
+    "ceiling": {
+      "height_m": 0.0,
+      "type": "flat|vaulted|coffered|exposed beams|other",
+      "color": "color",
+      "special_features": []
+    },
+    "windows": {
+      "count": 0,
+      "type": "description",
+      "estimated_total_area_sqm": 0.0,
+      "glazing": "single|double|unknown"
+    },
+    "doors": {
+      "count": 0,
+      "types": ["hinged", "sliding", "pocket"]
+    },
+    "overall_condition": "excellent|good|fair|poor",
+    "crowding_level": "sparse|balanced|moderate|cluttered",
+    "color_palette": ["dominant color 1", "color 2", "color 3", "accent color"],
+    "style_summary": "brief overall style description"
+  },
+  "detected_items": [
+    {
+      "id": "item_001",
+      "name": "3-seat sofa",
+      "category": "furniture",
+      "subcategory": "seating",
+      "position_description": "centre of room facing the TV wall",
+      "estimated_dimensions": {
+        "width_cm": 220,
+        "height_cm": 85,
+        "depth_cm": 95,
+        "seat_height_cm": 42,
+        "dimension_confidence": "medium"
+      },
+      "appearance": {
+        "primary_color": "light grey",
+        "secondary_colors": ["charcoal piping"],
+        "material": "woven fabric upholstery",
+        "frame_material": "solid wood",
+        "finish": "matte",
+        "pattern": "solid",
+        "texture": "smooth weave"
+      },
+      "style": "contemporary",
+      "condition": "excellent",
+      "quantity": 1,
+      "confidence_score": 0.92,
+      "product_search_keywords": [
+        "3-seat sofa light grey fabric",
+        "contemporary fabric sofa 220cm",
+        "low profile modern sofa",
+        "grey woven upholstery sofa",
+        "Scandinavian living room sofa"
+      ],
+      "notable_features": "Low profile with clean lines, solid wooden legs, appears to have removable cushion covers",
+      "estimated_price_range": "mid-range"
+    }
+  ],
   "spatial_features": [
     {
-      "type": "window|door|furniture|fixture",
+      "type": "window|door|structural_column|fireplace|built-in",
       "position": {"x": 0.0, "y": 0.0, "z": 0.0},
       "dimensions": {"width": 0.0, "height": 0.0, "depth": 0.0},
-      "importance": 0.0-1.0,
-      "accessibility_rating": 0.0-1.0
+      "importance": 0.0,
+      "accessibility_rating": 0.0
     }
   ],
   "layout_suggestions": [
     {
-      "item_type": "sofa|table|bed|etc",
+      "item_type": "description",
       "position": {"x": 0.0, "y": 0.0, "z": 0.0},
-      "rotation": 0-360,
+      "rotation": 0,
       "reasoning": "explanation",
-      "confidence": 0.0-1.0,
-      "alternative_positions": [{"x": 0.0, "y": 0.0, "z": 0.0}]
+      "confidence": 0.0,
+      "alternative_positions": []
     }
   ],
   "material_placements": [
     {
-      "material_id": "material_catalog_id",
-      "position": {"x": 0.0, "y": 0.0, "z": 0.0},
+      "surface": "floor|wall|ceiling|specific surface name",
+      "current_material": "what is there now",
+      "recommended_material": "recommended replacement or enhancement",
       "surface_area": 0.0,
-      "application_method": "tile|paint|wallpaper|etc",
-      "confidence": 0.0-1.0,
-      "reasoning": "explanation"
+      "application_method": "tile|paint|wallpaper|plank|panel|other",
+      "confidence": 0.0,
+      "reasoning": "why this recommendation"
     }
   ],
   "accessibility_analysis": {
-    "compliance_score": 0.0-1.0,
-    "accessibility_features": ["ramp", "grab_bar", "wide_doorway"],
-    "recommendations": ["add grab bars", "widen doorway"],
-    "barrier_free_paths": [
-      {
-        "start": {"x": 0.0, "y": 0.0},
-        "end": {"x": 0.0, "y": 0.0},
-        "width": 0.0
-      }
-    ],
-    "ada_compliance": true|false
+    "compliance_score": 0.0,
+    "accessibility_features": [],
+    "recommendations": [],
+    "barrier_free_paths": [],
+    "ada_compliance": false
   },
   "flow_optimization": {
-    "traffic_patterns": [
-      {
-        "path": [{"x": 0.0, "y": 0.0}, {"x": 1.0, "y": 1.0}],
-        "frequency": 0.0-1.0,
-        "purpose": "entry|exit|circulation"
-      }
-    ],
-    "bottlenecks": [
-      {
-        "position": {"x": 0.0, "y": 0.0},
-        "severity": 0.0-1.0,
-        "recommendation": "explanation"
-      }
-    ],
-    "efficiency_score": 0.0-1.0,
-    "suggested_improvements": ["widen pathway", "relocate furniture"]
+    "traffic_patterns": [],
+    "bottlenecks": [],
+    "efficiency_score": 0.0,
+    "suggested_improvements": []
   },
-  "reasoning_explanation": "Detailed explanation of all recommendations",
-  "confidence_score": 0.0-1.0
+  "reasoning_explanation": "Comprehensive explanation of the room and all findings",
+  "confidence_score": 0.0
 }
 
-IMPORTANT: Respond ONLY with valid JSON. No markdown, no code blocks, just pure JSON."""
+CRITICAL RULES:
+- detected_items MUST include every single visible item. Aim for completeness — if you can see it, list it.
+- Dimensions must be realistic estimates in centimetres, not placeholder zeros.
+- product_search_keywords must be specific enough to find this exact product in a catalogue.
+- Respond ONLY with valid JSON. No markdown, no code blocks, just pure JSON."""
 
         return base_prompt
 
@@ -294,7 +349,7 @@ IMPORTANT: Respond ONLY with valid JSON. No markdown, no code blocks, just pure 
             # Call Claude API
             response = client.messages.create(
                 model="claude-sonnet-4-20250514",
-                max_tokens=8000,
+                max_tokens=16000,
                 temperature=0.1,
                 messages=[{
                     "role": "user",
@@ -357,6 +412,8 @@ IMPORTANT: Respond ONLY with valid JSON. No markdown, no code blocks, just pure 
                 "workspace_id": workspace_id,
                 "room_type": room_type,
                 "analysis_type": analysis_type,
+                "room_analysis": result.get("room_analysis", {}),
+                "detected_items": result.get("detected_items", []),
                 "spatial_features": result.get("spatial_features", []),
                 "layout_suggestions": result.get("layout_suggestions", []),
                 "material_placements": result.get("material_placements", []),
