@@ -104,9 +104,28 @@ class SegmentationService:
 
         raise RuntimeError("No segmentation backend available — configure ANTHROPIC_API_KEY")
 
+    @staticmethod
+    def _detect_media_type(image_base64: str) -> str:
+        """Detect image media type from magic bytes in base64 data."""
+        import base64 as _b64
+        try:
+            header = _b64.b64decode(image_base64[:24] + "==")[:12]
+            if header[:3] == b"\xff\xd8\xff":
+                return "image/jpeg"
+            if header[:4] == b"\x89PNG":
+                return "image/png"
+            if header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+                return "image/webp"
+            if header[:4] in (b"GIF8", b"GIF9"):
+                return "image/gif"
+        except Exception:
+            pass
+        return "image/jpeg"  # safe fallback
+
     async def _segment_with_anthropic(self, image_base64: str) -> List[Dict[str, Any]]:
         """Call Anthropic claude-haiku-4-5 for segmentation."""
         import httpx
+        media_type = self._detect_media_type(image_base64)
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
                 "https://api.anthropic.com/v1/messages",
@@ -126,7 +145,7 @@ class SegmentationService:
                                     "type": "image",
                                     "source": {
                                         "type": "base64",
-                                        "media_type": "image/jpeg",
+                                        "media_type": media_type,
                                         "data": image_base64,
                                     },
                                 },
