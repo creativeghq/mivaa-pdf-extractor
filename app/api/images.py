@@ -990,7 +990,6 @@ class SegmentRequest(_BaseModel):
 @router.post("/segment")
 async def segment_image(
     request: SegmentRequest,
-    current_user: User = Depends(get_current_user),
 ):
     """
     **🔍 Material Zone Segmentation**
