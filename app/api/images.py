@@ -982,7 +982,8 @@ async def reclassify_image(
 from pydantic import BaseModel as _BaseModel
 
 class SegmentRequest(_BaseModel):
-    image_base64: str
+    image_url: Optional[str] = None
+    image_base64: Optional[str] = None
     workspace_id: Optional[str] = None
 
 
@@ -997,42 +998,33 @@ async def segment_image(
     Detect distinct material surfaces in a 3D rendered image using Qwen3-VL.
     Returns bounding boxes (relative 0–1) + metadata per zone.
 
-    The frontend uses Canvas API to crop each zone, then sends each crop to
-    `POST /api/rag/search?strategy=multi_vector` with `image_base64` + `query`.
-
-    ## Request
-    ```json
-    { "image_base64": "<base64 string without data URI prefix>", "workspace_id": "..." }
-    ```
-
-    ## Response
-    ```json
-    {
-      "zones": [
-        {
-          "label": "floor",
-          "material_type": "white oak hardwood",
-          "finish": "satin",
-          "dominant_color": "#c8a97a",
-          "bbox": {"x": 0.0, "y": 0.6, "w": 1.0, "h": 0.4},
-          "confidence": 0.93
-        }
-      ],
-      "count": 1,
-      "processing_time_ms": 1420
-    }
-    ```
+    Accepts either `image_url` (fetched server-side, no CORS issues) or
+    `image_base64` (raw base64 without data URI prefix).
     """
     from app.services.images.segmentation_service import get_segmentation_service
     import time
-
-    if not request.image_base64:
-        raise HTTPException(status_code=400, detail="image_base64 is required")
+    import httpx
+    import base64
 
     start = time.time()
+
+    # Resolve base64 — prefer image_url (server-side fetch avoids CORS)
+    image_base64 = request.image_base64
+    if not image_base64 and request.image_url:
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(request.image_url)
+                resp.raise_for_status()
+                image_base64 = base64.b64encode(resp.content).decode()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to fetch image_url: {e}")
+
+    if not image_base64:
+        raise HTTPException(status_code=400, detail="Provide image_url or image_base64")
+
     try:
         service = get_segmentation_service()
-        zones = await service.segment_image(request.image_base64)
+        zones = await service.segment_image(image_base64)
         elapsed = round((time.time() - start) * 1000)
         return {
             "zones": zones,
