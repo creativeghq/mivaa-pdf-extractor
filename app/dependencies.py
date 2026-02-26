@@ -153,19 +153,21 @@ async def get_current_user(
     try:
         # Get JWT middleware instance
         jwt_middleware = JWTAuthMiddleware(None)
-        
+
         # Validate token and extract claims
         claims = await jwt_middleware._validate_token(credentials.credentials)
-        
+
         if not claims:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid authentication credentials",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-            
+
         return claims
-        
+
+    except HTTPException:
+        raise  # Re-raise auth exceptions directly without wrapping
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
