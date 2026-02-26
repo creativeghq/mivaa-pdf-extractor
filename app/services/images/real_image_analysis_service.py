@@ -390,10 +390,14 @@ class RealImageAnalysisService:
                 raise ValueError(error_msg)
 
             # Resume Qwen endpoint if needed (CRITICAL: Must be called before inference)
-            if not self.qwen_manager.resume_if_needed():
+            # Wrapped in asyncio.to_thread() — resume_if_needed() is synchronous and
+            # calls endpoint.resume().wait() which can block for up to 60-90 seconds.
+            # Without to_thread(), this would freeze the entire async event loop,
+            # stalling all concurrent image processing tasks.
+            import asyncio
+            if not await asyncio.to_thread(self.qwen_manager.resume_if_needed):
                 self.logger.error("❌ Failed to resume Qwen endpoint - falling back to Claude")
-                # Fall back to Claude validation
-                return await self._analyze_with_claude(image_url, context, job_id)
+                return await self._analyze_with_claude(image_base64, context, job_id)
 
             # ✅ FIX: Add retry logic for vision model empty responses
             max_retries = 3
