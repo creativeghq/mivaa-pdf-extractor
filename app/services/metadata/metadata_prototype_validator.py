@@ -38,7 +38,7 @@ class MetadataPrototypeValidator:
         """
         self.job_id = job_id
         self.supabase = get_supabase_client()
-        self.embeddings_service = RealEmbeddingsService(job_id=job_id)
+        self.embeddings_service = RealEmbeddingsService()
         self.logger = logging.getLogger(__name__)
         
         # Cache for prototype embeddings (loaded once per instance)

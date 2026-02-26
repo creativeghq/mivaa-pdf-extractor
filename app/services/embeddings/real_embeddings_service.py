@@ -326,9 +326,8 @@ class RealEmbeddingsService:
                 from app.services.embeddings.slig_client import SLIGClient
                 self._slig_client = SLIGClient(
                     endpoint_url=self.slig_endpoint_url,
-                    api_token=self.slig_endpoint_token,
+                    token=self.slig_endpoint_token,
                     timeout=self.slig_timeout,
-                    max_retries=self.slig_max_retries
                 )
 
             # Use SLIG's text embedding to map text into visual space (768D)

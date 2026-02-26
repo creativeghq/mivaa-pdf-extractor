@@ -18,37 +18,50 @@ from app.services.embeddings.qwen_endpoint_manager import QwenEndpointManager
 
 logger = logging.getLogger(__name__)
 
-SEGMENT_PROMPT = """You are a material detection expert analyzing a 3D architectural rendering.
+# Default prompt — used when no 'segmentation' agent prompt exists in the DB.
+# To override: insert a row into the `prompts` table with
+#   prompt_type = 'agent', category = 'segmentation', is_active = true
+DEFAULT_SEGMENT_PROMPT = """You are a precision material-identification expert analyzing a 3D architectural rendering for catalog-based material matching.
 
-Identify every distinct material surface in this image (floor, wall, ceiling, countertop, furniture upholstery, curtains, cabinet doors, etc.).
+Identify every distinct material surface (floor, wall, ceiling, countertop, cabinetry, upholstery, curtains, trims, tiles, rugs, decorative panels, etc.).
 
-For EACH surface return a JSON object. Respond with ONLY a valid JSON array — no explanation, no markdown, no code fences.
+For EACH surface return a JSON object. Respond ONLY with a valid JSON array — no explanation, no markdown, no code fences.
 
 Rules:
-- bbox coordinates are RELATIVE (0.0–1.0), where (0,0) is top-left and (1,1) is bottom-right
-- Skip surfaces smaller than 3% of the image area
-- Use specific material names (e.g. "oak wood" not just "wood", "Carrara marble" not just "stone")
-- confidence: your certainty that the material identification is correct (0.0–1.0)
+- bbox: RELATIVE coordinates (0.0–1.0), (0,0) = top-left, (1,1) = bottom-right
+- Skip surfaces smaller than 2% of the image area
+- material_type MUST be catalog-grade specific — this text drives database search matching:
+  • "brushed stainless steel" not "metal"
+  • "Calacatta marble" or "Nero Marquina marble" not just "marble"
+  • "herringbone white oak engineered wood" not "wood floor"
+  • "large-format porcelain tile" not "tile"
+  • "bouclé wool upholstery" not "fabric"
+  • "fluted oak veneer panel" not "wood panel"
+  • "woven rattan" not "natural material"
+- Note texture/pattern layouts when visible: chevron, herringbone, stacked bond, running bond, mosaic, grid, ribbed, fluted
+- dominant_color: use the mid-tone hex (not the specular highlight or deepest shadow)
+- confidence: how certain you are the material identification is correct (0.0–1.0); use lower values when lighting or render style obscures texture detail
 
 Required fields per zone:
 {
-  "label": "descriptive surface name, e.g. floor, left wall, kitchen island countertop",
-  "material_type": "specific material, e.g. polished concrete, brushed brass, linen",
-  "finish": "surface finish, e.g. matte, glossy, satin, textured, rough",
-  "dominant_color": "#rrggbb hex of the most prominent color",
+  "label": "descriptive surface name, e.g. kitchen island countertop, accent left wall, main floor",
+  "material_type": "catalog-grade specific material name including pattern if applicable",
+  "finish": "matte | glossy | satin | brushed | honed | polished | textured | rough | patinated | lacquered",
+  "dominant_color": "#rrggbb",
   "bbox": {"x": 0.0, "y": 0.0, "w": 0.5, "h": 0.3},
   "confidence": 0.85
 }
 
-Return ONLY the JSON array. Example format:
+Return ONLY the JSON array. Example:
 [
-  {"label": "floor", "material_type": "white oak hardwood", "finish": "satin", "dominant_color": "#c8a97a", "bbox": {"x": 0.0, "y": 0.6, "w": 1.0, "h": 0.4}, "confidence": 0.93},
-  {"label": "back wall", "material_type": "plaster", "finish": "matte", "dominant_color": "#f5f0eb", "bbox": {"x": 0.0, "y": 0.0, "w": 1.0, "h": 0.6}, "confidence": 0.88}
+  {"label": "main floor", "material_type": "herringbone white oak engineered wood", "finish": "satin", "dominant_color": "#c8a97a", "bbox": {"x": 0.0, "y": 0.6, "w": 1.0, "h": 0.4}, "confidence": 0.93},
+  {"label": "back wall", "material_type": "smooth white gypsum plaster", "finish": "matte", "dominant_color": "#f5f0eb", "bbox": {"x": 0.0, "y": 0.0, "w": 1.0, "h": 0.6}, "confidence": 0.88},
+  {"label": "kitchen island countertop", "material_type": "Calacatta marble", "finish": "honed", "dominant_color": "#e8e4de", "bbox": {"x": 0.3, "y": 0.45, "w": 0.4, "h": 0.15}, "confidence": 0.91}
 ]"""
 
 
 class SegmentationService:
-    """Detects material zones in 3D renders via Claude Haiku (primary) or Qwen3-VL (fallback)."""
+    """Detects material zones in 3D renders via Qwen3-VL (primary) or Claude Sonnet (fallback)."""
 
     def __init__(self):
         import os
@@ -66,12 +79,36 @@ class SegmentationService:
             enabled=qwen_config["enabled"],
         )
 
+    async def _get_prompt(self) -> str:
+        """
+        Fetch the active segmentation prompt from the `prompts` table.
+        Falls back to DEFAULT_SEGMENT_PROMPT if no DB record is found.
+
+        DB record: prompt_type='agent', category='segmentation', is_active=true
+        The `content` field holds the prompt text.
+        """
+        try:
+            from app.services.utilities.unified_prompt_service import UnifiedPromptService
+            svc = UnifiedPromptService()
+            prompts = await svc.get_agent_prompts(category="segmentation")
+            if prompts:
+                content = prompts[0].get("content") or prompts[0].get("prompt_text")
+                if content:
+                    logger.debug("Segmentation prompt loaded from DB")
+                    return content
+        except Exception as e:
+            logger.debug(f"Could not load segmentation prompt from DB, using default: {e}")
+        return DEFAULT_SEGMENT_PROMPT
+
     async def segment_image(self, image_base64: str) -> List[Dict[str, Any]]:
         """
         Detect material zones in a 3D render.
 
-        Uses Claude Haiku as primary (always available, instant).
-        Falls back to HF Qwen3-VL if Anthropic fails.
+        Primary:  HF Qwen3-VL — resume_if_needed handles cold start (~60-90s first call).
+        Fallback: Anthropic claude-sonnet-4-6 — always available, no warmup.
+
+        Prompt is loaded dynamically from the `prompts` table (category='segmentation').
+        Falls back to DEFAULT_SEGMENT_PROMPT if no DB record exists.
 
         Args:
             image_base64: Base64-encoded image (no data URI prefix)
@@ -82,18 +119,17 @@ class SegmentationService:
         import asyncio
         start = time.time()
 
+        prompt = await self._get_prompt()
+
         # Primary: HF Qwen3-VL
-        # resume_if_needed() is synchronous (calls endpoint.resume().wait() up to 5min).
-        # Run in a thread so the async event loop stays free during warmup.
-        # First call when paused: ~60-90s warmup then fast inference.
-        # Subsequent calls while warm: instant.
-        # Auto-scaler pauses it again after ~5min of inactivity.
+        # resume_if_needed() is synchronous — runs in a thread to keep async loop free.
+        # First call when paused: ~60-90s warmup. Subsequent calls while warm: instant.
         if self.qwen_endpoint_token:
             try:
                 logger.info("Resuming Qwen endpoint if needed (may take ~60-90s on cold start)...")
                 resumed = await asyncio.to_thread(self.qwen_manager.resume_if_needed)
                 if resumed:
-                    zones = await self._segment_with_qwen(image_base64)
+                    zones = await self._segment_with_qwen(image_base64, prompt)
                     self.qwen_manager.mark_used()
                     elapsed = round((time.time() - start) * 1000)
                     logger.info(f"✅ Segmentation (Qwen): {len(zones)} zones in {elapsed}ms")
@@ -102,10 +138,10 @@ class SegmentationService:
             except Exception as e:
                 logger.warning(f"Qwen segmentation failed, falling back to Anthropic: {e}")
 
-        # Fallback: Anthropic claude-haiku — always available, no warmup delay
+        # Fallback: Anthropic claude-sonnet-4-6
         if self.anthropic_api_key:
             try:
-                zones = await self._segment_with_anthropic(image_base64)
+                zones = await self._segment_with_anthropic(image_base64, prompt)
                 elapsed = round((time.time() - start) * 1000)
                 logger.info(f"✅ Segmentation (Anthropic fallback): {len(zones)} zones in {elapsed}ms")
                 return zones
@@ -133,8 +169,8 @@ class SegmentationService:
             pass
         return "image/jpeg"  # safe fallback
 
-    async def _segment_with_anthropic(self, image_base64: str) -> List[Dict[str, Any]]:
-        """Call Anthropic claude-haiku-4-5 for segmentation."""
+    async def _segment_with_anthropic(self, image_base64: str, prompt: str) -> List[Dict[str, Any]]:
+        """Call Anthropic claude-sonnet-4-6 for segmentation."""
         import httpx
         media_type = self._detect_media_type(image_base64)
         async with httpx.AsyncClient(timeout=60) as client:
@@ -146,8 +182,8 @@ class SegmentationService:
                     "content-type": "application/json",
                 },
                 json={
-                    "model": "claude-haiku-4-5-20251001",
-                    "max_tokens": 2048,
+                    "model": "claude-sonnet-4-6",
+                    "max_tokens": 4096,
                     "messages": [
                         {
                             "role": "user",
@@ -160,7 +196,7 @@ class SegmentationService:
                                         "data": image_base64,
                                     },
                                 },
-                                {"type": "text", "text": SEGMENT_PROMPT},
+                                {"type": "text", "text": prompt},
                             ],
                         }
                     ],
@@ -170,7 +206,7 @@ class SegmentationService:
             content = resp.json()["content"][0]["text"].strip()
             return self._parse_zones(content)
 
-    async def _segment_with_qwen(self, image_base64: str) -> List[Dict[str, Any]]:
+    async def _segment_with_qwen(self, image_base64: str, prompt: str) -> List[Dict[str, Any]]:
         """Call HF Qwen3-VL endpoint (only if already running — no blocking resume)."""
         ai_service = get_ai_client_service()
         response = await ai_service.httpx.post(
@@ -185,7 +221,7 @@ class SegmentationService:
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": SEGMENT_PROMPT},
+                            {"type": "text", "text": prompt},
                             {
                                 "type": "image_url",
                                 "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
@@ -193,7 +229,7 @@ class SegmentationService:
                         ],
                     }
                 ],
-                "max_tokens": 2048,
+                "max_tokens": 4096,
                 "temperature": 0.1,
                 "top_p": 0.9,
             },
@@ -203,14 +239,14 @@ class SegmentationService:
         return self._parse_zones(content)
 
     def _parse_zones(self, content: str) -> List[Dict[str, Any]]:
-        """Extract and validate zone list from Qwen response."""
+        """Extract and validate zone list from model response."""
         # Strip markdown code fences if present
         content = re.sub(r"```(?:json)?\s*", "", content).strip().rstrip("```").strip()
 
         # Find JSON array
         match = re.search(r"\[.*\]", content, re.DOTALL)
         if not match:
-            logger.warning(f"No JSON array found in Qwen response: {content[:200]}")
+            logger.warning(f"No JSON array found in response: {content[:200]}")
             return []
 
         try:

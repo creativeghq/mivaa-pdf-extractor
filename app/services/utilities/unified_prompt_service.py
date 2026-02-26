@@ -102,6 +102,9 @@ class UnifiedPromptService:
             List of extraction prompts
         """
         try:
+            if not workspace_id:
+                return []
+
             cache_key = self._get_cache_key(type=self.EXTRACTION, workspace=workspace_id, stage=stage, category=category)
             cached = self._get_from_cache(cache_key)
             if cached is not None:
@@ -173,6 +176,9 @@ class UnifiedPromptService:
             List of template prompts
         """
         try:
+            if not workspace_id:
+                return []
+
             cache_key = self._get_cache_key(type=self.TEMPLATE, workspace=workspace_id, stage=stage, industry=industry)
             cached = self._get_from_cache(cache_key)
             if cached is not None:
@@ -297,6 +303,9 @@ class UnifiedPromptService:
             List of search prompts
         """
         try:
+            if not workspace_id:
+                return []
+
             cache_key = self._get_cache_key(type=self.SEARCH, workspace=workspace_id, subtype=prompt_subtype)
             cached = self._get_from_cache(cache_key)
             if cached is not None:
