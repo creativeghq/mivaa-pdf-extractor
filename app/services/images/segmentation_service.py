@@ -48,12 +48,14 @@ Return ONLY the JSON array. Example format:
 
 
 class SegmentationService:
-    """Detects material zones in 3D renders via Qwen3-VL."""
+    """Detects material zones in 3D renders via Claude Haiku (primary) or Qwen3-VL (fallback)."""
 
     def __init__(self):
+        import os
         settings = get_settings()
         qwen_config = settings.get_qwen_config()
 
+        self.anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
         self.qwen_endpoint_url: str = qwen_config["endpoint_url"]
         self.qwen_endpoint_token: str = qwen_config["endpoint_token"]
         self.qwen_manager = QwenEndpointManager(
@@ -68,6 +70,9 @@ class SegmentationService:
         """
         Detect material zones in a 3D render.
 
+        Uses Claude Haiku as primary (always available, instant).
+        Falls back to HF Qwen3-VL if Anthropic fails.
+
         Args:
             image_base64: Base64-encoded image (no data URI prefix)
 
@@ -76,69 +81,96 @@ class SegmentationService:
         """
         start = time.time()
 
-        if not self.qwen_endpoint_token:
-            raise ValueError("HUGGINGFACE_API_KEY not configured — cannot call Qwen3-VL")
-
-        # Resume endpoint if paused
-        if not self.qwen_manager.resume_if_needed():
-            raise RuntimeError("Qwen endpoint unavailable — cannot perform segmentation")
-
-        ai_service = get_ai_client_service()
-        max_retries = 3
-
-        for attempt in range(1, max_retries + 1):
+        # Primary: Anthropic claude-haiku — always available, no warmup delay
+        if self.anthropic_api_key:
             try:
-                response = await ai_service.httpx.post(
-                    self.qwen_endpoint_url,
-                    headers={
-                        "Authorization": f"Bearer {self.qwen_endpoint_token}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": "Qwen/Qwen3-VL-8B-Instruct",
-                        "messages": [
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": SEGMENT_PROMPT},
-                                    {
-                                        "type": "image_url",
-                                        "image_url": {
-                                            "url": f"data:image/jpeg;base64,{image_base64}"
-                                        },
-                                    },
-                                ],
-                            }
-                        ],
-                        "max_tokens": 2048,
-                        "temperature": 0.1,
-                        "top_p": 0.9,
-                    },
-                )
-
-                if response.status_code in [500, 503] and attempt < max_retries:
-                    import asyncio
-                    logger.warning(f"Qwen returned {response.status_code}, retry {attempt}/{max_retries}")
-                    await asyncio.sleep(2 ** attempt)
-                    continue
-
-                response.raise_for_status()
-                content = response.json()["choices"][0]["message"]["content"].strip()
-                zones = self._parse_zones(content)
-
+                zones = await self._segment_with_anthropic(image_base64)
                 elapsed = round((time.time() - start) * 1000)
-                logger.info(f"✅ Segmentation: {len(zones)} zones detected in {elapsed}ms")
-                self.qwen_manager.mark_used()
+                logger.info(f"✅ Segmentation (Anthropic): {len(zones)} zones in {elapsed}ms")
                 return zones
-
             except Exception as e:
-                if attempt == max_retries:
-                    logger.error(f"Segmentation failed after {max_retries} attempts: {e}")
-                    raise
-                import asyncio
-                await asyncio.sleep(2 ** attempt)
+                logger.warning(f"Anthropic segmentation failed, trying Qwen fallback: {e}")
 
-        return []
+        # Fallback: HF Qwen3-VL (only if endpoint is already running — no blocking resume)
+        if self.qwen_endpoint_token:
+            try:
+                zones = await self._segment_with_qwen(image_base64)
+                elapsed = round((time.time() - start) * 1000)
+                logger.info(f"✅ Segmentation (Qwen): {len(zones)} zones in {elapsed}ms")
+                return zones
+            except Exception as e:
+                logger.error(f"Qwen segmentation also failed: {e}")
+                raise
+
+        raise RuntimeError("No segmentation backend available — configure ANTHROPIC_API_KEY")
+
+    async def _segment_with_anthropic(self, image_base64: str) -> List[Dict[str, Any]]:
+        """Call Anthropic claude-haiku-4-5 for segmentation."""
+        import httpx
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": self.anthropic_api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 2048,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "image/jpeg",
+                                        "data": image_base64,
+                                    },
+                                },
+                                {"type": "text", "text": SEGMENT_PROMPT},
+                            ],
+                        }
+                    ],
+                },
+            )
+            resp.raise_for_status()
+            content = resp.json()["content"][0]["text"].strip()
+            return self._parse_zones(content)
+
+    async def _segment_with_qwen(self, image_base64: str) -> List[Dict[str, Any]]:
+        """Call HF Qwen3-VL endpoint (only if already running — no blocking resume)."""
+        ai_service = get_ai_client_service()
+        response = await ai_service.httpx.post(
+            self.qwen_endpoint_url,
+            headers={
+                "Authorization": f"Bearer {self.qwen_endpoint_token}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "Qwen/Qwen3-VL-8B-Instruct",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": SEGMENT_PROMPT},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
+                            },
+                        ],
+                    }
+                ],
+                "max_tokens": 2048,
+                "temperature": 0.1,
+                "top_p": 0.9,
+            },
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"].strip()
+        return self._parse_zones(content)
 
     def _parse_zones(self, content: str) -> List[Dict[str, Any]]:
         """Extract and validate zone list from Qwen response."""
