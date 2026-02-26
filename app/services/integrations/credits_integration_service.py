@@ -430,14 +430,14 @@ class CreditsIntegrationService:
         """
         Debit credits for external (non-AI) service operations.
 
-        Generic method for per-unit services: Twilio, Perplexity, Apollo,
+        Generic method for per-unit services: Twilio, Apollo,
         Hunter.io, ZeroBounce, and Firecrawl (edge function variant).
 
         Args:
             user_id: User ID who initiated the operation
             workspace_id: Workspace ID (optional)
             operation_type: Type of operation (e.g., 'b2b_manufacturer_search')
-            service_name: Service pricing key (e.g., 'perplexity-sonar', 'twilio-sms')
+            service_name: Service pricing key (e.g., 'twilio-sms', 'firecrawl-scrape')
             units: Number of operations performed (default: 1)
             metadata: Additional metadata to store
 
@@ -490,7 +490,7 @@ class CreditsIntegrationService:
                 'workspace_id': workspace_id,
                 'operation_type': operation_type,
                 'model_name': service_name,
-                'api_provider': service_name.split('-')[0],  # twilio, perplexity, apollo, etc.
+                'api_provider': service_name.split('-')[0],  # twilio, apollo, hunter, zerobounce, firecrawl
                 'input_tokens': 0,
                 'output_tokens': 0,
                 'input_cost_usd': 0,

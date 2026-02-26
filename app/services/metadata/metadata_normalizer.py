@@ -13,6 +13,7 @@ This allows the system to:
 
 import logging
 import re
+import unicodedata
 from typing import Dict, Any, List, Optional, Tuple
 
 from app.utils.text_similarity import calculate_string_similarity
@@ -140,6 +141,56 @@ NOT_FOUND_VALUES = {
     "-",
     "",
 }
+
+
+def _normalize_for_match(s: str) -> str:
+    """Accent-strip and uppercase a string for prefix comparison."""
+    return unicodedata.normalize('NFD', s).encode('ascii', 'ignore').decode('ascii').upper().strip()
+
+
+def filter_codes_by_product(codes: Any, product_name: str) -> Any:
+    """
+    Filter a sku_codes / product_codes dict so only entries that belong to
+    `product_name` are kept.
+
+    Keys that have a recognisable product-name prefix (e.g. "ONA MINT/12X45"
+    or "valenova_blue_30x60") are only kept when that prefix matches
+    `product_name`.  Plain colour/variant names that have no product prefix
+    (e.g. "white", "clay") are always kept — they are already product-scoped
+    because they came from the right product text.
+    """
+    if not product_name or not isinstance(codes, dict):
+        return codes
+
+    product_norm = _normalize_for_match(product_name)
+    filtered = {}
+
+    for key, value in codes.items():
+        key_str = str(key)
+
+        # Detect whether the key carries a product-name prefix.
+        # Pattern 1: "PRODUCT COLOR/SIZE"  → slash present + space before slash
+        # Pattern 2: "product_color_size"  → underscore-separated, first segment ≥ 3 chars
+        has_slash_prefix = "/" in key_str and " " in key_str.split("/")[0]
+        has_underscore_prefix = "_" in key_str and len(key_str.split("_")[0]) >= 3
+
+        if not has_slash_prefix and not has_underscore_prefix:
+            # Plain colour/variant name — always keep
+            filtered[key] = value
+            continue
+
+        # Extract the prefix and compare
+        if has_slash_prefix:
+            raw_prefix = key_str.split("/")[0].split(" ")[0]
+        else:
+            raw_prefix = key_str.split("_")[0]
+
+        prefix_norm = _normalize_for_match(raw_prefix)
+        if prefix_norm == product_norm:
+            filtered[key] = value
+        # else: belongs to a different product — drop it
+
+    return filtered
 
 
 def is_not_found_value(value: Any) -> bool:
@@ -322,12 +373,13 @@ def normalize_field_value(value: Any, field_name: str, metadata_dict: dict = Non
 # MAIN NORMALIZATION FUNCTION
 # ============================================================================
 
-def normalize_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+def normalize_metadata(metadata: Dict[str, Any], product_name: Optional[str] = None) -> Dict[str, Any]:
     """
     Normalize metadata to standardized schema.
 
     Args:
         metadata: Raw metadata dictionary with inconsistent field names
+        product_name: Current product name — used to filter cross-product SKU contamination
 
     Returns:
         Normalized metadata with standardized field names
@@ -375,20 +427,25 @@ def normalize_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
                 processed_fields.add(field_name)
 
         # Step 2: Handle special cases (individual SKU/color fields → objects)
-        normalized_fields = consolidate_individual_fields(normalized_fields, category)
+        normalized_fields = consolidate_individual_fields(normalized_fields, category, product_name)
 
         normalized[category] = normalized_fields
 
     return normalized
 
 
-def consolidate_individual_fields(fields: Dict[str, Any], category: str) -> Dict[str, Any]:
+def consolidate_individual_fields(fields: Dict[str, Any], category: str, product_name: Optional[str] = None) -> Dict[str, Any]:
     """
     Consolidate individual fields into objects.
 
     Examples:
         - sku_white, sku_clay, sku_green → sku_codes: {"white": "...", "clay": "...", "green": "..."}
         - grout_color_white, grout_color_clay → grout_color_codes: {"white": "...", "clay": "..."}
+
+    Args:
+        fields: Commercial fields dict
+        category: Metadata category (only "commercial" is processed)
+        product_name: Current product name used to filter cross-product SKU entries (Option B)
     """
     if category != "commercial":
         return fields
@@ -406,6 +463,11 @@ def consolidate_individual_fields(fields: Dict[str, Any], category: str) -> Dict
             value = field_value.get("value") if isinstance(field_value, dict) else field_value
             if value:
                 sku_codes[color] = value
+
+        # Pass-through already-formed sku_codes dict — will be filtered below
+        elif field_name == "sku_codes" and isinstance(field_value, dict):
+            for k, v in field_value.items():
+                sku_codes[k] = v
 
         # Consolidate grout color codes
         elif field_name.startswith("grout_color_") and "code" in field_name:
@@ -425,6 +487,14 @@ def consolidate_individual_fields(fields: Dict[str, Any], category: str) -> Dict
         else:
             # Keep other fields
             consolidated[field_name] = field_value
+
+    # [Option B] Filter assembled sku_codes by product name to remove cross-product contamination
+    if sku_codes and product_name:
+        before = len(sku_codes)
+        sku_codes = filter_codes_by_product(sku_codes, product_name)
+        removed = before - len(sku_codes)
+        if removed > 0:
+            logger.info(f"🔑 SKU filter: removed {removed} foreign SKU entries for product '{product_name}'")
 
     # Add consolidated objects
     if sku_codes:

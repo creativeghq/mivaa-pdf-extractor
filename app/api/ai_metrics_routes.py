@@ -396,7 +396,7 @@ async def get_ai_metrics_summary(
 @router.get(
     "/external-service-usage",
     summary="Get external service usage and credit consumption",
-    description="Returns usage, cost, and credit data for external services (Twilio, Apollo, Hunter, ZeroBounce, Perplexity, Firecrawl) from ai_usage_logs.",
+    description="Returns usage, cost, and credit data for external services (Twilio, Apollo, Hunter, ZeroBounce, Firecrawl) from ai_usage_logs.",
 )
 async def get_external_service_usage(
     time_period: str = Query("24h", description="Time period: 1h, 24h, 7d, 30d, all"),
@@ -417,7 +417,7 @@ async def get_external_service_usage(
             start_time = datetime(2020, 1, 1)
 
         # External service providers to filter on
-        ext_providers = ['twilio', 'perplexity', 'apollo', 'hunter', 'zerobounce', 'firecrawl']
+        ext_providers = ['twilio', 'apollo', 'hunter', 'zerobounce', 'firecrawl']
 
         query = supabase.client.table("ai_usage_logs").select(
             "id, user_id, operation_type, model_name, api_provider, "

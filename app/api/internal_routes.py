@@ -704,7 +704,8 @@ async def extract_metadata(
                 logger.info(f"   🔍 Extracting metadata for: {product.get('name')}")
                 extracted = await metadata_extractor.extract_metadata(
                     pdf_text=product_text,
-                    category_hint=category_hint
+                    category_hint=category_hint,
+                    product_name=product.get('name')
                 )
 
                 # Merge extracted metadata with existing metadata

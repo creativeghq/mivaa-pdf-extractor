@@ -399,13 +399,6 @@ class AIPricingConfig:
             "source": "https://www.twilio.com/en-us/whatsapp/pricing",
             "note": "WhatsApp utility conversation, varies by template type"
         },
-        "perplexity-sonar": {
-            "cost_per_unit": Decimal("0.005"),
-            "unit": "query",
-            "last_verified": "2026-02-14",
-            "source": "https://docs.perplexity.ai/guides/pricing",
-            "note": "Perplexity sonar model, per search query"
-        },
         "apollo-enrich": {
             "cost_per_unit": Decimal("0.05"),
             "unit": "enrichment",

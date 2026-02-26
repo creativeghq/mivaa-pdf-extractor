@@ -426,7 +426,8 @@ class DynamicMetadataExtractor:
         self,
         pdf_text: str,
         category_hint: Optional[str] = None,
-        manual_overrides: Optional[Dict[str, Any]] = None
+        manual_overrides: Optional[Dict[str, Any]] = None,
+        product_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Extract metadata dynamically from PDF text.
@@ -435,6 +436,8 @@ class DynamicMetadataExtractor:
             pdf_text: Text content from PDF
             category_hint: Optional material category hint
             manual_overrides: Manual values from admin (override AI extraction)
+            product_name: Current product name — used for Option A (prompt scoping) and
+                          Option B (normalization filter) to prevent cross-product SKU contamination
 
         Returns:
             {
@@ -459,8 +462,22 @@ class DynamicMetadataExtractor:
             if db_prompt_template:
                 # Use database prompt - replace placeholders
                 category_context = f"\nMaterial Category Hint: This appears to be a {category_hint} product." if category_hint else ""
-                prompt = db_prompt_template.replace("{category_context}", category_context).replace("{pdf_text}", smart_text)
-                self.logger.info("✅ Using DATABASE prompt for metadata extraction")
+                # [Option A] Inject product name scoping rule so the AI only extracts SKUs for THIS product
+                if product_name:
+                    product_name_context = (
+                        f"\nPRODUCT SCOPE: You are extracting metadata specifically for the product named '{product_name}'. "
+                        f"For sku_codes and product_codes: ONLY include codes that belong to '{product_name}'. "
+                        f"Do NOT include SKU or product codes for other products visible on the same PDF page."
+                    )
+                else:
+                    product_name_context = ""
+                prompt = (
+                    db_prompt_template
+                    .replace("{category_context}", category_context)
+                    .replace("{product_name_context}", product_name_context)
+                    .replace("{pdf_text}", smart_text)
+                )
+                self.logger.info(f"✅ Using DATABASE prompt for metadata extraction (product='{product_name or 'unknown'}')")
             else:
                 error_msg = "CRITICAL: Metadata extraction prompt not found in database. Add prompt via /admin/ai-configs with prompt_type='extraction', stage='entity_creation', category='products'"
                 self.logger.error(f"❌ {error_msg}")
@@ -485,10 +502,13 @@ class DynamicMetadataExtractor:
             original_data = extracted_data.copy()
             normalized_data = {}
 
-            # Normalize each category
+            # Normalize each category — pass product_name for Option B SKU filtering
             for category in ["critical", "discovered", "unknown"]:
                 if category in extracted_data:
-                    normalized_data[category] = normalize_metadata({category: extracted_data[category]}).get(category, {})
+                    normalized_data[category] = normalize_metadata(
+                        {category: extracted_data[category]},
+                        product_name=product_name
+                    ).get(category, {})
 
             # Get normalization report for logging
             normalization_report = get_normalization_report(

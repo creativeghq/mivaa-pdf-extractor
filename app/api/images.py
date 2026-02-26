@@ -974,3 +974,75 @@ async def reclassify_image(
             detail=f"Re-classification failed: {str(e)}"
         )
 
+
+# ---------------------------------------------------------------------------
+# Material Segmentation
+# ---------------------------------------------------------------------------
+
+from pydantic import BaseModel as _BaseModel
+
+class SegmentRequest(_BaseModel):
+    image_base64: str
+    workspace_id: Optional[str] = None
+
+
+@router.post("/segment")
+async def segment_image(
+    request: SegmentRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    **🔍 Material Zone Segmentation**
+
+    Detect distinct material surfaces in a 3D rendered image using Qwen3-VL.
+    Returns bounding boxes (relative 0–1) + metadata per zone.
+
+    The frontend uses Canvas API to crop each zone, then sends each crop to
+    `POST /api/rag/search?strategy=multi_vector` with `image_base64` + `query`.
+
+    ## Request
+    ```json
+    { "image_base64": "<base64 string without data URI prefix>", "workspace_id": "..." }
+    ```
+
+    ## Response
+    ```json
+    {
+      "zones": [
+        {
+          "label": "floor",
+          "material_type": "white oak hardwood",
+          "finish": "satin",
+          "dominant_color": "#c8a97a",
+          "bbox": {"x": 0.0, "y": 0.6, "w": 1.0, "h": 0.4},
+          "confidence": 0.93
+        }
+      ],
+      "count": 1,
+      "processing_time_ms": 1420
+    }
+    ```
+    """
+    from app.services.images.segmentation_service import get_segmentation_service
+    import time
+
+    if not request.image_base64:
+        raise HTTPException(status_code=400, detail="image_base64 is required")
+
+    start = time.time()
+    try:
+        service = get_segmentation_service()
+        zones = await service.segment_image(request.image_base64)
+        elapsed = round((time.time() - start) * 1000)
+        return {
+            "zones": zones,
+            "count": len(zones),
+            "processing_time_ms": elapsed,
+        }
+    except Exception as e:
+        logger.error(f"Segmentation failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Segmentation failed: {str(e)}",
+        )
+

@@ -1419,7 +1419,8 @@ class ProductDiscoveryService:
                     # Extract comprehensive metadata from focused text
                     extracted = await metadata_extractor.extract_metadata(
                         pdf_text=product_text,
-                        category_hint=category_hint
+                        category_hint=category_hint,
+                        product_name=product.name
                     )
 
                     # Merge extracted metadata with existing metadata
@@ -1529,7 +1530,8 @@ class ProductDiscoveryService:
                     self.logger.info(f"   🔍 Extracting metadata for: {product.name}")
                     extracted = await metadata_extractor.extract_metadata(
                         pdf_text=product_text,
-                        category_hint=category_hint
+                        category_hint=category_hint,
+                        product_name=product.name
                     )
 
                     # NEW: Validate metadata against prototypes
