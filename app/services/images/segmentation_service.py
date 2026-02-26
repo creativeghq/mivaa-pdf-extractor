@@ -81,17 +81,7 @@ class SegmentationService:
         """
         start = time.time()
 
-        # Primary: Anthropic claude-haiku — always available, no warmup delay
-        if self.anthropic_api_key:
-            try:
-                zones = await self._segment_with_anthropic(image_base64)
-                elapsed = round((time.time() - start) * 1000)
-                logger.info(f"✅ Segmentation (Anthropic): {len(zones)} zones in {elapsed}ms")
-                return zones
-            except Exception as e:
-                logger.warning(f"Anthropic segmentation failed, trying Qwen fallback: {e}")
-
-        # Fallback: HF Qwen3-VL (only if endpoint is already running — no blocking resume)
+        # Primary: HF Qwen3-VL — no blocking resume, fails instantly (404) if paused
         if self.qwen_endpoint_token:
             try:
                 zones = await self._segment_with_qwen(image_base64)
@@ -99,10 +89,20 @@ class SegmentationService:
                 logger.info(f"✅ Segmentation (Qwen): {len(zones)} zones in {elapsed}ms")
                 return zones
             except Exception as e:
-                logger.error(f"Qwen segmentation also failed: {e}")
+                logger.warning(f"Qwen segmentation failed (endpoint may be paused), trying Anthropic: {e}")
+
+        # Fallback: Anthropic claude-haiku — always available, no warmup delay
+        if self.anthropic_api_key:
+            try:
+                zones = await self._segment_with_anthropic(image_base64)
+                elapsed = round((time.time() - start) * 1000)
+                logger.info(f"✅ Segmentation (Anthropic): {len(zones)} zones in {elapsed}ms")
+                return zones
+            except Exception as e:
+                logger.error(f"Anthropic segmentation also failed: {e}")
                 raise
 
-        raise RuntimeError("No segmentation backend available — configure ANTHROPIC_API_KEY")
+        raise RuntimeError("No segmentation backend available — configure ANTHROPIC_API_KEY or HF endpoint")
 
     @staticmethod
     def _detect_media_type(image_base64: str) -> str:
