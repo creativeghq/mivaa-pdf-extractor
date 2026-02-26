@@ -79,24 +79,35 @@ class SegmentationService:
         Returns:
             List of zone dicts: label, material_type, finish, dominant_color, bbox, confidence
         """
+        import asyncio
         start = time.time()
 
-        # Primary: HF Qwen3-VL — no blocking resume, fails instantly (404) if paused
+        # Primary: HF Qwen3-VL
+        # resume_if_needed() is synchronous (calls endpoint.resume().wait() up to 5min).
+        # Run in a thread so the async event loop stays free during warmup.
+        # First call when paused: ~60-90s warmup then fast inference.
+        # Subsequent calls while warm: instant.
+        # Auto-scaler pauses it again after ~5min of inactivity.
         if self.qwen_endpoint_token:
             try:
-                zones = await self._segment_with_qwen(image_base64)
-                elapsed = round((time.time() - start) * 1000)
-                logger.info(f"✅ Segmentation (Qwen): {len(zones)} zones in {elapsed}ms")
-                return zones
+                logger.info("Resuming Qwen endpoint if needed (may take ~60-90s on cold start)...")
+                resumed = await asyncio.to_thread(self.qwen_manager.resume_if_needed)
+                if resumed:
+                    zones = await self._segment_with_qwen(image_base64)
+                    self.qwen_manager.mark_used()
+                    elapsed = round((time.time() - start) * 1000)
+                    logger.info(f"✅ Segmentation (Qwen): {len(zones)} zones in {elapsed}ms")
+                    return zones
+                logger.warning("Qwen endpoint could not be resumed, falling back to Anthropic")
             except Exception as e:
-                logger.warning(f"Qwen segmentation failed (endpoint may be paused), trying Anthropic: {e}")
+                logger.warning(f"Qwen segmentation failed, falling back to Anthropic: {e}")
 
         # Fallback: Anthropic claude-haiku — always available, no warmup delay
         if self.anthropic_api_key:
             try:
                 zones = await self._segment_with_anthropic(image_base64)
                 elapsed = round((time.time() - start) * 1000)
-                logger.info(f"✅ Segmentation (Anthropic): {len(zones)} zones in {elapsed}ms")
+                logger.info(f"✅ Segmentation (Anthropic fallback): {len(zones)} zones in {elapsed}ms")
                 return zones
             except Exception as e:
                 logger.error(f"Anthropic segmentation also failed: {e}")
