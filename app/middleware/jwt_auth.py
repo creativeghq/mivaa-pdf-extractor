@@ -314,29 +314,44 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             # Get Supabase JWT secret from environment
             supabase_jwt_secret = os.getenv("SUPABASE_JWT_SECRET")
             if not supabase_jwt_secret:
-                logger.debug("SUPABASE_JWT_SECRET not configured, skipping Supabase JWT validation")
+                logger.warning("SUPABASE_JWT_SECRET not configured — cannot validate Supabase JWTs")
                 return None
 
-            # Decode Supabase JWT token
-            claims = jwt.decode(
-                token,
-                supabase_jwt_secret,
-                algorithms=["HS256"],
-                audience="authenticated",  # Supabase uses "authenticated" as audience
-                options={"verify_exp": True, "verify_iat": True}
-            )
+            # Decode Supabase JWT token (PyJWT handles aud as string or list)
+            try:
+                claims = jwt.decode(
+                    token,
+                    supabase_jwt_secret,
+                    algorithms=["HS256"],
+                    audience="authenticated",  # Supabase uses "authenticated" as audience
+                    options={"verify_exp": True, "verify_iat": True}
+                )
+            except jwt.InvalidAudienceError:
+                # Try without audience verification as fallback (older Supabase tokens)
+                claims = jwt.decode(
+                    token,
+                    supabase_jwt_secret,
+                    algorithms=["HS256"],
+                    options={"verify_exp": True, "verify_iat": True, "verify_aud": False}
+                )
+                logger.warning("Supabase JWT decoded without audience verification (audience mismatch)")
 
             # Validate required Supabase claims
-            required_claims = ["sub", "exp", "iat", "aud"]
+            required_claims = ["sub", "exp", "iat"]
             for claim in required_claims:
                 if claim not in claims:
-                    logger.debug(f"Missing required Supabase claim: {claim}")
+                    logger.warning(f"Missing required Supabase claim: {claim}")
                     return None
 
-            # Check if audience is "authenticated" (Supabase standard)
-            if claims.get("aud") != "authenticated":
-                logger.debug(f"Invalid Supabase audience: {claims.get('aud')}")
-                return None
+            # Check if audience is "authenticated" — handle both string and list formats
+            aud = claims.get("aud")
+            if aud is not None:
+                aud_ok = aud == "authenticated" or aud == ["authenticated"] or (
+                    isinstance(aud, list) and "authenticated" in aud
+                )
+                if not aud_ok:
+                    logger.warning(f"Invalid Supabase audience: {aud!r}")
+                    return None
 
             # Extract user information from Supabase token
             user_id = claims.get("sub")
@@ -374,13 +389,13 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             return mivaa_claims
 
         except jwt.ExpiredSignatureError:
-            logger.debug("Supabase JWT token has expired")
+            logger.warning("Supabase JWT token has expired")
             return None
         except jwt.InvalidTokenError as e:
-            logger.debug(f"Invalid Supabase JWT token: {str(e)}")
+            logger.warning(f"Invalid Supabase JWT token: {str(e)}")
             return None
         except Exception as e:
-            logger.debug(f"Supabase JWT validation error: {str(e)}")
+            logger.warning(f"Supabase JWT validation error: {str(e)}")
             return None
 
     def _is_simple_api_key(self, token: str) -> bool:
