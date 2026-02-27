@@ -19,6 +19,67 @@ from app.services.integrations.credits_integration_service import get_credits_se
 
 router = APIRouter(prefix="/api", tags=["interior-design"])
 
+# Room type → readable English name
+_ROOM_NAMES: dict = {
+    "living_room": "living room", "bedroom": "bedroom", "kitchen": "kitchen",
+    "bathroom": "bathroom", "dining_room": "dining room", "home_office": "home office",
+    "hallway": "hallway", "studio": "studio apartment", "outdoor": "outdoor terrace",
+    "kids_room": "children's room", "basement": "basement lounge",
+}
+
+# Style → descriptive vocabulary for image generation models
+_STYLE_VOCAB: dict = {
+    "modern": "modern, clean lines, sleek surfaces, contemporary furniture, neutral palette",
+    "minimalist": "minimalist, ultra-clean, negative space, uncluttered, monochromatic tones",
+    "scandinavian": "Scandinavian, Nordic, light oak wood, white walls, cozy hygge atmosphere",
+    "industrial": "industrial loft, exposed concrete, raw steel accents, warehouse aesthetic",
+    "luxury": "luxury, high-end finishes, marble surfaces, gold accents, designer furniture, opulent",
+    "bohemian": "bohemian, eclectic layered textiles, warm earth tones, plants, woven accents",
+    "traditional": "traditional, classic rich wood tones, ornate mouldings, symmetrical layout",
+    "mediterranean": "Mediterranean, terracotta tiles, arched details, warm plaster walls, natural stone",
+    "japandi": "Japandi, wabi-sabi, natural wood, muted pale palette, zen minimalism",
+    "art_deco": "Art Deco, geometric patterns, brass accents, velvet upholstery, dramatic lighting",
+    "rustic": "rustic, reclaimed wood, exposed beams, stone fireplace, warm cozy atmosphere",
+    "coastal": "coastal, light airy, sandy tones, rattan furniture, linen textiles, sea-glass tones",
+}
+
+
+def _build_generation_prompt(
+    prompt: str,
+    room_type: Optional[str],
+    style: Optional[str],
+    is_image_to_image: bool,
+) -> str:
+    """
+    Build a rich, model-optimised generation prompt from user inputs.
+
+    Text-to-image: full descriptive sentence + quality boosters.
+    Image-to-image: concise style directive (avoids overriding the reference image).
+    """
+    room = _ROOM_NAMES.get(room_type or "", room_type or "interior space")
+    style_name = style or "contemporary"
+    style_tags = _STYLE_VOCAB.get(style or "", style_name)
+
+    if is_image_to_image:
+        # Transformation prompts should be directive and concise so the model
+        # focuses on style transfer rather than ignoring the reference image.
+        parts = [
+            f"{style_name} style redesign of a {room},",
+            prompt.rstrip(".") + ",",
+            style_tags + ",",
+            "professional interior design, high quality rendering",
+        ]
+    else:
+        # Text-to-image benefits from rich natural language + quality anchors.
+        parts = [
+            f"Professional interior design photograph of a beautifully designed {style_name} {room},",
+            prompt.rstrip(".") + ",",
+            style_tags + ",",
+            "soft natural and ambient lighting, photorealistic render,",
+            "architectural photography, wide-angle lens, sharp focus, high detail, 8K resolution",
+        ]
+    return " ".join(parts)
+
 # Model configurations - All Replicate models
 # Text-to-Image Models (for prompts without reference images)
 TEXT_TO_IMAGE_MODELS = [
@@ -337,12 +398,13 @@ async def create_interior_design(request: InteriorRequest):
         # Text-to-image: Use all text-to-image models
         models_to_use = TEXT_TO_IMAGE_MODELS
 
-    # Enhance prompt
-    enhanced_prompt = request.prompt
-    if request.room_type:
-        enhanced_prompt = f"{request.room_type} - {enhanced_prompt}"
-    if request.style:
-        enhanced_prompt = f"{request.style} style - {enhanced_prompt}"
+    # Build rich generation prompt
+    enhanced_prompt = _build_generation_prompt(
+        prompt=request.prompt,
+        room_type=request.room_type,
+        style=request.style,
+        is_image_to_image=bool(request.image),
+    )
 
     # Create job in database
     job_id = str(uuid.uuid4())

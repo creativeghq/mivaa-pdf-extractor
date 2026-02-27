@@ -543,7 +543,14 @@ class VecsService:
             return formatted_results
 
         except Exception as e:
-            logger.error(f"❌ Specialized search ({embedding_type}) failed: {e}")
+            err_msg = str(e)
+            # Dimension mismatch means the existing VECS collection was created with a
+            # different vector size (e.g. 1152D legacy vs current 768D SLIG).
+            # This is a known migration state — downgrade to WARNING so Sentry is silent.
+            if "dimension" in err_msg.lower() and "match" in err_msg.lower():
+                logger.warning(f"⚠️ Specialized search ({embedding_type}) skipped — dimension mismatch (collection needs re-indexing): {e}")
+            else:
+                logger.error(f"❌ Specialized search ({embedding_type}) failed: {e}")
             return []
 
     async def search_all_collections(

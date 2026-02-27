@@ -4212,7 +4212,8 @@ async def search_documents(
                 workspace_id=request.workspace_id,
                 top_k=request.top_k,
                 material_filters=material_filters,
-                search_config={"weights": rag_weights} if rag_weights else None
+                search_config={"weights": rag_weights} if rag_weights else None,
+                image_base64=getattr(request, 'image_base64', None),
             )
 
         elif strategy == "material":

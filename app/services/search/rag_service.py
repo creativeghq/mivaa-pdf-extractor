@@ -508,7 +508,8 @@ class RAGService:
         top_k: int = 10,
         material_filters: Optional[Dict[str, Any]] = None,
         similarity_threshold: float = 0.3,
-        search_config: Optional[Dict[str, Any]] = None
+        search_config: Optional[Dict[str, Any]] = None,
+        image_base64: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         🎯 HYBRID MULTI-SOURCE SEARCH - Combines ALL available data sources.
@@ -598,15 +599,31 @@ class RAGService:
             self.logger.info(f"🔍 HYBRID SEARCH: '{query[:50]}...'")
             self.logger.info(f"   Sources: Visual={enable_visual}, Chunk={enable_chunk}, Product={enable_product}, Keyword={enable_keyword}")
 
-            # Generate visual embedding from text (for image searches)
+            # Generate visual embedding — from actual image pixels when available,
+            # otherwise fall back to text→visual via SLIG.
             visual_embedding = None
             if enable_visual:
-                embedding_result = await self.embeddings_service.generate_visual_embedding(query)
-                if embedding_result.get("success"):
-                    visual_embedding = embedding_result.get("embedding", [])
-                    self.logger.info(f"✅ Visual embedding: {len(visual_embedding)}D")
-                else:
-                    self.logger.warning("⚠️ Visual embedding generation failed")
+                if image_base64:
+                    try:
+                        import base64 as _b64
+                        from io import BytesIO
+                        from PIL import Image as _Image
+                        img = _Image.open(BytesIO(_b64.b64decode(image_base64)))
+                        visual_embedding = await self._generate_visual_embedding_for_search(img)
+                        if visual_embedding:
+                            self.logger.info(f"✅ Visual embedding from image: {len(visual_embedding)}D")
+                        else:
+                            self.logger.warning("⚠️ Image visual embedding returned None, falling back to text")
+                    except Exception as _ve:
+                        self.logger.warning(f"⚠️ Image visual embedding failed ({_ve}), falling back to text")
+
+                if not visual_embedding:
+                    embedding_result = await self.embeddings_service.generate_visual_embedding(query)
+                    if embedding_result.get("success"):
+                        visual_embedding = embedding_result.get("embedding", [])
+                        self.logger.info(f"✅ Visual embedding from text: {len(visual_embedding)}D")
+                    else:
+                        self.logger.warning("⚠️ Visual embedding generation failed")
 
             # Generate text embedding (for chunk/product searches)
             text_embedding = None
@@ -631,7 +648,7 @@ class RAGService:
             image_scores = {}  # Maps image_id -> {embedding_type: score}
 
             if enable_visual and visual_embedding:
-                embedding_types = ['visual', 'color', 'texture', 'style', 'material']
+                embedding_types = ['color', 'texture', 'style', 'material']
                 search_tasks = []
 
                 for emb_type in embedding_types:

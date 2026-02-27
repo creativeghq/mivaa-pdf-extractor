@@ -105,7 +105,7 @@ class QwenEndpointManager:
         """Get or create endpoint instance for pause/resume operations."""
         if not self._can_pause_resume:
             return None
-        
+
         if self._endpoint is None:
             try:
                 self._endpoint = get_inference_endpoint(
@@ -117,8 +117,21 @@ class QwenEndpointManager:
             except Exception as e:
                 logger.error(f"❌ Failed to get Qwen endpoint: {e}")
                 return None
-        
+
         return self._endpoint
+
+    def _refresh_url_from_endpoint(self) -> None:
+        """Pull the live URL from the HF endpoint object so we never use a stale hardcoded URL."""
+        endpoint = self._get_endpoint()
+        if not endpoint:
+            return
+        try:
+            live_url = getattr(endpoint, "url", None)
+            if live_url and live_url != self.endpoint_url:
+                logger.info(f"🔗 Qwen endpoint URL updated: {live_url}")
+                self.endpoint_url = live_url
+        except Exception as e:
+            logger.debug(f"Could not refresh endpoint URL: {e}")
     
     def resume_if_needed(self) -> bool:
         """
@@ -148,6 +161,7 @@ class QwenEndpointManager:
 
             if endpoint.status == "running":
                 logger.info("✅ Qwen endpoint already running")
+                self._refresh_url_from_endpoint()
                 return True
 
             # Handle "initializing" state - poll until ready
@@ -166,6 +180,7 @@ class QwenEndpointManager:
                         self.last_resume_time = time.time()
                         self.warmup_completed = False  # Reset warmup flag
                         logger.info(f"✅ Qwen endpoint resumed (attempt {attempt + 1}/{self.max_resume_retries})")
+                        self._refresh_url_from_endpoint()
 
                         # Smart polling-based warmup (calls self.warmup())
                         if not self.warmup():
@@ -209,6 +224,7 @@ class QwenEndpointManager:
                     elapsed = time.time() - start_time
                     logger.info(f"✅ Qwen endpoint ready after {elapsed:.1f}s")
                     self.last_resume_time = time.time()
+                    self._refresh_url_from_endpoint()
 
                     # Warmup after becoming ready
                     if not self.warmup():

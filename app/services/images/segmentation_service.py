@@ -41,6 +41,13 @@ Rules:
 - Note texture/pattern layouts when visible: chevron, herringbone, stacked bond, running bond, mosaic, grid, ribbed, fluted
 - dominant_color: use the mid-tone hex (not the specular highlight or deepest shadow)
 - confidence: how certain you are the material identification is correct (0.0–1.0); use lower values when lighting or render style obscures texture detail
+- search_query: a single rich sentence optimised for multi-vector catalog search. It MUST cover all 6 dimensions so it matches every embedding type used to index the product catalog:
+  1. MATERIAL — specific name and subtype (e.g. "Calacatta marble slab")
+  2. TEXTURE — surface pattern, grain, weave or layout (e.g. "veined natural stone texture")
+  3. COLOR — descriptive name + tone, not hex (e.g. "warm white with grey veining")
+  4. FINISH — surface treatment (e.g. "honed matte finish")
+  5. STYLE — aesthetic category (e.g. "luxury contemporary")
+  6. APPLICATION — where the surface lives (e.g. "kitchen countertop surface")
 
 Required fields per zone:
 {
@@ -49,14 +56,15 @@ Required fields per zone:
   "finish": "matte | glossy | satin | brushed | honed | polished | textured | rough | patinated | lacquered",
   "dominant_color": "#rrggbb",
   "bbox": {"x": 0.0, "y": 0.0, "w": 0.5, "h": 0.3},
-  "confidence": 0.85
+  "confidence": 0.85,
+  "search_query": "rich sentence covering material, texture, color, finish, style, application"
 }
 
 Return ONLY the JSON array. Example:
 [
-  {"label": "main floor", "material_type": "herringbone white oak engineered wood", "finish": "satin", "dominant_color": "#c8a97a", "bbox": {"x": 0.0, "y": 0.6, "w": 1.0, "h": 0.4}, "confidence": 0.93},
-  {"label": "back wall", "material_type": "smooth white gypsum plaster", "finish": "matte", "dominant_color": "#f5f0eb", "bbox": {"x": 0.0, "y": 0.0, "w": 1.0, "h": 0.6}, "confidence": 0.88},
-  {"label": "kitchen island countertop", "material_type": "Calacatta marble", "finish": "honed", "dominant_color": "#e8e4de", "bbox": {"x": 0.3, "y": 0.45, "w": 0.4, "h": 0.15}, "confidence": 0.91}
+  {"label": "main floor", "material_type": "herringbone white oak engineered wood", "finish": "satin", "dominant_color": "#c8a97a", "bbox": {"x": 0.0, "y": 0.6, "w": 1.0, "h": 0.4}, "confidence": 0.93, "search_query": "herringbone white oak engineered hardwood flooring, warm honey-brown tone, satin finish, natural wood grain with diagonal chevron pattern, Scandinavian contemporary style, residential floor surface"},
+  {"label": "back wall", "material_type": "smooth white gypsum plaster", "finish": "matte", "dominant_color": "#f5f0eb", "bbox": {"x": 0.0, "y": 0.0, "w": 1.0, "h": 0.6}, "confidence": 0.88, "search_query": "smooth white gypsum plaster wall, off-white warm tone, matte finish, flat uniform texture, minimalist contemporary style, interior wall cladding"},
+  {"label": "kitchen island countertop", "material_type": "Calacatta marble", "finish": "honed", "dominant_color": "#e8e4de", "bbox": {"x": 0.3, "y": 0.45, "w": 0.4, "h": 0.15}, "confidence": 0.91, "search_query": "Calacatta marble countertop slab, warm white with grey veining, honed matte finish, natural stone veined texture, luxury contemporary style, kitchen countertop surface"}
 ]"""
 
 
@@ -275,6 +283,8 @@ class SegmentationService:
             zone.setdefault("material_type", "unknown")
             zone.setdefault("finish", "unknown")
             zone.setdefault("dominant_color", "#888888")
+            # search_query is optional — frontend falls back to material_type + finish if absent
+            zone.setdefault("search_query", "")
             validated.append(zone)
 
         return validated
