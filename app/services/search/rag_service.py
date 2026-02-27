@@ -1448,9 +1448,6 @@ class RAGService:
             import io
             import base64
 
-            # Load model if not already loaded
-            await self.embeddings_service.ensure_models_loaded()
-
             # Convert PIL image to base64
             buffered = io.BytesIO()
             image.save(buffered, format="JPEG")

@@ -55,6 +55,9 @@ class SearchQueryTracker:
             dynamic_weights: Actual 7-vector weights applied
             weight_profile_source: How profile was selected ("default", "query_understanding", "manual_override")
         """
+        if not workspace_id:
+            return  # Skip tracking when workspace_id is empty — prevents UUID insert error
+
         try:
             # Extract terms from query
             searched_terms = self._extract_search_terms(query_text, query_metadata)
