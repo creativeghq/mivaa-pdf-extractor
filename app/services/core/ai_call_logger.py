@@ -371,7 +371,7 @@ class AICallLogger:
 
     def _calculate_qwen_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
         """Calculate cost for Qwen (HuggingFace) API call using centralized pricing (returns billed cost with markup)"""
-        cost_data = ai_pricing.calculate_cost(model, input_tokens, output_tokens, provider="together")
+        cost_data = ai_pricing.calculate_cost(model, input_tokens, output_tokens, provider="huggingface")
         return float(cost_data['billed_cost_usd'])
 
     async def log_firecrawl_call(

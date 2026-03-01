@@ -732,8 +732,8 @@ class ImageProcessingService:
             logger.error(f"   Successfully classified: 0")
             logger.error(f"   This indicates a systemic issue with the AI classification service")
             logger.error(f"   Possible causes:")
-            logger.error(f"   1. Together.AI API key invalid or expired")
-            logger.error(f"   2. Together.AI service unavailable")
+            logger.error(f"   1. HuggingFace Endpoint token invalid or expired")
+            logger.error(f"   2. HuggingFace Endpoint service unavailable")
             logger.error(f"   3. Image files deleted before classification")
             logger.error(f"   4. Network connectivity issues")
             logger.error(f"   5. Model name incorrect or model unavailable")
@@ -745,7 +745,7 @@ class ImageProcessingService:
 
             raise Exception(
                 f"Image classification completely failed: 0/{total_input} images classified. "
-                f"Check Together.AI API key and service availability."
+                f"Check HuggingFace Endpoint token and service availability."
             )
 
         # ✅ FIX 7: Warning if classification rate is suspiciously low

@@ -89,8 +89,8 @@ def get_current_tier() -> RateLimitTier:
     Returns:
         RateLimitTier: The current tier configuration
     """
-    # Read tier from environment variable (supports legacy TOGETHER_AI_TIER for backward compat)
-    tier_number = int(os.getenv('VISION_MODEL_TIER', os.getenv('TOGETHER_AI_TIER', '1')))
+    # Read tier from environment variable
+    tier_number = int(os.getenv('VISION_MODEL_TIER', '1'))
 
     # Validate tier number
     if tier_number not in VISION_RATE_TIERS:

@@ -718,9 +718,9 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 ### AI Models
 1. **OpenAI**: text-embedding-3-small (1536D embeddings), GPT-4o-mini (query understanding)
 2. **Anthropic**: Claude Haiku 4.5 (fast classification), Claude Sonnet 4.5 (deep enrichment)
-3. **Together AI**: Qwen3-VL-8B-Instruct (primary), Qwen3-VL-32B-Instruct (validation)
-4. **CLIP**: 6 specialized embeddings (text, visual, color, texture, style, material) - 512D each
-5. **SigLIP**: ViT-SO400M for visual embeddings
+3. **HuggingFace Endpoint**: Qwen3-VL-32B-Instruct (vision analysis)
+4. **SigLIP2**: 5 specialized visual embeddings (visual, color, texture, style, material) - 768D each
+5. **Voyage AI**: voyage-3.5 (text + understanding embeddings, 1024D)
 
 ### API Endpoints
 - **Total**: 125+ endpoints across 16 categories (18 legacy endpoints removed)
@@ -912,8 +912,8 @@ Get your token from the frontend application or Supabase authentication.
                 "description": "🎨 Anthropic Claude integration - Image validation and product enrichment using Claude Haiku 4.5 (fast classification) and Claude Sonnet 4.5 (deep enrichment)"
             },
             {
-                "name": "Together AI",
-                "description": "🦙 Together AI integration - Vision models for advanced image analysis and material recognition"
+                "name": "HuggingFace Endpoint",
+                "description": "🤗 HuggingFace Endpoint integration - Qwen3-VL-32B vision model for advanced image analysis and material recognition"
             },
             {
                 "name": "Images",
@@ -2006,6 +2006,7 @@ from app.api.price_monitoring_routes import router as price_monitoring_router
 from app.api.websocket_routes import router as websocket_router
 from app.api.logs_routes import router as logs_router
 from app.api.admin_linking import router as admin_linking_router
+from app.api.sam_routes import router as sam_router
 
 app.include_router(health_router)  # Health check endpoints (must be first for monitoring)
 app.include_router(search_router)
@@ -2042,6 +2043,7 @@ app.include_router(price_monitoring_router)  # NEW: Price monitoring with Firecr
 app.include_router(websocket_router)  # NEW: WebSocket endpoint for real-time updates (job progress, system health)
 app.include_router(logs_router)  # NEW: System logs API (fetch, filter, clear logs from database)
 app.include_router(admin_linking_router)  # NEW: Admin entity linking (manual chunk-product linking for debugging)
+app.include_router(sam_router)  # SAM mask generation for material inpainting
 
 
 # ============================================================================

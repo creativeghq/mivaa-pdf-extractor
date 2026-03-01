@@ -181,7 +181,7 @@ class ImageInfo(BaseModel):
     )
     vision_provider: Optional[str] = Field(
         None,
-        description="Vision AI provider: anthropic, openai, together"
+        description="Vision AI provider: anthropic, openai, huggingface"
     )
     vision_model: Optional[str] = Field(
         None,

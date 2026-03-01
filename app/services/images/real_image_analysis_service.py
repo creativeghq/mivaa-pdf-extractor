@@ -414,7 +414,7 @@ class RealImageAnalysisService:
                                 "Content-Type": "application/json"
                             },
                             json={
-                                "model": "Qwen/Qwen3-VL-8B-Instruct",  # Model name from Together AI
+                                "model": "Qwen/Qwen3-VL-32B-Instruct",  # Model hosted on HuggingFace Endpoint
                                 "messages": [
                                     {
                                         "role": "user",
@@ -442,7 +442,7 @@ class RealImageAnalysisService:
                         error_text = response.text
 
                         # CRITICAL FIX: Handle 5xx errors with retry logic
-                        # Together.ai API occasionally returns 503/500 during high load or internal issues
+                        # HuggingFace Endpoint API occasionally returns 503/500 during high load or internal issues
                         if response.status_code in [500, 503]:
                             if attempt < max_retries:
                                 error_name = "Internal Server Error" if response.status_code == 500 else "Service Unavailable"
@@ -705,7 +705,7 @@ class RealImageAnalysisService:
             latency_ms = int((time.time() - start_time) * 1000)
             await self.ai_logger.log_ai_call(
                 task="image_vision_analysis",
-                model="qwen3-vl-8b",  # Actual Together AI model identifier
+                model="qwen3-vl-32b",  # HuggingFace Endpoint model identifier
                 input_tokens=0,
                 output_tokens=0,
                 cost=0.0,
