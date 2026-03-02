@@ -139,9 +139,22 @@ def get_dynamic_extraction_prompt(pdf_text: str, category_hint: Optional[str] = 
 {category_context}
 
 CRITICAL FIELDS (MUST extract these):
-1. material_category - Primary material type (tile, porcelain, ceramic, stone, marble, granite, wood, metal, glass, etc.)
-2. factory_name - Manufacturer or factory name
-3. factory_group_name - Parent company or group name (if mentioned)
+1. material_category - MUST be exactly one value from this controlled vocabulary:
+   floor_tile | wall_tile | wood_flooring | laminate | vinyl_flooring | carpet |
+   wall_paint | wallpaper | countertop | kitchen_worktop | bathroom_tile | shower_tile |
+   sofa | armchair | dining_chair | accent_chair | rug | curtain | cushion |
+   dining_table | coffee_table | side_table | cabinet | shelving | sideboard |
+   door | window | fabric_swatch | leather_swatch | stone_slab | metal_panel |
+   glass_panel | outdoor_furniture | lighting
+   Choose the best single match. If uncertain between floor_tile/wall_tile/bathroom_tile, use context clues (residential bath context → bathroom_tile, etc.)
+2. zone_intent - MUST be exactly one of: surface | full_object | upholstery | sub_element
+   Rules:
+   • surface     → floor/wall/ceiling tiles, paint, wallpaper, countertops, cladding — material to replace
+   • full_object → sofa, chair, rug, curtain, table, cabinet, lamp — entire product could be swapped
+   • upholstery  → fabric/leather swatches intended to cover furniture (headboard fabric, seat pad)
+   • sub_element → hardware, handles, brackets, trims, skirting — finish/colour change only
+3. factory_name - Manufacturer or factory name
+4. factory_group_name - Parent company or group name (if mentioned)
 
 DYNAMIC FIELDS (extract ANY you find):
 Extract all other attributes you discover, organized by category.
@@ -224,7 +237,8 @@ CRITICAL RULES:
 Return JSON in this exact format:
 {{
   "critical": {{
-    "material_category": {{"value": "...", "confidence": 0.95, "source": "detected"}},
+    "material_category": {{"value": "floor_tile", "confidence": 0.95, "source": "detected"}},
+    "zone_intent": {{"value": "surface", "confidence": 0.92, "source": "inferred"}},
     "factory_name": {{"value": "...", "confidence": 0.90, "source": "extracted"}},
     "factory_group_name": {{"value": "...", "confidence": 0.85, "source": "extracted"}}
   }},

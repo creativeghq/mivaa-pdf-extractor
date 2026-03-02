@@ -6,7 +6,83 @@ Includes metadata consolidation from AI text extraction, visual analysis, and fa
 """
 
 import logging
+import os
 from typing import Dict, Any, List, Optional
+
+# ── Controlled vocabulary ────────────────────────────────────────────────────
+MATERIAL_CATEGORY_VOCAB = {
+    "floor_tile", "wall_tile", "wood_flooring", "laminate", "vinyl_flooring", "carpet",
+    "wall_paint", "wallpaper", "countertop", "kitchen_worktop", "bathroom_tile", "shower_tile",
+    "sofa", "armchair", "dining_chair", "accent_chair", "rug", "curtain", "cushion",
+    "dining_table", "coffee_table", "side_table", "cabinet", "shelving", "sideboard",
+    "door", "window", "fabric_swatch", "leather_swatch", "stone_slab", "metal_panel",
+    "glass_panel", "outdoor_furniture", "lighting",
+}
+ZONE_INTENT_VOCAB = {"surface", "full_object", "upholstery", "sub_element"}
+
+
+async def _classify_product(name: str, description: str, existing_category: str) -> Dict[str, str]:
+    """
+    Call Claude Haiku to assign material_category + zone_intent from controlled vocabulary.
+    Returns dict with keys 'material_category' and 'zone_intent', or empty dict on failure.
+    """
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return {}
+
+    import httpx, json as _json
+
+    prompt = f"""Classify this interior material/furniture product into the controlled vocabularies below.
+
+Product name: {name}
+Description: {description or 'N/A'}
+Current category (may be wrong or missing): {existing_category or 'N/A'}
+
+CONTROLLED VOCABULARY — respond ONLY with a JSON object, no explanation:
+
+material_category (pick exactly one):
+  floor_tile | wall_tile | wood_flooring | laminate | vinyl_flooring | carpet |
+  wall_paint | wallpaper | countertop | kitchen_worktop | bathroom_tile | shower_tile |
+  sofa | armchair | dining_chair | accent_chair | rug | curtain | cushion |
+  dining_table | coffee_table | side_table | cabinet | shelving | sideboard |
+  door | window | fabric_swatch | leather_swatch | stone_slab | metal_panel |
+  glass_panel | outdoor_furniture | lighting
+
+zone_intent (pick exactly one):
+  surface     — floor/wall/ceiling tiles, paint, wallpaper, countertops, cladding
+  full_object — sofa, chair, rug, curtain, table, cabinet, lamp
+  upholstery  — fabric/leather swatches for covering furniture
+  sub_element — hardware, handles, trims, brackets
+
+Respond with exactly: {{"material_category": "...", "zone_intent": "..."}}"""
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 64,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+            resp.raise_for_status()
+            text = resp.json()["content"][0]["text"].strip()
+            data = _json.loads(text)
+            result = {}
+            if data.get("material_category") in MATERIAL_CATEGORY_VOCAB:
+                result["material_category"] = data["material_category"]
+            if data.get("zone_intent") in ZONE_INTENT_VOCAB:
+                result["zone_intent"] = data["zone_intent"]
+            return result
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Product classification failed: {e}")
+        return {}
 
 
 async def create_single_product(
@@ -97,6 +173,36 @@ async def create_single_product(
     for key in ['factory_name', 'factory_group_name', 'material_category']:
         if is_not_found(metadata.get(key)):
             metadata[key] = None
+
+    # ── Auto-classify material_category + zone_intent if missing / not in vocab ──
+    raw_cat = metadata.get("material_category")
+    # Flatten dict-valued critical field if AI stored it nested
+    if isinstance(raw_cat, dict):
+        raw_cat = raw_cat.get("value")
+        metadata["material_category"] = raw_cat
+
+    raw_intent = metadata.get("zone_intent")
+    if isinstance(raw_intent, dict):
+        raw_intent = raw_intent.get("value")
+        metadata["zone_intent"] = raw_intent
+
+    needs_category = not raw_cat or raw_cat not in MATERIAL_CATEGORY_VOCAB
+    needs_intent = not raw_intent or raw_intent not in ZONE_INTENT_VOCAB
+    if needs_category or needs_intent:
+        try:
+            classified = await _classify_product(
+                name=product.name,
+                description=metadata.get("description", "") or ai_metadata.get("description", ""),
+                existing_category=raw_cat or "",
+            )
+            if needs_category and classified.get("material_category"):
+                metadata["material_category"] = classified["material_category"]
+                logger.info(f"   🏷️ Auto-classified material_category: {classified['material_category']}")
+            if needs_intent and classified.get("zone_intent"):
+                metadata["zone_intent"] = classified["zone_intent"]
+                logger.info(f"   🏷️ Auto-classified zone_intent: {classified['zone_intent']}")
+        except Exception as cls_err:
+            logger.warning(f"   ⚠️ Auto-classification skipped: {cls_err}")
 
     # ✅ FIX: Extract description from multiple sources if product.description is empty
     description = product.description or ''

@@ -23,13 +23,13 @@ logger = logging.getLogger(__name__)
 #   prompt_type = 'agent', category = 'segmentation', is_active = true
 DEFAULT_SEGMENT_PROMPT = """You are a precision material-identification expert analyzing a 3D architectural rendering for catalog-based material matching.
 
-Identify every distinct material surface (floor, wall, ceiling, countertop, cabinetry, upholstery, curtains, trims, tiles, rugs, decorative panels, etc.).
+Identify every distinct material surface AND structural sub-element (floor, wall, ceiling, countertop, cabinetry, upholstery, curtains, trims, tiles, rugs, decorative panels, table legs, chair frames, door handles, hardware, etc.).
 
-For EACH surface return a JSON object. Respond ONLY with a valid JSON array — no explanation, no markdown, no code fences.
+For EACH surface or element return a JSON object. Respond ONLY with a valid JSON array — no explanation, no markdown, no code fences.
 
 Rules:
 - bbox: RELATIVE coordinates (0.0–1.0), (0,0) = top-left, (1,1) = bottom-right
-- Skip surfaces smaller than 2% of the image area
+- Skip surfaces smaller than 2% of the image area EXCEPT sub_element zones (legs, frames, hardware can be small — always include them if visually distinct)
 - material_type MUST be catalog-grade specific — this text drives database search matching:
   • "brushed stainless steel" not "metal"
   • "Calacatta marble" or "Nero Marquina marble" not just "marble"
@@ -49,22 +49,33 @@ Rules:
   5. STYLE — aesthetic category (e.g. "luxury contemporary")
   6. APPLICATION — where the surface lives (e.g. "kitchen countertop surface")
 
+- zone_intent: classify each zone as exactly one of:
+  • "surface"     — floor, wall, ceiling, countertop, backsplash, cladding — material/texture to replace
+  • "full_object" — sofa, chair, rug, curtain, table, cabinet, lamp — entire product could be swapped
+  • "upholstery"  — identifiable fabric/leather cover of furniture (seat cushion, sofa back panel, headboard fabric) — separate from the frame
+  • "sub_element" — table legs, chair frame/base, door handles, cabinet hardware, window frame, skirting board, shelf brackets — finish/colour change only
+
+Sub-element detection rule: If legs, frame, or hardware are visually distinct from the main object body, emit them as a SEPARATE zone entry with zone_intent="sub_element". Example: a dining table with visible metal legs MUST produce TWO zones — one for the table top (full_object) and one for the table legs (sub_element). Same for a chair with a distinct wooden frame vs upholstered seat.
+
 Required fields per zone:
 {
-  "label": "descriptive surface name, e.g. kitchen island countertop, accent left wall, main floor",
+  "label": "descriptive surface name, e.g. kitchen island countertop, accent left wall, main floor, dining table legs",
   "material_type": "catalog-grade specific material name including pattern if applicable",
   "finish": "matte | glossy | satin | brushed | honed | polished | textured | rough | patinated | lacquered",
   "dominant_color": "#rrggbb",
   "bbox": {"x": 0.0, "y": 0.0, "w": 0.5, "h": 0.3},
   "confidence": 0.85,
+  "zone_intent": "surface | full_object | upholstery | sub_element",
   "search_query": "rich sentence covering material, texture, color, finish, style, application"
 }
 
 Return ONLY the JSON array. Example:
 [
-  {"label": "main floor", "material_type": "herringbone white oak engineered wood", "finish": "satin", "dominant_color": "#c8a97a", "bbox": {"x": 0.0, "y": 0.6, "w": 1.0, "h": 0.4}, "confidence": 0.93, "search_query": "herringbone white oak engineered hardwood flooring, warm honey-brown tone, satin finish, natural wood grain with diagonal chevron pattern, Scandinavian contemporary style, residential floor surface"},
-  {"label": "back wall", "material_type": "smooth white gypsum plaster", "finish": "matte", "dominant_color": "#f5f0eb", "bbox": {"x": 0.0, "y": 0.0, "w": 1.0, "h": 0.6}, "confidence": 0.88, "search_query": "smooth white gypsum plaster wall, off-white warm tone, matte finish, flat uniform texture, minimalist contemporary style, interior wall cladding"},
-  {"label": "kitchen island countertop", "material_type": "Calacatta marble", "finish": "honed", "dominant_color": "#e8e4de", "bbox": {"x": 0.3, "y": 0.45, "w": 0.4, "h": 0.15}, "confidence": 0.91, "search_query": "Calacatta marble countertop slab, warm white with grey veining, honed matte finish, natural stone veined texture, luxury contemporary style, kitchen countertop surface"}
+  {"label": "main floor", "material_type": "herringbone white oak engineered wood", "finish": "satin", "dominant_color": "#c8a97a", "bbox": {"x": 0.0, "y": 0.6, "w": 1.0, "h": 0.4}, "confidence": 0.93, "zone_intent": "surface", "search_query": "herringbone white oak engineered hardwood flooring, warm honey-brown tone, satin finish, natural wood grain with diagonal chevron pattern, Scandinavian contemporary style, residential floor surface"},
+  {"label": "back wall", "material_type": "smooth white gypsum plaster", "finish": "matte", "dominant_color": "#f5f0eb", "bbox": {"x": 0.0, "y": 0.0, "w": 1.0, "h": 0.6}, "confidence": 0.88, "zone_intent": "surface", "search_query": "smooth white gypsum plaster wall, off-white warm tone, matte finish, flat uniform texture, minimalist contemporary style, interior wall cladding"},
+  {"label": "dining sofa", "material_type": "bouclé wool upholstery natural white", "finish": "textured", "dominant_color": "#f0ece6", "bbox": {"x": 0.1, "y": 0.3, "w": 0.5, "h": 0.4}, "confidence": 0.89, "zone_intent": "full_object", "search_query": "bouclé wool sofa upholstery, natural warm white, textured loop pile fabric, contemporary lounge seating, Scandinavian interior style"},
+  {"label": "dining table top", "material_type": "Calacatta marble", "finish": "honed", "dominant_color": "#e8e4de", "bbox": {"x": 0.3, "y": 0.45, "w": 0.4, "h": 0.1}, "confidence": 0.91, "zone_intent": "full_object", "search_query": "Calacatta marble table top slab, warm white with grey veining, honed matte finish, natural stone veined texture, luxury contemporary style, dining table surface"},
+  {"label": "dining table legs", "material_type": "brushed brass metal", "finish": "brushed", "dominant_color": "#c9a84c", "bbox": {"x": 0.32, "y": 0.52, "w": 0.36, "h": 0.12}, "confidence": 0.85, "zone_intent": "sub_element", "search_query": "brushed brass metal table legs, warm gold tone, brushed satin finish, cylindrical metal legs, luxury contemporary style, dining furniture hardware"}
 ]"""
 
 
@@ -283,6 +294,10 @@ class SegmentationService:
             zone.setdefault("material_type", "unknown")
             zone.setdefault("finish", "unknown")
             zone.setdefault("dominant_color", "#888888")
+            zone.setdefault("zone_intent", "surface")
+            # Validate zone_intent value
+            if zone["zone_intent"] not in ("surface", "full_object", "upholstery", "sub_element"):
+                zone["zone_intent"] = "surface"
             # search_query is optional — frontend falls back to material_type + finish if absent
             zone.setdefault("search_query", "")
             validated.append(zone)
