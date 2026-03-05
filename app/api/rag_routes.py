@@ -4830,7 +4830,7 @@ class KnowledgeBaseSearchRequest(BaseModel):
     workspace_id: str = Field(..., description="Workspace ID to search within")
     search_types: List[str] = Field(
         default=["products", "entities", "chunks"],
-        description="Types to search: products, entities, chunks, images"
+        description="Types to search: products, entities, chunks, images, kb_docs"
     )
     categories: Optional[List[str]] = Field(
         default=None,
@@ -4842,6 +4842,10 @@ class KnowledgeBaseSearchRequest(BaseModel):
     )
     top_k: int = Field(default=10, description="Number of results to return per type")
     similarity_threshold: float = Field(default=0.7, description="Minimum similarity score")
+    caller: str = Field(
+        default="agent",
+        description="Caller context: 'admin' (all levels), 'agent' (agent+public), 'public' (public only)"
+    )
 
 
 class KnowledgeBaseSearchResponse(BaseModel):
@@ -5046,6 +5050,102 @@ async def search_knowledge_base(
 
             except Exception as e:
                 logger.warning(f"Chunk search failed: {e}")
+
+        # Search KB docs (kb_docs table, filtered by category access_level + trigger_keyword)
+        if "kb_docs" in request.search_types:
+            logger.info("   📚 Searching KB docs...")
+            try:
+                caller = request.caller or "agent"
+                query_lower = request.query.lower()
+
+                if caller == "admin":
+                    # Admin sees everything — no keyword restriction
+                    allowed_access_levels = ["admin", "agent", "public"]
+                    accessible_category_ids = None  # no post-filter needed
+                elif caller == "public":
+                    allowed_access_levels = ["public"]
+                    accessible_category_ids = None
+                else:
+                    # Agent caller: public categories always accessible;
+                    # agent-level categories only if trigger_keyword matches (or no keyword set)
+                    allowed_access_levels = ["agent", "public"]
+
+                    cats_resp = supabase.client.table("kb_categories").select(
+                        "id, access_level, trigger_keyword"
+                    ).eq("workspace_id", request.workspace_id).in_(
+                        "access_level", ["agent", "public"]
+                    ).execute()
+
+                    accessible_category_ids: list[str] = []
+                    for cat in (cats_resp.data or []):
+                        if cat["access_level"] == "public":
+                            # Public categories: always accessible to agent
+                            accessible_category_ids.append(cat["id"])
+                        else:
+                            # Agent-level: check trigger_keyword
+                            kw = cat.get("trigger_keyword")
+                            if kw is None or kw.strip() == "":
+                                # No keyword restriction — always accessible
+                                accessible_category_ids.append(cat["id"])
+                            elif kw.lower() in query_lower:
+                                # Keyword present in query — grant access
+                                accessible_category_ids.append(cat["id"])
+                            # else: keyword required but not found — skip this category
+
+                    logger.info(
+                        f"   🔑 Accessible KB categories for query: {len(accessible_category_ids)}"
+                    )
+
+                # Generate text_1024 embedding for the query
+                from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+                embeddings_service = RealEmbeddingsService()
+                embedding_result = await embeddings_service.generate_all_embeddings(
+                    entity_id="kb_search_query",
+                    entity_type="search",
+                    text_content=request.query
+                )
+
+                if embedding_result.get("success"):
+                    query_embedding = embedding_result.get("embeddings", {}).get("text_1024")
+                    if query_embedding:
+                        kb_response = supabase.client.rpc(
+                            "kb_match_docs",
+                            {
+                                "query_embedding": query_embedding,
+                                "match_workspace_id": request.workspace_id,
+                                "match_threshold": 0.5,
+                                "match_count": request.top_k * 2,  # fetch extra, will post-filter
+                                "allowed_access_levels": allowed_access_levels,
+                            }
+                        ).execute()
+
+                        if kb_response.data:
+                            kb_count = 0
+                            for doc in kb_response.data:
+                                cat_id = doc.get("category_id")
+                                # Post-filter: skip if we have an accessible set and this cat isn't in it
+                                if (
+                                    accessible_category_ids is not None
+                                    and cat_id is not None
+                                    and cat_id not in accessible_category_ids
+                                ):
+                                    continue
+                                results["chunks"].append({
+                                    "id": doc.get("id"),
+                                    "content": (doc.get("content") or "")[:800],
+                                    "document_title": doc.get("title"),
+                                    "category": cat_id,
+                                    "metadata": {"source": "kb_docs", "visibility": doc.get("visibility")},
+                                    "relevance_score": doc.get("similarity", 0.0),
+                                    "type": "kb_doc",
+                                })
+                                kb_count += 1
+                                if kb_count >= request.top_k:
+                                    break
+                            logger.info(f"   ✅ Found {kb_count} KB docs after keyword filtering")
+
+            except Exception as e:
+                logger.warning(f"KB docs search failed: {e}")
 
         processing_time = (datetime.utcnow() - start_time).total_seconds()
         total_results = len(results["products"]) + len(results["entities"]) + len(results["chunks"]) + len(results["images"])

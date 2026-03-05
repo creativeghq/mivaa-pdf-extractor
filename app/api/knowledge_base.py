@@ -338,6 +338,8 @@ class CreateCategoryRequest(BaseModel):
     icon: Optional[str] = Field(None, description="Icon name")
     color: Optional[str] = Field(None, description="Hex color code")
     parent_category_id: Optional[str] = Field(None, description="Parent category UUID")
+    access_level: str = Field(default="agent", description="Access level: admin | agent | public")
+    trigger_keyword: Optional[str] = Field(None, description="Agent searches this category only when query contains this keyword (agent-level only, case-insensitive)")
 
 
 class CategoryResponse(BaseModel):
@@ -352,6 +354,8 @@ class CategoryResponse(BaseModel):
     parent_category_id: Optional[str]
     sort_order: int
     created_at: str
+    access_level: str = "agent"
+    trigger_keyword: Optional[str] = None
 
 
 @router.post(

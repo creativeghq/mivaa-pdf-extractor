@@ -13,6 +13,7 @@ from typing import Dict, Any, Optional
 from datetime import datetime
 
 from app.services.core.supabase_client import get_supabase_client
+from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +196,32 @@ class AutoKBDocumentService:
                     "product_id": product_id,
                     "relationship_type": category
                 }).execute()
+
+                # Generate embedding for the new doc
+                try:
+                    emb_service = RealEmbeddingsService()
+                    emb_result = await emb_service.generate_all_embeddings(
+                        entity_id=doc_id,
+                        entity_type="kb_doc",
+                        text_content=content
+                    )
+                    if emb_result.get("success"):
+                        text_embedding = emb_result.get("embeddings", {}).get("text_1024")
+                        self.supabase.client.table("kb_docs").update({
+                            "text_embedding": text_embedding,
+                            "embedding_status": "success",
+                            "embedding_model": "voyage-3.5",
+                            "embedding_generated_at": datetime.utcnow().isoformat()
+                        }).eq("id", doc_id).execute()
+                    else:
+                        self.supabase.client.table("kb_docs").update({
+                            "embedding_status": "failed"
+                        }).eq("id", doc_id).execute()
+                except Exception as emb_err:
+                    logger.warning(f"   ⚠️ Embedding failed for KB doc '{title}': {emb_err}")
+                    self.supabase.client.table("kb_docs").update({
+                        "embedding_status": "failed"
+                    }).eq("id", doc_id).execute()
 
                 logger.info(f"   ✅ KB doc created: {title}")
                 return doc_id
