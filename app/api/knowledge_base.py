@@ -195,14 +195,18 @@ async def update_kb_document(
         
         current_doc = current.data[0]
         
-        # Check if content changed
+        # Check if content changed OR embedding is missing/pending/failed
+        force_regenerate = bool(
+            request.metadata and request.metadata.get("force_regenerate")
+        )
+        embedding_missing = current_doc.get("embedding_status") != "success"
         content_changed = (
             request.title and request.title != current_doc.get("title") or
             request.content and request.content != current_doc.get("content") or
             request.summary and request.summary != current_doc.get("summary") or
             request.category_id and request.category_id != current_doc.get("category_id")
         )
-        
+
         update_data = {}
         if request.title:
             update_data["title"] = request.title
@@ -221,10 +225,13 @@ async def update_kb_document(
         if request.visibility:
             update_data["visibility"] = request.visibility
         if request.metadata:
-            update_data["metadata"] = request.metadata
-        
-        # Regenerate embedding if content changed
-        if content_changed:
+            # Strip internal force_regenerate flag before persisting
+            meta = {k: v for k, v in request.metadata.items() if k != "force_regenerate"}
+            if meta:
+                update_data["metadata"] = meta
+
+        # Regenerate embedding if content changed, embedding is missing, or explicitly forced
+        if content_changed or embedding_missing or force_regenerate:
             embeddings_service = RealEmbeddingsService()
             embedding_result = await embeddings_service.generate_all_embeddings(
                 entity_id="temp",
