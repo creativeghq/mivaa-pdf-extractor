@@ -1911,9 +1911,6 @@ async def root() -> Dict[str, Any]:
             "semantic_analysis": "/api/semantic-analysis",
 
             # Search APIs
-            "semantic_search": "/api/search/semantic",
-            "vector_search": "/api/search/vector",
-            "hybrid_search": "/api/search/hybrid",
             "search_recommendations": "/api/search/recommendations",
             "search_analytics": "/api/analytics",
 

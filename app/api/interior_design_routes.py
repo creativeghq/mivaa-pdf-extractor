@@ -81,28 +81,60 @@ def _build_generation_prompt(
     return " ".join(parts)
 
 # Model configurations - All Replicate models
+# Gemini model — calls generate-interior-gemini edge function, appears in the same results grid
+GEMINI_MODEL = {
+    "id": "gemini-interior", "name": "Gemini AI Design", "provider": "gemini",
+    "model": "gemini-3.1-flash-image-preview", "capability": "both",
+    "cost_per_generation": 0.0,  # credits handled by the edge function internally
+    "input_schema": "gemini_interior",
+}
+
 # Text-to-Image Models (for prompts without reference images)
 TEXT_TO_IMAGE_MODELS = [
     {"id": "flux-dev", "name": "FLUX.1-dev", "provider": "replicate", "model": "black-forest-labs/flux-dev", "capability": "text-to-image", "cost_per_generation": 0.025},
     {"id": "playground-v2.5", "name": "Playground v2.5", "provider": "replicate", "model": "playgroundai/playground-v2.5-1024px-aesthetic", "version": "a45f82a1382bed5c7aeb861dac7c7d191b0fdf74d8d57c4a0e6ed7d4d0bf7d24", "capability": "text-to-image", "cost_per_generation": 0.01},
     {"id": "sd3", "name": "Stable Diffusion 3", "provider": "replicate", "model": "stability-ai/stable-diffusion-3", "capability": "text-to-image", "cost_per_generation": 0.055},
+    # SDXL interior model — text-to-image only, uses depth+ControlNet
+    {"id": "interior-design-sdxl", "name": "Interior Design SDXL", "provider": "replicate", "model": "rocketdigitalai/interior-design-sdxl", "capability": "text-to-image", "cost_per_generation": 0.14,
+     "input_schema": "sdxl_interior"},
 ]
 
 # Image-to-Image Models (for interior design transformation with reference images)
 IMAGE_TO_IMAGE_MODELS = [
     # Working models - recommended for production
     {"id": "comfyui-interior-remodel", "name": "ComfyUI Interior Remodel", "provider": "replicate", "model": "jschoormans/comfyui-interior-remodel", "version": "2a360362540e1f6cfe59c9db4aa8aa9059233d40e638aae0cdeb6b41f3d0dcce", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.02},
-    {"id": "interiorly-gen1-dev", "name": "Interiorly Gen1 Dev", "provider": "replicate", "model": "julian-at/interiorly-gen1-dev", "version": "5e3080d1b308e80197b32f0ce638daa8a329d0cf42068739723d8259e44b445e", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.015},
+    {"id": "interiorly-gen1-dev", "name": "Interiorly Gen1 Dev", "provider": "replicate", "model": "julian-at/interiorly-gen1-dev", "version": "5e3080d1b308e80197b32f0ce638daa8a329d0cf42068739723d8259e44b445e", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.015,
+     "input_schema": "flux_lora_interior"},
     {"id": "designer-architecture", "name": "Designer Architecture", "provider": "replicate", "model": "davisbrown/designer-architecture", "version": "0d6f0893b05f14500ce03e45f54290cbffb907d14db49699f2823d0fd35def46", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.018},
-
-    # Additional models - may have issues but available for testing
-    {"id": "interior-v2", "name": "Interior V2", "provider": "replicate", "model": "jschoormans/interior-v2", "version": "8372bd24c6011ea957a0861f0146671eed615e375f038c13259c1882e3c8bac7", "capability": "image-to-image", "status": "experimental", "cost_per_generation": 0.02},
-    {"id": "adirik-interior-design", "name": "Adirik Interior Design", "provider": "replicate", "model": "adirik/interior-design", "version": "76604baddc85b1b4616e1c6475eca080da339c8875bd4996705440484a6eac38", "capability": "image-to-image", "status": "experimental", "cost_per_generation": 0.015},
-    {"id": "interior-design-sdxl", "name": "Interior Design SDXL", "provider": "replicate", "model": "rocketdigitalai/interior-design-sdxl", "version": "a3c091059a25590ce2d5ea13651fab63f447f21760e50c358d4b850e844f59ee", "capability": "image-to-image", "status": "experimental", "cost_per_generation": 0.022},
+    # Restored models — were failing due to wrong generic params, now use per-model input schemas
+    {"id": "adirik-interior-design", "name": "Adirik Interior Design", "provider": "replicate", "model": "adirik/interior-design", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.02,
+     "input_schema": "adirik_interior"},
+    {"id": "erayyavuz-interior-ai", "name": "Interior AI", "provider": "replicate", "model": "erayyavuz/interior-ai", "version": "e299c531485aac511610a878ef44b554381355de5ee032d109fcae5352f39fa9", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.02,
+     "input_schema": "interior_ai"},
+    {"id": "interior-v2", "name": "Interior V2", "provider": "replicate", "model": "jschoormans/interior-v2", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.02,
+     "input_schema": "interior_v2"},
+    # New Flux LoRA interior models
+    {"id": "interor-2", "name": "Interior 2 (Flux)", "provider": "replicate", "model": "doobls-ai/interor-2",
+     "version": "91f2ef63c76a73d2ec4c67cf7b2a9672e074046cf4fde1d98e46a5829f7ea68b",
+     "capability": "image-to-image", "status": "working", "cost_per_generation": 0.014,
+     "input_schema": "flux_lora_interior"},
+    {"id": "colourful-interiors", "name": "Colourful Interiors (Flux)", "provider": "replicate", "model": "rihan-a/colourful_interiors",
+     "version": "ba0425bc2e4bebafa8bd918519fdf3b5a022969a6a7c8ba0746b807bb5b541a3",
+     "capability": "image-to-image", "status": "working", "cost_per_generation": 0.014,
+     "input_schema": "flux_lora_interior", "trigger_word": "INTR"},
+    # New SD-based img2img models
+    {"id": "stable-interiors-v2-pb", "name": "Stable Interiors V2", "provider": "replicate", "model": "pointblack/stable-interiors-v2",
+     "version": "569b1bd6e4df6c9c900ad932d4a3a9f05585fac957dc6bc627aa1654853a97b5",
+     "capability": "image-to-image", "status": "working", "cost_per_generation": 0.011,
+     "input_schema": "stable_interiors"},
+    {"id": "stable-interiors-v2-yz", "name": "Stable Interiors V2 (Fast)", "provider": "replicate", "model": "youzu/stable-interiors-v2",
+     "version": "4836eb257a4fb8b87bac9eacbef9292ee8e1a497398ab96207067403a4be2daf",
+     "capability": "image-to-image", "status": "working", "cost_per_generation": 0.011,
+     "input_schema": "stable_interiors"},
 ]
 
-# Combined list - use all models by default
-ALL_MODELS = TEXT_TO_IMAGE_MODELS + IMAGE_TO_IMAGE_MODELS
+# Combined list — Gemini always included first so it appears at the top of the grid
+ALL_MODELS = [GEMINI_MODEL] + TEXT_TO_IMAGE_MODELS + IMAGE_TO_IMAGE_MODELS
 
 class InteriorRequest(BaseModel):
     prompt: str = Field(..., description="Interior design description")
@@ -116,45 +148,148 @@ class InteriorRequest(BaseModel):
     height: int = Field(1024, description="Image height")
 
 
-async def generate_with_replicate(model: dict, prompt: str, width: int, height: int, image_url: Optional[str], api_token: str, max_retries: int = 3) -> str:
+_VIRTUAL_STAGING_ROOM_MAP: dict = {
+    "living_room": "Living Room", "bedroom": "Bedroom", "kitchen": "Kitchen",
+    "bathroom": "Bathroom", "dining_room": "Dining Room", "home_office": "Office",
+    "outdoor": "Garden", "hallway": "Living Room", "studio": "Living Room",
+    "kids_room": "Bedroom", "basement": "Living Room",
+}
+
+_VIRTUAL_STAGING_STYLE_MAP: dict = {
+    "modern": "Modern", "minimalist": "Modern", "scandinavian": "Scandinavian",
+    "industrial": "Urban Industrial", "luxury": "Transitional Luxury",
+    "bohemian": "Modern Organic", "traditional": "Traditional",
+    "mediterranean": "Modern Organic", "japandi": "Scandinavian Oasis",
+    "art_deco": "Mid-Century Modern", "rustic": "Farmhouse", "coastal": "Coastal",
+}
+
+
+def _build_model_input(
+    model: dict,
+    prompt: str,
+    width: int,
+    height: int,
+    image_url: Optional[str],
+    room_type: Optional[str] = None,
+    style: Optional[str] = None,
+    api_token: Optional[str] = None,
+) -> dict:
+    """
+    Build model-specific input parameters.
+
+    Each Replicate model has its own schema — sending unsupported params causes 422 errors.
+    We use the 'input_schema' key on the model config to select the right builder.
+    Models without an explicit schema fall back to the safe generic builder.
+    """
+    schema = model.get("input_schema", "generic")
+
+    if schema == "adirik_interior":
+        # adirik/interior-design: uses prompt_strength (not strength), no num_outputs
+        data: dict = {"prompt": prompt, "num_inference_steps": 25, "guidance_scale": 7.5, "prompt_strength": 0.8}
+        if image_url:
+            data["image"] = image_url
+        return data
+
+    if schema == "interior_ai":
+        # erayyavuz/interior-ai: image param is 'input' (not 'image'), supports strength/guidance/steps
+        data = {"prompt": prompt, "num_inference_steps": 50, "guidance_scale": 7.5, "strength": 0.8}
+        if image_url:
+            data["input"] = image_url  # NOTE: 'input', not 'image'
+        return data
+
+    if schema == "interior_v2":
+        # jschoormans/interior-v2: minimal schema, only prompt + image
+        data = {"prompt": prompt}
+        if image_url:
+            data["image"] = image_url
+        return data
+
+    if schema == "flux_lora_interior":
+        # julian-at/interiorly-gen1-dev, doobls-ai/interor-2, rihan-a/colourful_interiors
+        # Flux LoRA base — prompt_strength for img2img, aspect_ratio for text-to-image
+        trigger = model.get("trigger_word", "")
+        final_prompt = f"{trigger} {prompt}" if trigger and trigger not in prompt else prompt
+        data = {"prompt": final_prompt, "num_inference_steps": 28, "guidance_scale": 3}
+        if image_url:
+            data["image"] = image_url
+            data["prompt_strength"] = 0.8
+        else:
+            data["aspect_ratio"] = "16:9"
+        return data
+
+    if schema == "stable_interiors":
+        # pointblack/stable-interiors-v2, youzu/stable-interiors-v2
+        # SD-based img2img: requires image + prompt, uses prompt_strength (not strength)
+        data = {"prompt": prompt, "num_inference_steps": 50, "guidance_scale": 15, "prompt_strength": 0.8}
+        if image_url:
+            data["image"] = image_url
+        return data
+
+    if schema == "virtual_staging":
+        # proplabs/virtual-staging: structured room + furniture_style enums, requires api_key as input
+        room = _VIRTUAL_STAGING_ROOM_MAP.get(room_type or "", "Living Room")
+        furniture_style = _VIRTUAL_STAGING_STYLE_MAP.get(style or "", "Default (AI decides)")
+        data = {
+            "image": image_url,
+            "room": room,
+            "furniture_style": furniture_style,
+        }
+        if api_token:
+            data["replicate_api_key"] = api_token
+        return data
+
+    if schema == "sdxl_interior":
+        # rocketdigitalai/interior-design-sdxl: text-to-image, uses inference_steps not num_inference_steps
+        return {
+            "prompt": prompt,
+            "inference_steps": 60,
+            "guidance_scale": 7,
+            "depth_strength": 0.8,
+            "promax_strength": 0.8,
+            "refiner_strength": 0.5,
+            "scheduler": "DPM++ 2M Karras",
+        }
+
+    # Generic fallback — used by working models that do support these standard params
+    data = {"prompt": prompt, "num_inference_steps": 25, "guidance_scale": 7.5}
+    if model["capability"] == "text-to-image":
+        data["width"] = width
+        data["height"] = height
+        data["num_outputs"] = 1
+    if model["capability"] == "image-to-image" and image_url:
+        data["image"] = image_url
+        data["strength"] = 0.8
+    return data
+
+
+async def generate_with_replicate(model: dict, prompt: str, width: int, height: int, image_url: Optional[str], api_token: str, max_retries: int = 3, room_type: Optional[str] = None, style: Optional[str] = None) -> str:
     """Generate image using Replicate API with retry logic"""
 
     for attempt in range(max_retries):
         try:
-            # Build input based on model capability
-            input_data = {
-                "prompt": prompt,
-                "num_inference_steps": 25,
-                "guidance_scale": 7.5,
-                "num_outputs": 1,
-            }
+            input_data = _build_model_input(model, prompt, width, height, image_url, room_type, style, api_token)
 
-            # Add dimensions for text-to-image
-            if model["capability"] == "text-to-image":
-                input_data["width"] = width
-                input_data["height"] = height
+            # Determine Replicate API endpoint and payload format:
+            # - If model has a version hash → POST /v1/predictions with {"version": "<hash>", "input": ...}
+            # - If model only has owner/name → POST /v1/models/{owner}/{name}/predictions with {"input": ...}
+            model_name = model.get("model", "")
+            version_hash = model.get("version", "")
 
-            # Add image for image-to-image
-            if model["capability"] == "image-to-image" and image_url:
-                input_data["image"] = image_url
-                input_data["strength"] = 0.8
-
-            # Determine model identifier - use version if available, otherwise use model name
-            # Replicate API accepts either "version" (hash) or "model" (owner/name format)
-            prediction_payload = {"input": input_data}
-
-            if model.get("version"):
-                prediction_payload["version"] = model["version"]
-            elif model.get("model"):
-                # Use model name format (e.g., "black-forest-labs/flux-dev")
-                prediction_payload["version"] = model["model"]
-            else:
+            if not model_name and not version_hash:
                 raise Exception(f"Model {model['name']} missing both 'version' and 'model' fields")
 
             async with httpx.AsyncClient(timeout=300.0) as client:
+                if version_hash:
+                    prediction_payload = {"version": version_hash, "input": input_data}
+                    url = "https://api.replicate.com/v1/predictions"
+                else:
+                    # Use the model-specific endpoint for latest version
+                    prediction_payload = {"input": input_data}
+                    url = f"https://api.replicate.com/v1/models/{model_name}/predictions"
+
                 # Create prediction
                 response = await client.post(
-                    "https://api.replicate.com/v1/predictions",
+                    url,
                     headers={
                         "Authorization": f"Bearer {api_token}",
                         "Content-Type": "application/json"
@@ -201,6 +336,49 @@ async def generate_with_replicate(model: dict, prompt: str, width: int, height: 
             else:
                 print(f"❌ [{model['name']}] All {max_retries} attempts failed")
                 raise
+
+
+async def generate_with_gemini_edge(
+    prompt: str,
+    room_type: Optional[str],
+    style: Optional[str],
+    image_url: Optional[str],
+    user_id: str,
+    workspace_id: Optional[str],
+) -> str:
+    """
+    Call the generate-interior-gemini Supabase edge function.
+    Returns the permanent public image URL.
+    """
+    supabase_url = os.getenv("SUPABASE_URL", "")
+    service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    if not supabase_url or not service_role_key:
+        raise Exception("SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not configured")
+
+    body: dict = {
+        "mode": "image-edit" if image_url else "text-to-image",
+        "prompt": prompt,
+        "room_type": room_type,
+        "style": style,
+        "model_tier": "fast",
+        "user_id": user_id,
+        "workspace_id": workspace_id,
+    }
+    if image_url:
+        body["reference_image_url"] = image_url
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        resp = await client.post(
+            f"{supabase_url}/functions/v1/generate-interior-gemini",
+            headers={"Authorization": f"Bearer {service_role_key}", "Content-Type": "application/json"},
+            json=body,
+        )
+        if resp.status_code != 200:
+            raise Exception(f"Gemini edge function error {resp.status_code}: {resp.text}")
+        result = resp.json()
+        if not result.get("success"):
+            raise Exception(result.get("error", "Gemini generation failed"))
+        return result["image_url"]
 
 
 async def download_and_upload_to_supabase(image_url: str, job_id: str, model_id: str) -> str:
@@ -294,16 +472,16 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
     """Background task with parallel processing, retry logic, timeout, and error handling"""
 
     try:
-        # Get Replicate API token
+        # Get Replicate API token (only required for Replicate models, not Gemini)
         replicate_token = os.getenv("REPLICATE_API_TOKEN")
-
-        if not replicate_token:
-            supabase = get_supabase_client()
-            supabase.client.table('generation_3d').update({
-                'generation_status': 'failed',
-                'error_message': 'REPLICATE_API_TOKEN not configured'
-            }).eq('id', job_id).execute()
-            return
+        replicate_models = [m for m in models_to_use if m.get("provider") != "gemini"]
+        if not replicate_token and replicate_models:
+            # Fail Replicate models but let Gemini continue
+            for m in replicate_models:
+                await atomic_update_model_result(job_id, m['id'], False, None, 0.0, "REPLICATE_API_TOKEN not configured")
+            models_to_use = [m for m in models_to_use if m.get("provider") == "gemini"]
+            if not models_to_use:
+                return
 
         # Semaphore to limit concurrent requests (3 at a time)
         semaphore = asyncio.Semaphore(3)
@@ -313,38 +491,47 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
                 try:
                     print(f"🎨 Starting generation for {model['name']}")
 
-                    # Generate with Replicate
-                    temp_image_url = await generate_with_replicate(
-                        model, enhanced_prompt, request.width, request.height,
-                        request.image, replicate_token, max_retries=3
-                    )
-
-                    print(f"✅ {model['name']} generation completed, uploading to Supabase Storage...")
-
-                    # Download and upload to Supabase Storage for permanent storage
-                    permanent_url = await download_and_upload_to_supabase(temp_image_url, job_id, model['id'])
-
-                    # Debit credits via shared layer (per-model, with markup + ai_usage_logs)
-                    credits_service = get_credits_service()
-                    debit_result = await credits_service.debit_credits_for_replicate(
-                        user_id=request.user_id,
-                        workspace_id=request.workspace_id,
-                        operation_type="interior_design",
-                        model_name=model['id'],
-                        num_generations=1,
-                        job_id=job_id,
-                        metadata={
-                            'room_type': request.room_type,
-                            'style': request.style,
-                            'model_display_name': model['name'],
-                        }
-                    )
-
-                    cost = debit_result.get('billed_cost_usd', model.get('cost_per_generation', 0.0))
-                    if debit_result.get('success'):
-                        print(f"✅ {model['name']} completed + credits debited (${cost:.3f}, {debit_result.get('credits_debited', 0):.1f} credits)")
+                    if model.get("provider") == "gemini":
+                        # Gemini: call edge function directly — returns permanent URL, handles its own credits
+                        permanent_url = await generate_with_gemini_edge(
+                            enhanced_prompt, request.room_type, request.style,
+                            request.image, request.user_id, request.workspace_id,
+                        )
                     else:
-                        print(f"⚠️ {model['name']} completed but credit debit failed: {debit_result.get('error')}")
+                        # Generate with Replicate
+                        temp_image_url = await generate_with_replicate(
+                            model, enhanced_prompt, request.width, request.height,
+                            request.image, replicate_token, max_retries=3,
+                            room_type=request.room_type, style=request.style,
+                        )
+                        print(f"✅ {model['name']} generation completed, uploading to Supabase Storage...")
+                        permanent_url = await download_and_upload_to_supabase(temp_image_url, job_id, model['id'])
+
+                    cost = 0.0
+                    if model.get("provider") != "gemini":
+                        # Debit credits via shared layer (Replicate models only)
+                        # Gemini credits are handled internally by the edge function
+                        credits_service = get_credits_service()
+                        debit_result = await credits_service.debit_credits_for_replicate(
+                            user_id=request.user_id,
+                            workspace_id=request.workspace_id,
+                            operation_type="interior_design",
+                            model_name=model['id'],
+                            num_generations=1,
+                            job_id=job_id,
+                            metadata={
+                                'room_type': request.room_type,
+                                'style': request.style,
+                                'model_display_name': model['name'],
+                            }
+                        )
+                        cost = debit_result.get('billed_cost_usd', model.get('cost_per_generation', 0.0))
+                        if debit_result.get('success'):
+                            print(f"✅ {model['name']} completed + credits debited (${cost:.3f}, {debit_result.get('credits_debited', 0):.1f} credits)")
+                        else:
+                            print(f"⚠️ {model['name']} completed but credit debit failed: {debit_result.get('error')}")
+                    else:
+                        print(f"✅ {model['name']} completed (credits handled by edge function)")
 
                     await atomic_update_model_result(job_id, model['id'], True, permanent_url, cost, None)
                 except Exception as e:

@@ -56,7 +56,7 @@ class ResponseMetadata(BaseModel):
                 "processing_time": 245.5,
                 "timestamp": "2024-01-15T10:30:00.000Z",
                 "version": "1.0.0",
-                "endpoint": "/api/search/semantic"
+                "endpoint": "/api/rag/search"
             }
         }
 
