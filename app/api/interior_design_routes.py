@@ -94,9 +94,6 @@ TEXT_TO_IMAGE_MODELS = [
     {"id": "flux-dev", "name": "FLUX.1-dev", "provider": "replicate", "model": "black-forest-labs/flux-dev", "capability": "text-to-image", "cost_per_generation": 0.025},
     {"id": "playground-v2.5", "name": "Playground v2.5", "provider": "replicate", "model": "playgroundai/playground-v2.5-1024px-aesthetic", "version": "a45f82a1382bed5c7aeb861dac7c7d191b0fdf74d8d57c4a0e6ed7d4d0bf7d24", "capability": "text-to-image", "cost_per_generation": 0.01},
     {"id": "sd3", "name": "Stable Diffusion 3", "provider": "replicate", "model": "stability-ai/stable-diffusion-3", "capability": "text-to-image", "cost_per_generation": 0.055},
-    # SDXL interior model — text-to-image only, uses depth+ControlNet
-    {"id": "interior-design-sdxl", "name": "Interior Design SDXL", "provider": "replicate", "model": "rocketdigitalai/interior-design-sdxl", "capability": "text-to-image", "cost_per_generation": 0.14,
-     "input_schema": "sdxl_interior"},
 ]
 
 # Image-to-Image Models (for interior design transformation with reference images)
@@ -131,6 +128,12 @@ IMAGE_TO_IMAGE_MODELS = [
      "version": "4836eb257a4fb8b87bac9eacbef9292ee8e1a497398ab96207067403a4be2daf",
      "capability": "image-to-image", "status": "working", "cost_per_generation": 0.011,
      "input_schema": "stable_interiors"},
+    # SDXL interior — image-to-image (requires reference image for depth/ControlNet), uses versioned endpoint
+    {"id": "interior-design-sdxl", "name": "Interior Design SDXL", "provider": "replicate",
+     "model": "rocketdigitalai/interior-design-sdxl",
+     "version": "a3c091059a25590ce2d5ea13651fab63f447f21760e50c358d4b850e844f59ee",
+     "capability": "image-to-image", "status": "working", "cost_per_generation": 0.14,
+     "input_schema": "sdxl_interior"},
 ]
 
 # Combined list — Gemini always included first so it appears at the top of the grid
@@ -239,16 +242,18 @@ def _build_model_input(
         return data
 
     if schema == "sdxl_interior":
-        # rocketdigitalai/interior-design-sdxl: text-to-image, uses inference_steps not num_inference_steps
-        return {
+        # rocketdigitalai/interior-design-sdxl: image-to-image, requires image for depth/ControlNet
+        data = {
             "prompt": prompt,
-            "inference_steps": 60,
-            "guidance_scale": 7,
+            "num_inference_steps": 50,
+            "guidance_scale": 7.5,
             "depth_strength": 0.8,
             "promax_strength": 0.8,
-            "refiner_strength": 0.5,
-            "scheduler": "DPM++ 2M Karras",
+            "refiner_strength": 0.4,
         }
+        if image_url:
+            data["image"] = image_url
+        return data
 
     # Generic fallback — used by working models that do support these standard params
     data = {"prompt": prompt, "num_inference_steps": 25, "guidance_scale": 7.5}
@@ -579,11 +584,11 @@ async def create_interior_design(request: InteriorRequest):
         # User specified specific models
         models_to_use = [m for m in ALL_MODELS if m["id"] in request.models]
     elif request.image:
-        # Image-to-image: Use only working image-to-image models
-        models_to_use = [m for m in IMAGE_TO_IMAGE_MODELS if m.get("status") != "failing"]
+        # Image-to-image: Gemini first, then all working image-to-image models
+        models_to_use = [GEMINI_MODEL] + [m for m in IMAGE_TO_IMAGE_MODELS if m.get("status") != "failing"]
     else:
-        # Text-to-image: Use all text-to-image models
-        models_to_use = TEXT_TO_IMAGE_MODELS
+        # Text-to-image: Gemini first, then all text-to-image models
+        models_to_use = [GEMINI_MODEL] + TEXT_TO_IMAGE_MODELS
 
     # Build rich generation prompt
     enhanced_prompt = _build_generation_prompt(
