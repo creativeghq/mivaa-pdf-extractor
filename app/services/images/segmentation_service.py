@@ -141,19 +141,28 @@ class SegmentationService:
         prompt = await self._get_prompt()
 
         # Primary: HF Qwen3-VL
-        # resume_if_needed() is synchronous — runs in a thread to keep async loop free.
-        # First call when paused: ~60-90s warmup. Subsequent calls while warm: instant.
+        # 1. Quick status check (~1s) — is endpoint already running?
+        # 2. If not running: wait for full resume/warm-up (no timeout — can take 60-90s).
+        # 3. Only fall back to Anthropic on actual error (resume returned False or exception).
         if self.qwen_endpoint_token:
             try:
-                logger.info("Resuming Qwen endpoint if needed (may take ~60-90s on cold start)...")
-                resumed = await asyncio.to_thread(self.qwen_manager.resume_if_needed)
-                if resumed:
-                    zones = await self._segment_with_qwen(image_base64, prompt)
-                    self.qwen_manager.mark_used()
-                    elapsed = round((time.time() - start) * 1000)
-                    logger.info(f"✅ Segmentation (Qwen): {len(zones)} zones in {elapsed}ms")
-                    return zones
-                logger.warning("Qwen endpoint could not be resumed, falling back to Anthropic")
+                logger.info("Checking Qwen endpoint status...")
+                is_running = await asyncio.wait_for(
+                    asyncio.to_thread(self.qwen_manager.is_running),
+                    timeout=5.0,
+                )
+                if not is_running:
+                    logger.info("Qwen endpoint warming up — waiting until ready (may take 60-90s)...")
+                    resumed = await asyncio.to_thread(self.qwen_manager.resume_if_needed)
+                    if not resumed:
+                        raise RuntimeError("Qwen endpoint failed to resume")
+                zones = await self._segment_with_qwen(image_base64, prompt)
+                self.qwen_manager.mark_used()
+                elapsed = round((time.time() - start) * 1000)
+                logger.info(f"✅ Segmentation (Qwen): {len(zones)} zones in {elapsed}ms")
+                return zones
+            except asyncio.TimeoutError:
+                logger.warning("Qwen status check timed out (5s), falling back to Anthropic")
             except Exception as e:
                 logger.warning(f"Qwen segmentation failed, falling back to Anthropic: {e}")
 

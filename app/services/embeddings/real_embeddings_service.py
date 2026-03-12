@@ -1049,10 +1049,9 @@ class RealEmbeddingsService:
         """
         Generate visual embedding using Google SigLIP ViT-SO400M.
 
-        Uses transformers library directly instead of sentence-transformers
-        to avoid 'hidden_size' attribute error with SiglipConfig.
+        Uses cloud SLIG endpoint (HuggingFace) — no local model loading.
 
-        NOTE: Models should be pre-loaded using ensure_models_loaded() before calling this.
+        NOTE: Requires SLIG_ENDPOINT_URL and SLIG_ENDPOINT_TOKEN to be configured.
 
         Args:
             image_url: URL of image
@@ -1067,7 +1066,6 @@ class RealEmbeddingsService:
         start_time = time.time()
 
         try:
-            import torch
             import base64
             from PIL import Image
             import io

@@ -2117,7 +2117,6 @@ class PDFProcessor:
         """
         try:
             from PIL import Image
-            import torch
 
             # Load image
             if not os.path.exists(image_path):

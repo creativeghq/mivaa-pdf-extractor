@@ -133,6 +133,32 @@ class QwenEndpointManager:
         except Exception as e:
             logger.debug(f"Could not refresh endpoint URL: {e}")
     
+    def is_running(self) -> bool:
+        """
+        Quick non-blocking check: is the endpoint currently accepting requests?
+
+        Only does a single HF status fetch (~1s HTTP call). Does NOT trigger
+        resume or warmup — use resume_if_needed() for that.
+
+        Returns:
+            True if status == "running", False for any other state or error.
+        """
+        if not self._can_pause_resume:
+            return True  # no management available — assume running
+
+        endpoint = self._get_endpoint()
+        if not endpoint:
+            return False
+
+        try:
+            endpoint.fetch()
+            status = endpoint.status
+            logger.debug(f"Qwen endpoint status: {status}")
+            return status == "running"
+        except Exception as e:
+            logger.warning(f"Could not check Qwen endpoint status: {e}")
+            return False
+
     def resume_if_needed(self) -> bool:
         """
         Resume endpoint if it's paused or wait if initializing.
