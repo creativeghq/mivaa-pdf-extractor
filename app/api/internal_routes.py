@@ -14,6 +14,13 @@ Endpoints:
 - POST /api/internal/create-relationships/{job_id} - Create chunk-image and product-image relationships
 - POST /api/internal/extract-metadata/{job_id} - Extract product metadata using AI
 - POST /api/internal/generate-product-embeddings - Generate embeddings for products without them
+- POST /api/internal/regenerate-image-embeddings - Regenerate visual embeddings for existing images
+- POST /api/internal/reset-job/{job_id} - Reset a stuck/failed job back to initialized state
+- POST /api/internal/extract-entities - Match document entities to products
+- POST /api/internal/generate-entity-embeddings - Generate text embeddings for document entities
+- POST /api/internal/queue-understanding-embeddings - Queue Phase 2 understanding embeddings (Qwen→Voyage)
+- POST /api/internal/regenerate-text-embeddings - Generate text embeddings for chunks missing them
+- POST /api/internal/validate-pipeline/{job_id} - Audit pipeline completion status across all stages
 """
 
 from fastapi import APIRouter, HTTPException, Depends
@@ -27,7 +34,6 @@ from app.services.embeddings.real_embeddings_service import RealEmbeddingsServic
 from app.services.search.relevancy_service import RelevancyService
 from app.services.core.supabase_client import get_supabase_client, SupabaseClient
 from app.services.tracking.progress_tracker import ProgressTracker
-from app.services.core.async_queue_service import AsyncQueueService
 from app.models.ai_config import AIModelConfig, DEFAULT_AI_CONFIG
 
 logger = logging.getLogger(__name__)
@@ -835,7 +841,7 @@ async def generate_product_embeddings(
         logger.info(f"   Found {len(products)} products to process")
 
         # Initialize services
-        async_queue = AsyncQueueService()
+        embeddings_service = RealEmbeddingsService()
 
         products_processed = 0
         chunks_created = 0
@@ -863,13 +869,11 @@ async def generate_product_embeddings(
                     continue
 
                 # Check if product already has chunks with embeddings
-                # First check if chunks exist for this product
                 existing_chunks = supabase.client.table('document_chunks').select('id, text_embedding').eq(
                     'metadata->>product_id', product_id
                 ).execute()
 
                 if existing_chunks.data and len(existing_chunks.data) > 0:
-                    # Check if any of the chunks have embeddings
                     has_embeddings = any(chunk.get('text_embedding') is not None for chunk in existing_chunks.data)
                     if has_embeddings:
                         logger.info(f"   ⏭️ Skipping product {product_name} - already has embeddings")
@@ -883,7 +887,7 @@ async def generate_product_embeddings(
                 chunk_record = {
                     'document_id': document_id,
                     'workspace_id': request.workspace_id,
-                    'content': chunk_text, 
+                    'content': chunk_text,
                     'chunk_index': 0,
                     'metadata': {
                         'product_id': product_id,
@@ -900,17 +904,16 @@ async def generate_product_embeddings(
                     chunk_id = chunk_response.data[0]['id']
                     chunks_created += 1
 
-                    # Queue for embedding generation
-                    await async_queue.queue_ai_analysis_jobs(
-                        document_id=document_id,
-                        chunks=[{'id': chunk_id}],
-                        analysis_type='embedding_generation',
-                        priority=0
-                    )
+                    # Generate text embedding inline (Voyage AI)
+                    embedding = await embeddings_service.generate_text_embedding(chunk_text)
+                    if embedding:
+                        supabase.client.table('document_chunks').update({
+                            'text_embedding': embedding
+                        }).eq('id', chunk_id).execute()
+                        embeddings_queued += 1
 
-                    embeddings_queued += 1
                     products_processed += 1
-                    logger.info(f"   ✅ Queued embedding for product: {product_name}")
+                    logger.info(f"   ✅ Generated embedding for product: {product_name}")
 
             except Exception as e:
                 error_msg = f"Failed to process product {product.get('name', product.get('id'))}: {str(e)}"
@@ -1228,3 +1231,485 @@ async def regenerate_image_embeddings(
             }).eq('id', request.job_id).execute()
 
         raise HTTPException(status_code=500, detail=f"Failed to regenerate image embeddings: {str(e)}")
+
+
+# ============================================================================
+# JOB RESET
+# ============================================================================
+
+class ResetJobResponse(BaseModel):
+    """Response model for job reset."""
+    success: bool
+    message: str
+    job_id: str
+    previous_status: Optional[str]
+
+
+@router.post("/reset-job/{job_id}", response_model=ResetJobResponse)
+async def reset_job(
+    job_id: str,
+    supabase: SupabaseClient = Depends(get_supabase_client)
+):
+    """
+    Reset a stuck or failed processing job back to initialized state.
+
+    Clears error_message, resets progress to 0, and sets status back to
+    'initialized' so the job can be re-triggered from the admin panel.
+
+    Args:
+        job_id: Job ID to reset
+
+    Returns:
+        ResetJobResponse with previous status
+    """
+    try:
+        from datetime import datetime
+
+        # Fetch current status
+        job_resp = supabase.client.table('background_jobs').select('status').eq('id', job_id).single().execute()
+        if not job_resp.data:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+        previous_status = job_resp.data.get('status')
+
+        supabase.client.table('background_jobs').update({
+            'status': 'initialized',
+            'progress': 0,
+            'error_message': None,
+            'started_at': None,
+            'completed_at': None,
+            'updated_at': datetime.utcnow().isoformat()
+        }).eq('id', job_id).execute()
+
+        logger.info(f"✅ Reset job {job_id} from '{previous_status}' → 'initialized'")
+
+        return ResetJobResponse(
+            success=True,
+            message=f"Job reset from '{previous_status}' to 'initialized'",
+            job_id=job_id,
+            previous_status=previous_status
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Failed to reset job {job_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to reset job: {str(e)}")
+
+
+# ============================================================================
+# DOCUMENT ENTITY EXTRACTION
+# ============================================================================
+
+class ExtractEntitiesRequest(BaseModel):
+    """Request model for entity extraction."""
+    document_id: str
+    workspace_id: str
+
+
+class ExtractEntitiesResponse(BaseModel):
+    """Response model for entity extraction."""
+    success: bool
+    relationships_created: int
+    entities_processed: int
+    message: str
+
+
+@router.post("/extract-entities", response_model=ExtractEntitiesResponse)
+async def extract_entities(request: ExtractEntitiesRequest):
+    """
+    Match document entities to products for an already-processed document.
+
+    Runs DocumentEntityService.match_entities_to_products() which links
+    existing document_entities records to products by page overlap,
+    factory/manufacturer match, and name similarity.
+
+    Args:
+        request: document_id + workspace_id
+
+    Returns:
+        ExtractEntitiesResponse with match statistics
+    """
+    try:
+        from app.services.discovery.document_entity_service import DocumentEntityService
+
+        logger.info(f"🔗 Matching entities for document {request.document_id}")
+        entity_service = DocumentEntityService()
+        result = await entity_service.match_entities_to_products(
+            document_id=request.document_id,
+            workspace_id=request.workspace_id
+        )
+
+        relationships = result.get('relationships_created', 0)
+        entities = result.get('entities_processed', 0)
+        logger.info(f"✅ Entity matching complete: {relationships} relationships, {entities} entities")
+
+        return ExtractEntitiesResponse(
+            success=True,
+            relationships_created=relationships,
+            entities_processed=entities,
+            message=f"Matched {relationships} entity-product relationships from {entities} entities"
+        )
+
+    except Exception as e:
+        logger.error(f"❌ Entity extraction failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Entity extraction failed: {str(e)}")
+
+
+# ============================================================================
+# ENTITY EMBEDDING GENERATION
+# ============================================================================
+
+class GenerateEntityEmbeddingsRequest(BaseModel):
+    """Request model for generating entity embeddings."""
+    document_id: str
+    workspace_id: str
+
+
+class GenerateEntityEmbeddingsResponse(BaseModel):
+    """Response model for entity embedding generation."""
+    success: bool
+    embeddings_created: int
+    entities_processed: int
+    message: str
+
+
+@router.post("/generate-entity-embeddings", response_model=GenerateEntityEmbeddingsResponse)
+async def generate_entity_embeddings(request: GenerateEntityEmbeddingsRequest):
+    """
+    Generate text embeddings for all document entities.
+
+    Runs DocumentEntityService.generate_entity_embeddings() which creates
+    Voyage AI 1024D text embeddings for each entity and stores them in the
+    embeddings table with entity_type='entity'.
+
+    Args:
+        request: document_id + workspace_id
+
+    Returns:
+        GenerateEntityEmbeddingsResponse with counts
+    """
+    try:
+        from app.services.discovery.document_entity_service import DocumentEntityService
+
+        logger.info(f"🎨 Generating entity embeddings for document {request.document_id}")
+        entity_service = DocumentEntityService()
+        result = await entity_service.generate_entity_embeddings(
+            document_id=request.document_id,
+            workspace_id=request.workspace_id
+        )
+
+        created = result.get('embeddings_created', 0)
+        processed = result.get('entities_processed', 0)
+        logger.info(f"✅ Entity embeddings complete: {created} created for {processed} entities")
+
+        return GenerateEntityEmbeddingsResponse(
+            success=True,
+            embeddings_created=created,
+            entities_processed=processed,
+            message=f"Generated {created} embeddings for {processed} entities"
+        )
+
+    except Exception as e:
+        logger.error(f"❌ Entity embedding generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Entity embedding generation failed: {str(e)}")
+
+
+# ============================================================================
+# PHASE 2 UNDERSTANDING EMBEDDING QUEUE
+# ============================================================================
+
+class QueueUnderstandingEmbeddingsRequest(BaseModel):
+    """Request model for queuing Phase 2 understanding embeddings."""
+    document_id: str
+    workspace_id: str
+    priority: str = "normal"  # low, normal, high
+
+
+class QueueUnderstandingEmbeddingsResponse(BaseModel):
+    """Response model for queuing understanding embeddings."""
+    success: bool
+    job_id: str
+    message: str
+
+
+@router.post("/queue-understanding-embeddings", response_model=QueueUnderstandingEmbeddingsResponse)
+async def queue_understanding_embeddings(request: QueueUnderstandingEmbeddingsRequest):
+    """
+    Queue Phase 2 understanding embedding generation for a document.
+
+    Phase 2 runs Qwen3-VL vision analysis on document images, converts the
+    vision_analysis JSON to text, then generates 1024D Voyage AI embeddings
+    (understanding embeddings) for semantic spec-based search.
+
+    This is safe to re-run — it skips images that already have understanding embeddings.
+
+    Args:
+        request: document_id + workspace_id + priority
+
+    Returns:
+        QueueUnderstandingEmbeddingsResponse with queued job_id
+    """
+    try:
+        from app.services.embeddings.clip_embedding_job_service import CLIPEmbeddingJobService
+
+        logger.info(f"⚡ Queuing Phase 2 understanding embeddings for document {request.document_id}")
+        clip_service = CLIPEmbeddingJobService()
+        job_id = await clip_service.queue_clip_generation_job(
+            document_id=request.document_id,
+            workspace_id=request.workspace_id,
+            priority=request.priority
+        )
+
+        logger.info(f"✅ Queued Phase 2 job: {job_id}")
+
+        return QueueUnderstandingEmbeddingsResponse(
+            success=True,
+            job_id=job_id,
+            message=f"Queued Phase 2 understanding embedding job: {job_id}"
+        )
+
+    except Exception as e:
+        logger.error(f"❌ Failed to queue understanding embeddings: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to queue understanding embeddings: {str(e)}")
+
+
+# ============================================================================
+# TEXT EMBEDDING REGENERATION
+# ============================================================================
+
+class RegenerateTextEmbeddingsRequest(BaseModel):
+    """Request model for regenerating text embeddings."""
+    document_id: Optional[str] = None
+    workspace_id: str
+    chunk_ids: Optional[List[str]] = None  # If None, process all chunks missing embeddings
+    force_regenerate: bool = False
+
+
+class RegenerateTextEmbeddingsResponse(BaseModel):
+    """Response model for text embedding regeneration."""
+    success: bool
+    message: str
+    chunks_processed: int
+    embeddings_generated: int
+    skipped: int
+    errors: List[str] = []
+
+
+@router.post("/regenerate-text-embeddings", response_model=RegenerateTextEmbeddingsResponse)
+async def regenerate_text_embeddings(
+    request: RegenerateTextEmbeddingsRequest,
+    supabase: SupabaseClient = Depends(get_supabase_client)
+):
+    """
+    Generate Voyage AI text embeddings for document chunks that are missing them.
+
+    Fetches chunks with null text_embedding, generates 1024D Voyage AI embeddings
+    inline, and saves directly to document_chunks.text_embedding.
+
+    Args:
+        request: workspace_id, optional document_id/chunk_ids, force_regenerate flag
+
+    Returns:
+        RegenerateTextEmbeddingsResponse with counts
+    """
+    try:
+        from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+
+        logger.info(f"📝 Starting text embedding regeneration for workspace: {request.workspace_id}")
+
+        # Build query
+        query = supabase.client.table('document_chunks').select('id, content').eq('workspace_id', request.workspace_id)
+
+        if request.document_id:
+            query = query.eq('document_id', request.document_id)
+
+        if request.chunk_ids:
+            query = query.in_('id', request.chunk_ids)
+
+        if not request.force_regenerate:
+            query = query.is_('text_embedding', 'null')
+
+        response = query.execute()
+
+        if not response.data:
+            return RegenerateTextEmbeddingsResponse(
+                success=True,
+                message="No chunks found needing embeddings",
+                chunks_processed=0,
+                embeddings_generated=0,
+                skipped=0
+            )
+
+        chunks = response.data
+        logger.info(f"   Found {len(chunks)} chunks to embed")
+
+        embedding_service = RealEmbeddingsService()
+        chunks_processed = 0
+        embeddings_generated = 0
+        skipped = 0
+        errors = []
+
+        for chunk in chunks:
+            try:
+                content = chunk.get('content', '').strip()
+                if not content:
+                    skipped += 1
+                    continue
+
+                embedding = await embedding_service.generate_text_embedding(content)
+                if embedding:
+                    supabase.client.table('document_chunks').update({
+                        'text_embedding': embedding
+                    }).eq('id', chunk['id']).execute()
+                    embeddings_generated += 1
+                else:
+                    errors.append(f"No embedding returned for chunk {chunk['id']}")
+
+                chunks_processed += 1
+
+            except Exception as e:
+                error_msg = f"Failed chunk {chunk.get('id')}: {str(e)}"
+                logger.error(f"   ❌ {error_msg}")
+                errors.append(error_msg)
+
+        message = f"Generated {embeddings_generated} embeddings for {chunks_processed} chunks"
+        if skipped:
+            message += f", skipped {skipped} empty chunks"
+        if errors:
+            message += f" ({len(errors)} errors)"
+
+        logger.info(f"✅ Text embedding regeneration complete: {embeddings_generated} embeddings generated")
+
+        return RegenerateTextEmbeddingsResponse(
+            success=True,
+            message=message,
+            chunks_processed=chunks_processed,
+            embeddings_generated=embeddings_generated,
+            skipped=skipped,
+            errors=errors
+        )
+
+    except Exception as e:
+        logger.error(f"❌ Text embedding regeneration failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to regenerate text embeddings: {str(e)}")
+
+
+# ============================================================================
+# PIPELINE VALIDATION
+# ============================================================================
+
+class ValidatePipelineResponse(BaseModel):
+    """Response model for pipeline validation."""
+    success: bool
+    job_id: str
+    document_id: Optional[str]
+    status: str
+    stages_complete: Dict[str, Any]
+    issues: List[str]
+    recommendations: List[str]
+
+
+@router.post("/validate-pipeline/{job_id}", response_model=ValidatePipelineResponse)
+async def validate_pipeline(
+    job_id: str,
+    supabase: SupabaseClient = Depends(get_supabase_client)
+):
+    """
+    Audit pipeline completion status for a job.
+
+    Checks each pipeline stage by querying the relevant DB tables and
+    returns a summary of what's complete, what's missing, and what to fix.
+
+    Args:
+        job_id: Job ID to validate
+
+    Returns:
+        ValidatePipelineResponse with per-stage completion status and recommendations
+    """
+    try:
+        # Get job record
+        job_resp = supabase.client.table('background_jobs').select('*').eq('id', job_id).single().execute()
+        if not job_resp.data:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+        job = job_resp.data
+        document_id = job.get('document_id') or job.get('metadata', {}).get('document_id')
+        workspace_id = job.get('workspace_id')
+
+        stages = {}
+        issues = []
+        recommendations = []
+
+        if document_id:
+            # Check images classified/uploaded
+            images_resp = supabase.client.table('document_images').select('id, image_url, vision_analysis').eq(
+                'document_id', document_id
+            ).execute()
+            image_count = len(images_resp.data) if images_resp.data else 0
+            stages['images_in_db'] = image_count
+
+            # Check understanding embeddings (via vision_analysis presence)
+            if images_resp.data:
+                with_vision = sum(1 for img in images_resp.data if img.get('vision_analysis'))
+                stages['images_with_vision_analysis'] = with_vision
+                if with_vision < image_count:
+                    missing = image_count - with_vision
+                    issues.append(f"{missing} images missing vision_analysis (Phase 2 not complete)")
+                    recommendations.append("Run POST /api/internal/queue-understanding-embeddings")
+
+            # Check products
+            products_resp = supabase.client.table('products').select('id').eq(
+                'source_document_id', document_id
+            ).execute()
+            product_count = len(products_resp.data) if products_resp.data else 0
+            stages['products'] = product_count
+            if product_count == 0:
+                issues.append("No products detected")
+                recommendations.append("Re-run POST /api/internal/detect-products/{job_id}")
+
+            # Check chunks
+            chunks_resp = supabase.client.table('document_chunks').select('id, text_embedding').eq(
+                'document_id', document_id
+            ).execute()
+            chunk_count = len(chunks_resp.data) if chunks_resp.data else 0
+            stages['chunks'] = chunk_count
+            if chunk_count == 0:
+                issues.append("No text chunks created")
+                recommendations.append("Re-run POST /api/internal/create-chunks/{job_id}")
+            else:
+                chunks_missing_emb = sum(1 for c in chunks_resp.data if not c.get('text_embedding'))
+                stages['chunks_missing_text_embedding'] = chunks_missing_emb
+                if chunks_missing_emb > 0:
+                    issues.append(f"{chunks_missing_emb} chunks missing text embeddings")
+                    recommendations.append("Run POST /api/internal/regenerate-text-embeddings")
+
+            # Check entities
+            entities_resp = supabase.client.table('document_entities').select('id').eq(
+                'source_document_id', document_id
+            ).execute()
+            stages['entities'] = len(entities_resp.data) if entities_resp.data else 0
+
+        stages['job_status'] = job.get('status')
+        stages['job_progress'] = job.get('progress', 0)
+
+        if not issues:
+            recommendations.append("Pipeline looks complete — no action needed")
+
+        logger.info(f"✅ Pipeline validation for job {job_id}: {len(issues)} issues found")
+
+        return ValidatePipelineResponse(
+            success=True,
+            job_id=job_id,
+            document_id=document_id,
+            status=job.get('status', 'unknown'),
+            stages_complete=stages,
+            issues=issues,
+            recommendations=recommendations
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Pipeline validation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Pipeline validation failed: {str(e)}")

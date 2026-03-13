@@ -22,8 +22,8 @@ from app.services.tracking.checkpoint_recovery_service import checkpoint_recover
 from app.services.tracking.xml_import_stages import XmlImportStage, get_xml_import_progress
 from app.services.images.image_download_service import ImageDownloadService
 from app.services.images.image_processing_service import ImageProcessingService
-from app.services.images.real_embeddings_service import RealEmbeddingsService
-from app.services.images.clip_embedding_job_service import CLIPEmbeddingJobService
+from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+from app.services.embeddings.clip_embedding_job_service import CLIPEmbeddingJobService
 from app.services.chunking.unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
 import sentry_sdk  # ✅ NEW: Sentry integration
 
