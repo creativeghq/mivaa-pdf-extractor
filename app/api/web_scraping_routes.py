@@ -15,7 +15,6 @@ from datetime import datetime
 
 from app.services.integrations.web_scraping_service import WebScrapingService
 from app.services.core.supabase_client import get_supabase_client
-from app.services.core.async_queue_service import AsyncQueueService
 
 logger = logging.getLogger(__name__)
 
@@ -71,37 +70,44 @@ async def process_scraping_session(
     """
     Process a Firecrawl scraping session and create products.
 
-    This endpoint is called by the Edge Function (scrape-session-manager) when
-    scraping completes. It processes the session in the background using
-    ProductDiscoveryService.discover_products_from_text().
-
-    Args:
-        request: Process session request
-        background_tasks: FastAPI background tasks
-
-    Returns:
-        Processing status with job ID
+    Called by the Edge Function (scrape-session-manager) when scraping completes.
+    Creates a background job for tracking, then processes the session via
+    WebScrapingService which runs the full pipeline:
+      1. Product discovery (Claude/GPT from markdown)
+      2. Product creation with text embeddings (Voyage AI, inline)
+      3. Image download → classification (Qwen/Claude) → 5 SLIG embeddings
+      4. Phase 2: Qwen3-VL analysis → understanding embeddings (1024D)
     """
     try:
         logger.info(f"🚀 Starting scraping session processing: {request.session_id}")
 
-        # Initialize service
-        scraping_service = WebScrapingService(model=request.model)
+        supabase = get_supabase_client()
 
         # Validate session exists
-        supabase = get_supabase_client()
         session_response = supabase.client.table("scraping_sessions").select("*").eq("id", request.session_id).single().execute()
-
         if not session_response.data:
             raise HTTPException(status_code=404, detail=f"Scraping session not found: {request.session_id}")
 
         session = session_response.data
 
-        # Update session status to processing
+        # Initialize service
+        scraping_service = WebScrapingService(model=request.model)
+
+        # Create background job for tracking
+        job_id = await scraping_service.create_background_job(
+            session_id=request.session_id,
+            workspace_id=request.workspace_id,
+            categories=request.categories or ["products"]
+        )
+
+        # Link background job to session so edge function can track progress
         supabase.client.table("scraping_sessions").update({
             "status": "processing",
+            "background_job_id": job_id,
             "updated_at": datetime.utcnow().isoformat()
         }).eq("id", request.session_id).execute()
+
+        logger.info(f"✅ Created background job {job_id} for session {request.session_id}")
 
         # Process in background
         async def process_session_background():
@@ -109,7 +115,8 @@ async def process_scraping_session(
                 result = await scraping_service.process_scraping_session(
                     session_id=request.session_id,
                     workspace_id=request.workspace_id,
-                    categories=request.categories or ["products"]
+                    categories=request.categories or ["products"],
+                    job_id=job_id
                 )
                 logger.info(f"✅ Session processing complete: {result}")
             except Exception as e:
@@ -122,7 +129,7 @@ async def process_scraping_session(
             success=True,
             session_id=request.session_id,
             message="Session processing started in background",
-            job_id=None  # Job tracking via AsyncQueueService not yet implemented
+            job_id=job_id
         )
 
     except HTTPException:
@@ -138,17 +145,10 @@ async def get_session_status(
 ) -> SessionStatusResponse:
     """
     Get scraping session processing status.
-
-    Args:
-        session_id: Scraping session ID
-
-    Returns:
-        Session status with progress information
     """
     try:
         supabase = get_supabase_client()
 
-        # Fetch session
         response = supabase.client.table("scraping_sessions").select("*").eq("id", session_id).single().execute()
 
         if not response.data:
@@ -165,7 +165,7 @@ async def get_session_status(
             completed_pages=session.get("completed_pages"),
             failed_pages=session.get("failed_pages"),
             materials_processed=session.get("materials_processed"),
-            products_created=session.get("materials_processed"),  # Same as materials_processed for now
+            products_created=session.get("materials_processed"),
             error_message=session.get("scraping_config", {}).get("error") if isinstance(session.get("scraping_config"), dict) else None,
             created_at=session["created_at"],
             updated_at=session["updated_at"]
@@ -185,51 +185,48 @@ async def retry_session_processing(
 ) -> ProcessSessionResponse:
     """
     Retry processing a failed scraping session.
-
-    Args:
-        session_id: Scraping session ID
-        background_tasks: FastAPI background tasks
-
-    Returns:
-        Processing status
     """
     try:
         logger.info(f"🔄 Retrying scraping session: {session_id}")
 
         supabase = get_supabase_client()
 
-        # Fetch session
         response = supabase.client.table("scraping_sessions").select("*").eq("id", session_id).single().execute()
-
         if not response.data:
             raise HTTPException(status_code=404, detail=f"Scraping session not found: {session_id}")
 
         session = response.data
 
-        # Validate session can be retried
         if session["status"] not in ["failed", "completed"]:
             raise HTTPException(
                 status_code=400,
                 detail=f"Session status is '{session['status']}', can only retry 'failed' or 'completed' sessions"
             )
 
-        # Reset session status
+        workspace_id = session.get("workspace_id") or "default"
+        scraping_service = WebScrapingService(model="claude")
+
+        # Create a fresh background job for the retry
+        job_id = await scraping_service.create_background_job(
+            session_id=session_id,
+            workspace_id=workspace_id,
+            categories=["products"]
+        )
+
         supabase.client.table("scraping_sessions").update({
             "status": "processing",
             "materials_processed": 0,
+            "background_job_id": job_id,
             "updated_at": datetime.utcnow().isoformat()
         }).eq("id", session_id).execute()
 
-        # Initialize service
-        scraping_service = WebScrapingService(model="claude")
-
-        # Process in background
         async def retry_session_background():
             try:
                 result = await scraping_service.process_scraping_session(
                     session_id=session_id,
-                    workspace_id=session.get("workspace_id") or "default",
-                    categories=["products"]
+                    workspace_id=workspace_id,
+                    categories=["products"],
+                    job_id=job_id
                 )
                 logger.info(f"✅ Session retry complete: {result}")
             except Exception as e:
@@ -242,7 +239,8 @@ async def retry_session_processing(
         return ProcessSessionResponse(
             success=True,
             session_id=session_id,
-            message="Session retry started in background"
+            message="Session retry started in background",
+            job_id=job_id
         )
 
     except HTTPException:
@@ -250,5 +248,3 @@ async def retry_session_processing(
     except Exception as e:
         logger.error(f"Failed to retry session: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to retry session: {str(e)}")
-
-

@@ -5,13 +5,13 @@ This service:
 1. Fetches scraping sessions from Supabase
 2. Retrieves scraped markdown content from scraping_pages
 3. Uses ProductDiscoveryService.discover_products_from_text() to find products
-4. Creates products in the database
-5. Links images to products
-6. Updates session status
+4. Creates products in the database with chunks + text embeddings (inline, Voyage AI)
+5. Downloads, classifies, and generates 5 SLIG embeddings per image
+6. Queues Phase 2 understanding embeddings (Qwen3-VL → Voyage AI 1024D)
+7. Updates session status
 
 ARCHITECTURE:
 - Reuses existing product discovery pipeline (no changes to PDF/XML)
-- Integrates with AsyncQueueService for background processing
 - Uses same error handling patterns as PDF processing
 """
 
@@ -23,10 +23,11 @@ import json
 
 from app.services.discovery.product_discovery_service import ProductDiscoveryService
 from app.services.core.supabase_client import get_supabase_client
-from app.services.core.async_queue_service import AsyncQueueService
 from app.services.chunking.unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
 from app.services.images.image_download_service import ImageDownloadService
 from app.services.images.image_processing_service import ImageProcessingService
+from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+from app.services.embeddings.clip_embedding_job_service import CLIPEmbeddingJobService
 from app.utils.retry_utils import retry_async
 from app.utils.circuit_breaker import claude_breaker, gpt_breaker, CircuitBreakerError
 from app.utils.timeout_guard import with_timeout, TimeoutError, TimeoutConstants
@@ -58,8 +59,7 @@ class WebScrapingService:
     Service for processing Firecrawl scraping sessions and converting to products.
 
     Features:
-    - Background job processing via AsyncQueueService
-    - Progress tracking in background_jobs table
+    - Background job creation and progress tracking in background_jobs table
     - Retry logic and error handling
     - Circuit breaker for AI API calls
     """
@@ -84,7 +84,6 @@ class WebScrapingService:
         self.workspace_id = workspace_id
         self.supabase = get_supabase_client()
         self.discovery_service = ProductDiscoveryService(model=model)
-        self.async_queue = AsyncQueueService()
 
         # ✅ Initialize chunking service for quality scoring and smart chunking
         self.chunking_service = UnifiedChunkingService(ChunkingConfig(
@@ -94,9 +93,15 @@ class WebScrapingService:
             overlap_size=100
         ))
 
-        # ✅ NEW: Initialize image services for full image processing
+        # ✅ Initialize image services for full image processing
         self.image_downloader = ImageDownloadService()
         self.image_processor = None  # Lazy init with workspace_id
+
+        # ✅ Text embedding service (Voyage AI / OpenAI fallback) — used inline for chunks
+        self.embedding_service = RealEmbeddingsService()
+
+        # ✅ CLIP job service — queues Phase 2 (Qwen3-VL → understanding embeddings)
+        self.clip_job_service = CLIPEmbeddingJobService()
 
     def _get_image_processor(self, workspace_id: str) -> ImageProcessingService:
         """Get or create image processor for workspace."""
@@ -356,6 +361,21 @@ class WebScrapingService:
 
             processing_time = (datetime.now() - start_time).total_seconds() * 1000
 
+            # Collect chunk dedup metrics from chunking service
+            qm = self.chunking_service.quality_metrics
+            chunk_metrics = {
+                'total_chunks_created': qm.total_chunks_created,
+                'exact_duplicates_prevented': qm.exact_duplicates_prevented,
+                'low_quality_rejected': qm.low_quality_rejected,
+                'final_chunks': qm.final_chunks,
+            }
+            if qm.exact_duplicates_prevented > 0 or qm.low_quality_rejected > 0:
+                self.logger.info(
+                    f"   📊 Chunk dedup: {qm.total_chunks_created} created → "
+                    f"{qm.final_chunks} final "
+                    f"({qm.exact_duplicates_prevented} deduped, {qm.low_quality_rejected} rejected)"
+                )
+
             # Update job progress: Completed
             if job_id:
                 await self.update_job_progress(
@@ -365,7 +385,8 @@ class WebScrapingService:
                     metadata={
                         'products_created': len(created_products),
                         'processing_time_ms': processing_time,
-                        'completed_at': datetime.utcnow().isoformat()
+                        'completed_at': datetime.utcnow().isoformat(),
+                        'quality_metrics': chunk_metrics,
                     }
                 )
 
@@ -610,6 +631,10 @@ class WebScrapingService:
         created_products = []
 
         try:
+            # Pre-fetch all Firecrawl-extracted images for this session once
+            # (avoids N+1 queries per product)
+            firecrawl_images = await self._fetch_firecrawl_images_for_session(session_id)
+
             for product in catalog.products:
                 # Prepare product data
                 product_data = {
@@ -645,15 +670,15 @@ class WebScrapingService:
                         job_id=job_id
                     )
 
-                    # ✅ NEW: Extract and process images from product description
-                    if product.description:
-                        await self._process_product_images(
-                            product_id=product_id,
-                            product_name=product.name,
-                            content=product.description,
-                            workspace_id=workspace_id,
-                            job_id=job_id
-                        )
+                    # Process images: description-extracted + Firecrawl-extracted
+                    await self._process_product_images(
+                        product_id=product_id,
+                        product_name=product.name,
+                        content=product.description or "",
+                        workspace_id=workspace_id,
+                        job_id=job_id,
+                        extra_image_urls=firecrawl_images
+                    )
                 else:
                     self.logger.warning(f"   ⚠️ Failed to create product: {product.name}")
 
@@ -777,19 +802,87 @@ class WebScrapingService:
 
             if chunk_ids:
                 self.logger.info(f"   ✅ Created {len(chunk_ids)} chunks for product {product_name}")
-
-                # Queue for embedding generation (async)
-                async_queue = AsyncQueueService()
-                await async_queue.queue_ai_analysis_jobs(
-                    document_id=product_id,
-                    chunks=chunk_ids,
-                    analysis_type='embedding_generation',
-                    priority=0
-                )
+                # Generate text embeddings inline — the ai_analysis_queue has no active consumer
+                await self._generate_chunk_embeddings(chunk_ids)
 
         except Exception as e:
             self.logger.error(f"   ❌ Failed to create chunks for product {product_name}: {e}")
             # Don't raise - product is already created
+
+    async def _generate_chunk_embeddings(self, chunk_ids: List[Dict[str, str]]) -> None:
+        """
+        Generate Voyage AI text embeddings for chunks and save to document_chunks.text_embedding.
+
+        This runs inline because ai_analysis_queue has no active consumer. Matching the
+        same pattern as the PDF pipeline's /api/internal/create-chunks endpoint.
+
+        Args:
+            chunk_ids: List of dicts with 'id' key
+        """
+        embedded = 0
+        for item in chunk_ids:
+            chunk_id = item.get('id')
+            if not chunk_id:
+                continue
+            try:
+                # Fetch chunk content
+                result = self.supabase.client.table('document_chunks').select('content').eq('id', chunk_id).single().execute()
+                if not result.data:
+                    continue
+                content = result.data.get('content', '')
+                if not content:
+                    continue
+
+                # Generate embedding (Voyage AI voyage-3.5, fallback OpenAI)
+                embedding = await self.embedding_service.generate_text_embedding(content)
+                if embedding:
+                    self.supabase.client.table('document_chunks').update({
+                        'text_embedding': embedding
+                    }).eq('id', chunk_id).execute()
+                    embedded += 1
+            except Exception as e:
+                self.logger.warning(f"   ⚠️ Failed to embed chunk {chunk_id}: {e}")
+
+        self.logger.info(f"   ✅ Generated text embeddings for {embedded}/{len(chunk_ids)} chunks")
+
+    async def _fetch_firecrawl_images_for_session(self, session_id: str) -> List[str]:
+        """
+        Fetch all image URLs that Firecrawl explicitly extracted during scraping.
+
+        Firecrawl's structured extraction saves per-material image arrays to
+        scraped_materials_temp.material_data.images. These are higher-quality than
+        regex-extracted URLs from markdown text, so we always include them.
+
+        Args:
+            session_id: Scraping session ID
+
+        Returns:
+            Deduplicated list of image URLs found by Firecrawl
+        """
+        try:
+            response = self.supabase.client.table('scraped_materials_temp') \
+                .select('material_data') \
+                .eq('scraping_session_id', session_id) \
+                .execute()
+
+            if not response.data:
+                return []
+
+            urls = set()
+            for row in response.data:
+                material_data = row.get('material_data') or {}
+                images = material_data.get('images', [])
+                if isinstance(images, list):
+                    for url in images:
+                        if isinstance(url, str) and url.startswith('http') and len(url) > 10:
+                            urls.add(url.strip())
+
+            self.logger.info(f"   📷 Found {len(urls)} Firecrawl-extracted image URLs for session {session_id}")
+            return list(urls)
+
+        except Exception as e:
+            self.logger.warning(f"   ⚠️ Failed to fetch Firecrawl images for session {session_id}: {e}")
+            return []
 
     async def _process_product_images(
         self,
@@ -797,17 +890,19 @@ class WebScrapingService:
         product_name: str,
         content: str,
         workspace_id: str,
-        job_id: str = None
+        job_id: str = None,
+        extra_image_urls: Optional[List[str]] = None
     ) -> None:
         """
-        Extract, download, classify, and generate CLIP embeddings for product images.
+        Extract, download, classify, and generate embeddings for product images.
 
-        ✅ NEW: Full image processing pipeline for scraped products:
-        1. Extract image URLs from markdown content
+        Full image processing pipeline for scraped products:
+        1. Merge URLs from markdown text + Firecrawl-extracted images (extra_image_urls)
         2. Download images to Supabase Storage
         3. Classify images (material vs non-material) using Qwen/Claude
-        4. Generate CLIP embeddings for ALL images (for search and agent)
+        4. Generate 5 SLIG embeddings per image (visual, color, texture, style, material — 768D)
         5. Save to document_images with embeddings
+        6. Queue Phase 2: Qwen3-VL analysis → understanding embedding (1024D)
 
         Args:
             product_id: Product ID
@@ -815,10 +910,23 @@ class WebScrapingService:
             content: Product description/content with potential image URLs
             workspace_id: Workspace ID
             job_id: Job ID for source tracking
+            extra_image_urls: Additional URLs from Firecrawl's structured extraction
         """
         try:
-            # Step 1: Extract image URLs from markdown
-            image_urls = self._extract_image_urls_from_markdown(content)
+            # Step 1: Merge description-extracted URLs with Firecrawl-extracted URLs
+            description_urls = self._extract_image_urls_from_markdown(content)
+            firecrawl_urls = extra_image_urls or []
+
+            # Deduplicate while preserving order (Firecrawl images first — higher quality)
+            seen = set()
+            image_urls = []
+            for url in firecrawl_urls + description_urls:
+                if url not in seen:
+                    seen.add(url)
+                    image_urls.append(url)
+
+            if firecrawl_urls:
+                self.logger.info(f"   📷 Merged {len(firecrawl_urls)} Firecrawl + {len(description_urls)} description URLs → {len(image_urls)} unique")
 
             if not image_urls:
                 self.logger.info(f"   📷 No images found in content for {product_name}")
@@ -894,7 +1002,22 @@ class WebScrapingService:
                     job_id=job_id  # Track AI cost per job
                 )
 
-                self.logger.info(f"   ✅ Saved {result.get('images_saved', 0)} images with {result.get('clip_embeddings_generated', 0)} CLIP embeddings")
+                images_saved = result.get('images_saved', 0)
+                self.logger.info(f"   ✅ Saved {images_saved} images with {result.get('clip_embeddings_generated', 0)} SLIG embeddings")
+
+                # Phase 2: Queue Qwen3-VL analysis → understanding embeddings (1024D via Voyage AI)
+                # This runs in background — picks up images saved above and generates
+                # vision_analysis JSON + understanding embedding for the 7th vector type
+                if images_saved > 0:
+                    try:
+                        phase2_job_id = await self.clip_job_service.queue_clip_generation_job(
+                            document_id=product_id,
+                            workspace_id=workspace_id,
+                            priority="normal"
+                        )
+                        self.logger.info(f"   🧠 Queued Phase 2 understanding embeddings job {phase2_job_id} for {product_name}")
+                    except Exception as phase2_err:
+                        self.logger.warning(f"   ⚠️ Phase 2 queue failed (non-critical): {phase2_err}")
 
                 # Create product-image relationships
                 await self._link_images_to_product(

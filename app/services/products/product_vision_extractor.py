@@ -130,42 +130,42 @@ class ProductVisionExtractor:
     ) -> List[ProductVisionResult]:
         """
         Extract product information from a list of extracted PDF images.
-        
+
         Args:
             extracted_images: List of image dictionaries with 'path', 'page_number', etc.
             document_context: Optional context about the document (catalog name, brand, etc.)
-            
+
         Returns:
-            List of ProductVisionResult objects
+            List of ProductVisionResult objects (may include multiple per page for catalogs)
         """
         products = []
-        
+
         for image_info in extracted_images:
             try:
                 image_path = image_info.get('path')
                 if not image_path:
                     continue
-                
+
                 # Read image
                 with open(image_path, 'rb') as f:
                     image_data = f.read()
                     image_base64 = base64.b64encode(image_data).decode('utf-8')
-                
-                # Analyze with Qwen3-VL Vision
-                product_info = await self._analyze_product_image(
+
+                # Analyze with Qwen3-VL Vision — may return multiple products per page
+                page_products = await self._analyze_product_image(
                     image_base64=image_base64,
                     page_number=image_info.get('page_number', 1),
                     context=document_context
                 )
-                
-                if product_info:
-                    products.append(product_info)
-                    self.logger.info(f"✅ Extracted product: {product_info.product_name} (page {product_info.page_number})")
-                
+
+                if page_products:
+                    products.extend(page_products)
+                    self.logger.info(f"✅ Extracted {len(page_products)} product(s) from page {image_info.get('page_number', 1)}: {[p.product_name for p in page_products]}")
+
             except Exception as e:
                 self.logger.error(f"Failed to extract product from image: {e}")
                 continue
-        
+
         return products
     
     async def _analyze_product_image(
@@ -173,10 +173,11 @@ class ProductVisionExtractor:
         image_base64: str,
         page_number: int,
         context: Optional[Dict[str, Any]] = None
-    ) -> Optional[ProductVisionResult]:
+    ) -> List[ProductVisionResult]:
         """
-        Analyze a single image for product information using Qwen3-VL Vision.
-        
+        Analyze a single image for all products using Qwen3-VL Vision.
+        Catalog pages may contain multiple products — all are returned.
+
         Uses a specialized prompt optimized for product catalog extraction.
         """
         try:
@@ -186,7 +187,7 @@ class ProductVisionExtractor:
             HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY", "")
             if not HUGGINGFACE_API_KEY:
                 self.logger.warning("HUGGINGFACE_API_KEY not set - skipping vision analysis")
-                return None
+                return []
             
             # Load prompt from database (image_analysis/products for vision-based extraction)
             db_prompt = await self._load_prompt_from_database(stage="image_analysis", category="products")
@@ -248,7 +249,7 @@ class ProductVisionExtractor:
                 
                 if response.status_code != 200:
                     self.logger.error(f"Qwen API error {response.status_code}: {response.text}")
-                    return None
+                    return []
                 
                 result = response.json()
                 content = result["choices"][0]["message"]["content"]
@@ -266,37 +267,39 @@ class ProductVisionExtractor:
                 # Check if content is empty
                 if not content:
                     self.logger.warning("Empty response from vision API")
-                    return None
+                    return []
 
                 analysis = json.loads(content)
-                
-                # Extract first product (or combine if multiple)
+
+                # Extract all products found on the page
                 products_data = analysis.get("products", [])
                 if not products_data:
-                    return None
-                
-                # For now, return the first product
-                # TODO: Handle multiple products per page
-                product_data = products_data[0]
-                
-                return ProductVisionResult(
-                    product_name=product_data.get("product_name", "Unknown"),
-                    product_code=product_data.get("product_code"),
-                    dimensions=product_data.get("dimensions"),
-                    colors=product_data.get("colors", []),
-                    materials=product_data.get("materials", []),
-                    finish=product_data.get("finish"),
-                    pattern=product_data.get("pattern"),
-                    designer=product_data.get("designer"),
-                    collection=product_data.get("collection"),
-                    page_number=page_number,
-                    confidence=product_data.get("confidence", 0.0),
-                    raw_analysis=analysis
-                )
+                    return []
+
+                results = []
+                for product_data in products_data:
+                    if not product_data or not isinstance(product_data, dict):
+                        continue
+                    results.append(ProductVisionResult(
+                        product_name=product_data.get("product_name", "Unknown"),
+                        product_code=product_data.get("product_code"),
+                        dimensions=product_data.get("dimensions"),
+                        colors=product_data.get("colors", []),
+                        materials=product_data.get("materials", []),
+                        finish=product_data.get("finish"),
+                        pattern=product_data.get("pattern"),
+                        designer=product_data.get("designer"),
+                        collection=product_data.get("collection"),
+                        page_number=page_number,
+                        confidence=product_data.get("confidence", 0.0),
+                        raw_analysis=analysis
+                    ))
+
+                return results
                 
         except Exception as e:
             self.logger.error(f"Product vision analysis failed: {e}")
-            return None
+            return []
         # NOTE: Removed between-batch auto_pause - endpoints pause only at full job completion
 
     async def enrich_existing_products(

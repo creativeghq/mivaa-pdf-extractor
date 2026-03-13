@@ -52,23 +52,37 @@ class ChunkTypeClassificationService:
         
     async def classify_chunk(self, content: str) -> ChunkClassificationResult:
         """
-        Classify a single chunk and extract structured metadata
-        
+        Classify a single chunk and extract structured metadata.
+
+        Uses pattern matching first. For low-confidence results (SUPPORTING_CONTENT
+        or UNCLASSIFIED), falls back to Qwen for better accuracy.
+
         Args:
             content: The text content of the chunk
-            
+
         Returns:
             ChunkClassificationResult with type, confidence, metadata, and reasoning
         """
         logger.info(f"🎯 Classifying chunk with {len(content)} characters")
-        
+
         try:
-            # Analyze content patterns and structure
+            # Primary: pattern-based classification (fast, no API cost)
             classification = self._analyze_content_patterns(content)
-            
-            # Extract structured metadata based on classification
+
+            # For ambiguous cases, upgrade with Qwen if endpoint is available
+            is_ambiguous = (
+                classification['chunk_type'] in (ChunkType.SUPPORTING_CONTENT, ChunkType.UNCLASSIFIED)
+                and len(content) >= 50  # Not worth LLM call for tiny chunks
+            )
+            if is_ambiguous:
+                qwen_result = await self._classify_with_qwen(content)
+                if qwen_result and qwen_result.confidence > classification['confidence']:
+                    logger.info(f"   🤖 Qwen upgraded classification: {classification['chunk_type'].value} → {qwen_result.chunk_type.value} ({qwen_result.confidence:.2f})")
+                    return qwen_result
+
+            # Extract structured metadata based on final classification
             metadata = self._extract_structured_metadata(content, classification['chunk_type'])
-            
+
             return ChunkClassificationResult(
                 chunk_type=classification['chunk_type'],
                 confidence=classification['confidence'],
@@ -77,14 +91,96 @@ class ChunkTypeClassificationService:
             )
         except Exception as error:
             logger.error(f"❌ Failed to classify chunk: {error}")
-            
-            # Return default classification on error
+
             return ChunkClassificationResult(
                 chunk_type=ChunkType.UNCLASSIFIED,
                 confidence=0.0,
                 metadata={},
                 reasoning=f"Classification failed: {error}"
             )
+
+    async def _classify_with_qwen(self, content: str) -> Optional[ChunkClassificationResult]:
+        """
+        Use Qwen to classify chunks that pattern matching couldn't confidently resolve.
+        Returns None if Qwen endpoint is unavailable (caller keeps pattern result).
+        """
+        try:
+            import json
+            import httpx
+            from app.config import settings as app_settings
+
+            qwen_config = app_settings.get_qwen_config()
+            if not qwen_config.get("enabled") or not qwen_config.get("endpoint_url"):
+                return None
+
+            chunk_types = ", ".join(ct.value for ct in ChunkType if ct != ChunkType.UNCLASSIFIED)
+            system_prompt = f"""You are a document chunk classifier for a material catalog platform.
+Classify the given text into exactly one of these types: {chunk_types}
+
+Rules:
+- product_description: describes a specific product (name, features, colors, sizes, finishes)
+- technical_specs: measurements, dimensions, technical properties, installation data
+- visual_showcase: describes aesthetics, visual appearance, mood, atmosphere
+- designer_story: about a designer, studio, creative process, or inspiration
+- collection_overview: introduces a product collection, range, or theme
+- supporting_content: general brand/company text, marketing copy, introductory content
+- index_content: table of contents, page numbers, navigation
+- sustainability_info: environmental, eco, recycled, carbon, sustainability
+- certification_info: ISO, CE, certifications, standards compliance
+
+Respond with ONLY this JSON: {{"chunk_type": "<type>", "confidence": <0.0-1.0>, "reasoning": "<brief>"}}"""
+
+            async with httpx.AsyncClient(timeout=12.0) as http:
+                response = await http.post(
+                    qwen_config["endpoint_url"],
+                    headers={
+                        "Authorization": f"Bearer {qwen_config['endpoint_token']}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": qwen_config["model"],
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": f"Classify this chunk:\n\n{content[:1500]}"},
+                        ],
+                        "max_tokens": 128,
+                        "temperature": 0.1,
+                    },
+                )
+
+            if response.status_code != 200:
+                return None
+
+            raw = response.json()["choices"][0]["message"]["content"].strip()
+            # Strip markdown code fences
+            if raw.startswith("```json"):
+                raw = raw[7:]
+            if raw.startswith("```"):
+                raw = raw[3:]
+            if raw.endswith("```"):
+                raw = raw[:-3]
+
+            data = json.loads(raw.strip())
+            chunk_type_str = data.get("chunk_type", "")
+            confidence = float(data.get("confidence", 0.0))
+
+            # Map string back to enum
+            try:
+                chunk_type = ChunkType(chunk_type_str)
+            except ValueError:
+                return None
+
+            metadata = self._extract_structured_metadata(content, chunk_type)
+            return ChunkClassificationResult(
+                chunk_type=chunk_type,
+                confidence=confidence,
+                metadata=metadata,
+                reasoning=data.get("reasoning", "Qwen classification")
+            )
+
+        except Exception as e:
+            logger.debug(f"Qwen chunk classification skipped: {e}")
+            return None
     
     async def classify_chunks_batch(self, chunks: List[Dict[str, str]]) -> List[ChunkClassificationResult]:
         """

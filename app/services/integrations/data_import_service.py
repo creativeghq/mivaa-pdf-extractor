@@ -6,7 +6,9 @@ Orchestrates the processing of XML import jobs:
 - Image downloads (5 concurrent)
 - Metadata extraction
 - Product normalization
-- Queue for product creation pipeline
+- Chunking + inline text embeddings (Voyage AI)
+- Image classification + SLIG embeddings (Phase 1)
+- Understanding embeddings via Qwen3-VL (Phase 2, queued)
 - Checkpoint recovery
 - Real-time progress updates
 """
@@ -16,11 +18,12 @@ import asyncio
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 from app.services.core.supabase_client import get_supabase_client
-from app.services.core.async_queue_service import AsyncQueueService
 from app.services.tracking.checkpoint_recovery_service import checkpoint_recovery_service, ProcessingStage
 from app.services.tracking.xml_import_stages import XmlImportStage, get_xml_import_progress
 from app.services.images.image_download_service import ImageDownloadService
 from app.services.images.image_processing_service import ImageProcessingService
+from app.services.images.real_embeddings_service import RealEmbeddingsService
+from app.services.images.clip_embedding_job_service import CLIPEmbeddingJobService
 from app.services.chunking.unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
 import sentry_sdk  # ✅ NEW: Sentry integration
 
@@ -33,7 +36,6 @@ class DataImportService:
     def __init__(self, workspace_id: str = None):
         supabase_wrapper = get_supabase_client()
         self.supabase = supabase_wrapper.client
-        self.async_queue = AsyncQueueService()
         self.image_downloader = ImageDownloadService()
         self.batch_size = 10  # Process 10 products at a time
         self.max_concurrent_images = 5  # Download 5 images concurrently
@@ -49,6 +51,10 @@ class DataImportService:
 
         # ✅ NEW: Image processor for classification and CLIP embeddings (lazy init)
         self.image_processor = None
+
+        # Embedding services for inline generation
+        self.embedding_service = RealEmbeddingsService()
+        self.clip_job_service = CLIPEmbeddingJobService()
 
     def _get_image_processor(self, workspace_id: str) -> ImageProcessingService:
         """Get or create image processor for workspace."""
@@ -225,6 +231,21 @@ class DataImportService:
                     failed_products=failed_count
                 )
 
+                # Collect chunk dedup metrics from chunking service
+                qm = self.chunking_service.quality_metrics
+                chunk_metrics = {
+                    'total_chunks_created': qm.total_chunks_created,
+                    'exact_duplicates_prevented': qm.exact_duplicates_prevented,
+                    'low_quality_rejected': qm.low_quality_rejected,
+                    'final_chunks': qm.final_chunks,
+                }
+                if qm.exact_duplicates_prevented > 0 or qm.low_quality_rejected > 0:
+                    logger.info(
+                        f"   📊 Chunk dedup: {qm.total_chunks_created} created → "
+                        f"{qm.final_chunks} final "
+                        f"({qm.exact_duplicates_prevented} deduped, {qm.low_quality_rejected} rejected)"
+                    )
+
                 # 🆕 Update background_jobs to 'completed'
                 await self._update_background_job_status(
                     job_id=job_id,
@@ -235,7 +256,8 @@ class DataImportService:
                         'total_products': total_products,
                         'processed': processed_count,
                         'failed': failed_count,
-                        'completion_rate': (processed_count / total_products * 100) if total_products > 0 else 0
+                        'completion_rate': (processed_count / total_products * 100) if total_products > 0 else 0,
+                        'quality_metrics': chunk_metrics,
                     }
                 )
 
@@ -599,6 +621,18 @@ class DataImportService:
 
                 logger.info(f"   ✅ Saved {result.get('images_saved', 0)} images with {result.get('clip_embeddings_generated', 0)} CLIP embeddings")
 
+                # Phase 2: Queue understanding embeddings (Qwen3-VL → Voyage AI 1024D)
+                try:
+                    phase2_job_id = await self.clip_job_service.queue_clip_generation_job(
+                        document_id=product_id,
+                        workspace_id=workspace_id,
+                        priority="normal"
+                    )
+                    if phase2_job_id:
+                        logger.info(f"   🔬 Queued Phase 2 understanding embeddings: job {phase2_job_id}")
+                except Exception as e:
+                    logger.warning(f"   ⚠️ Failed to queue Phase 2 for product {product_id}: {e}")
+
                 # Get saved image IDs for associations
                 saved_response = self.supabase.client.table('document_images')\
                     .select('id')\
@@ -752,17 +786,32 @@ class DataImportService:
             if chunk_ids:
                 logger.info(f"✅ Created {len(chunk_ids)} chunks for product {product_name}")
 
-                # Queue for embedding generation (async)
-                await self.async_queue.queue_ai_analysis_jobs(
-                    document_id=product_id,
-                    chunks=chunk_ids,
-                    analysis_type='embedding_generation',
-                    priority=0
-                )
+                # Generate text embeddings inline (ai_analysis_queue has no consumer)
+                await self._generate_chunk_embeddings(chunk_ids)
 
         except Exception as e:
             logger.error(f"❌ Failed to queue text processing for product {product_id}: {e}")
             # Don't raise - product is already created
+
+    async def _generate_chunk_embeddings(self, chunk_ids: list) -> None:
+        """Generate Voyage AI text embeddings for chunks inline."""
+        for chunk_ref in chunk_ids:
+            chunk_id = chunk_ref['id']
+            try:
+                chunk_response = self.supabase.table('document_chunks').select('content').eq('id', chunk_id).single().execute()
+                if not chunk_response.data:
+                    continue
+                content = chunk_response.data.get('content', '')
+                if not content:
+                    continue
+                embedding = await self.embedding_service.generate_text_embedding(content)
+                if embedding:
+                    self.supabase.table('document_chunks').update({
+                        'text_embedding': embedding
+                    }).eq('id', chunk_id).execute()
+                    logger.info(f"✅ Generated text embedding for chunk {chunk_id}")
+            except Exception as e:
+                logger.error(f"Failed to generate text embedding for chunk {chunk_id}: {e}")
 
     async def _get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get job details from database."""

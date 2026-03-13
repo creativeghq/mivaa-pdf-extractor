@@ -391,7 +391,7 @@ async def generate_with_gemini_edge(
     async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(
             f"{supabase_url}/functions/v1/generate-interior-gemini",
-            headers={"Authorization": f"Bearer {service_role_key}", "Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer {service_role_key}", "apikey": service_role_key, "Content-Type": "application/json"},
             json=body,
         )
         if resp.status_code != 200:

@@ -1048,10 +1048,58 @@ class UnifiedSearchService:
             self.logger.error(f"Material type search failed: {e}")
             return []
 
+    async def _parse_query_with_qwen(self, query: str, system_prompt: str) -> Optional[Dict[str, Any]]:
+        """
+        Try to parse search query using the Qwen endpoint (zero marginal cost when already running).
+        Returns parsed dict or raises on failure (caller falls back to GPT-4o-mini).
+        """
+        import json
+        import httpx
+        from app.config import get_settings
+
+        settings = get_settings()
+        qwen_config = settings.get_qwen_config()
+
+        if not qwen_config.get("enabled") or not qwen_config.get("endpoint_url"):
+            raise ValueError("Qwen endpoint not configured or disabled")
+
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            response = await http.post(
+                qwen_config["endpoint_url"],
+                headers={
+                    "Authorization": f"Bearer {qwen_config['endpoint_token']}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": qwen_config["model"],
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"Parse this query: {query}"},
+                    ],
+                    "max_tokens": 512,
+                    "temperature": 0.1,
+                },
+            )
+
+        if response.status_code != 200:
+            raise ValueError(f"Qwen endpoint error: {response.status_code}")
+
+        content = response.json()["choices"][0]["message"]["content"].strip()
+
+        # Strip markdown code fences (Qwen often wraps JSON in ```json ... ```)
+        if content.startswith("```json"):
+            content = content[7:]
+        if content.startswith("```"):
+            content = content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+
+        return json.loads(content.strip())
+
     async def _parse_query_with_ai(self, query: str) -> tuple[str, Dict[str, Any], str, Dict[str, float]]:
         """
-        🧠 Parse natural language query using GPT-4o-mini to extract structured filters
-        and select dynamic weight profile based on detected query intent.
+        🧠 Parse natural language query using Qwen (primary) or GPT-4o-mini (fallback)
+        to extract structured filters and select dynamic weight profile.
 
         This is the PREPROCESSING step that runs BEFORE multi-strategy search.
 
@@ -1064,8 +1112,6 @@ class UnifiedSearchService:
             - filters: Extracted structured filters (e.g., {"material_type": "ceramic tiles", ...})
             - weight_profile: Name of selected weight profile (e.g., "color_finish")
             - dynamic_weights: Dict of 7-vector weights for multi-vector fusion
-
-        Cost: ~$0.0001 per query (GPT-4o-mini)
         """
         import time
         start_time = time.time()
@@ -1074,16 +1120,7 @@ class UnifiedSearchService:
             import json
             from app.services.core.ai_call_logger import AICallLogger
 
-            # Use centralized AI client service
-            ai_service = get_ai_client_service()
-            client = ai_service.openai_async
-
-            # Call GPT-4o-mini to parse query
-            response = await client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{
-                    "role": "system",
-                    "content": """You are a material search query parser. Analyze the query and determine if it's:
+            system_prompt = """You are a material search query parser. Analyze the query and determine if it's:
 1. A PRODUCT NAME search (e.g., "MAISON by ONSET", "NOVA collection", "LOG by ALT Design")
 2. A DESCRIPTIVE search (e.g., "waterproof ceramic tiles for outdoor patio")
 
@@ -1116,49 +1153,58 @@ IMPORTANT RULES:
 3. pattern is separate from material_type - "wood pattern" is a pattern, not necessarily wood material.
 
 Return ONLY valid JSON. Use null for missing fields."""
-                }, {
-                    "role": "user",
-                    "content": f"Parse this query: {query}"
-                }],
-                response_format={"type": "json_object"},
-                temperature=0.3  # Low temperature for consistent parsing
-            )
 
-            # Parse response
-            parsed_data = json.loads(response.choices[0].message.content)
+            # Primary: try Qwen (zero marginal cost when endpoint already running)
+            parsed_data = None
+            model_used = "qwen"
+            try:
+                parsed_data = await self._parse_query_with_qwen(query, system_prompt)
+                self.logger.debug(f"🤖 Query parsed with Qwen")
+            except Exception as qwen_err:
+                self.logger.debug(f"Qwen unavailable ({qwen_err}), falling back to GPT-4o-mini")
 
-            # Log GPT-4o-mini query understanding call
-            ai_logger = AICallLogger()
-            input_tokens = response.usage.prompt_tokens if hasattr(response, 'usage') else 0
-            output_tokens = response.usage.completion_tokens if hasattr(response, 'usage') else 0
+            # Fallback: GPT-4o-mini
+            if parsed_data is None:
+                model_used = "gpt-4o-mini"
+                ai_service = get_ai_client_service()
+                client = ai_service.openai_async
+                response = await client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"Parse this query: {query}"},
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.1,
+                )
+                parsed_data = json.loads(response.choices[0].message.content)
 
-            # GPT-4o-mini pricing: $0.15/1M input, $0.60/1M output
-            cost = (input_tokens / 1_000_000) * 0.15 + (output_tokens / 1_000_000) * 0.60
-            latency_ms = int((time.time() - start_time) * 1000)
+                # Log cost (GPT-4o-mini pricing: $0.15/1M input, $0.60/1M output)
+                ai_logger = AICallLogger()
+                input_tokens = response.usage.prompt_tokens if hasattr(response, 'usage') else 0
+                output_tokens = response.usage.completion_tokens if hasattr(response, 'usage') else 0
+                latency_ms = int((time.time() - start_time) * 1000)
+                await ai_logger.log_gpt_call(
+                    task="query_understanding",
+                    model="gpt-4o-mini",
+                    response=response,
+                    latency_ms=latency_ms,
+                    confidence_score=0.90,
+                    confidence_breakdown={
+                        "model_confidence": 0.92,
+                        "completeness": 0.95,
+                        "consistency": 0.88,
+                        "validation": 0.85
+                    },
+                    action="use_ai_result",
+                    request_data={
+                        "query": query,
+                        "parsed_fields": {k: v for k, v in parsed_data.items() if v is not None and v != [] and v != ""}
+                    }
+                )
 
             # Select dynamic weight profile based on parsed query intent
             profile_name, dynamic_weights = self._select_weight_profile(parsed_data)
-
-            await ai_logger.log_gpt_call(
-                task="query_understanding",
-                model="gpt-4o-mini",
-                response=response,
-                latency_ms=latency_ms,
-                confidence_score=0.90,
-                confidence_breakdown={
-                    "model_confidence": 0.92,
-                    "completeness": 0.95,
-                    "consistency": 0.88,
-                    "validation": 0.85
-                },
-                action="use_ai_result",
-                request_data={
-                    "query": query,
-                    "weight_profile": profile_name,
-                    "dynamic_weights": dynamic_weights,
-                    "parsed_fields": {k: v for k, v in parsed_data.items() if v is not None and v != [] and v != ""}
-                }
-            )
 
             # Check if this is a product name search
             if parsed_data.get("is_product_name") or parsed_data.get("product_name"):
@@ -1224,7 +1270,7 @@ Return ONLY valid JSON. Use null for missing fields."""
                     else:
                         filters[db_key] = value
 
-            self.logger.info(f"🧠 Query parsed: '{query}' → visual_query='{visual_query}', profile='{profile_name}', filters={filters}")
+            self.logger.info(f"🧠 Query parsed [{model_used}]: '{query}' → visual_query='{visual_query}', profile='{profile_name}', filters={filters}")
 
             return visual_query, filters, profile_name, dynamic_weights
 
