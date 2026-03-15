@@ -917,13 +917,6 @@ async def reclassify_image(
 
         final_classification = primary_classification
 
-        # Validate with secondary model if needed
-        if force_validation or primary_classification.get('confidence', 0) < 0.6:
-            logger.info("🔍 Running validation with secondary model")
-            # You can add Claude or Qwen-32B validation here
-            # For now, we'll use the primary result
-            pass
-
         # Update database with new classification
         is_material = final_classification.get('is_material', False)
         new_category = 'product' if is_material else 'general'

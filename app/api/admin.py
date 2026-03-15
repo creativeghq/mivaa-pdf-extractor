@@ -1332,12 +1332,7 @@ async def reprocess_image_ocr(
             }
             
             # Step 7: Find potential product associations
-            # (This is a simplified version - you can enhance with more sophisticated matching)
             products_associated = 0
-            if extracted_text:
-                # Search for products that might match the OCR text
-                # This is a placeholder - implement your product matching logic
-                pass
             
             return {
                 'success': True,

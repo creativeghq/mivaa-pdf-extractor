@@ -6,8 +6,9 @@ including the two-stage classification system for creating products from PDF chu
 """
 
 import logging
-from typing import Dict, Any, Optional
-from fastapi import APIRouter, HTTPException, Depends, status
+import asyncio
+from typing import Dict, Any, Optional, List
+from fastapi import APIRouter, HTTPException, Depends, status, BackgroundTasks
 from pydantic import BaseModel, Field
 
 from app.services.products.product_creation_service import ProductCreationService
@@ -308,6 +309,140 @@ async def create_products_from_layout(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal server error: {str(e)}"
         )
+
+
+class BatchCategorizeRequest(BaseModel):
+    workspace_id: str = Field(..., description="UUID of the workspace to process")
+    only_uncategorized: bool = Field(
+        default=True,
+        description="If True, only process products without a material_category"
+    )
+    limit: Optional[int] = Field(
+        default=200,
+        description="Maximum number of products to process in one run"
+    )
+
+
+class BatchCategorizeResponse(BaseModel):
+    success: bool
+    total_found: int
+    categorized: int
+    failed: int
+    skipped: int
+    results: List[Dict[str, Any]]
+    message: str
+
+
+@router.post("/batch-categorize", response_model=BatchCategorizeResponse)
+async def batch_categorize_products(request: BatchCategorizeRequest) -> BatchCategorizeResponse:
+    """
+    Batch re-categorize products using Claude Haiku.
+
+    Fetches products for the workspace (optionally only those without a
+    material_category in metadata), calls _classify_product for each,
+    and updates metadata.material_category + metadata.zone_intent in DB.
+    """
+    try:
+        from app.api.pdf_processing.stage_4_products import _classify_product
+        supabase_client = SupabaseClient()
+        supabase = supabase_client.get_client()
+
+        # Fetch products
+        query = (
+            supabase
+            .from_("products")
+            .select("id, name, description, metadata")
+            .eq("workspace_id", request.workspace_id)
+        )
+
+        if request.only_uncategorized:
+            # Filter: metadata->material_category is null or missing
+            query = query.or_("metadata->material_category.is.null,metadata->>material_category.eq.")
+
+        if request.limit:
+            query = query.limit(request.limit)
+
+        result = query.execute()
+        products = result.data or []
+        total_found = len(products)
+
+        if total_found == 0:
+            return BatchCategorizeResponse(
+                success=True,
+                total_found=0,
+                categorized=0,
+                failed=0,
+                skipped=0,
+                results=[],
+                message="No products found matching criteria",
+            )
+
+        categorized = 0
+        failed = 0
+        skipped = 0
+        results: List[Dict[str, Any]] = []
+
+        # Process concurrently in batches of 10
+        BATCH = 10
+        for i in range(0, total_found, BATCH):
+            chunk = products[i : i + BATCH]
+
+            async def process_one(p: Dict[str, Any]) -> Dict[str, Any]:
+                meta = p.get("metadata") or {}
+                existing_cat = meta.get("material_category", "")
+                try:
+                    classification = await _classify_product(
+                        name=p.get("name") or "",
+                        description=p.get("description") or "",
+                        existing_category=existing_cat,
+                    )
+                    if not classification:
+                        return {"id": p["id"], "name": p.get("name"), "status": "skipped", "reason": "no classification returned"}
+
+                    updated_meta = {**meta, **classification}
+                    update_result = (
+                        supabase
+                        .from_("products")
+                        .update({"metadata": updated_meta})
+                        .eq("id", p["id"])
+                        .execute()
+                    )
+                    if hasattr(update_result, "error") and update_result.error:
+                        return {"id": p["id"], "name": p.get("name"), "status": "failed", "reason": str(update_result.error)}
+
+                    return {
+                        "id": p["id"],
+                        "name": p.get("name"),
+                        "status": "categorized",
+                        "material_category": classification.get("material_category"),
+                        "zone_intent": classification.get("zone_intent"),
+                    }
+                except Exception as e:
+                    return {"id": p["id"], "name": p.get("name"), "status": "failed", "reason": str(e)}
+
+            batch_results = await asyncio.gather(*[process_one(p) for p in chunk])
+            for r in batch_results:
+                results.append(r)
+                if r["status"] == "categorized":
+                    categorized += 1
+                elif r["status"] == "failed":
+                    failed += 1
+                else:
+                    skipped += 1
+
+        return BatchCategorizeResponse(
+            success=True,
+            total_found=total_found,
+            categorized=categorized,
+            failed=failed,
+            skipped=skipped,
+            results=results,
+            message=f"Processed {total_found} products: {categorized} categorized, {skipped} skipped, {failed} failed",
+        )
+
+    except Exception as e:
+        logger.error(f"Batch categorization failed: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/health")

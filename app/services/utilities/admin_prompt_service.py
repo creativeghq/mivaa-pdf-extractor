@@ -12,6 +12,7 @@ from uuid import UUID
 
 from app.services.core.supabase_client import get_supabase_client
 from app.services.utilities.unified_prompt_service import UnifiedPromptService
+from app.services.core.ai_client_service import get_ai_client_service
 
 logger = logging.getLogger(__name__)
 
@@ -216,21 +217,31 @@ class AdminPromptService:
         """
         try:
             start_time = datetime.utcnow()
-            
-            # TODO: Implement actual AI model testing
-            # For now, return mock results
-            
+
+            ai = get_ai_client_service()
+            response = await ai.anthropic_async.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1024,
+                messages=[{
+                    "role": "user",
+                    "content": f"{prompt_template}\n\nContent to process:\n{test_content}"
+                }]
+            )
+
             end_time = datetime.utcnow()
             execution_time = (end_time - start_time).total_seconds() * 1000
-            
+            result_text = response.content[0].text if response.content else ""
+
             return {
                 'success': True,
-                'result': 'Test execution successful',
+                'result': result_text,
                 'execution_time_ms': execution_time,
                 'prompt_length': len(prompt_template),
-                'test_content_length': len(test_content)
+                'test_content_length': len(test_content),
+                'input_tokens': response.usage.input_tokens,
+                'output_tokens': response.usage.output_tokens,
             }
-            
+
         except Exception as e:
             logger.error(f"Error testing prompt: {str(e)}")
             return {

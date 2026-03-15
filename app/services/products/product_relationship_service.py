@@ -11,8 +11,10 @@ Finds related products based on multiple criteria:
 """
 
 import logging
+import json
 from typing import List, Dict, Any, Optional
 from app.config import get_settings
+from app.services.core.ai_client_service import get_ai_client_service
 
 logger = logging.getLogger(__name__)
 
@@ -409,11 +411,71 @@ class ProductRelationshipService:
         exclude_id: str,
         custom_prompt: str
     ) -> List[Dict[str, Any]]:
-        """Find products using custom NLP-based rules (future enhancement)."""
-        # Placeholder for future LLM-based custom relationship detection
-        # This would use Claude/GPT to analyze products based on custom prompts
-        logger.info(f"Custom relationship detection not yet implemented. Prompt: {custom_prompt}")
-        return []
+        """Find products using a custom LLM-evaluated prompt against the product catalog."""
+        try:
+            # Fetch candidate products from workspace
+            response = self.supabase.table("products").select(
+                "id, name, description, material_type, color, finish, collection"
+            ).eq("workspace_id", workspace_id).neq("id", exclude_id).limit(50).execute()
+
+            if not response.data:
+                return []
+
+            candidates = response.data
+
+            # Ask Claude to select related products based on the custom prompt
+            ai = get_ai_client_service()
+            source_summary = {
+                "name": source_product.get("name", ""),
+                "description": source_product.get("description", ""),
+                "material_type": source_product.get("material_type", ""),
+                "color": source_product.get("color", ""),
+                "finish": source_product.get("finish", ""),
+                "collection": source_product.get("collection", ""),
+            }
+            candidate_list = [
+                {"index": i, "id": c["id"], "name": c.get("name", ""),
+                 "material_type": c.get("material_type", ""), "color": c.get("color", ""),
+                 "finish": c.get("finish", "")}
+                for i, c in enumerate(candidates)
+            ]
+
+            prompt = (
+                f"{custom_prompt}\n\n"
+                f"Source product: {json.dumps(source_summary)}\n\n"
+                f"Candidate products: {json.dumps(candidate_list)}\n\n"
+                "Return a JSON array of objects with 'index' and 'relevance_score' (0.0-1.0) "
+                "for candidates that match the custom relationship criteria. "
+                "Include only matches with score >= 0.5. "
+                "Example: [{\"index\": 2, \"relevance_score\": 0.85}]. "
+                "Return ONLY the JSON array."
+            )
+
+            resp = await ai.anthropic_async.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=512,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            matches = json.loads(resp.content[0].text.strip())
+
+            related = []
+            for match in matches:
+                idx = match.get("index")
+                score = float(match.get("relevance_score", 0.5))
+                if idx is not None and idx < len(candidates):
+                    product = candidates[idx]
+                    related.append({
+                        **product,
+                        "relevance_score": score,
+                        "relationship_type": "custom",
+                    })
+
+            logger.info(f"Custom relationship detection found {len(related)} matches")
+            return related
+
+        except Exception as e:
+            logger.error(f"Error in custom relationship detection: {e}")
+            return []
 
     def _deduplicate_products(self, products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Remove duplicate products, keeping the one with highest relevance score."""

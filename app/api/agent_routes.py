@@ -182,8 +182,8 @@ def _log(supabase, run_id: str, level: str, message: str, data: Optional[Dict] =
             "message": message,
             "data":    data,
         }).execute()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to write agent run log: {e}")
 
 
 # ── Agent handlers ───────────────────────────────────────────────────────────

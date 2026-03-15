@@ -74,7 +74,7 @@ class ProgressTracker:
     # Database tracking
     database_records_created: int = 0
     knowledge_base_entries: int = 0
-    images_stored: int = 0
+    images_extracted: int = 0
     chunks_created: int = 0
     products_created: int = 0
     text_embeddings_generated: int = 0  # NEW: Track text embeddings separately
@@ -167,7 +167,7 @@ class ProgressTracker:
                     'pages_skipped': self.pages_skipped,
                     'database_records_created': self.database_records_created,
                     'knowledge_base_entries': self.knowledge_base_entries,
-                    'images_extracted': self.images_stored,  # Material images saved to DB
+                    'images_extracted': self.images_extracted,  # Material images saved to DB
                     'total_images_extracted': self.total_images_extracted,  # All images found in PDF
                     'chunks_created': self.chunks_created,
                     'products_created': self.products_created,
@@ -200,7 +200,7 @@ class ProgressTracker:
                     'metadata': {
                         'current_page': self.current_page,
                         'total_pages': self.total_pages,
-                        'images_extracted': self.images_stored,  # Material images saved to DB
+                        'images_extracted': self.images_extracted,  # Material images saved to DB
                         'total_images_extracted': self.total_images_extracted,  # All images found
                         'chunks_created': self.chunks_created,
                         'products_created': self.products_created,
@@ -228,7 +228,7 @@ class ProgressTracker:
                 self.job_storage[self.job_id]['metadata'].update({
                     'pages_completed': self.pages_completed,
                     'pages_failed': self.pages_failed,
-                    'images_extracted': self.images_stored,  # Use images_extracted for API compatibility
+                    'images_extracted': self.images_extracted,
                     'chunks_created': self.chunks_created,
                     'products_created': self.products_created
                 })
@@ -387,7 +387,7 @@ class ProgressTracker:
         self,
         records_created: int = 0,
         kb_entries: int = 0,
-        images_stored: int = 0,
+        images_extracted: int = 0,
         chunks_created: int = 0,
         products_created: int = 0,
         clip_embeddings: int = 0,
@@ -408,7 +408,7 @@ class ProgressTracker:
         """
         self.database_records_created += records_created
         self.knowledge_base_entries += kb_entries
-        self.images_stored += images_stored
+        self.images_extracted += images_extracted
         self.chunks_created += chunks_created
         self.products_created += products_created
         self.clip_embeddings_generated += clip_embeddings
@@ -420,7 +420,7 @@ class ProgressTracker:
 
         logger.info(f"Updated database stats for job {self.job_id}: "
                    f"records={self.database_records_created}, kb={self.knowledge_base_entries}, "
-                   f"images={self.images_stored}, chunks={self.chunks_created}, products={self.products_created}, "
+                   f"images={self.images_extracted}, chunks={self.chunks_created}, products={self.products_created}, "
                    f"text_emb={self.text_embeddings_generated}, image_emb={self.image_embeddings_generated}, "
                    f"relations={self.relations_created}")
 
@@ -475,14 +475,14 @@ class ProgressTracker:
             # Log differences if any
             if actual_chunks != self.chunks_created:
                 logger.warning(f"⚠️ Chunk count mismatch: tracker={self.chunks_created}, DB={actual_chunks}")
-            if actual_images != self.images_stored:
-                logger.warning(f"⚠️ Image count mismatch: tracker={self.images_stored}, DB={actual_images}")
+            if actual_images != self.images_extracted:
+                logger.warning(f"⚠️ Image count mismatch: tracker={self.images_extracted}, DB={actual_images}")
             if actual_products != self.products_created:
                 logger.warning(f"⚠️ Product count mismatch: tracker={self.products_created}, DB={actual_products}")
 
             # Update tracker with actual counts
             self.chunks_created = actual_chunks
-            self.images_stored = actual_images
+            self.images_extracted = actual_images
             self.products_created = actual_products
 
             logger.info(f"✅ Synced counts from database:")
@@ -558,7 +558,7 @@ class ProgressTracker:
             processing_start_time=self.processing_start_time,
             database_records_created=self.database_records_created,
             knowledge_base_entries=self.knowledge_base_entries,
-            images_stored=self.images_stored,
+            images_extracted=self.images_extracted,
             errors=self.errors,
             warnings=self.warnings,
             average_page_processing_time=None,  # Calculate if needed
@@ -592,7 +592,7 @@ class ProgressTracker:
                             'pages_skipped': self.pages_skipped,
                             'database_records_created': self.database_records_created,
                             'knowledge_base_entries': self.knowledge_base_entries,
-                            'images_extracted': self.images_stored,  # Use images_extracted for API compatibility
+                            'images_extracted': self.images_extracted,
                             'chunks_created': self.chunks_created,
                             'products_created': self.products_created,
                             'errors_count': len(self.errors),

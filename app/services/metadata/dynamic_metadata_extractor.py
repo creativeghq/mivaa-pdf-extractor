@@ -890,8 +890,8 @@ class MetadataScopeDetector:
     - Product category (e.g., "All matte tiles have R11")
     """
 
-    def __init__(self, ai_client=None):
-        self.ai_client = ai_client
+    def __init__(self):
+        self.ai_client = get_ai_client_service()
         self.logger = logging.getLogger(__name__)
 
     async def detect_scope(
@@ -1068,7 +1068,13 @@ Analyze now:"""
 
     async def _call_ai(self, prompt: str) -> str:
         """Call AI service for scope detection."""
-        raise NotImplementedError("AI client integration needed")
+        ai_service = get_ai_client_service()
+        response = await ai_service.anthropic_async.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=512,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.content[0].text
 
     def _parse_scope_response(self, response: str) -> Dict[str, Any]:
         """Parse AI JSON response."""

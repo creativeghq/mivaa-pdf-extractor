@@ -773,12 +773,33 @@ class ProductCreationService:
 
             chunks = chunks_response.data or []
 
-            # If we have bounding box info, filter by proximity
+            # If we have bounding box info, rank chunks by their text position
+            # relative to the candidate's vertical position on the page.
             if candidate.get('boundingBox') and chunks:
-                # For now, return the first chunk from the same page
-                # TODO: Implement spatial proximity filtering
+                bbox = candidate['boundingBox']
+                # bbox is normalised 0-1 vertical position; use 'y' or 'top' if present
+                bbox_center_y = bbox.get('y', bbox.get('top', 0)) + bbox.get('height', 0) / 2
+
+                # Chunks carry start_position within document content (not pixel coords).
+                # Proxy: prefer higher quality_score chunks; break ties by position closeness.
+                def chunk_score(chunk: Dict[str, Any]) -> float:
+                    q = chunk.get('metadata', {}).get('quality_score', 0.5)
+                    # Normalise start_position as a rough page-relative fraction
+                    start = chunk.get('metadata', {}).get('start_position', 0)
+                    end = chunk.get('metadata', {}).get('end_position', start + 1)
+                    # Penalise chunks far from bbox_center_y in relative terms
+                    chunk_mid = (start + end) / 2
+                    proximity = 1.0 - abs(chunk_mid / max(end, 1) - bbox_center_y)
+                    return q * 0.7 + proximity * 0.3
+
+                chunks.sort(key=chunk_score, reverse=True)
                 return chunks[:1]
 
+            # No bounding box — return highest-quality chunk
+            chunks.sort(
+                key=lambda c: c.get('metadata', {}).get('quality_score', 0),
+                reverse=True
+            )
             return chunks[:1] if chunks else []
 
         except Exception as e:

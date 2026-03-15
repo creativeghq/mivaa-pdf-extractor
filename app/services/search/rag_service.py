@@ -715,6 +715,31 @@ class RAGService:
 
                     self.logger.info(f"✅ Chunk search: {len(chunk_scores)} chunks")
 
+                    # Cross-reference expansion: fetch target chunks referenced by top results
+                    if chunk_scores:
+                        try:
+                            top_chunk_ids = sorted(chunk_scores, key=chunk_scores.get, reverse=True)[:20]
+                            xref_response = self.supabase_client.client.table('document_chunks')\
+                                .select('id, metadata')\
+                                .in_('id', top_chunk_ids)\
+                                .execute()
+                            if xref_response.data:
+                                xref_target_ids = []
+                                for row in xref_response.data:
+                                    refs = (row.get('metadata') or {}).get('cross_references', [])
+                                    for ref in refs:
+                                        if ref.get('resolved'):
+                                            xref_target_ids.extend(ref.get('target_chunk_ids', []))
+                                xref_target_ids = [tid for tid in set(xref_target_ids) if tid not in chunk_scores]
+                                if xref_target_ids:
+                                    # Give cross-referenced chunks 60% of the referencing chunk's score
+                                    avg_ref_score = sum(chunk_scores[cid] for cid in top_chunk_ids if cid in chunk_scores) / max(len(top_chunk_ids), 1)
+                                    for tid in xref_target_ids:
+                                        chunk_scores[tid] = avg_ref_score * 0.6
+                                    self.logger.info(f"   📎 Cross-reference expansion: added {len(xref_target_ids)} referenced chunks")
+                        except Exception as xref_e:
+                            self.logger.warning(f"Cross-reference expansion failed: {xref_e}")
+
                 except Exception as e:
                     self.logger.warning(f"⚠️ Chunk search failed: {e}")
 

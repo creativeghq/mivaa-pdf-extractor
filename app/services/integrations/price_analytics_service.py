@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 from statistics import mean, median, stdev
 from decimal import Decimal
+from collections import defaultdict
 
 from app.services.core.supabase_client import get_supabase_client
 
@@ -185,17 +186,39 @@ class PriceAnalyticsService:
             return "stable"
 
     def _group_price_data(self, data: List[Dict], group_by: str) -> List[Dict[str, Any]]:
-        """Group price data by time interval"""
-        # For now, return raw data formatted for charts
-        # TODO: Implement actual grouping by hour/day/week
+        """Group price data by time interval, averaging prices within each bucket."""
+        def bucket_key(ts: str) -> str:
+            try:
+                dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                return ts
+            if group_by == "hour":
+                return dt.strftime("%Y-%m-%dT%H:00:00")
+            elif group_by == "week":
+                # ISO week start (Monday)
+                week_start = dt - timedelta(days=dt.weekday())
+                return week_start.strftime("%Y-%m-%d")
+            else:  # day (default)
+                return dt.strftime("%Y-%m-%d")
+
+        buckets: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"prices": [], "source": "", "availability": ""})
+        for item in data:
+            key = bucket_key(item["scraped_at"])
+            buckets[key]["prices"].append(float(item["price"]))
+            buckets[key]["source"] = item.get("source_name", "")
+            buckets[key]["availability"] = item.get("availability", "")
+
         return [
             {
-                "date": item["scraped_at"],
-                "price": float(item["price"]),
-                "source": item["source_name"],
-                "availability": item["availability"]
+                "date": key,
+                "price": round(mean(v["prices"]), 4),
+                "price_min": round(min(v["prices"]), 4),
+                "price_max": round(max(v["prices"]), 4),
+                "source": v["source"],
+                "availability": v["availability"],
+                "data_points": len(v["prices"]),
             }
-            for item in data
+            for key, v in sorted(buckets.items())
         ]
 
     def _calculate_price_position(self, price: float, competitor_prices: List[float]) -> str:

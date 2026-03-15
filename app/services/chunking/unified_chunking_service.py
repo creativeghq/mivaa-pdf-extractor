@@ -12,6 +12,7 @@ Replaces multiple chunking implementations with a single unified approach.
 
 import logging
 import hashlib
+import re
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
@@ -239,6 +240,9 @@ class UnifiedChunkingService:
             # Update total_chunks for all chunks
             for chunk in filtered_chunks:
                 chunk.total_chunks = len(filtered_chunks)
+
+            # Detect and annotate cross-references between chunks
+            filtered_chunks = self._detect_cross_references(filtered_chunks)
 
             self.logger.info(f"✅ Page-aware chunking complete: {len(filtered_chunks)} chunks from {len(pages)} pages")
             return filtered_chunks
@@ -931,6 +935,66 @@ class UnifiedChunkingService:
         """Reset quality metrics for new document."""
         self.quality_metrics = ChunkQualityMetrics()
         self._content_hashes.clear()
+
+    # Cross-reference patterns: "see page 12", "refer to table 3", "figure 2-1", etc.
+    _XREF_PATTERNS: List[Tuple[str, str]] = [
+        (r'(?:see|refer(?:ence)?|refer to|shown in|described in|detailed in|as in)\s+page[s]?\s+(\d+)', 'page'),
+        (r'(?:see|refer(?:ence)?|refer to|shown in|see also)\s+(?:the\s+)?(?:table|tbl\.?)\s+([\d\.\-]+)', 'table'),
+        (r'(?:see|refer(?:ence)?|shown in|as in|refer to)\s+(?:the\s+)?(?:figure|fig\.?)\s+([\d\.\-]+)', 'figure'),
+        (r'(?:see|refer to|described in|detailed in)\s+(?:the\s+)?(?:section|sec\.?)\s+([\d\.\-]+)', 'section'),
+        (r'(?:see|refer to)\s+(?:the\s+)?(?:appendix|app\.?)\s+([A-Z\d]+)', 'appendix'),
+        (r'\((?:see|cf\.?)\s+(?:page[s]?\s+)?(\d+)\)', 'page'),
+    ]
+
+    def _detect_cross_references(self, chunks: List['Chunk']) -> List['Chunk']:
+        """
+        Scan chunks for cross-references (e.g. "See page 12", "Refer to Table 3")
+        and annotate each chunk's metadata with resolved target chunk IDs.
+
+        Runs in O(n) over chunks — one regex pass per chunk, one lookup pass to resolve.
+        """
+        # Build page → chunk_ids index for fast resolution
+        page_to_chunk_ids: Dict[int, List[str]] = {}
+        for chunk in chunks:
+            page_num = chunk.metadata.get('page_number')
+            if page_num is not None:
+                page_to_chunk_ids.setdefault(int(page_num), []).append(chunk.id)
+
+        compiled = [(re.compile(pat, re.IGNORECASE), ref_type) for pat, ref_type in self._XREF_PATTERNS]
+
+        for chunk in chunks:
+            found_refs: List[Dict[str, Any]] = []
+            for pattern, ref_type in compiled:
+                for match in pattern.finditer(chunk.content):
+                    raw_ref = match.group(0)
+                    ref_value = match.group(1)
+
+                    target_chunk_ids: List[str] = []
+                    if ref_type == 'page':
+                        try:
+                            target_page = int(ref_value)
+                            target_chunk_ids = page_to_chunk_ids.get(target_page, [])
+                        except ValueError:
+                            pass
+
+                    found_refs.append({
+                        'type': ref_type,
+                        'raw_text': raw_ref,
+                        'ref_value': ref_value,
+                        'target_chunk_ids': target_chunk_ids,
+                        'resolved': len(target_chunk_ids) > 0,
+                    })
+
+            if found_refs:
+                chunk.metadata['cross_references'] = found_refs
+                self.logger.debug(
+                    f"   Chunk {chunk.chunk_index}: found {len(found_refs)} cross-reference(s)"
+                )
+
+        total_with_refs = sum(1 for c in chunks if c.metadata.get('cross_references'))
+        if total_with_refs:
+            self.logger.info(f"   ✅ Cross-references detected: {total_with_refs} chunks have references")
+        return chunks
 
     def _chunk_with_layout_regions(
         self,

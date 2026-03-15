@@ -12,6 +12,7 @@ from datetime import datetime
 import json
 
 from app.services.utilities.unified_prompt_service import UnifiedPromptService
+from app.services.core.ai_client_service import get_ai_client_service
 
 logger = logging.getLogger(__name__)
 
@@ -25,18 +26,14 @@ class SearchPromptService:
     FILTERING = "filtering"
     ENRICHMENT = "enrichment"
 
-    def __init__(self, supabase_client, llm_client=None):
-        """
-        Initialize the service.
+    # Haiku — cheap and fast for search augmentation tasks
+    _MODEL = "claude-haiku-4-5-20251001"
 
-        Args:
-            supabase_client: Supabase client for database operations
-            llm_client: Optional LLM client for prompt execution (OpenAI, Anthropic, etc.)
-        """
+    def __init__(self, supabase_client):
         self.supabase = supabase_client
-        self.llm_client = llm_client
         self.prompt_service = UnifiedPromptService()
         self._prompt_cache = {}
+        self._ai = get_ai_client_service()
     
     async def get_active_prompts(
         self,
@@ -307,20 +304,64 @@ class SearchPromptService:
     # Helper methods for LLM-based prompt execution
 
     async def _apply_llm_enhancement(self, query: str, prompt_text: str) -> str:
-        """Apply enhancement using LLM."""
-        # Placeholder for LLM integration
-        # This would call OpenAI/Anthropic API with the prompt
-        logger.info(f"LLM enhancement not yet implemented, using simple enhancement")
-        return self._simple_enhancement(query, prompt_text)
+        """Expand/rewrite the search query using an admin-configured prompt."""
+        try:
+            response = await self._ai.anthropic_async.messages.create(
+                model=self._MODEL,
+                max_tokens=256,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f"{prompt_text}\n\n"
+                        f"Search query: {query}\n\n"
+                        "Return ONLY the enhanced query text, nothing else."
+                    )
+                }]
+            )
+            enhanced = response.content[0].text.strip()
+            logger.info(f"LLM enhanced query: '{query}' -> '{enhanced}'")
+            return enhanced or query
+        except Exception as e:
+            logger.warning(f"LLM enhancement failed, falling back: {e}")
+            return self._simple_enhancement(query, prompt_text)
 
     async def _apply_llm_formatting(
         self,
         results: List[Dict[str, Any]],
         prompt_text: str
     ) -> List[Dict[str, Any]]:
-        """Apply formatting using LLM."""
-        # Placeholder for LLM integration
-        logger.info(f"LLM formatting not yet implemented, using simple formatting")
+        """Re-rank/reorder results according to an admin-configured formatting prompt."""
+        if not results:
+            return results
+        try:
+            # Build a compact results summary for the LLM
+            items = [
+                {"index": i, "id": r.get("id", i), "name": r.get("name", ""), "score": r.get("score", 0)}
+                for i, r in enumerate(results)
+            ]
+            response = await self._ai.anthropic_async.messages.create(
+                model=self._MODEL,
+                max_tokens=512,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f"{prompt_text}\n\n"
+                        f"Results to reorder (JSON):\n{json.dumps(items)}\n\n"
+                        "Return a JSON array of the original index values in the preferred order. "
+                        "Example: [2, 0, 1]. Return ONLY the JSON array."
+                    )
+                }]
+            )
+            raw = response.content[0].text.strip()
+            order = json.loads(raw)
+            if isinstance(order, list) and all(isinstance(x, int) for x in order):
+                reordered = [results[i] for i in order if i < len(results)]
+                # Append any items that weren't included by the LLM
+                included = set(order)
+                reordered += [results[i] for i in range(len(results)) if i not in included]
+                return reordered
+        except Exception as e:
+            logger.warning(f"LLM formatting failed, falling back: {e}")
         return self._simple_formatting(results, prompt_text)
 
     async def _apply_llm_filtering(
@@ -328,9 +369,36 @@ class SearchPromptService:
         results: List[Dict[str, Any]],
         prompt_text: str
     ) -> List[Dict[str, Any]]:
-        """Apply filtering using LLM."""
-        # Placeholder for LLM integration
-        logger.info(f"LLM filtering not yet implemented, using simple filtering")
+        """Remove irrelevant results using an admin-configured filtering prompt."""
+        if not results:
+            return results
+        try:
+            items = [
+                {"index": i, "id": r.get("id", i), "name": r.get("name", ""),
+                 "metadata": r.get("metadata", {})}
+                for i, r in enumerate(results)
+            ]
+            response = await self._ai.anthropic_async.messages.create(
+                model=self._MODEL,
+                max_tokens=512,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f"{prompt_text}\n\n"
+                        f"Results to filter (JSON):\n{json.dumps(items)}\n\n"
+                        "Return a JSON array of the index values that PASS the filter. "
+                        "Example: [0, 2]. Return ONLY the JSON array."
+                    )
+                }]
+            )
+            raw = response.content[0].text.strip()
+            keep = json.loads(raw)
+            if isinstance(keep, list) and all(isinstance(x, int) for x in keep):
+                filtered = [results[i] for i in keep if i < len(results)]
+                logger.info(f"LLM filtering: {len(results)} -> {len(filtered)} results")
+                return filtered
+        except Exception as e:
+            logger.warning(f"LLM filtering failed, falling back: {e}")
         return self._simple_filtering(results, prompt_text)
 
     async def _apply_llm_enrichment(
@@ -338,10 +406,48 @@ class SearchPromptService:
         results: List[Dict[str, Any]],
         prompt_text: str
     ) -> List[Dict[str, Any]]:
-        """Apply enrichment using LLM."""
-        # Placeholder for LLM integration
-        logger.info(f"LLM enrichment not yet implemented")
-        return results
+        """Add AI-generated fields to each result using an admin-configured enrichment prompt."""
+        if not results:
+            return results
+        try:
+            enriched = []
+            # Process in batches of 10 to avoid token limits
+            batch_size = 10
+            for batch_start in range(0, len(results), batch_size):
+                batch = results[batch_start:batch_start + batch_size]
+                items = [
+                    {"index": i, "id": r.get("id", i), "name": r.get("name", ""),
+                     "description": r.get("description", ""), "metadata": r.get("metadata", {})}
+                    for i, r in enumerate(batch)
+                ]
+                response = await self._ai.anthropic_async.messages.create(
+                    model=self._MODEL,
+                    max_tokens=1024,
+                    messages=[{
+                        "role": "user",
+                        "content": (
+                            f"{prompt_text}\n\n"
+                            f"Results to enrich (JSON):\n{json.dumps(items)}\n\n"
+                            "Return a JSON array where each item has 'index' and 'enrichment' "
+                            "(an object with any additional fields to add). "
+                            "Example: [{\"index\": 0, \"enrichment\": {\"ai_summary\": \"...\"}}]. "
+                            "Return ONLY the JSON array."
+                        )
+                    }]
+                )
+                raw = response.content[0].text.strip()
+                enrichments = json.loads(raw)
+                enrichment_map = {e["index"]: e.get("enrichment", {}) for e in enrichments}
+                for i, result in enumerate(batch):
+                    if i in enrichment_map:
+                        enriched.append({**result, **enrichment_map[i]})
+                    else:
+                        enriched.append(result)
+            logger.info(f"LLM enriched {len(enriched)} results")
+            return enriched
+        except Exception as e:
+            logger.warning(f"LLM enrichment failed, returning original results: {e}")
+            return results
 
     # Simple fallback methods
 

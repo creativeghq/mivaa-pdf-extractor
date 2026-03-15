@@ -10,16 +10,12 @@ This will be fully refactored in a future iteration to move the logic into prope
 service classes under app.services.orchestration.
 """
 
-# Re-export orchestration functions from rag_routes
 from app.api.rag_routes import (
-    process_document_background,
     process_document_with_discovery,
     run_async_in_background,
 )
 
 __all__ = [
-    'process_document_background',
     'process_document_with_discovery',
     'run_async_in_background',
 ]
-
