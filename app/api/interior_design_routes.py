@@ -99,7 +99,7 @@ TEXT_TO_IMAGE_MODELS = [
 # Image-to-Image Models (for interior design transformation with reference images)
 IMAGE_TO_IMAGE_MODELS = [
     # Working models - recommended for production
-    {"id": "comfyui-interior-remodel", "name": "ComfyUI Interior Remodel", "provider": "replicate", "model": "jschoormans/comfyui-interior-remodel", "version": "2a360362540e1f6cfe59c9db4aa8aa9059233d40e638aae0cdeb6b41f3d0dcce", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.02},
+    {"id": "comfyui-interior-remodel", "name": "ComfyUI Interior Remodel", "provider": "replicate", "model": "jschoormans/comfyui-interior-remodel", "version": "2a360362540e1f6cfe59c9db4aa8aa9059233d40e638aae0cdeb6b41f3d0dcce", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.02, "input_schema": "comfyui_interior"},
     {"id": "interiorly-gen1-dev", "name": "Interiorly Gen1 Dev", "provider": "replicate", "model": "julian-at/interiorly-gen1-dev", "version": "5e3080d1b308e80197b32f0ce638daa8a329d0cf42068739723d8259e44b445e", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.015,
      "input_schema": "flux_lora_interior"},
     {"id": "designer-architecture", "name": "Designer Architecture", "provider": "replicate", "model": "davisbrown/designer-architecture", "version": "0d6f0893b05f14500ce03e45f54290cbffb907d14db49699f2823d0fd35def46", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.018},
@@ -145,6 +145,7 @@ class InteriorRequest(BaseModel):
     room_type: Optional[str] = Field(None, description="Type of room (living_room, bedroom, etc.)")
     style: Optional[str] = Field(None, description="Design style (modern, minimalist, etc.)")
     models: Optional[List[str]] = Field(None, description="Specific model IDs to use, or None for all models")
+    exclude_models: Optional[List[str]] = Field(None, description="Model IDs to exclude from generation")
     user_id: str = Field(..., description="User ID")
     workspace_id: Optional[str] = Field(None, description="Workspace ID")
     width: int = Field(1024, description="Image width")
@@ -186,6 +187,13 @@ def _build_model_input(
     """
     schema = model.get("input_schema", "generic")
 
+    if schema == "comfyui_interior":
+        # jschoormans/comfyui-interior-remodel: ComfyUI workflow — only accepts image + prompt.
+        # Sending standard SD params (strength, guidance_scale, num_inference_steps) causes 422.
+        if not image_url:
+            raise ValueError("comfyui-interior-remodel requires a reference image")
+        return {"image": image_url, "prompt": prompt}
+
     if schema == "adirik_interior":
         # adirik/interior-design: uses prompt_strength (not strength), no num_outputs
         data: dict = {"prompt": prompt, "num_inference_steps": 25, "guidance_scale": 7.5, "prompt_strength": 0.8}
@@ -222,11 +230,10 @@ def _build_model_input(
 
     if schema == "stable_interiors":
         # pointblack/stable-interiors-v2, youzu/stable-interiors-v2
-        # SD-based img2img: requires image + prompt, uses prompt_strength (not strength)
-        data = {"prompt": prompt, "num_inference_steps": 50, "guidance_scale": 15, "prompt_strength": 0.8}
-        if image_url:
-            data["image"] = image_url
-        return data
+        # SD-based img2img: requires image; skip gracefully when none provided
+        if not image_url:
+            raise ValueError(f"{model['name']} requires a reference image")
+        return {"prompt": prompt, "image": image_url, "num_inference_steps": 50, "guidance_scale": 15, "prompt_strength": 0.8}
 
     if schema == "virtual_staging":
         # proplabs/virtual-staging: structured room + furniture_style enums, requires api_key as input
@@ -242,18 +249,18 @@ def _build_model_input(
         return data
 
     if schema == "sdxl_interior":
-        # rocketdigitalai/interior-design-sdxl: image-to-image, requires image for depth/ControlNet
-        data = {
+        # rocketdigitalai/interior-design-sdxl: requires image for depth/ControlNet
+        if not image_url:
+            raise ValueError(f"{model['name']} requires a reference image")
+        return {
             "prompt": prompt,
+            "image": image_url,
             "num_inference_steps": 50,
             "guidance_scale": 7.5,
             "depth_strength": 0.8,
             "promax_strength": 0.8,
             "refiner_strength": 0.4,
         }
-        if image_url:
-            data["image"] = image_url
-        return data
 
     if schema == "playground_v25":
         # playgroundai/playground-v2.5-1024px-aesthetic
@@ -349,6 +356,9 @@ async def generate_with_replicate(model: dict, prompt: str, width: int, height: 
 
                 raise Exception("Generation timed out")
 
+        except ValueError:
+            # Config/validation error — no point retrying (e.g. missing required image)
+            raise
         except Exception as e:
             if attempt < max_retries - 1:
                 wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
@@ -436,14 +446,14 @@ async def download_and_upload_to_supabase(image_url: str, job_id: str, model_id:
 
             # Upload to Supabase Storage
             supabase = get_supabase_client()
-            result = supabase.client.storage.from_('designer-assets').upload(
+            result = supabase.client.storage.from_('generation-images').upload(
                 filename,
                 image_data,
                 file_options={"content-type": content_type}
             )
 
             # Get public URL
-            public_url = supabase.client.storage.from_('designer-assets').get_public_url(filename)
+            public_url = supabase.client.storage.from_('generation-images').get_public_url(filename)
 
             print(f"✅ Uploaded image to Supabase Storage: {public_url}")
             return public_url
@@ -605,6 +615,10 @@ async def create_interior_design(request: InteriorRequest):
     else:
         # Text-to-image: Gemini first, then all text-to-image models
         models_to_use = [GEMINI_MODEL] + TEXT_TO_IMAGE_MODELS
+
+    # Apply exclusions (e.g. gemini-interior excluded when generate_gemini tool handles it separately)
+    if request.exclude_models:
+        models_to_use = [m for m in models_to_use if m["id"] not in request.exclude_models]
 
     # Build rich generation prompt
     enhanced_prompt = _build_generation_prompt(
