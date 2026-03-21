@@ -263,6 +263,36 @@ class DataImportService:
 
                 logger.info(f"🎉 Import job {job_id} completed: {processed_count}/{total_products} products processed")
 
+                # ── Factory propagation + enrichment trigger ─────────────────
+                # Re-use the same helper from the PDF pipeline
+                try:
+                    import os, httpx as _httpx
+                    _supabase_url = os.getenv("SUPABASE_URL", "")
+                    _service_key  = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+                    if _supabase_url and _service_key:
+                        # Collect all product IDs created in this job
+                        _pids_resp = self.supabase.table('products').select('id').eq('source_job_id', job_id).execute()
+                        _pids = [r['id'] for r in (_pids_resp.data or [])]
+                        if _pids:
+                            async with _httpx.AsyncClient(timeout=15) as _hc:
+                                _resp = await _hc.post(
+                                    f"{_supabase_url}/functions/v1/trigger-factory-enrichment",
+                                    json={
+                                        "workspace_id": workspace_id,
+                                        "product_ids": _pids,
+                                        "scope_column": "source_job_id",
+                                        "scope_value": job_id,
+                                    },
+                                    headers={"Authorization": f"Bearer {_service_key}"},
+                                )
+                                _d = _resp.json()
+                                logger.info(
+                                    f"🏭 Factory enrichment: propagated={_d.get('propagated', 0)}, "
+                                    f"queued_job={_d.get('queued_job_id') or 'none'}"
+                                )
+                except Exception as _fe:
+                    logger.warning(f"⚠️ Factory enrichment trigger (non-blocking): {_fe}")
+
                 # ✅ Stage: COMPLETED
                 await self._log_stage(job_id, XmlImportStage.COMPLETED, "completed", items=processed_count)
 
@@ -482,6 +512,39 @@ class DataImportService:
             product_name = product_data.get('name', 'Unknown Product')
             logger.info(f"📤 Creating product: {product_name}")
 
+            # ── Build canonical factory nested object ────────────────────
+            factory_obj = {}
+            _factory_fields = [
+                'factory_name', 'factory_group_name', 'address', 'city',
+                'country', 'postal_code', 'phone', 'email', 'website',
+                'country_of_origin', 'founded_year', 'company_type',
+                'linkedin_url', 'employee_count',
+            ]
+            for _f in _factory_fields:
+                _v = product_data.get(_f)
+                if _v and str(_v).strip() not in ('', 'Unknown Factory', 'n/a', 'N/A'):
+                    factory_obj[_f] = _v
+
+            # ── Build metadata (canonical location for all content fields) ─
+            product_metadata = {
+                "extracted_from": "xml_import",
+                "import_job_id": job_id,
+                "extraction_date": datetime.utcnow().isoformat(),
+                "workspace_id": workspace_id,
+                # Content fields — same schema as PDF/scraping
+                "material_category": product_data.get('material_category'),
+                "factory_name": product_data.get('factory_name'),
+                "factory_group_name": product_data.get('factory_group_name'),
+                "color": product_data.get('color'),
+                "designer": product_data.get('designer'),
+                "collection": product_data.get('collection'),
+                "finish": product_data.get('finish'),
+                "material": product_data.get('material'),
+                **product_data.get('metadata', {}),
+            }
+            if factory_obj:
+                product_metadata['factory'] = factory_obj
+
             # Build product record for database
             product_record = {
                 "name": product_name,
@@ -489,28 +552,15 @@ class DataImportService:
                 "long_description": product_data.get('description', '')[:5000],
                 "workspace_id": workspace_id,
                 "properties": {
-                    "factory_name": product_data.get('factory_name'),
-                    "factory_group_name": product_data.get('factory_group_name'),
-                    "material_category": product_data.get('material_category'),
+                    # Non-content / display fields only
                     "price": product_data.get('price'),
-                    "color": product_data.get('color'),
                     "dimensions": product_data.get('dimensions'),
-                    "designer": product_data.get('designer'),
-                    "collection": product_data.get('collection'),
-                    "finish": product_data.get('finish'),
-                    "material": product_data.get('material'),
                     "import_source": "xml_import",
                     "import_job_id": job_id,
                     "auto_generated": True,
                     "generation_timestamp": datetime.utcnow().isoformat()
                 },
-                "metadata": {
-                    "extracted_from": "xml_import",
-                    "import_job_id": job_id,
-                    "extraction_date": datetime.utcnow().isoformat(),
-                    "workspace_id": workspace_id,
-                    **product_data.get('metadata', {})
-                },
+                "metadata": product_metadata,
                 "status": "draft",
                 "created_from_type": "xml_import",
                 "created_at": datetime.utcnow().isoformat(),

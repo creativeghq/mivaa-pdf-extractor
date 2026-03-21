@@ -7,7 +7,94 @@ Includes metadata consolidation from AI text extraction, visual analysis, and fa
 
 import logging
 import os
+import httpx
 from typing import Dict, Any, List, Optional
+
+# ── Factory field keys (canonical set) ───────────────────────────────────────
+_FACTORY_FIELDS = [
+    'factory_name', 'factory_group_name', 'address', 'city', 'country',
+    'postal_code', 'phone', 'email', 'website', 'country_of_origin',
+    'founded_year', 'company_type', 'linkedin_url', 'employee_count',
+]
+
+
+def _build_factory_object(metadata: Dict[str, Any], factory_defaults: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Assemble a canonical `factory` nested object from AI-extracted metadata
+    and catalog-level factory defaults.
+
+    Priority (highest first):
+      1. metadata.factory (already nested — from previous run or direct extraction)
+      2. flat metadata fields (factory_name, factory_group_name, …)
+      3. factory_defaults (from catalog.catalog_factory / catalog_factory_group)
+    """
+    # Start from existing nested object if present
+    existing = metadata.get('factory') or {}
+    if not isinstance(existing, dict):
+        existing = {}
+
+    factory: Dict[str, Any] = {}
+
+    # Layer 3: defaults
+    for k, v in factory_defaults.items():
+        if v and not _is_empty_value(v):
+            factory[k] = v
+
+    # Layer 2: flat metadata fields
+    for field in _FACTORY_FIELDS:
+        val = metadata.get(field)
+        if val and not _is_empty_value(val):
+            factory[field] = val
+
+    # Layer 1: existing nested object wins for non-empty values
+    for k, v in existing.items():
+        if v and not _is_empty_value(v):
+            factory[k] = v
+
+    return factory
+
+
+async def _trigger_factory_enrichment(
+    workspace_id: str,
+    product_ids: List[str],
+    scope_column: str,
+    scope_value: str,
+    logger: logging.Logger,
+) -> None:
+    """
+    Fire-and-forget call to the trigger-factory-enrichment edge function.
+    Queues a background agent job if completeness is below threshold.
+    Never raises — enrichment is best-effort.
+    """
+    supabase_url = os.getenv("SUPABASE_URL", "")
+    service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    if not supabase_url or not service_role_key:
+        return
+
+    url = f"{supabase_url}/functions/v1/trigger-factory-enrichment"
+    payload = {
+        "workspace_id": workspace_id,
+        "product_ids": product_ids,
+        "scope_column": scope_column,
+        "scope_value": scope_value,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                url,
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {service_role_key}",
+                    "Content-Type": "application/json",
+                },
+            )
+            data = resp.json()
+            logger.info(
+                f"   🏭 Factory enrichment trigger: propagated={data.get('propagated', 0)}, "
+                f"queued_job={data.get('queued_job_id') or 'none'}"
+            )
+    except Exception as exc:
+        logger.warning(f"   ⚠️ Factory enrichment trigger failed (non-blocking): {exc}")
 
 # ── Controlled vocabulary ────────────────────────────────────────────────────
 MATERIAL_CATEGORY_VOCAB = {
@@ -173,6 +260,17 @@ async def create_single_product(
     for key in ['factory_name', 'factory_group_name', 'material_category']:
         if is_not_found(metadata.get(key)):
             metadata[key] = None
+
+    # ── Assemble canonical factory nested object ──────────────────────────
+    factory_obj = _build_factory_object(metadata, factory_defaults)
+    if factory_obj:
+        metadata['factory'] = factory_obj
+        # Always keep backward-compat flat fields in sync
+        if factory_obj.get('factory_name'):
+            metadata['factory_name'] = factory_obj['factory_name']
+        if factory_obj.get('factory_group_name'):
+            metadata['factory_group_name'] = factory_obj['factory_group_name']
+        logger.info(f"   🏭 Factory object assembled: {list(factory_obj.keys())}")
 
     # ── Auto-classify material_category + zone_intent if missing / not in vocab ──
     raw_cat = metadata.get("material_category")
@@ -394,6 +492,21 @@ async def propagate_common_fields_to_products(
             'available_sizes',
         ]
 
+        # ── Find the most complete nested factory object across all products ──
+        best_factory: Dict[str, Any] = {}
+        best_factory_score = 0
+        _completeness_fields = ['factory_name', 'city', 'country', 'address',
+                                 'phone', 'email', 'website', 'country_of_origin', 'employee_count']
+        for product in products:
+            meta = product.get('metadata', {}) or {}
+            fobj = meta.get('factory') or {}
+            if not isinstance(fobj, dict):
+                continue
+            score = sum(1 for f in _completeness_fields if fobj.get(f) and not _is_empty_value(fobj[f]))
+            if score > best_factory_score:
+                best_factory_score = score
+                best_factory = fobj
+
         # Nested fields to propagate: (parent_key, child_key)
         # Tiles/stones from the same catalog series share these material-level properties.
         nested_fields = [
@@ -463,6 +576,28 @@ async def propagate_common_fields_to_products(
                 current_value = parent.get(child_key)
                 if _is_empty_value(current_value) and not _is_empty_value(common_value):
                     nested_updates[(parent_key, child_key)] = common_value
+
+            # Propagate nested factory object if product is missing/incomplete
+            factory_updated = False
+            if best_factory:
+                existing_fobj = metadata.get('factory') or {}
+                existing_score = sum(
+                    1 for f in _completeness_fields
+                    if existing_fobj.get(f) and not _is_empty_value(existing_fobj[f])
+                ) if isinstance(existing_fobj, dict) else 0
+                if existing_score < best_factory_score:
+                    # Merge: existing values win, best_factory fills gaps
+                    merged_factory = {**best_factory, **{
+                        k: v for k, v in existing_fobj.items()
+                        if v and not _is_empty_value(v)
+                    }}
+                    updates_needed['factory'] = merged_factory
+                    # Keep flat backward-compat fields in sync
+                    if merged_factory.get('factory_name'):
+                        updates_needed['factory_name'] = merged_factory['factory_name']
+                    if merged_factory.get('factory_group_name'):
+                        updates_needed['factory_group_name'] = merged_factory['factory_group_name']
+                    factory_updated = True
 
             if updates_needed or nested_updates:
                 updated_metadata = {**metadata, **updates_needed}

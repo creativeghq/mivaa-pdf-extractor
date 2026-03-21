@@ -2985,6 +2985,27 @@ async def process_document_with_discovery(
         })
         await tracker._sync_to_database(stage="dimension_extraction")
 
+        # ── Factory enrichment trigger (async, non-blocking) ─────────────────
+        try:
+            from app.api.pdf_processing.stage_4_products import _trigger_factory_enrichment
+            all_product_ids = [p['id'] for p in (
+                supabase.client.table('products')
+                .select('id')
+                .eq('source_document_id', document_id)
+                .execute()
+            ).data or []]
+            if all_product_ids:
+                import asyncio
+                asyncio.create_task(_trigger_factory_enrichment(
+                    workspace_id=workspace_id,
+                    product_ids=all_product_ids,
+                    scope_column='source_document_id',
+                    scope_value=document_id,
+                    logger=logger,
+                ))
+        except Exception as _fe:
+            logger.warning(f"⚠️ Factory enrichment trigger failed (non-blocking): {_fe}")
+
         # ============================================================================
         # STAGE 5: QUALITY ENHANCEMENT (MODULAR)
         # ============================================================================

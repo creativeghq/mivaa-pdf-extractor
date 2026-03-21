@@ -359,6 +359,33 @@ class WebScrapingService:
                 materials_processed=len(created_products)
             )
 
+            # ── Factory propagation + enrichment trigger ─────────────────
+            if created_products:
+                try:
+                    import os, httpx as _httpx
+                    _supabase_url = os.getenv("SUPABASE_URL", "")
+                    _service_key  = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+                    if _supabase_url and _service_key:
+                        _pids = [p['id'] for p in created_products]
+                        async with _httpx.AsyncClient(timeout=15) as _hc:
+                            _resp = await _hc.post(
+                                f"{_supabase_url}/functions/v1/trigger-factory-enrichment",
+                                json={
+                                    "workspace_id": workspace_id,
+                                    "product_ids": _pids,
+                                    "scope_column": "scrape_session_id",
+                                    "scope_value": session_id,
+                                },
+                                headers={"Authorization": f"Bearer {_service_key}"},
+                            )
+                            _d = _resp.json()
+                            self.logger.info(
+                                f"🏭 Factory enrichment: propagated={_d.get('propagated', 0)}, "
+                                f"queued_job={_d.get('queued_job_id') or 'none'}"
+                            )
+                except Exception as _fe:
+                    self.logger.warning(f"⚠️ Factory enrichment trigger (non-blocking): {_fe}")
+
             processing_time = (datetime.now() - start_time).total_seconds() * 1000
 
             # Collect chunk dedup metrics from chunking service
@@ -630,21 +657,57 @@ class WebScrapingService:
         """
         created_products = []
 
+        # ── Build catalog-level factory defaults ─────────────────────────────
+        catalog_factory_defaults = {}
+        if getattr(catalog, 'catalog_factory', None):
+            catalog_factory_defaults['factory_name'] = catalog.catalog_factory
+        if getattr(catalog, 'catalog_factory_group', None):
+            catalog_factory_defaults['factory_group_name'] = catalog.catalog_factory_group
+
         try:
             # Pre-fetch all Firecrawl-extracted images for this session once
             # (avoids N+1 queries per product)
             firecrawl_images = await self._fetch_firecrawl_images_for_session(session_id)
 
             for product in catalog.products:
+                # Build metadata with canonical factory nested object
+                base_meta = dict(product.metadata or {})
+
+                # Assemble factory object: catalog defaults < product meta < Firecrawl extract
+                factory_obj: dict = {}
+                for _f, _v in catalog_factory_defaults.items():
+                    if _v:
+                        factory_obj[_f] = _v
+                # Product-level factory fields (from product discovery)
+                for _f in ['factory_name', 'factory_group_name', 'address', 'city', 'country',
+                           'postal_code', 'phone', 'email', 'website', 'country_of_origin',
+                           'founded_year', 'company_type', 'linkedin_url', 'employee_count']:
+                    _v = base_meta.get(_f)
+                    if _v and str(_v).strip():
+                        factory_obj[_f] = _v
+                # Existing nested factory object wins for non-empty fields
+                for _k, _val in (base_meta.get('factory') or {}).items():
+                    if _val and str(_val).strip():
+                        factory_obj[_k] = _val
+
+                if factory_obj:
+                    base_meta['factory'] = factory_obj
+                    # Backward-compat flat fields
+                    if factory_obj.get('factory_name'):
+                        base_meta['factory_name'] = factory_obj['factory_name']
+                    if factory_obj.get('factory_group_name'):
+                        base_meta['factory_group_name'] = factory_obj['factory_group_name']
+
                 # Prepare product data
                 product_data = {
                     "workspace_id": workspace_id,
                     "name": product.name,
                     "description": product.description or "",
-                    "metadata": product.metadata or {},
+                    "metadata": base_meta,
                     "source_type": "web_scraping",
                     "source_job_id": job_id,
                     "import_batch_id": f"scraping_{session_id}",
+                    "scrape_session_id": session_id,
                     "source_url": source_url,
                     "source_reference": session_id,
                     "confidence_score": product.confidence,

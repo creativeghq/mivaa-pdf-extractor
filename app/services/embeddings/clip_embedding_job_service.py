@@ -62,10 +62,10 @@ class CLIPEmbeddingJobService:
             job_data = {
                 'job_type': 'clip_embedding_generation',
                 'status': 'pending',
-                'priority': priority,
-                'payload': {
+                'metadata': {
                     'document_id': document_id,
-                    'workspace_id': workspace_id
+                    'workspace_id': workspace_id,
+                    'priority': priority
                 },
                 'created_at': datetime.utcnow().isoformat(),
                 'updated_at': datetime.utcnow().isoformat()
@@ -508,14 +508,14 @@ class CLIPEmbeddingJobService:
             if metadata:
                 # Get current metadata
                 result = self.supabase.client.table('background_jobs')\
-                    .select('payload')\
+                    .select('metadata')\
                     .eq('id', job_id)\
                     .single()\
                     .execute()
 
-                current_payload = result.data.get('payload', {}) if result.data else {}
+                current_payload = result.data.get('metadata', {}) if result.data else {}
                 current_payload.update(metadata)
-                update_data['payload'] = current_payload
+                update_data['metadata'] = current_payload
 
             self.supabase.client.table('background_jobs')\
                 .update(update_data)\
