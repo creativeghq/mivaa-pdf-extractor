@@ -94,6 +94,24 @@ IMAGE_TO_IMAGE_MODELS = [
     {"id": "interiorly-gen1-dev", "name": "Interiorly Gen1 Dev", "provider": "replicate", "model": "julian-at/interiorly-gen1-dev", "version": "5e3080d1b308e80197b32f0ce638daa8a329d0cf42068739723d8259e44b445e", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.015,
      "input_schema": "flux_lora_interior"},
     {"id": "designer-architecture", "name": "Designer Architecture", "provider": "replicate", "model": "davisbrown/designer-architecture", "version": "0d6f0893b05f14500ce03e45f54290cbffb907d14db49699f2823d0fd35def46", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.018},
+    # Restored: was returning 404 because no version hash — versioned endpoint now used (confirmed live 2026-03-22)
+    {"id": "interior-v2", "name": "Interior V2", "provider": "replicate",
+     "model": "jschoormans/interior-v2",
+     "version": "8372bd24c6011ea957a0861f0146671eed615e375f038c13259c1882e3c8bac7",
+     "capability": "image-to-image", "status": "working", "cost_per_generation": 0.02,
+     "input_schema": "interior_v2"},
+    # Restored: was returning 404 because no version hash — versioned endpoint now used (confirmed live 2026-03-22)
+    {"id": "adirik-interior-design", "name": "Adirik Interior Design", "provider": "replicate",
+     "model": "adirik/interior-design",
+     "version": "76604baddc85b1b4616e1c6475eca080da339c8875bd4996705440484a6eac38",
+     "capability": "image-to-image", "status": "working", "cost_per_generation": 0.02,
+     "input_schema": "adirik_interior"},
+    # Restored: was timing out with 50 steps — reduced to 30 (model still live, image param is "input" not "image")
+    {"id": "erayyavuz-interior-ai", "name": "Interior AI", "provider": "replicate",
+     "model": "erayyavuz/interior-ai",
+     "version": "e299c531485aac511610a878ef44b554381355de5ee032d109fcae5352f39fa9",
+     "capability": "image-to-image", "status": "working", "cost_per_generation": 0.02,
+     "input_schema": "interior_ai"},
     # Flux LoRA interior models
     {"id": "interor-2", "name": "Interior 2 (Flux)", "provider": "replicate", "model": "doobls-ai/interor-2",
      "version": "91f2ef63c76a73d2ec4c67cf7b2a9672e074046cf4fde1d98e46a5829f7ea68b",
@@ -118,11 +136,6 @@ IMAGE_TO_IMAGE_MODELS = [
      "version": "a3c091059a25590ce2d5ea13651fab63f447f21760e50c358d4b850e844f59ee",
      "capability": "image-to-image", "status": "working", "cost_per_generation": 0.14,
      "input_schema": "sdxl_interior"},
-    # Removed — confirmed dead via DB logs (2026-03-22):
-    # "interior-v2"          → 404 Not Found (model deleted from Replicate)
-    # "adirik-interior-design" → 404 Not Found (model deleted from Replicate)
-    # "erayyavuz-interior-ai"  → consistent timeout every run
-    # "gemini-interior"        → 401 Unauthorized (agent path handles Gemini via generate_gemini tool)
 ]
 
 # Combined list
@@ -192,7 +205,8 @@ def _build_model_input(
 
     if schema == "interior_ai":
         # erayyavuz/interior-ai: image param is 'input' (not 'image'), supports strength/guidance/steps
-        data = {"prompt": prompt, "num_inference_steps": 50, "guidance_scale": 7.5, "strength": 0.8}
+        # Reduced to 30 steps (was 50) to avoid Replicate polling timeout
+        data = {"prompt": prompt, "num_inference_steps": 30, "guidance_scale": 7.5, "strength": 0.8}
         if image_url:
             data["input"] = image_url  # NOTE: 'input', not 'image'
         return data
@@ -320,8 +334,9 @@ async def generate_with_replicate(model: dict, prompt: str, width: int, height: 
                 result = response.json()
                 prediction_id = result["id"]
 
-                # Poll for completion
-                max_attempts = 60
+                # Poll for completion — 90 attempts × 2s = 180s max
+                # erayyavuz/interior-ai takes ~65s compute + Replicate queue time
+                max_attempts = 90
                 for _ in range(max_attempts):
                     status_response = await client.get(
                         f"https://api.replicate.com/v1/predictions/{prediction_id}",
