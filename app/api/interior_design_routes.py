@@ -81,14 +81,6 @@ def _build_generation_prompt(
     return " ".join(parts)
 
 # Model configurations - All Replicate models
-# Gemini model — calls generate-interior-gemini edge function, appears in the same results grid
-GEMINI_MODEL = {
-    "id": "gemini-interior", "name": "Gemini AI Design", "provider": "gemini",
-    "model": "gemini-3.1-flash-image-preview", "capability": "both",
-    "cost_per_generation": 0.0,  # credits handled by the edge function internally
-    "input_schema": "gemini_interior",
-}
-
 # Text-to-Image Models (for prompts without reference images)
 TEXT_TO_IMAGE_MODELS = [
     {"id": "flux-dev", "name": "FLUX.1-dev", "provider": "replicate", "model": "black-forest-labs/flux-dev", "capability": "text-to-image", "cost_per_generation": 0.025},
@@ -98,19 +90,11 @@ TEXT_TO_IMAGE_MODELS = [
 
 # Image-to-Image Models (for interior design transformation with reference images)
 IMAGE_TO_IMAGE_MODELS = [
-    # Working models - recommended for production
     {"id": "comfyui-interior-remodel", "name": "ComfyUI Interior Remodel", "provider": "replicate", "model": "jschoormans/comfyui-interior-remodel", "version": "2a360362540e1f6cfe59c9db4aa8aa9059233d40e638aae0cdeb6b41f3d0dcce", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.02, "input_schema": "comfyui_interior"},
     {"id": "interiorly-gen1-dev", "name": "Interiorly Gen1 Dev", "provider": "replicate", "model": "julian-at/interiorly-gen1-dev", "version": "5e3080d1b308e80197b32f0ce638daa8a329d0cf42068739723d8259e44b445e", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.015,
      "input_schema": "flux_lora_interior"},
     {"id": "designer-architecture", "name": "Designer Architecture", "provider": "replicate", "model": "davisbrown/designer-architecture", "version": "0d6f0893b05f14500ce03e45f54290cbffb907d14db49699f2823d0fd35def46", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.018},
-    # Restored models — were failing due to wrong generic params, now use per-model input schemas
-    {"id": "adirik-interior-design", "name": "Adirik Interior Design", "provider": "replicate", "model": "adirik/interior-design", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.02,
-     "input_schema": "adirik_interior"},
-    {"id": "erayyavuz-interior-ai", "name": "Interior AI", "provider": "replicate", "model": "erayyavuz/interior-ai", "version": "e299c531485aac511610a878ef44b554381355de5ee032d109fcae5352f39fa9", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.02,
-     "input_schema": "interior_ai"},
-    {"id": "interior-v2", "name": "Interior V2", "provider": "replicate", "model": "jschoormans/interior-v2", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.02,
-     "input_schema": "interior_v2"},
-    # New Flux LoRA interior models
+    # Flux LoRA interior models
     {"id": "interor-2", "name": "Interior 2 (Flux)", "provider": "replicate", "model": "doobls-ai/interor-2",
      "version": "91f2ef63c76a73d2ec4c67cf7b2a9672e074046cf4fde1d98e46a5829f7ea68b",
      "capability": "image-to-image", "status": "working", "cost_per_generation": 0.014,
@@ -119,7 +103,7 @@ IMAGE_TO_IMAGE_MODELS = [
      "version": "ba0425bc2e4bebafa8bd918519fdf3b5a022969a6a7c8ba0746b807bb5b541a3",
      "capability": "image-to-image", "status": "working", "cost_per_generation": 0.014,
      "input_schema": "flux_lora_interior", "trigger_word": "INTR"},
-    # New SD-based img2img models
+    # SD-based img2img models
     {"id": "stable-interiors-v2-pb", "name": "Stable Interiors V2", "provider": "replicate", "model": "pointblack/stable-interiors-v2",
      "version": "569b1bd6e4df6c9c900ad932d4a3a9f05585fac957dc6bc627aa1654853a97b5",
      "capability": "image-to-image", "status": "working", "cost_per_generation": 0.011,
@@ -128,16 +112,21 @@ IMAGE_TO_IMAGE_MODELS = [
      "version": "4836eb257a4fb8b87bac9eacbef9292ee8e1a497398ab96207067403a4be2daf",
      "capability": "image-to-image", "status": "working", "cost_per_generation": 0.011,
      "input_schema": "stable_interiors"},
-    # SDXL interior — image-to-image (requires reference image for depth/ControlNet), uses versioned endpoint
+    # SDXL interior — requires reference image for depth/ControlNet
     {"id": "interior-design-sdxl", "name": "Interior Design SDXL", "provider": "replicate",
      "model": "rocketdigitalai/interior-design-sdxl",
      "version": "a3c091059a25590ce2d5ea13651fab63f447f21760e50c358d4b850e844f59ee",
      "capability": "image-to-image", "status": "working", "cost_per_generation": 0.14,
      "input_schema": "sdxl_interior"},
+    # Removed — confirmed dead via DB logs (2026-03-22):
+    # "interior-v2"          → 404 Not Found (model deleted from Replicate)
+    # "adirik-interior-design" → 404 Not Found (model deleted from Replicate)
+    # "erayyavuz-interior-ai"  → consistent timeout every run
+    # "gemini-interior"        → 401 Unauthorized (agent path handles Gemini via generate_gemini tool)
 ]
 
-# Combined list — Gemini always included first so it appears at the top of the grid
-ALL_MODELS = [GEMINI_MODEL] + TEXT_TO_IMAGE_MODELS + IMAGE_TO_IMAGE_MODELS
+# Combined list
+ALL_MODELS = TEXT_TO_IMAGE_MODELS + IMAGE_TO_IMAGE_MODELS
 
 class InteriorRequest(BaseModel):
     prompt: str = Field(..., description="Interior design description")
@@ -376,6 +365,7 @@ async def generate_with_gemini_edge(
     image_url: Optional[str],
     user_id: str,
     workspace_id: Optional[str],
+    model_tier: str = "fast",
 ) -> str:
     """
     Call the generate-interior-gemini Supabase edge function.
@@ -391,7 +381,7 @@ async def generate_with_gemini_edge(
         "prompt": prompt,
         "room_type": room_type,
         "style": style,
-        "model_tier": "fast",
+        "model_tier": model_tier,
         "user_id": user_id,
         "workspace_id": workspace_id,
     }
@@ -503,16 +493,11 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
     """Background task with parallel processing, retry logic, timeout, and error handling"""
 
     try:
-        # Get Replicate API token (only required for Replicate models, not Gemini)
         replicate_token = os.getenv("REPLICATE_API_TOKEN")
-        replicate_models = [m for m in models_to_use if m.get("provider") != "gemini"]
-        if not replicate_token and replicate_models:
-            # Fail Replicate models but let Gemini continue
-            for m in replicate_models:
+        if not replicate_token:
+            for m in models_to_use:
                 await atomic_update_model_result(job_id, m['id'], False, None, 0.0, "REPLICATE_API_TOKEN not configured")
-            models_to_use = [m for m in models_to_use if m.get("provider") == "gemini"]
-            if not models_to_use:
-                return
+            return
 
         # Semaphore to limit concurrent requests (3 at a time)
         semaphore = asyncio.Semaphore(3)
@@ -522,47 +507,35 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
                 try:
                     print(f"🎨 Starting generation for {model['name']}")
 
-                    if model.get("provider") == "gemini":
-                        # Gemini: call edge function directly — returns permanent URL, handles its own credits
-                        permanent_url = await generate_with_gemini_edge(
-                            enhanced_prompt, request.room_type, request.style,
-                            request.image, request.user_id, request.workspace_id,
-                        )
-                    else:
-                        # Generate with Replicate
-                        temp_image_url = await generate_with_replicate(
-                            model, enhanced_prompt, request.width, request.height,
-                            request.image, replicate_token, max_retries=3,
-                            room_type=request.room_type, style=request.style,
-                        )
-                        print(f"✅ {model['name']} generation completed, uploading to Supabase Storage...")
-                        permanent_url = await download_and_upload_to_supabase(temp_image_url, job_id, model['id'])
+                    # All models in the grid are Replicate
+                    temp_image_url = await generate_with_replicate(
+                        model, enhanced_prompt, request.width, request.height,
+                        request.image, replicate_token, max_retries=3,
+                        room_type=request.room_type, style=request.style,
+                    )
+                    print(f"✅ {model['name']} generation completed, uploading to Supabase Storage...")
+                    permanent_url = await download_and_upload_to_supabase(temp_image_url, job_id, model['id'])
 
                     cost = 0.0
-                    if model.get("provider") != "gemini":
-                        # Debit credits via shared layer (Replicate models only)
-                        # Gemini credits are handled internally by the edge function
-                        credits_service = get_credits_service()
-                        debit_result = await credits_service.debit_credits_for_replicate(
-                            user_id=request.user_id,
-                            workspace_id=request.workspace_id,
-                            operation_type="interior_design",
-                            model_name=model['id'],
-                            num_generations=1,
-                            job_id=job_id,
-                            metadata={
-                                'room_type': request.room_type,
-                                'style': request.style,
-                                'model_display_name': model['name'],
-                            }
-                        )
-                        cost = debit_result.get('billed_cost_usd', model.get('cost_per_generation', 0.0))
-                        if debit_result.get('success'):
-                            print(f"✅ {model['name']} completed + credits debited (${cost:.3f}, {debit_result.get('credits_debited', 0):.1f} credits)")
-                        else:
-                            print(f"⚠️ {model['name']} completed but credit debit failed: {debit_result.get('error')}")
+                    credits_service = get_credits_service()
+                    debit_result = await credits_service.debit_credits_for_replicate(
+                        user_id=request.user_id,
+                        workspace_id=request.workspace_id,
+                        operation_type="interior_design",
+                        model_name=model['id'],
+                        num_generations=1,
+                        job_id=job_id,
+                        metadata={
+                            'room_type': request.room_type,
+                            'style': request.style,
+                            'model_display_name': model['name'],
+                        }
+                    )
+                    cost = debit_result.get('billed_cost_usd', model.get('cost_per_generation', 0.0))
+                    if debit_result.get('success'):
+                        print(f"✅ {model['name']} completed + credits debited (${cost:.3f}, {debit_result.get('credits_debited', 0):.1f} credits)")
                     else:
-                        print(f"✅ {model['name']} completed (credits handled by edge function)")
+                        print(f"⚠️ {model['name']} completed but credit debit failed: {debit_result.get('error')}")
 
                     await atomic_update_model_result(job_id, model['id'], True, permanent_url, cost, None)
                 except Exception as e:
@@ -610,11 +583,12 @@ async def create_interior_design(request: InteriorRequest):
         # User specified specific models
         models_to_use = [m for m in ALL_MODELS if m["id"] in request.models]
     elif request.image:
-        # Image-to-image: Gemini first, then all working image-to-image models
-        models_to_use = [GEMINI_MODEL] + [m for m in IMAGE_TO_IMAGE_MODELS if m.get("status") != "failing"]
+        # Image-to-image: all working image-to-image models
+        # (Gemini is handled separately by the agent via generate_gemini tool)
+        models_to_use = [m for m in IMAGE_TO_IMAGE_MODELS if m.get("status") != "failing"]
     else:
-        # Text-to-image: Gemini first, then all text-to-image models
-        models_to_use = [GEMINI_MODEL] + TEXT_TO_IMAGE_MODELS
+        # Text-to-image: all text-to-image models
+        models_to_use = list(TEXT_TO_IMAGE_MODELS)
 
     # Apply exclusions (e.g. gemini-interior excluded when generate_gemini tool handles it separately)
     if request.exclude_models:
