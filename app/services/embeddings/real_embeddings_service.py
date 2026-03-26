@@ -107,21 +107,6 @@ class RealEmbeddingsService:
         # Debug logging for Voyage AI configuration
         self.logger.info(f"🔧 Voyage AI Config: enabled={self.voyage_enabled}, api_key={'SET' if self.voyage_api_key else 'NOT SET'}, model={self.voyage_model}")
 
-        # Initialize embedding cache (Phase 1 optimization)
-        self._embedding_cache = None
-        if config and getattr(config, 'enable_embedding_cache', False):
-            try:
-                from app.services.embeddings.embedding_cache_service import EmbeddingCacheService
-                redis_url = os.getenv("REDIS_URL")
-                self._embedding_cache = EmbeddingCacheService(
-                    redis_url=redis_url,
-                    ttl=getattr(config, 'embedding_cache_ttl', 86400),
-                    max_size=getattr(config, 'embedding_cache_max_size', 10000),
-                    enabled=True
-                )
-                self.logger.info("✅ Embedding cache initialized")
-            except Exception as e:
-                self.logger.warning(f"Failed to initialize embedding cache: {e}")
     
     async def generate_all_embeddings(
         self,
@@ -800,14 +785,6 @@ class RealEmbeddingsService:
                 # ✅ CRITICAL FIX: Map 1536D (OpenAI default) to 1024D (Voyage AI max)
                 voyage_dimensions = 1024 if dimensions == 1536 else dimensions
 
-                # Check cache first
-                model_name = f"voyage-3.5-{voyage_dimensions}d-{input_type}"
-                if self._embedding_cache:
-                    cached_embedding = await self._embedding_cache.get(text, model_name)
-                    if cached_embedding is not None:
-                        self.logger.debug(f"✅ Cache hit for Voyage embedding ({voyage_dimensions}D, {input_type})")
-                        return cached_embedding.tolist()
-
                 # Call Voyage AI API
                 async with httpx.AsyncClient() as client:
                     request_data = {
@@ -837,10 +814,6 @@ class RealEmbeddingsService:
                     if response.status_code == 200:
                         data = response.json()
                         embedding = data["data"][0]["embedding"]
-
-                        # Cache the result
-                        if self._embedding_cache:
-                            await self._embedding_cache.set(text, model_name, np.array(embedding))
 
                         # Log AI call with proper cost calculation
                         latency_ms = int((time.time() - start_time) * 1000)
@@ -920,14 +893,6 @@ class RealEmbeddingsService:
             # OpenAI text-embedding-3-small supports custom dimensions via 'dimensions' parameter
             openai_dimensions = dimensions  # Use requested dimensions (1024D for chunks)
 
-            # Check cache first
-            model_name = f"text-embedding-3-small-{openai_dimensions}d"
-            if self._embedding_cache:
-                cached_embedding = await self._embedding_cache.get(text, model_name)
-                if cached_embedding is not None:
-                    self.logger.debug(f"✅ Cache hit for OpenAI embedding ({openai_dimensions}D)")
-                    return cached_embedding.tolist()
-
             # Call OpenAI API
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -945,10 +910,6 @@ class RealEmbeddingsService:
                 if response.status_code == 200:
                     data = response.json()
                     embedding = data["data"][0]["embedding"]
-
-                    # Cache the result
-                    if self._embedding_cache:
-                        await self._embedding_cache.set(text, model_name, np.array(embedding))
 
                     # Log AI call
                     latency_ms = int((time.time() - start_time) * 1000)
