@@ -100,7 +100,7 @@ class StuckJobAnalyzer:
             now = datetime.utcnow()
             duration = (now - updated_at).total_seconds() / 60
             return round(duration, 2)
-        except:
+        except Exception:
             return 0.0
     
     def _analyze_stage_progression(self, checkpoints: List[Dict[str, Any]]) -> Dict[str, Any]:

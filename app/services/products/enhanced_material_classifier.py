@@ -246,7 +246,7 @@ Respond ONLY with valid JSON, no additional text."""
                         error_data = response.json()
                         if 'error' in error_data:
                             error_msg += f": {error_data['error']}"
-                    except:
+                    except Exception:
                         error_msg += ": Unable to parse error response"
                     self.logger.error(error_msg)
                     return None

@@ -55,34 +55,36 @@ class ImageDownloadService:
             return []
         
         max_concurrent = max_concurrent or self.max_concurrent
-        logger.info(f"📥 Downloading {len(urls)} images (max {max_concurrent} concurrent)")
-        
+        logger.info(f"[{job_id}] 📥 Downloading {len(urls)} images (max {max_concurrent} concurrent)")
+
         # Create semaphore to limit concurrent downloads
         semaphore = asyncio.Semaphore(max_concurrent)
-        
-        # Download all images concurrently
-        tasks = [
-            self._download_single_image(url, job_id, workspace_id, semaphore, index)
-            for index, url in enumerate(urls)
-        ]
-        
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
+
+        # Shared aiohttp session for all downloads in this batch (avoids TCP connection waste)
+        connector = aiohttp.TCPConnector(limit=max_concurrent)
+        async with aiohttp.ClientSession(connector=connector) as session:
+            tasks = [
+                self._download_single_image(url, job_id, workspace_id, semaphore, index, session)
+                for index, url in enumerate(urls)
+            ]
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
         # Filter out failed downloads
         successful_downloads = []
         failed_count = 0
-        
+
         for result in results:
             if isinstance(result, Exception):
-                logger.error(f"❌ Image download failed: {result}")
+                logger.error(f"[{job_id}] ❌ Image download task raised exception: {result}", exc_info=result)
                 failed_count += 1
             elif result and result.get('success'):
                 successful_downloads.append(result)
             else:
                 failed_count += 1
-        
-        logger.info(f"✅ Downloaded {len(successful_downloads)}/{len(urls)} images ({failed_count} failed)")
-        
+
+        logger.info(f"[{job_id}] ✅ Downloaded {len(successful_downloads)}/{len(urls)} images ({failed_count} failed)")
+
         return successful_downloads
 
     async def _download_single_image(
@@ -91,7 +93,8 @@ class ImageDownloadService:
         job_id: str,
         workspace_id: str,
         semaphore: asyncio.Semaphore,
-        index: int
+        index: int,
+        session: aiohttp.ClientSession = None
     ) -> Dict[str, Any]:
         """
         Download a single image with retry logic.
@@ -104,6 +107,7 @@ class ImageDownloadService:
             workspace_id: Workspace ID
             semaphore: Semaphore for concurrency control
             index: Image index
+            session: Shared aiohttp session for connection reuse (created per batch)
 
         Returns:
             Image reference with storage URL
@@ -111,61 +115,55 @@ class ImageDownloadService:
         async with semaphore:
             for attempt in range(self.max_retries):
                 try:
-                    # Validate URL
-                    if not await self.validate_image_url(url):
+                    # Validate URL format before making any network request
+                    if not self.validate_image_url(url):
                         raise ValueError(f"Invalid image URL: {url}")
 
-                    # Download image
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(url, timeout=aiohttp.ClientTimeout(total=self.timeout)) as response:
-                            # Handle HTTP 429 rate limiting with longer backoff
-                            if response.status == 429:
-                                # Get Retry-After header if available
-                                retry_after = response.headers.get('Retry-After')
-                                if retry_after:
-                                    try:
-                                        wait_time = int(retry_after)
-                                    except ValueError:
-                                        # Retry-After might be a date string, use default
-                                        wait_time = 30 + (attempt * 30)  # 30s, 60s, 90s...
-                                else:
-                                    # No Retry-After header, use longer exponential backoff
-                                    wait_time = 30 + (attempt * 30)  # 30s, 60s, 90s...
+                    # Use the shared session (passed from download_images batch call)
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=self.timeout)) as response:
+                        # Handle HTTP 429 rate limiting with longer backoff
+                        if response.status == 429:
+                            retry_after = response.headers.get('Retry-After')
+                            try:
+                                wait_time = int(retry_after) if retry_after else 30 + (attempt * 30)
+                            except ValueError:
+                                wait_time = 30 + (attempt * 30)
+                            logger.warning(
+                                f"[{job_id}] ⏳ Rate limited (429) for {url[:80]}... "
+                                f"Waiting {wait_time}s before retry {attempt + 1}/{self.max_retries}"
+                            )
+                            await asyncio.sleep(wait_time)
+                            raise ValueError(f"HTTP 429 Rate Limited: {url}")
 
-                                logger.warning(
-                                    f"⏳ Rate limited (429) for {url[:80]}... "
-                                    f"Waiting {wait_time}s before retry {attempt + 1}/{self.max_retries}"
-                                )
-                                await asyncio.sleep(wait_time)
-                                raise ValueError(f"HTTP 429 Rate Limited: {url}")
+                        if response.status != 200:
+                            raise ValueError(f"HTTP {response.status}: {url}")
 
-                            if response.status != 200:
-                                raise ValueError(f"HTTP {response.status}: {url}")
+                        # Check content type — accept any image/* or octet-stream (some CDNs omit MIME)
+                        content_type = response.headers.get('Content-Type', 'image/jpeg')
+                        if not content_type.startswith('image/') and 'octet-stream' not in content_type:
+                            raise ValueError(f"Invalid content type: {content_type}")
 
-                            # Check content type
-                            content_type = response.headers.get('Content-Type', '')
-                            if not content_type.startswith('image/'):
-                                raise ValueError(f"Invalid content type: {content_type}")
+                        # Check declared content-length before reading (fast fail for oversized files)
+                        content_length = response.headers.get('Content-Length')
+                        if content_length:
+                            try:
+                                if int(content_length) > self.max_file_size:
+                                    raise ValueError(f"File too large: {content_length} bytes")
+                            except (ValueError, TypeError):
+                                pass  # Malformed header — proceed and check after read
 
-                            # Check file size
-                            content_length = response.headers.get('Content-Length')
-                            if content_length and int(content_length) > self.max_file_size:
-                                raise ValueError(f"File too large: {content_length} bytes")
+                        # Read image data
+                        image_data = await response.read()
 
-                            # Read image data
-                            image_data = await response.read()
+                        if len(image_data) == 0:
+                            raise ValueError("Empty image data")
 
-                            # Validate image data
-                            if len(image_data) == 0:
-                                raise ValueError("Empty image data")
+                        if len(image_data) > self.max_file_size:
+                            raise ValueError(f"File too large: {len(image_data)} bytes")
 
-                            if len(image_data) > self.max_file_size:
-                                raise ValueError(f"File too large: {len(image_data)} bytes")
-
-                    # Generate filename
+                    # Generate filename and store
                     filename = self._generate_filename(url, index)
 
-                    # Store in Supabase Storage
                     storage_result = await self.store_image_in_storage(
                         image_data=image_data,
                         filename=filename,
@@ -177,7 +175,7 @@ class ImageDownloadService:
                     if not storage_result.get('success'):
                         raise ValueError(f"Storage upload failed: {storage_result.get('error')}")
 
-                    logger.info(f"✅ Downloaded image {index + 1}: {url[:100]}")
+                    logger.info(f"[{job_id}] ✅ Downloaded image {index + 1}: {url[:100]}")
 
                     return {
                         'success': True,
@@ -195,19 +193,14 @@ class ImageDownloadService:
                     is_rate_limit = "429" in error_str or "rate limit" in error_str.lower()
 
                     if attempt < self.max_retries - 1:
-                        # Use longer backoff for rate limiting
-                        if is_rate_limit:
-                            backoff_time = 30 + (attempt * 30)  # 30s, 60s, 90s for rate limits
-                        else:
-                            backoff_time = 2 ** attempt  # 1s, 2s, 4s for other errors
-
+                        backoff_time = 30 + (attempt * 30) if is_rate_limit else 2 ** attempt
                         logger.warning(
-                            f"⚠️ Retry {attempt + 1}/{self.max_retries} for {url[:80]}... "
+                            f"[{job_id}] ⚠️ Retry {attempt + 1}/{self.max_retries} for {url[:80]}... "
                             f"Error: {e}. Waiting {backoff_time}s"
                         )
                         await asyncio.sleep(backoff_time)
                     else:
-                        logger.error(f"❌ Failed to download {url} after {self.max_retries} attempts: {e}")
+                        logger.error(f"[{job_id}] ❌ Failed to download {url} after {self.max_retries} attempts: {e}")
                         return {
                             'success': False,
                             'original_url': url,
@@ -215,35 +208,44 @@ class ImageDownloadService:
                             'index': index
                         }
 
-    async def validate_image_url(self, url: str) -> bool:
+    def validate_image_url(self, url: str) -> bool:
         """
-        Validate image URL format.
-        
+        Validate that a URL is a plausible image URL before making a network request.
+
+        Intentionally permissive: CDN URLs often have no file extension (e.g.
+        https://cdn.example.com/media/product/12345). Content-type is checked
+        after download, so we only reject clearly non-image patterns here.
+
         Args:
             url: Image URL to validate
-            
+
         Returns:
-            True if valid, False otherwise
+            True if worth attempting to download, False otherwise
         """
         if not url or not isinstance(url, str):
             return False
-        
-        # Check if URL starts with http:// or https://
+
+        # Must be HTTP(S)
         if not url.startswith(('http://', 'https://')):
             return False
-        
-        # Check for common image extensions
-        valid_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg')
+
+        # Reject known non-image paths (documents, stylesheets, scripts, data URIs)
         url_lower = url.lower()
-        
-        # URL might have query parameters, so check before '?'
+        non_image_extensions = ('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.css', '.js', '.html', '.htm', '.xml', '.json')
         url_path = url_lower.split('?')[0]
-        
-        # Either has valid extension or is from known image hosting service
-        has_extension = any(url_path.endswith(ext) for ext in valid_extensions)
-        is_image_host = any(host in url_lower for host in ['imgur.com', 'cloudinary.com', 'unsplash.com'])
-        
-        return has_extension or is_image_host
+        if any(url_path.endswith(ext) for ext in non_image_extensions):
+            return False
+
+        # Must have a non-trivial path (not just a bare domain)
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            if not parsed.netloc or len(parsed.path) < 2:
+                return False
+        except Exception:
+            return False
+
+        return True
 
     async def store_image_in_storage(
         self,

@@ -33,25 +33,18 @@ from app.services.core.supabase_client import initialize_supabase, get_supabase_
 from app.monitoring import global_performance_monitor
 
 # Initialize Sentry for error tracking and monitoring
-sentry_sdk.init(
-    dsn=os.environ.get("SENTRY_DSN", "https://73f48f6581b882c707ded429e384fb8a@o4509716458045440.ingest.de.sentry.io/4510132019658832"),
-    # Add data like request headers and IP for users
-    send_default_pii=True,
-    # Set traces_sample_rate to 1.0 to capture 100% of transactions for performance monitoring
-    traces_sample_rate=1.0,
-    # Set profiles_sample_rate to 1.0 to profile 100% of sampled transactions
-    profiles_sample_rate=1.0,
-    # Environment tracking
-    environment="production",
-    # Enable logs to be sent to Sentry (CRITICAL for monitoring)
-    enable_logs=True,
-    # Capture all log levels (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-    _experiments={
-        "record_sql_params": True,
-    },
-    # Use default HTTP transport (connection pooling handled internally)
-    # transport=sentry_sdk.HttpTransport(),  # Not needed - uses default
-)
+# Full configuration is handled inside the lifespan() startup block below,
+# which uses settings.get_sentry_config() for proper env-driven values.
+# This early init is intentionally minimal — only DSN is set so that any
+# import-time exceptions are captured before lifespan runs.
+_early_sentry_dsn = os.environ.get("SENTRY_DSN")
+if _early_sentry_dsn:
+    sentry_sdk.init(
+        dsn=_early_sentry_dsn,
+        send_default_pii=False,
+        traces_sample_rate=0.0,   # No tracing until full init in lifespan
+        environment=os.environ.get("ENVIRONMENT", "development"),
+    )
 
 # Configure logging using the enhanced system
 configure_logging()
@@ -105,8 +98,10 @@ def signal_handler(signum, frame):
         except Exception as e:
             logger.error(f"Failed to log active jobs: {e}")
 
-    # Re-raise the signal to allow default handling
-    sys.exit(0)
+    # Do NOT call sys.exit() here — that would bypass FastAPI's lifespan
+    # shutdown handlers and skip resource cleanup.  Instead we set the flag
+    # (already done above) and let ASGI/uvicorn handle the graceful shutdown
+    # via its own signal forwarding.
 
 # Register signal handlers
 signal.signal(signal.SIGTERM, signal_handler)
@@ -317,10 +312,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to initialize job recovery: {e}", exc_info=True)
 
+    def _log_task_error(name: str):
+        """Return a done-callback that logs uncaught exceptions from background tasks."""
+        def _callback(task: asyncio.Task) -> None:
+            if not task.cancelled():
+                exc = task.exception()
+                if exc:
+                    logger.error(f"❌ Background task '{name}' raised an unhandled exception: {exc}", exc_info=exc)
+        return _callback
+
     # Initialize and start database health monitoring
     try:
         from app.services.core.database_health_service import database_health_service
-        asyncio.create_task(database_health_service.start())
+        t = asyncio.create_task(database_health_service.start())
+        t.add_done_callback(_log_task_error('database_health_service'))
         logger.info("✅ Database health monitoring started")
     except Exception as e:
         logger.error(f"❌ Failed to start database health monitoring: {e}", exc_info=True)
@@ -328,8 +333,8 @@ async def lifespan(app: FastAPI):
     # Initialize and start job monitor service
     try:
         from app.services.tracking.job_monitor_service import job_monitor_service
-        # Start job monitor in background
-        asyncio.create_task(job_monitor_service.start())
+        t = asyncio.create_task(job_monitor_service.start())
+        t.add_done_callback(_log_task_error('job_monitor_service'))
         logger.info("✅ Job monitor service started - monitoring every 60 seconds")
     except Exception as e:
         logger.error(f"❌ Failed to start job monitor service: {e}", exc_info=True)
@@ -349,7 +354,8 @@ async def lifespan(app: FastAPI):
                 
                 enabled=True
             )
-            asyncio.create_task(auto_scaler.start())
+            t = asyncio.create_task(auto_scaler.start())
+            t.add_done_callback(_log_task_error('endpoint_auto_scaler'))
             app.state.endpoint_auto_scaler = auto_scaler
             logger.info("✅ HuggingFace endpoint auto-scaler started")
         else:

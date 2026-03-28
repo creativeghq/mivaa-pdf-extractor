@@ -573,7 +573,7 @@ class DataImportService:
             product_record['import_batch_id'] = f"xml_{job_id}"
 
             # Insert product into database
-            insert_response = self.supabase.client.table('products').insert(product_record).execute()
+            insert_response = self.supabase.table('products').insert(product_record).execute()
 
             if not insert_response.data:
                 raise ValueError("Failed to insert product - no data returned")
@@ -671,20 +671,23 @@ class DataImportService:
 
                 logger.info(f"   ✅ Saved {result.get('images_saved', 0)} images with {result.get('clip_embeddings_generated', 0)} CLIP embeddings")
 
-                # Phase 2: Queue understanding embeddings (Qwen3-VL → Voyage AI 1024D)
+                # Phase 2: Qwen3-VL vision analysis → understanding embeddings (1024D)
+                # Fire as a non-blocking background task so product creation continues
                 try:
-                    phase2_job_id = await self.clip_job_service.queue_clip_generation_job(
-                        document_id=product_id,
-                        workspace_id=workspace_id,
-                        priority="normal"
+                    from app.services.images.background_image_processor import start_background_image_processing
+                    from app.services.core.supabase_client import get_supabase_client as _get_sb
+                    _phase2_task = asyncio.create_task(
+                        start_background_image_processing(product_id, _get_sb())
                     )
-                    if phase2_job_id:
-                        logger.info(f"   🔬 Queued Phase 2 understanding embeddings: job {phase2_job_id}")
+                    _phase2_task.add_done_callback(lambda t: logger.error(
+                        f"❌ Phase 2 background processing failed for product {product_id}: {t.exception()}", exc_info=t.exception()
+                    ) if not t.cancelled() and t.exception() else None)
+                    logger.info(f"   🧠 Triggered Phase 2 Qwen3-VL + understanding embeddings for product {product_id}")
                 except Exception as e:
-                    logger.warning(f"   ⚠️ Failed to queue Phase 2 for product {product_id}: {e}")
+                    logger.warning(f"   ⚠️ Phase 2 trigger failed (non-blocking) for product {product_id}: {e}", exc_info=True)
 
                 # Get saved image IDs for associations
-                saved_response = self.supabase.client.table('document_images')\
+                saved_response = self.supabase.table('document_images')\
                     .select('id')\
                     .eq('document_id', product_id)\
                     .order('created_at', desc=True)\
@@ -713,7 +716,7 @@ class DataImportService:
                         })
 
                     if relationship_records:
-                        self.supabase.client.table('image_product_associations').insert(relationship_records).execute()
+                        self.supabase.table('image_product_associations').insert(relationship_records).execute()
                         logger.info(f"   ✅ Created {len(relationship_records)} product-image relationships")
 
         except Exception as e:
@@ -866,7 +869,7 @@ class DataImportService:
     async def _get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get job details from database."""
         try:
-            response = self.supabase.client.table('data_import_jobs').select('*').eq('id', job_id).single().execute()
+            response = self.supabase.table('data_import_jobs').select('*').eq('id', job_id).single().execute()
             return response.data
         except Exception as e:
             logger.error(f"Failed to get job {job_id}: {e}")
@@ -883,7 +886,7 @@ class DataImportService:
                 if isinstance(value, datetime):
                     update_data[key] = value.isoformat()
             
-            self.supabase.client.table('data_import_jobs').update(update_data).eq('id', job_id).execute()
+            self.supabase.table('data_import_jobs').update(update_data).eq('id', job_id).execute()
             logger.info(f"✅ Updated job {job_id} status to {status}")
         except Exception as e:
             logger.error(f"Failed to update job status: {e}")
@@ -903,7 +906,7 @@ class DataImportService:
                 progress_percent = int((processed / total) * 100) if total > 0 else 0
 
             # Update data_import_jobs table
-            self.supabase.client.table('data_import_jobs').update({
+            self.supabase.table('data_import_jobs').update({
                 'processed_products': processed,
                 'failed_products': failed,
                 'metadata': {
@@ -913,12 +916,12 @@ class DataImportService:
             }).eq('id', job_id).execute()
 
             # 🆕 Get background_job_id from data_import_jobs
-            job_response = self.supabase.client.table('data_import_jobs').select('background_job_id').eq('id', job_id).single().execute()
+            job_response = self.supabase.table('data_import_jobs').select('background_job_id').eq('id', job_id).single().execute()
             background_job_id = job_response.data.get('background_job_id') if job_response.data else None
 
             if background_job_id:
                 # 🆕 Update job_progress table (upsert)
-                self.supabase.client.table('job_progress').upsert({
+                self.supabase.table('job_progress').upsert({
                     'job_id': background_job_id,
                     'stage': f'xml_import_{stage}',
                     'progress_percent': progress_percent,
@@ -932,7 +935,7 @@ class DataImportService:
                 }, on_conflict='job_id,stage').execute()
 
                 # 🆕 Update background_jobs heartbeat and progress
-                self.supabase.client.table('background_jobs').update({
+                self.supabase.table('background_jobs').update({
                     'progress_percent': progress_percent,
                     'last_heartbeat': datetime.utcnow().isoformat(),
                     'metadata': {
@@ -963,7 +966,7 @@ class DataImportService:
         """
         try:
             # Get background_job_id from data_import_jobs
-            job_response = self.supabase.client.table('data_import_jobs').select('background_job_id').eq('id', job_id).single().execute()
+            job_response = self.supabase.table('data_import_jobs').select('background_job_id').eq('id', job_id).single().execute()
             background_job_id = job_response.data.get('background_job_id') if job_response.data else None
 
             if not background_job_id:
@@ -984,7 +987,7 @@ class DataImportService:
             update_data['last_heartbeat'] = datetime.utcnow().isoformat()
 
             # Update background_jobs table
-            self.supabase.client.table('background_jobs').update(update_data).eq('id', background_job_id).execute()
+            self.supabase.table('background_jobs').update(update_data).eq('id', background_job_id).execute()
             logger.info(f"✅ Updated background_job {background_job_id} status to {status}")
 
         except Exception as e:
@@ -1001,7 +1004,7 @@ class DataImportService:
     ) -> None:
         """Record import history entry."""
         try:
-            self.supabase.client.table('data_import_history').insert({
+            self.supabase.table('data_import_history').insert({
                 'job_id': job_id,
                 'source_data': source_data,
                 'normalized_data': normalized_data,

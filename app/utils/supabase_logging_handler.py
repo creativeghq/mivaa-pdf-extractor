@@ -146,7 +146,7 @@ class SupabaseLoggingHandler(logging.Handler):
                         batch = []
                         last_flush = time.time()
                         
-                except:
+                except Exception:
                     # Timeout - continue loop
                     pass
                     

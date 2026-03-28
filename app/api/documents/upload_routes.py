@@ -308,7 +308,7 @@ async def upload_document(
         # Register temp file with ResourceManager for cleanup tracking
         resource_manager = get_resource_manager()
         import asyncio
-        asyncio.create_task(
+        _reg_task = asyncio.create_task(
             resource_manager.register_resource(
                 resource_id=f"temp_pdf_{document_id}",
                 resource_type="temp_file",
@@ -317,6 +317,9 @@ async def upload_document(
                 metadata={"filename": filename, "source": "upload_routes"}
             )
         )
+        _reg_task.add_done_callback(lambda t: logger.error(
+            f"❌ ResourceManager registration failed: {t.exception()}", exc_info=t.exception()
+        ) if not t.cancelled() and t.exception() else None)
         logger.info(f"✅ Registered temp PDF with ResourceManager: {file_path}")
 
         # Get Supabase client

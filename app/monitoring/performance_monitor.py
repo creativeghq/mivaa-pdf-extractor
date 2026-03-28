@@ -128,6 +128,9 @@ class SystemMonitor:
         
         self.monitoring = True
         self.monitor_task = asyncio.create_task(self._monitor_loop(interval))
+        self.monitor_task.add_done_callback(lambda t: logger.error(
+            f"❌ Performance monitor task failed: {t.exception()}", exc_info=t.exception()
+        ) if not t.cancelled() and t.exception() else None)
         logger.info(f"Started system monitoring with {interval}s interval")
     
     async def stop_monitoring(self):

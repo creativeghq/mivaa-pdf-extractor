@@ -344,7 +344,7 @@ class RealQualityScoringService:
                 return 0.6
             else:
                 return 0.4
-        except:
+        except Exception:
             return 0.5
     
     def _calculate_embedding_coverage(self, image_data: Dict[str, Any]) -> float:
@@ -393,7 +393,7 @@ class RealQualityScoringService:
             structure_score = 1.0 if 50 <= avg_sentence_length <= 150 else 0.7
             
             return (keyword_score * 0.6 + structure_score * 0.4)
-        except:
+        except Exception:
             return 0.5
     
     def _calculate_boundary_quality(self, content: str) -> float:
@@ -410,7 +410,7 @@ class RealQualityScoringService:
             capital_score = 1.0 if starts_with_capital else 0.7
             
             return (punctuation_score * 0.6 + capital_score * 0.4)
-        except:
+        except Exception:
             return 0.5
 
 

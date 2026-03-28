@@ -993,7 +993,7 @@ class RAGService:
                 from .search_query_tracker import get_search_tracker
                 tracker = get_search_tracker()
                 # Track asynchronously (don't wait)
-                asyncio.create_task(tracker.track_query(
+                _track_task = asyncio.create_task(tracker.track_query(
                     workspace_id=workspace_id,
                     query_text=query,
                     query_metadata=material_filters,
@@ -1001,6 +1001,9 @@ class RAGService:
                     result_count=len(results),
                     response_time_ms=int((time.time() - start_time) * 1000)
                 ))
+                _track_task.add_done_callback(lambda t: self.logger.warning(
+                    f"Search tracking task failed: {t.exception()}"
+                ) if not t.cancelled() and t.exception() else None)
             except Exception as e:
                 self.logger.warning(f"Search tracking failed: {e}")
 

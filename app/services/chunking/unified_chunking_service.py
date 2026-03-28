@@ -861,7 +861,7 @@ class UnifiedChunkingService:
             )
 
             return round(quality_score, 3)
-        except:
+        except Exception:
             return 0.5
 
     def _get_content_hash(self, content: str) -> str:

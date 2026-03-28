@@ -196,7 +196,7 @@ class RealEmbeddingsService:
                     try:
                         pil_image_for_reuse.close()
                         self.logger.debug("✅ Closed PIL image after all embeddings generated")
-                    except:
+                    except Exception:
                         pass
 
             # 3. Understanding Embedding (1024D) - Qwen vision_analysis → Voyage AI
@@ -1110,7 +1110,7 @@ class RealEmbeddingsService:
             if not image_was_provided and pil_image and hasattr(pil_image, 'close'):
                 try:
                     pil_image.close()
-                except:
+                except Exception:
                     pass
 
         return None, None

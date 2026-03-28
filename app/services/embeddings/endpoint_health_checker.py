@@ -185,7 +185,7 @@ class EndpointHealthChecker:
                         try:
                             error_body = response.text[:500]
                             logger.warning(f"⚠️ SLIG health check 400 Bad Request: {error_body}")
-                        except:
+                        except Exception:
                             logger.warning(f"⚠️ SLIG health check failed: HTTP 400 Bad Request")
                     else:
                         logger.warning(f"⚠️ SLIG health check failed: HTTP {response.status_code}")

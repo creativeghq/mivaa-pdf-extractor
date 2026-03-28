@@ -98,9 +98,25 @@ router = APIRouter(prefix="/api/rag", tags=["RAG"])
 
 # Job storage for async processing (in-memory cache)
 job_storage: Dict[str, Dict[str, Any]] = {}
+# Tracks insertion time for TTL eviction (job_id -> monotonic timestamp)
+_job_storage_inserted_at: Dict[str, float] = {}
 
 # Job recovery service (initialized on startup)
 job_recovery_service: Optional[JobRecoveryService] = None
+
+_JOB_STORAGE_TTL_SECONDS = 2 * 60 * 60  # 2 hours
+
+
+def _evict_expired_job_storage() -> None:
+    """Remove job_storage entries older than TTL. Call on each write to avoid unbounded growth."""
+    import time
+    now = time.monotonic()
+    expired = [jid for jid, ts in _job_storage_inserted_at.items() if now - ts > _JOB_STORAGE_TTL_SECONDS]
+    for jid in expired:
+        job_storage.pop(jid, None)
+        _job_storage_inserted_at.pop(jid, None)
+    if expired:
+        logger.info(f"🧹 Evicted {len(expired)} expired job_storage entries (TTL={_JOB_STORAGE_TTL_SECONDS}s)")
 
 
 async def initialize_job_recovery():
@@ -1165,6 +1181,8 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
             file_content = None
 
             # Initialize job in job_storage (CRITICAL: required by process_document_with_discovery)
+            import time as _time
+            _evict_expired_job_storage()
             job_storage[job_id] = {
                 "job_id": job_id,
                 "document_id": document_id,
@@ -1172,6 +1190,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
                 "progress": job_data.get('progress', 0),
                 "metadata": job_data.get('metadata', {})
             }
+            _job_storage_inserted_at[job_id] = _time.monotonic()
             logger.info(f"✅ Job {job_id} added to job_storage for resume")
 
             # CONSOLIDATED: All jobs now use process_document_with_discovery
@@ -1971,7 +1990,7 @@ async def create_products_background(
                     "timestamp": datetime.utcnow().isoformat()
                 }
             )
-        except:
+        except Exception:
             pass  # Don't fail if checkpoint creation fails
 
 
@@ -2174,6 +2193,8 @@ async def process_document_with_discovery(
     # Initialize job_storage for this job if not already present
     # This is critical - the job may not exist in memory if this is a new upload
     if job_id not in job_storage:
+        import time as _time
+        _evict_expired_job_storage()
         job_storage[job_id] = {
             "job_id": job_id,
             "document_id": document_id,
@@ -2184,6 +2205,7 @@ async def process_document_with_discovery(
                 "test_single_product": test_single_product
             }
         }
+        _job_storage_inserted_at[job_id] = _time.monotonic()
         logger.info(f"✅ Initialized job_storage for job {job_id}")
 
     # Read file content ONLY when needed
@@ -2996,13 +3018,17 @@ async def process_document_with_discovery(
             ).data or []]
             if all_product_ids:
                 import asyncio
-                asyncio.create_task(_trigger_factory_enrichment(
+                _fe_task = asyncio.create_task(_trigger_factory_enrichment(
                     workspace_id=workspace_id,
                     product_ids=all_product_ids,
                     scope_column='source_document_id',
                     scope_value=document_id,
                     logger=logger,
                 ))
+                _fe_task.add_done_callback(lambda t: logger.error(
+                    f"❌ Factory enrichment task failed: {t.exception()}",
+                    exc_info=t.exception(),
+                ) if not t.cancelled() and t.exception() else None)
         except Exception as _fe:
             logger.warning(f"⚠️ Factory enrichment trigger failed (non-blocking): {_fe}")
 

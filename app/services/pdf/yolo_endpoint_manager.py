@@ -300,7 +300,7 @@ class YoloEndpointManager:
             )
             # Accept 200 or 404 (no /health route but endpoint responding)
             return response.status_code in [200, 404]
-        except:
+        except Exception:
             return False
 
     def pause_if_idle(self) -> bool:

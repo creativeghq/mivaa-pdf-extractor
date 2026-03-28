@@ -138,8 +138,8 @@ class BackgroundImageProcessor:
             
             # Import services
             from .real_image_analysis_service import RealImageAnalysisService
-            from .real_embeddings_service import RealEmbeddingsService
-            
+            from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+
             # Initialize services
             analysis_service = RealImageAnalysisService(self.supabase)
             embeddings_service = RealEmbeddingsService(self.supabase)

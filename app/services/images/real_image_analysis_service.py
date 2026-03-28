@@ -988,7 +988,7 @@ class RealImageAnalysisService:
                 if pil_image and hasattr(pil_image, 'close'):
                     try:
                         pil_image.close()
-                    except:
+                    except Exception:
                         pass
 
                 # SigLIP returns 1152D embeddings

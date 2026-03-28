@@ -68,6 +68,9 @@ class JobProgressMonitor:
 
         self.is_running = True
         self.monitoring_task = asyncio.create_task(self._monitor_loop())
+        self.monitoring_task.add_done_callback(lambda t: logger.error(
+            f"❌ Progress monitor task failed for job {self.job_id}: {t.exception()}", exc_info=t.exception()
+        ) if not t.cancelled() and t.exception() else None)
 
         # Log to both console and Sentry
         logger.info(f"📊 Started progress monitoring for job {self.job_id}")

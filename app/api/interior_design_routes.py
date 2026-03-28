@@ -643,8 +643,21 @@ async def create_interior_design(request: InteriorRequest):
         'workflow_status': 'processing'  # Use valid constraint value
     }).execute()
 
-    # Start background processing
-    asyncio.create_task(process_generation_background(job_id, request, models_to_use, enhanced_prompt))
+    # Start background processing — attach an error callback so task failures
+    # are logged and the job status is updated rather than silently disappearing.
+    def _on_generation_done(task: asyncio.Task) -> None:
+        exc = task.exception() if not task.cancelled() else None
+        if exc:
+            import logging as _logging
+            _logging.getLogger(__name__).error(
+                f"[interior_design] Background generation task for job {job_id} failed: {exc}",
+                exc_info=exc,
+            )
+
+    task = asyncio.create_task(
+        process_generation_background(job_id, request, models_to_use, enhanced_prompt)
+    )
+    task.add_done_callback(_on_generation_done)
 
     # Return job info immediately
     return JSONResponse({

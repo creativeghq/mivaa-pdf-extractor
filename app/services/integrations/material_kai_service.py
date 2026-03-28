@@ -593,7 +593,10 @@ class MaterialKaiService:
             logger.info("WebSocket connection established")
             
             # Start listening for messages
-            asyncio.create_task(self._websocket_listener())
+            _ws_task = asyncio.create_task(self._websocket_listener())
+            _ws_task.add_done_callback(lambda t: logger.error(
+                f"WebSocket listener task failed: {t.exception()}", exc_info=t.exception()
+            ) if not t.cancelled() and t.exception() else None)
             
         except Exception as e:
             logger.error(f"WebSocket initialization failed: {e}")

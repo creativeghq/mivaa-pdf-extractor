@@ -741,6 +741,9 @@ class ProgressTracker:
         # Start heartbeat task
         import asyncio
         self._heartbeat_task = asyncio.create_task(heartbeat_loop())
+        self._heartbeat_task.add_done_callback(lambda t: logger.error(
+            f"❌ Heartbeat task failed for job {self.job_id}: {t.exception()}", exc_info=t.exception()
+        ) if not t.cancelled() and t.exception() else None)
 
     async def check_if_cancelled(self) -> bool:
         """
@@ -821,7 +824,7 @@ class ProgressTracker:
             self._heartbeat_task.cancel()
             try:
                 await self._heartbeat_task
-            except:
+            except (asyncio.CancelledError, Exception):
                 pass  # Ignore cancellation errors
             self._heartbeat_task = None
 

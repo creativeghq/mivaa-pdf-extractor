@@ -453,7 +453,7 @@ class WebScrapingService:
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to process scraping session {session_id}: {e}")
+            self.logger.error(f"❌ Failed to process scraping session {session_id}: {e}", exc_info=True)
 
             # Track error in Sentry
             if SENTRY_AVAILABLE:
@@ -1068,19 +1068,21 @@ class WebScrapingService:
                 images_saved = result.get('images_saved', 0)
                 self.logger.info(f"   ✅ Saved {images_saved} images with {result.get('clip_embeddings_generated', 0)} SLIG embeddings")
 
-                # Phase 2: Queue Qwen3-VL analysis → understanding embeddings (1024D via Voyage AI)
-                # This runs in background — picks up images saved above and generates
+                # Phase 2: Qwen3-VL vision analysis → understanding embeddings (1024D via Voyage AI)
+                # Fire as a non-blocking background task — picks up saved images and generates
                 # vision_analysis JSON + understanding embedding for the 7th vector type
                 if images_saved > 0:
                     try:
-                        phase2_job_id = await self.clip_job_service.queue_clip_generation_job(
-                            document_id=product_id,
-                            workspace_id=workspace_id,
-                            priority="normal"
+                        from app.services.images.background_image_processor import start_background_image_processing
+                        _phase2_task = asyncio.create_task(
+                            start_background_image_processing(product_id, self.supabase)
                         )
-                        self.logger.info(f"   🧠 Queued Phase 2 understanding embeddings job {phase2_job_id} for {product_name}")
+                        _phase2_task.add_done_callback(lambda t: self.logger.error(
+                            f"❌ Phase 2 background processing failed for product {product_id}: {t.exception()}", exc_info=t.exception()
+                        ) if not t.cancelled() and t.exception() else None)
+                        self.logger.info(f"   🧠 Triggered Phase 2 Qwen3-VL + understanding embeddings for {product_name}")
                     except Exception as phase2_err:
-                        self.logger.warning(f"   ⚠️ Phase 2 queue failed (non-critical): {phase2_err}")
+                        self.logger.warning(f"   ⚠️ Phase 2 trigger failed (non-critical): {phase2_err}", exc_info=True)
 
                 # Create product-image relationships
                 await self._link_images_to_product(
