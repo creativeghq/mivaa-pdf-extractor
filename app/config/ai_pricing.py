@@ -95,17 +95,17 @@ class AIPricingConfig:
             "source": "https://openai.com/api/pricing/",
             "note": "Used in GPT5Service for high-accuracy tasks"
         },
-        "gpt-4o": {
-            "input": Decimal("2.50"),
-            "output": Decimal("10.00"),
-            "last_verified": "2026-01-24",
+        "gpt-5.2": {
+            "input": Decimal("7.00"),
+            "output": Decimal("21.00"),
+            "last_verified": "2026-03-29",
             "source": "https://openai.com/api/pricing/",
             "note": "Main production model for discovery & metadata"
         },
-        "gpt-4o-mini": {
-            "input": Decimal("0.15"),
-            "output": Decimal("0.60"),
-            "last_verified": "2026-01-24",
+        "gpt-5.2-mini": {
+            "input": Decimal("1.00"),
+            "output": Decimal("3.00"),
+            "last_verified": "2026-03-29",
             "source": "https://openai.com/api/pricing/",
             "note": "Cost-effective model for reranking & query expansion"
         }

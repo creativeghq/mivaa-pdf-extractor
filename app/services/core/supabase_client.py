@@ -100,10 +100,10 @@ class SupabaseClient:
     def client(self) -> Client:
         """
         Get the Supabase client instance.
-        
+
         Returns:
             Supabase client instance
-            
+
         Raises:
             RuntimeError: If client is not initialized
         """
@@ -112,7 +112,23 @@ class SupabaseClient:
                 "Supabase client not initialized. Call initialize() first."
             )
         return self._client
-    
+
+    @property
+    def async_client(self) -> 'AsyncSupabaseClient':
+        """
+        Async façade over the sync Supabase client.
+
+        Every .execute() call is dispatched to asyncio.to_thread() so it never
+        blocks the FastAPI event loop. Use this in all async service methods:
+
+            result = await self.db.table('products').insert(record).execute()
+            result = await self.db.rpc('some_fn', {...}).execute()
+
+        The underlying sync client is the same singleton — no extra connections.
+        """
+        from app.services.core.async_supabase import AsyncSupabaseClient
+        return AsyncSupabaseClient(self.client)
+
     @property
     def settings(self) -> Settings:
         """

@@ -62,37 +62,38 @@ class JobRecoveryService:
             bool: True if successful, False otherwise
         """
         try:
-            # Check if job exists and get existing metadata
-            existing = self.supabase.client.table(self.table_name).select("id, metadata").eq("id", job_id).execute()
+            now = datetime.utcnow().isoformat()
 
-            # Merge metadata with existing metadata instead of replacing
-            merged_metadata = {}
-            if existing.data and existing.data[0].get("metadata"):
-                merged_metadata = existing.data[0]["metadata"].copy()
-            if metadata:
-                merged_metadata.update(metadata)
-
+            # Upsert scalar fields — single atomic write, no prior read needed
             job_data = {
                 "id": job_id,
                 "document_id": document_id,
                 "filename": filename,
                 "status": status,
                 "progress": progress,
-                "metadata": merged_metadata,
                 "error": error,
-                "updated_at": datetime.utcnow().isoformat()
+                "updated_at": now
             }
 
+            existing = self.supabase.client.table(self.table_name).select("id").eq("id", job_id).execute()
+
             if existing.data:
-                # Update existing job
                 self.supabase.client.table(self.table_name).update(job_data).eq("id", job_id).execute()
                 logger.debug(f"Updated job {job_id} in database: status={status}, progress={progress}")
             else:
-                # Insert new job
-                job_data["created_at"] = datetime.utcnow().isoformat()
+                job_data["created_at"] = now
+                job_data["metadata"] = metadata or {}
                 self.supabase.client.table(self.table_name).insert(job_data).execute()
                 logger.info(f"Persisted new job {job_id} to database: status={status}")
-            
+                return True
+
+            # Merge metadata atomically via Postgres function (avoids read-modify-write race)
+            if metadata:
+                self.supabase.client.rpc(
+                    'merge_background_job_metadata',
+                    {'p_job_id': job_id, 'p_metadata': metadata}
+                ).execute()
+
             return True
             
         except Exception as e:

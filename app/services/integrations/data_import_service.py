@@ -35,7 +35,8 @@ class DataImportService:
 
     def __init__(self, workspace_id: str = None):
         supabase_wrapper = get_supabase_client()
-        self.supabase = supabase_wrapper.client
+        self.supabase = supabase_wrapper.client   # sync client (legacy, kept for compatibility)
+        self.db = supabase_wrapper.async_client   # async façade — use in all async methods
         self.image_downloader = ImageDownloadService()
         self.batch_size = 10  # Process 10 products at a time
         self.max_concurrent_images = 5  # Download 5 images concurrently
@@ -97,7 +98,7 @@ class DataImportService:
         # Update background_jobs with current stage and progress
         try:
             progress = get_xml_import_progress(stage)
-            self.supabase.table('background_jobs').update({
+            await self.db.table('background_jobs').update({
                 'current_stage': stage.value,
                 'progress': progress,
                 'updated_at': datetime.utcnow().isoformat()
@@ -573,7 +574,7 @@ class DataImportService:
             product_record['import_batch_id'] = f"xml_{job_id}"
 
             # Insert product into database
-            insert_response = self.supabase.table('products').insert(product_record).execute()
+            insert_response = await self.db.table('products').insert(product_record).execute()
 
             if not insert_response.data:
                 raise ValueError("Failed to insert product - no data returned")
@@ -787,7 +788,7 @@ class DataImportService:
                         }
                     }
 
-                    chunk_response = self.supabase.table('document_chunks').insert(chunk_record).execute()
+                    chunk_response = await self.db.table('document_chunks').insert(chunk_record).execute()
                     if chunk_response.data:
                         chunk_ids.append({'id': chunk_response.data[0]['id']})
             else:
@@ -807,7 +808,7 @@ class DataImportService:
                     }
                 }
 
-                chunk_response = self.supabase.table('document_chunks').insert(chunk_record).execute()
+                chunk_response = await self.db.table('document_chunks').insert(chunk_record).execute()
 
                 if chunk_response.data:
                     chunk_id = chunk_response.data[0]['id']
@@ -826,7 +827,7 @@ class DataImportService:
                     quality_score = self.chunking_service._calculate_chunk_quality(temp_chunk)
 
                     # Update chunk with quality score
-                    self.supabase.table('document_chunks').update({
+                    await self.db.table('document_chunks').update({
                         'quality_score': quality_score,
                         'metadata': {
                             **chunk_record['metadata'],
@@ -851,7 +852,7 @@ class DataImportService:
         for chunk_ref in chunk_ids:
             chunk_id = chunk_ref['id']
             try:
-                chunk_response = self.supabase.table('document_chunks').select('content').eq('id', chunk_id).single().execute()
+                chunk_response = await self.db.table('document_chunks').select('content').eq('id', chunk_id).single().execute()
                 if not chunk_response.data:
                     continue
                 content = chunk_response.data.get('content', '')
@@ -859,7 +860,7 @@ class DataImportService:
                     continue
                 embedding = await self.embedding_service.generate_text_embedding(content)
                 if embedding:
-                    self.supabase.table('document_chunks').update({
+                    await self.db.table('document_chunks').update({
                         'text_embedding': embedding
                     }).eq('id', chunk_id).execute()
                     logger.info(f"✅ Generated text embedding for chunk {chunk_id}")
@@ -869,7 +870,7 @@ class DataImportService:
     async def _get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get job details from database."""
         try:
-            response = self.supabase.table('data_import_jobs').select('*').eq('id', job_id).single().execute()
+            response = await self.db.table('data_import_jobs').select('*').eq('id', job_id).single().execute()
             return response.data
         except Exception as e:
             logger.error(f"Failed to get job {job_id}: {e}")
@@ -880,13 +881,13 @@ class DataImportService:
         try:
             update_data = {'status': status, 'updated_at': datetime.utcnow().isoformat()}
             update_data.update(kwargs)
-            
+
             # Convert datetime objects to ISO strings
             for key, value in update_data.items():
                 if isinstance(value, datetime):
                     update_data[key] = value.isoformat()
-            
-            self.supabase.table('data_import_jobs').update(update_data).eq('id', job_id).execute()
+
+            await self.db.table('data_import_jobs').update(update_data).eq('id', job_id).execute()
             logger.info(f"✅ Updated job {job_id} status to {status}")
         except Exception as e:
             logger.error(f"Failed to update job status: {e}")
@@ -905,23 +906,26 @@ class DataImportService:
             if progress_percent is None:
                 progress_percent = int((processed / total) * 100) if total > 0 else 0
 
-            # Update data_import_jobs table
-            self.supabase.table('data_import_jobs').update({
+            now = datetime.utcnow().isoformat()
+
+            # Update data_import_jobs (scalar fields + metadata overwrite — no race here)
+            await self.db.table('data_import_jobs').update({
                 'processed_products': processed,
                 'failed_products': failed,
+                'last_heartbeat': now,
                 'metadata': {
                     'current_stage': stage,
                     'progress_percentage': progress_percent
                 }
             }).eq('id', job_id).execute()
 
-            # 🆕 Get background_job_id from data_import_jobs
-            job_response = self.supabase.table('data_import_jobs').select('background_job_id').eq('id', job_id).single().execute()
+            # Look up background_job_id
+            job_response = await self.db.table('data_import_jobs').select('background_job_id').eq('id', job_id).single().execute()
             background_job_id = job_response.data.get('background_job_id') if job_response.data else None
 
             if background_job_id:
-                # 🆕 Update job_progress table (upsert)
-                self.supabase.table('job_progress').upsert({
+                # Update job_progress table (upsert)
+                await self.db.table('job_progress').upsert({
                     'job_id': background_job_id,
                     'stage': f'xml_import_{stage}',
                     'progress_percent': progress_percent,
@@ -934,17 +938,22 @@ class DataImportService:
                     }
                 }, on_conflict='job_id,stage').execute()
 
-                # 🆕 Update background_jobs heartbeat and progress
-                self.supabase.table('background_jobs').update({
+                # Update background_jobs scalar fields
+                await self.db.table('background_jobs').update({
                     'progress_percent': progress_percent,
-                    'last_heartbeat': datetime.utcnow().isoformat(),
-                    'metadata': {
+                    'last_heartbeat': now,
+                }).eq('id', background_job_id).execute()
+
+                # Merge metadata atomically — no read-modify-write race
+                await self.db.rpc('merge_background_job_metadata', {
+                    'p_job_id': background_job_id,
+                    'p_metadata': {
                         'processed': processed,
                         'failed': failed,
                         'total': total,
                         'current_stage': stage
                     }
-                }).eq('id', background_job_id).execute()
+                }).execute()
 
                 logger.debug(f"📊 Updated job progress: {progress_percent}% ({processed}/{total} products)")
         except Exception as e:
@@ -966,28 +975,34 @@ class DataImportService:
         """
         try:
             # Get background_job_id from data_import_jobs
-            job_response = self.supabase.table('data_import_jobs').select('background_job_id').eq('id', job_id).single().execute()
+            job_response = await self.db.table('data_import_jobs').select('background_job_id').eq('id', job_id).single().execute()
             background_job_id = job_response.data.get('background_job_id') if job_response.data else None
 
             if not background_job_id:
                 logger.warning(f"No background_job_id found for data_import_job {job_id}")
                 return
 
-            # Build update data
-            update_data = {'status': status}
+            # Build update data for scalar fields
+            update_data = {'status': status, 'last_heartbeat': datetime.utcnow().isoformat()}
 
-            # Convert datetime objects to ISO strings
+            # Separate out 'metadata' — merge atomically; everything else goes in update_data
+            extra_metadata = None
             for key, value in kwargs.items():
-                if isinstance(value, datetime):
+                if key == 'metadata':
+                    extra_metadata = value
+                elif isinstance(value, datetime):
                     update_data[key] = value.isoformat()
                 else:
                     update_data[key] = value
 
-            # Always update last_heartbeat
-            update_data['last_heartbeat'] = datetime.utcnow().isoformat()
+            await self.db.table('background_jobs').update(update_data).eq('id', background_job_id).execute()
 
-            # Update background_jobs table
-            self.supabase.table('background_jobs').update(update_data).eq('id', background_job_id).execute()
+            if extra_metadata:
+                await self.db.rpc('merge_background_job_metadata', {
+                    'p_job_id': background_job_id,
+                    'p_metadata': extra_metadata
+                }).execute()
+
             logger.info(f"✅ Updated background_job {background_job_id} status to {status}")
 
         except Exception as e:
@@ -1004,7 +1019,7 @@ class DataImportService:
     ) -> None:
         """Record import history entry."""
         try:
-            self.supabase.table('data_import_history').insert({
+            await self.db.table('data_import_history').insert({
                 'job_id': job_id,
                 'source_data': source_data,
                 'normalized_data': normalized_data,

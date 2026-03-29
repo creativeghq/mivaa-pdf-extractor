@@ -82,7 +82,9 @@ class WebScrapingService:
         self.logger = logger
         self.model = model
         self.workspace_id = workspace_id
-        self.supabase = get_supabase_client()
+        _sb = get_supabase_client()
+        self.supabase = _sb                       # wrapper (sync .client + async_client)
+        self.db = _sb.async_client                # async façade — use in all async methods
         self.discovery_service = ProductDiscoveryService(model=model)
 
         # ✅ Initialize chunking service for quality scoring and smart chunking
@@ -144,7 +146,7 @@ class WebScrapingService:
         # Update background_jobs with current stage and progress
         try:
             progress = get_web_scraping_progress(stage)
-            self.supabase.client.table('background_jobs').update({
+            await self.db.table('background_jobs').update({
                 'current_stage': stage.value,
                 'progress': progress,
                 'updated_at': datetime.utcnow().isoformat()
@@ -577,7 +579,7 @@ class WebScrapingService:
             Session data or None if not found
         """
         try:
-            response = self.supabase.client.table("scraping_sessions").select("*").eq("id", session_id).single().execute()
+            response = await self.db.table("scraping_sessions").select("*").eq("id", session_id).single().execute()
 
             if response.data:
                 return response.data
@@ -599,7 +601,7 @@ class WebScrapingService:
         """
         try:
             # Fetch all pages for this session
-            response = self.supabase.client.table("scraping_pages").select("*").eq("session_id", session_id).order("page_index").execute()
+            response = await self.db.table("scraping_pages").select("*").eq("session_id", session_id).order("page_index").execute()
 
             if not response.data:
                 return ""
@@ -716,7 +718,7 @@ class WebScrapingService:
                 }
 
                 # Insert product
-                response = self.supabase.client.table("products").insert(product_data).execute()
+                response = await self.db.table("products").insert(product_data).execute()
 
                 if response.data:
                     created_product = response.data[0]
@@ -814,7 +816,7 @@ class WebScrapingService:
                         }
                     }
 
-                    chunk_response = self.supabase.client.table('document_chunks').insert(chunk_record).execute()
+                    chunk_response = await self.db.table('document_chunks').insert(chunk_record).execute()
                     if chunk_response.data:
                         chunk_ids.append({'id': chunk_response.data[0]['id']})
             else:
@@ -834,7 +836,7 @@ class WebScrapingService:
                     }
                 }
 
-                chunk_response = self.supabase.client.table('document_chunks').insert(chunk_record).execute()
+                chunk_response = await self.db.table('document_chunks').insert(chunk_record).execute()
 
                 if chunk_response.data:
                     chunk_id = chunk_response.data[0]['id']
@@ -853,7 +855,7 @@ class WebScrapingService:
                     quality_score = self.chunking_service._calculate_chunk_quality(temp_chunk)
 
                     # Update chunk with quality score
-                    self.supabase.client.table('document_chunks').update({
+                    await self.db.table('document_chunks').update({
                         'quality_score': quality_score,
                         'metadata': {
                             **chunk_record['metadata'],
@@ -889,7 +891,7 @@ class WebScrapingService:
                 continue
             try:
                 # Fetch chunk content
-                result = self.supabase.client.table('document_chunks').select('content').eq('id', chunk_id).single().execute()
+                result = await self.db.table('document_chunks').select('content').eq('id', chunk_id).single().execute()
                 if not result.data:
                     continue
                 content = result.data.get('content', '')
@@ -899,7 +901,7 @@ class WebScrapingService:
                 # Generate embedding (Voyage AI voyage-3.5, fallback OpenAI)
                 embedding = await self.embedding_service.generate_text_embedding(content)
                 if embedding:
-                    self.supabase.client.table('document_chunks').update({
+                    await self.db.table('document_chunks').update({
                         'text_embedding': embedding
                     }).eq('id', chunk_id).execute()
                     embedded += 1
@@ -923,7 +925,7 @@ class WebScrapingService:
             Deduplicated list of image URLs found by Firecrawl
         """
         try:
-            response = self.supabase.client.table('scraped_materials_temp') \
+            response = await self.db.table('scraped_materials_temp') \
                 .select('material_data') \
                 .eq('scraping_session_id', session_id) \
                 .execute()
@@ -1114,7 +1116,7 @@ class WebScrapingService:
         """
         try:
             # Get images that were just saved for this product
-            response = self.supabase.client.table('document_images')\
+            response = await self.db.table('document_images')\
                 .select('id')\
                 .eq('document_id', product_id)\
                 .order('created_at', desc=True)\
@@ -1145,7 +1147,7 @@ class WebScrapingService:
                 })
 
             if associations:
-                self.supabase.client.table('image_product_associations').insert(associations).execute()
+                await self.db.table('image_product_associations').insert(associations).execute()
                 self.logger.info(f"   ✅ Created {len(associations)} product-image associations")
 
         except Exception as e:
@@ -1189,7 +1191,7 @@ class WebScrapingService:
                     "failed_at": datetime.utcnow().isoformat()
                 }
 
-            self.supabase.client.table("scraping_sessions").update(update_data).eq("id", session_id).execute()
+            await self.db.table("scraping_sessions").update(update_data).eq("id", session_id).execute()
 
             self.logger.info(f"   ✅ Updated session status to: {status}")
 
@@ -1253,7 +1255,7 @@ class WebScrapingService:
                 'updated_at': datetime.utcnow().isoformat()
             }
 
-            result = self.supabase.client.table('background_jobs').insert(job_data).execute()
+            result = await self.db.table('background_jobs').insert(job_data).execute()
 
             if result.data and len(result.data) > 0:
                 self.logger.info(f"✅ Created background job {job_id} for scraping session {session_id}")
@@ -1284,21 +1286,22 @@ class WebScrapingService:
         try:
             update_data = {
                 'progress': min(100, max(0, progress)),
+                'last_heartbeat': datetime.utcnow().isoformat(),
                 'updated_at': datetime.utcnow().isoformat()
             }
 
             if status:
                 update_data['status'] = status
 
-            if metadata:
-                # Fetch current metadata and merge
-                current_job = self.supabase.client.table('background_jobs').select('metadata').eq('id', job_id).single().execute()
-                if current_job.data:
-                    current_metadata = current_job.data.get('metadata', {})
-                    current_metadata.update(metadata)
-                    update_data['metadata'] = current_metadata
+            # Scalar fields update (progress, status, heartbeat) — no read needed
+            await self.db.table('background_jobs').update(update_data).eq('id', job_id).execute()
 
-            self.supabase.client.table('background_jobs').update(update_data).eq('id', job_id).execute()
+            # Metadata merge — atomic via Postgres function (eliminates read-modify-write race)
+            if metadata:
+                await self.db.rpc(
+                    'merge_background_job_metadata',
+                    {'p_job_id': job_id, 'p_metadata': metadata}
+                ).execute()
 
         except Exception as e:
             self.logger.error(f"Failed to update job progress: {e}")

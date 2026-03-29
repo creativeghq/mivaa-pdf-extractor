@@ -54,9 +54,9 @@ class AIModelConfig(BaseModel):
     )
 
     # Product Discovery Model
-    discovery_model: Literal["claude-sonnet-4-5-20250929", "gpt-5", "gpt-4o"] = Field(
+    discovery_model: Literal["claude-sonnet-4-5-20250929", "gpt-5", "gpt-5.2"] = Field(
         default="claude-sonnet-4-5-20250929",
-        description="Model for product discovery (Claude Sonnet 4.5, GPT-5, or GPT-4o)"
+        description="Model for product discovery (Claude Sonnet 4.5, GPT-5, or GPT-5.2)"
     )
     
     # Metadata Extraction Model
@@ -67,7 +67,7 @@ class AIModelConfig(BaseModel):
     
     # Chunking Model (for semantic chunking)
     chunking_model: str = Field(
-        default="gpt-4o",
+        default="gpt-5.2",
         description="Model for semantic chunking and text analysis"
     )
     
@@ -124,7 +124,7 @@ class AIModelConfig(BaseModel):
                 "classification_confidence_threshold": 0.7,
                 "discovery_model": "claude-sonnet-4-20250514",
                 "metadata_extraction_model": "claude",
-                "chunking_model": "gpt-4o",
+                "chunking_model": "gpt-5.2",
                 "discovery_temperature": 0.1,
                 "classification_temperature": 0.1,
                 "metadata_temperature": 0.1,
@@ -141,7 +141,7 @@ DEFAULT_AI_CONFIG = AIModelConfig()
 
 # Alternative configurations for different use cases
 FAST_CONFIG = AIModelConfig(
-    discovery_model="gpt-4o",  # Faster than Claude
+    discovery_model="gpt-5.2",  # Faster than Claude
     classification_validation_model="claude-haiku-4-20250514",  # Faster validation
     metadata_extraction_model="gpt",  # Faster metadata extraction
     discovery_max_tokens=2048,  # Reduce tokens for speed
@@ -158,7 +158,7 @@ HIGH_ACCURACY_CONFIG = AIModelConfig(
 )
 
 COST_OPTIMIZED_CONFIG = AIModelConfig(
-    discovery_model="gpt-4o",  # Good balance
+    discovery_model="gpt-5.2",  # Good balance
     classification_validation_model="claude-haiku-4-20250514",  # Cheaper validation
     metadata_extraction_model="gpt",  # Cheaper metadata
     classification_confidence_threshold=0.6,  # Lower threshold to reduce validation calls

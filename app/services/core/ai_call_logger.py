@@ -58,7 +58,9 @@ class AICallLogger:
         fallback_reason: Optional[str] = None,
         request_data: Optional[Dict[str, Any]] = None,
         response_data: Optional[Dict[str, Any]] = None,
-        error_message: Optional[str] = None
+        error_message: Optional[str] = None,
+        user_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
     ) -> bool:
         """
         Log an AI call to the database.
@@ -110,11 +112,40 @@ class AICallLogger:
                     f"confidence={confidence_score:.2f} | action={action} | "
                     f"cost=${cost:.4f} | latency={latency_ms}ms"
                 )
+
+                # Mirror to ai_usage_logs (dashboard-facing table)
+                try:
+                    cost_data = ai_pricing.calculate_cost(model, input_tokens, output_tokens)
+                    usage_entry = {
+                        "user_id": user_id,
+                        "workspace_id": workspace_id,
+                        "operation_type": task,
+                        "model_name": model,
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "input_cost_usd": float(cost_data.get("input_cost_usd", 0)),
+                        "output_cost_usd": float(cost_data.get("output_cost_usd", 0)),
+                        "total_cost_usd": float(cost_data.get("total_cost_usd", cost)),
+                        "raw_cost_usd": float(cost_data.get("raw_cost_usd", cost)),
+                        "markup_multiplier": float(cost_data.get("markup_multiplier", 1.5)),
+                        "billed_cost_usd": float(cost_data.get("billed_cost_usd", cost)),
+                        "job_id": job_id,
+                        "metadata": {
+                            "action": action,
+                            "confidence_score": round(confidence_score, 2),
+                            "latency_ms": latency_ms,
+                            "fallback_reason": fallback_reason,
+                        },
+                    }
+                    self.supabase.client.table("ai_usage_logs").insert(usage_entry).execute()
+                except Exception as usage_err:
+                    self.logger.warning(f"⚠️ Failed to mirror to ai_usage_logs: {usage_err}")
+
                 return True
             else:
                 self.logger.error(f"❌ Failed to log AI call: No data returned")
                 return False
-                
+
         except Exception as e:
             self.logger.error(f"❌ Failed to log AI call: {e}")
             # Don't fail the main operation if logging fails
@@ -192,7 +223,9 @@ class AICallLogger:
                 job_id=job_id,
                 fallback_reason=fallback_reason,
                 request_data=request_data,
-                response_data={"text": response_text[:500]}  # Truncate for storage
+                response_data={"text": response_text[:500]},
+                user_id=user_id,
+                workspace_id=workspace_id,
             )
 
         except Exception as e:
@@ -271,9 +304,11 @@ class AICallLogger:
                 job_id=job_id,
                 fallback_reason=fallback_reason,
                 request_data=request_data,
-                response_data={"text": response_text[:500]}  # Truncate for storage
+                response_data={"text": response_text[:500]},
+                user_id=user_id,
+                workspace_id=workspace_id,
             )
-            
+
         except Exception as e:
             self.logger.error(f"❌ Failed to log GPT call: {e}")
             return False
@@ -352,7 +387,9 @@ class AICallLogger:
                 job_id=job_id,
                 fallback_reason=fallback_reason,
                 request_data=request_data,
-                response_data={"text": response_text[:500]}  # Truncate for storage
+                response_data={"text": response_text[:500]},
+                user_id=user_id,
+                workspace_id=workspace_id,
             )
 
         except Exception as e:

@@ -635,7 +635,7 @@ class DynamicMetadataExtractor:
             raise RuntimeError(f"Claude metadata extraction failed: {str(e)}") from e
 
     async def _call_gpt(self, prompt: str) -> str:
-        """Call GPT-4o for metadata extraction."""
+        """Call GPT-5.2 for metadata extraction."""
         start_time = datetime.now()
 
         try:
@@ -644,7 +644,7 @@ class DynamicMetadataExtractor:
             client = ai_service.openai
 
             response = client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-5.2",
                 messages=[
                     {
                         "role": "system",
@@ -665,13 +665,13 @@ class DynamicMetadataExtractor:
             latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
 
             # Calculate cost
-            input_cost = (response.usage.prompt_tokens / 1_000_000) * 2.50  # GPT-4o pricing
-            output_cost = (response.usage.completion_tokens / 1_000_000) * 10.00
+            input_cost = (response.usage.prompt_tokens / 1_000_000) * 7.00  # GPT-5.2 pricing
+            output_cost = (response.usage.completion_tokens / 1_000_000) * 21.00
             total_cost = input_cost + output_cost
 
             await self.ai_logger.log_ai_call(
                 task="dynamic_metadata_extraction",
-                model="gpt-4o",
+                model="gpt-5.2",
                 input_tokens=response.usage.prompt_tokens,
                 output_tokens=response.usage.completion_tokens,
                 cost=total_cost,

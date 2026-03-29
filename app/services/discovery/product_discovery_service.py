@@ -855,7 +855,7 @@ class ProductDiscoveryService:
             client = ai_service.openai
 
             response = client.chat.completions.create(
-                model="gpt-4o",  # Will be GPT-5 when available
+                model="gpt-5.2",
                 messages=[
                     {
                         "role": "system",
@@ -876,7 +876,7 @@ class ProductDiscoveryService:
 
             # DEBUG: Log how many products GPT found
             products_found = len(result.get("products", []))
-            self.logger.info(f"🔍 GPT-4o discovered {products_found} products")
+            self.logger.info(f"🔍 GPT-5.2 discovered {products_found} products")
             if products_found > 0:
                 product_names = [p.get("name", "Unknown") for p in result.get("products", [])]
                 self.logger.info(f"   Product names: {product_names}")
@@ -886,13 +886,13 @@ class ProductDiscoveryService:
             confidence_score = result.get("confidence_score", 0.9)
 
             # Calculate cost
-            input_cost = (response.usage.prompt_tokens / 1_000_000) * 2.50  # GPT-4o pricing
-            output_cost = (response.usage.completion_tokens / 1_000_000) * 10.00
+            input_cost = (response.usage.prompt_tokens / 1_000_000) * 7.00  # GPT-5.2 pricing
+            output_cost = (response.usage.completion_tokens / 1_000_000) * 21.00
             total_cost = input_cost + output_cost
 
             await self.ai_logger.log_ai_call(
                 task="product_discovery",
-                model="gpt-4o",
+                model="gpt-5.2",
                 input_tokens=response.usage.prompt_tokens,
                 output_tokens=response.usage.completion_tokens,
                 cost=total_cost,

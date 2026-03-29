@@ -140,7 +140,7 @@ class Settings(BaseSettings):
 
     # LLM Reranking
     llm_reranking_top_k: int = Field(default=5, env="LLM_RERANKING_TOP_K")
-    llm_reranking_model: str = Field(default="gpt-4o-mini", env="LLM_RERANKING_MODEL")
+    llm_reranking_model: str = Field(default="gpt-5.2-mini", env="LLM_RERANKING_MODEL")
 
     # Sliding Window Retrieval
     sliding_window_max_tokens: int = Field(default=4000, env="SLIDING_WINDOW_MAX_TOKENS")
@@ -174,7 +174,7 @@ class Settings(BaseSettings):
     # OpenAI API Settings (Fallback for Voyage AI text embeddings)
     # ============================================================================
     openai_api_key: str = Field(default="", env="OPENAI_API_KEY")
-    openai_model: str = Field(default="gpt-4o", env="OPENAI_MODEL")
+    openai_model: str = Field(default="gpt-5.2", env="OPENAI_MODEL")
     openai_embedding_model: str = Field(default="text-embedding-3-small", env="OPENAI_EMBEDDING_MODEL")
     openai_max_tokens: int = Field(default=4096, env="OPENAI_MAX_TOKENS")
     openai_temperature: float = Field(default=0.1, env="OPENAI_TEMPERATURE")
@@ -228,7 +228,7 @@ class Settings(BaseSettings):
         env="ENABLE_MULTIMODAL"
     )
     multimodal_llm_model: str = Field(
-        default="gpt-4o",
+        default="gpt-5.2",
         env="MULTIMODAL_LLM_MODEL"
     )
     multimodal_max_tokens: int = Field(
@@ -292,7 +292,7 @@ class Settings(BaseSettings):
         env="IMAGE_PROCESSING_ENABLED"
     )
     image_analysis_model: str = Field(
-        default="gpt-4o",
+        default="gpt-5.2",
         env="IMAGE_ANALYSIS_MODEL"
     )
     image_resize_max_width: int = Field(

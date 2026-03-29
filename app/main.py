@@ -13,6 +13,7 @@ import os
 import sys
 import signal
 import asyncio
+import concurrent.futures
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Dict, Any, Optional
@@ -213,18 +214,39 @@ async def lifespan(app: FastAPI):
         # Continue startup even if performance monitoring fails
         app.state.performance_monitor = None
     
+    # Configure a named thread pool for asyncio.to_thread() (Supabase sync calls).
+    # 20 threads handles up to 20 concurrent DB calls without pool exhaustion.
+    _executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=20,
+        thread_name_prefix="supabase-io"
+    )
+    asyncio.get_event_loop().set_default_executor(_executor)
+    logger.info("✅ ThreadPoolExecutor configured (max_workers=20) for async DB calls")
+
     # Initialize services, database connections, etc.
     try:
         # Initialize Supabase client
         initialize_supabase(settings)
         logger.info("Supabase client initialized successfully")
-        
+
         # Perform health check
         supabase_client = get_supabase_client()
         if supabase_client.health_check():
             logger.info("Supabase connection health check passed")
         else:
             logger.warning("Supabase connection health check failed")
+
+        # Recover any jobs that were stuck processing when the service last died
+        try:
+            recovered = supabase_client.client.rpc('recover_stale_jobs', {}).execute()
+            count = recovered.data if isinstance(recovered.data, int) else 0
+            if count:
+                logger.warning(f"⚠️ Startup recovery: marked {count} stale jobs as failed (no heartbeat >30 min)")
+            else:
+                logger.info("✅ Startup recovery: no stale jobs found")
+        except Exception as recovery_err:
+            logger.error(f"Startup stale-job recovery failed (non-critical): {recovery_err}", exc_info=True)
+
     except Exception as e:
         logger.error(f"Failed to initialize Supabase: {str(e)}")
         # Continue startup even if Supabase fails to allow for graceful degradation
@@ -370,6 +392,10 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.warning("=" * 80)
     logger.warning("🛑 SHUTDOWN INITIATED")
+    try:
+        _executor.shutdown(wait=False)
+    except Exception:
+        pass
     logger.warning(f"🛑 Shutdown time: {datetime.now().isoformat()}")
     logger.warning("=" * 80)
 
