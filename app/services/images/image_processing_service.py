@@ -118,7 +118,7 @@ class ImageProcessingService:
         extracted_images: List[Dict[str, Any]],
         confidence_threshold: float = 0.6,  # OPTIMIZED: Lowered from 0.7 to reduce validation calls
         primary_model: str = "Qwen/Qwen3-VL-32B-Instruct",  # PRIMARY: Qwen3-VL-32B (reliable, high accuracy)
-        validation_model: str = "claude-sonnet-4-20250514",  # FALLBACK: Claude Sonnet 4.5 (highest quality)
+        validation_model: str = "claude-sonnet-4-6-20260217",  # FALLBACK: Claude Sonnet 4.5 (highest quality)
         batch_size: int = 15,  # NEW: Process images in batches to prevent OOM
         job_id: Optional[str] = None  # NEW: Job ID for AI cost tracking
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -127,7 +127,7 @@ class ImageProcessingService:
 
         SUPPORTED MODELS:
         - Qwen/Qwen3-VL-32B-Instruct: PRIMARY - High accuracy, reliable ($0.50/1M input, $1.50/1M output)
-        - claude-sonnet-4-20250514: FALLBACK - Highest quality vision model (for failures/low confidence)
+        - claude-sonnet-4-6-20260217: FALLBACK - Highest quality vision model (for failures/low confidence)
 
         MEMORY OPTIMIZATIONS:
         - Processes images in batches (default: 15) to prevent OOM crashes
@@ -467,7 +467,7 @@ class ImageProcessingService:
                     raise ValueError(error_msg)
 
                 response = await ai_service.anthropic_async.messages.create(
-                    model="claude-sonnet-4-20250514",
+                    model="claude-sonnet-4-6-20260217",
                     max_tokens=1024,
                     messages=[{
                         "role": "user",

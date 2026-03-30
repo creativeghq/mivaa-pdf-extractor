@@ -260,7 +260,7 @@ Generate a professional, engaging product description that:
 RESPOND WITH ONLY THE DESCRIPTION, NO ADDITIONAL TEXT."""
 
             response = self.anthropic_client.messages.create(
-                model="claude-sonnet-4-5-20250929",
+                model="claude-sonnet-4-6-20260217",
                 max_tokens=500,
                 messages=[{"role": "user", "content": prompt}]
             )

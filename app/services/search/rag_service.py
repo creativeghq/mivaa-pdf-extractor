@@ -1568,7 +1568,7 @@ class RAGService:
             # Step 4: Call Claude 4.5 Sonnet
             client = self.ai_client_service.anthropic
             response = client.messages.create(
-                model="claude-sonnet-4-5-20250929",
+                model="claude-sonnet-4-6-20260217",
                 max_tokens=2048,
                 temperature=0.1,
                 messages=[{"role": "user", "content": prompt}]
@@ -1580,7 +1580,7 @@ class RAGService:
             latency_ms = int((time.time() - start_time) * 1000)
             await self.ai_logger.log_claude_call(
                 task="rag_query_document",
-                model="claude-sonnet-4-5-20250929",
+                model="claude-sonnet-4-6-20260217",
                 response=response,
                 latency_ms=latency_ms,
                 confidence_score=0.85,
@@ -1607,7 +1607,7 @@ class RAGService:
                 "metadata": {
                     "chunks_retrieved": len(chunks),
                     "processing_time_ms": latency_ms,
-                    "model": "claude-sonnet-4-5-20250929"
+                    "model": "claude-sonnet-4-6-20260217"
                 }
             }
 
@@ -1738,7 +1738,7 @@ class RAGService:
             # Step 6: Call Claude 4.5 Sonnet
             client = self.ai_client_service.anthropic
             response = client.messages.create(
-                model="claude-sonnet-4-5-20250929",
+                model="claude-sonnet-4-6-20260217",
                 max_tokens=4096,
                 temperature=0.1 if query_type == "factual" else 0.3,
                 messages=[{"role": "user", "content": prompt}]
@@ -1754,7 +1754,7 @@ class RAGService:
             latency_ms = int((time.time() - start_time) * 1000)
             await self.ai_logger.log_claude_call(
                 task=f"rag_advanced_query_{query_type}",
-                model="claude-sonnet-4-5-20250929",
+                model="claude-sonnet-4-6-20260217",
                 response=response,
                 latency_ms=latency_ms,
                 confidence_score=confidence,
@@ -1797,7 +1797,7 @@ class RAGService:
                     "query_type": query_type,
                     "has_conversation_context": conversation_context is not None,
                     "processing_time_ms": latency_ms,
-                    "model": "claude-sonnet-4-5-20250929"
+                    "model": "claude-sonnet-4-6-20260217"
                 }
             }
 

@@ -54,9 +54,9 @@ class AIModelConfig(BaseModel):
     )
 
     # Product Discovery Model
-    discovery_model: Literal["claude-sonnet-4-5-20250929", "gpt-5", "gpt-5.2"] = Field(
-        default="claude-sonnet-4-5-20250929",
-        description="Model for product discovery (Claude Sonnet 4.5, GPT-5, or GPT-5.2)"
+    discovery_model: Literal["claude-sonnet-4-6-20260217", "gpt-5", "gpt-5.2"] = Field(
+        default="claude-sonnet-4-6-20260217",
+        description="Model for product discovery (Claude Sonnet 4.6, GPT-5, or GPT-5.2)"
     )
     
     # Metadata Extraction Model
@@ -120,9 +120,9 @@ class AIModelConfig(BaseModel):
                 "text_embedding_dimensions": 1024,
                 "text_embedding_input_type": "document",
                 "classification_primary_model": "Qwen/Qwen3-VL-8B-Instruct",
-                "classification_validation_model": "claude-sonnet-4-20250514",
+                "classification_validation_model": "claude-sonnet-4-6-20260217",
                 "classification_confidence_threshold": 0.7,
-                "discovery_model": "claude-sonnet-4-20250514",
+                "discovery_model": "claude-sonnet-4-6-20260217",
                 "metadata_extraction_model": "claude",
                 "chunking_model": "gpt-5.2",
                 "discovery_temperature": 0.1,
@@ -142,7 +142,7 @@ DEFAULT_AI_CONFIG = AIModelConfig()
 # Alternative configurations for different use cases
 FAST_CONFIG = AIModelConfig(
     discovery_model="gpt-5.2",  # Faster than Claude
-    classification_validation_model="claude-haiku-4-20250514",  # Faster validation
+    classification_validation_model="claude-haiku-4-5-20251001",  # Faster validation
     metadata_extraction_model="gpt",  # Faster metadata extraction
     discovery_max_tokens=2048,  # Reduce tokens for speed
     metadata_max_tokens=2048
@@ -150,7 +150,7 @@ FAST_CONFIG = AIModelConfig(
 
 HIGH_ACCURACY_CONFIG = AIModelConfig(
     discovery_model="gpt-5",  # Most accurate
-    classification_validation_model="claude-sonnet-4-20250514",  # Best validation
+    classification_validation_model="claude-sonnet-4-6-20260217",  # Best validation
     metadata_extraction_model="claude",  # Most accurate metadata
     classification_confidence_threshold=0.8,  # Higher threshold
     discovery_max_tokens=8192,  # More context
@@ -159,7 +159,7 @@ HIGH_ACCURACY_CONFIG = AIModelConfig(
 
 COST_OPTIMIZED_CONFIG = AIModelConfig(
     discovery_model="gpt-5.2",  # Good balance
-    classification_validation_model="claude-haiku-4-20250514",  # Cheaper validation
+    classification_validation_model="claude-haiku-4-5-20251001",  # Cheaper validation
     metadata_extraction_model="gpt",  # Cheaper metadata
     classification_confidence_threshold=0.6,  # Lower threshold to reduce validation calls
     discovery_max_tokens=2048,  # Reduce tokens

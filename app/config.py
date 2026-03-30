@@ -378,11 +378,11 @@ class Settings(BaseSettings):
         env="ANTHROPIC_MODEL_CLASSIFICATION"
     )
     anthropic_model_validation: str = Field(
-        default="claude-sonnet-4-5-20250929",
+        default="claude-sonnet-4-6-20260217",
         env="ANTHROPIC_MODEL_VALIDATION"
     )
     anthropic_model_enrichment: str = Field(
-        default="claude-sonnet-4-5-20250929",
+        default="claude-sonnet-4-6-20260217",
         env="ANTHROPIC_MODEL_ENRICHMENT"
     )
     anthropic_max_tokens: int = Field(
@@ -403,7 +403,7 @@ class Settings(BaseSettings):
     )
     # NEW: Claude for RAG Queries
     anthropic_model_rag_query: str = Field(
-        default="claude-sonnet-4-5-20250929",
+        default="claude-sonnet-4-6-20260217",
         env="ANTHROPIC_MODEL_RAG_QUERY",
         description="Claude model for RAG question answering"
     )
@@ -423,7 +423,7 @@ class Settings(BaseSettings):
         description="Vision model provider: 'anthropic' (Claude), 'openai' (GPT-4o), 'huggingface' (Qwen)"
     )
     vision_guided_model: str = Field(
-        default="claude-sonnet-4-5-20250929",
+        default="claude-sonnet-4-6-20260217",
         env="VISION_GUIDED_MODEL",
         description="Vision model to use (provider-specific model name)"
     )

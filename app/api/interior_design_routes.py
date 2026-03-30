@@ -83,7 +83,7 @@ def _build_generation_prompt(
 # Model configurations - All Replicate models
 # Text-to-Image Models (for prompts without reference images)
 TEXT_TO_IMAGE_MODELS = [
-    {"id": "flux-dev", "name": "FLUX.1-dev", "provider": "replicate", "model": "black-forest-labs/flux-dev", "capability": "text-to-image", "cost_per_generation": 0.025},
+    {"id": "flux-2-pro", "name": "FLUX.2 Pro", "provider": "replicate", "model": "black-forest-labs/flux-2-pro", "capability": "text-to-image", "cost_per_generation": 0.05},
     {"id": "playground-v2.5", "name": "Playground v2.5", "provider": "replicate", "model": "playgroundai/playground-v2.5-1024px-aesthetic", "version": "a45f82a1382bed5c7aeb861dac7c7d191b0fdf74d8d57c4a0e6ed7d4d0bf7d24", "capability": "text-to-image", "cost_per_generation": 0.01, "input_schema": "playground_v25"},
     {"id": "sd3", "name": "Stable Diffusion 3", "provider": "replicate", "model": "stability-ai/stable-diffusion-3", "capability": "text-to-image", "cost_per_generation": 0.055},
 ]

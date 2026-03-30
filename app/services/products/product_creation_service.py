@@ -1457,7 +1457,7 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
             settings = get_settings()
 
             response = client.messages.create(
-                model=settings.anthropic_model_enrichment,  # claude-4-5-sonnet-20250514
+                model=settings.anthropic_model_enrichment,  # claude-sonnet-4-6-20260217
                 max_tokens=4096,
                 temperature=0.1,
                 messages=[{"role": "user", "content": prompt}]

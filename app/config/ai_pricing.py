@@ -27,7 +27,7 @@ class AIPricingConfig:
     """
 
     # Last price verification date
-    LAST_UPDATED = "2026-01-24"
+    LAST_UPDATED = "2026-03-30"
 
     # Platform markup multiplier (50% markup = 1.50)
     # Users are billed at raw_cost * MARKUP_MULTIPLIER
@@ -58,10 +58,10 @@ class AIPricingConfig:
             "input": Decimal("3.00"),
             "output": Decimal("15.00"),
         },
-        "claude-sonnet-4-5-20250929": {
+        "claude-sonnet-4-6-20260217": {
             "input": Decimal("3.00"),
             "output": Decimal("15.00"),
-            "last_verified": "2026-01-24",
+            "last_verified": "2026-03-30",
             "source": "https://www.anthropic.com/pricing"
         },
         "claude-4-5-haiku-20250514": {
@@ -70,7 +70,7 @@ class AIPricingConfig:
             "last_verified": "2026-01-24",
             "source": "https://www.anthropic.com/pricing"
         },
-        "claude-4-5-sonnet-20250514": {
+        "claude-sonnet-4-6": {
             "input": Decimal("3.00"),
             "output": Decimal("15.00"),
             "last_verified": "2026-01-24",
@@ -287,12 +287,19 @@ class AIPricingConfig:
 
     REPLICATE_PRICING = {
         # Text-to-Image Models
+        "flux-2-pro": {
+            "cost_per_generation": Decimal("0.05"),
+            "billing_type": "per_generation",
+            "last_verified": "2026-03-30",
+            "source": "https://replicate.com/pricing",
+            "note": "FLUX.2 Pro production-grade text-to-image (4MP, photorealistic)"
+        },
         "flux-dev": {
             "cost_per_generation": Decimal("0.025"),
             "billing_type": "per_generation",
             "last_verified": "2026-01-23",
             "source": "https://replicate.com/pricing",
-            "note": "FLUX.1-dev high quality text-to-image"
+            "note": "FLUX.1-dev legacy text-to-image"
         },
         "flux-schnell": {
             "cost_per_generation": Decimal("0.003"),

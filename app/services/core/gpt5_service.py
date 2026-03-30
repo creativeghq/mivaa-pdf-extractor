@@ -101,7 +101,7 @@ class GPT5Service:
     async def generate_completion(
         self,
         prompt: str,
-        model: str = "gpt-5",
+        model: str = "gpt-5.2",
         max_tokens: int = 2000,
         temperature: float = 0.3,
         system_prompt: Optional[str] = None,
@@ -109,7 +109,7 @@ class GPT5Service:
         task: str = "gpt5_completion",
     ) -> Dict[str, Any]:
         """
-        Generate completion using GPT-5.
+        Generate completion using GPT-5.2.
         
         Args:
             prompt: User prompt
@@ -288,11 +288,11 @@ class GPT5Service:
 
 Provide a detailed analysis in JSON format."""
         
-        # Call GPT-5
+        # Call GPT-5.2
         result = await self.generate_completion(
             prompt=user_prompt,
             system_prompt=system_prompt,
-            model="gpt-5",
+            model="gpt-5.2",
             max_tokens=2000,
             temperature=0.2,  # Lower temperature for structured output
             job_id=job_id,
