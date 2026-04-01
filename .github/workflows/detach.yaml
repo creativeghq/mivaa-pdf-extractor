@@ -28,7 +28,10 @@ jobs:
             https://api.github.com/user/repos \
             -d '{"name":"mivaa-pdf-extractor","private":false}'
       
-      - name: Mirror push
+      - name: Wait for repository creation
+        run: sleep 5
+      
+      - name: Mirror push with proper auth
         run: |
-          cd /tmp/fork-detach
-          git --git-dir mivaa-pdf-extractor.git push --mirror https://${{ secrets.GITHUB_TOKEN }}@github.com/creativeghq/mivaa-pdf-extractor.git
+          cd /tmp/fork-detach/mivaa-pdf-extractor.git
+          git push --mirror "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/creativeghq/mivaa-pdf-extractor.git"
