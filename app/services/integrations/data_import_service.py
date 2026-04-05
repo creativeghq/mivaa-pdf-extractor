@@ -27,6 +27,13 @@ from app.services.embeddings.clip_embedding_job_service import CLIPEmbeddingJobS
 from app.services.chunking.unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
 import sentry_sdk  # ✅ NEW: Sentry integration
 
+# Category → default unit mapping (mirrors material_categories.default_unit)
+_CATEGORY_DEFAULT_UNITS = {
+    'tiles': 'sqm', 'wood': 'sqm', 'paint_wall_decor': 'sqm',
+    'decor': 'pcs', 'furniture': 'pcs', 'general_materials': 'pcs',
+    'heating': 'pcs', 'sanitary': 'pcs', 'kitchen': 'pcs', 'lighting': 'pcs',
+}
+
 logger = logging.getLogger(__name__)
 
 
@@ -527,13 +534,15 @@ class DataImportService:
                     factory_obj[_f] = _v
 
             # ── Build metadata (canonical location for all content fields) ─
+            mat_cat = product_data.get('material_category')
             product_metadata = {
                 "extracted_from": "xml_import",
                 "import_job_id": job_id,
                 "extraction_date": datetime.utcnow().isoformat(),
                 "workspace_id": workspace_id,
                 # Content fields — same schema as PDF/scraping
-                "material_category": product_data.get('material_category'),
+                "material_category": mat_cat,
+                "unit": _CATEGORY_DEFAULT_UNITS.get(mat_cat, 'pcs') if mat_cat else 'pcs',
                 "factory_name": product_data.get('factory_name'),
                 "factory_group_name": product_data.get('factory_group_name'),
                 "color": product_data.get('color'),

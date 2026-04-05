@@ -10,6 +10,36 @@ import os
 import httpx
 from typing import Dict, Any, List, Optional
 
+# ── Category → default unit mapping (mirrors material_categories.default_unit) ─
+_CATEGORY_DEFAULT_UNITS: Dict[str, str] = {
+    'tiles': 'sqm',
+    'wood': 'sqm',
+    'decor': 'pcs',
+    'furniture': 'pcs',
+    'general_materials': 'pcs',
+    'paint_wall_decor': 'sqm',
+    'heating': 'pcs',
+    'sanitary': 'pcs',
+    'kitchen': 'pcs',
+    'lighting': 'pcs',
+}
+
+
+def _resolve_default_unit(material_category: Optional[str]) -> str:
+    """Resolve default unit from material category. Falls back to 'pcs'."""
+    if not material_category:
+        return 'pcs'
+    cat = material_category.lower().strip()
+    # Direct match
+    if cat in _CATEGORY_DEFAULT_UNITS:
+        return _CATEGORY_DEFAULT_UNITS[cat]
+    # Fuzzy match: check if category contains a known key
+    for key, unit in _CATEGORY_DEFAULT_UNITS.items():
+        if key in cat or cat in key:
+            return unit
+    return 'pcs'
+
+
 # ── Factory field keys (canonical set) ───────────────────────────────────────
 _FACTORY_FIELDS = [
     'factory_name', 'factory_group_name', 'address', 'city', 'country',
@@ -325,6 +355,10 @@ async def create_single_product(
                 description = meta_desc
             if description:
                 logger.info(f"   📝 Extracted description from metadata.description: {description[:50]}...")
+
+    # Set default unit from category if not already present
+    if not metadata.get('unit'):
+        metadata['unit'] = _resolve_default_unit(metadata.get('material_category'))
 
     product_data = {
         'source_document_id': document_id,
