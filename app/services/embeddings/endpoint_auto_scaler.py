@@ -133,7 +133,7 @@ class EndpointAutoScaler:
             
             return result.count or 0
         except Exception as e:
-            logger.error(f"Failed to get queue depth: {e}")
+            logger.warning(f"Failed to get queue depth: {e}")
             return 0
     
     def get_endpoint(self, endpoint_name: str):
@@ -147,7 +147,7 @@ class EndpointAutoScaler:
                 token=self.hf_token
             )
         except Exception as e:
-            logger.error(f"Failed to get endpoint {endpoint_name}: {e}")
+            logger.warning(f"Failed to get endpoint {endpoint_name}: {e}")
             return None
     
     def scale_endpoint(self, endpoint_name: str, desired_replicas: int) -> bool:
@@ -185,7 +185,7 @@ class EndpointAutoScaler:
             return True
             
         except Exception as e:
-            logger.error(f"❌ Failed to scale {endpoint_name}: {e}")
+            logger.warning(f"⚠️ Failed to scale {endpoint_name}: {e}")
             return False
     
     def calculate_desired_replicas(self, queue_depth: int, max_replicas: int) -> int:
@@ -203,25 +203,33 @@ class EndpointAutoScaler:
         """Check queue depth and scale endpoints accordingly."""
         if not self.enabled:
             return
-        
-        # Initialize endpoint configs on first run
+
+        queue_depth = await self.get_queue_depth()
+
+        # If queue is empty and no endpoints are tracked as running, skip entirely.
+        # This avoids making HuggingFace API calls (and generating errors/Sentry events)
+        # when endpoints are paused and nothing needs processing.
+        if queue_depth == 0 and not any(
+            self._current_replicas.get(name, 0) > 0 for name in self.managed_endpoints
+        ):
+            return
+
+        # Initialize endpoint configs lazily — only when we actually need to scale
         if not self._endpoints_initialized:
             await self.initialize_endpoint_configs()
-        
-        queue_depth = await self.get_queue_depth()
-        
+
         for endpoint_name in self.managed_endpoints:
             config = self._endpoint_configs.get(endpoint_name, {'max_replica': 2})
             max_rep = config.get('max_replica', 2)
-            
+
             desired_replicas = self.calculate_desired_replicas(queue_depth, max_rep)
-            current = self._current_replicas.get(endpoint_name, 1)
-            
+            current = self._current_replicas.get(endpoint_name, 0)
+
             # Scale up immediately if needed
             if desired_replicas > current:
                 self.scale_endpoint(endpoint_name, desired_replicas)
                 self._last_queue_empty.pop(endpoint_name, None)
-            
+
             # Scale down only after idle period
             elif desired_replicas < current:
                 if queue_depth == 0:
@@ -229,7 +237,7 @@ class EndpointAutoScaler:
                     if endpoint_name not in self._last_queue_empty:
                         self._last_queue_empty[endpoint_name] = datetime.now()
                         logger.info(f"⏳ Queue empty, will scale down {endpoint_name} in {self.scale_down_idle_minutes} min")
-                    
+
                     # Check if idle long enough
                     idle_time = datetime.now() - self._last_queue_empty[endpoint_name]
                     if idle_time >= timedelta(minutes=self.scale_down_idle_minutes):
@@ -251,7 +259,7 @@ class EndpointAutoScaler:
             try:
                 await self.check_and_scale()
             except Exception as e:
-                logger.error(f"Auto-scaler error: {e}")
+                logger.warning(f"Auto-scaler cycle error: {e}")
             
             await asyncio.sleep(self.check_interval)
     
