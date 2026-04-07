@@ -102,7 +102,7 @@ class AIPricingConfig:
             "source": "https://openai.com/api/pricing/",
             "note": "Main production model for discovery & metadata"
         },
-        "gpt-5.2-mini": {
+        "gpt-5-mini": {
             "input": Decimal("1.00"),
             "output": Decimal("3.00"),
             "last_verified": "2026-03-29",

@@ -295,7 +295,7 @@ Variations:
 
             response = await ai_client.generate_text(
                 prompt=prompt,
-                model="gpt-5.2-mini",  # Use cheaper model for query expansion
+                model="gpt-5-mini",  # Use cheaper model for query expansion
                 max_tokens=200,
                 temperature=0.7  # Higher temperature for diversity
             )

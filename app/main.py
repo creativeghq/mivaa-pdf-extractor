@@ -1367,7 +1367,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
 
                     # Minimal test with cheapest model
                     response = client.chat.completions.create(
-                        model="gpt-5.2-mini",  # Cheapest model
+                        model="gpt-5-mini",  # Cheapest model
                         max_tokens=1,
                         messages=[{"role": "user", "content": "hi"}]
                     )

@@ -87,14 +87,14 @@ class SearchQueryTracker:
                         else:
                             unmatched_terms.append(str(value))
                             # Track unmatched term for frequency analysis
-                            await self._track_unmatched_term(
+                            self._track_unmatched_term(
                                 term=str(value),
                                 property_key=property_key,
                                 workspace_id=workspace_id
                             )
             
-            # Insert tracking record
-            await self.supabase.client.table('search_query_tracking').insert({
+            # Insert tracking record (sync client — no await)
+            self.supabase.client.table('search_query_tracking').insert({
                 'workspace_id': workspace_id,
                 'user_id': user_id,
                 'query_text': query_text,
@@ -125,7 +125,7 @@ class SearchQueryTracker:
             # Don't fail the search if tracking fails
             self.logger.error(f"Failed to track search query: {e}")
     
-    async def _track_unmatched_term(
+    def _track_unmatched_term(
         self,
         term: str,
         property_key: str,
@@ -133,8 +133,8 @@ class SearchQueryTracker:
     ):
         """Track an unmatched term for frequency analysis."""
         try:
-            # Upsert into unmatched_term_frequency
-            result = await self.supabase.client.rpc(
+            # Upsert into unmatched_term_frequency (sync client — no await)
+            result = self.supabase.client.rpc(
                 'upsert_unmatched_term',
                 {
                     'p_term': term,
@@ -142,24 +142,24 @@ class SearchQueryTracker:
                     'p_workspace_id': workspace_id
                 }
             ).execute()
-            
+
         except Exception as e:
             # If RPC doesn't exist, do manual upsert
             try:
-                existing = await self.supabase.client.table('unmatched_term_frequency').select('*').eq(
+                existing = self.supabase.client.table('unmatched_term_frequency').select('*').eq(
                     'term', term
                 ).eq('property_key', property_key).execute()
-                
+
                 if existing.data:
                     # Update frequency
-                    await self.supabase.client.table('unmatched_term_frequency').update({
+                    self.supabase.client.table('unmatched_term_frequency').update({
                         'frequency_count': existing.data[0]['frequency_count'] + 1,
                         'last_seen_at': datetime.utcnow().isoformat(),
                         'workspace_ids': list(set(existing.data[0].get('workspace_ids', []) + [workspace_id]))
                     }).eq('id', existing.data[0]['id']).execute()
                 else:
                     # Insert new
-                    await self.supabase.client.table('unmatched_term_frequency').insert({
+                    self.supabase.client.table('unmatched_term_frequency').insert({
                         'term': term,
                         'property_key': property_key,
                         'frequency_count': 1,

@@ -140,7 +140,7 @@ class Settings(BaseSettings):
 
     # LLM Reranking
     llm_reranking_top_k: int = Field(default=5, env="LLM_RERANKING_TOP_K")
-    llm_reranking_model: str = Field(default="gpt-5.2-mini", env="LLM_RERANKING_MODEL")
+    llm_reranking_model: str = Field(default="gpt-5-mini", env="LLM_RERANKING_MODEL")
 
     # Sliding Window Retrieval
     sliding_window_max_tokens: int = Field(default=4000, env="SLIDING_WINDOW_MAX_TOKENS")

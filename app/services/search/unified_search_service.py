@@ -1165,11 +1165,11 @@ Return ONLY valid JSON. Use null for missing fields."""
 
             # Fallback: GPT-4o-mini
             if parsed_data is None:
-                model_used = "gpt-5.2-mini"
+                model_used = "gpt-5-mini"
                 ai_service = get_ai_client_service()
                 client = ai_service.openai_async
                 response = await client.chat.completions.create(
-                    model="gpt-5.2-mini",
+                    model="gpt-5-mini",
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": f"Parse this query: {query}"},
@@ -1186,7 +1186,7 @@ Return ONLY valid JSON. Use null for missing fields."""
                 latency_ms = int((time.time() - start_time) * 1000)
                 await ai_logger.log_gpt_call(
                     task="query_understanding",
-                    model="gpt-5.2-mini",
+                    model="gpt-5-mini",
                     response=response,
                     latency_ms=latency_ms,
                     confidence_score=0.90,
