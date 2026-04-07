@@ -3658,11 +3658,15 @@ async def search_documents(
         weight_profile = "balanced"
         if enable_query_understanding:
             try:
+                import asyncio
                 from app.services.search.unified_search_service import UnifiedSearchService
 
                 # Create temporary service instance for query parsing
                 unified_service = UnifiedSearchService()
-                visual_query, parsed_filters, weight_profile, dynamic_weights = await unified_service._parse_query_with_ai(query_to_use)
+                visual_query, parsed_filters, weight_profile, dynamic_weights = await asyncio.wait_for(
+                    unified_service._parse_query_with_ai(query_to_use),
+                    timeout=8  # 8s timeout — don't let query understanding block search
+                )
 
                 # Update query to use visual query (core concept for embedding)
                 query_to_use = visual_query
@@ -3681,6 +3685,8 @@ async def search_documents(
 
                 logger.info(f"🧠 Query understanding: '{request.query}' → visual_query='{visual_query}', profile='{weight_profile}', filters={parsed_filters}")
 
+            except asyncio.TimeoutError:
+                logger.warning(f"Query understanding timed out after 8s, continuing with original query")
             except Exception as e:
                 logger.error(f"Query understanding failed: {e}, continuing with original query")
                 # Continue with original query if parsing fails

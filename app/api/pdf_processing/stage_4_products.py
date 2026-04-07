@@ -375,6 +375,43 @@ async def create_single_product(
     if result.data and len(result.data) > 0:
         product_id = result.data[0]['id']
         logger.info(f"   ✅ Created product in DB: {product.name} (ID: {product_id})")
+
+        # Generate text_embedding_1024 for product-level vector search.
+        # Builds a rich text from name + description + key metadata fields,
+        # then embeds with Voyage AI (1024D) — same model as document_chunks.
+        try:
+            embedding_text_parts = [product.name or '']
+            if description:
+                embedding_text_parts.append(description)
+            # Include searchable metadata in the embedding text
+            for key in ('manufacturer', 'factory_name', 'factory_group_name', 'designer', 'material_category', 'zone_intent'):
+                val = metadata.get(key)
+                if val and isinstance(val, str) and val.lower() not in ('not specified', 'not found', 'unknown', 'n/a'):
+                    embedding_text_parts.append(val.replace('_', ' '))
+            colors = metadata.get('available_colors')
+            if isinstance(colors, list):
+                embedding_text_parts.extend(colors)
+
+            embedding_text = ' | '.join(embedding_text_parts)
+
+            from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+            embeddings_svc = RealEmbeddingsService()
+            emb_result = await embeddings_svc.generate_text_embedding(embedding_text)
+            text_emb = emb_result.get('embedding') if emb_result.get('success') else None
+
+            if text_emb:
+                # Store as vector string for pgvector
+                embedding_str = '[' + ','.join(str(x) for x in text_emb) + ']'
+                supabase.client.table('products').update(
+                    {'text_embedding_1024': embedding_str}
+                ).eq('id', product_id).execute()
+                logger.info(f"   🧠 Generated text_embedding_1024 for {product.name}")
+            else:
+                logger.warning(f"   ⚠️ Embedding generation returned no text_1024 for {product.name}")
+
+        except Exception as emb_err:
+            logger.warning(f"   ⚠️ Product embedding generation failed (non-blocking): {emb_err}")
+
         return {'product_id': product_id}
     else:
         raise Exception(f"Failed to create product {product.name} in database")

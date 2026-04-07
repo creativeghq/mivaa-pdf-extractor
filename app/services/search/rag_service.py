@@ -594,53 +594,81 @@ class RAGService:
             embedding_weights = config.get('weights', default_weights)
 
             # ============================================================================
-            # STEP 1: Generate query embeddings (visual + text)
+            # STEP 1: Generate query embeddings (visual + text + understanding)
+            # All embedding calls run in PARALLEL with 10s timeout each.
+            # If any fail or timeout, search continues with remaining sources.
             # ============================================================================
+            EMBEDDING_TIMEOUT = 10  # seconds — prevents search from hanging
             self.logger.info(f"🔍 HYBRID SEARCH: '{query[:50]}...'")
             self.logger.info(f"   Sources: Visual={enable_visual}, Chunk={enable_chunk}, Product={enable_product}, Keyword={enable_keyword}")
 
-            # Generate visual embedding — from actual image pixels when available,
-            # otherwise fall back to text→visual via SLIG.
             visual_embedding = None
-            if enable_visual:
+            text_embedding = None
+            understanding_embedding = None
+
+            # Build embedding tasks to run in parallel
+            async def _get_visual_embedding():
+                if not enable_visual:
+                    return None
                 if image_base64:
                     try:
                         import base64 as _b64
                         from io import BytesIO
                         from PIL import Image as _Image
                         img = _Image.open(BytesIO(_b64.b64decode(image_base64)))
-                        visual_embedding = await self._generate_visual_embedding_for_search(img)
-                        if visual_embedding:
-                            self.logger.info(f"✅ Visual embedding from image: {len(visual_embedding)}D")
-                        else:
-                            self.logger.warning("⚠️ Image visual embedding returned None, falling back to text")
+                        emb = await self._generate_visual_embedding_for_search(img)
+                        if emb:
+                            self.logger.info(f"✅ Visual embedding from image: {len(emb)}D")
+                            return emb
                     except Exception as _ve:
                         self.logger.warning(f"⚠️ Image visual embedding failed ({_ve}), falling back to text")
+                result = await self.embeddings_service.generate_visual_embedding(query)
+                if result.get("success"):
+                    emb = result.get("embedding", [])
+                    self.logger.info(f"✅ Visual embedding from text: {len(emb)}D")
+                    return emb
+                self.logger.warning("⚠️ Visual embedding generation failed")
+                return None
 
-                if not visual_embedding:
-                    embedding_result = await self.embeddings_service.generate_visual_embedding(query)
-                    if embedding_result.get("success"):
-                        visual_embedding = embedding_result.get("embedding", [])
-                        self.logger.info(f"✅ Visual embedding from text: {len(visual_embedding)}D")
-                    else:
-                        self.logger.warning("⚠️ Visual embedding generation failed")
+            async def _get_text_embedding():
+                if not (enable_chunk or enable_product):
+                    return None
+                result = await self.embeddings_service.generate_text_embedding(query)
+                if result.get("success"):
+                    emb = result.get("embedding", [])
+                    self.logger.info(f"✅ Text embedding: {len(emb)}D")
+                    return emb
+                self.logger.warning("⚠️ Text embedding generation failed")
+                return None
 
-            # Generate text embedding (for chunk/product searches)
-            text_embedding = None
-            if enable_chunk or enable_product:
-                text_result = await self.embeddings_service.generate_text_embedding(query)
-                if text_result.get("success"):
-                    text_embedding = text_result.get("embedding", [])
-                    self.logger.info(f"✅ Text embedding: {len(text_embedding)}D")
-                else:
-                    self.logger.warning("⚠️ Text embedding generation failed")
+            async def _get_understanding_embedding():
+                result = await self.embeddings_service.generate_understanding_query_embedding(query)
+                if result.get("success"):
+                    emb = result.get("embedding", [])
+                    self.logger.info(f"✅ Understanding embedding: {len(emb)}D")
+                    return emb
+                return None
 
-            # Generate understanding query embedding (for vision-understanding search)
-            understanding_embedding = None
-            understanding_result = await self.embeddings_service.generate_understanding_query_embedding(query)
-            if understanding_result.get("success"):
-                understanding_embedding = understanding_result.get("embedding", [])
-                self.logger.info(f"✅ Understanding embedding: {len(understanding_embedding)}D")
+            # Run all embedding generations in parallel, each with its own timeout.
+            # Per-task timeouts ensure completed tasks are preserved even if one hangs.
+            visual_result, text_result, understanding_result = await asyncio.gather(
+                asyncio.wait_for(_get_visual_embedding(), timeout=EMBEDDING_TIMEOUT),
+                asyncio.wait_for(_get_text_embedding(), timeout=EMBEDDING_TIMEOUT),
+                asyncio.wait_for(_get_understanding_embedding(), timeout=EMBEDDING_TIMEOUT),
+                return_exceptions=True
+            )
+            if isinstance(visual_result, Exception):
+                self.logger.warning(f"⚠️ Visual embedding failed/timed out: {visual_result}")
+            else:
+                visual_embedding = visual_result
+            if isinstance(text_result, Exception):
+                self.logger.warning(f"⚠️ Text embedding failed/timed out: {text_result}")
+            else:
+                text_embedding = text_result
+            if isinstance(understanding_result, Exception):
+                self.logger.warning(f"⚠️ Understanding embedding failed/timed out: {understanding_result}")
+            else:
+                understanding_embedding = understanding_result
 
             # ============================================================================
             # STEP 2A: Search VISUAL + UNDERSTANDING embeddings (6 VECS collections)
@@ -768,6 +796,34 @@ class RAGService:
                     self.logger.warning(f"⚠️ Product search failed: {e}")
 
             # ============================================================================
+            # STEP 2D: Fulltext search on products (search_tsv)
+            # Catches manufacturer, designer, material_category, colors, textures
+            # that embedding search may miss.
+            # ============================================================================
+            fulltext_product_scores = {}  # Maps product_id -> score
+
+            try:
+                fulltext_results = await self._search_products_fulltext(
+                    query=query,
+                    workspace_id=workspace_id,
+                    limit=top_k * 2
+                )
+
+                for result in fulltext_results:
+                    product_id = result.get('product_id')
+                    if not product_id:
+                        continue
+                    # Normalize ts_rank_cd score to 0-1 range (scores are typically 0-0.5)
+                    score = min(1.0, result.get('similarity_score', 0.0) * 2.0)
+                    fulltext_product_scores[product_id] = score
+
+                if fulltext_product_scores:
+                    self.logger.info(f"✅ Fulltext search: {len(fulltext_product_scores)} products")
+
+            except Exception as e:
+                self.logger.warning(f"⚠️ Fulltext search failed: {e}")
+
+            # ============================================================================
             # STEP 3: Map all sources to products
             # ============================================================================
             product_scores = {}  # Maps product_id -> {source_type: score}
@@ -834,7 +890,7 @@ class RAGService:
                         if 'chunk' not in product_scores[product_id] or product_scores[product_id]['chunk'] < weighted_score:
                             product_scores[product_id]['chunk'] = weighted_score
 
-            # 3C: Add direct product scores (NEW!)
+            # 3C: Add direct product scores
             if direct_product_scores:
                 self.logger.info(f"📎 Direct product scores: {len(direct_product_scores)}")
 
@@ -842,6 +898,18 @@ class RAGService:
                     if product_id not in product_scores:
                         product_scores[product_id] = {}
                     product_scores[product_id]['product'] = score
+
+            # 3D: Add fulltext product scores (manufacturer, designer, colors, etc.)
+            if fulltext_product_scores:
+                self.logger.info(f"📎 Fulltext product scores: {len(fulltext_product_scores)}")
+
+                for product_id, score in fulltext_product_scores.items():
+                    if product_id not in product_scores:
+                        product_scores[product_id] = {}
+                    # Use 'keyword' source since fulltext IS keyword matching
+                    # Take the max of keyword (Jaccard) and fulltext (PostgreSQL tsrank)
+                    existing = product_scores[product_id].get('keyword', 0.0)
+                    product_scores[product_id]['keyword'] = max(existing, score)
 
             self.logger.info(f"🎯 Total products with scores: {len(product_scores)}")
 
@@ -873,7 +941,7 @@ class RAGService:
                     # Add keyword score if enabled
                     if enable_keyword:
                         keyword_score = self._calculate_text_score(query, product)
-                        scores['keyword'] = keyword_score
+                        scores['keyword'] = max(scores.get('keyword', 0.0), keyword_score)
 
                     # Calculate weighted score from ALL sources
                     weighted_score = 0.0
@@ -1152,14 +1220,48 @@ class RAGService:
         if product.get('name'):
             text_parts.append(('name', product['name'], 3.0))
 
+        # Manufacturer / factory (highest weight — same as name)
+        metadata = product.get('metadata') or {}
+        if isinstance(metadata, dict) and metadata:
+            for mfr_key in ('manufacturer', 'factory_name', 'factory_group_name'):
+                mfr_val = metadata.get(mfr_key)
+                if mfr_val and isinstance(mfr_val, str) and mfr_val != 'Not specified':
+                    text_parts.append(('manufacturer', mfr_val, 3.0))
+
+            # Designer (high weight)
+            designer = metadata.get('designer')
+            if designer and isinstance(designer, str):
+                text_parts.append(('designer', designer, 2.5))
+
+            # Collection name (high weight)
+            design = metadata.get('design')
+            collection = None
+            if isinstance(design, dict):
+                coll_obj = design.get('collection')
+                if isinstance(coll_obj, dict):
+                    collection = coll_obj.get('value')
+                elif isinstance(coll_obj, str):
+                    collection = coll_obj
+            if collection:
+                text_parts.append(('collection', collection, 2.5))
+
+            # Material category + colors (medium weight)
+            mat_cat = metadata.get('material_category', '')
+            if isinstance(mat_cat, str):
+                mat_cat = mat_cat.replace('_', ' ')
+            if mat_cat:
+                text_parts.append(('material_category', mat_cat, 2.0))
+
+            colors = metadata.get('available_colors')
+            if isinstance(colors, list):
+                text_parts.append(('colors', ' '.join(str(c) for c in colors), 1.5))
+
         # Product description (medium weight)
         if product.get('description'):
             text_parts.append(('description', product['description'], 2.0))
 
-        # Metadata fields (lower weight)
-        metadata = product.get('metadata', {})
-        if metadata:
-            # Flatten metadata to text
+        # Remaining metadata fields (lower weight)
+        if isinstance(metadata, dict) and metadata:
             metadata_text = self._flatten_metadata_to_text(metadata)
             text_parts.append(('metadata', metadata_text, 1.0))
 
@@ -2134,4 +2236,39 @@ Respond with JSON:
             # Graceful degradation: return empty list
             return []
 
+    async def _search_products_fulltext(
+        self,
+        query: str,
+        workspace_id: str,
+        limit: int = 20
+    ) -> List[Dict[str, Any]]:
+        """
+        Search products using PostgreSQL full-text search on search_tsv.
+
+        search_tsv indexes: name (A), manufacturer/factory (A), designer (B),
+        material_category (B), finish (B), description (C), colors (C), textures (C).
+
+        This catches queries by manufacturer name, designer, material type, etc.
+        that embedding-based search may miss.
+        """
+        try:
+            result = self.supabase_client.client.rpc(
+                'search_products_fulltext',
+                {
+                    'search_query': query,
+                    'p_workspace_id': workspace_id,
+                    'p_limit': limit
+                }
+            ).execute()
+
+            if result.data and len(result.data) > 0:
+                self.logger.info(f"✅ Fulltext search: {len(result.data)} results")
+                return result.data
+            else:
+                self.logger.debug("⚠️ No fulltext matches found")
+                return []
+
+        except Exception as e:
+            self.logger.warning(f"⚠️ Fulltext search failed: {e}")
+            return []
 

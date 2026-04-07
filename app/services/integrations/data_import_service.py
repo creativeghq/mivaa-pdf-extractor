@@ -591,6 +591,30 @@ class DataImportService:
             product_id = insert_response.data[0]['id']
             logger.info(f"✅ Created product {product_id}: {product_name}")
 
+            # Generate text_embedding_1024 for product-level vector search
+            try:
+                emb_parts = [product_name or '']
+                desc = product_data.get('description', '')
+                if desc:
+                    emb_parts.append(desc[:500])
+                for key in ('factory_name', 'factory_group_name', 'designer', 'material_category', 'collection', 'color', 'finish', 'material'):
+                    val = product_data.get(key) or product_metadata.get(key)
+                    if val and isinstance(val, str) and val.lower() not in ('not specified', 'not found', 'unknown', 'n/a', ''):
+                        emb_parts.append(val.replace('_', ' '))
+
+                from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+                emb_svc = RealEmbeddingsService()
+                emb_result = await emb_svc.generate_text_embedding(' | '.join(emb_parts))
+                text_emb = emb_result.get('embedding') if emb_result.get('success') else None
+                if text_emb:
+                    emb_str = '[' + ','.join(str(x) for x in text_emb) + ']'
+                    await self.db.table('products').update(
+                        {'text_embedding_1024': emb_str}
+                    ).eq('id', product_id).execute()
+                    logger.info(f"   🧠 Generated text_embedding_1024 for {product_name}")
+            except Exception as emb_err:
+                logger.warning(f"   ⚠️ Product embedding failed (non-blocking): {emb_err}")
+
             # Link downloaded images to product
             downloaded_images = product_data.get('downloaded_images', [])
             if downloaded_images:

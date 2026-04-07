@@ -1596,6 +1596,125 @@ async def regenerate_text_embeddings(
 
 
 # ============================================================================
+# PRODUCT TEXT EMBEDDING BACKFILL
+# ============================================================================
+
+class BackfillProductEmbeddingsRequest(BaseModel):
+    """Request to backfill text_embedding_1024 on products table."""
+    workspace_id: str = Field(..., description="Workspace ID")
+    force: bool = Field(False, description="Regenerate even for products that already have embeddings")
+
+class BackfillProductEmbeddingsResponse(BaseModel):
+    """Response for product embedding backfill."""
+    success: bool
+    message: str
+    total_products: int = 0
+    embeddings_generated: int = 0
+    skipped: int = 0
+    errors: List[str] = []
+
+
+@router.post("/backfill-product-embeddings", response_model=BackfillProductEmbeddingsResponse)
+async def backfill_product_embeddings(
+    request: BackfillProductEmbeddingsRequest,
+    supabase: SupabaseClient = Depends(get_supabase_client)
+):
+    """
+    Backfill text_embedding_1024 for all products missing it.
+
+    Generates Voyage AI 1024D embeddings from product name + description + metadata,
+    same as the extraction pipeline (stage_4_products).
+    """
+    try:
+        from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+
+        logger.info(f"🔄 Starting product text_embedding_1024 backfill for workspace: {request.workspace_id}")
+
+        # Fetch products
+        query = supabase.client.table('products').select(
+            'id, name, description, metadata'
+        ).eq('workspace_id', request.workspace_id)
+
+        if not request.force:
+            query = query.is_('text_embedding_1024', 'null')
+
+        response = query.execute()
+
+        if not response.data:
+            return BackfillProductEmbeddingsResponse(
+                success=True,
+                message="No products need embedding backfill",
+                total_products=0
+            )
+
+        products = response.data
+        logger.info(f"   Found {len(products)} products to backfill")
+
+        embeddings_svc = RealEmbeddingsService()
+        generated = 0
+        skipped = 0
+        errors = []
+
+        for product in products:
+            try:
+                name = product.get('name', '')
+                description = product.get('description', '')
+                metadata = product.get('metadata') or {}
+
+                # Build rich embedding text (same logic as stage_4_products)
+                parts = [name]
+                if description:
+                    parts.append(description)
+                for key in ('manufacturer', 'factory_name', 'factory_group_name', 'designer', 'material_category', 'zone_intent'):
+                    val = metadata.get(key)
+                    if val and isinstance(val, str) and val.lower() not in ('not specified', 'not found', 'unknown', 'n/a'):
+                        parts.append(val.replace('_', ' '))
+                colors = metadata.get('available_colors')
+                if isinstance(colors, list):
+                    parts.extend(colors)
+
+                embedding_text = ' | '.join(parts)
+
+                if len(embedding_text.strip()) < 3:
+                    skipped += 1
+                    continue
+
+                emb_result = await embeddings_svc.generate_text_embedding(embedding_text)
+                text_emb = emb_result.get('embedding') if emb_result.get('success') else None
+
+                if text_emb:
+                    embedding_str = '[' + ','.join(str(x) for x in text_emb) + ']'
+                    supabase.client.table('products').update(
+                        {'text_embedding_1024': embedding_str}
+                    ).eq('id', product['id']).execute()
+                    generated += 1
+                    logger.info(f"   ✅ [{generated}/{len(products)}] {name}")
+                else:
+                    errors.append(f"No text_1024 returned for {name}")
+
+            except Exception as e:
+                errors.append(f"Failed {product.get('name', product['id'])}: {str(e)}")
+                logger.error(f"   ❌ {errors[-1]}")
+
+        message = f"Backfilled {generated}/{len(products)} products with text_embedding_1024"
+        if skipped:
+            message += f", skipped {skipped}"
+
+        return BackfillProductEmbeddingsResponse(
+            success=True,
+            message=message,
+            total_products=len(products),
+            embeddings_generated=generated,
+            skipped=skipped,
+            errors=errors
+        )
+
+    except Exception as e:
+        logger.error(f"❌ Product embedding backfill failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to backfill product embeddings: {str(e)}")
+
+
+# ============================================================================
 # PIPELINE VALIDATION
 # ============================================================================
 
