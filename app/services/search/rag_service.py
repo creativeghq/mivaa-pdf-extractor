@@ -997,8 +997,14 @@ class RAGService:
                     # Add filter boost to weighted score
                     final_score = weighted_score + filter_boost
 
+                    # Adaptive threshold: if most embedding sources failed/timed out,
+                    # lower the threshold so fulltext/keyword results can still surface.
+                    active_sources = sum(1 for s in ['visual', 'chunk', 'understanding', 'product']
+                                        if scores.get(s, 0.0) > 0)
+                    effective_threshold = similarity_threshold if active_sources >= 2 else similarity_threshold * 0.3
+
                     # Only include results above threshold
-                    if final_score >= similarity_threshold:
+                    if final_score >= effective_threshold:
                         results.append({
                             "id": product_id,
                             "product_name": product.get('name'),

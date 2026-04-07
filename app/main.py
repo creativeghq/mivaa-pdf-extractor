@@ -1359,18 +1359,16 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                 cached_status["cached"] = True
                 services_status["openai"] = cached_status
             else:
-                # Actually test the API
+                # Lightweight check: verify client initializes and key is set.
+                # Never make real completions calls from health checks — they
+                # cost money and hit rate limits during crash-loop restarts.
                 try:
                     from openai import OpenAI
                     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
                     start_time = time.time()
 
-                    # Minimal test with cheapest model
-                    response = client.chat.completions.create(
-                        model="gpt-5-mini",  # Cheapest model
-                        max_tokens=1,
-                        messages=[{"role": "user", "content": "hi"}]
-                    )
+                    # Just list models to verify API key works (free, no tokens consumed)
+                    client.models.retrieve("gpt-5-mini")
                     latency_ms = int((time.time() - start_time) * 1000)
 
                     status_result = {
