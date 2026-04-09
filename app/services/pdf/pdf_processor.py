@@ -68,8 +68,13 @@ class PDFProcessingConstants:
     TEXT_TO_IMAGE_RATIO_THRESHOLD: float = 30.0  # Threshold for text-to-image ratio
 
     # Render settings
-    YOLO_RENDER_DPI: int = 150  # DPI for YOLO layout detection rendering
-    FULL_PAGE_RENDER_ZOOM: float = 2.0  # Zoom factor for full page rendering (144 DPI)
+    YOLO_RENDER_DPI: int = 250  # DPI for YOLO layout detection rendering
+    FULL_PAGE_RENDER_ZOOM: float = 250 / 72  # Zoom factor for full page rendering (250 DPI)
+
+    # Embedded image quality gate — effective DPI below this triggers re-render from page
+    # Effective DPI = (image_pixels / display_points) * 72
+    # 100 DPI is the floor — below this, the image looks visibly soft/pixelated
+    MIN_EFFECTIVE_DPI: float = 100.0
 
 
 # Global instance for easy access
@@ -942,7 +947,7 @@ class PDFProcessor:
                     layout_result = await yolo_detector.detect_layout_regions(
                         pdf_path=pdf_path,
                         page_num=page_idx,
-                        dpi=150
+                        dpi=PDF_CONSTANTS.YOLO_RENDER_DPI
                     )
 
                     # Get IMAGE and CAPTION regions
@@ -966,8 +971,8 @@ class PDFProcessor:
                         doc = fitz.open(pdf_path)
                         page = doc[page_idx]
 
-                        # Render at high DPI for quality
-                        zoom = 150 / 72  # 150 DPI
+                        # Render at 250 DPI for material-quality detail
+                        zoom = PDF_CONSTANTS.YOLO_RENDER_DPI / 72  # 250 DPI
                         mat = fitz.Matrix(zoom, zoom)
                         pix = page.get_pixmap(matrix=mat)
 
@@ -995,7 +1000,7 @@ class PDFProcessor:
                                 image_filename = f"page_{pdf_page}_yolo_region_{region_idx}.jpg"
                                 image_path = os.path.join(image_dir, image_filename)
 
-                                cropped_image.save(image_path, "JPEG", quality=95)
+                                cropped_image.save(image_path, "JPEG", quality=95, progressive=True)
 
                                 # Get image dimensions
                                 width, height = cropped_image.size
@@ -1035,7 +1040,7 @@ class PDFProcessor:
                                     if best_caption:
                                         try:
                                             cap_bbox = best_caption.bbox
-                                            zoom = 150 / 72  # Same DPI used for rendering
+                                            zoom = PDF_CONSTANTS.YOLO_RENDER_DPI / 72  # Same DPI used for rendering
                                             pdf_rect = fitz.Rect(
                                                 cap_bbox.x / zoom,
                                                 cap_bbox.y / zoom,
@@ -1174,7 +1179,9 @@ class PDFProcessor:
 
                 # ============================================================
                 # LAYER 1: Extract embedded images (normal PDFs)
+                # With effective DPI check — low-DPI images get re-rendered
                 # ============================================================
+                low_dpi_images_on_page = False
                 if len(image_list) > 0:
                     for img_idx, img in enumerate(image_list):
                         try:
@@ -1182,17 +1189,13 @@ class PDFProcessor:
                             base_image = doc.extract_image(xref)
                             image_bytes = base_image["image"]
                             image_ext = base_image["ext"]
-
-                            # Save image to disk
-                            image_filename = f"page_{pdf_page}_image_{img_idx}.{image_ext}"
-                            image_path = os.path.join(image_dir, image_filename)
-
-                            with open(image_path, "wb") as img_file:
-                                img_file.write(image_bytes)
+                            img_width = base_image.get('width', 0)
+                            img_height = base_image.get('height', 0)
 
                             # ✅ FIX: Get bounding box for image placement on page
                             # This is critical for spread layout detection (left vs right page)
                             bbox = None
+                            rect = None
                             try:
                                 img_rects = page.get_image_rects(xref)
                                 if img_rects:
@@ -1212,6 +1215,35 @@ class PDFProcessor:
                             except Exception as bbox_err:
                                 self.logger.warning(f"   ⚠️ Failed to get bbox for image {img_idx}: {bbox_err}")
 
+                            # ✅ Effective DPI check — detect low-quality embedded images
+                            # Effective DPI = (pixel_dimension / display_points) * 72
+                            # If the image is stretched beyond its native resolution, it looks blurry
+                            effective_dpi = None
+                            if rect and img_width > 0 and img_height > 0 and rect.width > 0 and rect.height > 0:
+                                dpi_x = (img_width / rect.width) * 72
+                                dpi_y = (img_height / rect.height) * 72
+                                effective_dpi = min(dpi_x, dpi_y)
+                                self.logger.info(
+                                    f"   📊 [Job: {job_id}] Image {img_idx} effective DPI: {effective_dpi:.0f} "
+                                    f"(pixels {img_width}x{img_height} displayed at {rect.width:.0f}x{rect.height:.0f}pt)"
+                                )
+
+                                if effective_dpi < PDF_CONSTANTS.MIN_EFFECTIVE_DPI:
+                                    self.logger.warning(
+                                        f"   ⚠️ [Job: {job_id}] Image {img_idx} effective DPI {effective_dpi:.0f} "
+                                        f"< {PDF_CONSTANTS.MIN_EFFECTIVE_DPI} — will re-render from page"
+                                    )
+                                    low_dpi_images_on_page = True
+                                    del image_bytes, base_image
+                                    continue  # Skip this embedded image, Layer 2 will re-render the page
+
+                            # Save image to disk
+                            image_filename = f"page_{pdf_page}_image_{img_idx}.{image_ext}"
+                            image_path = os.path.join(image_dir, image_filename)
+
+                            with open(image_path, "wb") as img_file:
+                                img_file.write(image_bytes)
+
                             # Populate image metadata with Layer 1 information (using PDF page number)
                             extracted_images.append({
                                 'path': image_path,
@@ -1222,9 +1254,10 @@ class PDFProcessor:
                                 'captures_vector_graphics': False,  # Embedded images don't capture vector graphics
                                 'format': image_ext,
                                 'size_bytes': len(image_bytes),
-                                'width': base_image.get('width'),
-                                'height': base_image.get('height'),
-                                'bbox': bbox  # ✅ NEW: Bounding box for spread layout detection
+                                'width': img_width,
+                                'height': img_height,
+                                'bbox': bbox,  # ✅ Bounding box for spread layout detection
+                                'effective_dpi': effective_dpi
                             })
 
                             # Immediately free memory
@@ -1236,10 +1269,11 @@ class PDFProcessor:
                                 f"bbox={extracted_images[-1].get('bbox')}, id(img)={id(extracted_images[-1])}"
                             )
 
+                            dpi_suffix = f", eDPI={effective_dpi:.0f}" if effective_dpi else ""
                             self.logger.info(
                                 f"   ✅ [Job: {job_id}] Extracted image {img_idx + 1}/{len(image_list)}: {image_filename} "
                                 f"({extracted_images[-1]['width']}x{extracted_images[-1]['height']}, "
-                                f"{extracted_images[-1]['size_bytes']} bytes)"
+                                f"{extracted_images[-1]['size_bytes']} bytes{dpi_suffix})"
                             )
 
                         except Exception as e:
@@ -1250,31 +1284,35 @@ class PDFProcessor:
                             continue
 
                 # ============================================================
-                # LAYER 2: Full Page Rendering (for vector graphics)
-                # Only render if Layer 1 found 0 embedded images
+                # LAYER 2: Full Page Rendering (high-quality 250 DPI)
+                # Triggered when:
+                #   - No embedded images on page (vector graphics / scanned)
+                #   - Some embedded images had low effective DPI
                 # ============================================================
-                else:
+                if len(image_list) == 0 or low_dpi_images_on_page:
                     try:
+                        reason = "low effective DPI embedded images" if low_dpi_images_on_page else "no embedded images"
                         self.logger.info(
-                            f"   📸 [Job: {job_id}] No embedded images on PDF page {pdf_page} - "
-                            f"rendering full page to capture vector graphics"
+                            f"   📸 [Job: {job_id}] Rendering PDF page {pdf_page} at 250 DPI "
+                            f"({reason})"
                         )
 
-                        # Render page to high-res image (2x zoom = 144 DPI)
-                        zoom = 2.0
+                        # Render page at 250 DPI (matching PDFToImagesConverter quality)
+                        zoom = PDF_CONSTANTS.FULL_PAGE_RENDER_ZOOM
                         mat = fitz.Matrix(zoom, zoom)
                         pix = page.get_pixmap(matrix=mat, alpha=False)
 
-                        # Convert pixmap to PIL Image
+                        # Convert pixmap to PIL via PNG (lossless intermediate)
+                        # then save as JPEG once — avoids double lossy compression
                         from PIL import Image
                         import io
-                        img_data = pix.tobytes('jpeg')
+                        img_data = pix.tobytes('png')
                         pil_image = Image.open(io.BytesIO(img_data))
 
-                        # Save full page render
+                        # Single JPEG compression at quality=95
                         full_page_filename = f"page_{pdf_page}_full_render.jpg"
                         full_page_path = os.path.join(image_dir, full_page_filename)
-                        pil_image.save(full_page_path, "JPEG", quality=85)
+                        pil_image.save(full_page_path, "JPEG", quality=95, progressive=True)
 
                         # Get file size
                         file_size = os.path.getsize(full_page_path)
@@ -1290,7 +1328,8 @@ class PDFProcessor:
                             'format': 'jpg',
                             'size_bytes': file_size,
                             'width': pil_image.width,
-                            'height': pil_image.height
+                            'height': pil_image.height,
+                            'render_dpi': 250
                         })
 
                         # Free memory immediately
@@ -1298,7 +1337,8 @@ class PDFProcessor:
                         pil_image = None
 
                         self.logger.info(
-                            f"   ✅ [Job: {job_id}] Full page render saved: {full_page_filename}"
+                            f"   ✅ [Job: {job_id}] Full page render saved: {full_page_filename} "
+                            f"({extracted_images[-1]['width']}x{extracted_images[-1]['height']}, 250 DPI)"
                         )
 
                     except Exception as e:
@@ -1934,10 +1974,11 @@ class PDFProcessor:
             if processing_options.get('denoise', True):
                 enhanced = cv2.fastNlMeansDenoisingColored(enhanced, None, 10, 10, 7, 21)
             
-            # Save enhanced image
+            # Save enhanced image as progressive JPEG via PIL
             base_name = os.path.splitext(original_path)[0]
             enhanced_path = f"{base_name}_enhanced.jpg"
-            cv2.imwrite(enhanced_path, enhanced, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            enhanced_rgb = cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB)
+            Image.fromarray(enhanced_rgb).save(enhanced_path, "JPEG", quality=95, progressive=True)
             
             return enhanced_path
             

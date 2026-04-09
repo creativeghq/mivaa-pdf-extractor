@@ -116,22 +116,37 @@ async def get_rag_service(request: Request) -> RAGService:
     )
 
 
+_pdf_processor_singleton: Optional[PDFProcessor] = None
+
 def get_pdf_processor():
     """
-    Get PDF processor instance.
+    Get PDF processor singleton instance.
 
-    Creates a new instance for each request to avoid state sharing issues.
-    PDFProcessor is lightweight and stateless, so this is acceptable.
+    Reuses the same PDFProcessor across requests to avoid re-creating
+    the ThreadPoolExecutor and re-importing heavy CV2/scipy modules.
 
     Returns:
         PDFProcessor instance
     """
-    return PDFProcessor()
+    global _pdf_processor_singleton
+    if _pdf_processor_singleton is None:
+        _pdf_processor_singleton = PDFProcessor()
+    return _pdf_processor_singleton
 
 
 # ============================================================================
 # Authentication Dependencies
 # ============================================================================
+
+# Singleton JWT middleware — avoids re-instantiation + settings parse per request
+_jwt_middleware_singleton: Optional[JWTAuthMiddleware] = None
+
+def _get_jwt_middleware() -> JWTAuthMiddleware:
+    global _jwt_middleware_singleton
+    if _jwt_middleware_singleton is None:
+        _jwt_middleware_singleton = JWTAuthMiddleware(None)
+    return _jwt_middleware_singleton
+
 
 async def get_current_user(
     request: Request,
@@ -139,20 +154,19 @@ async def get_current_user(
 ) -> Dict[str, Any]:
     """
     Extract and validate the current authenticated user from JWT token.
-    
+
     Args:
         request: FastAPI request object
         credentials: HTTP Bearer token credentials
-        
+
     Returns:
         Dict containing user information and claims
-        
+
     Raises:
         HTTPException: If token is invalid or user is not authenticated
     """
     try:
-        # Get JWT middleware instance
-        jwt_middleware = JWTAuthMiddleware(None)
+        jwt_middleware = _get_jwt_middleware()
 
         # Validate token and extract claims
         claims = await jwt_middleware._validate_token(credentials.credentials)
@@ -182,32 +196,31 @@ async def get_workspace_context(
 ) -> WorkspaceContext:
     """
     Extract and validate workspace context from authenticated user.
-    
+
     Args:
         request: FastAPI request object
         user: Authenticated user information (JWT claims)
-        
+
     Returns:
         WorkspaceContext with validated workspace information
-        
+
     Raises:
         HTTPException: If workspace context is invalid or missing
     """
     try:
-        # Get JWT middleware instance
-        jwt_middleware = JWTAuthMiddleware(None)
-        
+        jwt_middleware = _get_jwt_middleware()
+
         # Extract workspace context
         workspace_context = await jwt_middleware._extract_workspace_context(user)
-        
+
         if not workspace_context:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Invalid or missing workspace context"
             )
-            
+
         return workspace_context
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

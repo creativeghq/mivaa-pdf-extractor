@@ -103,7 +103,7 @@ class YoloLayoutDetector:
         self,
         pdf_path: str,
         page_num: int,
-        dpi: int = 150
+        dpi: int = 250
     ) -> Image.Image:
         """
         Convert PDF page to PIL Image for YOLO analysis.
@@ -149,7 +149,7 @@ class YoloLayoutDetector:
         self,
         pdf_path: str,
         page_num: int,
-        dpi: int = 150
+        dpi: int = 250
     ) -> LayoutDetectionResult:
         """
         Detect layout regions in a PDF page using YOLO DocParser.
@@ -433,7 +433,7 @@ class YoloLayoutDetector:
         self,
         pdf_path: str,
         page_numbers: List[int],
-        dpi: int = 150
+        dpi: int = 250
     ) -> List[LayoutDetectionResult]:
         """
         Detect layout regions for multiple pages.

@@ -94,6 +94,7 @@ class RealEmbeddingsService:
         self.slig_timeout = settings.slig_timeout
         self.slig_max_retries = settings.slig_max_retries
         self._slig_client = None  # Lazy-initialized SLIG client
+        self._voyage_client = None  # Lazy-initialized Voyage AI httpx client
 
         # Log SLIG configuration
         self.logger.info(f"☁️ Visual Embeddings: SLIG Cloud Endpoint (basiliskan/siglip2, 768D)")
@@ -557,70 +558,74 @@ class RealEmbeddingsService:
                 # OpenAI supports: 512, 1536
                 voyage_dimensions = 1024 if dimensions == 1536 else dimensions
 
-                # Call Voyage AI batch API
-                async with httpx.AsyncClient() as client:
-                    request_data = {
-                        "model": "voyage-3.5",
-                        "input": processed_texts,  # Use processed texts (no empty strings)
-                        "truncation": truncation
-                    }
-
-                    # Add optional parameters (only if not None/default)
-                    if input_type is not None:
-                        request_data["input_type"] = input_type
-                    if voyage_dimensions != 1024:
-                        request_data["output_dimension"] = voyage_dimensions
-                    if output_dtype != "float":
-                        request_data["output_dtype"] = output_dtype
-
-                    response = await client.post(
-                        "https://api.voyageai.com/v1/embeddings",
-                        headers={
-                            "Authorization": f"Bearer {self.voyage_api_key}",
-                            "Content-Type": "application/json"
-                        },
-                        json=request_data,
-                        timeout=60.0  # Longer timeout for batch requests
+                # Reuse httpx client for connection keepalive across batches
+                if self._voyage_client is None:
+                    self._voyage_client = httpx.AsyncClient(
+                        timeout=60.0,
+                        limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
                     )
 
-                    if response.status_code == 200:
-                        data = response.json()
-                        embeddings = [item["embedding"] for item in data["data"]]
+                request_data = {
+                    "model": "voyage-3.5",
+                    "input": processed_texts,  # Use processed texts (no empty strings)
+                    "truncation": truncation
+                }
 
-                        # Log AI call with proper cost calculation
-                        latency_ms = int((time.time() - start_time) * 1000)
-                        usage = data.get("usage", {})
-                        input_tokens = usage.get("total_tokens", 0)
+                # Add optional parameters (only if not None/default)
+                if input_type is not None:
+                    request_data["input_type"] = input_type
+                if voyage_dimensions != 1024:
+                    request_data["output_dimension"] = voyage_dimensions
+                if output_dtype != "float":
+                    request_data["output_dtype"] = output_dtype
 
-                        # Voyage AI Pricing (as of Dec 2024)
-                        cost_per_million = 0.06  # voyage-3.5
-                        cost = (input_tokens / 1_000_000) * cost_per_million
+                response = await self._voyage_client.post(
+                    "https://api.voyageai.com/v1/embeddings",
+                    headers={
+                        "Authorization": f"Bearer {self.voyage_api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json=request_data,
+                )
 
-                        await self.ai_logger.log_ai_call(
-                            task="batch_text_embedding_generation",
-                            model=f"voyage-3.5-{voyage_dimensions}d",
-                            input_tokens=input_tokens,
-                            output_tokens=0,
-                            cost=cost,
-                            latency_ms=latency_ms,
-                            confidence_score=0.95,
-                            confidence_breakdown={
-                                "model_confidence": 0.98,
-                                "completeness": 1.0,
-                                "consistency": 0.95,
-                                "validation": 0.90,
-                                "batch_size": len(texts)  # ✅ FIXED: Move batch_size to confidence_breakdown
-                            },
-                            action="use_ai_result"
-                        )
+                if response.status_code == 200:
+                    data = response.json()
+                    embeddings = [item["embedding"] for item in data["data"]]
 
-                        self.logger.info(f"✅ Generated {len(embeddings)} Voyage AI embeddings in batch ({voyage_dimensions}D, {input_type})")
-                        return embeddings
-                    else:
-                        error_body = response.text
-                        self.logger.error(f"Voyage AI batch API error {response.status_code}: {error_body}")
-                        self.logger.error(f"Request data: {request_data}")
-                        raise Exception(f"Voyage AI API error: {response.status_code} - {error_body}")
+                    # Log AI call with proper cost calculation
+                    latency_ms = int((time.time() - start_time) * 1000)
+                    usage = data.get("usage", {})
+                    input_tokens = usage.get("total_tokens", 0)
+
+                    # Voyage AI Pricing (as of Dec 2024)
+                    cost_per_million = 0.06  # voyage-3.5
+                    cost = (input_tokens / 1_000_000) * cost_per_million
+
+                    await self.ai_logger.log_ai_call(
+                        task="batch_text_embedding_generation",
+                        model=f"voyage-3.5-{voyage_dimensions}d",
+                        input_tokens=input_tokens,
+                        output_tokens=0,
+                        cost=cost,
+                        latency_ms=latency_ms,
+                        confidence_score=0.95,
+                        confidence_breakdown={
+                            "model_confidence": 0.98,
+                            "completeness": 1.0,
+                            "consistency": 0.95,
+                            "validation": 0.90,
+                            "batch_size": len(texts)  # ✅ FIXED: Move batch_size to confidence_breakdown
+                        },
+                        action="use_ai_result"
+                    )
+
+                    self.logger.info(f"✅ Generated {len(embeddings)} Voyage AI embeddings in batch ({voyage_dimensions}D, {input_type})")
+                    return embeddings
+                else:
+                    error_body = response.text
+                    self.logger.error(f"Voyage AI batch API error {response.status_code}: {error_body}")
+                    self.logger.error(f"Request data: {request_data}")
+                    raise Exception(f"Voyage AI API error: {response.status_code} - {error_body}")
 
             except Exception as e:
                 self.logger.warning(f"Voyage AI batch failed, falling back to OpenAI: {e}")
