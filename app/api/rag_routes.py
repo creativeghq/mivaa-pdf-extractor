@@ -2216,6 +2216,16 @@ async def process_document_with_discovery(
                     if status == "running":
                         logger.info("   ✅ Qwen endpoint already running, skipping warmup")
                         manager.warmup_completed = True
+                        # CRITICAL: even when skipping warmup, we MUST refresh the
+                        # endpoint URL from the live HF endpoint, otherwise
+                        # downstream code (health checker, OpenAI client) reads
+                        # an empty/protocolless URL and crashes with
+                        # "Request URL is missing http://" / APIConnectionError.
+                        # (2026-04-10 fix — discovered after Phase E run #4 was
+                        # still hitting the bug despite the source-level
+                        # `_refresh_url_from_endpoint` patch.)
+                        await asyncio.to_thread(manager._refresh_url_from_endpoint)
+                        logger.info(f"   🔗 Qwen endpoint URL after refresh: {manager.endpoint_url}")
                         warmup_results["skipped"].append("qwen")
                         return
 
@@ -2469,30 +2479,41 @@ async def process_document_with_discovery(
             health_check_timeout_seconds=30
         )
 
-        # Build config for health checks based on what was warmed up
+        # Build config for health checks based on what was warmed up.
+        # ⚠️ Read URL from each endpoint MANAGER (live, post-resume), not from
+        # settings.get_*_config()['endpoint_url'] — those settings fields are
+        # documented as "fallback only" and are populated empty by default;
+        # the manager dynamically resolves the real URL during warmup
+        # (qwen_endpoint_manager.py:131-132 etc.). Reading from settings
+        # produced "Request URL is missing http://" health check failures
+        # and 30×6s wasted retries on every job. (2026-04-10 fix)
+        def _live_url_from_manager(manager, fallback_url):
+            url = getattr(manager, 'endpoint_url', None) or fallback_url or ''
+            return url
+
         endpoints_config = {}
         if 'qwen' in endpoint_managers:
             qwen_config = settings.get_qwen_config()
             endpoints_config['qwen'] = {
-                'url': qwen_config['endpoint_url'],
+                'url': _live_url_from_manager(endpoint_managers['qwen'], qwen_config['endpoint_url']),
                 'token': qwen_config.get('endpoint_token', qwen_config.get('hf_token', ''))
             }
         if 'slig' in endpoint_managers:
             slig_config = settings.get_slig_config()
             endpoints_config['slig'] = {
-                'url': slig_config['endpoint_url'],
+                'url': _live_url_from_manager(endpoint_managers['slig'], slig_config['endpoint_url']),
                 'token': slig_config['hf_token']
             }
         if 'yolo' in endpoint_managers:
             yolo_config = settings.get_yolo_config()
             endpoints_config['yolo'] = {
-                'url': yolo_config['endpoint_url'],
+                'url': _live_url_from_manager(endpoint_managers['yolo'], yolo_config['endpoint_url']),
                 'token': yolo_config.get('hf_token', '')
             }
         if 'chandra' in endpoint_managers:
             chandra_config = settings.get_chandra_config()
             endpoints_config['chandra'] = {
-                'url': chandra_config['endpoint_url'],
+                'url': _live_url_from_manager(endpoint_managers['chandra'], chandra_config['endpoint_url']),
                 'token': chandra_config.get('hf_token', '')
             }
 
@@ -2877,7 +2898,13 @@ async def process_document_with_discovery(
                 .execute()
             ).data or []]
             if all_product_ids:
-                import asyncio
+                # NOTE: do NOT re-import asyncio here. asyncio is imported at
+                # module level (line 20). A local `import asyncio` inside this
+                # function makes Python treat `asyncio` as a function-scoped
+                # local for the WHOLE function, which causes the earlier
+                # `await asyncio.to_thread(...)` calls in the warm-up section
+                # (~line 2215+) to UnboundLocalError before this line is ever
+                # reached. Removed 2026-04-10 after Phase E crash.
                 _fe_task = asyncio.create_task(_trigger_factory_enrichment(
                     workspace_id=workspace_id,
                     product_ids=all_product_ids,
@@ -3526,7 +3553,11 @@ async def search_documents(
         _t_qu_start = _time.time()
         if enable_query_understanding:
             try:
-                import asyncio
+                # asyncio is imported at module level (line 20). Do NOT re-import
+                # locally — same UnboundLocalError trap as the discovery pipeline
+                # function (see comment at the previous fix site). The earlier
+                # `asyncio.create_task` / `asyncio.TimeoutError` references in
+                # this function would all crash before this branch is reached.
                 from app.services.search.unified_search_service import UnifiedSearchService
 
                 # Create temporary service instance for query parsing

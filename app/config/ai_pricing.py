@@ -58,7 +58,7 @@ class AIPricingConfig:
             "input": Decimal("3.00"),
             "output": Decimal("15.00"),
         },
-        "claude-sonnet-4-6-20260217": {
+        "claude-sonnet-4-6": {
             "input": Decimal("3.00"),
             "output": Decimal("15.00"),
             "last_verified": "2026-03-30",

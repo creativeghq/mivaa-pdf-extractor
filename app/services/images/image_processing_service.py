@@ -19,6 +19,7 @@ import logging
 from app.services.core.supabase_client import get_supabase_client
 from app.services.embeddings.vecs_service import VecsService
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+from app.services.images.vision_provider import VisionProvider
 from app.services.pdf.pdf_processor import PDFProcessor
 # PageConverter removed - using simple PDF page numbers instead
 from app.config import get_settings
@@ -158,7 +159,7 @@ class ImageProcessingService:
         extracted_images: List[Dict[str, Any]],
         confidence_threshold: float = 0.6,  # OPTIMIZED: Lowered from 0.7 to reduce validation calls
         primary_model: str = "Qwen/Qwen3-VL-32B-Instruct",  # PRIMARY: Qwen3-VL-32B (reliable, high accuracy)
-        validation_model: str = "claude-sonnet-4-6-20260217",  # FALLBACK: Claude Sonnet 4.5 (highest quality)
+        validation_model: str = "claude-sonnet-4-6",  # FALLBACK: Claude Sonnet 4.5 (highest quality)
         batch_size: int = 15,  # NEW: Process images in batches to prevent OOM
         job_id: Optional[str] = None  # NEW: Job ID for AI cost tracking
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -167,7 +168,7 @@ class ImageProcessingService:
 
         SUPPORTED MODELS:
         - Qwen/Qwen3-VL-32B-Instruct: PRIMARY - High accuracy, reliable ($0.50/1M input, $1.50/1M output)
-        - claude-sonnet-4-6-20260217: FALLBACK - Highest quality vision model (for failures/low confidence)
+        - claude-sonnet-4-6: FALLBACK - Highest quality vision model (for failures/low confidence)
 
         MEMORY OPTIMIZATIONS:
         - Processes images in batches (default: 15) to prevent OOM crashes
@@ -212,7 +213,15 @@ class ImageProcessingService:
         qwen_config = settings.get_qwen_config()
 
         huggingface_api_key = qwen_config["endpoint_token"]
-        qwen_endpoint_url = qwen_config["endpoint_url"]
+        # ⚠️ DO NOT use qwen_config["endpoint_url"] here. Per config.py:320-324
+        # that field is "only a fallback" — the real URL is resolved dynamically
+        # from HF at runtime by the QwenEndpointManager during warmup/resume
+        # (qwen_endpoint_manager.py:131-132 logs `🔗 Qwen endpoint URL updated`).
+        # If we read from settings the URL is empty/stale and OpenAI client
+        # raises APIConnectionError on every classification → Stage 3 fails
+        # universally → falls back to Claude. Read it from the LIVE manager
+        # below after `qwen_manager` is initialized.
+        qwen_endpoint_url = None  # populated from qwen_manager.endpoint_url after init
 
         if not huggingface_api_key:
             logger.error("❌ CRITICAL: HUGGINGFACE_API_KEY not configured!")
@@ -240,7 +249,7 @@ class ImageProcessingService:
         # Fallback: Create new manager if registry not available
         if qwen_manager is None:
             qwen_manager = QwenEndpointManager(
-                endpoint_url=qwen_endpoint_url,
+                endpoint_url="",  # resolved dynamically by manager from HF
                 endpoint_name=qwen_config["endpoint_name"],
                 namespace=qwen_config["namespace"],
                 endpoint_token=huggingface_api_key,
@@ -248,8 +257,22 @@ class ImageProcessingService:
             )
             logger.info("ℹ️ Created new Qwen manager (registry not available)")
 
+        # ⚠️ Pull the LIVE endpoint URL from the manager, not from settings.
+        # The manager updates its URL during warmup/resume (qwen_endpoint_manager.py:131-132).
+        # Settings may be empty or stale and will cause OpenAI client APIConnectionError.
+        qwen_endpoint_url = qwen_manager.endpoint_url
+        if not qwen_endpoint_url or not qwen_endpoint_url.startswith(("http://", "https://")):
+            logger.error(
+                f"❌ CRITICAL: qwen_manager.endpoint_url is invalid ({qwen_endpoint_url!r}). "
+                "Manager warmup probably did not run before classify_images was called."
+            )
+        else:
+            logger.info(f"✅ Using live Qwen endpoint URL from manager: {qwen_endpoint_url}")
+
         # Check if Qwen is enabled and assume it's ready (warmup done at job start)
-        qwen_endpoint_available = qwen_config["enabled"]
+        qwen_endpoint_available = qwen_config["enabled"] and bool(
+            qwen_endpoint_url and qwen_endpoint_url.startswith(("http://", "https://"))
+        )
         if qwen_endpoint_available:
             logger.info("✅ Qwen endpoint configured (warmup done at job start)")
         else:
@@ -507,7 +530,7 @@ class ImageProcessingService:
                     raise ValueError(error_msg)
 
                 response = await ai_service.anthropic_async.messages.create(
-                    model="claude-sonnet-4-6-20260217",
+                    model="claude-sonnet-4-6",
                     max_tokens=1024,
                     messages=[{
                         "role": "user",
@@ -907,6 +930,157 @@ class ImageProcessingService:
             return 0
 
     # ------------------------------------------------------------------ #
+    # Icon-candidate detection (Stage 3 split)                            #
+    # ------------------------------------------------------------------ #
+    #
+    # After classification, some images that look like product specs
+    # (R-rating badges, PEI icons, slip-resistance symbols, packaging
+    # icons, etc.) get routed to the icon extraction pipeline INSTEAD of
+    # the regular image embedding pipeline. They get OCR + Claude → spec
+    # metadata, NOT visual SLIG / specialized SLIG / understanding vectors.
+    # This keeps the visual VECS collections clean of icon junk while
+    # capturing the structured spec data into product.metadata.
+    #
+    # Detection rules (all must hold):
+    #   1. width  < ICON_MAX_DIM and height < ICON_MAX_DIM
+    #   2. ICON_MIN_ASPECT <= width/height <= ICON_MAX_ASPECT
+    #   3. ≥ ICON_MIN_PER_PAGE such images on the same page_number
+    #
+    # The 3rd rule is the strictest — a single small image on a page is
+    # almost certainly a logo or thumbnail, but a row of N small images
+    # together is the spec icon strip. Catalogs with ceramic specs
+    # typically have 5-8 icons in a single row at the bottom of the page.
+    #
+    # Two sources feed the icon candidate pool:
+    #   (a) `material_images`     — Qwen classified them as PRODUCT_IMAGE/MIXED
+    #                               but they're actually small spec icons
+    #   (b) `non_material_images` — Qwen classified them as DECORATIVE
+    #                               (logos, headers, etc.); the DECORATIVE
+    #                               override re-routes them to icon extraction
+    #                               IF they meet the size + grid rules
+    #
+    # Anything that fails all 3 rules stays in its original bucket.
+    ICON_MAX_DIM = 200          # px — both width and height must be below this
+    ICON_MIN_ASPECT = 0.5       # width/height ≥ 0.5 (not super-tall)
+    ICON_MAX_ASPECT = 2.0       # width/height ≤ 2.0 (not super-wide)
+    ICON_MIN_PER_PAGE = 3       # at least N icon-shaped images on the same page
+
+    @classmethod
+    def _is_icon_shaped(cls, img_data: Dict[str, Any]) -> bool:
+        """Check if a single image meets the size + aspect ratio rules.
+
+        Page-grouping (rule 3) is checked separately by the caller because it
+        needs all candidates from the page to compare against.
+        """
+        width = img_data.get('width') or 0
+        height = img_data.get('height') or 0
+        if width <= 0 or height <= 0:
+            return False
+        if width >= cls.ICON_MAX_DIM or height >= cls.ICON_MAX_DIM:
+            return False
+        aspect = width / height
+        return cls.ICON_MIN_ASPECT <= aspect <= cls.ICON_MAX_ASPECT
+
+    @staticmethod
+    def _classification_is_decorative(img_data: Dict[str, Any]) -> bool:
+        """True if Qwen classified this image as DECORATIVE.
+
+        Used by the DECORATIVE override path: a small grid of decorative-
+        classified images on the same page is more likely a strip of spec
+        icons than actual decoration, so we re-route them to icon extraction.
+        """
+        classification = img_data.get('ai_classification') or {}
+        category = (classification.get('classification') or '').upper().strip()
+        return category == 'DECORATIVE'
+
+    def _split_material_and_icon_candidates(
+        self,
+        material_images: List[Dict[str, Any]],
+        non_material_images: Optional[List[Dict[str, Any]]] = None,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Split classified images into 3 routing buckets:
+          - regular_material_images : full Stage 3 pipeline (visual SLIG +
+                                      4 specialized + understanding embedding)
+          - icon_candidates         : icon extraction pipeline only
+                                      (OCR + Claude → spec metadata, NO embeddings)
+          - remaining_non_material  : pure decoration / technical diagrams
+                                      (logos, headers, page borders) — dropped
+                                      from further processing as before
+
+        Detection: a candidate is icon-shaped if (width, height < ICON_MAX_DIM)
+        AND aspect ratio in [ICON_MIN_ASPECT, ICON_MAX_ASPECT]. The page-grouping
+        rule (≥ ICON_MIN_PER_PAGE per page) is enforced as the second pass.
+
+        Args:
+            material_images: Images Qwen classified as PRODUCT_IMAGE / MIXED
+            non_material_images: Optional — images Qwen classified as
+                DECORATIVE / TECHNICAL_DIAGRAM. When provided, decorative
+                images that meet the icon shape + grid rules are re-routed
+                to the icon path (the "DECORATIVE override").
+
+        Returns:
+            (regular_material_images, icon_candidates, remaining_non_material)
+        """
+        non_material_images = non_material_images or []
+
+        # Pass 1: tag every image with whether it's icon-shaped
+        material_shaped = [(img, self._is_icon_shaped(img)) for img in material_images]
+        decorative_shaped = [
+            (img, self._is_icon_shaped(img) and self._classification_is_decorative(img))
+            for img in non_material_images
+        ]
+
+        # Pass 2: group by page and check the per-page count gate
+        # (combine both pools for the count, since a spec strip can span both
+        # classifier verdicts — Qwen often calls some icons PRODUCT_IMAGE and
+        # adjacent ones DECORATIVE).
+        from collections import defaultdict
+        page_counts: Dict[int, int] = defaultdict(int)
+        for img, is_icon in material_shaped + decorative_shaped:
+            if is_icon:
+                page = img.get('page_number')
+                if page is not None:
+                    page_counts[page] += 1
+
+        pages_with_icon_grid = {
+            page for page, count in page_counts.items() if count >= self.ICON_MIN_PER_PAGE
+        }
+
+        # Pass 3: assign each image to a final bucket
+        regular_material: List[Dict[str, Any]] = []
+        icon_candidates: List[Dict[str, Any]] = []
+        remaining_non_material: List[Dict[str, Any]] = []
+
+        for img, is_shaped in material_shaped:
+            if is_shaped and img.get('page_number') in pages_with_icon_grid:
+                icon_candidates.append(img)
+            else:
+                regular_material.append(img)
+
+        for img, is_shaped_and_decorative in decorative_shaped:
+            if is_shaped_and_decorative and img.get('page_number') in pages_with_icon_grid:
+                icon_candidates.append(img)
+            else:
+                remaining_non_material.append(img)
+
+        if icon_candidates:
+            logger.info(
+                f"   🔖 Icon split: {len(regular_material)} regular material, "
+                f"{len(icon_candidates)} icon candidates "
+                f"(from {len(material_images)} material + {len(non_material_images)} non-material), "
+                f"{len(remaining_non_material)} remain as non-material"
+            )
+        else:
+            logger.debug(
+                f"   🔖 Icon split: no icon candidates detected "
+                f"({len(regular_material)} regular material, "
+                f"{len(remaining_non_material)} non-material)"
+            )
+
+        return regular_material, icon_candidates, remaining_non_material
+
+    # ------------------------------------------------------------------ #
     # Material analysis (vision_analysis JSON) — feeds understanding emb #
     # ------------------------------------------------------------------ #
     #
@@ -1121,7 +1295,7 @@ class ImageProcessingService:
                         return None
 
                     parsed = self._parse_vision_analysis_json(raw, image_id)
-                    validated = self._validate_vision_analysis(parsed, image_id, source="qwen")
+                    validated = self._validate_vision_analysis(parsed, image_id, source=VisionProvider.QWEN.value)
                     if validated is not None:
                         return validated
 
@@ -1209,7 +1383,7 @@ class ImageProcessingService:
             ]
 
             kwargs = {
-                "model": "claude-sonnet-4-6-20260217",
+                "model": "claude-sonnet-4-6",
                 "max_tokens": 1024,
                 "messages": [{"role": "user", "content": content}],
             }
@@ -1233,7 +1407,7 @@ class ImageProcessingService:
                 return None
 
             parsed = self._parse_vision_analysis_json(raw, image_id)
-            return self._validate_vision_analysis(parsed, image_id, source="claude_fallback")
+            return self._validate_vision_analysis(parsed, image_id, source=VisionProvider.CLAUDE_FALLBACK.value)
 
         except Exception as e:
             logger.warning(
@@ -1259,27 +1433,23 @@ class ImageProcessingService:
         Strategy:
           1. Try Qwen3-VL (warm endpoint, with retries) — primary path.
           2. On failure, fall back to Claude Sonnet 4.6 — secondary path.
-          3. If both fail, return (None, 'failed') so the caller can record
+          3. If both fail, return (None, FAILED) so the caller can record
              the failure in job-level stats and the image gets all other
              vectors except `understanding_1024`.
 
-        Args:
-            image_base64: Base64-encoded image (raw, no data: prefix).
-            image_id: Image UUID (for logging).
-
         Returns:
-            (vision_analysis_dict, source) where source is one of:
-              - 'qwen'             : produced by Qwen3-VL
-              - 'claude_fallback'  : Qwen failed, Claude produced it
-              - 'skipped'          : prompt not loaded, never attempted
-              - 'failed'           : both providers failed
+            (vision_analysis_dict, source) where source is the string value
+            of a `VisionProvider` enum member: QWEN | CLAUDE_FALLBACK | SKIPPED | FAILED.
+            Only QWEN and CLAUDE_FALLBACK are persistable (DB CHECK constraint);
+            SKIPPED and FAILED are in-memory only — the caller never writes a
+            row when one of those is returned.
         """
         if not self.material_analyzer_prompt:
             logger.debug(
                 f"   ⏭️ Skipping material analysis for {image_id}: "
                 f"Material Image Analyzer prompt not loaded"
             )
-            return None, 'skipped'
+            return None, VisionProvider.SKIPPED.value
 
         # Primary: Qwen
         qwen_result = await self._try_qwen_material_analysis(
@@ -1288,7 +1458,7 @@ class ImageProcessingService:
             max_retries=2,
         )
         if qwen_result is not None:
-            return qwen_result, 'qwen'
+            return qwen_result, VisionProvider.QWEN.value
 
         # Fallback: Claude
         logger.info(
@@ -1300,13 +1470,13 @@ class ImageProcessingService:
             image_id=image_id,
         )
         if claude_result is not None:
-            return claude_result, 'claude_fallback'
+            return claude_result, VisionProvider.CLAUDE_FALLBACK.value
 
         logger.error(
             f"   ❌ Material analysis failed for {image_id} via BOTH Qwen and Claude — "
             f"image will be missing the understanding embedding"
         )
-        return None, 'failed'
+        return None, VisionProvider.FAILED.value
 
     async def _process_single_image_with_retry(
         self,
@@ -1392,7 +1562,7 @@ class ImageProcessingService:
                         'style_slig': False,
                         'material_slig': False,
                         'understanding': False,
-                        'vision_analysis_source': 'skipped',
+                        'vision_analysis_source': VisionProvider.SKIPPED.value,
                     })
 
                 logger.info(f"   🎨 Generating CLIP embeddings for image {idx + 1}/{total}")
@@ -1421,7 +1591,16 @@ class ImageProcessingService:
                 # rest of the platform can read it (admin UI, search filters,
                 # downstream services). Best-effort — we never want a JSONB write
                 # failure to block embedding generation.
-                if vision_analysis:
+                #
+                # Defensive gate: only persist if BOTH vision_analysis is present
+                # AND the source value is in the persistable set (`qwen` or
+                # `claude_fallback`). The DB CHECK constraint enforces the same
+                # rule, so writing a non-persistable value would fail anyway.
+                try:
+                    persistable_source = VisionProvider(vision_analysis_source).is_persistable()
+                except ValueError:
+                    persistable_source = False
+                if vision_analysis and persistable_source:
                     try:
                         self.supabase_client.client.table('document_images').update({
                             'vision_analysis': vision_analysis,
@@ -1614,8 +1793,160 @@ class ImageProcessingService:
             'style_slig': False,
             'material_slig': False,
             'understanding': False,
-            'vision_analysis_source': 'failed',
+            'vision_analysis_source': VisionProvider.FAILED.value,
         })
+
+    # ------------------------------------------------------------------ #
+    # Icon candidate processing — OCR + Claude → spec metadata, NO VECS  #
+    # ------------------------------------------------------------------ #
+
+    async def _process_icon_candidate(
+        self,
+        img_data: Dict[str, Any],
+        document_id: str,
+        workspace_id: str,
+        idx: int,
+        total: int,
+    ) -> Tuple[bool, bool, Optional[str], Dict[str, Any]]:
+        """
+        Process a single icon-candidate image.
+
+        Steps:
+          1. save_single_image — write the document_images row with category='icon_metadata'
+          2. ocr_service.extract_icon_metadata — OCR + Claude with the
+             `Icon-Based Metadata Extraction` prompt
+          3. UPDATE document_images.metadata['icon_metadata'] with the
+             extracted IconMetadata items (audit trail)
+          4. NO embedding generation, NO VECS writes, NO SLIG calls.
+
+        The Stage 4 product consolidation step reads metadata['icon_metadata']
+        across all images for a product and rolls them up into the flat
+        top-level keys on products.metadata that match material_metadata_fields.
+
+        Returns:
+            (image_saved, embedding_generated, error_message, per_image_stats)
+            where embedding_generated is always False (icons get no embeddings)
+            and per_image_stats reports zeros for every embedding type plus
+            an `icon_metadata_count` field showing how many spec items were
+            extracted from this icon.
+        """
+        per_image_stats = {
+            'image_id': None,
+            'visual_slig': False,
+            'color_slig': False,
+            'texture_slig': False,
+            'style_slig': False,
+            'material_slig': False,
+            'understanding': False,
+            'vision_analysis_source': VisionProvider.SKIPPED.value,
+            'is_icon_candidate': True,
+            'icon_metadata_count': 0,
+        }
+
+        try:
+            # Step 1: save the document_images row, marked as an icon
+            image_id = await self.supabase_client.save_single_image(
+                image_info=img_data,
+                document_id=document_id,
+                workspace_id=workspace_id,
+                image_index=idx,
+                category='icon_metadata',
+                extraction_method=img_data.get('extraction_method', 'pymupdf'),
+                bbox=img_data.get('bbox'),
+                detection_confidence=img_data.get('detection_confidence'),
+                product_name=img_data.get('product_name'),
+                material_category='icon_metadata',
+            )
+            if not image_id:
+                return (False, False, 'Failed to save icon image to database', per_image_stats)
+
+            img_data['id'] = image_id
+            per_image_stats['image_id'] = image_id
+
+            # Step 2: OCR + Claude — extract structured spec items from the icon
+            image_path = img_data.get('path')
+            if not image_path or not os.path.exists(image_path):
+                logger.warning(
+                    f"   ⚠️ Icon image file not found at {image_path} for {image_id}"
+                )
+                return (True, False, 'Icon image file not found', per_image_stats)
+
+            try:
+                from app.services.pdf.ocr_service import get_ocr_service
+                ocr_service = get_ocr_service()
+                icon_metadata_items = await ocr_service.extract_icon_metadata(
+                    image=image_path,
+                    workspace_id=workspace_id,
+                    use_ai=True,
+                )
+            except Exception as ocr_err:
+                logger.warning(
+                    f"   ⚠️ Icon OCR/AI extraction failed for {image_id}: {ocr_err}"
+                )
+                return (True, False, f'Icon extraction failed: {ocr_err}', per_image_stats)
+
+            if not icon_metadata_items:
+                logger.info(
+                    f"   ℹ️ Icon {image_id} (page {img_data.get('page_number')}): "
+                    f"no spec items extracted"
+                )
+                return (True, False, None, per_image_stats)
+
+            # Step 3: persist the extracted items as JSONB on document_images.metadata
+            # for the audit trail. Stage 4 reads this to roll up onto the product.
+            try:
+                serialized_items = [
+                    {
+                        'field_name': item.field_name,
+                        'value': item.value,
+                        'confidence': item.confidence,
+                        'bbox': item.bbox,
+                        'icon_type': item.icon_type,
+                    }
+                    for item in icon_metadata_items
+                ]
+                # Read current metadata, merge, write back. We use a single
+                # update because we know icon images don't compete with other
+                # writers (no embedding pipeline, no vision_analysis update).
+                existing = self.supabase_client.client.table('document_images')\
+                    .select('metadata')\
+                    .eq('id', image_id)\
+                    .single()\
+                    .execute()
+                existing_meta = (existing.data or {}).get('metadata') or {}
+                if not isinstance(existing_meta, dict):
+                    existing_meta = {}
+                existing_meta['icon_metadata'] = serialized_items
+
+                self.supabase_client.client.table('document_images').update({
+                    'metadata': existing_meta,
+                }).eq('id', image_id).execute()
+
+                per_image_stats['icon_metadata_count'] = len(serialized_items)
+                field_names = sorted({item.field_name for item in icon_metadata_items})
+                logger.info(
+                    f"   🔖 Icon {image_id} (page {img_data.get('page_number')}): "
+                    f"extracted {len(serialized_items)} spec items "
+                    f"({', '.join(field_names[:6])}{'...' if len(field_names) > 6 else ''})"
+                )
+                return (True, False, None, per_image_stats)
+
+            except Exception as persist_err:
+                logger.warning(
+                    f"   ⚠️ Failed to persist icon_metadata on document_images "
+                    f"for {image_id}: {persist_err}"
+                )
+                # Treat as a partial success — the image is saved, items were
+                # extracted, but we couldn't persist them. Better to retry the
+                # whole image at the next backfill than to silently lose data.
+                return (True, False, f'Icon metadata persist failed: {persist_err}', per_image_stats)
+
+        except Exception as e:
+            logger.error(
+                f"   ❌ Unexpected error processing icon candidate at idx {idx}: {e}",
+                exc_info=True,
+            )
+            return (False, False, str(e), per_image_stats)
 
     async def save_images_and_generate_clips(
         self,
@@ -1628,6 +1959,7 @@ class ImageProcessingService:
         job_id: Optional[str] = None,  # NEW: Job ID for AI cost tracking
         tracker: Optional[Any] = None,  # NEW: ProgressTracker for per-image events
         progress_label: Optional[str] = None,  # e.g. "Stage 3: Processing images for {product}"
+        icon_candidates: Optional[List[Dict[str, Any]]] = None,  # NEW: spec icons → OCR + Claude path
     ) -> Dict[str, Any]:
         """
         Save images to database and generate CLIP embeddings with batching and retry logic.
@@ -1639,9 +1971,12 @@ class ImageProcessingService:
         4. Detailed error tracking (log which images fail and why)
         5. Per-image progress events to ProgressTracker (visible in admin UI)
         6. Per-vector statistics aggregation (visual + 4 specialized + understanding)
+        7. Icon candidate processing — when `icon_candidates` is provided,
+           those images are routed to OCR + Claude for spec extraction and
+           are NOT given any visual embeddings.
 
         Args:
-            material_images: List of material image data
+            material_images: List of regular material image data (full Stage 3 pipeline)
             document_id: Document ID
             workspace_id: Workspace ID
             batch_size: Number of images to process per batch (default: 20)
@@ -1652,21 +1987,31 @@ class ImageProcessingService:
                      events are pushed via update_detailed_progress() so the admin
                      UI can show "Image 12/50: generating embeddings".
             progress_label: Optional label prefix shown in progress updates.
+            icon_candidates: Optional list of icon-shaped images that should be
+                             routed to the icon extraction path (OCR + Claude →
+                             spec metadata, NO visual embeddings). When None or
+                             empty, only the regular material path runs.
 
         Returns:
             Dict with counts, failed images, and per-vector stats: {
                 images_saved,
                 clip_embeddings_generated,
-                failed_images: [{index, path, page_number, error}],
+                failed_images,
                 vector_stats: {
                     visual_slig, color_slig, texture_slig, style_slig,
                     material_slig, understanding,
-                    vision_analysis_qwen, vision_analysis_claude_fallback,
-                    vision_analysis_failed, vision_analysis_skipped
+                    vision_analysis_<provider> (one per VisionProvider value),
+                    icon_candidates_processed,
+                    icon_metadata_extracted,
+                    icon_extraction_failed,
                 }
             }
         """
+        icon_candidates = icon_candidates or []
+
         logger.info(f"💾 Saving {len(material_images)} material images to database and generating CLIP embeddings...")
+        if icon_candidates:
+            logger.info(f"   🔖 Plus {len(icon_candidates)} icon candidates → OCR + Claude path (no embeddings)")
         logger.info(f"   📦 Batch size: {batch_size}, Max retries: {max_retries}")
 
         images_saved_count = 0
@@ -1676,6 +2021,10 @@ class ImageProcessingService:
         # Per-vector aggregation — drives the admin UI's "what actually populated"
         # display and lets us answer "how many images got the understanding
         # embedding?" without round-tripping to VECS.
+        #
+        # vision_analysis_* keys are derived from the VisionProvider enum so
+        # adding a new provider value (e.g. a new fallback model) only requires
+        # adding it to the enum — the aggregation keys appear automatically.
         vector_stats = {
             'visual_slig': 0,
             'color_slig': 0,
@@ -1683,11 +2032,13 @@ class ImageProcessingService:
             'style_slig': 0,
             'material_slig': 0,
             'understanding': 0,
-            'vision_analysis_qwen': 0,
-            'vision_analysis_claude_fallback': 0,
-            'vision_analysis_failed': 0,
-            'vision_analysis_skipped': 0,
+            # Icon pipeline counters — populated below if icon_candidates is set.
+            'icon_candidates_processed': 0,
+            'icon_metadata_extracted': 0,  # # of icons that returned ≥1 spec item
+            'icon_extraction_failed': 0,   # # of icons whose OCR/Claude failed
         }
+        for vp in VisionProvider:
+            vector_stats[f'vision_analysis_{vp.value}'] = 0
 
         # Check checkpoint - get number of images already processed
         checkpoint_index = await self._get_embedding_checkpoint(document_id)
@@ -1722,16 +2073,38 @@ class ImageProcessingService:
             except Exception as tracker_init_err:
                 logger.debug(f"   ⚠️ Tracker init update failed (non-critical): {tracker_init_err}")
 
-        for batch_start in range(0, total_images, batch_size):
-            batch_end = min(batch_start + batch_size, total_images)
-            batch = material_images[batch_start:batch_end]
+        # 2026-04-10: parallelized this loop with a per-image semaphore.
+        # The previous sequential per-image pattern caused Qwen3-VL endpoint
+        # auto-pause: each image's Qwen material-analysis call was followed
+        # by ~15s of save+update+embed orchestration before the next call,
+        # so Qwen sat idle for 15s gaps and the 60s auto-pause eventually
+        # fired mid-job (Stage 3.5 Material analysis fallback to Claude).
+        # Per-image work is fully isolated (no cross-image state), so we
+        # run POST_PROCESSING_CONCURRENCY in flight via a semaphore. This
+        # keeps Qwen continuously busy with N concurrent calls (well under
+        # the 4-replica capacity), eliminates the auto-pause window, and
+        # cuts wall clock from sequential ~16s/img to ~16s/N amortized.
+        # The outer batching loop is preserved for memory bounds.
+        POST_PROCESSING_CONCURRENCY = 8
+        post_processing_sem = asyncio.Semaphore(POST_PROCESSING_CONCURRENCY)
 
-            logger.info(f"   📦 Processing batch {batch_start // batch_size + 1}/{(total_images + batch_size - 1) // batch_size} ({batch_start + 1}-{batch_end}/{total_images})")
+        # Dedicated counter for "completed so far" so the per-image progress
+        # label is monotonic regardless of which task finishes first. We
+        # increment it inside _process_one after the heavy work, on the
+        # event loop, where increments are atomic under asyncio's
+        # single-threaded cooperative scheduling.
+        completed_counter = {'value': checkpoint_index}
 
-            # Process batch images with retry logic
-            for idx, img_data in enumerate(batch):
-                global_idx = batch_start + idx + checkpoint_index
+        async def _process_one(img_data, global_idx):
+            """Per-image task: heavy work behind semaphore, aggregation after.
 
+            Aggregation runs on the event loop after each await, so increments
+            on the shared counters/dicts/lists are safe under asyncio's
+            single-threaded cooperative scheduling — no Lock needed.
+            """
+            nonlocal images_saved_count, clip_embeddings_count
+
+            async with post_processing_sem:
                 image_saved, embedding_generated, error, per_image_stats = (
                     await self._process_single_image_with_retry(
                         img_data=img_data,
@@ -1744,60 +2117,173 @@ class ImageProcessingService:
                     )
                 )
 
+            if image_saved:
+                images_saved_count += 1
+            if embedding_generated:
+                clip_embeddings_count += 1
+
+            # Aggregate per-vector counts
+            for vec_key in (
+                'visual_slig', 'color_slig', 'texture_slig',
+                'style_slig', 'material_slig', 'understanding',
+            ):
+                if per_image_stats.get(vec_key):
+                    vector_stats[vec_key] += 1
+
+            # Aggregate vision_analysis provenance counts. The source value is
+            # always one of VisionProvider's string values (the orchestrator
+            # uses the enum). Defensive: an unknown value gets bucketed as
+            # SKIPPED so we don't silently lose the count.
+            source = per_image_stats.get('vision_analysis_source', VisionProvider.SKIPPED.value)
+            source_key = f'vision_analysis_{source}'
+            if source_key in vector_stats:
+                vector_stats[source_key] += 1
+            else:
+                vector_stats[f'vision_analysis_{VisionProvider.SKIPPED.value}'] += 1
+
+            if error:
+                failed_images.append({
+                    'index': global_idx,
+                    'image_id': per_image_stats.get('image_id'),
+                    'path': img_data.get('path'),
+                    'page_number': img_data.get('page_number'),
+                    'error': error,
+                })
+
+            # Per-image progress event — pushed to background_jobs so the
+            # admin UI updates as we go. update_detailed_progress() debounces
+            # internally (MIN_SYNC_INTERVAL = 2s), so we can call it from
+            # every concurrent slot without overwhelming the database.
+            completed_counter['value'] += 1
+            if tracker is not None:
+                try:
+                    step_label = (
+                        f"{label_prefix} ({completed_counter['value']}/{total_with_checkpoint}) "
+                        f"— v:{vector_stats['visual_slig']} "
+                        f"c:{vector_stats['color_slig']} "
+                        f"t:{vector_stats['texture_slig']} "
+                        f"s:{vector_stats['style_slig']} "
+                        f"m:{vector_stats['material_slig']} "
+                        f"u:{vector_stats['understanding']}"
+                    )
+                    await tracker.update_detailed_progress(
+                        current_step=step_label,
+                        progress_current=completed_counter['value'],
+                        progress_total=total_with_checkpoint,
+                    )
+                except Exception as tracker_err:
+                    logger.debug(f"   ⚠️ Tracker update failed (non-critical): {tracker_err}")
+
+        for batch_start in range(0, total_images, batch_size):
+            batch_end = min(batch_start + batch_size, total_images)
+            batch = material_images[batch_start:batch_end]
+
+            logger.info(
+                f"   📦 Processing batch {batch_start // batch_size + 1}/"
+                f"{(total_images + batch_size - 1) // batch_size} "
+                f"({batch_start + 1}-{batch_end}/{total_images}) "
+                f"with concurrency {POST_PROCESSING_CONCURRENCY}"
+            )
+
+            # Build and run per-image tasks for this batch in parallel.
+            # return_exceptions=True is a safety net — _process_single_image_with_retry
+            # already handles its own retries and returns (False, False, error, stats)
+            # rather than raising, but we keep it so an unexpected exception in
+            # one image cannot take down the whole batch.
+            tasks = [
+                _process_one(img_data, batch_start + idx + checkpoint_index)
+                for idx, img_data in enumerate(batch)
+            ]
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Log batch completion
+            logger.info(f"   ✅ Batch {batch_start // batch_size + 1} complete: {len(batch)} images processed")
+
+        # ──────────────────────────────────────────────────────────────── #
+        # Icon candidate processing                                         #
+        # ──────────────────────────────────────────────────────────────── #
+        # Icons are processed AFTER the regular material loop so they
+        # don't compete for the Qwen endpoint while embeddings are running.
+        # Each icon gets a single Claude call (the icon prompt is small and
+        # the OCR step is local), so we run them with a smaller concurrency
+        # cap to avoid hammering the Anthropic rate limit.
+        if icon_candidates:
+            ICON_CONCURRENCY = 4
+            icon_sem = asyncio.Semaphore(ICON_CONCURRENCY)
+            icon_completed = {'value': 0}
+            icon_total = len(icon_candidates)
+            icon_label = (progress_label or "Stage 3: Processing images") + " — icons"
+
+            async def _process_one_icon(img_data, icon_idx):
+                """Per-icon task: OCR + Claude → spec metadata, behind a semaphore."""
+                nonlocal images_saved_count
+                async with icon_sem:
+                    image_saved, _embedding_generated, error, per_icon_stats = (
+                        await self._process_icon_candidate(
+                            img_data=img_data,
+                            document_id=document_id,
+                            workspace_id=workspace_id,
+                            idx=icon_idx,
+                            total=icon_total,
+                        )
+                    )
+
                 if image_saved:
                     images_saved_count += 1
-                if embedding_generated:
-                    clip_embeddings_count += 1
 
-                # Aggregate per-vector counts
-                for vec_key in (
-                    'visual_slig', 'color_slig', 'texture_slig',
-                    'style_slig', 'material_slig', 'understanding',
-                ):
-                    if per_image_stats.get(vec_key):
-                        vector_stats[vec_key] += 1
-
-                # Aggregate vision_analysis provenance counts
-                source = per_image_stats.get('vision_analysis_source', 'skipped')
-                source_key = f'vision_analysis_{source}'
-                if source_key in vector_stats:
-                    vector_stats[source_key] += 1
+                vector_stats['icon_candidates_processed'] += 1
+                if per_icon_stats.get('icon_metadata_count', 0) > 0:
+                    vector_stats['icon_metadata_extracted'] += 1
+                if error and per_icon_stats.get('icon_metadata_count', 0) == 0:
+                    vector_stats['icon_extraction_failed'] += 1
 
                 if error:
                     failed_images.append({
-                        'index': global_idx,
-                        'image_id': per_image_stats.get('image_id'),
+                        'index': icon_idx,
+                        'image_id': per_icon_stats.get('image_id'),
                         'path': img_data.get('path'),
                         'page_number': img_data.get('page_number'),
-                        'error': error,
+                        'error': f'[icon] {error}',
                     })
 
-                # Per-image progress event — pushed to background_jobs so the
-                # admin UI updates as we go. update_detailed_progress() debounces
-                # internally (MIN_SYNC_INTERVAL = 2s), so we can call it on every
-                # image without overwhelming the database.
+                # Per-icon progress event so the UI shows icons advancing
+                # alongside the regular material counters.
+                icon_completed['value'] += 1
                 if tracker is not None:
                     try:
-                        completed_so_far = global_idx + 1
                         step_label = (
-                            f"{label_prefix} ({completed_so_far}/{total_with_checkpoint}) "
+                            f"{icon_label} ({icon_completed['value']}/{icon_total}) "
                             f"— v:{vector_stats['visual_slig']} "
                             f"c:{vector_stats['color_slig']} "
                             f"t:{vector_stats['texture_slig']} "
                             f"s:{vector_stats['style_slig']} "
                             f"m:{vector_stats['material_slig']} "
-                            f"u:{vector_stats['understanding']}"
+                            f"u:{vector_stats['understanding']} "
+                            f"i:{vector_stats['icon_metadata_extracted']}"
                         )
                         await tracker.update_detailed_progress(
                             current_step=step_label,
-                            progress_current=completed_so_far,
-                            progress_total=total_with_checkpoint,
+                            progress_current=total_with_checkpoint + icon_completed['value'],
+                            progress_total=total_with_checkpoint + icon_total,
                         )
                     except Exception as tracker_err:
-                        logger.debug(f"   ⚠️ Tracker update failed (non-critical): {tracker_err}")
+                        logger.debug(f"   ⚠️ Tracker icon update failed (non-critical): {tracker_err}")
 
-            # Log batch completion
-            logger.info(f"   ✅ Batch {batch_start // batch_size + 1} complete: {len(batch)} images processed")
+            logger.info(
+                f"   🔖 Processing {icon_total} icon candidates with concurrency {ICON_CONCURRENCY}"
+            )
+            for icon_batch_start in range(0, icon_total, batch_size):
+                icon_batch_end = min(icon_batch_start + batch_size, icon_total)
+                icon_batch = icon_candidates[icon_batch_start:icon_batch_end]
+                icon_tasks = [
+                    _process_one_icon(img_data, icon_batch_start + idx)
+                    for idx, img_data in enumerate(icon_batch)
+                ]
+                await asyncio.gather(*icon_tasks, return_exceptions=True)
+                logger.info(
+                    f"   ✅ Icon batch {icon_batch_start // batch_size + 1} complete: "
+                    f"{len(icon_batch)} icons processed"
+                )
 
         # Final summary
         logger.info(f"✅ Image processing complete:")
@@ -1809,12 +2295,17 @@ class ImageProcessingService:
             f"style={vector_stats['style_slig']}, material={vector_stats['material_slig']}, "
             f"understanding={vector_stats['understanding']}"
         )
-        logger.info(
-            f"   Vision analysis provenance: qwen={vector_stats['vision_analysis_qwen']}, "
-            f"claude_fallback={vector_stats['vision_analysis_claude_fallback']}, "
-            f"failed={vector_stats['vision_analysis_failed']}, "
-            f"skipped={vector_stats['vision_analysis_skipped']}"
+        provenance_summary = ', '.join(
+            f"{vp.value}={vector_stats[f'vision_analysis_{vp.value}']}"
+            for vp in VisionProvider
         )
+        logger.info(f"   Vision analysis provenance: {provenance_summary}")
+        if vector_stats['icon_candidates_processed'] > 0:
+            logger.info(
+                f"   Icon extraction: {vector_stats['icon_metadata_extracted']}/"
+                f"{vector_stats['icon_candidates_processed']} icons produced spec items "
+                f"(failed: {vector_stats['icon_extraction_failed']})"
+            )
 
         if failed_images:
             logger.warning(f"   ⚠️ Failed images: {len(failed_images)}")

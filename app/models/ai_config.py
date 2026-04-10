@@ -54,8 +54,8 @@ class AIModelConfig(BaseModel):
     )
 
     # Product Discovery Model
-    discovery_model: Literal["claude-sonnet-4-6-20260217", "gpt-5", "gpt-5.2"] = Field(
-        default="claude-sonnet-4-6-20260217",
+    discovery_model: Literal["claude-sonnet-4-6", "gpt-5", "gpt-5.2"] = Field(
+        default="claude-sonnet-4-6",
         description="Model for product discovery (Claude Sonnet 4.6, GPT-5, or GPT-5.2)"
     )
     
@@ -120,9 +120,9 @@ class AIModelConfig(BaseModel):
                 "text_embedding_dimensions": 1024,
                 "text_embedding_input_type": "document",
                 "classification_primary_model": "Qwen/Qwen3-VL-8B-Instruct",
-                "classification_validation_model": "claude-sonnet-4-6-20260217",
+                "classification_validation_model": "claude-sonnet-4-6",
                 "classification_confidence_threshold": 0.7,
-                "discovery_model": "claude-sonnet-4-6-20260217",
+                "discovery_model": "claude-sonnet-4-6",
                 "metadata_extraction_model": "claude",
                 "chunking_model": "gpt-5.2",
                 "discovery_temperature": 0.1,
@@ -150,7 +150,7 @@ FAST_CONFIG = AIModelConfig(
 
 HIGH_ACCURACY_CONFIG = AIModelConfig(
     discovery_model="gpt-5",  # Most accurate
-    classification_validation_model="claude-sonnet-4-6-20260217",  # Best validation
+    classification_validation_model="claude-sonnet-4-6",  # Best validation
     metadata_extraction_model="claude",  # Most accurate metadata
     classification_confidence_threshold=0.8,  # Higher threshold
     discovery_max_tokens=8192,  # More context

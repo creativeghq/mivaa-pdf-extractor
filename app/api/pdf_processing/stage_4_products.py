@@ -270,6 +270,25 @@ async def create_single_product(
         logger=logger
     )
 
+    # ✨ NEW (2026-04): Fetch the canonical spec field taxonomy ONCE per
+    # product creation. Used for both icon metadata rollup AND the embedding
+    # text builder so they agree on what counts as a "spec field".
+    known_spec_fields = await _fetch_known_spec_fields(supabase, logger)
+
+    # ✨ NEW (2026-04): Roll up per-image icon_metadata into flat top-level
+    # spec keys (e.g. metadata['slip_resistance'] = 'R10'). The icon
+    # extraction pipeline writes per-image audit data to
+    # document_images.metadata['icon_metadata']; here we promote the highest
+    # -confidence value for each field onto the product itself, normalized
+    # against material_metadata_fields.
+    icon_rollup = await _merge_icon_metadata_into_product(
+        document_id=document_id,
+        image_indices=product.image_indices,
+        known_spec_fields=known_spec_fields,
+        supabase=supabase,
+        logger=logger,
+    )
+
     # ✨ NEW: Consolidate metadata from all sources
     try:
         from app.services.metadata.metadata_consolidation_service import MetadataConsolidationService
@@ -287,6 +306,18 @@ async def create_single_product(
     except Exception as e:
         logger.warning(f"   ⚠️ Metadata consolidation failed, using AI metadata only: {e}")
         metadata = ai_metadata
+
+    # ✨ NEW (2026-04): Merge icon rollup into top-level metadata.
+    # Icon-extracted spec values are typically the most authoritative source
+    # for technical specs (R-rating, PEI, fire rating, frost resistance, etc)
+    # because they come from canonical icons in the catalog. We give them
+    # priority over AI text extraction guesses by writing them last.
+    if icon_rollup:
+        for spec_field, spec_value in icon_rollup.items():
+            metadata[spec_field] = spec_value
+        logger.info(
+            f"   🔖 Merged {len(icon_rollup)} icon-extracted spec fields onto product"
+        )
 
     # Clean up "not found" values
     for key in ['factory_name', 'factory_group_name', 'material_category']:
@@ -401,6 +432,41 @@ async def create_single_product(
             if isinstance(colors, list):
                 embedding_text_parts.extend(colors)
 
+            # ✨ NEW (2026-04): Walk every known spec field from material_metadata_fields
+            # and append non-null values to the embedding text. This means a search
+            # like "porcelain tile R10 PEI IV frost resistant" matches a product whose
+            # spec icons have been extracted, even though those values were never
+            # written manually — they were rolled up from icon_metadata into top-level
+            # keys by `_merge_icon_metadata_into_product` above.
+            #
+            # This loop runs over the canonical taxonomy (single source of truth),
+            # not a hardcoded list, so adding a new spec to material_metadata_fields
+            # automatically flows it into Voyage embeddings without code changes.
+            _embedded_spec_fields_so_far = {
+                'factory_name', 'factory_group_name', 'designer',
+                'material_category', 'zone_intent',
+            }
+            for spec_field in known_spec_fields:
+                if spec_field in _embedded_spec_fields_so_far:
+                    continue  # already appended above
+                val = metadata.get(spec_field)
+                if val is None or val == '' or val == []:
+                    continue
+                # Render the value to text — handle scalars, lists, and bools.
+                if isinstance(val, bool):
+                    if val:
+                        embedding_text_parts.append(spec_field.replace('_', ' '))
+                elif isinstance(val, (str, int, float)):
+                    text_val = str(val).strip()
+                    if text_val and text_val.lower() not in ('not specified', 'not found', 'unknown', 'n/a'):
+                        embedding_text_parts.append(f"{spec_field.replace('_', ' ')}: {text_val}")
+                elif isinstance(val, list) and val:
+                    items = [str(v).strip() for v in val if v not in (None, '', [])]
+                    if items:
+                        embedding_text_parts.append(
+                            f"{spec_field.replace('_', ' ')}: {', '.join(items)}"
+                        )
+
             embedding_text = ' | '.join(embedding_text_parts)
 
             from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
@@ -489,6 +555,155 @@ async def _fetch_visual_metadata_for_product(
 
     except Exception as e:
         logger.warning(f"   ⚠️ Failed to fetch visual metadata: {e}")
+        return {}
+
+
+# ────────────────────────────────────────────────────────────────────────── #
+# Icon metadata: rollup from per-image icon_metadata into flat product keys  #
+# ────────────────────────────────────────────────────────────────────────── #
+
+# Field-name normalization map. The Icon-Based Metadata Extraction prompt
+# returns some field names that don't quite match `material_metadata_fields`
+# — typically singular vs plural mismatches. Anything not in this map is
+# used as-is.
+ICON_FIELD_NAME_NORMALIZATION = {
+    'certification': 'certifications',  # prompt returns singular, schema is plural
+}
+
+
+def _normalize_icon_field_name(field_name: str) -> str:
+    """Normalize an icon prompt's field_name to match material_metadata_fields."""
+    if not field_name:
+        return field_name
+    return ICON_FIELD_NAME_NORMALIZATION.get(field_name.strip(), field_name.strip())
+
+
+async def _fetch_known_spec_fields(
+    supabase: Any,
+    logger: logging.Logger,
+) -> List[str]:
+    """
+    Fetch the canonical spec field name list from `material_metadata_fields`.
+
+    This is the source of truth for which top-level keys on `products.metadata`
+    are valid spec fields. Used by:
+      1. `_merge_icon_metadata_into_product` — to drop icon entries whose
+         field_name doesn't match a known spec (defensive against the prompt
+         inventing new field names).
+      2. The product embedding text builder — to walk every spec field that
+         is populated on a product and append it to the Voyage embedding text,
+         so a search like "porcelain tile R10 frost resistant" matches.
+    """
+    try:
+        result = supabase.client.table('material_metadata_fields') \
+            .select('field_name') \
+            .execute()
+        if not result.data:
+            logger.warning("   ⚠️ material_metadata_fields is empty — spec rollup will skip all icons")
+            return []
+        # Deduplicate (the table has a few rows with the same field_name across
+        # different applies_to_categories — we only care about the unique set).
+        return sorted({row['field_name'] for row in result.data if row.get('field_name')})
+    except Exception as e:
+        logger.warning(f"   ⚠️ Failed to fetch material_metadata_fields: {e}")
+        return []
+
+
+async def _merge_icon_metadata_into_product(
+    document_id: str,
+    image_indices: Optional[List[int]],
+    known_spec_fields: List[str],
+    supabase: Any,
+    logger: logging.Logger,
+) -> Dict[str, Any]:
+    """
+    Walk all `document_images` for a product, collect every icon_metadata
+    entry, normalize field names against `material_metadata_fields`, and
+    return a flat dict of `{field_name: value}` to merge into the product's
+    top-level metadata.
+
+    Conflict resolution: when two images contribute the same field, the
+    higher-confidence value wins. Anything whose normalized field_name is
+    not in `known_spec_fields` is logged as a warning and dropped — we don't
+    want the icon prompt inventing new fields.
+
+    Returns:
+        Flat dict of {spec_field_name: value} ready to merge into
+        `product.metadata`. Empty dict if there are no icons.
+    """
+    if not known_spec_fields:
+        return {}
+
+    try:
+        # Fetch all images for this document — we'll filter to ones with
+        # icon_metadata in their metadata blob. We don't filter by image
+        # index because Stage 3 may have routed icons to image indices the
+        # product object doesn't know about (icons are detected post-classification).
+        images_response = supabase.client.table('document_images') \
+            .select('id, page_number, metadata') \
+            .eq('document_id', document_id) \
+            .execute()
+        if not images_response.data:
+            return {}
+
+        known_spec_set = set(known_spec_fields)
+        # field_name → (value, confidence) — highest-confidence wins
+        best_per_field: Dict[str, tuple] = {}
+        unknown_fields: Dict[str, int] = {}
+        total_items_seen = 0
+
+        for image in images_response.data:
+            image_meta = image.get('metadata') or {}
+            if not isinstance(image_meta, dict):
+                continue
+            icon_items = image_meta.get('icon_metadata') or []
+            if not isinstance(icon_items, list) or not icon_items:
+                continue
+
+            for item in icon_items:
+                if not isinstance(item, dict):
+                    continue
+                total_items_seen += 1
+                raw_field = item.get('field_name')
+                if not raw_field:
+                    continue
+                field = _normalize_icon_field_name(raw_field)
+                if field not in known_spec_set:
+                    unknown_fields[field] = unknown_fields.get(field, 0) + 1
+                    continue
+                value = item.get('value')
+                if value is None or value == '' or value == []:
+                    continue
+                confidence = float(item.get('confidence') or 0.0)
+
+                existing = best_per_field.get(field)
+                if existing is None or confidence > existing[1]:
+                    best_per_field[field] = (value, confidence)
+
+        rollup = {field: value for field, (value, _conf) in best_per_field.items()}
+
+        if rollup:
+            logger.info(
+                f"   🔖 Icon metadata rollup: {len(rollup)} flat spec fields from "
+                f"{total_items_seen} icon items "
+                f"({', '.join(sorted(rollup.keys())[:8])}{'...' if len(rollup) > 8 else ''})"
+            )
+        elif total_items_seen > 0:
+            logger.info(
+                f"   🔖 Icon metadata rollup: {total_items_seen} items seen but none "
+                f"matched known spec fields"
+            )
+
+        if unknown_fields:
+            logger.warning(
+                f"   ⚠️ Icon metadata: dropped {sum(unknown_fields.values())} items with unknown field names: "
+                f"{dict(sorted(unknown_fields.items(), key=lambda x: -x[1])[:5])}"
+            )
+
+        return rollup
+
+    except Exception as e:
+        logger.warning(f"   ⚠️ Failed to merge icon metadata into product: {e}")
         return {}
 
 

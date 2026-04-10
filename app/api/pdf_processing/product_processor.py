@@ -362,6 +362,7 @@ async def process_single_product(
             {
                 "images_processed": images_processed,
                 "images_material": image_result.get('images_material', 0),
+                "images_icon_candidates": image_result.get('images_icon_candidates', 0),
                 "images_non_material": image_result.get('images_non_material', 0),
                 "clip_embeddings_generated": clip_embeddings,
                 # Per-vector breakdown — visible in admin UI
@@ -374,6 +375,10 @@ async def process_single_product(
                 "vision_analysis_qwen": vector_stats.get('vision_analysis_qwen', 0),
                 "vision_analysis_claude_fallback": vector_stats.get('vision_analysis_claude_fallback', 0),
                 "vision_analysis_failed": vector_stats.get('vision_analysis_failed', 0),
+                # Icon extraction stats — visible in admin UI
+                "icon_candidates_processed": vector_stats.get('icon_candidates_processed', 0),
+                "icon_metadata_extracted": vector_stats.get('icon_metadata_extracted', 0),
+                "icon_extraction_failed": vector_stats.get('icon_extraction_failed', 0),
             }
         )
         result.images_processed = images_processed
@@ -382,16 +387,23 @@ async def process_single_product(
         logger_instance.info(f"✅ Generated {clip_embeddings} CLIP embeddings for {product.name}")
 
         # ✅ FIX: Update tracker with CLIP embeddings count
+        # 2026-04-10: kwarg renamed images_stored → images_extracted to match
+        # ProgressTracker.update_database_stats() signature (the tracker uses
+        # `images_extracted` everywhere; `images_stored` was a stale name from
+        # an older schema). Was producing
+        # `update_database_stats() got an unexpected keyword argument 'images_stored'`
+        # → Stage 4 product persistence crash → checkpoint validation reports
+        # 0 products / 0 chunks / 0 images.
         if tracker:
             await tracker.update_database_stats(
-                images_stored=images_processed,
+                images_extracted=images_processed,
                 clip_embeddings=clip_embeddings,
                 image_embeddings=clip_embeddings,
                 sync_to_db=True
             )
             # Log the actual tracker values to verify sync
             logger_instance.info(f"   📊 Updated tracker: {images_processed} images, {clip_embeddings} CLIP embeddings")
-            logger_instance.info(f"   📊 Tracker totals: images_stored={tracker.images_stored}, clip_embeddings={tracker.clip_embeddings_generated}, image_embeddings={tracker.image_embeddings_generated}")
+            logger_instance.info(f"   📊 Tracker totals: images_extracted={tracker.images_extracted}, clip_embeddings={tracker.clip_embeddings_generated}, image_embeddings={tracker.image_embeddings_generated}")
 
         # ✅ CHECKPOINT: IMAGES_EXTRACTED - Stage 3 complete
         await checkpoint_recovery_service.create_checkpoint(

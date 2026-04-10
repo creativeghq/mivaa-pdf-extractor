@@ -1156,17 +1156,28 @@ class RealEmbeddingsService:
                 "style": "focus on design style and aesthetic elements"
             }
 
-            # First, get the base image embedding (768D)
-            # ✅ FIX: get_image_embedding only accepts 'image' parameter (URL or PIL Image)
-            image_embedding_result = await self._slig_client.get_image_embedding(
+            # First, get the base image embedding (768D).
+            # ⚠️ 2026-04 bug fix (regression of the fix at lines 1173-1187 below):
+            # `SligClient.get_image_embedding()` returns a bare `List[float]`
+            # for a single image (see slig_client.py:240-242), NOT a dict with
+            # an "embedding" key. The previous `"embedding" not in result`
+            # check was always True against a list of floats, so the bail-out
+            # branch fired on every call and ALL 4 specialized embeddings
+            # were silently skipped — same class of shape-mismatch bug as
+            # the original 2026-04 fix to the inner loop helpers, just on
+            # the outer call.
+            base_image_embedding = await self._slig_client.get_image_embedding(
                 image=image_data if image_data else image_url
             )
 
-            if not image_embedding_result or "embedding" not in image_embedding_result:
-                self.logger.warning("⚠️ Failed to get base image embedding for specialized embeddings — skipping specialized embeddings")
+            if not base_image_embedding or len(base_image_embedding) != 768:
+                self.logger.warning(
+                    "⚠️ Failed to get base image embedding for specialized embeddings "
+                    f"(got {type(base_image_embedding).__name__}, "
+                    f"len={len(base_image_embedding) if base_image_embedding else 0}) "
+                    "— skipping specialized embeddings"
+                )
                 return None, pil_image
-
-            base_image_embedding = image_embedding_result["embedding"]
 
             # Generate specialized embeddings using text-guided blending.
             #

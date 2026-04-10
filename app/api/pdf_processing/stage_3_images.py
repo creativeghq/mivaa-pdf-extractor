@@ -365,7 +365,7 @@ async def process_product_images(
             extracted_images=extracted_images_list,
             confidence_threshold=0.6,
             primary_model="Qwen/Qwen3-VL-32B-Instruct",
-            validation_model="claude-sonnet-4-6-20260217",
+            validation_model="claude-sonnet-4-6",
             batch_size=15
         )
     except Exception as e:
@@ -378,27 +378,62 @@ async def process_product_images(
     logger.info(f"      Material images: {len(material_images)}")
     logger.info(f"      Non-material images: {non_material_count}")
 
-    # 🔍 BBOX TRACE: Log bbox after classification
-    logger.info(f"   🔍 [BBOX TRACE] After classification - checking {len(material_images)} material images:")
-    for i, img in enumerate(material_images[:5]):  # Log first 5
+    # ========================================================================
+    # ICON-CANDIDATE SPLIT
+    # ========================================================================
+    # Re-route small grid-of-icons images (R-rating, PEI, slip, fire ratings,
+    # packaging icons, …) to the icon extraction path so they get OCR + Claude
+    # → spec metadata into products.metadata, NOT visual SLIG embeddings.
+    # The DECORATIVE override re-routes images Qwen labelled as DECORATIVE if
+    # they ALSO meet the icon size + grid rules (Qwen often misclassifies
+    # spec icons as decoration).
+    regular_material_images, icon_candidates, remaining_non_material = (
+        image_service._split_material_and_icon_candidates(
+            material_images=material_images,
+            non_material_images=non_material_images,
+        )
+    )
+
+    # The non_material list shrinks if any of its decorative entries got
+    # promoted to the icon path (DECORATIVE override).
+    non_material_count = len(remaining_non_material)
+
+    # 🔍 BBOX TRACE: Log bbox after classification + icon split
+    logger.info(
+        f"   🔍 [BBOX TRACE] After split - checking {len(regular_material_images)} regular + "
+        f"{len(icon_candidates)} icon candidates:"
+    )
+    for i, img in enumerate(regular_material_images[:5]):  # Log first 5
         bbox = img.get('bbox')
         bbox_len = len(bbox) if isinstance(bbox, (list, tuple)) else 'N/A'
         logger.info(f"      Image {i}: {img.get('filename')}, bbox_len={bbox_len}, bbox={bbox[:4] if isinstance(bbox, (list, tuple)) and len(bbox) >= 4 else bbox}, id={id(img)}")
 
     # ========================================================================
-    # UPLOAD MATERIAL IMAGES TO STORAGE
+    # UPLOAD MATERIAL + ICON IMAGES TO STORAGE
     # ========================================================================
-    logger.info(f"   📤 UPLOAD STAGE: Uploading {len(material_images)} material images...")
-    uploaded_images = await image_service.upload_images_to_storage(
-        material_images=material_images,
+    # Both regular material and icon candidates need storage URLs — the icons
+    # so the admin UI can display them, the regular ones for embeddings later.
+    images_to_upload = regular_material_images + icon_candidates
+    logger.info(
+        f"   📤 UPLOAD STAGE: Uploading {len(images_to_upload)} images "
+        f"({len(regular_material_images)} regular + {len(icon_candidates)} icons)..."
+    )
+    uploaded_all = await image_service.upload_images_to_storage(
+        material_images=images_to_upload,
         document_id=document_id
     )
+    logger.info(f"      Successfully uploaded: {len(uploaded_all)}/{len(images_to_upload)}")
 
-    logger.info(f"      Successfully uploaded: {len(uploaded_images)}/{len(material_images)}")
+    # The uploader returns the same dicts with `storage_url` populated. We
+    # need to re-split into regular vs icons by id() so we know which ones
+    # to send through which pipeline.
+    icon_object_ids = {id(img) for img in icon_candidates}
+    uploaded_regular = [img for img in uploaded_all if id(img) not in icon_object_ids]
+    uploaded_icons = [img for img in uploaded_all if id(img) in icon_object_ids]
 
     # 🔍 BBOX TRACE: Log bbox after upload
-    logger.info(f"   🔍 [BBOX TRACE] After upload - checking {len(uploaded_images)} uploaded images:")
-    for i, img in enumerate(uploaded_images[:5]):  # Log first 5
+    logger.info(f"   🔍 [BBOX TRACE] After upload - checking {len(uploaded_regular)} regular uploaded images:")
+    for i, img in enumerate(uploaded_regular[:5]):  # Log first 5
         bbox = img.get('bbox')
         bbox_len = len(bbox) if isinstance(bbox, (list, tuple)) else 'N/A'
         logger.info(f"      Image {i}: {img.get('filename')}, bbox_len={bbox_len}, bbox={bbox[:4] if isinstance(bbox, (list, tuple)) and len(bbox) >= 4 else bbox}, id={id(img)}")
@@ -410,14 +445,17 @@ async def process_product_images(
     material_category = config.get('material_category')
     logger.info(f"   💾 DATABASE STAGE: Saving metadata and generating CLIP embeddings...")
     logger.info(f"      Material category: {material_category or 'not specified'}")
+    if uploaded_icons:
+        logger.info(f"      Icon candidates: {len(uploaded_icons)} → OCR + Claude path")
     save_result = await image_service.save_images_and_generate_clips(
-        material_images=uploaded_images,
+        material_images=uploaded_regular,
         document_id=document_id,
         workspace_id=workspace_id,
         material_category=material_category,
         job_id=job_id,
         tracker=tracker,
         progress_label=f"Stage 3: Processing images for {product.name}",
+        icon_candidates=uploaded_icons,
     )
 
     images_processed = save_result.get('images_saved', 0)
@@ -426,7 +464,7 @@ async def process_product_images(
     vector_stats = save_result.get('vector_stats', {})
 
     logger.info(f"   📊 DATABASE RESULTS:")
-    logger.info(f"      Images saved to DB: {images_processed}/{len(uploaded_images)}")
+    logger.info(f"      Images saved to DB: {images_processed}/{len(uploaded_all)}")
     logger.info(f"      CLIP embeddings generated: {clip_embeddings}/{images_processed}")
     if vector_stats:
         logger.info(
@@ -442,20 +480,28 @@ async def process_product_images(
             f"claude_fallback={vector_stats.get('vision_analysis_claude_fallback', 0)}, "
             f"failed={vector_stats.get('vision_analysis_failed', 0)}"
         )
+        if vector_stats.get('icon_candidates_processed', 0) > 0:
+            logger.info(
+                f"      Icons: extracted={vector_stats.get('icon_metadata_extracted', 0)}/"
+                f"{vector_stats.get('icon_candidates_processed', 0)} "
+                f"(failed: {vector_stats.get('icon_extraction_failed', 0)})"
+            )
 
     if failed_images:
         logger.warning(f"      ⚠️ Failed to save {len(failed_images)} images")
 
     logger.info(f"   ✅ STAGE 3 COMPLETE for {product.name}")
     logger.info(f"      Total extracted: {total_images}")
-    logger.info(f"      Material images: {len(material_images)}")
+    logger.info(f"      Regular material images: {len(regular_material_images)}")
+    logger.info(f"      Icon candidates: {len(icon_candidates)}")
     logger.info(f"      Successfully processed: {images_processed}")
     logger.info(f"      CLIP embeddings: {clip_embeddings}")
 
     return {
         'images_processed': images_processed,
         'clip_embeddings_generated': clip_embeddings,
-        'images_material': len(material_images),
+        'images_material': len(regular_material_images),
+        'images_icon_candidates': len(icon_candidates),
         'images_non_material': non_material_count,
         'vector_stats': vector_stats,
         'failed_images': failed_images,

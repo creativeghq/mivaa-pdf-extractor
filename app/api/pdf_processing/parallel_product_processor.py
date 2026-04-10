@@ -175,9 +175,11 @@ async def process_products_parallel(
                         metrics['clip_embeddings'] += product_result.clip_embeddings_generated
 
                         # Update tracker
+                        # 2026-04-10: kwarg renamed images_stored → images_extracted
+                        # to match ProgressTracker.update_database_stats() signature.
                         await tracker.update_database_stats(
                             chunks_created=product_result.chunks_created,
-                            images_stored=product_result.images_processed,
+                            images_extracted=product_result.images_processed,
                             clip_embeddings=product_result.clip_embeddings_generated,
                             products_created=1,
                             sync_to_db=True
@@ -337,9 +339,10 @@ async def _process_products_sequential(
                 result.total_relationships_created += product_result.relationships_created
                 result.total_clip_embeddings += product_result.clip_embeddings_generated
 
+                # 2026-04-10: kwarg renamed images_stored → images_extracted.
                 await tracker.update_database_stats(
                     chunks_created=product_result.chunks_created,
-                    images_stored=product_result.images_processed,
+                    images_extracted=product_result.images_processed,
                     clip_embeddings=product_result.clip_embeddings_generated,
                     products_created=1,
                     sync_to_db=True

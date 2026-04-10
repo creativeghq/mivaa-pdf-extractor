@@ -111,7 +111,7 @@ class EmbeddingToTextService:
             start_time = time.time()
             client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
             response = client.messages.create(
-                model="claude-sonnet-4-6-20260217",
+                model="claude-sonnet-4-6",
                 max_tokens=2048,
                 messages=[{"role": "user", "content": full_prompt}]
             )
@@ -120,7 +120,7 @@ class EmbeddingToTextService:
             # Log AI call with correct signature
             await self.ai_logger.log_ai_call(
                 task="embedding_to_text_conversion",
-                model="claude-sonnet-4-6-20260217",
+                model="claude-sonnet-4-6",
                 input_tokens=response.usage.input_tokens,
                 output_tokens=response.usage.output_tokens,
                 cost=self._calculate_cost(response.usage),

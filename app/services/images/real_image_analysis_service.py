@@ -750,7 +750,7 @@ class RealImageAnalysisService:
 
             # Call Claude Vision API
             response = client.messages.create(
-                model="claude-sonnet-4-6-20260217",
+                model="claude-sonnet-4-6",
                 max_tokens=1024,
                 messages=[
                     {
@@ -831,7 +831,7 @@ class RealImageAnalysisService:
 
                 await self.ai_logger.log_claude_call(
                     task="image_vision_validation",
-                    model="claude-sonnet-4-6-20260217",
+                    model="claude-sonnet-4-6",
                     response=response,
                     latency_ms=latency_ms,
                     confidence_score=confidence_score,
@@ -841,7 +841,7 @@ class RealImageAnalysisService:
                 )
 
                 return {
-                    "model": "claude-sonnet-4-6-20260217",
+                    "model": "claude-sonnet-4-6",
                     "validation": validation,
                     "success": True
                 }
@@ -871,7 +871,7 @@ class RealImageAnalysisService:
             latency_ms = int((time.time() - start_time) * 1000)
             await self.ai_logger.log_ai_call(
                 task="image_vision_validation",
-                model="claude-sonnet-4-6-20260217",
+                model="claude-sonnet-4-6",
                 input_tokens=0,
                 output_tokens=0,
                 cost=0.0,
@@ -913,7 +913,7 @@ class RealImageAnalysisService:
 
             # Call Claude Vision API with base64 image
             response = client.messages.create(
-                model="claude-sonnet-4-6-20260217",
+                model="claude-sonnet-4-6",
                 max_tokens=1024,
                 messages=[
                     {
@@ -950,7 +950,7 @@ class RealImageAnalysisService:
                     raise json.JSONDecodeError("No JSON object found", content, 0)
 
                 return {
-                    "model": "claude-sonnet-4-6-20260217",
+                    "model": "claude-sonnet-4-6",
                     "validation": validation,
                     "success": True
                 }

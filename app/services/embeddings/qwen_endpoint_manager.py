@@ -121,15 +121,26 @@ class QwenEndpointManager:
         return self._endpoint
 
     def _refresh_url_from_endpoint(self) -> None:
-        """Pull the live URL from the HF endpoint object so we never use a stale hardcoded URL."""
+        """Pull the live URL from the HF endpoint object so we never use a stale hardcoded URL.
+
+        ⚠️ HF SDK note: depending on endpoint state, `endpoint.url` may return
+        the bare host (e.g. `gbz6krk3i2is85b0.us-east-1.aws.endpoints.huggingface.cloud`)
+        without an `https://` scheme. We MUST normalize it here, otherwise
+        every consumer (httpx health check, OpenAI client, etc.) raises
+        "Request URL is missing an 'http://' or 'https://' protocol" or
+        APIConnectionError. (2026-04-10 fix)
+        """
         endpoint = self._get_endpoint()
         if not endpoint:
             return
         try:
             live_url = getattr(endpoint, "url", None)
-            if live_url and live_url != self.endpoint_url:
-                logger.info(f"🔗 Qwen endpoint URL updated: {live_url}")
-                self.endpoint_url = live_url
+            if live_url:
+                if not live_url.startswith(("http://", "https://")):
+                    live_url = "https://" + live_url.lstrip("/")
+                if live_url != self.endpoint_url:
+                    logger.info(f"🔗 Qwen endpoint URL updated: {live_url}")
+                    self.endpoint_url = live_url
         except Exception as e:
             logger.debug(f"Could not refresh endpoint URL: {e}")
     
