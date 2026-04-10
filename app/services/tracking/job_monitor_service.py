@@ -208,7 +208,9 @@ class JobMonitorService:
 
         except Exception as e:
             self.stats["errors"] += 1
-            logger.error(f"❌ Error detecting heartbeat timeout jobs: {e}")
+            # Demoted to warning — transient Supabase REST 5xx errors are expected
+            # and the next polling cycle will retry. Returning [] is graceful degradation.
+            logger.warning(f"⚠️ Heartbeat timeout detection failed (will retry next cycle): {e}")
             return []
 
     async def _detect_stuck_scraping_sessions(self, timeout_minutes: int = 30) -> List[Dict[str, Any]]:

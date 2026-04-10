@@ -37,7 +37,7 @@ class VisualMetadataService:
 
         Args:
             image_id: Image UUID
-            embeddings: Dict with specialized embeddings (color_siglip_1152, texture_siglip_1152, etc.)
+            embeddings: Dict with specialized embeddings (color_slig_768, texture_slig_768, style_slig_768, material_slig_768)
 
         Returns:
             Dict with extracted visual metadata or None if failed

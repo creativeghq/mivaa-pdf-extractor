@@ -143,10 +143,13 @@ class ProductInfo:
             "coverage_per_box_sqft": 12.27
         },
 
-        # Factory/Group identification (for agentic queries)
-        "factory": "Castellón Factory",
-        "factory_group": "Harmony Group",
-        "manufacturer": "Harmony Materials",
+        # Factory/Group identification (for agentic queries) — canonical schema:
+        # `factory_name` is the maker brand. `factory_group_name` only when the
+        # parent group is meaningfully different. Do NOT use `manufacturer`,
+        # `brand`, `supplier`, `factory`, or `factory_group` — those are folded
+        # into the canonical keys at write time by normalize_factory_keys().
+        "factory_name": "HARMONY",
+        "factory_group_name": "Peronda Group",
         "country_of_origin": "Spain",
 
         # Technical specifications
@@ -223,9 +226,8 @@ class ProductCatalog:
     specifications: List[SpecificationInfo] = None
 
     # Catalog-level factory info (inherited by products without factory info)
-    catalog_factory: Optional[str] = None  # e.g., "HARMONY"
-    catalog_factory_group: Optional[str] = None  # e.g., "Peronda Group"
-    catalog_manufacturer: Optional[str] = None  # e.g., "Harmony Materials"
+    catalog_factory: Optional[str] = None  # e.g., "HARMONY" — the maker brand (canonical)
+    catalog_factory_group: Optional[str] = None  # e.g., "Peronda Group" — parent group when meaningfully different
     # pages_per_sheet removed - we only use PDF pages now
 
     # Metadata
@@ -1017,10 +1019,18 @@ class ProductDiscoveryService:
         for page_str, classification in result.get("page_classification", {}).items():
             page_classification[int(page_str)] = classification
 
-        # Extract catalog-level factory info (from cover/intro pages)
-        catalog_factory = result.get("catalog_factory")
-        catalog_factory_group = result.get("catalog_factory_group")
-        catalog_manufacturer = result.get("catalog_manufacturer")
+        # Extract catalog-level factory info (from cover/intro pages).
+        # Accept legacy alias keys (catalog_manufacturer/brand/supplier) — fold into catalog_factory.
+        catalog_factory = (
+            result.get("catalog_factory")
+            or result.get("catalog_manufacturer")
+            or result.get("catalog_brand")
+            or result.get("catalog_supplier")
+        )
+        catalog_factory_group = (
+            result.get("catalog_factory_group")
+            or result.get("catalog_group")
+        )
 
         # Log if catalog-level factory info was found
         if catalog_factory:
@@ -1035,7 +1045,6 @@ class ProductDiscoveryService:
             specifications=specifications,
             catalog_factory=catalog_factory,
             catalog_factory_group=catalog_factory_group,
-            catalog_manufacturer=catalog_manufacturer,
             total_pages=total_pages,
             total_images=0,  # Will be updated later
             content_classification=page_classification,

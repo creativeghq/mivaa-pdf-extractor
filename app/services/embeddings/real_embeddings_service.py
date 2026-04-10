@@ -1168,68 +1168,102 @@ class RealEmbeddingsService:
 
             base_image_embedding = image_embedding_result["embedding"]
 
-            # Generate specialized embeddings using similarity-weighted approach
+            # Generate specialized embeddings using text-guided blending.
+            #
+            # ⚠️ 2026-04 bug fix: the prior implementation called
+            # `self._slig_client.get_similarity(image_url=, image_data=, text=)`
+            # and `get_text_embedding(...)` with the wrong response-shape
+            # assumption (expected a dict with an "embedding" key, but the
+            # client returns a bare List[float]). Both calls silently raised,
+            # the per-type `except` fell back to using the base image embedding
+            # for all 4 types, and the 4 specialized VECS collections
+            # (image_color_embeddings / image_texture_embeddings /
+            # image_style_embeddings / image_material_embeddings) ended up
+            # empty in production. Fixed by (a) calling `calculate_similarity`
+            # with the documented signature, (b) unpacking the real
+            # `similarity_scores` matrix shape, (c) using `get_text_embedding`
+            # as a direct list, and (d) failing LOUD on any error (skip the
+            # type, do not fall back to the base embedding — that silent
+            # fallback is how this bug hid for months).
+            import numpy as np
+
             specialized = {}
+            image_input = image_data if image_data else image_url
 
             for embedding_type, text_prompt in text_prompts.items():
                 try:
-                    # Get similarity score between image and text prompt
-                    similarity_result = await self._slig_client.get_similarity(
-                        image_url=image_url,
-                        image_data=image_data,
-                        text=text_prompt
+                    # Cosine similarity between the image and the aspect prompt
+                    # via SLIG's similarity mode. Response shape:
+                    # { "similarity_scores": [[float]], "image_count": 1, "text_count": 1 }
+                    similarity_result = await self._slig_client.calculate_similarity(
+                        images=image_input,
+                        texts=text_prompt,
+                    )
+                    sim_matrix = similarity_result.get("similarity_scores") if similarity_result else None
+                    if not sim_matrix or not sim_matrix[0]:
+                        raise ValueError(
+                            f"SLIG calculate_similarity returned empty similarity_scores for "
+                            f"{embedding_type} (prompt={text_prompt!r})"
+                        )
+                    similarity_score = float(sim_matrix[0][0])
+
+                    # Text embedding for the prompt (SLIG text branch returns
+                    # a List[float] directly — NOT a dict).
+                    text_embedding = await self._slig_client.get_text_embedding(text_prompt)
+                    if not text_embedding or len(text_embedding) == 0:
+                        raise ValueError(
+                            f"SLIG get_text_embedding returned empty result for "
+                            f"{embedding_type} (prompt={text_prompt!r})"
+                        )
+
+                    # Blend: higher similarity = more image-weighted
+                    # (0.7–0.9 range). The result is a text-guided vector
+                    # that points toward the aspect's subspace.
+                    img_emb = np.array(base_image_embedding, dtype=np.float32)
+                    txt_emb = np.array(text_embedding, dtype=np.float32)
+                    if img_emb.shape != txt_emb.shape:
+                        raise ValueError(
+                            f"Dimension mismatch for {embedding_type}: "
+                            f"image {img_emb.shape} vs text {txt_emb.shape}"
+                        )
+
+                    blend_weight = 0.7 + (0.2 * similarity_score)
+                    guided_embedding = blend_weight * img_emb + (1 - blend_weight) * txt_emb
+                    norm = np.linalg.norm(guided_embedding)
+                    if norm > 0:
+                        guided_embedding = guided_embedding / norm
+
+                    specialized[embedding_type] = guided_embedding.tolist()
+                    self.logger.debug(
+                        f"✅ Generated {embedding_type} specialized embedding "
+                        f"(768D, similarity={similarity_score:.3f}, blend_weight={blend_weight:.3f})"
                     )
 
-                    if similarity_result and "similarity" in similarity_result:
-                        similarity_score = similarity_result["similarity"]
-
-                        # Also get text embedding for this prompt
-                        text_embedding_result = await self._slig_client.get_text_embedding(text_prompt)
-
-                        if text_embedding_result and "embedding" in text_embedding_result:
-                            text_embedding = text_embedding_result["embedding"]
-
-                            # Create text-guided embedding by blending:
-                            # - Base image embedding (weighted by similarity)
-                            # - Text embedding (weighted by 1-similarity)
-                            # This creates embeddings that focus on the specific aspect
-                            import numpy as np
-
-                            # Convert to numpy for easier math
-                            img_emb = np.array(base_image_embedding)
-                            txt_emb = np.array(text_embedding)
-
-                            # Blend: higher similarity = more image, lower = more text guidance
-                            blend_weight = 0.7 + (0.2 * similarity_score)  # 0.7-0.9 range
-                            guided_embedding = (blend_weight * img_emb + (1 - blend_weight) * txt_emb)
-
-                            # Normalize to unit vector
-                            norm = np.linalg.norm(guided_embedding)
-                            if norm > 0:
-                                guided_embedding = guided_embedding / norm
-
-                            specialized[embedding_type] = guided_embedding.tolist()
-                            self.logger.debug(f"✅ Generated {embedding_type} embedding (768D, similarity={similarity_score:.3f})")
-                        else:
-                            self.logger.warning(f"⚠️ Failed to get text embedding for {embedding_type}")
-                            # Fallback: use base image embedding
-                            specialized[embedding_type] = base_image_embedding
-                    else:
-                        self.logger.warning(f"⚠️ Failed to get similarity for {embedding_type}")
-                        # Fallback: use base image embedding
-                        specialized[embedding_type] = base_image_embedding
-
                 except Exception as e:
-                    self.logger.error(f"❌ Failed to generate {embedding_type} embedding: {e}")
-                    # Fallback: use base image embedding
-                    specialized[embedding_type] = base_image_embedding
+                    # Loud failure — do NOT fall back to the base image
+                    # embedding. Silent fallback is what hid this bug for
+                    # months. Skip the type; the caller already handles
+                    # partial results and will simply omit the missing
+                    # specialized VECS collection for this image.
+                    self.logger.error(
+                        f"❌ Failed to generate {embedding_type} specialized embedding "
+                        f"(skipping, not falling back to base): {e}",
+                        exc_info=True,
+                    )
+                    continue
 
             if len(specialized) == 4:
                 self.logger.info("✅ Generated 4 text-guided specialized SLIG embeddings (768D each)")
                 return specialized, pil_image
+            elif specialized:
+                self.logger.warning(
+                    f"⚠️ Only generated {len(specialized)}/4 specialized embeddings "
+                    f"(missing: {sorted(set(text_prompts) - set(specialized))})"
+                )
+                return specialized, pil_image
             else:
-                self.logger.warning(f"⚠️ Only generated {len(specialized)}/4 specialized embeddings")
-                return specialized if specialized else None, pil_image
+                self.logger.error("❌ All 4 specialized SLIG embeddings failed — none generated")
+                return None, pil_image
 
         except Exception as e:
             self.logger.error(f"❌ Specialized SLIG embedding generation failed: {e}")
@@ -1255,7 +1289,7 @@ class RealEmbeddingsService:
     # - _generate_application_embedding (was just downsampled text embedding)
     #
     # Replaced by SLIG text-guided specialized embeddings (color, texture, style, material)
-    # stored in VECS collections at 1152D each.
+    # stored in VECS collections at 768D each.
 
 
 

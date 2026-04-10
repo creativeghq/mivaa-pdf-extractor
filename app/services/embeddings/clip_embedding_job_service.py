@@ -201,38 +201,35 @@ class CLIPEmbeddingJobService:
 
     async def _get_images_without_clip(self, document_id: str) -> List[Dict[str, Any]]:
         """
-        Get all images for a document that don't have CLIP embeddings.
+        Get all images for a document that don't have a visual SLIG embedding yet.
 
-        Queries embeddings table to find images without visual_512 embeddings.
+        Uses the canonical has_slig_embedding boolean flag on document_images,
+        which is maintained by vecs_service after each successful upsert.
 
         Args:
             document_id: Document ID
 
         Returns:
-            List of image records
+            List of image records that need embedding generation
         """
         try:
-            # Get all images for this document
             images_result = self.supabase.client.table('document_images')\
-                .select('id, image_url, storage_path, page_number, metadata')\
+                .select('id, image_url, storage_path, page_number, metadata, has_slig_embedding')\
                 .eq('document_id', document_id)\
                 .execute()
 
             if not images_result.data:
                 return []
 
-            all_images = images_result.data
+            images_without_slig = [img for img in images_result.data if not img.get('has_slig_embedding')]
 
-            # Get image IDs that already have visual embeddings
-            # Note: Visual embeddings are stored in document_images.visual_clip_embedding_512
-            # Filter to images without CLIP embeddings (where visual_clip_embedding_512 is null)
-            images_without_clip = [img for img in all_images if not img.get('visual_clip_embedding_512')]
-
-            logger.info(f"Found {len(images_without_clip)}/{len(all_images)} images without CLIP embeddings")
-            return images_without_clip
+            logger.info(
+                f"Found {len(images_without_slig)}/{len(images_result.data)} images without SLIG embeddings"
+            )
+            return images_without_slig
 
         except Exception as e:
-            logger.error(f"❌ Failed to get images without CLIP: {e}")
+            logger.error(f"❌ Failed to get images without SLIG: {e}")
             return []
 
     async def _generate_clip_for_image(
@@ -289,14 +286,10 @@ class CLIPEmbeddingJobService:
             embeddings = embedding_result.get('embeddings', {})
             embeddings_count = 0
 
-            # Save visual CLIP embedding to document_images table
-            visual_embedding = embeddings.get('visual_512')
-            if visual_embedding:
-                await self._save_visual_embedding_to_db(image_id, visual_embedding)
-                embeddings_count += 1
-                logger.debug(f"✅ Saved visual CLIP embedding for image {image_id}")
-
-            # Save visual SigLIP to VECS collection
+            # Save visual SLIG embedding (768D from SigLIP2 via SLIG cloud endpoint)
+            # to VECS — single source of truth. The has_slig_embedding boolean
+            # flag on document_images is updated automatically by vecs_service.
+            visual_embedding = embeddings.get('visual_768')
             if visual_embedding:
                 metadata = {
                     'document_id': document_id,
@@ -306,34 +299,24 @@ class CLIPEmbeddingJobService:
                 }
                 await self.vecs_service.upsert_image_embedding(
                     image_id=image_id,
-                    siglip_embedding=visual_embedding,  # ✅ Fixed: Changed from clip_embedding to siglip_embedding
+                    siglip_embedding=visual_embedding,
                     metadata=metadata
                 )
-                logger.debug(f"✅ Saved visual SigLIP to VECS for image {image_id}")
+                embeddings_count += 1
+                logger.debug(f"✅ Saved visual SLIG embedding (768D) for image {image_id}")
+                logger.debug(f"✅ Saved visual SLIG to VECS for image {image_id}")
 
-            # Save specialized embeddings to VECS collections (support both CLIP 512D and SigLIP 1152D)
+            # Save specialized embeddings (SLIG 768D, emitted by real_embeddings_service
+            # under the keys color_slig_768 / texture_slig_768 / style_slig_768 / material_slig_768).
             specialized_embeddings = {}
-
-            # Check for SigLIP embeddings (1152D) first, then fall back to CLIP (512D)
-            if embeddings.get('color_siglip_1152'):
-                specialized_embeddings['color'] = embeddings.get('color_siglip_1152')
-            elif embeddings.get('color_clip_512'):
-                specialized_embeddings['color'] = embeddings.get('color_clip_512')
-
-            if embeddings.get('texture_siglip_1152'):
-                specialized_embeddings['texture'] = embeddings.get('texture_siglip_1152')
-            elif embeddings.get('texture_clip_512'):
-                specialized_embeddings['texture'] = embeddings.get('texture_clip_512')
-
-            if embeddings.get('style_siglip_1152'):
-                specialized_embeddings['style'] = embeddings.get('style_siglip_1152')
-            elif embeddings.get('style_clip_512'):
-                specialized_embeddings['style'] = embeddings.get('style_clip_512')
-
-            if embeddings.get('material_siglip_1152'):
-                specialized_embeddings['material'] = embeddings.get('material_siglip_1152')
-            elif embeddings.get('material_clip_512'):
-                specialized_embeddings['material'] = embeddings.get('material_clip_512')
+            if embeddings.get('color_slig_768'):
+                specialized_embeddings['color'] = embeddings.get('color_slig_768')
+            if embeddings.get('texture_slig_768'):
+                specialized_embeddings['texture'] = embeddings.get('texture_slig_768')
+            if embeddings.get('style_slig_768'):
+                specialized_embeddings['style'] = embeddings.get('style_slig_768')
+            if embeddings.get('material_slig_768'):
+                specialized_embeddings['material'] = embeddings.get('material_slig_768')
 
             if specialized_embeddings:
                 metadata = {
@@ -356,16 +339,16 @@ class CLIPEmbeddingJobService:
                     logger.info(f"🎨 Stage 3.5: Converting visual embeddings to text metadata for {image_id}")
                     visual_metadata_service = VisualMetadataService(workspace_id=workspace_id)
 
-                    # Prepare embeddings for conversion (use SigLIP 1152D embeddings only)
+                    # Prepare embeddings for conversion (SLIG 768D — canonical schema).
                     embeddings_for_conversion = {}
-                    if embeddings.get('color_siglip_1152'):
-                        embeddings_for_conversion['color_siglip_1152'] = embeddings.get('color_siglip_1152')
-                    if embeddings.get('texture_siglip_1152'):
-                        embeddings_for_conversion['texture_siglip_1152'] = embeddings.get('texture_siglip_1152')
-                    if embeddings.get('material_siglip_1152'):
-                        embeddings_for_conversion['material_siglip_1152'] = embeddings.get('material_siglip_1152')
-                    if embeddings.get('style_siglip_1152'):
-                        embeddings_for_conversion['style_siglip_1152'] = embeddings.get('style_siglip_1152')
+                    if embeddings.get('color_slig_768'):
+                        embeddings_for_conversion['color_slig_768'] = embeddings.get('color_slig_768')
+                    if embeddings.get('texture_slig_768'):
+                        embeddings_for_conversion['texture_slig_768'] = embeddings.get('texture_slig_768')
+                    if embeddings.get('material_slig_768'):
+                        embeddings_for_conversion['material_slig_768'] = embeddings.get('material_slig_768')
+                    if embeddings.get('style_slig_768'):
+                        embeddings_for_conversion['style_slig_768'] = embeddings.get('style_slig_768')
 
                     if embeddings_for_conversion:
                         visual_metadata_result = await visual_metadata_service.process_image_visual_metadata(
@@ -456,30 +439,6 @@ class CLIPEmbeddingJobService:
         except Exception as e:
             logger.error(f"❌ Failed to download image from storage: {e}")
             return None
-
-    async def _save_visual_embedding_to_db(self, image_id: str, embedding: List[float]) -> bool:
-        """
-        Save visual CLIP embedding to document_images table.
-
-        Args:
-            image_id: Image ID
-            embedding: Visual CLIP embedding (512D)
-
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            # Save to document_images table
-            update_data = {
-                "visual_clip_embedding_512": embedding
-            }
-            self.supabase.client.table('document_images').update(update_data).eq('id', image_id).execute()
-            logger.debug(f"✅ Saved visual CLIP embedding (512D) to document_images for {image_id}")
-            return True
-
-        except Exception as e:
-            logger.error(f"❌ Failed to save visual embedding to document_images: {e}")
-            return False
 
     async def _update_job_status(
         self,

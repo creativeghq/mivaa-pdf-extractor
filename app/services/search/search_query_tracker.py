@@ -39,7 +39,12 @@ class SearchQueryTracker:
         user_id: Optional[str] = None,
         weight_profile: str = "balanced",
         dynamic_weights: Optional[Dict[str, float]] = None,
-        weight_profile_source: str = "default"
+        weight_profile_source: str = "default",
+        # Per-stage timings (all optional — fed by the caller)
+        stage_timings: Optional[Dict[str, int]] = None,
+        cache_hit: bool = False,
+        is_product_name_search: bool = False,
+        strategy: Optional[str] = None,
     ):
         """Track a search query and analyze for missing prototypes.
 
@@ -94,7 +99,8 @@ class SearchQueryTracker:
                             )
             
             # Insert tracking record (sync client — no await)
-            self.supabase.client.table('search_query_tracking').insert({
+            stage_timings = stage_timings or {}
+            insert_payload = {
                 'workspace_id': workspace_id,
                 'user_id': user_id,
                 'query_text': query_text,
@@ -111,8 +117,20 @@ class SearchQueryTracker:
                 'weight_profile': weight_profile,
                 'dynamic_weights': dynamic_weights,
                 'weight_profile_source': weight_profile_source,
-                'timestamp': datetime.utcnow().isoformat()
-            }).execute()
+                'timestamp': datetime.utcnow().isoformat(),
+                # New observability columns
+                'query_understanding_ms': stage_timings.get('query_understanding_ms'),
+                'embedding_generation_ms': stage_timings.get('embedding_generation_ms'),
+                'vector_search_ms': stage_timings.get('vector_search_ms'),
+                'fulltext_search_ms': stage_timings.get('fulltext_search_ms'),
+                'scoring_ms': stage_timings.get('scoring_ms'),
+                'enhancement_ms': stage_timings.get('enhancement_ms'),
+                'total_ms': stage_timings.get('total_ms') or response_time_ms,
+                'cache_hit': cache_hit,
+                'is_product_name_search': is_product_name_search,
+                'strategy': strategy,
+            }
+            self.supabase.client.table('search_query_tracking').insert(insert_payload).execute()
             
             # Log zero-result queries for immediate attention
             if result_count == 0:

@@ -660,16 +660,13 @@ async def get_document_content(
         images_count = len(result['images'])
         products_count = len(result['products'])
 
-        # Count embeddings
+        # Count embeddings via canonical has_*_slig boolean flags on document_images.
+        # Actual vectors live in vecs.image_*_embeddings collections.
         text_embeddings = sum(1 for chunk in result['chunks'] if chunk.get('embeddings'))
-        visual_embeddings = sum(1 for img in result['images'] if img.get('visual_clip_embedding_512'))
+        visual_embeddings = sum(1 for img in result['images'] if img.get('has_slig_embedding'))
         vision_analysis = sum(1 for img in result['images'] if img.get('vision_analysis'))
         claude_validation = sum(1 for img in result['images'] if img.get('claude_validation'))
-        # Understanding embeddings are stored in VECS (not document_images columns)
-        # Images with vision_analysis have understanding embeddings generated
-        understanding_embeddings = vision_analysis
-        # Specialized embeddings (color, texture, style, material) are stored in VECS collections
-        # Visual embedding count serves as proxy for SLIG specialized embeddings
+        understanding_embeddings = sum(1 for img in result['images'] if img.get('has_understanding_embedding'))
 
         result['statistics'] = {
             "chunks_count": chunks_count,

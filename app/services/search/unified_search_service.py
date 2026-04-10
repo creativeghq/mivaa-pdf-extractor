@@ -127,6 +127,9 @@ class UnifiedSearchService:
         self.config = config or SearchConfig()
         self.supabase = supabase_client
         self.logger = logger
+        # Diagnostics for query understanding (used by callers for observability)
+        self._last_query_understanding_was_cache_hit: bool = False
+        self._last_query_understanding_ms: int = 0
 
     def _select_weight_profile(self, parsed_data: Dict[str, Any]) -> Tuple[str, Dict[str, float]]:
         """
@@ -1103,6 +1106,9 @@ class UnifiedSearchService:
 
         This is the PREPROCESSING step that runs BEFORE multi-strategy search.
 
+        Cached: results are stored in `query_understanding_cache` keyed on the
+        normalised query hash. Cache hits skip the LLM call entirely.
+
         Args:
             query: Natural language query (e.g., "waterproof ceramic tiles for outdoor patio, matte finish, light beige")
 
@@ -1112,9 +1118,33 @@ class UnifiedSearchService:
             - filters: Extracted structured filters (e.g., {"material_type": "ceramic tiles", ...})
             - weight_profile: Name of selected weight profile (e.g., "color_finish")
             - dynamic_weights: Dict of 7-vector weights for multi-vector fusion
+
+        Side effect: sets `self._last_query_understanding_was_cache_hit` and
+        `self._last_query_understanding_ms` so callers can record timing.
         """
         import time
         start_time = time.time()
+
+        # Reset diagnostics
+        self._last_query_understanding_was_cache_hit = False
+        self._last_query_understanding_ms = 0
+
+        # ── Cache lookup (skip the LLM if we've parsed this query before) ──
+        try:
+            from app.services.search.query_understanding_cache import get_query_understanding_cache
+            cache = get_query_understanding_cache()
+            cached = await cache.lookup(query)
+            if cached:
+                self._last_query_understanding_was_cache_hit = True
+                self._last_query_understanding_ms = int((time.time() - start_time) * 1000)
+                return (
+                    cached.get("visual_query") or query,
+                    cached.get("filters") or {},
+                    cached.get("weight_profile") or "balanced",
+                    cached.get("dynamic_weights") or WEIGHT_PROFILES["balanced"],
+                )
+        except Exception as cache_err:
+            self.logger.debug(f"Query cache lookup failed (continuing): {cache_err}")
 
         try:
             import json
@@ -1206,10 +1236,29 @@ Return ONLY valid JSON. Use null for missing fields."""
             # Select dynamic weight profile based on parsed query intent
             profile_name, dynamic_weights = self._select_weight_profile(parsed_data)
 
+            parse_latency_ms = int((time.time() - start_time) * 1000)
+            self._last_query_understanding_ms = parse_latency_ms
+
             # Check if this is a product name search
             if parsed_data.get("is_product_name") or parsed_data.get("product_name"):
                 # For product name searches, return the original query unchanged
                 self.logger.info(f"🧠 Query identified as PRODUCT NAME: '{query}' → profile='{profile_name}'")
+                # Store in cache (fire-and-forget)
+                try:
+                    from app.services.search.query_understanding_cache import get_query_understanding_cache
+                    await get_query_understanding_cache().store(
+                        query=query,
+                        parsed_data=parsed_data,
+                        visual_query=query,
+                        filters={},
+                        weight_profile=profile_name,
+                        dynamic_weights=dynamic_weights,
+                        is_product_name=True,
+                        model_used=model_used,
+                        parse_latency_ms=parse_latency_ms,
+                    )
+                except Exception as store_err:
+                    self.logger.debug(f"Cache store failed: {store_err}")
                 return query, {}, profile_name, dynamic_weights
 
             # Build visual query (core concept for embedding)
@@ -1272,11 +1321,31 @@ Return ONLY valid JSON. Use null for missing fields."""
 
             self.logger.info(f"🧠 Query parsed [{model_used}]: '{query}' → visual_query='{visual_query}', profile='{profile_name}', filters={filters}")
 
+            # Store in cache (fire-and-forget)
+            try:
+                from app.services.search.query_understanding_cache import get_query_understanding_cache
+                await get_query_understanding_cache().store(
+                    query=query,
+                    parsed_data=parsed_data,
+                    visual_query=visual_query,
+                    filters=filters,
+                    weight_profile=profile_name,
+                    dynamic_weights=dynamic_weights,
+                    is_product_name=False,
+                    model_used=model_used,
+                    parse_latency_ms=parse_latency_ms,
+                )
+            except Exception as store_err:
+                self.logger.debug(f"Cache store failed: {store_err}")
+
             return visual_query, filters, profile_name, dynamic_weights
 
         except Exception as e:
-            self.logger.error(f"Query parsing failed: {e}, using original query")
-            # Fallback: return original query with no filters and balanced weights
+            # Demoted to warning — query understanding is best-effort. The fallback
+            # to the original query + balanced weights is the documented behavior
+            # and search continues to work. Common cause: OpenAI rate limit / quota.
+            self.logger.warning(f"Query parsing failed (using original query as fallback): {e}")
+            self._last_query_understanding_ms = int((time.time() - start_time) * 1000)
             return query, {}, "balanced", WEIGHT_PROFILES["balanced"]
 
 

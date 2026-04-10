@@ -10,7 +10,6 @@ This service creates and manages relevancy relationships:
 
 import logging
 from typing import List, Dict, Any, Optional
-import numpy as np
 from app.services.core.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
@@ -18,101 +17,17 @@ logger = logging.getLogger(__name__)
 
 class RelevancyService:
     """Service for managing entity relationships and relevancy scores."""
-    
+
     def __init__(self):
         self.supabase_client = get_supabase_client()
-    
-    def calculate_cosine_similarity(self, embedding1: List[float], embedding2: List[float]) -> float:
-        """Calculate cosine similarity between two embeddings."""
-        try:
-            vec1 = np.array(embedding1)
-            vec2 = np.array(embedding2)
-            
-            dot_product = np.dot(vec1, vec2)
-            norm1 = np.linalg.norm(vec1)
-            norm2 = np.linalg.norm(vec2)
-            
-            if norm1 == 0 or norm2 == 0:
-                return 0.0
-            
-            similarity = dot_product / (norm1 * norm2)
-            return float(similarity)
-        
-        except Exception as e:
-            logger.error(f"Error calculating cosine similarity: {e}")
-            return 0.0
-    
-    async def create_chunk_image_relationships(
-        self,
-        document_id: str,
-        similarity_threshold: float = 0.5
-    ) -> int:
-        """
-        Create chunk-to-image relationships based on embedding similarity.
-        
-        Args:
-            document_id: Document ID
-            similarity_threshold: Minimum similarity score to create relationship
-            
-        Returns:
-            Number of relationships created
-        """
-        logger.info(f"🔗 Creating chunk-image relationships for document {document_id}...")
-        
-        # Get all chunks with embeddings
-        chunks_result = self.supabase_client.client.table('document_chunks')\
-            .select('id, text_embedding')\
-            .eq('document_id', document_id)\
-            .not_.is_('text_embedding', 'null')\
-            .execute()
-        
-        chunks = chunks_result.data if chunks_result.data else []
-        
-        # Get all images with CLIP embeddings
-        images_result = self.supabase_client.client.table('document_images')\
-            .select('id, visual_clip_embedding_512')\
-            .eq('document_id', document_id)\
-            .not_.is_('visual_clip_embedding_512', 'null')\
-            .execute()
-        
-        images = images_result.data if images_result.data else []
-        
-        logger.info(f"   Found {len(chunks)} chunks and {len(images)} images with embeddings")
-        
-        relationships_created = 0
-        
-        # Create relationships based on similarity
-        for chunk in chunks:
-            chunk_embedding = chunk['text_embedding']
-            
-            for image in images:
-                image_embedding = image['visual_clip_embedding_512']
-                
-                # Calculate similarity
-                similarity = self.calculate_cosine_similarity(chunk_embedding, image_embedding)
-                
-                if similarity >= similarity_threshold:
-                    try:
-                        relationship = {
-                            'chunk_id': chunk['id'],
-                            'image_id': image['id'],
-                            'relevance_score': similarity
-                        }
-                        
-                        self.supabase_client.client.table('chunk_image_relationships')\
-                            .insert(relationship)\
-                            .execute()
-                        
-                        relationships_created += 1
-                        logger.debug(f"   ✅ Created chunk-image relationship (similarity: {similarity:.3f})")
-                    
-                    except Exception as e:
-                        logger.warning(f"   ⚠️ Failed to create chunk-image relationship: {e}")
-        
-        logger.info(f"✅ Created {relationships_created} chunk-image relationships")
-        
-        return relationships_created
-    
+
+
+    # NOTE: create_chunk_image_relationships() was removed in 2026-04 cleanup.
+    # The function compared 1024D text embeddings against 768D visual embeddings via
+    # cosine similarity, which is mathematically invalid (different dimensions).
+    # The real producer of chunk_image_relationships is
+    # `entity_linking_service.link_images_to_chunks` which uses page_proximity.
+
     async def create_product_image_relationships(
         self,
         document_id: str,
@@ -273,26 +188,24 @@ class RelevancyService:
         Returns:
             Dict with counts: {chunk_image_relationships, product_image_relationships}
         """
-        logger.info(f"🔗 Creating all relationships for document {document_id}...")
+        logger.info(f"🔗 Creating product-image relationships for document {document_id}...")
 
-        # Create chunk-image relationships
-        chunk_image_count = await self.create_chunk_image_relationships(
-            document_id=document_id,
-            similarity_threshold=similarity_threshold
-        )
+        # Note: chunk-image relationships are created by entity_linking_service
+        # using page_proximity, NOT by this service. The legacy cosine-similarity
+        # implementation was removed in 2026-04 (was mathematically broken — comparing
+        # 1024D text against 768D visual). The similarity_threshold parameter is
+        # retained for API compatibility but unused.
+        _ = similarity_threshold  # legacy parameter, kept for caller compatibility
 
-        # Create product-image relationships
         product_image_count = await self.create_product_image_relationships(
             document_id=document_id,
             product_ids=product_ids
         )
 
-        logger.info(f"✅ All relationships created:")
-        logger.info(f"   Chunk-image: {chunk_image_count}")
-        logger.info(f"   Product-image: {product_image_count}")
+        logger.info(f"✅ Product-image: {product_image_count}")
 
         return {
-            'chunk_image_relationships': chunk_image_count,
+            'chunk_image_relationships': 0,  # Handled by entity_linking_service
             'product_image_relationships': product_image_count
         }
 

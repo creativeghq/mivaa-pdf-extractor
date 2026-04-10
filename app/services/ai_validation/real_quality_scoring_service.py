@@ -348,34 +348,27 @@ class RealQualityScoringService:
             return 0.5
     
     def _calculate_embedding_coverage(self, image_data: Dict[str, Any]) -> float:
-        """Calculate embedding coverage for images (visual + understanding)."""
+        """Calculate embedding coverage for images via canonical has_*_slig boolean flags.
+
+        Visual SLIG (60%) + understanding embedding (40%). Specialized embeddings
+        (color/texture/style/material) are not weighted here because they always
+        co-occur with the visual embedding.
+        """
         coverage = 0.0
-        if image_data.get('clip_embedding') or image_data.get('visual_clip_embedding_512'):
+        if image_data.get('has_slig_embedding'):
             coverage += 0.6
-        if image_data.get('vision_analysis'):
-            # Understanding embedding is generated from vision_analysis
+        if image_data.get('has_understanding_embedding'):
             coverage += 0.4
         return min(1.0, coverage)
-    
+
     def _calculate_product_embedding_coverage(self, product_data: Dict[str, Any]) -> float:
-        """Calculate embedding coverage for products (all 6 types)."""
-        coverage = 0.0
-        total = 6
+        """Calculate embedding coverage for products.
 
-        if product_data.get('text_embedding'):
-            coverage += 1
-        if product_data.get('visual_clip_embedding_512'):
-            coverage += 1
-        if product_data.get('multimodal_fusion_embedding_2048'):
-            coverage += 1
-        if product_data.get('color_embedding_256'):
-            coverage += 1
-        if product_data.get('texture_embedding_256'):
-            coverage += 1
-        if product_data.get('application_embedding_512'):
-            coverage += 1
-
-        return coverage / total
+        Post-2026-04 cleanup, the only canonical product-level embedding is
+        text_embedding_1024 (Voyage AI 1024D). Image-level embeddings live in
+        vecs.image_*_embeddings collections, accessed via image_product_associations.
+        """
+        return 1.0 if product_data.get('text_embedding_1024') else 0.0
     
     def _calculate_coherence(self, content: str) -> float:
         """Calculate semantic coherence of content."""

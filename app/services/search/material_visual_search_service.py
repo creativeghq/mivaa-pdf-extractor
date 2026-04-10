@@ -628,92 +628,48 @@ class MaterialVisualSearchService:
             collection_stats = multi_vector_results.get('collection_stats', {})
             logger.info(f"✅ Multi-vector search: {len(vecs_results)} results, stats: {collection_stats}")
 
-            # ✅ FALLBACK: If VECS returns no results, use direct pgvector database search
+            # ✅ FALLBACK: If VECS returned no results, retry the visual primary search
+            # alone with relaxed parameters. After the 2026-04 cleanup, vecs.image_slig_embeddings
+            # is the single source of truth for visual embeddings — there is no
+            # secondary store to fall back to.
             if not vecs_results:
-                logger.info("🔄 VECS returned no results, falling back to direct pgvector search")
+                logger.info("🔄 Multi-vector returned no results, falling back to primary visual search")
                 try:
-                    supabase = get_supabase_client()
-
-                    # Convert embedding to pgvector format
-                    embedding_str = '[' + ','.join(str(x) for x in query_embedding) + ']'
-
-                    # Direct pgvector similarity search on document_images
-                    query_sql = f"""
-                    SELECT
-                        di.id::text as image_id,
-                        di.image_url,
-                        di.page_number,
-                        di.product_name,
-                        di.category,
-                        di.document_id::text,
-                        1 - (di.visual_clip_embedding_512 <=> '{embedding_str}'::vector) as similarity_score
-                    FROM document_images di
-                    WHERE di.visual_clip_embedding_512 IS NOT NULL
-                    ORDER BY di.visual_clip_embedding_512 <=> '{embedding_str}'::vector
-                    LIMIT {request.limit * 2}
-                    """
-
-                    import asyncio
-                    result = await asyncio.to_thread(
-                        lambda: supabase.client.rpc('exec_sql', {'query': query_sql}).execute()
+                    fallback_results = await vecs_service.search_similar_images(
+                        query_embedding=query_embedding,
+                        limit=request.limit * 2,
+                        filters=filters,
+                        include_metadata=True,
                     )
+                    if fallback_results:
+                        # Hydrate metadata from document_images for the response shape
+                        supabase = get_supabase_client()
+                        image_ids = [r.get('image_id') for r in fallback_results if r.get('image_id')]
+                        if image_ids:
+                            di_response = await asyncio.to_thread(
+                                lambda: supabase.client.table('document_images')
+                                .select('id, image_url, page_number, product_name, category, document_id')
+                                .in_('id', image_ids)
+                                .execute()
+                            )
+                            di_lookup = {str(row['id']): row for row in (di_response.data or [])}
+                        else:
+                            di_lookup = {}
 
-                    # If RPC doesn't work, try direct table query with Python-side similarity
-                    if not result.data:
-                        logger.info("🔄 RPC failed, using Python-side similarity calculation")
-                        table_result = await asyncio.to_thread(
-                            lambda: supabase.client.table('document_images')
-                            .select('id, image_url, page_number, product_name, category, document_id, visual_clip_embedding_512')
-                            .not_.is_('visual_clip_embedding_512', 'null')
-                            .limit(200)
-                            .execute()
-                        )
-
-                        if table_result.data:
-                            import numpy as np
-                            query_vec = np.array(query_embedding)
-
-                            for row in table_result.data:
-                                embedding = row.get('visual_clip_embedding_512')
-                                if embedding:
-                                    if isinstance(embedding, str):
-                                        embedding = [float(x) for x in embedding.strip('[]').split(',')]
-
-                                    if len(embedding) == 768:
-                                        img_vec = np.array(embedding)
-                                        similarity = float(np.dot(query_vec, img_vec) / (np.linalg.norm(query_vec) * np.linalg.norm(img_vec)))
-
-                                        vecs_results.append({
-                                            'image_id': str(row.get('id')),
-                                            'similarity_score': similarity,
-                                            'metadata': {
-                                                'image_url': row.get('image_url'),
-                                                'page_number': row.get('page_number'),
-                                                'product_name': row.get('product_name'),
-                                                'category': row.get('category'),
-                                                'document_id': str(row.get('document_id'))
-                                            }
-                                        })
-
-                            # Sort by similarity
-                            vecs_results.sort(key=lambda x: x['similarity_score'], reverse=True)
-                            vecs_results = vecs_results[:request.limit * 2]
-                            logger.info(f"✅ Direct DB search found {len(vecs_results)} results")
-                    else:
-                        # Parse RPC results
-                        for row in result.data:
+                        for r in fallback_results:
+                            di = di_lookup.get(str(r.get('image_id')), {})
                             vecs_results.append({
-                                'image_id': row.get('image_id'),
-                                'similarity_score': row.get('similarity_score', 0),
+                                'image_id': r.get('image_id'),
+                                'similarity_score': r.get('similarity_score', 0),
                                 'metadata': {
-                                    'image_url': row.get('image_url'),
-                                    'page_number': row.get('page_number'),
-                                    'product_name': row.get('product_name'),
-                                    'category': row.get('category'),
-                                    'document_id': row.get('document_id')
+                                    'image_url': di.get('image_url'),
+                                    'page_number': di.get('page_number'),
+                                    'product_name': di.get('product_name'),
+                                    'category': di.get('category'),
+                                    'document_id': str(di.get('document_id', '')),
                                 }
                             })
-                        logger.info(f"✅ RPC search found {len(vecs_results)} results")
+                        logger.info(f"✅ Visual primary fallback found {len(vecs_results)} results")
 
                 except Exception as db_err:
                     logger.error(f"❌ Direct DB search failed: {db_err}")

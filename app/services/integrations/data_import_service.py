@@ -25,6 +25,7 @@ from app.services.images.image_processing_service import ImageProcessingService
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 from app.services.embeddings.clip_embedding_job_service import CLIPEmbeddingJobService
 from app.services.chunking.unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
+from app.services.metadata.metadata_normalizer import normalize_factory_keys
 import sentry_sdk  # ✅ NEW: Sentry integration
 
 # Category → default unit mapping (mirrors material_categories.default_unit)
@@ -431,38 +432,46 @@ class DataImportService:
     ) -> Dict[str, Any]:
         """
         Normalize product data using field mappings.
-        
+
         Args:
             product: Raw product data from XML
             field_mappings: Field mapping configuration
-            
+
         Returns:
             Normalized product data
         """
         normalized = {}
-        
+
         # Apply field mappings
         for xml_field, target_field in field_mappings.items():
             if xml_field in product:
                 normalized[target_field] = product[xml_field]
-        
+
+        # Defensive aliasing — fold any manufacturer/brand/supplier fields the
+        # caller may have passed through into the canonical factory_name.
+        # The xml-import-orchestrator edge function already maps these, but
+        # callers can POST directly to /api/import/process bypassing it.
+        normalize_factory_keys(normalized)
+
         # Ensure required fields exist
         if 'name' not in normalized:
             normalized['name'] = product.get('name', 'Unknown Product')
-        
+
         if 'factory_name' not in normalized:
             normalized['factory_name'] = product.get('factory_name', 'Unknown Factory')
-        
+
         if 'material_category' not in normalized:
             normalized['material_category'] = product.get('material_category', 'Unknown Category')
-        
-        # Add metadata
+
+        # Add metadata (also normalize any inner metadata blob the caller passed)
+        inner_meta = dict(product.get('metadata', {}))
+        normalize_factory_keys(inner_meta)
         normalized['metadata'] = {
             'source_type': 'xml_import',
             'import_date': datetime.utcnow().isoformat(),
-            **product.get('metadata', {})
+            **inner_meta,
         }
-        
+
         return normalized
 
     async def _download_images(
@@ -520,6 +529,9 @@ class DataImportService:
             product_name = product_data.get('name', 'Unknown Product')
             logger.info(f"📤 Creating product: {product_name}")
 
+            # ── Defensive: normalize any factory aliases on the inbound row ──
+            normalize_factory_keys(product_data)
+
             # ── Build canonical factory nested object ────────────────────
             factory_obj = {}
             _factory_fields = [
@@ -534,6 +546,10 @@ class DataImportService:
                     factory_obj[_f] = _v
 
             # ── Build metadata (canonical location for all content fields) ─
+            # Normalize the inner metadata blob too, then spread.
+            inner_meta = dict(product_data.get('metadata', {}))
+            normalize_factory_keys(inner_meta)
+
             mat_cat = product_data.get('material_category')
             product_metadata = {
                 "extracted_from": "xml_import",
@@ -550,7 +566,7 @@ class DataImportService:
                 "collection": product_data.get('collection'),
                 "finish": product_data.get('finish'),
                 "material": product_data.get('material'),
-                **product_data.get('metadata', {}),
+                **inner_meta,
             }
             if factory_obj:
                 product_metadata['factory'] = factory_obj
@@ -703,22 +719,13 @@ class DataImportService:
                     job_id=job_id  # Track AI cost per job
                 )
 
-                logger.info(f"   ✅ Saved {result.get('images_saved', 0)} images with {result.get('clip_embeddings_generated', 0)} CLIP embeddings")
+                logger.info(f"   ✅ Saved {result.get('images_saved', 0)} images with {result.get('clip_embeddings_generated', 0)} embeddings")
 
-                # Phase 2: Qwen3-VL vision analysis → understanding embeddings (1024D)
-                # Fire as a non-blocking background task so product creation continues
-                try:
-                    from app.services.images.background_image_processor import start_background_image_processing
-                    from app.services.core.supabase_client import get_supabase_client as _get_sb
-                    _phase2_task = asyncio.create_task(
-                        start_background_image_processing(product_id, _get_sb())
-                    )
-                    _phase2_task.add_done_callback(lambda t: logger.error(
-                        f"❌ Phase 2 background processing failed for product {product_id}: {t.exception()}", exc_info=t.exception()
-                    ) if not t.cancelled() and t.exception() else None)
-                    logger.info(f"   🧠 Triggered Phase 2 Qwen3-VL + understanding embeddings for product {product_id}")
-                except Exception as e:
-                    logger.warning(f"   ⚠️ Phase 2 trigger failed (non-blocking) for product {product_id}: {e}", exc_info=True)
+                # NOTE: Phase 2 Qwen3-VL background processing was removed in 2026-04
+                # along with background_image_processor.py — that pipeline was calling
+                # a non-existent method (`generate_material_embeddings`) and silently
+                # failing for every image. If understanding embeddings are needed,
+                # they should be generated inline by image_processing_service.
 
                 # Get saved image IDs for associations
                 saved_response = self.supabase.table('document_images')\

@@ -349,11 +349,13 @@ async def process_single_product(
             catalog=catalog,
             config=config,
             logger=logger_instance,
-            layout_regions=layout_regions  # ✅ NEW: Pass YOLO layout regions for bbox data
+            layout_regions=layout_regions,  # ✅ NEW: Pass YOLO layout regions for bbox data
+            tracker=tracker,  # ✅ NEW: Per-image progress events visible in admin UI
         )
 
         images_processed = image_result.get('images_processed', 0)
         clip_embeddings = image_result.get('clip_embeddings_generated', 0)
+        vector_stats = image_result.get('vector_stats', {}) or {}
         await product_tracker.mark_stage_complete(
             product_id,
             ProductStage.IMAGES,
@@ -361,7 +363,17 @@ async def process_single_product(
                 "images_processed": images_processed,
                 "images_material": image_result.get('images_material', 0),
                 "images_non_material": image_result.get('images_non_material', 0),
-                "clip_embeddings_generated": clip_embeddings
+                "clip_embeddings_generated": clip_embeddings,
+                # Per-vector breakdown — visible in admin UI
+                "visual_slig_count": vector_stats.get('visual_slig', 0),
+                "color_slig_count": vector_stats.get('color_slig', 0),
+                "texture_slig_count": vector_stats.get('texture_slig', 0),
+                "style_slig_count": vector_stats.get('style_slig', 0),
+                "material_slig_count": vector_stats.get('material_slig', 0),
+                "understanding_count": vector_stats.get('understanding', 0),
+                "vision_analysis_qwen": vector_stats.get('vision_analysis_qwen', 0),
+                "vision_analysis_claude_fallback": vector_stats.get('vision_analysis_claude_fallback', 0),
+                "vision_analysis_failed": vector_stats.get('vision_analysis_failed', 0),
             }
         )
         result.images_processed = images_processed

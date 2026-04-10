@@ -210,6 +210,73 @@ def normalize_null_value(value: Any) -> Any:
 
 
 # ============================================================================
+# FACTORY KEY NORMALIZATION (canonical: factory_name / factory_group_name)
+# ============================================================================
+
+# Aliases that should fold into `factory_name` (the maker / brand)
+_FACTORY_NAME_ALIASES = ('manufacturer', 'brand', 'supplier')
+
+# Aliases that should fold into `factory_group_name` (the parent group)
+_FACTORY_GROUP_ALIASES = ('factory_group',)
+
+
+def normalize_factory_keys(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Standardize factory/manufacturer keys to the canonical schema:
+      - factory_name        — the maker (e.g. "Harmony")
+      - factory_group_name  — the parent group, when meaningfully different (e.g. "Peronda Group")
+
+    Folds in legacy / AI-emitted aliases (manufacturer, brand, supplier, factory_group)
+    so the rest of the pipeline only needs to know about the two canonical keys.
+
+    Behavior:
+      - If `factory_name` is empty/missing: copy from manufacturer → brand → supplier (first non-empty wins).
+      - If `factory_name` is empty AND `factory` is a string (not a dict): use that.
+      - If `factory_group_name` is empty/missing: copy from `factory_group`.
+      - All alias keys are then deleted from the metadata to enforce a single source of truth.
+      - The nested `factory` object (if present as a dict) is left untouched — that's the
+        rich nested location built by stage_4_products._build_factory_object().
+
+    Idempotent — safe to call multiple times. Mutates and returns the same dict.
+    """
+    if not isinstance(metadata, dict):
+        return metadata
+
+    # ── factory_name ─────────────────────────────────────────────────────────
+    if is_not_found_value(metadata.get('factory_name')):
+        # Try aliases in priority order
+        for alias in _FACTORY_NAME_ALIASES:
+            val = metadata.get(alias)
+            if not is_not_found_value(val):
+                metadata['factory_name'] = val
+                break
+        else:
+            # Last resort: AI sometimes writes `factory` as a flat string instead of a nested dict
+            factory_val = metadata.get('factory')
+            if isinstance(factory_val, str) and not is_not_found_value(factory_val):
+                metadata['factory_name'] = factory_val
+
+    # ── factory_group_name ───────────────────────────────────────────────────
+    if is_not_found_value(metadata.get('factory_group_name')):
+        for alias in _FACTORY_GROUP_ALIASES:
+            val = metadata.get(alias)
+            if not is_not_found_value(val):
+                metadata['factory_group_name'] = val
+                break
+
+    # ── Drop the alias keys (single source of truth) ─────────────────────────
+    for alias in _FACTORY_NAME_ALIASES + _FACTORY_GROUP_ALIASES:
+        metadata.pop(alias, None)
+
+    # If `factory` was a flat string (not a nested dict), drop it too — its value
+    # has been folded into factory_name above. The nested-dict form is preserved.
+    if 'factory' in metadata and not isinstance(metadata['factory'], dict):
+        metadata.pop('factory', None)
+
+    return metadata
+
+
+# ============================================================================
 # MATERIAL CATEGORY NORMALIZATION
 # ============================================================================
 

@@ -1,16 +1,18 @@
 """
 RAG Service - Direct Vector DB Implementation
 
-This service provides multi-vector search capabilities using direct vector database queries.
+This service provides multi-vector search capabilities using VECS collections
+as the single source of truth for image embeddings.
 
 Search Strategy:
-- Multi-Vector Search: Combines 6 specialized CLIP embeddings in parallel
-  1. text_embedding (1024D, 20%) - Semantic text understanding (Voyage AI)
-  2. visual_clip_embedding_512 (20%) - General visual similarity
-  3. color_clip_embedding_512 (15%) - Color palette matching
-  4. texture_clip_embedding_512 (15%) - Texture pattern matching
-  5. style_clip_embedding_512 (15%) - Design style matching
-  6. material_clip_embedding_512 (15%) - Material type matching
+- Multi-Vector Search: Combines 7 vectors in parallel
+  1. document_chunks.text_embedding (1024D Voyage AI, 20%) - Semantic text
+  2. vecs.image_slig_embeddings (768D SLIG, 20%) - General visual similarity
+  3. vecs.image_color_embeddings (768D SLIG, 12.5%) - Color palette matching
+  4. vecs.image_texture_embeddings (768D SLIG, 12.5%) - Texture pattern matching
+  5. vecs.image_style_embeddings (768D SLIG, 12.5%) - Design style matching
+  6. vecs.image_material_embeddings (768D SLIG, 12.5%) - Material type matching
+  7. vecs.image_understanding_embeddings (1024D Voyage from Qwen3-VL, 10%) - Vision-understanding
 """
 
 import logging
@@ -515,19 +517,20 @@ class RAGService:
         🎯 HYBRID MULTI-SOURCE SEARCH - Combines ALL available data sources.
 
         **SEARCH SOURCES (All enabled by default):**
-        1. **Visual Embeddings** (5 VECS collections) - Image-based search
-           - visual_clip_embedding_512 (general visual similarity)
-           - color_clip_embedding_512 (color palette matching)
-           - texture_clip_embedding_512 (texture pattern matching)
-           - style_clip_embedding_512 (design style matching)
-           - material_clip_embedding_512 (material type matching)
+        1. **Visual Embeddings** (6 VECS collections, 768D SLIG / 1024D Voyage)
+           - vecs.image_slig_embeddings (general visual similarity)
+           - vecs.image_color_embeddings (color palette matching)
+           - vecs.image_texture_embeddings (texture pattern matching)
+           - vecs.image_style_embeddings (design style matching)
+           - vecs.image_material_embeddings (material type matching)
+           - vecs.image_understanding_embeddings (Qwen3-VL → Voyage 1024D)
 
         2. **Text Embeddings** (document_chunks) - Semantic text search
-           - Searches chunk text_embedding (1024D Voyage AI, stored as vector(1024))
+           - Searches document_chunks.text_embedding (halfvec(1024) Voyage AI 3.5)
            - Maps chunks to products via chunk_product_relationships
 
         3. **Direct Product Search** - Product-level embeddings
-           - Searches product text_embedding_1024 (1024D, stored as vector(1024))
+           - Searches products.text_embedding_1024 (halfvec(1024) Voyage AI 3.5)
            - Direct metadata matching
 
         4. **Keyword Matching** - Traditional text search
@@ -1073,24 +1076,8 @@ class RAGService:
                 except Exception as e:
                     self.logger.warning(f"Metadata validation scoring failed: {e}")
 
-            # Track search query for prototype discovery
-            try:
-                from .search_query_tracker import get_search_tracker
-                tracker = get_search_tracker()
-                # Track asynchronously (don't wait)
-                _track_task = asyncio.create_task(tracker.track_query(
-                    workspace_id=workspace_id,
-                    query_text=query,
-                    query_metadata=material_filters,
-                    search_type="multi_vector",
-                    result_count=len(results),
-                    response_time_ms=int((time.time() - start_time) * 1000)
-                ))
-                _track_task.add_done_callback(lambda t: self.logger.warning(
-                    f"Search tracking task failed: {t.exception()}"
-                ) if not t.cancelled() and t.exception() else None)
-            except Exception as e:
-                self.logger.warning(f"Search tracking failed: {e}")
+            # NOTE: search query tracking is now done in rag_routes.search_documents
+            # with full per-stage timings. The old call here would double-track.
 
             return {
                 "results": results,

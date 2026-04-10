@@ -32,6 +32,7 @@ from app.utils.retry_utils import retry_async
 from app.utils.circuit_breaker import claude_breaker, gpt_breaker, CircuitBreakerError
 from app.utils.timeout_guard import with_timeout, TimeoutError, TimeoutConstants
 from app.services.tracking.web_scraping_stages import WebScrapingStage, get_web_scraping_progress
+from app.services.metadata.metadata_normalizer import normalize_factory_keys
 import re
 
 # Sentry integration for error tracking and monitoring
@@ -675,6 +676,10 @@ class WebScrapingService:
                 # Build metadata with canonical factory nested object
                 base_meta = dict(product.metadata or {})
 
+                # Normalize alias keys (manufacturer/brand/supplier/factory_group → canonical)
+                # so the assembly below sees a single source of truth.
+                normalize_factory_keys(base_meta)
+
                 # Assemble factory object: catalog defaults < product meta < Firecrawl extract
                 factory_obj: dict = {}
                 for _f, _v in catalog_factory_defaults.items():
@@ -694,7 +699,7 @@ class WebScrapingService:
 
                 if factory_obj:
                     base_meta['factory'] = factory_obj
-                    # Backward-compat flat fields
+                    # Keep flat fields in sync with the nested object
                     if factory_obj.get('factory_name'):
                         base_meta['factory_name'] = factory_obj['factory_name']
                     if factory_obj.get('factory_group_name'):
@@ -1070,21 +1075,11 @@ class WebScrapingService:
                 images_saved = result.get('images_saved', 0)
                 self.logger.info(f"   ✅ Saved {images_saved} images with {result.get('clip_embeddings_generated', 0)} SLIG embeddings")
 
-                # Phase 2: Qwen3-VL vision analysis → understanding embeddings (1024D via Voyage AI)
-                # Fire as a non-blocking background task — picks up saved images and generates
-                # vision_analysis JSON + understanding embedding for the 7th vector type
-                if images_saved > 0:
-                    try:
-                        from app.services.images.background_image_processor import start_background_image_processing
-                        _phase2_task = asyncio.create_task(
-                            start_background_image_processing(product_id, self.supabase)
-                        )
-                        _phase2_task.add_done_callback(lambda t: self.logger.error(
-                            f"❌ Phase 2 background processing failed for product {product_id}: {t.exception()}", exc_info=t.exception()
-                        ) if not t.cancelled() and t.exception() else None)
-                        self.logger.info(f"   🧠 Triggered Phase 2 Qwen3-VL + understanding embeddings for {product_name}")
-                    except Exception as phase2_err:
-                        self.logger.warning(f"   ⚠️ Phase 2 trigger failed (non-critical): {phase2_err}", exc_info=True)
+                # NOTE: Phase 2 Qwen3-VL background processing was removed in 2026-04
+                # along with background_image_processor.py — that pipeline was calling
+                # a non-existent method (`generate_material_embeddings`) and silently
+                # failing for every image. If understanding embeddings are needed,
+                # they should be generated inline by image_processing_service.
 
                 # Create product-image relationships
                 await self._link_images_to_product(

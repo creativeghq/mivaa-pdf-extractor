@@ -87,7 +87,10 @@ class ImageProcessingService:
         self.settings = get_settings()
         self.workspace_id = workspace_id or self.settings.default_workspace_id
         self.classification_prompt = None
+        self.material_analyzer_prompt = None  # Rich material analysis (feeds understanding embedding)
+        self.material_analyzer_system_prompt = None
         self._load_classification_prompt()
+        self._load_material_analyzer_prompt()
 
     def _load_classification_prompt(self) -> None:
         """Load image classification prompt from database."""
@@ -112,6 +115,43 @@ class ImageProcessingService:
         except Exception as e:
             logger.error(f"❌ Failed to load classification prompt from database: {e}")
             self.classification_prompt = None
+
+    def _load_material_analyzer_prompt(self) -> None:
+        """
+        Load the rich material analysis prompt from the database.
+
+        This prompt is used AFTER classification confirms an image is a material,
+        to extract structured properties (material type, color, texture, finish,
+        applications) which are then:
+          1. Stored on `document_images.vision_analysis` (JSONB)
+          2. Passed to `RealEmbeddingsService.generate_all_embeddings(vision_analysis=...)`
+             so the Voyage understanding embedding (1024D) gets generated and
+             written to `vecs.image_understanding_embeddings`.
+
+        Without this prompt loaded, the understanding branch is skipped and the
+        7-vector fusion search degrades to 6 vectors.
+        """
+        try:
+            result = self.supabase_client.client.table('prompts')\
+                .select('prompt_text, system_prompt')\
+                .eq('name', 'Material Image Analyzer')\
+                .eq('is_active', True)\
+                .limit(1)\
+                .execute()
+
+            if result.data and len(result.data) > 0:
+                self.material_analyzer_prompt = result.data[0].get('prompt_text')
+                self.material_analyzer_system_prompt = result.data[0].get('system_prompt')
+                logger.info("✅ Loaded Material Image Analyzer prompt from database")
+            else:
+                logger.warning(
+                    "⚠️ 'Material Image Analyzer' prompt not found in database. "
+                    "Understanding embeddings will be skipped — search will use 6 of 7 vectors."
+                )
+                self.material_analyzer_prompt = None
+        except Exception as e:
+            logger.error(f"❌ Failed to load Material Image Analyzer prompt from database: {e}")
+            self.material_analyzer_prompt = None
 
     async def classify_images(
         self,
@@ -851,18 +891,422 @@ class ImageProcessingService:
             Last processed index or None if no checkpoint exists
         """
         try:
+            # Use the canonical has_slig_embedding flag (maintained by vecs_service)
+            # to count how many images already have visual embeddings.
             result = self.supabase_client.client.table('document_images')\
                 .select('id')\
                 .eq('document_id', document_id)\
-                .not_.is_('visual_clip_embedding_512', 'null')\
+                .eq('has_slig_embedding', True)\
                 .execute()
 
             if result.data:
-                return len(result.data)  # Number of images with embeddings
+                return len(result.data)
             return 0
         except Exception as e:
             logger.warning(f"   ⚠️ Failed to get embedding checkpoint: {e}")
             return 0
+
+    # ------------------------------------------------------------------ #
+    # Material analysis (vision_analysis JSON) — feeds understanding emb #
+    # ------------------------------------------------------------------ #
+    #
+    # The flow is:
+    #   1. Try Qwen3-VL via the warmed-up endpoint, with N retries on
+    #      transient (5xx / connection) failures.
+    #   2. If Qwen returns nothing parseable after retries, fall back to
+    #      Claude Sonnet 4.6 which is highly reliable for strict JSON.
+    #   3. Parse the response into a dict, validate against the expected
+    #      schema, and return None if both providers failed.
+    #
+    # Result is stored on `document_images.vision_analysis` (JSONB) and
+    # passed to `RealEmbeddingsService.generate_all_embeddings(vision_analysis=)`
+    # so the Voyage understanding (1024D) embedding gets generated and saved
+    # to `vecs.image_understanding_embeddings`.
+
+    # Top-level fields the Material Image Analyzer prompt is expected to
+    # return. We treat the analysis as valid if AT LEAST `_MIN_REQUIRED_FIELDS`
+    # of these are present and non-null. This is intentionally tolerant —
+    # the goal is to catch outright garbage, not to enforce perfect schema
+    # compliance from a vision model.
+    _EXPECTED_VISION_ANALYSIS_FIELDS = (
+        'material_type',
+        'material_subtype',
+        'color_palette',
+        'primary_color_hex',
+        'texture',
+        'pattern',
+        'finish',
+        'design_style',
+        'applications',
+        'physical_properties',
+        'quality_assessment',
+        'confidence',
+    )
+    _MIN_REQUIRED_VISION_FIELDS = 4  # at least this many non-null keys
+
+    @staticmethod
+    def _parse_vision_analysis_json(raw: str, image_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Parse a vision-analysis raw response into a dict.
+
+        Tolerates:
+          - Plain JSON
+          - ```json ... ``` markdown fences
+          - Extra prose around a single JSON object (extracts first {...})
+
+        Returns None if no parseable JSON object can be recovered.
+        """
+        import json as _json
+        import re as _re
+
+        if not raw:
+            return None
+
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = _re.sub(r'^```(?:json)?\s*', '', cleaned)
+            cleaned = _re.sub(r'\s*```$', '', cleaned)
+
+        try:
+            return _json.loads(cleaned)
+        except _json.JSONDecodeError:
+            pass
+
+        # Fallback: extract the first {...} block, tolerating leading prose.
+        match = _re.search(r'\{[\s\S]*\}', cleaned)
+        if not match:
+            logger.warning(
+                f"   ⚠️ Vision analysis response for {image_id} not parseable as JSON; "
+                f"first 200 chars: {raw[:200]!r}"
+            )
+            return None
+        try:
+            return _json.loads(match.group(0))
+        except _json.JSONDecodeError as parse_err:
+            logger.warning(
+                f"   ⚠️ Vision analysis JSON parse failed for {image_id}: {parse_err}"
+            )
+            return None
+
+    @classmethod
+    def _validate_vision_analysis(
+        cls, vision_analysis: Any, image_id: str, source: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Validate that a parsed vision_analysis dict looks usable.
+
+        Returns the dict on success, None on validation failure. Logs the
+        reason loudly so partial / malformed responses are visible to ops.
+        """
+        if not isinstance(vision_analysis, dict) or not vision_analysis:
+            logger.warning(
+                f"   ⚠️ {source}: vision_analysis for {image_id} is not a non-empty dict — "
+                f"got {type(vision_analysis).__name__}"
+            )
+            return None
+
+        present_fields = [
+            f for f in cls._EXPECTED_VISION_ANALYSIS_FIELDS
+            if vision_analysis.get(f) not in (None, "", [], {})
+        ]
+        if len(present_fields) < cls._MIN_REQUIRED_VISION_FIELDS:
+            logger.warning(
+                f"   ⚠️ {source}: vision_analysis for {image_id} has only "
+                f"{len(present_fields)}/{cls._MIN_REQUIRED_VISION_FIELDS} required "
+                f"fields populated (got: {present_fields}). Marking invalid."
+            )
+            return None
+
+        logger.info(
+            f"   🔬 {source}: vision_analysis valid for {image_id} "
+            f"({len(present_fields)}/{len(cls._EXPECTED_VISION_ANALYSIS_FIELDS)} fields populated)"
+        )
+        return vision_analysis
+
+    async def _try_qwen_material_analysis(
+        self,
+        image_base64: str,
+        image_id: str,
+        max_retries: int = 2,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Primary path: call Qwen3-VL with the Material Image Analyzer prompt.
+
+        Retries up to `max_retries` times on transient errors. Returns a
+        validated dict, or None if Qwen could not produce a usable response.
+        """
+        try:
+            from app.services.embeddings.endpoint_registry import endpoint_registry
+            from app.services.embeddings.qwen_endpoint_manager import QwenEndpointManager
+            from app.config import get_settings
+            from openai import AsyncOpenAI
+
+            settings = get_settings()
+            qwen_config = settings.get_qwen_config()
+            qwen_endpoint_url = qwen_config["endpoint_url"]
+            huggingface_api_key = qwen_config["endpoint_token"]
+
+            if not huggingface_api_key or not qwen_config.get("enabled"):
+                logger.warning(
+                    f"   ⚠️ Qwen endpoint not configured/enabled — skipping Qwen path "
+                    f"for material analysis of {image_id}"
+                )
+                return None
+
+            try:
+                qwen_manager = endpoint_registry.get_qwen_manager()
+            except Exception:
+                qwen_manager = None
+            if qwen_manager is None:
+                qwen_manager = QwenEndpointManager(
+                    endpoint_url=qwen_endpoint_url,
+                    endpoint_name=qwen_config["endpoint_name"],
+                    namespace=qwen_config["namespace"],
+                    endpoint_token=huggingface_api_key,
+                    enabled=qwen_config["enabled"],
+                )
+
+            if not await asyncio.to_thread(qwen_manager.resume_if_needed):
+                logger.warning(
+                    f"   ⚠️ Failed to resume Qwen endpoint for material analysis of {image_id}"
+                )
+                return None
+
+            base_url = qwen_endpoint_url.rstrip('/')
+            if not base_url.endswith('/v1'):
+                base_url = base_url + '/v1'
+            base_url = base_url + '/'
+
+            client = AsyncOpenAI(
+                base_url=base_url,
+                api_key=huggingface_api_key,
+                timeout=120.0,
+            )
+
+            messages = []
+            if self.material_analyzer_system_prompt:
+                messages.append({
+                    "role": "system",
+                    "content": self.material_analyzer_system_prompt,
+                })
+            messages.append({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
+                    },
+                    {"type": "text", "text": self.material_analyzer_prompt},
+                ],
+            })
+
+            for attempt in range(max_retries + 1):
+                try:
+                    response = await client.chat.completions.create(
+                        model="Qwen/Qwen3-VL-32B-Instruct",
+                        messages=messages,
+                        max_tokens=1024,
+                        temperature=0.1,
+                        stream=False,
+                    )
+                    raw = response.choices[0].message.content if response.choices else None
+                    if not raw:
+                        logger.warning(
+                            f"   ⚠️ Qwen returned empty material analysis for {image_id} "
+                            f"(attempt {attempt + 1}/{max_retries + 1})"
+                        )
+                        if attempt < max_retries:
+                            await asyncio.sleep(1.5 ** attempt)
+                            continue
+                        return None
+
+                    parsed = self._parse_vision_analysis_json(raw, image_id)
+                    validated = self._validate_vision_analysis(parsed, image_id, source="qwen")
+                    if validated is not None:
+                        return validated
+
+                    # Parsed but failed validation — retry once in case of
+                    # a one-off bad sample.
+                    if attempt < max_retries:
+                        logger.info(
+                            f"   🔁 Retrying Qwen material analysis for {image_id} "
+                            f"(attempt {attempt + 2}/{max_retries + 1}) — "
+                            f"previous result failed validation"
+                        )
+                        await asyncio.sleep(1.0)
+                        continue
+                    return None
+
+                except Exception as call_err:
+                    err_str = str(call_err)
+                    is_transient = (
+                        '503' in err_str
+                        or '502' in err_str
+                        or '504' in err_str
+                        or 'timeout' in err_str.lower()
+                        or 'Service Unavailable' in err_str
+                        or 'Connection' in err_str
+                    )
+                    if is_transient and attempt < max_retries:
+                        backoff = min(1.5 ** attempt + 0.5, 6.0)
+                        logger.warning(
+                            f"   ⏳ Qwen material analysis transient error for {image_id} "
+                            f"(attempt {attempt + 1}/{max_retries + 1}): {err_str[:150]} — "
+                            f"retrying in {backoff:.1f}s"
+                        )
+                        await asyncio.sleep(backoff)
+                        continue
+                    logger.warning(
+                        f"   ⚠️ Qwen material analysis failed for {image_id} "
+                        f"(attempt {attempt + 1}/{max_retries + 1}): {err_str[:200]}"
+                    )
+                    return None
+
+            return None
+
+        except Exception as e:
+            logger.warning(
+                f"   ⚠️ Qwen material analysis path failed for {image_id}: {e}",
+                exc_info=True,
+            )
+            return None
+
+    async def _try_claude_material_analysis(
+        self,
+        image_base64: str,
+        image_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Fallback path: call Claude Sonnet 4.6 with the same prompt when
+        Qwen has failed. Claude is more reliable for strict JSON output
+        and acts as a safety net so we don't lose the understanding
+        embedding for an image just because Qwen had a bad day.
+        """
+        try:
+            from app.services.core.ai_client_service import get_ai_client_service
+
+            if not self.material_analyzer_prompt:
+                return None
+
+            ai_service = get_ai_client_service()
+            if not getattr(ai_service, 'anthropic_async', None):
+                logger.warning(
+                    f"   ⚠️ Anthropic client not available — cannot run Claude fallback "
+                    f"for material analysis of {image_id}"
+                )
+                return None
+
+            content = [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/jpeg",
+                        "data": image_base64,
+                    },
+                },
+                {"type": "text", "text": self.material_analyzer_prompt},
+            ]
+
+            kwargs = {
+                "model": "claude-sonnet-4-6-20260217",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": content}],
+            }
+            if self.material_analyzer_system_prompt:
+                kwargs["system"] = self.material_analyzer_system_prompt
+
+            response = await ai_service.anthropic_async.messages.create(**kwargs)
+
+            # Anthropic SDK returns a list of content blocks; concatenate
+            # any text blocks.
+            text_parts: List[str] = []
+            for block in response.content:
+                block_type = getattr(block, 'type', None)
+                if block_type == 'text':
+                    text_parts.append(getattr(block, 'text', '') or '')
+            raw = ''.join(text_parts).strip()
+            if not raw:
+                logger.warning(
+                    f"   ⚠️ Claude fallback returned empty material analysis for {image_id}"
+                )
+                return None
+
+            parsed = self._parse_vision_analysis_json(raw, image_id)
+            return self._validate_vision_analysis(parsed, image_id, source="claude_fallback")
+
+        except Exception as e:
+            logger.warning(
+                f"   ⚠️ Claude fallback for material analysis failed for {image_id}: {e}",
+                exc_info=True,
+            )
+            return None
+
+    async def _analyze_material_image(
+        self,
+        image_base64: str,
+        image_id: str,
+    ) -> Tuple[Optional[Dict[str, Any]], str]:
+        """
+        Run rich material analysis on a confirmed-material image and return
+        a structured `vision_analysis` JSON.
+
+        This is the input the Voyage understanding embedding consumes — it
+        captures material type, color, texture, finish, applications, etc.
+        as structured properties, which then become a 1024D embedding in
+        `vecs.image_understanding_embeddings`.
+
+        Strategy:
+          1. Try Qwen3-VL (warm endpoint, with retries) — primary path.
+          2. On failure, fall back to Claude Sonnet 4.6 — secondary path.
+          3. If both fail, return (None, 'failed') so the caller can record
+             the failure in job-level stats and the image gets all other
+             vectors except `understanding_1024`.
+
+        Args:
+            image_base64: Base64-encoded image (raw, no data: prefix).
+            image_id: Image UUID (for logging).
+
+        Returns:
+            (vision_analysis_dict, source) where source is one of:
+              - 'qwen'             : produced by Qwen3-VL
+              - 'claude_fallback'  : Qwen failed, Claude produced it
+              - 'skipped'          : prompt not loaded, never attempted
+              - 'failed'           : both providers failed
+        """
+        if not self.material_analyzer_prompt:
+            logger.debug(
+                f"   ⏭️ Skipping material analysis for {image_id}: "
+                f"Material Image Analyzer prompt not loaded"
+            )
+            return None, 'skipped'
+
+        # Primary: Qwen
+        qwen_result = await self._try_qwen_material_analysis(
+            image_base64=image_base64,
+            image_id=image_id,
+            max_retries=2,
+        )
+        if qwen_result is not None:
+            return qwen_result, 'qwen'
+
+        # Fallback: Claude
+        logger.info(
+            f"   🩹 Falling back to Claude for material analysis of {image_id} "
+            f"(Qwen returned no usable result)"
+        )
+        claude_result = await self._try_claude_material_analysis(
+            image_base64=image_base64,
+            image_id=image_id,
+        )
+        if claude_result is not None:
+            return claude_result, 'claude_fallback'
+
+        logger.error(
+            f"   ❌ Material analysis failed for {image_id} via BOTH Qwen and Claude — "
+            f"image will be missing the understanding embedding"
+        )
+        return None, 'failed'
 
     async def _process_single_image_with_retry(
         self,
@@ -872,8 +1316,8 @@ class ImageProcessingService:
         idx: int,
         total: int,
         max_retries: int = 3,
-        material_category: Optional[str] = None
-    ) -> Tuple[bool, bool, Optional[str]]:
+        material_category: Optional[str] = None,
+    ) -> Tuple[bool, bool, Optional[str], Dict[str, Any]]:
         """
         Process a single image with retry logic.
 
@@ -940,22 +1384,64 @@ class ImageProcessingService:
                 image_path = img_data.get('path')
                 if not image_path or not os.path.exists(image_path):
                     logger.warning(f"   ⚠️ Image file not found for CLIP generation: {image_path}")
-                    return (True, False, "Image file not found")
+                    return (True, False, "Image file not found", {
+                        'image_id': image_id,
+                        'visual_slig': False,
+                        'color_slig': False,
+                        'texture_slig': False,
+                        'style_slig': False,
+                        'material_slig': False,
+                        'understanding': False,
+                        'vision_analysis_source': 'skipped',
+                    })
 
                 logger.info(f"   🎨 Generating CLIP embeddings for image {idx + 1}/{total}")
 
-                # Read image and convert to base64
+                # Read image once and prepare two encodings:
+                #   - `image_base64_raw`  : raw base64 (what Qwen / Material Image Analyzer expects)
+                #   - `image_base64_data` : `data:image/jpeg;base64,...` data URL (what the
+                #                            embeddings service / SLIG client expect)
                 with open(image_path, 'rb') as img_file:
                     image_bytes = img_file.read()
-                    image_base64 = f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('utf-8')}"
+                    image_base64_raw = base64.b64encode(image_bytes).decode('utf-8')
+                    image_base64_data = f"data:image/jpeg;base64,{image_base64_raw}"
 
-                # Generate all embeddings
+                # Run rich material analysis (Qwen3-VL primary, Claude Sonnet 4.6
+                # fallback) to produce the structured `vision_analysis` JSON. This
+                # is the input the Voyage understanding embedding consumes — without
+                # it, the 1024D understanding branch is skipped and we lose the 7th
+                # vector. The (vision_analysis, source) tuple lets us track which
+                # provider produced the result for job-level stats.
+                vision_analysis, vision_analysis_source = await self._analyze_material_image(
+                    image_base64=image_base64_raw,
+                    image_id=image_id,
+                )
+
+                # Persist vision_analysis (and provenance) to document_images so the
+                # rest of the platform can read it (admin UI, search filters,
+                # downstream services). Best-effort — we never want a JSONB write
+                # failure to block embedding generation.
+                if vision_analysis:
+                    try:
+                        self.supabase_client.client.table('document_images').update({
+                            'vision_analysis': vision_analysis,
+                            'vision_provider': vision_analysis_source,
+                        }).eq('id', image_id).execute()
+                    except Exception as va_persist_err:
+                        logger.warning(
+                            f"   ⚠️ Failed to persist vision_analysis on document_images "
+                            f"for {image_id}: {va_persist_err}"
+                        )
+
+                # Generate all embeddings — passing vision_analysis enables the
+                # Voyage understanding (1024D) branch in real_embeddings_service.
                 embedding_result = await self.embedding_service.generate_all_embeddings(
                     entity_id=image_id,
                     entity_type="image",
                     text_content="",
-                    image_data=image_base64,
-                    material_properties={}
+                    image_data=image_base64_data,
+                    material_properties={},
+                    vision_analysis=vision_analysis,
                 )
 
                 if not embedding_result or not embedding_result.get('success'):
@@ -979,67 +1465,44 @@ class ImageProcessingService:
                     )
                     logger.error(f"   ❌ [BBOX TRACE] embeddings keys: {list(embeddings.keys())}")
 
-                # Save visual CLIP embedding (768D from SigLIP2)
-                # ✅ FIXED: Changed from 'visual_512' to 'visual_768' to match real_embeddings_service output
+                # Save visual SLIG embedding (768D from SigLIP2 via SLIG cloud endpoint).
+                # Producer key is `visual_768` — see real_embeddings_service.generate_all_embeddings.
+                # VECS is the single source of truth for image embeddings; the
+                # has_slig_embedding boolean flag on document_images is updated
+                # automatically by vecs_service after a successful upsert.
                 visual_embedding = embeddings.get('visual_768')
                 if visual_embedding:
-                    # Save to embeddings table for tracking
-                    try:
-                        # Save visual CLIP embedding to document_images
-                        # Note: Column is named visual_clip_embedding_512 but stores 768D SigLIP embeddings
-                        update_data = {
-                            "visual_clip_embedding_512": visual_embedding
-                        }
-                        self.supabase_client.client.table('document_images').update(update_data).eq('id', image_id).execute()
-                        logger.debug(f"   ✅ Saved visual CLIP embedding (768D SigLIP) to document_images for {image_id}")
-                    except Exception as emb_error:
-                        logger.error(f"   ❌ Failed to save visual embedding to document_images: {emb_error}")
-                        last_error = f"Failed to save visual embedding: {emb_error}"
-                        retry_count += 1
-                        if retry_count < max_retries:
-                            await asyncio.sleep(2 ** retry_count)
-                        continue
-
-                    # Save to VECS collection for fast similarity search
                     try:
                         await self.vecs_service.upsert_image_embedding(
                             image_id=image_id,
-                            siglip_embedding=visual_embedding,  # ✅ FIXED: Changed from clip_embedding to siglip_embedding
+                            siglip_embedding=visual_embedding,
                             metadata={
                                 'document_id': document_id,
-                                'workspace_id': workspace_id,  # ✅ ADDED: Include workspace_id in metadata
+                                'workspace_id': workspace_id,
                                 'page_number': img_data.get('page_number', 1),
                                 'quality_score': img_data.get('quality_score', 0.5)
                             }
                         )
                         logger.debug(f"   ✅ Saved visual embedding to VECS for {image_id}")
                     except Exception as vecs_error:
-                        logger.warning(f"   ⚠️ Failed to save to VECS: {vecs_error}")
+                        logger.error(f"   ❌ Failed to save visual embedding to VECS: {vecs_error}")
+                        last_error = f"Failed to save visual embedding: {vecs_error}"
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            await asyncio.sleep(2 ** retry_count)
+                        continue
 
-                # Save specialized embeddings (support both old 512D and new 1152D SigLIP)
+                # Save specialized embeddings (SLIG 768D, emitted by real_embeddings_service
+                # under the keys color_slig_768 / texture_slig_768 / style_slig_768 / material_slig_768).
                 specialized_embeddings = {}
-
-                # Check for new SigLIP embeddings (1152D) first
-                if embeddings.get('color_siglip_1152'):
-                    specialized_embeddings['color'] = embeddings.get('color_siglip_1152')
-                elif embeddings.get('color_512'):
-                    specialized_embeddings['color'] = embeddings.get('color_512')
-
-                if embeddings.get('texture_siglip_1152'):
-                    specialized_embeddings['texture'] = embeddings.get('texture_siglip_1152')
-                elif embeddings.get('texture_512'):
-                    specialized_embeddings['texture'] = embeddings.get('texture_512')
-
-                if embeddings.get('style_siglip_1152'):
-                    specialized_embeddings['style'] = embeddings.get('style_siglip_1152')
-
-                if embeddings.get('material_siglip_1152'):
-                    specialized_embeddings['material'] = embeddings.get('material_siglip_1152')
-                elif embeddings.get('material_512'):
-                    specialized_embeddings['material'] = embeddings.get('material_512')
-
-                if embeddings.get('application_512'):
-                    specialized_embeddings['application'] = embeddings.get('application_512')
+                if embeddings.get('color_slig_768'):
+                    specialized_embeddings['color'] = embeddings.get('color_slig_768')
+                if embeddings.get('texture_slig_768'):
+                    specialized_embeddings['texture'] = embeddings.get('texture_slig_768')
+                if embeddings.get('style_slig_768'):
+                    specialized_embeddings['style'] = embeddings.get('style_slig_768')
+                if embeddings.get('material_slig_768'):
+                    specialized_embeddings['material'] = embeddings.get('material_slig_768')
 
                 # Save understanding embedding to VECS if present (1024D from Voyage AI)
                 understanding_embedding = embeddings.get('understanding_1024')
@@ -1059,7 +1522,10 @@ class ImageProcessingService:
                         logger.warning(f"   ⚠️ Failed to save understanding embedding to VECS: {understanding_error}")
 
                 if specialized_embeddings:
-                    # Save to VECS collections
+                    # Save to VECS collections — single source of truth.
+                    # The has_color_slig / has_texture_slig / has_style_slig /
+                    # has_material_slig flags on document_images are updated by
+                    # vecs_service automatically after each successful upsert.
                     await self.vecs_service.upsert_specialized_embeddings(
                         image_id=image_id,
                         embeddings=specialized_embeddings,
@@ -1069,48 +1535,23 @@ class ImageProcessingService:
                         }
                     )
 
-                    # Save specialized embeddings to document_images
-                    update_data = {}
-                    for emb_type, emb_vector in specialized_embeddings.items():
-                        try:
-                            # Map embedding type to column name
-                            column_map = {
-                                "color": "color_embedding_256",
-                                "texture": "texture_embedding_256",
-                                "application": "application_embedding_512"
-                            }
-                            column_name = column_map.get(emb_type)
-                            if column_name:
-                                update_data[column_name] = emb_vector
-                                logger.debug(f"   ✅ Adding {emb_type} embedding to document_images for {image_id}")
-                        except Exception as emb_error:
-                            logger.warning(f"   ⚠️ Failed to prepare {emb_type} embedding: {emb_error}")
-
-                    # Update document_images with all specialized embeddings
-                    if update_data:
-                        try:
-                            self.supabase_client.client.table('document_images').update(update_data).eq('id', image_id).execute()
-                            logger.debug(f"   ✅ Saved {len(update_data)} specialized embeddings to document_images for {image_id}")
-                        except Exception as update_error:
-                            logger.warning(f"   ⚠️ Failed to save specialized embeddings to document_images: {update_error}")
-
-                    # ✨ NEW: Stage 3.5 - Convert visual embeddings to text metadata
+                    # ✨ Stage 3.5 - Convert visual embeddings to text metadata
                     try:
                         from app.services.metadata.visual_metadata_service import VisualMetadataService
 
                         logger.info(f"   🎨 Stage 3.5: Converting visual embeddings to text metadata for {image_id}")
                         visual_metadata_service = VisualMetadataService(workspace_id=workspace_id)
 
-                        # Prepare embeddings for conversion (use SigLIP 1152D embeddings)
+                        # Prepare embeddings for conversion (SLIG 768D — canonical schema).
                         embeddings_for_conversion = {}
-                        if embeddings.get('color_siglip_1152'):
-                            embeddings_for_conversion['color_siglip_1152'] = embeddings.get('color_siglip_1152')
-                        if embeddings.get('texture_siglip_1152'):
-                            embeddings_for_conversion['texture_siglip_1152'] = embeddings.get('texture_siglip_1152')
-                        if embeddings.get('material_siglip_1152'):
-                            embeddings_for_conversion['material_siglip_1152'] = embeddings.get('material_siglip_1152')
-                        if embeddings.get('style_siglip_1152'):
-                            embeddings_for_conversion['style_siglip_1152'] = embeddings.get('style_siglip_1152')
+                        if embeddings.get('color_slig_768'):
+                            embeddings_for_conversion['color_slig_768'] = embeddings.get('color_slig_768')
+                        if embeddings.get('texture_slig_768'):
+                            embeddings_for_conversion['texture_slig_768'] = embeddings.get('texture_slig_768')
+                        if embeddings.get('material_slig_768'):
+                            embeddings_for_conversion['material_slig_768'] = embeddings.get('material_slig_768')
+                        if embeddings.get('style_slig_768'):
+                            embeddings_for_conversion['style_slig_768'] = embeddings.get('style_slig_768')
 
                         if embeddings_for_conversion:
                             visual_metadata_result = await visual_metadata_service.process_image_visual_metadata(
@@ -1128,9 +1569,33 @@ class ImageProcessingService:
                     except Exception as visual_meta_error:
                         logger.warning(f"   ⚠️ Visual metadata extraction failed (non-critical): {visual_meta_error}")
 
-                total_embeddings = 1 + len(specialized_embeddings)
-                logger.info(f"   ✅ Generated and saved {total_embeddings} CLIP embeddings for image {image_id}")
-                return (True, True, None)
+                # Per-image vector inventory — what actually got into VECS for this
+                # image. Used by save_images_and_generate_clips to aggregate job-level
+                # stats and surface them in the admin UI.
+                per_image_stats = {
+                    'image_id': image_id,
+                    'visual_slig': bool(visual_embedding),
+                    'color_slig': 'color' in specialized_embeddings,
+                    'texture_slig': 'texture' in specialized_embeddings,
+                    'style_slig': 'style' in specialized_embeddings,
+                    'material_slig': 'material' in specialized_embeddings,
+                    'understanding': bool(understanding_embedding),
+                    'vision_analysis_source': vision_analysis_source,
+                }
+
+                total_embeddings = (
+                    (1 if visual_embedding else 0)
+                    + len(specialized_embeddings)
+                    + (1 if understanding_embedding else 0)
+                )
+                logger.info(
+                    f"   ✅ Image {image_id}: saved {total_embeddings} embeddings "
+                    f"(visual={per_image_stats['visual_slig']}, "
+                    f"specialized={len(specialized_embeddings)}/4, "
+                    f"understanding={per_image_stats['understanding']}, "
+                    f"vision_analysis={vision_analysis_source})"
+                )
+                return (True, True, None, per_image_stats)
 
             except Exception as e:
                 last_error = str(e)
@@ -1141,7 +1606,16 @@ class ImageProcessingService:
                 else:
                     logger.error(f"   ❌ Failed after {max_retries} retries for image {idx + 1}: {e}")
 
-        return (False, False, last_error)
+        return (False, False, last_error, {
+            'image_id': img_data.get('id'),
+            'visual_slig': False,
+            'color_slig': False,
+            'texture_slig': False,
+            'style_slig': False,
+            'material_slig': False,
+            'understanding': False,
+            'vision_analysis_source': 'failed',
+        })
 
     async def save_images_and_generate_clips(
         self,
@@ -1151,7 +1625,9 @@ class ImageProcessingService:
         batch_size: int = 20,
         max_retries: int = 3,
         material_category: Optional[str] = None,
-        job_id: Optional[str] = None  # NEW: Job ID for AI cost tracking
+        job_id: Optional[str] = None,  # NEW: Job ID for AI cost tracking
+        tracker: Optional[Any] = None,  # NEW: ProgressTracker for per-image events
+        progress_label: Optional[str] = None,  # e.g. "Stage 3: Processing images for {product}"
     ) -> Dict[str, Any]:
         """
         Save images to database and generate CLIP embeddings with batching and retry logic.
@@ -1161,6 +1637,8 @@ class ImageProcessingService:
         2. Retry logic with exponential backoff (up to 3 retries per image)
         3. Checkpoint recovery (resume from last successful batch)
         4. Detailed error tracking (log which images fail and why)
+        5. Per-image progress events to ProgressTracker (visible in admin UI)
+        6. Per-vector statistics aggregation (visual + 4 specialized + understanding)
 
         Args:
             material_images: List of material image data
@@ -1170,12 +1648,22 @@ class ImageProcessingService:
             max_retries: Maximum retry attempts per image (default: 3)
             material_category: Material category from upload (tiles, heatpump, wood, etc.)
             job_id: Optional job ID for AI cost tracking/aggregation
+            tracker: Optional ProgressTracker — when provided, per-image progress
+                     events are pushed via update_detailed_progress() so the admin
+                     UI can show "Image 12/50: generating embeddings".
+            progress_label: Optional label prefix shown in progress updates.
 
         Returns:
-            Dict with counts and failed images: {
+            Dict with counts, failed images, and per-vector stats: {
                 images_saved,
                 clip_embeddings_generated,
-                failed_images: [{index, path, error}]
+                failed_images: [{index, path, page_number, error}],
+                vector_stats: {
+                    visual_slig, color_slig, texture_slig, style_slig,
+                    material_slig, understanding,
+                    vision_analysis_qwen, vision_analysis_claude_fallback,
+                    vision_analysis_failed, vision_analysis_skipped
+                }
             }
         """
         logger.info(f"💾 Saving {len(material_images)} material images to database and generating CLIP embeddings...")
@@ -1184,6 +1672,22 @@ class ImageProcessingService:
         images_saved_count = 0
         clip_embeddings_count = 0
         failed_images = []
+
+        # Per-vector aggregation — drives the admin UI's "what actually populated"
+        # display and lets us answer "how many images got the understanding
+        # embedding?" without round-tripping to VECS.
+        vector_stats = {
+            'visual_slig': 0,
+            'color_slig': 0,
+            'texture_slig': 0,
+            'style_slig': 0,
+            'material_slig': 0,
+            'understanding': 0,
+            'vision_analysis_qwen': 0,
+            'vision_analysis_claude_fallback': 0,
+            'vision_analysis_failed': 0,
+            'vision_analysis_skipped': 0,
+        }
 
         # Check checkpoint - get number of images already processed
         checkpoint_index = await self._get_embedding_checkpoint(document_id)
@@ -1196,11 +1700,28 @@ class ImageProcessingService:
                 return {
                     'images_saved': checkpoint_index,
                     'clip_embeddings_generated': checkpoint_index,
-                    'failed_images': []
+                    'failed_images': [],
+                    'vector_stats': vector_stats,
                 }
 
         # Process in batches
         total_images = len(material_images)
+        total_with_checkpoint = total_images + checkpoint_index
+        label_prefix = progress_label or "Stage 3: Processing images"
+
+        # Initial progress event so the UI shows "0/N" before the first image
+        # finishes (otherwise the user sees no movement until the first image
+        # completes, which can be 10-20s into the run).
+        if tracker is not None:
+            try:
+                await tracker.update_detailed_progress(
+                    current_step=f"{label_prefix} (0/{total_with_checkpoint})",
+                    progress_current=checkpoint_index,
+                    progress_total=total_with_checkpoint,
+                )
+            except Exception as tracker_init_err:
+                logger.debug(f"   ⚠️ Tracker init update failed (non-critical): {tracker_init_err}")
+
         for batch_start in range(0, total_images, batch_size):
             batch_end = min(batch_start + batch_size, total_images)
             batch = material_images[batch_start:batch_end]
@@ -1211,14 +1732,16 @@ class ImageProcessingService:
             for idx, img_data in enumerate(batch):
                 global_idx = batch_start + idx + checkpoint_index
 
-                image_saved, embedding_generated, error = await self._process_single_image_with_retry(
-                    img_data=img_data,
-                    document_id=document_id,
-                    workspace_id=workspace_id,
-                    idx=global_idx,
-                    total=total_images + checkpoint_index,
-                    max_retries=max_retries,
-                    material_category=material_category
+                image_saved, embedding_generated, error, per_image_stats = (
+                    await self._process_single_image_with_retry(
+                        img_data=img_data,
+                        document_id=document_id,
+                        workspace_id=workspace_id,
+                        idx=global_idx,
+                        total=total_with_checkpoint,
+                        max_retries=max_retries,
+                        material_category=material_category,
+                    )
                 )
 
                 if image_saved:
@@ -1226,13 +1749,52 @@ class ImageProcessingService:
                 if embedding_generated:
                     clip_embeddings_count += 1
 
+                # Aggregate per-vector counts
+                for vec_key in (
+                    'visual_slig', 'color_slig', 'texture_slig',
+                    'style_slig', 'material_slig', 'understanding',
+                ):
+                    if per_image_stats.get(vec_key):
+                        vector_stats[vec_key] += 1
+
+                # Aggregate vision_analysis provenance counts
+                source = per_image_stats.get('vision_analysis_source', 'skipped')
+                source_key = f'vision_analysis_{source}'
+                if source_key in vector_stats:
+                    vector_stats[source_key] += 1
+
                 if error:
                     failed_images.append({
                         'index': global_idx,
+                        'image_id': per_image_stats.get('image_id'),
                         'path': img_data.get('path'),
                         'page_number': img_data.get('page_number'),
-                        'error': error
+                        'error': error,
                     })
+
+                # Per-image progress event — pushed to background_jobs so the
+                # admin UI updates as we go. update_detailed_progress() debounces
+                # internally (MIN_SYNC_INTERVAL = 2s), so we can call it on every
+                # image without overwhelming the database.
+                if tracker is not None:
+                    try:
+                        completed_so_far = global_idx + 1
+                        step_label = (
+                            f"{label_prefix} ({completed_so_far}/{total_with_checkpoint}) "
+                            f"— v:{vector_stats['visual_slig']} "
+                            f"c:{vector_stats['color_slig']} "
+                            f"t:{vector_stats['texture_slig']} "
+                            f"s:{vector_stats['style_slig']} "
+                            f"m:{vector_stats['material_slig']} "
+                            f"u:{vector_stats['understanding']}"
+                        )
+                        await tracker.update_detailed_progress(
+                            current_step=step_label,
+                            progress_current=completed_so_far,
+                            progress_total=total_with_checkpoint,
+                        )
+                    except Exception as tracker_err:
+                        logger.debug(f"   ⚠️ Tracker update failed (non-critical): {tracker_err}")
 
             # Log batch completion
             logger.info(f"   ✅ Batch {batch_start // batch_size + 1} complete: {len(batch)} images processed")
@@ -1241,6 +1803,18 @@ class ImageProcessingService:
         logger.info(f"✅ Image processing complete:")
         logger.info(f"   Images saved to DB: {images_saved_count + checkpoint_index}")
         logger.info(f"   CLIP embeddings generated: {clip_embeddings_count + checkpoint_index}")
+        logger.info(
+            f"   Vectors written: visual={vector_stats['visual_slig']}, "
+            f"color={vector_stats['color_slig']}, texture={vector_stats['texture_slig']}, "
+            f"style={vector_stats['style_slig']}, material={vector_stats['material_slig']}, "
+            f"understanding={vector_stats['understanding']}"
+        )
+        logger.info(
+            f"   Vision analysis provenance: qwen={vector_stats['vision_analysis_qwen']}, "
+            f"claude_fallback={vector_stats['vision_analysis_claude_fallback']}, "
+            f"failed={vector_stats['vision_analysis_failed']}, "
+            f"skipped={vector_stats['vision_analysis_skipped']}"
+        )
 
         if failed_images:
             logger.warning(f"   ⚠️ Failed images: {len(failed_images)}")
@@ -1252,5 +1826,6 @@ class ImageProcessingService:
         return {
             'images_saved': images_saved_count + checkpoint_index,
             'clip_embeddings_generated': clip_embeddings_count + checkpoint_index,
-            'failed_images': failed_images
+            'failed_images': failed_images,
+            'vector_stats': vector_stats,
         }

@@ -273,14 +273,16 @@ class DocumentEntityService:
             for product in products:
                 product_metadata = product.get('metadata', {})
                 product_page_range = product_metadata.get('page_range', [])
+                # Canonical factory key only — manufacturer/brand/supplier aliases
+                # are normalized away at write time by normalize_factory_keys().
+                factory_val = product_metadata.get('factory_name')
                 preprocessed_products.append({
                     'id': product['id'],
                     'name': product.get('name', ''),
                     'name_lower': product.get('name', '').lower(),
                     'page_range_set': set(product_page_range) if product_page_range else set(),
                     'page_range_len': len(product_page_range) if product_page_range else 0,
-                    'factory': product_metadata.get('factory_name', '').lower() if product_metadata.get('factory_name') else None,
-                    'manufacturer': product_metadata.get('manufacturer', '').lower() if product_metadata.get('manufacturer') else None,
+                    'factory': factory_val.lower() if factory_val else None,
                 })
 
             self.logger.info(f"   ⚡ Pre-processed {len(preprocessed_products)} products for matching")
@@ -293,8 +295,10 @@ class DocumentEntityService:
                 entity_page_range = entity.get('page_range', [])
                 entity_page_range_set = set(entity_page_range) if entity_page_range else set()
                 entity_page_range_len = len(entity_page_range) if entity_page_range else 0
-                entity_factory = entity.get('factory_name', '').lower() if entity.get('factory_name') else None
-                entity_manufacturer = entity.get('manufacturer', '').lower() if entity.get('manufacturer') else None
+                # document_entities table has both factory_name AND manufacturer columns;
+                # treat them as the same concept (matching the canonical product schema).
+                entity_factory_raw = entity.get('factory_name') or entity.get('manufacturer')
+                entity_factory = entity_factory_raw.lower() if entity_factory_raw else None
 
                 entities_processed += 1
                 matched_products = []
@@ -317,12 +321,7 @@ class DocumentEntityService:
                         match_score += 0.3
                         match_reasons.append(f"Factory match: {entity_factory}")
 
-                    # 3. Manufacturer match (medium priority - 0.3)
-                    if entity_manufacturer and product['manufacturer'] and entity_manufacturer == product['manufacturer']:
-                        match_score += 0.3
-                        match_reasons.append(f"Manufacturer match: {entity_manufacturer}")
-
-                    # 4. Name similarity (low priority - 0.1) - using pre-computed lowercase
+                    # 3. Name similarity (low priority - 0.1) - using pre-computed lowercase
                     if product['name_lower'] in entity_name_lower or entity_name_lower in product['name_lower']:
                         match_score += 0.1
                         match_reasons.append(f"Name similarity")

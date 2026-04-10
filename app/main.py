@@ -160,7 +160,28 @@ async def lifespan(app: FastAPI):
                     event_level=logging.ERROR  # Send errors as events
                 ),
             ]
-            
+
+            # before_send filter — drops events we don't want noise from.
+            # Currently filters:
+            #   1. All events when debug mode is on
+            #   2. RateLimitError from openai.* — these are quota / billing issues
+            #      that are already handled gracefully by query understanding's
+            #      fallback path. Sentry's auto-instrumentation captures them
+            #      from inside the openai library before our try/except can
+            #      catch them, which is why a logging-level demotion alone
+            #      isn't enough.
+            def _before_send(event, hint):
+                if settings.debug:
+                    return None
+                exc_info = hint.get("exc_info") if hint else None
+                if exc_info:
+                    exc_type = exc_info[0]
+                    exc_module = getattr(exc_type, "__module__", "")
+                    exc_name = getattr(exc_type, "__name__", "")
+                    if exc_module.startswith("openai") and exc_name == "RateLimitError":
+                        return None
+                return event
+
             # Initialize Sentry SDK
             sentry_sdk.init(
                 dsn=sentry_config["dsn"],
@@ -174,7 +195,7 @@ async def lifespan(app: FastAPI):
                 attach_stacktrace=True,
                 send_default_pii=False,  # Don't send personally identifiable information
                 max_breadcrumbs=50,
-                before_send=lambda event, hint: event if not settings.debug else None,  # Skip in debug mode
+                before_send=_before_send,
             )
             
             logger.info("✅ Sentry error tracking initialized successfully")

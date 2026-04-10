@@ -68,7 +68,8 @@ async def process_product_images(
     catalog: Any,
     config: Dict[str, Any],
     logger: logging.Logger,
-    layout_regions: Optional[List[Any]] = None  # ✅ NEW: YOLO layout regions with bbox data
+    layout_regions: Optional[List[Any]] = None,  # ✅ NEW: YOLO layout regions with bbox data
+    tracker: Optional[Any] = None,  # ✅ NEW: ProgressTracker for per-image progress events
 ) -> Dict[str, Any]:
     """
     Process images for a single product (product-centric pipeline).
@@ -87,9 +88,13 @@ async def process_product_images(
         config: Processing configuration
         logger: Logger instance
         layout_regions: Optional YOLO layout regions with bbox data for accurate positioning
+        tracker: Optional ProgressTracker — when provided, image-level progress
+                 events ("Image 12/50 — v:12 c:12 t:12 s:11 m:12 u:12") are
+                 pushed to background_jobs so the admin UI can display them.
 
     Returns:
-        Dictionary with images_processed, images_material, images_non_material counts
+        Dictionary with images_processed, images_material, images_non_material counts,
+        clip_embeddings_generated, vector_stats (per-vector counts), failed_images.
     """
     from app.services.images.image_processing_service import ImageProcessingService
 
@@ -409,16 +414,34 @@ async def process_product_images(
         material_images=uploaded_images,
         document_id=document_id,
         workspace_id=workspace_id,
-        material_category=material_category
+        material_category=material_category,
+        job_id=job_id,
+        tracker=tracker,
+        progress_label=f"Stage 3: Processing images for {product.name}",
     )
 
     images_processed = save_result.get('images_saved', 0)
     clip_embeddings = save_result.get('clip_embeddings_generated', 0)
     failed_images = save_result.get('failed_images', [])
+    vector_stats = save_result.get('vector_stats', {})
 
     logger.info(f"   📊 DATABASE RESULTS:")
     logger.info(f"      Images saved to DB: {images_processed}/{len(uploaded_images)}")
     logger.info(f"      CLIP embeddings generated: {clip_embeddings}/{images_processed}")
+    if vector_stats:
+        logger.info(
+            f"      Vectors per type: visual={vector_stats.get('visual_slig', 0)}, "
+            f"color={vector_stats.get('color_slig', 0)}, "
+            f"texture={vector_stats.get('texture_slig', 0)}, "
+            f"style={vector_stats.get('style_slig', 0)}, "
+            f"material={vector_stats.get('material_slig', 0)}, "
+            f"understanding={vector_stats.get('understanding', 0)}"
+        )
+        logger.info(
+            f"      Vision analysis: qwen={vector_stats.get('vision_analysis_qwen', 0)}, "
+            f"claude_fallback={vector_stats.get('vision_analysis_claude_fallback', 0)}, "
+            f"failed={vector_stats.get('vision_analysis_failed', 0)}"
+        )
 
     if failed_images:
         logger.warning(f"      ⚠️ Failed to save {len(failed_images)} images")
@@ -433,5 +456,7 @@ async def process_product_images(
         'images_processed': images_processed,
         'clip_embeddings_generated': clip_embeddings,
         'images_material': len(material_images),
-        'images_non_material': non_material_count
+        'images_non_material': non_material_count,
+        'vector_stats': vector_stats,
+        'failed_images': failed_images,
     }

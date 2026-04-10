@@ -10,6 +10,8 @@ import os
 import httpx
 from typing import Dict, Any, List, Optional
 
+from app.services.metadata.metadata_normalizer import normalize_factory_keys
+
 # ── Category → default unit mapping (mirrors material_categories.default_unit) ─
 _CATEGORY_DEFAULT_UNITS: Dict[str, str] = {
     'tiles': 'sqm',
@@ -291,6 +293,11 @@ async def create_single_product(
         if is_not_found(metadata.get(key)):
             metadata[key] = None
 
+    # ── Normalize factory aliases to canonical keys ───────────────────────
+    # Folds metadata.manufacturer / brand / supplier / factory_group → factory_name / factory_group_name
+    # and removes the alias keys, so the rest of the platform only sees the canonical schema.
+    normalize_factory_keys(metadata)
+
     # ── Assemble canonical factory nested object ──────────────────────────
     factory_obj = _build_factory_object(metadata, factory_defaults)
     if factory_obj:
@@ -383,8 +390,10 @@ async def create_single_product(
             embedding_text_parts = [product.name or '']
             if description:
                 embedding_text_parts.append(description)
-            # Include searchable metadata in the embedding text
-            for key in ('manufacturer', 'factory_name', 'factory_group_name', 'designer', 'material_category', 'zone_intent'):
+            # Include searchable metadata in the embedding text.
+            # Use canonical factory_name / factory_group_name only — manufacturer
+            # alias is normalized away upstream by normalize_factory_keys().
+            for key in ('factory_name', 'factory_group_name', 'designer', 'material_category', 'zone_intent'):
                 val = metadata.get(key)
                 if val and isinstance(val, str) and val.lower() not in ('not specified', 'not found', 'unknown', 'n/a'):
                     embedding_text_parts.append(val.replace('_', ' '))

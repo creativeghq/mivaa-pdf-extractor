@@ -69,8 +69,8 @@ class EmbeddingToTextService:
 
         Args:
             image_id: Image UUID
-            embeddings: Dict with keys color_siglip_1152, texture_siglip_1152, 
-                       material_siglip_1152, style_siglip_1152
+            embeddings: Dict with keys color_slig_768, texture_slig_768,
+                       material_slig_768, style_slig_768 (SLIG 768D — canonical)
 
         Returns:
             Dict with extracted metadata and confidence scores
@@ -85,20 +85,20 @@ class EmbeddingToTextService:
                 "image_id": image_id,
                 "embeddings": {
                     "color_embedding": {
-                        "dimension": len(embeddings.get("color_siglip_1152", [])),
-                        "sample": embeddings.get("color_siglip_1152", [])[:10] if embeddings.get("color_siglip_1152") else []
+                        "dimension": len(embeddings.get("color_slig_768", [])),
+                        "sample": embeddings.get("color_slig_768", [])[:10] if embeddings.get("color_slig_768") else []
                     },
                     "texture_embedding": {
-                        "dimension": len(embeddings.get("texture_siglip_1152", [])),
-                        "sample": embeddings.get("texture_siglip_1152", [])[:10] if embeddings.get("texture_siglip_1152") else []
+                        "dimension": len(embeddings.get("texture_slig_768", [])),
+                        "sample": embeddings.get("texture_slig_768", [])[:10] if embeddings.get("texture_slig_768") else []
                     },
                     "material_embedding": {
-                        "dimension": len(embeddings.get("material_siglip_1152", [])),
-                        "sample": embeddings.get("material_siglip_1152", [])[:10] if embeddings.get("material_siglip_1152") else []
+                        "dimension": len(embeddings.get("material_slig_768", [])),
+                        "sample": embeddings.get("material_slig_768", [])[:10] if embeddings.get("material_slig_768") else []
                     },
                     "style_embedding": {
-                        "dimension": len(embeddings.get("style_siglip_1152", [])),
-                        "sample": embeddings.get("style_siglip_1152", [])[:10] if embeddings.get("style_siglip_1152") else []
+                        "dimension": len(embeddings.get("style_slig_768", [])),
+                        "sample": embeddings.get("style_slig_768", [])[:10] if embeddings.get("style_slig_768") else []
                     }
                 }
             }

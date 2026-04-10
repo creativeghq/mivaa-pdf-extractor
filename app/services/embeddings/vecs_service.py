@@ -29,7 +29,27 @@ class VecsService:
         """Initialize VECS client with Supabase connection."""
         self._client = None
         self._collections: Dict[str, Collection] = {}
-        
+        self._supabase_rest = None  # lazy-init Supabase REST client for boolean flag updates
+
+    def _get_supabase_rest(self):
+        """Lazy init of the Supabase REST client used for updating
+        document_images.has_*_slig boolean flags after each VECS upsert."""
+        if self._supabase_rest is None:
+            from app.services.core.supabase_client import get_supabase_client
+            self._supabase_rest = get_supabase_client()
+        return self._supabase_rest
+
+    def _set_image_flag(self, image_id: str, flag_column: str) -> None:
+        """Set a boolean flag on document_images. Best-effort — silently ignores
+        failures so a flag-update issue never breaks the embedding upsert path."""
+        try:
+            self._get_supabase_rest().client.table('document_images').update(
+                {flag_column: True}
+            ).eq('id', image_id).execute()
+        except Exception as flag_err:
+            logger.debug(f"⚠️ Failed to set {flag_column} for image {image_id}: {flag_err}")
+
+
     def _get_connection_string(self) -> str:
         """Build Supabase connection string for vecs.
 
@@ -142,22 +162,25 @@ class VecsService:
                 name="image_slig_embeddings",
                 dimension=768
             )
-            
+
             # Prepare metadata
             meta = metadata or {}
-            
+
             # Upsert single record
             collection.upsert(
                 records=[(image_id, siglip_embedding, meta)]
             )
 
+            # Update canonical presence flag on document_images
+            self._set_image_flag(image_id, 'has_slig_embedding')
+
             logger.debug(f"✅ Upserted SigLIP embedding for image {image_id}")
             return True
-            
+
         except Exception as e:
             logger.error(f"❌ Failed to upsert embedding for image {image_id}: {e}")
             return False
-    
+
     async def batch_upsert_image_embeddings(
         self,
         records: List[Tuple[str, List[float], Dict[str, Any]]]
@@ -180,9 +203,15 @@ class VecsService:
             # Batch upsert
             collection.upsert(records=records)
 
+            # Update canonical presence flags on document_images
+            for record in records:
+                image_id = record[0] if record else None
+                if image_id:
+                    self._set_image_flag(image_id, 'has_slig_embedding')
+
             logger.info(f"✅ Batch upserted {len(records)} SigLIP embeddings")
             return len(records)
-            
+
         except Exception as e:
             logger.error(f"❌ Batch upsert failed: {e}")
             return 0
@@ -218,11 +247,14 @@ class VecsService:
                 try:
                     collection = self.get_or_create_collection(
                         name=collection_name,
-                        dimension=768  # Updated to 768D for SLIG
+                        dimension=768  # SLIG SigLIP2 cloud endpoint
                     )
 
                     # Upsert single record
                     collection.upsert(records=[(image_id, embeddings[embedding_type], metadata)])
+
+                    # Update canonical presence flag (has_color_slig / has_texture_slig / etc.)
+                    self._set_image_flag(image_id, f'has_{embedding_type}_slig')
 
                     results[collection_name] = True
                     logger.debug(f"✅ Upserted {embedding_type} embedding (768D) to '{collection_name}'")
@@ -266,6 +298,9 @@ class VecsService:
             collection.upsert(
                 records=[(image_id, embedding, meta)]
             )
+
+            # Update canonical presence flag on document_images
+            self._set_image_flag(image_id, 'has_understanding_embedding')
 
             logger.debug(f"✅ Upserted understanding embedding for image {image_id}")
             return True
@@ -543,14 +578,10 @@ class VecsService:
             return formatted_results
 
         except Exception as e:
-            err_msg = str(e)
-            # Dimension mismatch means the existing VECS collection was created with a
-            # different vector size (e.g. 1152D legacy vs current 768D SLIG).
-            # This is a known migration state — downgrade to WARNING so Sentry is silent.
-            if "dimension" in err_msg.lower() and "match" in err_msg.lower():
-                logger.warning(f"⚠️ Specialized search ({embedding_type}) skipped — dimension mismatch (collection needs re-indexing): {e}")
-            else:
-                logger.error(f"❌ Specialized search ({embedding_type}) failed: {e}")
+            # Post-migration: all 4 specialized collections are 768D halfvec, matching
+            # the SLIG cloud endpoint output. Any dimension mismatch here is a real
+            # bug (e.g. caller passing the wrong-size query embedding) — log as ERROR.
+            logger.error(f"❌ Specialized search ({embedding_type}) failed: {e}")
             return []
 
     async def search_all_collections(

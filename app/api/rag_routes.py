@@ -1599,21 +1599,25 @@ async def get_products(
 @router.get("/embeddings")
 async def get_embeddings(
     document_id: Optional[str] = Query(None, description="Filter by document ID"),
-    embedding_type: Optional[str] = Query(None, description="Filter by embedding type (text, visual, multimodal, color, texture, application)"),
+    embedding_type: Optional[str] = Query(None, description="Filter by embedding type (text, visual, color, texture, style, material, understanding)"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of embeddings to return"),
     offset: int = Query(0, ge=0, description="Number of embeddings to skip")
 ):
     """
     Get embeddings for a document.
 
+    Returns presence summary for image embeddings (read from document_images
+    has_*_slig boolean flags — VECS is the canonical store) and the actual
+    text embedding vectors for document_chunks.
+
     Args:
         document_id: Document ID to filter embeddings
-        embedding_type: Type of embedding (text, visual, clip, color, texture, application, multimodal)
+        embedding_type: Optional type filter (text, visual, color, texture, style, material, understanding)
         limit: Maximum number of embeddings to return
         offset: Pagination offset
 
     Returns:
-        List of embeddings with metadata from document_images and document_chunks
+        List of embeddings (text embeddings inline, image embeddings as presence flags)
     """
     try:
         supabase_client = get_supabase_client()
@@ -1627,86 +1631,47 @@ async def get_embeddings(
         embeddings = []
         embedding_stats = {}
 
-        # Query image embeddings from document_images
-        image_query = supabase_client.client.table('document_images').select(
-            'id, image_url, visual_clip_embedding_512, color_embedding_256, texture_embedding_256, application_embedding_512, multimodal_fusion_embedding_2688'
-        ).eq('document_id', document_id).range(offset, offset + limit - 1)
+        # ── Image embeddings: read presence from document_images boolean flags ──
+        # VECS is the source of truth for the actual vectors. We expose only the
+        # presence flags here because returning raw 768D float arrays for every
+        # image would balloon the response size for no admin-UI benefit.
+        wants_image = not embedding_type or embedding_type in (
+            'visual', 'slig', 'color', 'texture', 'style', 'material', 'understanding'
+        )
+        if wants_image:
+            image_result = supabase_client.client.table('document_images').select(
+                'id, image_url, has_slig_embedding, has_color_slig, has_texture_slig, '
+                'has_style_slig, has_material_slig, has_understanding_embedding'
+            ).eq('document_id', document_id).range(offset, offset + limit - 1).execute()
 
-        image_result = image_query.execute()
+            flag_to_meta = {
+                'has_slig_embedding':         ('visual_slig_768',        768,  'siglip2',            'visual'),
+                'has_color_slig':             ('color_slig_768',         768,  'siglip2',            'color'),
+                'has_texture_slig':           ('texture_slig_768',       768,  'siglip2',            'texture'),
+                'has_style_slig':             ('style_slig_768',         768,  'siglip2',            'style'),
+                'has_material_slig':          ('material_slig_768',      768,  'siglip2',            'material'),
+                'has_understanding_embedding':('understanding_1024',     1024, 'voyage-3.5',         'understanding'),
+            }
 
-        if image_result.data:
-            for img in image_result.data:
-                # Add CLIP embedding
-                if img.get('visual_clip_embedding_512'):
-                    if not embedding_type or embedding_type in ['visual', 'clip']:
-                        embeddings.append({
-                            'id': f"{img['id']}_clip",
-                            'entity_id': img['id'],
-                            'entity_type': 'image',
-                            'embedding_type': 'visual_clip_512',
-                            'dimension': 512,
-                            'model': 'clip-vit-base-patch32',
-                            'embedding': img['visual_clip_embedding_512']
-                        })
-                        embedding_stats['visual_clip_512'] = embedding_stats.get('visual_clip_512', 0) + 1
+            for img in (image_result.data or []):
+                for flag, (label, dim, model, type_alias) in flag_to_meta.items():
+                    if not img.get(flag):
+                        continue
+                    if embedding_type and embedding_type != type_alias and embedding_type not in ('visual', 'slig'):
+                        continue
+                    embeddings.append({
+                        'id': f"{img['id']}_{type_alias}",
+                        'entity_id': img['id'],
+                        'entity_type': 'image',
+                        'embedding_type': label,
+                        'dimension': dim,
+                        'model': model,
+                        'present': True,
+                        'storage': f"vecs.image_{type_alias if type_alias != 'visual' else 'slig'}_embeddings",
+                    })
+                    embedding_stats[label] = embedding_stats.get(label, 0) + 1
 
-                # Add color embedding
-                if img.get('color_embedding_256'):
-                    if not embedding_type or embedding_type == 'color':
-                        embeddings.append({
-                            'id': f"{img['id']}_color",
-                            'entity_id': img['id'],
-                            'entity_type': 'image',
-                            'embedding_type': 'color_256',
-                            'dimension': 256,
-                            'model': 'clip-vit-base-patch32',
-                            'embedding': img['color_embedding_256']
-                        })
-                        embedding_stats['color_256'] = embedding_stats.get('color_256', 0) + 1
-
-                # Add texture embedding
-                if img.get('texture_embedding_256'):
-                    if not embedding_type or embedding_type == 'texture':
-                        embeddings.append({
-                            'id': f"{img['id']}_texture",
-                            'entity_id': img['id'],
-                            'entity_type': 'image',
-                            'embedding_type': 'texture_256',
-                            'dimension': 256,
-                            'model': 'clip-vit-base-patch32',
-                            'embedding': img['texture_embedding_256']
-                        })
-                        embedding_stats['texture_256'] = embedding_stats.get('texture_256', 0) + 1
-
-                # Add application embedding
-                if img.get('application_embedding_512'):
-                    if not embedding_type or embedding_type == 'application':
-                        embeddings.append({
-                            'id': f"{img['id']}_application",
-                            'entity_id': img['id'],
-                            'entity_type': 'image',
-                            'embedding_type': 'application_512',
-                            'dimension': 512,
-                            'model': 'clip-vit-base-patch32',
-                            'embedding': img['application_embedding_512']
-                        })
-                        embedding_stats['application_512'] = embedding_stats.get('application_512', 0) + 1
-
-                # Add multimodal fusion embedding
-                if img.get('multimodal_fusion_embedding_2688'):
-                    if not embedding_type or embedding_type == 'multimodal':
-                        embeddings.append({
-                            'id': f"{img['id']}_multimodal",
-                            'entity_id': img['id'],
-                            'entity_type': 'image',
-                            'embedding_type': 'multimodal_fusion_2688',
-                            'dimension': 2688,
-                            'model': 'siglip-so400m-14-384',
-                            'embedding': img['multimodal_fusion_embedding_2688']
-                        })
-                        embedding_stats['multimodal_fusion_2688'] = embedding_stats.get('multimodal_fusion_2688', 0) + 1
-
-        # Query text embeddings from document_chunks
+        # ── Text chunk embeddings: still inline (1024D Voyage AI) ──
         if not embedding_type or embedding_type == 'text':
             chunk_query = supabase_client.client.table('document_chunks').select(
                 'id, content, text_embedding, embedding_dimension'
@@ -1716,14 +1681,14 @@ async def get_embeddings(
 
             if chunk_result.data:
                 for chunk in chunk_result.data:
-                    dimension = chunk.get('embedding_dimension', 1024)  # Default to 1024 if not specified
+                    dimension = chunk.get('embedding_dimension', 1024)
                     embeddings.append({
                         'id': f"{chunk['id']}_text",
                         'entity_id': chunk['id'],
                         'entity_type': 'chunk',
                         'embedding_type': f'text_{dimension}',
                         'dimension': dimension,
-                        'model': 'voyage-3',
+                        'model': 'voyage-3.5',
                         'embedding': chunk['text_embedding']
                     })
                     embedding_stats[f'text_{dimension}'] = embedding_stats.get(f'text_{dimension}', 0) + 1
@@ -1992,111 +1957,6 @@ async def create_products_background(
             )
         except Exception:
             pass  # Don't fail if checkpoint creation fails
-
-
-async def process_images_background(
-    document_id: str,
-    job_id: str,
-    images_count: int
-):
-    """
-    Background task to process image AI analysis with checkpoint support.
-    Runs separately to avoid blocking main PDF processing.
-    Creates a sub-job for tracking.
-    """
-    supabase_client = get_supabase_client()
-    sub_job_id = str(uuid4())  # ✅ FIX: Generate proper UUID instead of appending "_images"
-
-    try:
-        logger.info(f"🖼️ Starting background image AI analysis for document {document_id}")
-
-        # Create sub-job in database
-        try:
-            supabase_client.client.table('background_jobs').insert({
-                "id": sub_job_id,
-                "parent_job_id": job_id,
-                "job_type": "image_analysis",
-                "document_id": document_id,
-                "status": "processing",
-                "progress": 0,
-                "metadata": {
-                    "images_count": images_count,
-                    "started_at": datetime.utcnow().isoformat()
-                },
-                "created_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat()
-            }).execute()
-            logger.info(f"✅ Created sub-job {sub_job_id} for image analysis")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to create sub-job: {e}")
-
-        # Run background image processing
-        from app.services.images.background_image_processor import start_background_image_processing
-        result = await start_background_image_processing(
-            document_id=document_id,
-            supabase_client=supabase_client
-        )
-
-        images_processed = result.get('total_processed', 0)
-        images_failed = result.get('total_failed', 0)
-        logger.info(f"✅ Background image analysis completed: {images_processed} processed, {images_failed} failed")
-
-        # Update sub-job status to completed
-        try:
-            supabase_client.client.table('background_jobs').update({
-                "status": "completed",
-                "progress": 100,
-                "metadata": {
-                    "images_count": images_count,
-                    "images_processed": images_processed,
-                    "images_failed": images_failed,
-                    "batches_processed": result.get('batches_processed', 0),
-                    "completed_at": datetime.utcnow().isoformat()
-                },
-                "updated_at": datetime.utcnow().isoformat()
-            }).eq('id', sub_job_id).execute()
-            logger.info(f"✅ Marked sub-job {sub_job_id} as completed")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to update sub-job: {e}")
-
-        # Create IMAGE_ANALYSIS_COMPLETED checkpoint
-        try:
-            await checkpoint_recovery_service.create_checkpoint(
-                job_id=job_id,
-                stage=ProcessingStage.COMPLETED,  # Use COMPLETED since this is the final stage
-                data={
-                    "document_id": document_id,
-                    "images_processed": images_processed,
-                    "images_failed": images_failed
-                },
-                metadata={
-                    "current_step": "Image AI analysis completed",
-                    "images_count": images_count,
-                    "timestamp": datetime.utcnow().isoformat()
-                }
-            )
-            logger.info(f"✅ Created IMAGE_ANALYSIS_COMPLETED checkpoint for job {job_id}")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to create checkpoint: {e}")
-
-    except Exception as e:
-        logger.error(f"❌ Background image analysis failed: {e}", exc_info=True)
-
-        # Mark sub-job as failed
-        try:
-            supabase_client.client.table('background_jobs').update({
-                "status": "failed",
-                "error": str(e),
-                "metadata": {
-                    "images_count": images_count,
-                    "error_message": str(e),
-                    "failed_at": datetime.utcnow().isoformat()
-                },
-                "updated_at": datetime.utcnow().isoformat()
-            }).eq('id', sub_job_id).execute()
-            logger.info(f"✅ Marked sub-job {sub_job_id} as failed")
-        except Exception as sub_error:
-            logger.warning(f"⚠️ Failed to update sub-job: {sub_error}")
 
 
 async def process_document_with_discovery(
@@ -3619,7 +3479,13 @@ async def search_documents(
     - **1000 requests/hour** per workspace
     - Parallel execution (`strategy="all"`) counts as 1 request
     """
+    import time as _time
     start_time = datetime.utcnow()
+    _t_total_start = _time.time()
+    # Per-stage timing accumulator (used for observability tracking)
+    stage_timings: Dict[str, int] = {}
+    qu_was_cache_hit = False
+    qu_was_product_name = False
 
     try:
         # Validate strategy
@@ -3656,6 +3522,8 @@ async def search_documents(
         parsed_filters = {}
         dynamic_weights = None
         weight_profile = "balanced"
+        unified_service = None
+        _t_qu_start = _time.time()
         if enable_query_understanding:
             try:
                 import asyncio
@@ -3667,6 +3535,9 @@ async def search_documents(
                     unified_service._parse_query_with_ai(query_to_use),
                     timeout=8  # 8s timeout — don't let query understanding block search
                 )
+                qu_was_cache_hit = getattr(unified_service, '_last_query_understanding_was_cache_hit', False)
+                # If parser returned no filters and visual_query == original, it was a product-name search
+                qu_was_product_name = (not parsed_filters) and (visual_query == query_to_use)
 
                 # Update query to use visual query (core concept for embedding)
                 query_to_use = visual_query
@@ -3690,8 +3561,10 @@ async def search_documents(
             except Exception as e:
                 logger.error(f"Query understanding failed: {e}, continuing with original query")
                 # Continue with original query if parsing fails
+        stage_timings['query_understanding_ms'] = int((_time.time() - _t_qu_start) * 1000)
 
         # 🔍 STEP 2: Route to appropriate search method based on strategy
+        _t_search_start = _time.time()
         # All strategies now use the parsed query + extracted filters + dynamic weights
         if strategy == "multi_vector":
             # 🎯 Enhanced multi-vector search with dynamic weight profiles
@@ -3758,10 +3631,14 @@ async def search_documents(
                 detail=f"Invalid strategy '{strategy}'. Valid strategies: multi_vector, material, image"
             )
 
+        # Combined search time (vector + fulltext + scoring all happen inside rag_service)
+        stage_timings['vector_search_ms'] = int((_time.time() - _t_search_start) * 1000)
+
         # Get raw results
         raw_results = results.get('results', [])
 
         # Apply formatting, filtering, enrichment prompts if enabled
+        _t_enhancement_start = _time.time()
         processed_results = raw_results
         if request.use_search_prompts:
             processed_results = await search_prompt_service.format_results(
@@ -3781,8 +3658,32 @@ async def search_documents(
             request.include_related_products,
             request.related_products_limit
         )
+        stage_timings['enhancement_ms'] = int((_time.time() - _t_enhancement_start) * 1000)
+        stage_timings['total_ms'] = int((_time.time() - _t_total_start) * 1000)
 
         processing_time = (datetime.utcnow() - start_time).total_seconds()
+
+        # ── Track search query with full per-stage timings (fire-and-forget) ──
+        try:
+            from app.services.search.search_query_tracker import get_search_tracker
+            tracker = get_search_tracker()
+            asyncio.create_task(tracker.track_query(
+                workspace_id=request.workspace_id,
+                query_text=request.query,
+                query_metadata=parsed_filters or None,
+                search_type=strategy,
+                result_count=len(enhanced_results),
+                response_time_ms=stage_timings.get('total_ms', 0),
+                weight_profile=weight_profile or "balanced",
+                dynamic_weights=dynamic_weights,
+                weight_profile_source="query_understanding" if enable_query_understanding else "default",
+                stage_timings=stage_timings,
+                cache_hit=qu_was_cache_hit,
+                is_product_name_search=qu_was_product_name,
+                strategy=strategy,
+            ))
+        except Exception as track_err:
+            logger.debug(f"Search tracking failed (non-fatal): {track_err}")
 
         # Build search metadata
         search_metadata = {
@@ -3894,14 +3795,17 @@ async def get_document_content(
         images_count = len(result['images'])
         products_count = len(result['products'])
 
-        # Count embeddings
+        # Count embeddings via the canonical has_*_slig boolean flags on document_images.
+        # The actual embedding vectors live in vecs.image_*_embeddings collections.
         text_embeddings = sum(1 for chunk in result['chunks'] if chunk.get('embeddings'))
-        clip_embeddings = sum(1 for img in result['images'] if img.get('visual_clip_embedding_512'))
+        slig_embeddings = sum(1 for img in result['images'] if img.get('has_slig_embedding'))
+        understanding_embeddings = sum(1 for img in result['images'] if img.get('has_understanding_embedding'))
+        color_embeddings = sum(1 for img in result['images'] if img.get('has_color_slig'))
+        texture_embeddings = sum(1 for img in result['images'] if img.get('has_texture_slig'))
+        style_embeddings = sum(1 for img in result['images'] if img.get('has_style_slig'))
+        material_embeddings = sum(1 for img in result['images'] if img.get('has_material_slig'))
         vision_analysis = sum(1 for img in result['images'] if img.get('vision_analysis'))
         claude_validation = sum(1 for img in result['images'] if img.get('claude_validation'))
-        color_embeddings = sum(1 for img in result['images'] if img.get('color_embedding_256'))
-        texture_embeddings = sum(1 for img in result['images'] if img.get('texture_embedding_256'))
-        application_embeddings = sum(1 for img in result['images'] if img.get('application_embedding_512'))
 
         result['statistics'] = {
             "chunks_count": chunks_count,
@@ -3911,19 +3815,23 @@ async def get_document_content(
                 "openai_calls": text_embeddings,
                 "vision_calls": vision_analysis,
                 "claude_calls": claude_validation,
-                "clip_embeddings": clip_embeddings
+                "slig_embeddings": slig_embeddings
             },
             "embeddings_generated": {
                 "text": text_embeddings,
-                "visual": clip_embeddings,
+                "visual": slig_embeddings,
                 "color": color_embeddings,
                 "texture": texture_embeddings,
-                "application": application_embeddings,
-                "total": text_embeddings + clip_embeddings + color_embeddings + texture_embeddings + application_embeddings
+                "style": style_embeddings,
+                "material": material_embeddings,
+                "understanding": understanding_embeddings,
+                "total": (text_embeddings + slig_embeddings + color_embeddings
+                          + texture_embeddings + style_embeddings + material_embeddings
+                          + understanding_embeddings)
             },
             "completion_rates": {
                 "text_embeddings": f"{(text_embeddings / chunks_count * 100) if chunks_count > 0 else 0:.1f}%",
-                "image_analysis": f"{(clip_embeddings / images_count * 100) if images_count > 0 else 0:.1f}%"
+                "image_analysis": f"{(slig_embeddings / images_count * 100) if images_count > 0 else 0:.1f}%"
             }
         }
 
@@ -4442,8 +4350,9 @@ async def search_knowledge_base(
                             "relevance_score": result.get('weighted_score', 0.0),
                             "type": "product",
                             "embeddings": {
+                                # Only product-level embedding column post-cleanup is text_embedding_1024.
+                                # Image-level visual embeddings live in vecs.image_*_embeddings.
                                 "text": bool(result.get('text_embedding_1024')),
-                                "visual": bool(result.get('visual_clip_embedding_512')),
                                 "understanding": bool(result.get('vision_analysis')),
                             }
                         })

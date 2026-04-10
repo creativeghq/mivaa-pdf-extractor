@@ -812,8 +812,9 @@ async def search_knowledge_base(
                             "relevance_score": result.get('weighted_score', 0.0),
                             "type": "product",
                             "embeddings": {
+                                # Only product-level embedding column post-cleanup is text_embedding_1024.
+                                # Image-level visual embeddings live in vecs.image_*_embeddings.
                                 "text": bool(result.get('text_embedding_1024')),
-                                "visual": bool(result.get('visual_clip_embedding_512')),
                                 "understanding": bool(result.get('vision_analysis')),
                             }
                         })
