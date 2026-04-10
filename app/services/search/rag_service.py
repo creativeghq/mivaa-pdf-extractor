@@ -944,13 +944,24 @@ class RAGService:
                         scores['keyword'] = max(scores.get('keyword', 0.0), keyword_score)
 
                     # Calculate weighted score from ALL sources
+                    # IMPORTANT: Normalize by ACTIVE weights only (sources with score > 0).
+                    # Otherwise single-source matches (e.g., manufacturer-only fulltext hits)
+                    # get unfairly diluted by the unused embedding weights — e.g., a keyword
+                    # score of 0.4 would shrink to 0.4*0.12=0.048 and fall below threshold.
                     weighted_score = 0.0
+                    active_weight_sum = 0.0
                     score_breakdown = {}
 
                     for source_type, weight in embedding_weights.items():
                         source_score = scores.get(source_type, 0.0)
-                        weighted_score += source_score * weight
+                        if source_score > 0:
+                            weighted_score += source_score * weight
+                            active_weight_sum += weight
                         score_breakdown[f'{source_type}_score'] = source_score
+
+                    # Normalize so the score reflects quality, not source count
+                    if active_weight_sum > 0:
+                        weighted_score = weighted_score / active_weight_sum
 
                     # Apply material filters as soft boosts
                     filter_boost = 0.0
