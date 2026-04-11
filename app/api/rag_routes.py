@@ -2930,6 +2930,11 @@ async def process_document_with_discovery(
             document_id=document_id,
             supabase=supabase,
             logger=logger,
+            # Plumb the job_id through so Layers 1/2/3 can emit progress
+            # updates via ProgressTrackingService and the frontend
+            # AsyncJobQueueMonitor can render the catalog-layout /
+            # legend-extraction / spec-vision sub-stages in real time.
+            job_id=getattr(tracker, "job_id", None),
         )
         logger.info(
             f"🧩 Product enrichment: "
