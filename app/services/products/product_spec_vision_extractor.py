@@ -287,48 +287,109 @@ def _get_source_pdf_path(document_id: str) -> Optional[str]:
     return None
 
 
+def _find_pdf_pages_by_text(
+    pdf_path: str,
+    product_name: str,
+    max_pages: int = 12,
+) -> List[int]:
+    """Scan the PDF and return 0-indexed page indices whose text contains
+    `product_name` (case- and accent-insensitive).
+
+    This is the authoritative signal for "where does this product live in the
+    PDF" when the chunk metadata's `product_pages` turns out to be catalog
+    folio labels (two per physical spread) rather than absolute PDF indices.
+    """
+    import unicodedata
+
+    def _normalize(s: str) -> str:
+        # Strip accents + uppercase so "PIQUÉ" matches "PIQUE" and vice versa.
+        s = unicodedata.normalize("NFD", s)
+        s = "".join(c for c in s if not unicodedata.combining(c))
+        return s.upper().strip()
+
+    needle = _normalize(product_name)
+    if not needle:
+        return []
+
+    doc = fitz.open(pdf_path)
+    matches: List[int] = []
+    try:
+        for i in range(doc.page_count):
+            text = _normalize(doc[i].get_text())
+            if needle in text:
+                matches.append(i)
+                if len(matches) >= max_pages:
+                    break
+    finally:
+        doc.close()
+    return matches
+
+
 def _resolve_pdf_pages_for_product(
     pdf_path: str,
     product_page_range: List[int],
+    product_name: Optional[str] = None,
 ) -> List[int]:
-    """Map product page numbers to 0-indexed PDF page indices — deterministic.
+    """Return 0-indexed PDF page indices where `product_name` actually lives.
 
-    Input convention: `product_page_range` is a list of PDF page numbers as
-    stored in `document_chunks.metadata.product_pages` — the MIVAA extraction
-    pipeline writes absolute 1-indexed PDF page numbers there (NOT catalog
-    page labels), so the conversion is simply `n - 1` to get 0-indexed
-    PyMuPDF indices. No fuzzy offset guessing.
+    Priority:
+      1. **Text scan** (authoritative): open the PDF and find every page
+         that literally contains the product name. Accent/case-insensitive.
+      2. **Fallback**: treat `product_page_range` as 1-indexed PDF page
+         numbers and subtract 1. This is only correct when the upstream
+         pipeline stored true PDF page numbers (which it does for some
+         catalogs, but NOT for Harmony-style catalogs where the chunk
+         metadata stores printed folio labels — two folios per spread).
 
-    The old implementation fanned each page out to four candidate offsets
-    `(-2, -1, 0, 1)` and capped the result at the first 4 — which for a
-    6-page range would shift the window *backwards* past where the spec
-    table actually lives. That was the root cause of VALENOVA picking up
-    the preceding product's spec data on the first backfill run.
+    Background: earlier revisions trusted `product_page_range` and applied a
+    fuzzy `(-2..+1)` offset heuristic, and then a strict `n - 1` conversion.
+    Both were wrong for Harmony: chunk metadata stored catalog folio labels
+    like [26, 27, 28, 29, 30, 31] for a product whose actual PDF pages were
+    [13, 14, 15] (one physical page = two printed folios). Claude Vision was
+    scanning brand-intro pages that had no VALENOVA data on them at all.
 
-    Args:
-        pdf_path: Path to the PDF (used only to bounds-check page count).
-        product_page_range: List of 1-indexed PDF page numbers.
-
-    Returns:
-        Sorted list of 0-indexed PyMuPDF page indices, clamped to document
-        range. Empty list if input is empty or nothing is in range.
+    We still honor `product_page_range` as a fallback so products with no
+    name match (e.g. renamed, SKU-only) can still get scanned.
     """
-    if not product_page_range:
+    if not pdf_path or not os.path.exists(pdf_path):
         return []
+
     doc = fitz.open(pdf_path)
     total = doc.page_count
     doc.close()
 
-    resolved = sorted({
+    # Primary: name-based text scan
+    text_matches: List[int] = []
+    if product_name:
+        text_matches = _find_pdf_pages_by_text(pdf_path, product_name)
+
+    # Fallback: numeric conversion from chunk metadata
+    numeric_matches: List[int] = sorted({
         int(p) - 1
-        for p in product_page_range
+        for p in (product_page_range or [])
         if isinstance(p, (int, str)) and str(p).isdigit() and 0 <= int(p) - 1 < total
     })
+
+    if text_matches:
+        logger.info(
+            f"   🗺  spec vision: text scan found '{product_name}' on PDF pages "
+            f"{text_matches} (total={total}) — using these"
+        )
+        return text_matches
+
+    if numeric_matches:
+        logger.info(
+            f"   🗺  spec vision: text scan empty, falling back to numeric "
+            f"input={sorted(product_page_range)} → 0-indexed {numeric_matches} "
+            f"(total={total})"
+        )
+        return numeric_matches
+
     logger.info(
-        f"   🗺  spec vision page map: input={sorted(product_page_range)} "
-        f"→ 0-indexed PDF pages {resolved} (total={total})"
+        f"   🗺  spec vision: no pages resolvable for '{product_name}' "
+        f"(input={sorted(product_page_range) if product_page_range else []})"
     )
-    return resolved
+    return []
 
 
 def _select_best_spec_result(results: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -380,7 +441,9 @@ def extract_specs_from_pdf_pages(
         logger.warning(f"product_spec_vision_extractor: PDF not found at {pdf_path}")
         return {}
 
-    pdf_indices = _resolve_pdf_pages_for_product(pdf_path, product_page_range)
+    pdf_indices = _resolve_pdf_pages_for_product(
+        pdf_path, product_page_range, product_name=product_name,
+    )
     if not pdf_indices:
         logger.info(f"product_spec_vision_extractor: no valid pages for {product_name}")
         return {}
