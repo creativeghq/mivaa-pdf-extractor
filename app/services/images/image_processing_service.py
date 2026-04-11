@@ -1257,6 +1257,18 @@ class ImageProcessingService:
                 timeout=120.0,
             )
 
+            # 2026-04-11: fix MIVAA-NG for Qwen path — sniff real media type
+            # from decoded base64 so PNG icons don't get sent as image/jpeg.
+            # Qwen's OpenAI-compat endpoint is more forgiving than Claude but
+            # has still returned 400s on mismatched data URLs in the past.
+            qwen_detected_media_type = "image/jpeg"
+            try:
+                import base64 as _b64
+                sample = _b64.b64decode(image_base64[:64], validate=False)[:16]
+                qwen_detected_media_type = _detect_image_media_type(sample)
+            except Exception:
+                pass
+
             messages = []
             if self.material_analyzer_system_prompt:
                 messages.append({
@@ -1268,7 +1280,7 @@ class ImageProcessingService:
                 "content": [
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
+                        "image_url": {"url": f"data:{qwen_detected_media_type};base64,{image_base64}"},
                     },
                     {"type": "text", "text": self.material_analyzer_prompt},
                 ],
@@ -1370,12 +1382,27 @@ class ImageProcessingService:
                 )
                 return None
 
+            # 2026-04-11: fix MIVAA-NG — detect the real media type from the
+            # decoded base64 magic bytes instead of hardcoding "image/jpeg".
+            # Claude's API rejects with
+            # "image was specified using image/jpeg but appears to be image/png"
+            # when the mime type lies, and ~60% of our icon + YOLO-region
+            # crops are PNG. Sniff first 16 decoded bytes — cheap, no new
+            # deps. Falls back to image/jpeg on decode error.
+            detected_media_type = "image/jpeg"
+            try:
+                import base64 as _b64
+                sample = _b64.b64decode(image_base64[:64], validate=False)[:16]
+                detected_media_type = _detect_image_media_type(sample)
+            except Exception:
+                pass
+
             content = [
                 {
                     "type": "image",
                     "source": {
                         "type": "base64",
-                        "media_type": "image/jpeg",
+                        "media_type": detected_media_type,
                         "data": image_base64,
                     },
                 },

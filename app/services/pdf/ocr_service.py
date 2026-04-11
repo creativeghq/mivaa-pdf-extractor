@@ -6,6 +6,7 @@ for extracting text from images with preprocessing and multi-language support.
 Integrates with the Material Kai Vision Platform for enhanced multi-modal processing.
 """
 
+import asyncio
 import logging
 import os
 import tempfile
@@ -606,8 +607,18 @@ class OCRService:
             # Preprocess image for better icon detection
             preprocessed = self.preprocessor.preprocess_for_ocr(img)
 
-            # Extract all text with bounding boxes
-            ocr_results = await self.extract_text(preprocessed, return_bbox=True)
+            # Extract all text with bounding boxes.
+            # 2026-04-11: fix MIVAA-54T — was calling self.extract_text() which
+            # doesn't exist on OCRService. The real synchronous method is
+            # extract_text_from_image() which returns List[OCRResult] where
+            # each result already carries .text / .confidence / .bbox.
+            # Run it in a thread so we don't block the event loop on the
+            # CPU-bound EasyOCR call.
+            ocr_results = await asyncio.to_thread(
+                self.extract_text_from_image,
+                preprocessed,
+                False,  # use_preprocessing=False — we already preprocessed above
+            )
 
             if not ocr_results:
                 logger.warning("No text extracted from image")

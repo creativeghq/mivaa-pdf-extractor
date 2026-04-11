@@ -198,6 +198,12 @@ class SLIGEndpointManager:
         poll_interval = 5  # Check every 5 seconds
         max_wait = self.warmup_timeout
 
+        # 2026-04-11: HF "no GPU capacity" detector — see qwen_endpoint_manager
+        # for the full rationale. Same pattern in all 4 managers.
+        last_ready_replica = 0
+        last_progress_time = time.time()
+        NO_PROGRESS_TIMEOUT = 90
+
         while (time.time() - start_time) < max_wait:
             try:
                 endpoint.fetch()
@@ -217,7 +223,31 @@ class SLIGEndpointManager:
                     logger.error(f"❌ Endpoint failed: {endpoint.status}")
                     return False
 
-                logger.info(f"   ⏳ Still {endpoint.status}, waiting... ({time.time() - start_time:.0f}s)")
+                # No-progress detection
+                try:
+                    compute = getattr(endpoint, "compute", {}) or {}
+                    current_ready = (compute.get("readyReplica") if isinstance(compute, dict) else None) or 0
+                    target = (compute.get("targetReplica") if isinstance(compute, dict) else None) or "?"
+                except Exception:
+                    current_ready, target = 0, "?"
+
+                if current_ready > last_ready_replica:
+                    last_ready_replica = current_ready
+                    last_progress_time = time.time()
+                elif (time.time() - last_progress_time) > NO_PROGRESS_TIMEOUT:
+                    logger.error(
+                        f"❌ HuggingFace cannot allocate GPU capacity for SLIG endpoint "
+                        f"'{getattr(self, 'endpoint_name', '<unknown>')}' — no progress in "
+                        f"{NO_PROGRESS_TIMEOUT}s (state={endpoint.status}, "
+                        f"ready=0/{target}). This is an HF infrastructure issue, "
+                        f"not a code bug. Either wait for capacity to free up, "
+                        f"or set min_replica=1 on the HF endpoint dashboard to "
+                        f"keep at least one instance always-on (eliminates "
+                        f"cold-start delays for production runs)."
+                    )
+                    return False
+
+                logger.info(f"   ⏳ Still {endpoint.status}, waiting... ({time.time() - start_time:.0f}s, ready={current_ready}/{target})")
                 time.sleep(poll_interval)
 
             except Exception as e:

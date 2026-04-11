@@ -60,6 +60,16 @@ class JobProgressMonitor:
         self.last_report_time = datetime.utcnow()
         self.monitoring_task = None
         self.is_running = False
+        # 2026-04-11: Sentry rate-limiting for POTENTIAL STUCK JOB alerts.
+        # Previously fired every 60s for the entire time a job was stuck,
+        # generating ~20 Sentry events per stuck job per 20 minutes and
+        # 418 events total across this session. Now: fire once per stage
+        # when the threshold is first crossed, and re-fire at most every
+        # 10 minutes afterwards as a "still stuck" reminder. Resets when
+        # the stage transitions (see update_stage).
+        self._stuck_alert_stage: Optional[str] = None          # which stage we last alerted for
+        self._stuck_alert_last_fired: Optional[datetime] = None  # when we last fired for this stage
+        self._stuck_alert_refire_interval_seconds = 600        # 10 min re-fire gap
         
     async def start(self):
         """Start the monitoring task"""
@@ -107,6 +117,12 @@ class JobProgressMonitor:
 
         self.current_stage = stage
         self.current_stage_start = datetime.utcnow()
+
+        # 2026-04-11: Reset stuck-job alert rate limiter on every stage
+        # transition so a new "stuck" incident on a different stage fires
+        # immediately instead of being suppressed by the re-fire window.
+        self._stuck_alert_stage = None
+        self._stuck_alert_last_fired = None
 
         # CRITICAL FIX: Only send to Sentry if stage took unusually long
         # Use stage-specific threshold or SLOW_STAGE_THRESHOLD (5 minutes)
@@ -204,7 +220,9 @@ class JobProgressMonitor:
                 timeout_minutes = stage_timeout / 60
                 actual_minutes = time_in_current_stage / 60
 
-                # ENHANCED LOGGING: Add detailed context to identify if job is truly stuck
+                # ENHANCED LOGGING: Add detailed context to identify if job is truly stuck.
+                # Logs run on every poll (local disk / journalctl is cheap);
+                # only the Sentry capture is rate-limited below.
                 logger.warning(
                     f"⚠️ Job {self.job_id} in {self.current_stage} for {actual_minutes:.1f} minutes "
                     f"(threshold: {timeout_minutes:.1f} minutes)\n"
@@ -213,12 +231,32 @@ class JobProgressMonitor:
                     f"   🔄 Last heartbeat: {datetime.utcnow().isoformat()}"
                 )
 
-                # Send to Sentry with enhanced context
-                sentry_sdk.capture_message(
-                    f"⚠️ POTENTIAL STUCK JOB: {self.job_id} in {self.current_stage} for {actual_minutes:.1f} minutes "
-                    f"(threshold: {timeout_minutes:.1f}min) - Check if job is making progress or truly stuck",
-                    level="warning"
-                )
+                # 2026-04-11: rate-limit Sentry alerts to fire-once per stage
+                # + re-fire every 10 minutes as a "still stuck" reminder.
+                # Previously fired on every 60s poll → ~20 events per stuck
+                # job → 418 events in this session. We still get the signal
+                # we need (first crossing + periodic reminder) without the
+                # 20× duplication per incident.
+                now = datetime.utcnow()
+                should_fire = False
+                if self._stuck_alert_stage != self.current_stage:
+                    # First time crossing the threshold for this stage
+                    should_fire = True
+                elif self._stuck_alert_last_fired is None:
+                    should_fire = True
+                else:
+                    seconds_since_last_fire = (now - self._stuck_alert_last_fired).total_seconds()
+                    if seconds_since_last_fire >= self._stuck_alert_refire_interval_seconds:
+                        should_fire = True
+
+                if should_fire:
+                    sentry_sdk.capture_message(
+                        f"⚠️ POTENTIAL STUCK JOB: {self.job_id} in {self.current_stage} for {actual_minutes:.1f} minutes "
+                        f"(threshold: {timeout_minutes:.1f}min) - Check if job is making progress or truly stuck",
+                        level="warning"
+                    )
+                    self._stuck_alert_stage = self.current_stage
+                    self._stuck_alert_last_fired = now
             else:
                 # Regular progress update - LOG ONLY, don't send to Sentry (reduces noise)
                 logger.debug(
