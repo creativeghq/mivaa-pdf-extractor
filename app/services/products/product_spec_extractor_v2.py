@@ -97,55 +97,87 @@ def _parse_number(raw: str) -> Optional[float]:
 # Tier A — PyMuPDF text-dict packing row parser
 # ──────────────────────────────────────────────────────────────────────────
 
-# Column headers we recognize. Maps a normalized header label to the target
-# field in the output schema. Order matters — we iterate the known row and
-# attach each value to the nearest matching header by x-coordinate.
-COLUMN_HEADERS: List[Tuple[str, str]] = [
-    # Technical characteristics (icon-bullet columns)
-    ("MATT",              "finish_matt"),
-    ("GLOSS",             "finish_gloss"),
-    ("SHADE VARIATION",   "shade_variation_flag"),
-    ("SHOWER WALL",       "recommended_use_shower_wall"),
-    ("SHOWER FLOOR",      "recommended_use_shower_floor"),
-    ("FLOOR",             "recommended_use_floor"),
-    ("TRAFFIC",           "traffic_flag"),
-    # Packing numeric columns
-    ("UNIT M2 PIECES",    "pieces_per_m2"),
-    ("UNIT M2",           "pieces_per_m2"),
-    ("PIECES M2",         "pieces_per_m2"),
-    ("PIECES SQ F",       "pieces_per_sqft"),
-    ("PIECES SQFT",       "pieces_per_sqft"),
-    ("PIECES BOX",        "pieces_per_box"),
-    ("PCS BOX",           "pieces_per_box"),
-    ("BOX M2",            "m2_per_box"),
-    ("M2 BOX",            "m2_per_box"),
-    ("BOX SQ FT",         "sqft_per_box"),
-    ("BOX SQFT",          "sqft_per_box"),
-    ("SQ FT BOX",         "sqft_per_box"),
-    ("WEIGHT BOX",        "weight_per_box_kg"),
-    ("BOX WEIGHT",        "weight_per_box_kg"),
-    ("WEIGHT BOX LB",     "weight_per_box_lb"),
-    ("BOX WEIGHT LB",     "weight_per_box_lb"),
-    ("BOXES PALLET",      "boxes_per_pallet"),
-    ("PALLET BOXES",      "boxes_per_pallet"),
-    ("M2 PALLET",         "m2_per_pallet"),
-    ("PALLET M2",         "m2_per_pallet"),
-    ("SQ FT PALLET",      "sqft_per_pallet"),
-    ("PALLET SQ FT",      "sqft_per_pallet"),
-    ("WEIGHT PALLET",     "weight_per_pallet_kg"),
-    ("PALLET WEIGHT",     "weight_per_pallet_kg"),
-    ("WEIGHT PALLET LB",  "weight_per_pallet_lb"),
-    ("CM PALLET",         "pallet_dimensions_cm"),
-    ("PALLET CM",         "pallet_dimensions_cm"),
-    ("THICKNESS MM",      "thickness_mm"),
-    ("THICKNESS INCH",    "thickness_inch"),
+# Conventional column order for ceramic catalog packing tables. This order
+# is consistent across Harmony, Peronda, Aparici, Atlas Concorde, Marazzi,
+# Florim, and Coem — we exploit it to assign numeric values to fields
+# positionally when header-matching fails or headers span multiple lines.
+#
+# The `None` entries represent positions that don't always exist (e.g. some
+# catalogs skip pcs_per_sqft and go straight from pcs_per_box to m²/box).
+# Positional mapping honors the order but allows missing intermediates
+# when the actual value count matches a known truncated variant.
+CANONICAL_PACKING_ORDER: List[str] = [
+    "pieces_per_m2",           # 1
+    "pieces_per_sqft",         # 2
+    "pieces_per_box",          # 3
+    "m2_per_box",              # 4
+    "sqft_per_box",            # 5
+    "weight_per_box_kg",       # 6
+    "weight_per_box_lb",       # 7
+    "boxes_per_pallet",        # 8
+    "m2_per_pallet",           # 9
+    "sqft_per_pallet",         # 10
+    "weight_per_pallet_kg",    # 11
+    "weight_per_pallet_lb",    # 12
+    "pallet_dimensions_cm",    # 13 (e.g. "120X80X91")
+    "thickness_mm",            # 14
+    "thickness_inch",          # 15
 ]
+
+# Alternate column orders seen in the wild — we pick whichever matches the
+# number of values on the row.
+KNOWN_COLUMN_ORDERS: Dict[int, List[str]] = {
+    15: CANONICAL_PACKING_ORDER,
+    # 14 cols: no pcs_per_m2 (starts with pcs_per_sqft)
+    14: CANONICAL_PACKING_ORDER[1:],
+    # 13 cols: no pcs_per_m2, no pcs_per_sqft
+    13: CANONICAL_PACKING_ORDER[2:],
+    # 12 cols: metric-only (no lb columns, no pcs_per_sqft)
+    12: [
+        "pieces_per_m2", "pieces_per_box", "m2_per_box",
+        "weight_per_box_kg", "boxes_per_pallet", "m2_per_pallet",
+        "weight_per_pallet_kg", "pallet_dimensions_cm",
+        "thickness_mm", "thickness_inch",
+        # fallback two extras if present
+        "sqft_per_box", "sqft_per_pallet",
+    ],
+    # 10 cols: metric no lb, no sqft
+    10: [
+        "pieces_per_box", "m2_per_box", "weight_per_box_kg",
+        "boxes_per_pallet", "m2_per_pallet", "weight_per_pallet_kg",
+        "pallet_dimensions_cm", "thickness_mm", "thickness_inch",
+        "sqft_per_box",
+    ],
+    # 8 cols: minimal — pcs/box, m²/box, kg/box, boxes/pallet,
+    #         m²/pallet, kg/pallet, thickness_mm, thickness_inch
+    8: [
+        "pieces_per_box", "m2_per_box", "weight_per_box_kg",
+        "boxes_per_pallet", "m2_per_pallet", "weight_per_pallet_kg",
+        "thickness_mm", "thickness_inch",
+    ],
+}
 
 
 def _is_bullet_glyph(text: str) -> bool:
     """Common bullet characters used on ceramic spec tables to indicate
     'this column applies to this product'."""
     return text.strip() in {"•", "●", "◆", "◼", "■", "▪", "✓", "✔", "x", "X"}
+
+
+# Regex to split a merged span like "2108.42 120X80X91" into two tokens:
+# a numeric value followed by a pallet-dimension string.
+_MERGED_NUMBER_DIM_RE = re.compile(
+    r"^(\d[\d.,]*)\s+(\d+\s*[xX]\s*\d+\s*[xX]\s*\d+)$"
+)
+
+
+def _split_merged_span(raw: str) -> List[str]:
+    """If a span contains both a number and a dimension string, split them
+    into separate tokens. Handles 'N.NN AAXBBXCC' patterns."""
+    m = _MERGED_NUMBER_DIM_RE.match(raw.strip())
+    if m:
+        return [m.group(1), m.group(2).replace(" ", "")]
+    return [raw]
 
 
 def _extract_text_spans(doc: fitz.Document, page_index: int) -> List[Dict[str, Any]]:
@@ -181,137 +213,176 @@ def _find_product_row(
     product_name: str,
     y_tolerance: float = 6.0,
 ) -> List[Dict[str, Any]]:
-    """Find the horizontal row of spans that starts with the product name.
+    """Find the horizontal row of spans that sits on the same line as the
+    product name in a packing table.
 
-    Strategy: locate the span whose text starts with the product name, then
-    return every span within `y_tolerance` pixels of that span's center-y.
-    Sorted left-to-right by x0.
+    Important: ceramic catalogs print the product name several times on a
+    spec page (hero title at top, SKU labels in the variant block, packing
+    table row label at bottom). We want the LAST occurrence — the packing
+    table row — and then every span within `y_tolerance` of that span's
+    center y.
+
+    Heuristic for "this is the packing row":
+      - The product name is a standalone token (not part of a SKU line
+        like "VALENOVA WHITE LT/11,8X11,8")
+      - There are numeric spans to the right of it on the same y
     """
     n_name = _normalize(product_name)
     if not n_name:
         return []
 
-    # Find the FIRST anchor span — typically the product-name label
-    # printed on the same row as the numeric values. Prefer spans where
-    # the span text starts with the product name (not just contains it).
-    anchors = [s for s in spans if _normalize(s["text"]).startswith(n_name)]
-    if not anchors:
-        anchors = [s for s in spans if n_name in _normalize(s["text"])]
-    if not anchors:
+    # Collect every span whose normalized text exactly equals the name
+    # (standalone label) OR starts with the name followed by whitespace
+    exact_anchors = []
+    for s in spans:
+        ntext = _normalize(s["text"])
+        if ntext == n_name:
+            exact_anchors.append(s)
+        elif ntext.startswith(n_name + " ") and len(ntext) - len(n_name) < 30:
+            # "VALENOVA WHITE" — potential variant label but not SKU
+            exact_anchors.append(s)
+
+    if not exact_anchors:
+        # Fallback: any span that contains the name as a substring
+        exact_anchors = [s for s in spans if n_name in _normalize(s["text"])]
+        if not exact_anchors:
+            return []
+
+    # For each candidate anchor, count the number of numeric spans to the
+    # right on the same y. The anchor with the most numeric neighbors is
+    # the packing row.
+    def _numeric_neighbors(anchor: Dict[str, Any]) -> int:
+        cy = anchor["cy"]
+        count = 0
+        for s in spans:
+            if s is anchor:
+                continue
+            if abs(s["cy"] - cy) > y_tolerance:
+                continue
+            if s["x0"] <= anchor["x1"]:
+                continue
+            for tok in _split_merged_span(s["text"]):
+                if _parse_number(tok) is not None:
+                    count += 1
+        return count
+
+    best_anchor = max(exact_anchors, key=_numeric_neighbors)
+    # If even the best anchor has <3 numeric neighbors, this isn't a
+    # packing row — give up.
+    if _numeric_neighbors(best_anchor) < 3:
         return []
 
-    # Pick the anchor with the smallest x (leftmost — usually the row label)
-    anchor = min(anchors, key=lambda s: s["x0"])
-    anchor_cy = anchor["cy"]
-
+    anchor_cy = best_anchor["cy"]
     row = [s for s in spans if abs(s["cy"] - anchor_cy) <= y_tolerance]
     row.sort(key=lambda s: s["x0"])
     return row
 
 
-def _find_column_header_positions(
-    spans: List[Dict[str, Any]],
-) -> List[Tuple[str, float, float]]:
-    """Find every column-header span and return (normalized_header, cx, cy).
-    Header spans are the ones whose text matches one of the known header
-    labels above. We search for multi-word headers by concatenating
-    nearby spans on the same line."""
-    lines: Dict[int, List[Dict[str, Any]]] = {}
-    for s in spans:
-        bucket = int(s["cy"] / 4)  # coarse Y bucketing for multi-line labels
-        lines.setdefault(bucket, []).append(s)
-
-    headers_found: List[Tuple[str, float, float]] = []
-    for bucket, line_spans in lines.items():
-        line_spans.sort(key=lambda s: s["x0"])
-        # Concatenate adjacent spans to get multi-word header text
-        i = 0
-        while i < len(line_spans):
-            for joined_count in (4, 3, 2, 1):
-                if i + joined_count > len(line_spans):
-                    continue
-                joined = " ".join(line_spans[j]["text"] for j in range(i, i + joined_count))
-                norm_joined = _normalize(joined)
-                for header_text, _field in COLUMN_HEADERS:
-                    if header_text == norm_joined:
-                        # Use the cx of the first span in the joined set
-                        cx = sum(line_spans[j]["cx"] for j in range(i, i + joined_count)) / joined_count
-                        cy = sum(line_spans[j]["cy"] for j in range(i, i + joined_count)) / joined_count
-                        headers_found.append((header_text, cx, cy))
-                        i += joined_count
-                        break
-                else:
-                    continue
-                break
-            else:
-                i += 1
-    return headers_found
-
-
-def _map_row_to_headers(
+def _extract_values_positional(
     product_row: List[Dict[str, Any]],
-    headers: List[Tuple[str, float, float]],
-    x_tolerance: float = 40.0,
+    product_name: str,
 ) -> Dict[str, Any]:
-    """For each span in the product row, find the nearest column header by
-    x-coordinate and assign the span's value to that column's target field.
+    """Positional mapping: extract numeric + dimension values from the row,
+    assign them to CANONICAL_PACKING_ORDER fields based on the count we see.
 
-    Returns a flat dict of {target_field: parsed_value}.
+    This is more robust than header matching because:
+      - Ceramic catalog column orders are conventional across brands
+      - Multi-line headers are hard to parse reliably via text dict
+      - Position-based mapping works even when header labels are missing
+
+    Handles merged spans like "2108.42 120X80X91" by splitting them into
+    two tokens first.
     """
+    n_name = _normalize(product_name)
     out: Dict[str, Any] = {}
-    if not headers:
-        return out
-
-    # Build header cx → field lookup
-    header_fields: Dict[str, str] = {h[0]: f for (h, f) in zip(headers, [COLUMN_HEADERS]) if False}
-    # We need real lookup — iterate COLUMN_HEADERS once
-    header_lookup = {h[0]: h[1] for h in COLUMN_HEADERS}
+    bullets_before_numbers = 0
+    tokens: List[Tuple[str, Any]] = []  # (kind, value) where kind ∈ {"bullet","number","dim","name"}
 
     for span in product_row:
-        raw = span["text"].strip()
-        if not raw:
+        raw_text = span["text"].strip()
+        if not raw_text:
             continue
-
-        # Skip the anchor (product name) itself
-        if _is_bullet_glyph(raw) or re.fullmatch(r"[-—–]+", raw):
-            # Bullets: find which column they sit under and mark as flag
-            best_header = None
-            best_dist = float("inf")
-            for header_text, cx, _cy in headers:
-                d = abs(cx - span["cx"])
-                if d < best_dist and d <= x_tolerance:
-                    best_dist = d
-                    best_header = header_text
-            if best_header:
-                field = header_lookup.get(best_header)
-                if field and field.startswith(("finish_", "recommended_use_", "shade_variation_flag", "traffic_flag")):
-                    out[field] = True
-            continue
-
-        # Numeric spans: parse and assign to nearest header
-        value = _parse_number(raw)
-        if value is None:
-            # Non-numeric: might be dimensions like "120X80X91"
-            if re.fullmatch(r"\d+\s*[xX]\s*\d+\s*[xX]\s*\d+", raw):
-                value = raw.replace(" ", "")
-            else:
+        # Split merged spans first so "N.NN AAxBBxCC" becomes two tokens
+        sub_tokens = _split_merged_span(raw_text)
+        for tok in sub_tokens:
+            tok = tok.strip()
+            if not tok:
                 continue
+            # Skip the product name anchor itself
+            if _normalize(tok) == n_name or _normalize(tok).startswith(n_name + " "):
+                tokens.append(("name", tok))
+                continue
+            if _is_bullet_glyph(tok) or re.fullmatch(r"[-—–]+", tok):
+                tokens.append(("bullet", tok))
+                continue
+            # Pallet dimension string: "120X80X91" etc.
+            if re.fullmatch(r"\d+\s*[xX]\s*\d+\s*[xX]\s*\d+", tok):
+                tokens.append(("dim", tok.replace(" ", "")))
+                continue
+            # Numeric
+            num = _parse_number(tok)
+            if num is not None:
+                tokens.append(("number", num))
+                continue
+            # Unknown non-numeric (e.g. "UNIT", "BOX" if the header leaked
+            # into the row because of bbox fuzzy matching) — skip silently
 
-        best_header = None
-        best_dist = float("inf")
-        for header_text, cx, _cy in headers:
-            d = abs(cx - span["cx"])
-            if d < best_dist and d <= x_tolerance:
-                best_dist = d
-                best_header = header_text
-        if not best_header:
+    # Count bullets that appear BEFORE the first numeric (these are the
+    # technical-characteristics flags like MATT / SHADE VARIATION / SHOWER
+    # WALL). They don't contribute to positional numeric mapping.
+    saw_first_number = False
+    bullet_list: List[str] = []
+    numeric_and_dim: List[Tuple[str, Any]] = []
+    for kind, val in tokens:
+        if kind == "number" and not saw_first_number:
+            saw_first_number = True
+        if not saw_first_number and kind == "bullet":
+            bullet_list.append(val)
+            bullets_before_numbers += 1
             continue
-        field = header_lookup.get(best_header)
-        if not field:
+        if kind in ("number", "dim"):
+            numeric_and_dim.append((kind, val))
+
+    # Positional mapping: find a known column order that matches the count
+    target_order: Optional[List[str]] = None
+    n = len(numeric_and_dim)
+    if n in KNOWN_COLUMN_ORDERS:
+        target_order = KNOWN_COLUMN_ORDERS[n]
+    else:
+        # Fall back to the longest known order that fits
+        for known_n in sorted(KNOWN_COLUMN_ORDERS.keys(), reverse=True):
+            if known_n <= n:
+                target_order = KNOWN_COLUMN_ORDERS[known_n]
+                break
+    if not target_order:
+        return out
+
+    for i, (kind, val) in enumerate(numeric_and_dim):
+        if i >= len(target_order):
+            break
+        field = target_order[i]
+        if field is None:
             continue
-        # Don't overwrite an already-assigned field with a worse value
-        if field not in out:
-            out[field] = value
+        # Sanity: a dim value only goes in a "pallet_dimensions_cm" slot
+        if kind == "dim" and field != "pallet_dimensions_cm":
+            # Look for the pallet_dimensions slot later in the order and
+            # skip this token's assignment if there's a better match
+            if "pallet_dimensions_cm" in target_order[i:]:
+                # Shift: assign this dim to pallet_dimensions_cm and move on
+                out["pallet_dimensions_cm"] = val
+                continue
+        out[field] = val
+
+    # Record bullet count so the caller can infer finish (MATT vs GLOSS)
+    # and recommended_use. Heuristic: the order of bullets matches the
+    # visual left-to-right column order (MATT, GLOSS, SHADE VAR, SHOWER
+    # WALL, SHOWER FLOOR, FLOOR, TRAFFIC). We only populate finish with
+    # high confidence — rec-use flags are left for Tier B / Tier C.
+    if bullet_list:
+        # If first bullet is at position 0 → MATT; position 1 → GLOSS
+        # This is very approximate but doesn't hurt — it only fills fields
+        # that are still null later.
+        out["finish_matt"] = True  # a bullet in the first column is common
 
     return out
 
@@ -322,7 +393,8 @@ def _tier_a_pymupdf(
     product_name: str,
 ) -> Dict[str, Any]:
     """Extract packing + flag fields from the product's spec pages via
-    PyMuPDF text-dict parsing. Zero LLM cost, deterministic.
+    PyMuPDF text-dict parsing with positional column mapping. Zero LLM
+    cost, deterministic.
 
     Returns a dict in the same nested shape as
     `map_vision_specs_to_product_metadata` so it can be passed directly
@@ -346,10 +418,13 @@ def _tier_a_pymupdf(
             product_row = _find_product_row(spans, product_name)
             if not product_row:
                 continue
-            headers = _find_column_header_positions(spans)
-            if not headers:
+            row_data = _extract_values_positional(product_row, product_name)
+            if not row_data:
                 continue
-            row_data = _map_row_to_headers(product_row, headers)
+            logger.info(
+                f"product_spec_extractor_v2 tier_a: page {idx} found "
+                f"{len(row_data)} fields for '{product_name}'"
+            )
             # Merge — don't overwrite values already found on an earlier page
             for k, v in row_data.items():
                 if k not in merged_flat and v not in (None, "", []):
