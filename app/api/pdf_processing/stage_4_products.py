@@ -1265,8 +1265,94 @@ def _extract_fields_from_chunk_text(text: str) -> Dict[str, Any]:
                     dims.append({"metric_cm": f"{w}x{h}", "format_label": None})
         except ValueError:
             continue
+
+    # ── Imperial dimensions: '4.65x4.65"' — attach to existing metric dims ─
+    imperial_pattern = _re.compile(r'(\d{1,3}(?:[.,]\d{1,3})?)\s*[xX×]\s*(\d{1,3}(?:[.,]\d{1,3})?)\s*["”]')
+    imperials = []
+    for m in imperial_pattern.finditer(text):
+        w = m.group(1).replace(",", ".")
+        h = m.group(2).replace(",", ".")
+        imperials.append(f"{w}x{h}")
+    # Zip imperials onto dims by order (best-effort pairing)
+    for i, d in enumerate(dims):
+        if i < len(imperials):
+            d["imperial_in"] = imperials[i]
+
+    # ── Format label: "Q59 (11,8x11,8 cm − 45/8x45/8")" captures the Q59 tag ─
+    q_label_pattern = _re.compile(r"\b(Q\d{1,3})\s*\(", _re.IGNORECASE)
+    q_matches = q_label_pattern.findall(text)
+    if q_matches and dims:
+        dims[0]["format_label"] = q_matches[0].upper()
+
     if dims:
         candidates["dimensions"] = dims
+
+    # ── Grout product names: "MAPEI | ULTRACOLOR PLUS" and "KERAKOLL | FUGABELLA" ─
+    grout_product_pattern = _re.compile(
+        r"(MAPEI|KERAKOLL|ISOMAT|TECHNICA|LITOKOL)\s*\|\s*([A-Z][A-Z0-9\s]{2,30})",
+        _re.IGNORECASE,
+    )
+    grout_products: Dict[str, str] = {}
+    for m in grout_product_pattern.finditer(text):
+        supplier = m.group(1).upper()
+        product = m.group(2).strip()
+        # Clean trailing whitespace/newlines from the captured product name
+        product = _re.sub(r"\s+", " ", product).strip()
+        # Stop at common end-of-line markers
+        product = _re.split(r"\*+|\|", product, maxsplit=1)[0].strip()
+        if 3 <= len(product) <= 40:
+            grout_products[f"grout_{supplier.lower()}_product"] = product
+    if grout_products:
+        candidates.update(grout_products)
+
+    # ── MATT/GLOSS finish indicators appearing in packing tables ─────────
+    # "MATT" and "GLOSS" on the spec page are options, not confirmed values for
+    # this product unless they appear with a "✓" or bold marker — but their
+    # presence on the page at least hints at what finishes exist.
+    finish_patterns = {
+        "matt":      _re.compile(r"\bMATT\b"),
+        "gloss":     _re.compile(r"\bGLOSS\b"),
+        "polished":  _re.compile(r"\bPOLISHED\b", _re.IGNORECASE),
+        "satin":     _re.compile(r"\bSATIN\b", _re.IGNORECASE),
+        "natural":   _re.compile(r"\bNATURAL\b", _re.IGNORECASE),
+    }
+    # Only set finish if the text makes a definitive claim; multiple options =
+    # skip (don't overwrite vision_analysis which has the actual answer).
+    # We intentionally do NOT write candidates["finish"] here — vision rollup
+    # handles finish more reliably.
+
+    # ── Collection name: "{PRODUCT} by {DESIGNER}" + "the new X collection" ─
+    # Also handle: "VALENOVA by SG NY is the new Signature collaboration"
+    collection_patterns = [
+        _re.compile(r"\b([A-Z][A-Z0-9]+)\s+by\s+[A-Z]", _re.IGNORECASE),
+        _re.compile(r"(?:the\s+new\s+|the\s+)?([A-Z][A-Z0-9]+)\s+collection\b", _re.IGNORECASE),
+    ]
+    collection_candidates: List[str] = []
+    for pat in collection_patterns:
+        for m in pat.finditer(text):
+            name = m.group(1).strip()
+            if 3 <= len(name) <= 20 and name.isupper():
+                collection_candidates.append(name)
+    if collection_candidates:
+        from collections import Counter
+        most_common = Counter(collection_candidates).most_common(1)[0][0]
+        # Title case it — "VALENOVA" → "Valenova"
+        candidates["collection"] = most_common.title()
+
+    # ── Inspiration: "draws inspiration from X", "inspired by X" ─────────
+    inspiration_patterns = [
+        _re.compile(r"draws?\s+inspiration\s+from\s+(?:the\s+)?([a-zA-Z][\w\s\-]{3,60})", _re.IGNORECASE),
+        _re.compile(r"inspired\s+by\s+(?:the\s+)?([a-zA-Z][\w\s\-]{3,60})", _re.IGNORECASE),
+    ]
+    for pat in inspiration_patterns:
+        m = pat.search(text)
+        if m:
+            inspiration = m.group(1).strip()
+            # Stop at sentence boundary
+            inspiration = _re.split(r"[,.;]", inspiration, maxsplit=1)[0].strip()
+            if 3 <= len(inspiration) <= 80:
+                candidates["inspiration"] = inspiration
+                break
 
     return candidates
 
@@ -1287,8 +1373,14 @@ def _rollup_vision_analysis(vision_rows: List[Dict[str, Any]]) -> Dict[str, Any]
     from collections import Counter
 
     material_types: List[str] = []
+    material_subtypes: List[str] = []
     finishes: List[str] = []
+    patterns: List[str] = []
+    textures: List[str] = []
+    design_styles: List[str] = []
     all_colors: List[str] = []
+    all_applications: List[str] = []
+    primary_hex_codes: List[str] = []
 
     for row in vision_rows:
         va = row.get("vision_analysis") or {}
@@ -1299,15 +1391,41 @@ def _rollup_vision_analysis(vision_rows: List[Dict[str, Any]]) -> Dict[str, Any]
         if isinstance(mt, str) and mt.strip():
             material_types.append(mt.strip().lower())
 
+        mst = va.get("material_subtype")
+        if isinstance(mst, str) and mst.strip():
+            material_subtypes.append(mst.strip().lower())
+
         finish = va.get("finish")
         if isinstance(finish, str) and finish.strip():
             finishes.append(finish.strip().lower())
+
+        pattern = va.get("pattern")
+        if isinstance(pattern, str) and pattern.strip():
+            patterns.append(pattern.strip())
+
+        texture = va.get("texture")
+        if isinstance(texture, str) and texture.strip():
+            textures.append(texture.strip())
+
+        style = va.get("design_style")
+        if isinstance(style, str) and style.strip():
+            design_styles.append(style.strip().lower())
 
         palette = va.get("color_palette") or va.get("colors") or []
         if isinstance(palette, list):
             for c in palette:
                 if isinstance(c, str) and c.strip():
                     all_colors.append(c.strip().lower())
+
+        apps = va.get("applications") or []
+        if isinstance(apps, list):
+            for a in apps:
+                if isinstance(a, str) and a.strip():
+                    all_applications.append(a.strip().lower())
+
+        hx = va.get("primary_color_hex")
+        if isinstance(hx, str) and hx.strip().startswith("#"):
+            primary_hex_codes.append(hx.strip().upper())
 
     candidates: Dict[str, Any] = {}
 
@@ -1317,15 +1435,54 @@ def _rollup_vision_analysis(vision_rows: List[Dict[str, Any]]) -> Dict[str, Any]
         if normalized:
             candidates["material_category"] = normalized
 
+    if material_subtypes:
+        # Pick the most specific one (longest description)
+        unique_subtypes = list({s: True for s in material_subtypes}.keys())
+        candidates["material_subtype"] = max(unique_subtypes, key=len)
+
     if finishes:
         most_common_finish, _count = Counter(finishes).most_common(1)[0]
         candidates["finish"] = most_common_finish
+
+    if patterns:
+        # Primary (singular) pattern — the most descriptive entry, kept for
+        # backwards compatibility with older UI consumers.
+        candidates["pattern"] = max(set(patterns), key=len)
+        # Aggregated list of all unique patterns seen across variants —
+        # rendered as a chip list in the product detail modal's Appearance
+        # section. Dedupe case-insensitively, preserve order by frequency.
+        pattern_counts = Counter(patterns)
+        unique_patterns: List[str] = []
+        seen_pattern_norms: set = set()
+        for p, _ in pattern_counts.most_common():
+            norm = p.strip().lower()
+            if norm and norm not in seen_pattern_norms:
+                seen_pattern_norms.add(norm)
+                unique_patterns.append(p.strip())
+        if unique_patterns:
+            candidates["patterns"] = unique_patterns[:20]  # cap
+
+    if textures:
+        candidates["texture"] = max(set(textures), key=len)
+
+    if design_styles:
+        most_common_style, _count = Counter(design_styles).most_common(1)[0]
+        candidates["design_style"] = most_common_style
 
     if all_colors:
         # Union, deduped, preserving most common order
         color_counts = Counter(all_colors)
         unique_colors = [c for c, _ in color_counts.most_common()]
         candidates["appearance_colors"] = unique_colors[:20]  # cap at 20
+
+    if all_applications:
+        app_counts = Counter(all_applications)
+        candidates["applications"] = [a for a, _ in app_counts.most_common()][:10]
+
+    if primary_hex_codes:
+        # Pick the most frequent hex (product-level primary color)
+        most_common_hex, _count = Counter(primary_hex_codes).most_common(1)[0]
+        candidates["primary_color_hex"] = most_common_hex
 
     return candidates
 
@@ -1370,12 +1527,19 @@ def _merge_enriched_fields_into_metadata(
     # ── Apply chunk candidates ────────────────────────────────────────────
     fill_if_empty("factory_name", chunk_candidates.get("factory_name"), "chunk_regex")
     fill_if_empty("designers", chunk_candidates.get("designers"), "chunk_regex")
+    fill_if_empty("collection", chunk_candidates.get("collection"), "chunk_regex")
+    fill_if_empty("inspiration", chunk_candidates.get("inspiration"), "chunk_regex", container="design")
     fill_if_empty("pieces_per_box", chunk_candidates.get("pieces_per_box"), "chunk_regex", container="packaging")
     fill_if_empty("patterns_count", chunk_candidates.get("patterns_count"), "chunk_regex", container="packaging")
     fill_if_empty("body_type", chunk_candidates.get("body_type"), "chunk_regex", container="material_properties")
     fill_if_empty("sku_codes", chunk_candidates.get("sku_codes"), "chunk_regex", container="commercial")
     fill_if_empty("grout_suppliers", chunk_candidates.get("grout_suppliers"), "chunk_regex", container="commercial")
     fill_if_empty("grout_color_codes", chunk_candidates.get("grout_color_codes"), "chunk_regex", container="commercial")
+    # Grout product names (chunk 17 style): MAPEI | ULTRACOLOR PLUS, etc.
+    fill_if_empty("grout_mapei", chunk_candidates.get("grout_mapei_product"), "chunk_regex", container="commercial")
+    fill_if_empty("grout_kerakoll", chunk_candidates.get("grout_kerakoll_product"), "chunk_regex", container="commercial")
+    fill_if_empty("grout_isomat", chunk_candidates.get("grout_isomat_product"), "chunk_regex", container="commercial")
+    fill_if_empty("grout_technica", chunk_candidates.get("grout_technica_product"), "chunk_regex", container="commercial")
 
     # Dimensions special-case: only fill if currently empty/missing/hallucinated
     chunk_dims = chunk_candidates.get("dimensions")
@@ -1383,10 +1547,36 @@ def _merge_enriched_fields_into_metadata(
         new_metadata["dimensions"] = chunk_dims
         extraction_meta["dimensions"] = {"source": "chunk_regex", "confidence": 0.95}
         filled.append("dimensions")
+        # When we fill chunk dimensions, also drop the stale AI-hallucinated
+        # `available_sizes` so the UI sidebar (which prefers available_sizes
+        # over dimensions) shows the real value. Only drop it if we just
+        # filled dimensions — don't touch it on unrelated enrichment runs.
+        if "available_sizes" in new_metadata:
+            new_metadata.pop("available_sizes", None)
+            filled.append("(dropped stale available_sizes)")
+
+    # If we filled `designers` (plural array, correct full name), drop any
+    # stale scalar `designer` leftover from the old AI extractor. Both existing
+    # at once confuses the UI, and the plural is the canonical form.
+    if (
+        chunk_candidates.get("designers")
+        and isinstance(new_metadata.get("designers"), list)
+        and new_metadata.get("designers")
+        and "designer" in new_metadata
+    ):
+        new_metadata.pop("designer", None)
+        filled.append("(dropped stale designer scalar)")
 
     # ── Apply vision candidates ───────────────────────────────────────────
     fill_if_empty("material_category", vision_candidates.get("material_category"), "vision_rollup")
     fill_if_empty("finish", vision_candidates.get("finish"), "vision_rollup", container="material_properties")
+    fill_if_empty("material_subtype", vision_candidates.get("material_subtype"), "vision_rollup", container="material_properties")
+    fill_if_empty("pattern", vision_candidates.get("pattern"), "vision_rollup", container="appearance")
+    fill_if_empty("patterns", vision_candidates.get("patterns"), "vision_rollup", container="appearance")
+    fill_if_empty("texture", vision_candidates.get("texture"), "vision_rollup", container="appearance")
+    fill_if_empty("design_style", vision_candidates.get("design_style"), "vision_rollup", container="design")
+    fill_if_empty("applications", vision_candidates.get("applications"), "vision_rollup")
+    fill_if_empty("primary_color_hex", vision_candidates.get("primary_color_hex"), "vision_rollup", container="appearance")
 
     vision_colors = vision_candidates.get("appearance_colors")
     if vision_colors:
@@ -1410,11 +1600,19 @@ async def enrich_products_from_chunks_and_vision(
     supabase: Any,
     logger: logging.Logger,
     target_product_id: Optional[str] = None,
+    enable_spec_vision: bool = True,
+    enable_description_writer: bool = True,
 ) -> Dict[str, Any]:
     """Stage 4.7: fill null product.metadata fields from chunks and vision_analysis.
 
     Runs after Stage 0 AI extraction + Stage 4.5 propagation + Stage 4.6 dimension
     extraction. Only fills empty values. Never overwrites AI-extracted data.
+
+    Now also runs (per product):
+      1. product_spec_vision_extractor — Claude Vision on the product's PDF spec
+         pages for packing data, slip/PEI/fire/shade icons, certifications, etc.
+      2. product_description_writer — Claude Haiku on the product's chunks to
+         generate a clean English description (written to products.description).
 
     Args:
         document_id: Document to enrich.
@@ -1423,20 +1621,28 @@ async def enrich_products_from_chunks_and_vision(
         target_product_id: If provided, enrich only this product (used by the
                            backfill endpoint). Otherwise, enrich all products
                            in the document.
+        enable_spec_vision: Toggle for the Claude Vision spec page pass.
+        enable_description_writer: Toggle for the Claude Haiku description generator.
 
     Returns:
         Stats: products_checked, products_updated, fields_filled (set),
-               chunk_candidates_found, vision_candidates_found
+               chunk_candidates_found, vision_candidates_found,
+               spec_vision_calls, description_writes
     """
     stats: Dict[str, Any] = {
         "products_checked": 0,
         "products_updated": 0,
         "fields_filled": set(),
+        "spec_vision_calls": 0,
+        "description_writes": 0,
+        "kb_docs_created": 0,
+        "kb_attachments_created": 0,
+        "catalog_kb_docs_created": 0,
     }
 
     try:
-        # ── Fetch products ─────────────────────────────────────────────────
-        q = supabase.client.table("products").select("id, name, metadata")
+        # ── Fetch products (include description column for writer check) ───
+        q = supabase.client.table("products").select("id, name, description, metadata")
         if target_product_id:
             q = q.eq("id", target_product_id)
         else:
@@ -1449,10 +1655,13 @@ async def enrich_products_from_chunks_and_vision(
             logger.info("   ℹ️ Enrichment: no products to enrich")
             return stats
 
-        # ── Fetch document chunks for the whole document (we filter per-product
-        #    by page_range below) ─────────────────────────────────────────
+        # ── Fetch document chunks for the whole document ──────────────────
+        # document_chunks has a direct `product_id` column AND stores
+        # `metadata.product_pages` (array of absolute page numbers). We scope
+        # chunks by product_id (exact) and fall back to doc-wide if a product
+        # has no directly-linked chunks.
         chunks_resp = supabase.client.table("document_chunks") \
-            .select("content, page_number") \
+            .select("content, product_id, metadata") \
             .eq("document_id", document_id) \
             .execute()
         all_chunks = chunks_resp.data or []
@@ -1471,26 +1680,38 @@ async def enrich_products_from_chunks_and_vision(
             product_name = product.get("name") or "(unnamed)"
             metadata = product.get("metadata") or {}
 
-            # Determine the product's page range.
+            # Determine the product's page range. Prefer the direct column
+            # on document_chunks (when available); otherwise fall back to
+            # metadata.page_range on the product row, then to chunk metadata.
             page_range = metadata.get("page_range") or []
             if not isinstance(page_range, list):
                 page_range = []
             page_set = set(page_range)
 
-            # Scope chunks to this product's pages (fall back to full doc if
-            # page_range is unknown).
-            if page_set:
+            # ── Scope chunks to this product ─────────────────────────────
+            # Primary: chunks with product_id matching this product.
+            product_chunks = [c for c in all_chunks if c.get("product_id") == product_id]
+
+            # Secondary: chunks whose metadata.product_pages overlaps page_set.
+            if not product_chunks and page_set:
                 product_chunks = [
                     c for c in all_chunks
-                    if c.get("page_number") in page_set or c.get("page_number") is None
+                    if isinstance(c.get("metadata"), dict)
+                    and any(
+                        p in page_set
+                        for p in (c["metadata"].get("product_pages") or [])
+                    )
                 ]
-            else:
+
+            # Tertiary: fall back to all chunks for the document.
+            if not product_chunks:
                 product_chunks = all_chunks
+
             combined_text = " ".join(
                 c.get("content", "") for c in product_chunks if c.get("content")
             )
 
-            # Scope vision rows the same way.
+            # ── Scope vision rows by page_range ──────────────────────────
             if page_set:
                 product_vision = [
                     v for v in all_vision if v.get("page_number") in page_set
@@ -1501,18 +1722,106 @@ async def enrich_products_from_chunks_and_vision(
             chunk_candidates = _extract_fields_from_chunk_text(combined_text)
             vision_candidates = _rollup_vision_analysis(product_vision)
 
-            if not chunk_candidates and not vision_candidates:
+            # ── Stage 4.7.c: Claude Vision spec page extractor ─────────────
+            # Runs the PDF source pages through Claude Haiku Vision to pull
+            # packing, tech characteristics, and certifications that chunks
+            # and image vision_analysis don't cover.
+            spec_vision_candidates: Dict[str, Any] = {}
+            if enable_spec_vision and page_set:
+                try:
+                    from app.services.products.product_spec_vision_extractor import (
+                        extract_specs_from_pdf_pages,
+                        map_vision_specs_to_product_metadata,
+                        _get_source_pdf_path,
+                    )
+                    pdf_path = _get_source_pdf_path(document_id)
+                    if pdf_path:
+                        raw_specs = extract_specs_from_pdf_pages(
+                            pdf_path=pdf_path,
+                            product_page_range=sorted(page_set),
+                            product_name=product_name,
+                        )
+                        if raw_specs:
+                            spec_vision_candidates = map_vision_specs_to_product_metadata(raw_specs)
+                            stats["spec_vision_calls"] += 1
+                    else:
+                        logger.info(
+                            f"   ℹ️ Spec vision: PDF source not on disk for doc {document_id}, skipping"
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"   ⚠️ Spec vision extractor failed for '{product_name}': {e}"
+                    )
+
+            if not chunk_candidates and not vision_candidates and not spec_vision_candidates:
                 logger.info(
                     f"   ℹ️ Enrichment: no candidates found for '{product_name}' "
                     f"(pages={sorted(page_set) if page_set else 'all'})"
                 )
-                continue
+                # Still try description writer even if structured fields empty
+            else:
+                # Merge spec-vision candidates in first (lowest priority — fills
+                # only what chunks + vision_analysis didn't provide)
+                pass
 
             new_metadata, filled = _merge_enriched_fields_into_metadata(
                 existing_metadata=metadata,
                 chunk_candidates=chunk_candidates,
                 vision_candidates=vision_candidates,
             )
+
+            # Second merge pass: bring in the nested dicts from spec_vision
+            # Each top-level key in spec_vision_candidates is a nested container
+            # (material_properties, performance, application, packaging, commercial,
+            # compliance, plus two promoted fields dimensions_cm_from_vision /
+            # dimensions_inch_from_vision). Merge each one into metadata without
+            # clobbering existing keys.
+            if spec_vision_candidates:
+                extraction_meta = dict(new_metadata.get("_extraction_metadata") or {})
+                for key, value in spec_vision_candidates.items():
+                    if isinstance(value, dict):
+                        # nested container — merge each child if missing
+                        container = dict(new_metadata.get(key) or {})
+                        any_added = False
+                        for child_key, child_value in value.items():
+                            if _is_empty_value(container.get(child_key)) and not _is_empty_value(child_value):
+                                container[child_key] = child_value
+                                extraction_meta[f"{key}.{child_key}"] = {
+                                    "source": "claude_spec_vision", "confidence": 0.85
+                                }
+                                filled.append(f"{key}.{child_key}")
+                                any_added = True
+                        if any_added:
+                            new_metadata[key] = container
+                    else:
+                        # flat promoted field
+                        if _is_empty_value(new_metadata.get(key)) and not _is_empty_value(value):
+                            new_metadata[key] = value
+                            extraction_meta[key] = {"source": "claude_spec_vision", "confidence": 0.85}
+                            filled.append(key)
+                if filled:
+                    new_metadata["_extraction_metadata"] = extraction_meta
+
+            # ── Stage 4.7.d: Description writer (writes to products.description) ─
+            # Separate from metadata because description is a top-level column.
+            new_description: Optional[str] = None
+            existing_description = (product.get("description") or "").strip() if isinstance(product.get("description"), str) else ""
+            if enable_description_writer and not existing_description:
+                try:
+                    from app.services.products.product_description_writer import (
+                        write_product_description_from_chunks,
+                    )
+                    new_description = write_product_description_from_chunks(
+                        product_name=product_name,
+                        chunks=product_chunks,
+                    )
+                    if new_description:
+                        stats["description_writes"] += 1
+                        filled.append("description")
+                except Exception as e:
+                    logger.warning(
+                        f"   ⚠️ Description writer failed for '{product_name}': {e}"
+                    )
 
             if not filled:
                 logger.info(
@@ -1521,8 +1830,13 @@ async def enrich_products_from_chunks_and_vision(
                 )
                 continue
 
+            # Re-fetch product row to get id (in case supabase select changed)
+            update_payload: Dict[str, Any] = {"metadata": new_metadata}
+            if new_description:
+                update_payload["description"] = new_description
+
             supabase.client.table("products") \
-                .update({"metadata": new_metadata}) \
+                .update(update_payload) \
                 .eq("id", product_id) \
                 .execute()
 
@@ -1533,6 +1847,89 @@ async def enrich_products_from_chunks_and_vision(
                 f"(chunk_candidates={list(chunk_candidates.keys())}, "
                 f"vision_candidates={list(vision_candidates.keys())})"
             )
+
+            # ── Stage 4.7.e: Re-run AutoKBDocumentService with newly-enriched metadata ──
+            # The existing product_processor wired this service at product creation,
+            # but at that point packaging/compliance/care were all empty. Now that
+            # enrichment has populated them, re-invoke the service to produce the KB
+            # docs that were skipped the first time.
+            try:
+                from app.services.knowledge.auto_kb_document_service import AutoKBDocumentService
+                kb_service = AutoKBDocumentService()
+                kb_stats = await kb_service.create_kb_documents_from_metadata(
+                    product_id=product_id,
+                    product_name=product_name,
+                    workspace_id=new_metadata.get("workspace_id") or product.get("workspace_id") or "",
+                    metadata=new_metadata,
+                )
+                if kb_stats.get("documents_created"):
+                    stats["kb_docs_created"] += kb_stats["documents_created"]
+                    logger.info(
+                        f"   📚 AutoKBDocumentService created {kb_stats['documents_created']} "
+                        f"KB docs for '{product_name}' from enriched metadata"
+                    )
+            except Exception as kb_err:
+                logger.warning(
+                    f"   ⚠️ AutoKBDocumentService failed for '{product_name}': {kb_err}"
+                )
+
+        # ── Stage 4.7.f: Catalog-wide knowledge extraction (ONCE per document) ──
+        # Runs after all products have been enriched. Uses Claude Vision on the
+        # last ~10 pages of the PDF to extract iconography legends, regulations,
+        # installation guides, care instructions, sustainability claims, etc.
+        # Creates catalog-wide kb_docs and links them to every product.
+        #
+        # Only runs when we're enriching the WHOLE document (target_product_id
+        # is None) — single-product backfill doesn't need to re-scan the catalog.
+        if target_product_id is None and products:
+            try:
+                from app.services.knowledge.catalog_knowledge_extractor import (
+                    extract_catalog_knowledge_from_pdf,
+                    _get_source_pdf_path as _get_kb_pdf_path,
+                )
+                pdf_for_kb = _get_kb_pdf_path(document_id)
+                if pdf_for_kb:
+                    all_product_ids = [p["id"] for p in products if p.get("id")]
+                    # Pick workspace_id from first product (all share one document)
+                    workspace_id_for_kb = (
+                        (products[0].get("metadata") or {}).get("workspace_id")
+                        or products[0].get("workspace_id")
+                        or ""
+                    )
+                    if not workspace_id_for_kb:
+                        # Last resort: fetch from documents table
+                        try:
+                            doc_row = supabase.client.table("documents") \
+                                .select("workspace_id") \
+                                .eq("id", document_id) \
+                                .limit(1) \
+                                .execute()
+                            if doc_row.data:
+                                workspace_id_for_kb = doc_row.data[0].get("workspace_id") or ""
+                        except Exception:
+                            pass
+
+                    if workspace_id_for_kb:
+                        kb_cat_stats = await extract_catalog_knowledge_from_pdf(
+                            document_id=document_id,
+                            workspace_id=workspace_id_for_kb,
+                            pdf_path=pdf_for_kb,
+                            product_ids=all_product_ids,
+                            supabase=supabase,
+                            logger_instance=logger,
+                        )
+                        stats["catalog_kb_docs_created"] = kb_cat_stats.get("docs_created", 0)
+                        stats["kb_attachments_created"] += kb_cat_stats.get("attachments_created", 0)
+                    else:
+                        logger.info(
+                            f"   ℹ️ Catalog KB: no workspace_id available for {document_id}, skipping"
+                        )
+                else:
+                    logger.info(
+                        f"   ℹ️ Catalog KB: PDF not on disk for {document_id}, skipping"
+                    )
+            except Exception as kb_err:
+                logger.warning(f"   ⚠️ Catalog knowledge extractor failed: {kb_err}")
 
         # Convert fields_filled set to list for JSON serialization
         stats["fields_filled"] = sorted(stats["fields_filled"])
