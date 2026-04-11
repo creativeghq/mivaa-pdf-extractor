@@ -56,28 +56,26 @@ MAX_IMAGE_BYTES = 4_000_000
 # deliberately flat — nested objects make the post-parse merge harder.
 # Placeholder {product_name} is substituted at call time so Claude can
 # filter multi-product spec pages down to just the one we're enriching.
-SPEC_PROMPT_TEMPLATE = """You are reading one page of a ceramic tile catalog. The page may contain spec data for MULTIPLE products. We are enriching ONLY this product:
+SPEC_PROMPT_TEMPLATE = """You are reading one page of a ceramic tile catalog. The page may list MULTIPLE product series (e.g. "PIQUE 30", "PIQUÉ WAFFLE", "VALENOVA", "ONA", "FOLD") side by side in a single packing table or shared spec grid. We are enriching this specific product:
 
     TARGET PRODUCT NAME: {product_name}
 
-Your job is to extract technical specifications that apply ONLY to "{product_name}". Ignore data that clearly belongs to a different product on the same page (different product header / different variant-name prefix / different color family).
+Return `page_contains_target: true` if ANY of the following is true:
+  - A row whose variant name / SKU code mentions "{product_name}" (case-insensitive, accent-insensitive, any language) is visible on this page
+  - A shared technical-characteristics icon strip (MATT / GLOSS / SHADE VARIATION / SHOWER WALL / SHOWER FLOOR / FLOOR / TRAFFIC plus R-rating / PEI / water absorption / fire / frost) is visible and would apply to this product
+  - A shared packing-table header is visible (UNIT / m² / PIECES / BOX / BOXES PALLET / WEIGHT PALLET etc.) even if the specific row data is mixed across products
 
-If the page contains NO data for "{product_name}" (e.g. it's a photo page for a different product, or a brand intro page), return this exact empty envelope:
+ONLY return `page_contains_target: false` when the page is CLEARLY a different product's photo / intro / brand spread with nothing that could apply to "{product_name}".
+
+For the fields you return:
+  - variants / SKU codes / packing_per_variant / grout_recommendations → ONLY include rows whose variant name starts with or mentions "{product_name}" (case-insensitive). Drop rows for other products on the same table.
+  - slip_resistance / pei_rating / water_absorption_class / fire_rating / frost_resistance / shade_variation / traffic_level / installation_method / joint_width_mm / certifications → include if visible on this page, even if presented as a shared spec grid. Those icons are usually one set per spec page.
+  - thickness_mm / finish / body_type / dimensions → include if the page shows values specifically tied to "{product_name}".
+
+If page_contains_target is false, return exactly:
 {"page_contains_target": false, "product_name": null}
 
-Otherwise return STRICT JSON with every field you CAN see for "{product_name}" and null for fields you cannot. Look carefully at:
-
-1. Product name, variants, SKU codes, color labels — ONLY "{product_name}" variants
-2. Dimensions (metric cm + imperial inch), thickness (mm)
-3. Colors, finish, body type, patterns
-4. Packing table: pieces/box, m²/box, sqft/box, boxes/pallet, weight/box (kg AND lb), m²/pallet, weight/pallet (kg AND lb)
-5. Technical characteristics icons: slip resistance (R9/R10/R11/R12), PEI rating (PEI I/II/III/IV/V), water absorption class (BIa/BIb/BIIa/BIIb/BIII), fire rating (A1/A2/Bfl/Cfl), frost resistance (yes/no), shade variation (V1/V2/V3/V4), traffic level (residential/commercial/heavy)
-6. Recommended use (shower wall, shower floor, wall, floor, outdoor)
-7. Grout recommendations (per color: supplier + product name + color code)
-8. Certifications (ISO, EN, CE, DIN, BS, ANSI, LEED)
-9. Installation method, joint width
-
-Return STRICT JSON ONLY (no prose, no markdown fences):
+Otherwise return STRICT JSON (no prose, no markdown fences). Fields you cannot clearly see should be null. Arrays you cannot populate should be []:
 {
   "page_contains_target": true,
   "product_name": "{product_name}",
