@@ -1446,33 +1446,83 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                     settings = get_settings()
                     qwen_config = settings.get_qwen_config()
 
-                    start_time = time.time()
+                    # ⚠️ Pull the LIVE endpoint URL from the registry manager,
+                    # NOT from settings. QWEN_ENDPOINT_URL is not set as an env
+                    # var in production — the real URL lives on
+                    # `qwen_manager.endpoint_url` after warmup/resume.
+                    # Reading from settings produces an empty base URL and the
+                    # health check fails with "Request URL is missing
+                    # 'http://' or 'https://' protocol" on every call. (Same
+                    # bug class as the _try_qwen_material_analysis fix landed
+                    # in 2026-04-11 commit 71b7d3d.)
+                    qwen_endpoint_url = qwen_config.get('endpoint_url') or ''
+                    try:
+                        from app.services.embeddings.endpoint_registry import endpoint_registry
+                        qwen_manager = endpoint_registry.get_qwen_manager()
+                        if qwen_manager is not None:
+                            live_url = getattr(qwen_manager, 'endpoint_url', '') or ''
+                            if live_url and live_url.startswith(('http://', 'https://')):
+                                qwen_endpoint_url = live_url
+                    except Exception:
+                        pass
 
-                    # Test endpoint status with minimal request
-                    async with httpx.AsyncClient(timeout=10.0) as client:
-                        response = await client.post(
-                            f"{qwen_config['endpoint_url'].rstrip('/')}/chat/completions",
-                            headers={
-                                "Authorization": f"Bearer {qwen_config['endpoint_token']}",
-                                "Content-Type": "application/json"
-                            },
-                            json={
-                                "model": "Qwen/Qwen3-VL-32B-Instruct",
-                                "messages": [{"role": "user", "content": "hi"}],
-                                "max_tokens": 1,
-                                "temperature": 0.1
-                            }
-                        )
+                    if not (qwen_endpoint_url and qwen_endpoint_url.startswith(('http://', 'https://'))):
+                        # Endpoint URL truly not resolved yet (first boot, no
+                        # warmup run yet). Report cost-saving state instead of
+                        # failing the /health probe with "missing protocol".
+                        status_result = {
+                            "status": "healthy",
+                            "message": "Qwen endpoint URL not yet resolved (awaiting first warmup)",
+                            "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                            "cached": False,
+                        }
+                        services_status["qwen_endpoint"] = status_result
+                        cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
+                        _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time}
+                    else:
+                        start_time = time.time()
 
-                    latency_ms = int((time.time() - start_time) * 1000)
+                        # Test endpoint status with minimal request
+                        async with httpx.AsyncClient(timeout=10.0) as client:
+                            response = await client.post(
+                                f"{qwen_endpoint_url.rstrip('/')}/chat/completions",
+                                headers={
+                                    "Authorization": f"Bearer {qwen_config['endpoint_token']}",
+                                    "Content-Type": "application/json"
+                                },
+                                json={
+                                    "model": "Qwen/Qwen3-VL-32B-Instruct",
+                                    "messages": [{"role": "user", "content": "hi"}],
+                                    "max_tokens": 1,
+                                    "temperature": 0.1
+                                }
+                            )
 
-                    # Check if endpoint is paused (normal state to save costs)
-                    if response.status_code == 400:
-                        response_text = response.text
-                        if "paused" in response_text.lower():
+                        latency_ms = int((time.time() - start_time) * 1000)
+
+                        # Check if endpoint is paused (normal state to save costs)
+                        if response.status_code == 400:
+                            response_text = response.text
+                            if "paused" in response_text.lower():
+                                status_result = {
+                                    "status": "healthy",
+                                    "message": "Endpoint paused (cost-saving mode - will auto-resume on use)",
+                                    "latency_ms": latency_ms,
+                                    "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                                    "cached": False
+                                }
+                            else:
+                                status_result = {
+                                    "status": "unhealthy",
+                                    "message": f"API error: {response_text[:100]}",
+                                    "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                                    "cached": False
+                                }
+                                overall_status = "unhealthy"
+                        elif response.status_code == 200:
                             status_result = {
                                 "status": "healthy",
-                                "message": "Endpoint paused (cost-saving mode - will auto-resume on use)",
+                                "message": "Endpoint running and operational",
                                 "latency_ms": latency_ms,
                                 "last_checked": datetime.fromtimestamp(current_time).isoformat(),
                                 "cached": False
@@ -1480,31 +1530,15 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                         else:
                             status_result = {
                                 "status": "unhealthy",
-                                "message": f"API error: {response_text[:100]}",
+                                "message": f"HTTP {response.status_code}: {response.text[:100]}",
                                 "last_checked": datetime.fromtimestamp(current_time).isoformat(),
                                 "cached": False
                             }
                             overall_status = "unhealthy"
-                    elif response.status_code == 200:
-                        status_result = {
-                            "status": "healthy",
-                            "message": "Endpoint running and operational",
-                            "latency_ms": latency_ms,
-                            "last_checked": datetime.fromtimestamp(current_time).isoformat(),
-                            "cached": False
-                        }
-                    else:
-                        status_result = {
-                            "status": "unhealthy",
-                            "message": f"HTTP {response.status_code}: {response.text[:100]}",
-                            "last_checked": datetime.fromtimestamp(current_time).isoformat(),
-                            "cached": False
-                        }
-                        overall_status = "unhealthy"
 
-                    services_status["qwen_endpoint"] = status_result
-                    cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
-                    _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time}
+                        services_status["qwen_endpoint"] = status_result
+                        cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
+                        _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time}
 
                 except Exception as api_error:
                     status_result = {
