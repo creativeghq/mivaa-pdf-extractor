@@ -54,9 +54,20 @@ MAX_IMAGE_BYTES = 4_000_000
 
 # The single prompt we send for every product spec page. The schema is
 # deliberately flat — nested objects make the post-parse merge harder.
-SPEC_PROMPT = """Extract ALL ceramic tile technical specifications visible on this page from the product specification PDF. Look carefully at:
+# Placeholder {product_name} is substituted at call time so Claude can
+# filter multi-product spec pages down to just the one we're enriching.
+SPEC_PROMPT_TEMPLATE = """You are reading one page of a ceramic tile catalog. The page may contain spec data for MULTIPLE products. We are enriching ONLY this product:
 
-1. Product name, variants, SKU codes, color labels
+    TARGET PRODUCT NAME: {product_name}
+
+Your job is to extract technical specifications that apply ONLY to "{product_name}". Ignore data that clearly belongs to a different product on the same page (different product header / different variant-name prefix / different color family).
+
+If the page contains NO data for "{product_name}" (e.g. it's a photo page for a different product, or a brand intro page), return this exact empty envelope:
+{"page_contains_target": false, "product_name": null}
+
+Otherwise return STRICT JSON with every field you CAN see for "{product_name}" and null for fields you cannot. Look carefully at:
+
+1. Product name, variants, SKU codes, color labels — ONLY "{product_name}" variants
 2. Dimensions (metric cm + imperial inch), thickness (mm)
 3. Colors, finish, body type, patterns
 4. Packing table: pieces/box, m²/box, sqft/box, boxes/pallet, weight/box (kg AND lb), m²/pallet, weight/pallet (kg AND lb)
@@ -68,7 +79,8 @@ SPEC_PROMPT = """Extract ALL ceramic tile technical specifications visible on th
 
 Return STRICT JSON ONLY (no prose, no markdown fences):
 {
-  "product_name": "...",
+  "page_contains_target": true,
+  "product_name": "{product_name}",
   "dimensions_cm": "...",
   "dimensions_inch": "...",
   "thickness_mm": null,
@@ -114,14 +126,30 @@ Return STRICT JSON ONLY (no prose, no markdown fences):
   "joint_width_mm": null
 }
 
-For packaging_per_variant: when the packing table shows ONE ROW PER FORMAT/VARIANT (different pieces/box, m²/box, or weight per format), capture every row. When a single packing spec covers the whole product, leave packaging_per_variant as [] and populate only the scalar pieces_per_box / m2_per_box / weight_* fields.
+For packaging_per_variant: only include rows whose variant name starts with or matches "{product_name}". Drop every row that clearly belongs to a different product, even if it's on the same packing table.
+
+The technical characteristics icons section is usually a strip of small pictograms labeled MATT, GLOSS, SHADE VARIATION, SHOWER WALL, SHOWER FLOOR, FLOOR, TRAFFIC, etc. Below or beside those labels look for values like R10, R11, PEI III, V2, BIa, A1, Class II — read each icon's state even if it's subtle.
 
 CRITICAL rules:
 - Use null for fields you cannot clearly see on this page.
 - Do NOT hallucinate values. Empty > guessed.
 - For arrays, return [] if empty.
-- For variants/grout, only include entries you can clearly read.
+- NEVER include variants, SKU codes, packing rows, or grout recommendations for a product OTHER than "{product_name}".
 - Return JSON only. No prose. No markdown fences."""
+
+def _build_spec_prompt(product_name: str) -> str:
+    """Fill SPEC_PROMPT_TEMPLATE with the target product name.
+
+    We use a plain `.replace` rather than `.format` because the template
+    embeds literal JSON braces that would trip .format's {…} parser.
+    """
+    safe = (product_name or "").strip() or "the ceramic product on this page"
+    return SPEC_PROMPT_TEMPLATE.replace("{product_name}", safe)
+
+
+# Backwards-compat constant for any caller that still imports SPEC_PROMPT
+# without a product name (emits a generic prompt).
+SPEC_PROMPT = _build_spec_prompt("the ceramic product on this page")
 
 
 def _render_pdf_page_to_bytes(pdf_path: str, page_index: int, dpi: int = PAGE_RENDER_DPI) -> bytes:
@@ -191,8 +219,10 @@ def _detect_image_media_type(image_bytes: bytes) -> str:
     return "image/png"  # fallback
 
 
-def _call_claude_vision(png_bytes: bytes, prompt: str = SPEC_PROMPT) -> Optional[Dict[str, Any]]:
+def _call_claude_vision(png_bytes: bytes, prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Single Claude Vision call, returns parsed JSON dict or None on failure."""
+    if prompt is None:
+        prompt = SPEC_PROMPT
     if not ANTHROPIC_API_KEY:
         logger.error("product_spec_vision_extractor: ANTHROPIC_API_KEY not set")
         return None
@@ -338,11 +368,15 @@ def extract_specs_from_pdf_pages(
 
     Args:
         pdf_path: Path to the source PDF on disk.
-        product_page_range: 1-indexed catalog page numbers for this product.
-        product_name: Optional — used for logging only.
+        product_page_range: 1-indexed PDF page numbers for this product.
+        product_name: REQUIRED in practice — embedded in the prompt so Claude
+                      filters multi-product pages down to this product's rows
+                      only. Pages whose Claude response has
+                      `page_contains_target=false` are dropped entirely.
 
     Returns:
-        Merged spec dict (fields defined by SPEC_PROMPT schema). Empty on failure.
+        Merged spec dict (fields defined by SPEC_PROMPT_TEMPLATE schema).
+        Empty on failure.
     """
     if not os.path.exists(pdf_path):
         logger.warning(f"product_spec_vision_extractor: PDF not found at {pdf_path}")
@@ -353,19 +387,18 @@ def extract_specs_from_pdf_pages(
         logger.info(f"product_spec_vision_extractor: no valid pages for {product_name}")
         return {}
 
-    # Cap at 8 pages per product — most products span 2-4 pages in a ceramic
-    # catalog (intro page + photos + spec page + variants table). Anything
-    # beyond that is usually a sign of over-assignment from chunking, so we
-    # trim. The early-break below still cuts us off once we have the packing
-    # fields, so in practice most products only cost 1-2 Claude calls.
     pdf_indices = pdf_indices[:8]
 
+    product_aware_prompt = _build_spec_prompt(product_name or "")
     logger.info(
         f"📸 product_spec_vision_extractor: {product_name or '?'} "
         f"scanning {len(pdf_indices)} pages {pdf_indices}"
     )
 
     results: List[Dict[str, Any]] = []
+    pages_kept = 0
+    pages_dropped_other_product = 0
+
     for idx in pdf_indices:
         try:
             png = _render_pdf_page_to_bytes(pdf_path, idx)
@@ -373,25 +406,54 @@ def extract_specs_from_pdf_pages(
             logger.warning(f"product_spec_vision_extractor: render page {idx} failed: {e}")
             continue
 
-        data = _call_claude_vision(png)
-        if data:
-            results.append(data)
-            # Quick break if we already got the main packing fields on an early page
-            if all(
-                data.get(k) not in (None, [], "")
-                for k in ("pieces_per_box", "m2_per_box", "weight_per_box_kg", "boxes_per_pallet")
-            ):
-                logger.info(f"   ✅ full packing data found on PDF page {idx}, skipping remaining")
-                break
+        data = _call_claude_vision(png, prompt=product_aware_prompt)
+        if not data:
+            continue
+
+        # Skip pages that explicitly said they don't contain target product data.
+        if data.get("page_contains_target") is False:
+            pages_dropped_other_product += 1
+            logger.info(
+                f"   ⏭  page {idx}: Claude reported no '{product_name}' data, skipping"
+            )
+            continue
+
+        results.append(data)
+        pages_kept += 1
+
+        # Early break: once we have both the icon strip values AND the packing
+        # block for the target product, scanning further pages only adds noise.
+        has_icons = any(
+            data.get(k) not in (None, [], "")
+            for k in ("slip_resistance", "pei_rating", "water_absorption_class",
+                      "shade_variation")
+        )
+        has_packing = all(
+            data.get(k) not in (None, [], "")
+            for k in ("pieces_per_box", "m2_per_box", "weight_per_box_kg", "boxes_per_pallet")
+        )
+        if has_icons and has_packing:
+            logger.info(
+                f"   ✅ page {idx} has full icon strip + packing for '{product_name}', "
+                f"stopping scan"
+            )
+            break
 
     if not results:
+        logger.info(
+            f"   ℹ️ product_spec_vision_extractor: no pages matched '{product_name}' "
+            f"({pages_dropped_other_product} pages belonged to other products)"
+        )
         return {}
 
     merged = _select_best_spec_result(results)
+    # Strip out the envelope flags before returning — callers don't need them.
+    merged.pop("page_contains_target", None)
+
     populated = sum(1 for v in merged.values() if v not in (None, [], ""))
     logger.info(
         f"   ✅ product_spec_vision_extractor: {populated}/{len(merged)} fields populated "
-        f"from {len(results)} page(s)"
+        f"from {pages_kept} page(s) ({pages_dropped_other_product} other-product pages dropped)"
     )
     return merged
 

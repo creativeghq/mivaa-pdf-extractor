@@ -189,12 +189,25 @@ class AutoKBDocumentService:
             if result.data:
                 doc_id = result.data[0]['id']
 
-                # Link document to product
+                # Link document to product.
+                #
+                # kb_doc_attachments.relationship_type has a CHECK constraint
+                # limiting it to one of: primary, supplementary, related,
+                # certification, specification. Map the auto-KB `category`
+                # (packaging / compliance / care / certification) onto that
+                # vocabulary — otherwise every insert fails with 23514.
+                CATEGORY_TO_RELATIONSHIP = {
+                    "packaging":     "specification",
+                    "compliance":    "specification",
+                    "certification": "certification",
+                    "care":          "supplementary",
+                }
+                relationship_type = CATEGORY_TO_RELATIONSHIP.get(category, "related")
                 self.supabase.client.table("kb_doc_attachments").insert({
                     "workspace_id": workspace_id,
                     "document_id": doc_id,
                     "product_id": product_id,
-                    "relationship_type": category
+                    "relationship_type": relationship_type
                 }).execute()
 
                 # Generate embedding for the new doc

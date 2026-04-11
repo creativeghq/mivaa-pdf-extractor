@@ -193,16 +193,23 @@ def _call_claude_vision_knowledge(png_bytes: bytes) -> Optional[Dict[str, Any]]:
 # Main entry point
 # ──────────────────────────────────────────────────────────────────────────
 
-# Map page_type → kb_doc_attachments.relationship_type
+# Map page_type → kb_doc_attachments.relationship_type.
+#
+# kb_doc_attachments.relationship_type has a CHECK constraint limiting it to:
+#   primary | supplementary | related | certification | specification.
+# Every other value (regulation, installation, care, etc.) gets rejected
+# with 23514 at insert time. We fold the richer page_type taxonomy down
+# onto that vocabulary here; the ORIGINAL page_type is still preserved in
+# `kb_docs.metadata.page_type` for display purposes on the frontend.
 PAGE_TYPE_TO_RELATIONSHIP: Dict[str, str] = {
-    "iconography":    "reference",
-    "regulation":     "regulation",
-    "installation":   "installation",
-    "care":           "care",
-    "sustainability": "sustainability",
+    "iconography":    "related",
+    "regulation":     "specification",
+    "installation":   "specification",
+    "care":           "supplementary",
+    "sustainability": "supplementary",
     "certification":  "certification",
-    "legal":          "legal",
-    "brand":          "brand",
+    "legal":          "related",
+    "brand":          "related",
 }
 
 
@@ -316,7 +323,7 @@ async def extract_catalog_knowledge_from_pdf(
         title = (data.get("title") or "").strip() or f"{page_type.title()} (page {idx + 1})"
         content_md = (data.get("content_markdown") or "").strip()
         key_points = data.get("key_points") or []
-        relationship_type = PAGE_TYPE_TO_RELATIONSHIP.get(page_type, "reference")
+        relationship_type = PAGE_TYPE_TO_RELATIONSHIP.get(page_type, "related")
 
         # Check if a catalog-level KB doc for this document + page_type already
         # exists (idempotency: don't duplicate on re-runs).
