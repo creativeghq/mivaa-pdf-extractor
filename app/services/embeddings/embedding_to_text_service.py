@@ -14,6 +14,7 @@ import anthropic
 
 from app.services.core.supabase_client import get_supabase_client
 from app.services.core.ai_call_logger import AICallLogger
+from app.services.core.anthropic_error_reporter import report_anthropic_failure
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +150,11 @@ class EmbeddingToTextService:
                 return {}
 
         except Exception as e:
+            report_anthropic_failure(
+                e,
+                service="embedding_to_text_service",
+                context={"image_id": image_id},
+            )
             logger.error(f"Error converting embeddings to text: {e}")
             return {}
 

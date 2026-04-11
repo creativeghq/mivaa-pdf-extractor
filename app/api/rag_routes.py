@@ -2940,6 +2940,58 @@ async def process_document_with_discovery(
         # Track overall metrics
         total_products = len(catalog.products)
 
+        # ========================================================================
+        # CATALOG-WIDE ICON EXTRACTION (runs ONCE before the product loop)
+        # ========================================================================
+        # Ceramic catalogs typically put shared legend/iconography pages
+        # (slip ratings, PEI wear classes, fire ratings, shade variation) on
+        # pages not assigned to any product. If we only look at per-product
+        # pages in Stage 3, those icons are never OCR'd and the rollup to
+        # `product.metadata.slip_resistance` / `.pei_rating` / ... fails with
+        # all-nulls for legitimately-populated catalogs.
+        #
+        # This pre-pass scans `catalog.supplementary_pages` (computed by
+        # Stage 0 discovery) for icon-shaped images and routes them through
+        # the same OCR + Claude icon pipeline as per-product icons. The
+        # resulting document_images rows share the same document_id, and the
+        # Stage 4 `_merge_icon_metadata_into_product` rollup already queries
+        # all images for the document — so every product in this catalog
+        # automatically inherits the catalog-wide spec defaults.
+        try:
+            from app.api.pdf_processing.stage_3_images import process_catalog_wide_icons
+
+            logger.info("🔖 Running catalog-wide icon extraction pass (supplementary pages)...")
+            if tracker:
+                tracker.current_step = "Catalog-wide icon extraction"
+                await tracker.update_heartbeat()
+
+            catalog_icon_stats = await process_catalog_wide_icons(
+                file_content=file_content,
+                document_id=document_id,
+                workspace_id=workspace_id,
+                job_id=job_id,
+                catalog=catalog,
+                logger=logger,
+            )
+            logger.info(
+                f"🔖 Catalog-wide icon pass complete: "
+                f"pages={catalog_icon_stats.get('supplementary_pages_scanned', 0)}, "
+                f"icons_found={catalog_icon_stats.get('icon_candidates_found', 0)}, "
+                f"icons_with_spec_items={catalog_icon_stats.get('icon_metadata_extracted', 0)}, "
+                f"failed={catalog_icon_stats.get('icon_extraction_failed', 0)}"
+            )
+        except Exception as cat_icons_err:
+            # This is a best-effort pre-pass — the rest of the pipeline MUST
+            # keep running if it fails. We surface to Sentry so ops can see it.
+            logger.warning(
+                f"⚠️ Catalog-wide icon pass failed (non-blocking): {cat_icons_err}"
+            )
+            try:
+                import sentry_sdk
+                sentry_sdk.capture_exception(cat_icons_err)
+            except Exception:
+                pass
+
         # 🧪 TEST MODE: Process only first product if test_single_product=True
         if test_single_product:
             logger.warning("=" * 80)

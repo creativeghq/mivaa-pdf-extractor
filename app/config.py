@@ -562,9 +562,11 @@ class Settings(BaseSettings):
         description="Timeout in seconds for endpoint resume operation"
     )
     chandra_inference_timeout: int = Field(
-        default=30,
+        default=120,
         env="CHANDRA_INFERENCE_TIMEOUT",
-        description="Timeout in seconds for OCR inference calls"
+        description="Timeout in seconds for OCR inference calls. Chandra on icon strips "
+        "can take 30-90s depending on image size; 30s was the old default and produced "
+        "spurious read-timeout failures on normal-size catalog icon crops."
     )
 
     # ============================================================================

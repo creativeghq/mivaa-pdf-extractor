@@ -512,26 +512,60 @@ async def process_single_product(
                 # Store layout regions
                 region_data = []
                 table_regions = []
+                dropped_invalid_bbox = 0
                 for region in layout_regions:
                     if region.type == 'TABLE':
                         table_regions.append(region)
-                    
+
+                    # Normalise YOLO bbox to satisfy product_layout_regions
+                    # CHECK constraints (width > 0, height > 0). YOLO occasionally
+                    # emits degenerate regions — we saw one with negative height on
+                    # page 24 of harmony-signature-book-24-25.pdf that crashed the
+                    # whole insert batch. Clamp negatives to abs(); drop anything
+                    # that remains zero-size.
+                    raw_x = float(region.bbox.x)
+                    raw_y = float(region.bbox.y)
+                    raw_w = float(region.bbox.width)
+                    raw_h = float(region.bbox.height)
+                    w = abs(raw_w)
+                    h = abs(raw_h)
+                    if w <= 0 or h <= 0:
+                        dropped_invalid_bbox += 1
+                        logger_instance.warning(
+                            f"   ⚠️ Dropping degenerate YOLO region on page {region.bbox.page}: "
+                            f"x={raw_x}, y={raw_y}, w={raw_w}, h={raw_h}"
+                        )
+                        continue
+                    if raw_w < 0 or raw_h < 0:
+                        logger_instance.warning(
+                            f"   ⚠️ Clamped inverted YOLO bbox on page {region.bbox.page}: "
+                            f"(w={raw_w}, h={raw_h}) → (w={w}, h={h})"
+                        )
+
                     region_data.append({
                         'product_id': product_db_id,
                         'page_number': region.bbox.page,
                         'region_type': region.type,
-                        'bbox_x': region.bbox.x,
-                        'bbox_y': region.bbox.y,
-                        'bbox_width': region.bbox.width,
-                        'bbox_height': region.bbox.height,
+                        'bbox_x': raw_x,
+                        'bbox_y': raw_y,
+                        'bbox_width': w,
+                        'bbox_height': h,
                         'confidence': region.confidence,
                         'reading_order': region.reading_order,
                         'text_content': getattr(region, 'text_content', None),
                         'metadata': {'yolo_model': 'yolo-docparser'}
                     })
 
-                supabase_client.client.table('product_layout_regions').insert(region_data).execute()
-                logger_instance.info(f"   💾 Stored {len(region_data)} layout regions")
+                if region_data:
+                    supabase_client.client.table('product_layout_regions').insert(region_data).execute()
+                    logger_instance.info(
+                        f"   💾 Stored {len(region_data)} layout regions"
+                        + (f" ({dropped_invalid_bbox} degenerate dropped)" if dropped_invalid_bbox else "")
+                    )
+                elif dropped_invalid_bbox:
+                    logger_instance.warning(
+                        f"   ⚠️ All {dropped_invalid_bbox} YOLO regions were degenerate — nothing stored"
+                    )
 
                 # Extract tables if TABLE regions found
                 if table_regions:

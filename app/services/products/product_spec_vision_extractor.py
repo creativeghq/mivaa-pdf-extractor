@@ -33,6 +33,8 @@ import anthropic
 import fitz  # PyMuPDF
 from PIL import Image
 
+from app.services.core.anthropic_error_reporter import report_anthropic_failure
+
 logger = logging.getLogger(__name__)
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
@@ -343,6 +345,7 @@ def _call_claude_vision(png_bytes: bytes, prompt: Optional[str] = None) -> Optio
             }],
         )
     except Exception as e:
+        report_anthropic_failure(e, service="product_spec_vision_extractor")
         logger.warning(f"product_spec_vision_extractor: Claude call failed: {e}")
         return None
 

@@ -6,6 +6,16 @@ This module handles image processing for individual products in the product-cent
 IMPORTANT: This module uses PHYSICAL PAGE NUMBERS (1-based) throughout.
 Physical pages are what users see in catalogs. PDF sheet indices are only
 used internally when accessing PyMuPDF - never exposed to other modules.
+
+It also exposes `process_catalog_wide_icons()`, a once-per-document pre-pass
+that scans the PDF's SUPPLEMENTARY pages (pages not assigned to any product
+during discovery — i.e. shared legend / iconography / regulation / care /
+certification pages) for spec icon strips and routes them through the same
+OCR + Claude icon extraction pipeline used for per-product icons. The
+resulting `document_images` rows are stored with the document_id, so the
+existing `_merge_icon_metadata_into_product` rollup in Stage 4 naturally
+picks them up for every product in the catalog without any per-product
+association logic.
 """
 
 import os
@@ -506,3 +516,232 @@ async def process_product_images(
         'vector_stats': vector_stats,
         'failed_images': failed_images,
     }
+
+
+async def process_catalog_wide_icons(
+    file_content: bytes,
+    document_id: str,
+    workspace_id: str,
+    job_id: str,
+    catalog: Any,
+    logger: logging.Logger,
+) -> Dict[str, Any]:
+    """
+    Catalog-wide icon extraction pre-pass.
+
+    Scans the PDF's SUPPLEMENTARY pages — i.e. pages not assigned to any product
+    during Stage 0 discovery — for spec icon strips and routes them through the
+    same OCR + Claude icon extraction pipeline as per-product icons.
+
+    This exists because ceramic catalogs commonly put shared legend/iconography
+    pages (R9/R10/R11 slip ratings, PEI wear classes, fire ratings, shade
+    variation V1-V4) at the start or end of the book, not on each product page.
+    Without this pass, those icons are never OCR'd because per-product Stage 3
+    only looks at the product's own pages.
+
+    Per-product rollup is unchanged — the icon rows land in `document_images`
+    with `document_id` set, and `_merge_icon_metadata_into_product` in Stage 4
+    already walks all images for the document (not just a product's associated
+    images), so every product in the catalog gets those catalog-wide spec
+    defaults merged into `product.metadata` automatically.
+
+    Args:
+        file_content: PDF file bytes.
+        document_id: Document ID for the run.
+        workspace_id: Workspace ID.
+        job_id: Job ID (logged, used for AI cost attribution).
+        catalog: The ProductCatalog from Stage 0 discovery. Must have
+                 `supplementary_pages` populated. If empty, this function
+                 is a no-op.
+        logger: Logger.
+
+    Returns:
+        Stats dict:
+            {
+                'supplementary_pages_scanned': int,
+                'images_extracted': int,
+                'icon_candidates_found': int,
+                'icons_processed': int,
+                'icon_metadata_extracted': int,  # icons that yielded >= 1 spec item
+                'icon_extraction_failed': int,
+            }
+        All zeros when there are no supplementary pages or no icon candidates.
+    """
+    from app.services.images.image_processing_service import ImageProcessingService
+
+    supplementary_pages_0based = list(getattr(catalog, 'supplementary_pages', None) or [])
+
+    stats = {
+        'supplementary_pages_scanned': 0,
+        'images_extracted': 0,
+        'icon_candidates_found': 0,
+        'icons_processed': 0,
+        'icon_metadata_extracted': 0,
+        'icon_extraction_failed': 0,
+    }
+
+    if not supplementary_pages_0based:
+        logger.info("🔖 [catalog-icons] No supplementary pages — skipping catalog-wide icon pass")
+        return stats
+
+    logger.info(
+        f"🔖 [catalog-icons] Scanning {len(supplementary_pages_0based)} supplementary "
+        f"PDF pages for shared legend/iconography content..."
+    )
+    stats['supplementary_pages_scanned'] = len(supplementary_pages_0based)
+
+    image_service = ImageProcessingService(workspace_id=workspace_id)
+    pdf_processor = get_pdf_processor()
+
+    # Build a physical-page map for assignment. Supplementary pages are by
+    # definition not in any product's page range, but we still want to store
+    # a sensible page_number on each icon image row (for downstream display
+    # and for the per-image icon audit trail). We use the 1-based physical
+    # page number that corresponds to the PDF page index.
+    has_spread_layout = bool(getattr(catalog, 'has_spread_layout', False))
+    physical_to_pdf_map: Dict[int, tuple] = getattr(catalog, 'physical_to_pdf_map', None) or {}
+
+    # Invert physical_to_pdf_map so we can go pdf_idx -> [physical pages].
+    pdf_idx_to_physical: Dict[int, List[int]] = {}
+    if has_spread_layout and physical_to_pdf_map:
+        for phys, (pdf_idx, _pos) in physical_to_pdf_map.items():
+            pdf_idx_to_physical.setdefault(pdf_idx, []).append(phys)
+
+    def _physical_for(pdf_idx: int) -> int:
+        """Best-effort physical page number for a given PDF sheet index."""
+        if pdf_idx in pdf_idx_to_physical:
+            return min(pdf_idx_to_physical[pdf_idx])
+        return pdf_idx + 1  # 1-based physical = 0-based pdf idx + 1
+
+    # Extract images from every supplementary PDF page.
+    extracted_images_list: List[Dict[str, Any]] = []
+    for pdf_idx in supplementary_pages_0based:
+        pdf_page_1based = pdf_idx + 1
+        processing_options = {
+            'extract_images': True,
+            'extract_text': False,
+            'extract_tables': False,
+            'page_list': [pdf_page_1based],
+            'extract_categories': ['products'],
+            'job_id': job_id,
+        }
+        try:
+            page_result = await pdf_processor.process_pdf_from_bytes(
+                pdf_bytes=file_content,
+                document_id=document_id,
+                processing_options=processing_options,
+            )
+        except Exception as extract_err:
+            logger.warning(
+                f"   ⚠️ [catalog-icons] Failed to extract PDF page {pdf_page_1based}: {extract_err}"
+            )
+            continue
+
+        if not page_result or not page_result.extracted_images:
+            continue
+
+        phys_page = _physical_for(pdf_idx)
+        for img in page_result.extracted_images:
+            img['page_number'] = phys_page
+            img['catalog_wide_icon_source'] = True
+            extracted_images_list.append(img)
+
+    stats['images_extracted'] = len(extracted_images_list)
+    if not extracted_images_list:
+        logger.info("🔖 [catalog-icons] No images extracted from supplementary pages")
+        return stats
+
+    logger.info(
+        f"🔖 [catalog-icons] Extracted {len(extracted_images_list)} images from "
+        f"{len(supplementary_pages_0based)} supplementary page(s); classifying..."
+    )
+
+    # Classify so the icon filter has `ai_classification` on every image.
+    try:
+        material_images, non_material_images = await image_service.classify_images(
+            extracted_images=extracted_images_list,
+        )
+    except Exception as cls_err:
+        logger.warning(
+            f"   ⚠️ [catalog-icons] Classification failed — skipping catalog-wide icon pass: {cls_err}"
+        )
+        return stats
+
+    # Split into regular / icon / non-material using the existing rules.
+    _regular, icon_candidates, _non_material = (
+        image_service._split_material_and_icon_candidates(
+            material_images=material_images,
+            non_material_images=non_material_images,
+        )
+    )
+
+    stats['icon_candidates_found'] = len(icon_candidates)
+    if not icon_candidates:
+        logger.info(
+            "🔖 [catalog-icons] No icon-shaped candidates on supplementary pages — "
+            "nothing to OCR"
+        )
+        return stats
+
+    logger.info(
+        f"🔖 [catalog-icons] {len(icon_candidates)} icon candidates found on shared "
+        f"pages — uploading and running OCR + Claude..."
+    )
+
+    # Upload icon images to storage so they have the same URL contract as
+    # per-product icons (admin UI display, audit trail).
+    try:
+        uploaded_icons = await image_service.upload_images_to_storage(
+            material_images=icon_candidates,
+            document_id=document_id,
+        )
+    except Exception as upload_err:
+        logger.warning(
+            f"   ⚠️ [catalog-icons] Failed to upload icon candidates, continuing with local paths: {upload_err}"
+        )
+        uploaded_icons = icon_candidates
+
+    # Tag each icon's dict so the DB row carries a catalog-wide flag for the
+    # admin UI and for any future filter that wants to exclude catalog icons
+    # from per-product counts.
+    for icon in uploaded_icons:
+        meta = icon.get('metadata') or {}
+        if not isinstance(meta, dict):
+            meta = {}
+        meta['catalog_wide_icon'] = True
+        icon['metadata'] = meta
+
+    # Route each icon through the existing _process_icon_candidate path, which
+    # handles: save_single_image → OCR + Claude → merge icon_metadata back onto
+    # the document_images row.
+    total_icons = len(uploaded_icons)
+    for idx, icon_img in enumerate(uploaded_icons, start=1):
+        try:
+            (_saved, _embedded, err, per_image_stats) = await image_service._process_icon_candidate(
+                img_data=icon_img,
+                document_id=document_id,
+                workspace_id=workspace_id,
+                idx=idx,
+                total=total_icons,
+            )
+        except Exception as icon_err:
+            logger.warning(
+                f"   ⚠️ [catalog-icons] Icon {idx}/{total_icons} raised: {icon_err}"
+            )
+            stats['icon_extraction_failed'] += 1
+            continue
+
+        stats['icons_processed'] += 1
+        if err:
+            stats['icon_extraction_failed'] += 1
+        elif per_image_stats.get('icon_metadata_count', 0) > 0:
+            stats['icon_metadata_extracted'] += 1
+
+    logger.info(
+        f"🔖 [catalog-icons] Done: scanned={stats['supplementary_pages_scanned']} pages, "
+        f"extracted={stats['images_extracted']} images, "
+        f"icons={stats['icons_processed']}/{stats['icon_candidates_found']}, "
+        f"spec-rich={stats['icon_metadata_extracted']}, "
+        f"failed={stats['icon_extraction_failed']}"
+    )
+    return stats

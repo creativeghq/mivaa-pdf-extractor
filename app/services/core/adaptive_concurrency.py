@@ -27,7 +27,7 @@ Usage:
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,30 @@ class AdaptiveConcurrency:
         self._in_flight = 0
         self._consecutive_failures = 0
         self._consecutive_successes = 0
-        self._cond = asyncio.Condition()
+        # Lazy-init the Condition on first async use.
+        #
+        # Why: in Python 3.9, `asyncio.Condition()` binds to the event loop
+        # returned by `events.get_event_loop()` at construction time. When the
+        # module-level `endpoint_controller` singleton is built at *import*
+        # time (before uvicorn has started any request loop), the Condition
+        # latches to either a throwaway loop or no loop at all. Once uvicorn
+        # creates its per-request loop and code calls `slot()`, the Condition's
+        # internal Futures belong to the wrong loop and raise:
+        #
+        #     RuntimeError: got Future <Future pending> attached to a different loop
+        #
+        # That's MIVAA-56Z — 42 events in 35 seconds during the Stage 3 batch.
+        # Deferring creation until the first coroutine actually enters `slot()`
+        # guarantees the Condition binds to the running request loop.
+        self._cond: Optional[asyncio.Condition] = None
+
+    def _get_cond(self) -> asyncio.Condition:
+        """Return the Condition, creating it lazily inside the caller's
+        running event loop on first use.
+        """
+        if self._cond is None:
+            self._cond = asyncio.Condition()
+        return self._cond
 
     @property
     def limit(self) -> int:
@@ -84,16 +107,17 @@ class AdaptiveConcurrency:
         Blocks (cooperatively) until `in_flight < limit`. Releases on exit even
         if the protected code raises.
         """
-        async with self._cond:
+        cond = self._get_cond()
+        async with cond:
             while self._in_flight >= self._limit:
-                await self._cond.wait()
+                await cond.wait()
             self._in_flight += 1
         try:
             yield
         finally:
-            async with self._cond:
+            async with cond:
                 self._in_flight -= 1
-                self._cond.notify_all()
+                cond.notify_all()
 
     def record_success(self) -> None:
         """Signal that an in-flight call succeeded.
@@ -176,8 +200,9 @@ class AdaptiveConcurrency:
 
     async def _notify_one(self) -> None:
         """Wake one waiter after a limit increase."""
-        async with self._cond:
-            self._cond.notify(1)
+        cond = self._get_cond()
+        async with cond:
+            cond.notify(1)
 
     def stats(self) -> dict:
         """Snapshot of current state for logging / progress reports."""

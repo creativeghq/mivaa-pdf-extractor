@@ -23,6 +23,8 @@ from typing import Any, List, Optional
 
 import anthropic
 
+from app.services.core.anthropic_error_reporter import report_anthropic_failure
+
 logger = logging.getLogger(__name__)
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
@@ -129,6 +131,11 @@ def write_product_description_from_chunks(
             }],
         )
     except Exception as e:
+        report_anthropic_failure(
+            e,
+            service="product_description_writer",
+            context={"product_name": product_name},
+        )
         logger.warning(f"product_description_writer: Claude call failed: {e}")
         return None
 

@@ -51,7 +51,7 @@ class ChandraEndpointManager:
         endpoint_name: Optional[str] = None,
         namespace: Optional[str] = None,
         auto_pause_timeout: int = 60,
-        inference_timeout: int = 30,
+        inference_timeout: int = 120,
         warmup_timeout: int = 300,
         max_resume_retries: int = 3,
         enabled: bool = True

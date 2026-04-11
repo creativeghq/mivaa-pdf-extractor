@@ -243,6 +243,15 @@ class ProductCatalog:
     # PDF page widths (pdf_page_idx -> width) - for spread center calculation
     pdf_page_widths: Dict[int, float] = None
 
+    # Supplementary pages = PDF page indices (0-based) that were NOT assigned
+    # to any product during discovery. These are typically legend / iconography /
+    # certification / installation / care / sustainability pages that apply
+    # catalog-wide rather than to one product. The catalog-wide icon pass in
+    # Stage 3 scans these pages for icon strips so a per-product rollup can
+    # still pick up e.g. R9 slip ratings printed on a shared legend page
+    # (instead of only finding icons on individual product pages).
+    supplementary_pages: List[int] = None
+
     # Processing info
     processing_time_ms: float = 0.0
     model_used: str = ""
@@ -260,6 +269,8 @@ class ProductCatalog:
             self.content_classification = {}
         if self.physical_to_pdf_map is None:
             self.physical_to_pdf_map = {}
+        if self.supplementary_pages is None:
+            self.supplementary_pages = []
 
 
 class ProductDiscoveryService:
@@ -1318,6 +1329,13 @@ class ProductDiscoveryService:
             supplementary_text = ""
             all_pdf_page_indices = set(range(pdf_page_count))
             supplementary_page_indices = sorted(all_pdf_page_indices - all_product_pages)
+
+            # Expose the supplementary page set on the catalog so Stage 3 can
+            # run a catalog-wide icon extraction pass over them. Without this,
+            # any icon strips that live on shared legend/compliance pages
+            # (rather than on individual product pages) would never be OCR'd
+            # and would never flow through to product.metadata.
+            catalog.supplementary_pages = list(supplementary_page_indices)
 
             if supplementary_page_indices:
                 self.logger.info(

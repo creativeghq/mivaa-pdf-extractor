@@ -45,6 +45,8 @@ import anthropic
 import fitz  # PyMuPDF
 from PIL import Image
 
+from app.services.core.anthropic_error_reporter import report_anthropic_failure
+
 logger = logging.getLogger(__name__)
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
@@ -168,6 +170,7 @@ def _call_claude_vision_knowledge(png_bytes: bytes) -> Optional[Dict[str, Any]]:
             }],
         )
     except Exception as e:
+        report_anthropic_failure(e, service="catalog_knowledge_extractor")
         logger.warning(f"catalog_knowledge_extractor: Claude call failed: {e}")
         return None
 
@@ -325,58 +328,44 @@ async def extract_catalog_knowledge_from_pdf(
         key_points = data.get("key_points") or []
         relationship_type = PAGE_TYPE_TO_RELATIONSHIP.get(page_type, "related")
 
-        # Check if a catalog-level KB doc for this document + page_type already
-        # exists (idempotency: don't duplicate on re-runs).
+        # Upsert kb_doc via RPC — idempotent on (source_document_id, page_index, title).
+        # No need for a pre-check: the RPC handles insert-vs-update based on the
+        # natural key, and a duplicate run will simply refresh the row in place.
         try:
-            existing = supabase.client.table("kb_docs") \
-                .select("id") \
-                .eq("workspace_id", workspace_id) \
-                .contains("metadata", {
-                    "auto_generated": True,
-                    "catalog_knowledge": True,
-                    "source_document_id": document_id,
-                    "page_type": page_type,
-                    "source_page_index": idx,
-                }) \
-                .execute()
-            if existing.data:
-                log.info(f"   ℹ️ KB doc already exists for {page_type} page {idx}, skipping")
-                continue
-        except Exception:
-            pass  # idempotency check is best-effort
-
-        # Insert kb_doc
-        try:
-            result = supabase.client.table("kb_docs").insert({
-                "workspace_id": workspace_id,
-                "title": title,
-                "content": content_md,
-                "content_markdown": content_md,
-                "summary": " ".join(key_points[:3])[:500] if key_points else content_md[:300],
-                "status": "published",
-                "visibility": "workspace",
-                "metadata": {
-                    "auto_generated": True,
-                    "catalog_knowledge": True,
-                    "page_type": page_type,
-                    "relationship_type": relationship_type,
-                    "source_document_id": document_id,
-                    "source_page_index": idx,
-                    "extraction_method": "claude_vision",
-                    "extraction_model": KNOWLEDGE_VISION_MODEL,
-                    "key_points": key_points,
-                    "generated_at": datetime.utcnow().isoformat(),
+            rpc_result = supabase.client.rpc(
+                "upsert_kb_doc",
+                {
+                    "p_workspace_id": workspace_id,
+                    "p_title": title,
+                    "p_content": content_md,
+                    "p_content_markdown": content_md,
+                    "p_summary": (
+                        " ".join(key_points[:3])[:500] if key_points else content_md[:300]
+                    ),
+                    "p_status": "published",
+                    "p_visibility": "workspace",
+                    "p_metadata": {
+                        "auto_generated": True,
+                        "catalog_knowledge": True,
+                        "page_type": page_type,
+                        "relationship_type": relationship_type,
+                        "source_document_id": document_id,
+                        "source_page_index": idx,
+                        "extraction_method": "claude_vision",
+                        "extraction_model": KNOWLEDGE_VISION_MODEL,
+                        "key_points": key_points,
+                        "generated_at": datetime.utcnow().isoformat(),
+                    },
                 },
-            }).execute()
+            ).execute()
         except Exception as e:
-            log.warning(f"   ❌ kb_docs insert failed: {e}")
-            stats["errors"].append(f"insert_{idx}: {e}")
+            log.warning(f"   ❌ kb_docs upsert failed: {e}")
+            stats["errors"].append(f"upsert_{idx}: {e}")
             continue
 
-        if not result.data:
+        doc_id = rpc_result.data if isinstance(rpc_result.data, str) else None
+        if not doc_id:
             continue
-
-        doc_id = result.data[0]["id"]
         stats["docs_created"] += 1
 
         # Generate embedding (best-effort)

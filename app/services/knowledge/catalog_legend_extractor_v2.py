@@ -53,6 +53,8 @@ import fitz  # PyMuPDF
 import sentry_sdk
 from PIL import Image
 
+from app.services.core.anthropic_error_reporter import report_anthropic_failure
+
 logger = logging.getLogger(__name__)
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
@@ -254,6 +256,7 @@ def _call_claude(image_bytes: bytes, prompt: str) -> Optional[Dict[str, Any]]:
             }],
         )
     except Exception as e:
+        report_anthropic_failure(e, service="catalog_legend_extractor_v2")
         logger.warning(f"catalog_legend_extractor_v2: Claude call failed: {e}")
         return None
 
@@ -561,17 +564,17 @@ async def extract_catalog_legends(
             if not content_md:
                 continue
             try:
-                kb_result = (
-                    supabase.client.table("kb_docs")
-                    .insert({
-                        "workspace_id": workspace_id,
-                        "title": title,
-                        "content": content_md,
-                        "content_markdown": content_md,
-                        "summary": content_md[:300],
-                        "status": "published",
-                        "visibility": "workspace",
-                        "metadata": {
+                kb_result = supabase.client.rpc(
+                    "upsert_kb_doc",
+                    {
+                        "p_workspace_id": workspace_id,
+                        "p_title": title,
+                        "p_content": content_md,
+                        "p_content_markdown": content_md,
+                        "p_summary": content_md[:300],
+                        "p_status": "published",
+                        "p_visibility": "workspace",
+                        "p_metadata": {
                             "auto_generated": True,
                             "catalog_knowledge": True,
                             "legend_type": resolved_type,
@@ -581,11 +584,10 @@ async def extract_catalog_legends(
                             "extraction_model": LEGEND_VISION_MODEL,
                             "generated_at": datetime.utcnow().isoformat(),
                         },
-                    })
-                    .execute()
-                )
-                if kb_result.data:
-                    doc_id = kb_result.data[0]["id"]
+                    },
+                ).execute()
+                doc_id = kb_result.data if isinstance(kb_result.data, str) else None
+                if doc_id:
                     stats["kb_docs_created"] += 1
                     relationship = LEGEND_TYPE_TO_RELATIONSHIP.get(resolved_type, "related")
                     if product_ids:
