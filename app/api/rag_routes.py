@@ -2407,14 +2407,25 @@ async def process_document_with_discovery(
                         warmup_results["skipped"].append("qwen")
                         return
 
-                    # Run blocking resume in thread pool
-                    resumed = await asyncio.to_thread(manager.resume_if_needed)
-                    if resumed:
-                        logger.info(f"   ⏳ Warming up Qwen ({manager.warmup_timeout}s)...")
-                        await asyncio.sleep(1)  # Minimal async yield
-                        manager.warmup_completed = True
+                    # Run the REAL warmup in thread pool. The manager's
+                    # warmup() handles: refresh URL → inline resume →
+                    # poll /chat/completions until it's serving. This is
+                    # the only way to guarantee the endpoint is ready
+                    # BEFORE Stage 3 image classification starts — and
+                    # to refresh `manager.endpoint_url` from the live HF
+                    # SDK when QWEN_ENDPOINT_URL env var is empty.
+                    def resume_and_warmup_qwen():
+                        if manager.resume_if_needed():
+                            return manager.warmup()
+                        return False
+
+                    success = await asyncio.to_thread(resume_and_warmup_qwen)
+                    if success:
                         warmup_results["success"].append("qwen")
                         logger.info("   ✅ Qwen warmup complete")
+                    else:
+                        warmup_results["failed"].append({"endpoint": "qwen", "error": "warmup returned False"})
+                        logger.warning("   ⚠️ Qwen warmup returned False (will retry on first use)")
                 else:
                     warmup_results["skipped"].append("qwen")
             except Exception as e:

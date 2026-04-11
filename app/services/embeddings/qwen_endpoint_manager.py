@@ -320,37 +320,55 @@ class QwenEndpointManager:
 
 
     def warmup(self) -> bool:
-        """Smart polling-based warmup - stops as soon as endpoint responds."""
+        """Smart polling-based warmup - stops as soon as endpoint responds.
+
+        2026-04-11 rework: pre-fetch the live URL from HF SDK AND inline
+        the resume logic (fetch + resume().wait()) directly. We can NOT
+        call `self.resume_if_needed()` here because that method calls
+        `self.warmup()` at the end — mutual recursion = infinite loop.
+        """
         if self.warmup_completed:
             logger.info("✅ Qwen endpoint already warmed up")
             return True
 
-        # CRITICAL: pull the live URL from HF SDK BEFORE the test loop.
-        # Root cause of the 2026-04-11 pipeline hang: the manager was
-        # initialized with an empty endpoint_url (rag_routes.py:2376 passes
-        # qwen_config["endpoint_url"] which is empty in prod because
-        # QWEN_ENDPOINT_URL env var is not set). `_test_inference` then
-        # skipped every attempt with "endpoint_url not configured" and the
-        # warmup loop never completed. Fix: always call
-        # `_refresh_url_from_endpoint()` at the top so self.endpoint_url
-        # gets populated from `endpoint.url` regardless of current status.
+        # Step 1: pull the live URL from HF SDK so self.endpoint_url
+        # isn't empty when _test_inference runs.
         self._refresh_url_from_endpoint()
 
-        # Defensive check: ensure endpoint is not paused before warmup
+        # Step 2: inline resume — fetch the endpoint and if it's in any
+        # state other than 'running', wait it into 'running'. Wraps HF
+        # SDK calls in try/except so warmup still proceeds to the test
+        # loop even if the SDK path fails.
         if self._can_pause_resume:
             endpoint = self._get_endpoint()
             if endpoint:
                 try:
                     endpoint.fetch()
-                    if endpoint.status in ["paused", "scaledToZero"]:
-                        logger.warning(f"⚠️ Qwen endpoint is {endpoint.status} - triggering resume")
-                        endpoint.resume().wait(timeout=300)
-                        self.resume_count += 1
-                        self.last_resume_time = time.time()
-                        # Refresh again post-resume: the URL may have changed.
+                    current_status = getattr(endpoint, 'status', None)
+                    logger.info(f"🔍 Qwen endpoint status at warmup: {current_status}")
+                    if current_status in ("paused", "scaledToZero", "pending"):
+                        logger.warning(
+                            f"⚠️ Qwen endpoint is {current_status} — "
+                            f"calling endpoint.resume() and waiting up to 300s"
+                        )
+                        try:
+                            endpoint.resume().wait(timeout=300)
+                            self.resume_count += 1
+                            self.last_resume_time = time.time()
+                            logger.info("✅ Qwen endpoint resume() returned")
+                        except Exception as resume_err:
+                            logger.warning(
+                                f"⚠️ Qwen endpoint resume() raised: {resume_err}"
+                            )
+                        # Refresh URL after resume in case HF reassigned it.
                         self._refresh_url_from_endpoint()
+                    elif current_status == "initializing":
+                        logger.info(
+                            f"⏳ Qwen endpoint is initializing — "
+                            f"the test loop below will poll until it's ready"
+                        )
                 except Exception as e:
-                    logger.warning(f"⚠️ Failed to check/resume endpoint during warmup: {e}")
+                    logger.warning(f"⚠️ Failed to fetch/resume Qwen endpoint: {e}")
 
         logger.info(f"🔥 Warming up Qwen endpoint (max {self.warmup_timeout}s)...")
         start_time = time.time()
