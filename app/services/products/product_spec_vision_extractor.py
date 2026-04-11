@@ -42,11 +42,13 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 # env var without changing code.
 CLAUDE_VISION_MODEL = os.getenv("PRODUCT_SPEC_VISION_MODEL", "claude-haiku-4-5-20251001")
 
-# Render DPI for PDF pages. 220 keeps letterpress / icon strips legible while
-# staying well under Claude's 5 MB input limit on large A4 pages. Anything
-# higher and we frequently have to re-shrink — which wastes time and risks
-# losing icon detail from the downscale pass.
-PAGE_RENDER_DPI = 220
+# Render DPI for PDF pages. 280 is high enough for the technical-characteristics
+# icon strip (slip resistance / PEI / water absorption glyphs are ~20-30 px tall
+# at 220 DPI and Claude Haiku struggles to classify them; at 280 they're
+# clearly readable). When the resulting PNG exceeds 5 MB, _render_page_under_limit
+# drops DPI step-by-step and switches to JPEG so we always fit within Claude's
+# hard limit without losing the icons.
+PAGE_RENDER_DPI = 280
 
 # Max bytes per image before we downscale. 4 MB leaves comfortable headroom
 # under Claude's 5 MB hard limit after base64 expansion overhead.
@@ -71,6 +73,22 @@ For the fields you return:
   - variants / SKU codes / packing_per_variant / grout_recommendations → ONLY include rows whose variant name starts with or mentions "{product_name}" (case-insensitive). Drop rows for other products on the same table.
   - slip_resistance / pei_rating / water_absorption_class / fire_rating / frost_resistance / shade_variation / traffic_level / installation_method / joint_width_mm / certifications → include if visible on this page, even if presented as a shared spec grid. Those icons are usually one set per spec page.
   - thickness_mm / finish / body_type / dimensions → include if the page shows values specifically tied to "{product_name}".
+
+TECHNICAL CHARACTERISTICS ICON STRIP — read carefully
+-----------------------------------------------------
+Ceramic catalogs show tech specs as a ROW of small square pictograms near the top or bottom of the spec page, each with a tiny label underneath. You MUST inspect every icon and extract its value when visible. The icons you will see in Harmony / similar catalogs:
+
+  • MATT / GLOSS          — finish dot, report "matte" or "gloss" in `finish`
+  • SHADE VARIATION       — V1 / V2 / V3 / V4 → `shade_variation`
+  • SLIP RESISTANCE       — foot on wet surface, look for R9 / R10 / R11 / R12 label → `slip_resistance`
+  • PEI                   — circle of arrows or roman numeral I..V → `pei_rating`
+  • WATER ABSORPTION      — water droplet + BIa / BIb / BIIa / BIIb / BIII → `water_absorption_class`
+  • FIRE RATING           — flame + A1 / A2 / Bfl / Cfl → `fire_rating`
+  • FROST RESISTANCE      — snowflake; yes/no → `frost_resistance`
+  • TRAFFIC LEVEL         — footprint; residential / commercial / heavy → `traffic_level`
+  • SHOWER WALL / FLOOR / FLOOR — check marks next to each → include in `recommended_use` array
+
+Most pages show 6-10 of these pictograms together. Even if a value looks subtle, RETURN WHAT YOU SEE rather than null. If a pictogram is clearly struck-through or dimmed, it's an absent feature — skip it. If you genuinely cannot read the icon strip, use null for that field but still populate the other fields on the page.
 
 If page_contains_target is false, return exactly:
 {"page_contains_target": false, "product_name": null}
@@ -150,14 +168,78 @@ def _build_spec_prompt(product_name: str) -> str:
 SPEC_PROMPT = _build_spec_prompt("the ceramic product on this page")
 
 
-def _render_pdf_page_to_bytes(pdf_path: str, page_index: int, dpi: int = PAGE_RENDER_DPI) -> bytes:
-    """Render one PDF page to PNG bytes."""
+def _render_pdf_page_to_bytes(
+    pdf_path: str,
+    page_index: int,
+    dpi: int = PAGE_RENDER_DPI,
+    *,
+    fmt: str = "png",
+    jpeg_quality: int = 85,
+) -> bytes:
+    """Render one PDF page to image bytes.
+
+    `fmt` may be "png" or "jpg". JPEG is ~4-6x smaller for photographic
+    brochure pages and is used as a fallback when PNG renders exceed the
+    5 MB Claude limit (some high-res Harmony spreads produce 6-8 MB PNGs).
+    """
     doc = fitz.open(pdf_path)
     try:
         pix = doc[page_index].get_pixmap(dpi=dpi)
+        if fmt == "jpg":
+            return pix.tobytes("jpg", jpg_quality=jpeg_quality)
         return pix.tobytes("png")
     finally:
         doc.close()
+
+
+def _render_page_under_limit(
+    pdf_path: str,
+    page_index: int,
+    max_bytes: int = MAX_IMAGE_BYTES,
+) -> Optional[bytes]:
+    """Render a PDF page into bytes guaranteed to fit under `max_bytes`.
+
+    Strategy:
+      1. Try PNG at the default DPI. Keep if it's already under max_bytes.
+      2. If too big, try PNG at progressively lower DPIs (180, 150, 120).
+      3. If PNG still too big, switch to JPEG at 180/150/120 DPI with
+         quality 88/82/75.
+      4. Return the smallest rendering we can produce; return None only
+         if every attempt fails at the PyMuPDF level.
+
+    This bypasses PIL entirely — PyMuPDF produces both PNG and JPEG
+    natively, so we never have to round-trip through Image.open, which
+    was choking on high-res Harmony pages with "cannot identify image
+    file".
+    """
+    # Pass 1: PNG at several DPIs
+    for dpi in (PAGE_RENDER_DPI, 180, 150, 120):
+        try:
+            data = _render_pdf_page_to_bytes(pdf_path, page_index, dpi=dpi, fmt="png")
+        except Exception as e:
+            logger.warning(f"   ⚠️ PNG render page {page_index} @ {dpi} dpi failed: {e}")
+            continue
+        if len(data) <= max_bytes:
+            return data
+
+    # Pass 2: JPEG at several DPI / quality combos
+    for dpi, q in ((180, 88), (150, 85), (120, 80), (100, 75)):
+        try:
+            data = _render_pdf_page_to_bytes(
+                pdf_path, page_index, dpi=dpi, fmt="jpg", jpeg_quality=q,
+            )
+        except Exception as e:
+            logger.warning(f"   ⚠️ JPEG render page {page_index} @ {dpi} dpi q={q} failed: {e}")
+            continue
+        if len(data) <= max_bytes:
+            return data
+
+    # Last-resort attempt — even an oversized payload is preferable to None
+    # since the caller logs the failure and moves on.
+    try:
+        return _render_pdf_page_to_bytes(pdf_path, page_index, dpi=100, fmt="jpg", jpeg_quality=70)
+    except Exception:
+        return None
 
 
 def _shrink_if_needed(png_bytes: bytes, max_bytes: int = MAX_IMAGE_BYTES) -> bytes:
@@ -476,19 +558,17 @@ def extract_specs_from_pdf_pages(
     pages_dropped_other_product = 0
 
     for idx in pdf_indices:
-        # Everything per-page is wrapped in one try/except so that a PIL
-        # open failure, a rendering failure, or a Claude 4xx on one page
-        # does not abort the whole scan. We've seen PyMuPDF produce PNGs
-        # that PIL can't read for high-res Harmony spreads; those pages
-        # get logged and skipped, not propagated.
-        try:
-            png = _render_pdf_page_to_bytes(pdf_path, idx)
-        except Exception as e:
-            logger.warning(f"   ⚠️ render page {idx} failed: {e}")
+        # Render directly under the 5 MB Claude limit via PyMuPDF (PNG then
+        # JPEG fallback at progressively lower DPI). This bypasses PIL
+        # entirely, which previously choked on some high-res Harmony
+        # spreads with "cannot identify image file".
+        image_bytes = _render_page_under_limit(pdf_path, idx)
+        if image_bytes is None:
+            logger.warning(f"   ⚠️ render page {idx} failed at every DPI/format attempt")
             continue
 
         try:
-            data = _call_claude_vision(png, prompt=product_aware_prompt)
+            data = _call_claude_vision(image_bytes, prompt=product_aware_prompt)
         except Exception as e:
             logger.warning(f"   ⚠️ Claude Vision call failed for page {idx}: {e}")
             continue
