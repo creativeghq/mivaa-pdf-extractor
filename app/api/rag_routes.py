@@ -1270,6 +1270,184 @@ async def resume_job(job_id: str, background_tasks: BackgroundTasks):
     return await restart_job_from_checkpoint(job_id, background_tasks)
 
 
+@router.post("/documents/{document_id}/reprocess")
+async def reprocess_document(
+    document_id: str,
+    background_tasks: BackgroundTasks,
+    clear_intermediate: bool = True,
+) -> Dict[str, Any]:
+    """
+    Full Stage 0→4.7 reprocess of an existing document without re-uploading
+    the PDF. Use this to validate pipeline changes against a known document.
+
+    Flow:
+      1. Find the latest background_jobs row for this document_id.
+      2. Resolve the PDF on disk (from /tmp/pdf_processor_{doc_id}/).
+      3. If `clear_intermediate=True` (default): delete derived data
+         (products, chunks, images, checkpoints, catalog_layout,
+         catalog_legends) so the new run starts from a clean slate.
+         The `documents` row itself is preserved.
+      4. Create a NEW background_jobs row (status=pending, progress=0).
+      5. Launch `process_document_with_discovery()` as a background task.
+      6. Return the new job_id + handoff URL for the monitor.
+
+    Query params:
+      clear_intermediate (bool, default True): whether to wipe derived data.
+        Set False for a "resume fresh" that just starts a new job against
+        existing intermediate state — useful if you want to test idempotency.
+    """
+    import uuid
+
+    try:
+        supabase = get_supabase_client()
+
+        # ── 1. Resolve the document and its latest job ─────────────────
+        doc_resp = supabase.client.table("documents") \
+            .select("id, filename, workspace_id, metadata") \
+            .eq("id", document_id) \
+            .limit(1) \
+            .execute()
+        if not doc_resp.data:
+            raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
+        doc = doc_resp.data[0]
+        filename = doc.get("filename") or f"{document_id}.pdf"
+        workspace_id = doc.get("workspace_id")
+        doc_metadata = doc.get("metadata") or {}
+
+        # Find the latest job to preserve user-specified discovery options
+        jobs_resp = supabase.client.table("background_jobs") \
+            .select("id, discovery_model, focused_extraction, extract_categories, metadata") \
+            .eq("document_id", document_id) \
+            .order("created_at", desc=True) \
+            .limit(1) \
+            .execute()
+        prev_job = (jobs_resp.data or [{}])[0] if jobs_resp.data else {}
+
+        discovery_model = prev_job.get("discovery_model") or "claude-sonnet-4-6"
+        focused_extraction = prev_job.get("focused_extraction", True)
+        extract_categories = prev_job.get("extract_categories") or []
+
+        # ── 2. Resolve PDF on disk ─────────────────────────────────────
+        from app.services.products.product_spec_vision_extractor import _get_source_pdf_path
+        pdf_path = _get_source_pdf_path(document_id)
+        if not pdf_path:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"PDF source not on disk for document {document_id}. "
+                    f"Expected at /tmp/pdf_processor_{document_id}/{document_id}.pdf. "
+                    f"Re-download from Supabase Storage first."
+                ),
+            )
+
+        # ── 3. Clear intermediate data (optional) ──────────────────────
+        if clear_intermediate:
+            logger.info(f"🧹 reprocess: clearing intermediate data for {document_id}")
+
+            # Collect product ids for this doc so we can delete their joins
+            prods = supabase.client.table("products") \
+                .select("id") \
+                .eq("source_document_id", document_id) \
+                .execute()
+            product_ids = [p["id"] for p in (prods.data or [])]
+
+            # image_product_associations (not ON DELETE CASCADE from products)
+            if product_ids:
+                supabase.client.table("image_product_associations") \
+                    .delete().in_("product_id", product_ids).execute()
+                supabase.client.table("kb_doc_attachments") \
+                    .delete().in_("product_id", product_ids).execute()
+
+            # Derived tables (products → chunks → images)
+            supabase.client.table("products") \
+                .delete().eq("source_document_id", document_id).execute()
+            supabase.client.table("document_chunks") \
+                .delete().eq("document_id", document_id).execute()
+            supabase.client.table("document_images") \
+                .delete().eq("document_id", document_id).execute()
+
+            # Checkpoints on previous jobs
+            if prev_job.get("id"):
+                try:
+                    supabase.client.table("job_checkpoints") \
+                        .delete().eq("job_id", prev_job["id"]).execute()
+                except Exception as _cp_err:
+                    logger.warning(f"reprocess: checkpoint clear failed: {_cp_err}")
+
+            # Wipe the Layer 1/2 cached output on the document so they re-run
+            doc_metadata.pop("catalog_layout", None)
+            doc_metadata.pop("catalog_legends", None)
+            supabase.client.table("documents") \
+                .update({"metadata": doc_metadata}).eq("id", document_id).execute()
+
+        # ── 4. Create a fresh background_jobs row ──────────────────────
+        new_job_id = str(uuid.uuid4())
+        supabase.client.table("background_jobs").insert({
+            "id": new_job_id,
+            "document_id": document_id,
+            "workspace_id": workspace_id,
+            "job_type": "pdf_processing",
+            "status": "pending",
+            "progress": 0,
+            "filename": filename,
+            "discovery_model": discovery_model,
+            "focused_extraction": focused_extraction,
+            "extract_categories": extract_categories,
+            "metadata": {
+                "reprocess_of": prev_job.get("id"),
+                "triggered_by": "reprocess_endpoint",
+                "clear_intermediate": clear_intermediate,
+            },
+        }).execute()
+
+        # ── 5. Kick off process_document_with_discovery in the background
+        background_tasks.add_task(
+            process_document_with_discovery,
+            job_id=new_job_id,
+            document_id=document_id,
+            file_path=pdf_path,
+            filename=filename,
+            title=doc_metadata.get("title") or filename,
+            description=doc_metadata.get("description") or "",
+            document_tags=doc_metadata.get("tags") or [],
+            discovery_model=discovery_model,
+            focused_extraction=focused_extraction,
+            extract_categories=extract_categories,
+            chunk_size=1000,
+            chunk_overlap=200,
+            workspace_id=workspace_id,
+            agent_prompt=doc_metadata.get("agent_prompt"),
+            enable_prompt_enhancement=True,
+            test_single_product=False,
+        )
+
+        logger.info(
+            f"🔄 reprocess: launched new job {new_job_id} for document {document_id} "
+            f"(previous job: {prev_job.get('id') or 'none'}, cleared: {clear_intermediate})"
+        )
+
+        return {
+            "success": True,
+            "document_id": document_id,
+            "new_job_id": new_job_id,
+            "previous_job_id": prev_job.get("id"),
+            "cleared_intermediate": clear_intermediate,
+            "message": (
+                f"Reprocess dispatched. Monitor via "
+                f"/api/rag/documents/job/{new_job_id} or the admin AsyncJobQueueMonitor."
+            ),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ reprocess_document failed for {document_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Reprocess failed: {str(e)}",
+        )
+
+
 @router.get("/documents/jobs")
 async def list_jobs(
     limit: int = 10,

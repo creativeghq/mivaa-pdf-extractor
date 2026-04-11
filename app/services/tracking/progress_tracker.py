@@ -158,6 +158,13 @@ class ProgressTracker:
                 'metadata': {
                     'current_stage': self.current_stage.value,
                     'stage': self.current_stage.value,  # Alias for UI compatibility
+                    # sub_stage is a fine-grained label (e.g. "catalog_layout_analysis",
+                    # "catalog_legend_extraction", "product_spec_extraction") that
+                    # callers pass via `stage_name`. The frontend AsyncJobQueueMonitor
+                    # reads this when present so users see the NEW Layer 1/2/3
+                    # pipeline sub-stages during Stage 4.7 enrichment — not just
+                    # the generic ANALYZING_STRUCTURE enum.
+                    'sub_stage': stage if stage else None,
                     'current_step': self.current_step,  # Detailed step description for UI
                     'progress_current': self.progress_current,  # Current item number for UI
                     'progress_total': self.progress_total,  # Total items for UI
