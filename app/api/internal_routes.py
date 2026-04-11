@@ -1809,3 +1809,299 @@ async def enrich_existing_product(product_id: str) -> EnrichExistingProductRespo
             status_code=500,
             detail=f"Backfill enrichment failed: {str(e)}",
         )
+
+
+# ============================================================================
+# POST /api/internal/run-catalog-knowledge/{document_id}
+# ============================================================================
+
+class RunCatalogKnowledgeResponse(BaseModel):
+    success: bool
+    document_id: str
+    layout: Optional[Dict[str, Any]] = None
+    legends_stats: Optional[Dict[str, Any]] = None
+    message: str
+
+
+@router.post("/run-catalog-knowledge/{document_id}", response_model=RunCatalogKnowledgeResponse)
+async def run_catalog_knowledge(document_id: str, force: bool = False) -> RunCatalogKnowledgeResponse:
+    """
+    Standalone runner for Layer 1 (catalog layout analyzer) + Layer 2
+    (catalog legend extractor) against a single document.
+
+    Use this when you want to (re)process the catalog-wide data — page
+    classification, legend extraction, certification propagation — WITHOUT
+    re-running the full Stage 0-4 pipeline. This is the only endpoint that
+    re-runs the catalog_legends and certifications propagation for every
+    product in the document.
+
+    Query param `force=true` bypasses the idempotency check and re-analyzes
+    even if `documents.metadata.catalog_layout.analyzed_at` exists.
+    """
+    try:
+        supabase = get_supabase_client()
+
+        # Resolve PDF path
+        from app.services.products.product_spec_vision_extractor import _get_source_pdf_path
+        pdf_path = _get_source_pdf_path(document_id)
+        if not pdf_path:
+            raise HTTPException(
+                status_code=400,
+                detail=f"PDF source not on disk for document {document_id}. "
+                       f"Run a re-ingestion or upload the file to /tmp/pdf_processor_{{doc_id}}/.",
+            )
+
+        # Resolve workspace_id for kb_docs
+        doc_resp = supabase.client.table("documents") \
+            .select("workspace_id") \
+            .eq("id", document_id) \
+            .limit(1) \
+            .execute()
+        if not doc_resp.data:
+            raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
+        workspace_id = doc_resp.data[0].get("workspace_id")
+        if not workspace_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Document {document_id} has no workspace_id — cannot create kb_docs",
+            )
+
+        # Layer 1: catalog layout
+        from app.services.discovery.catalog_layout_analyzer import analyze_catalog_layout
+        layout = await analyze_catalog_layout(
+            document_id=document_id,
+            pdf_path=pdf_path,
+            supabase=supabase,
+            force=force,
+        )
+
+        # Layer 2: legend extraction + cert propagation
+        from app.services.knowledge.catalog_legend_extractor_v2 import extract_catalog_legends
+        legends_stats = await extract_catalog_legends(
+            document_id=document_id,
+            pdf_path=pdf_path,
+            workspace_id=workspace_id,
+            supabase=supabase,
+            force=force,
+        )
+
+        return RunCatalogKnowledgeResponse(
+            success=True,
+            document_id=document_id,
+            layout={
+                "analyzed_at": layout.get("analyzed_at"),
+                "total_pages": layout.get("total_pages"),
+                "stats": layout.get("stats"),
+            },
+            legends_stats=legends_stats,
+            message=(
+                f"Layer 1 + 2 complete: {legends_stats.get('legends_extracted', 0)} legend pages extracted, "
+                f"{legends_stats.get('products_updated', 0)} products updated with certifications, "
+                f"{legends_stats.get('kb_docs_created', 0)} kb_docs created"
+            ),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ run_catalog_knowledge failed for document {document_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Catalog knowledge extraction failed: {str(e)}",
+        )
+
+
+# ============================================================================
+# GET /api/internal/document-extraction-status/{document_id}
+# ============================================================================
+
+class ProductCoverage(BaseModel):
+    id: str
+    name: str
+    populated_fields: int
+    missing_critical: List[str]
+    source_breakdown: Dict[str, int]
+
+
+class DocumentExtractionStatusResponse(BaseModel):
+    success: bool
+    document_id: str
+    filename: Optional[str]
+    catalog_layout_analyzed: bool
+    legends_extracted: bool
+    layout_stats: Optional[Dict[str, Any]]
+    legend_types_found: List[str]
+    global_certifications: List[str]
+    total_products: int
+    average_coverage_pct: float
+    products_by_coverage: Dict[str, int]
+    issues: List[str]
+    products_sample: List[ProductCoverage]
+
+
+@router.get("/document-extraction-status/{document_id}", response_model=DocumentExtractionStatusResponse)
+async def document_extraction_status(
+    document_id: str,
+    sample_limit: int = 10,
+) -> DocumentExtractionStatusResponse:
+    """
+    Observability endpoint — returns a snapshot of how well a document has
+    been processed end-to-end. Shows:
+
+      - Whether Layer 1 (catalog layout) ran
+      - Whether Layer 2 (catalog legends + certs) ran
+      - Which legend types were found
+      - Global certifications propagated
+      - Per-product field coverage (populated / missing critical)
+      - Source breakdown (how many fields came from chunks vs vision vs legend)
+      - Issues detected (missing legend pages, failed extractions, etc.)
+
+    Use this to triage a catalog after ingestion: run it, see which products
+    are underfilled and which legends are missing, and decide whether to
+    re-run a specific layer or accept the current state.
+    """
+    try:
+        supabase = get_supabase_client()
+
+        # Load doc + metadata
+        doc_resp = supabase.client.table("documents") \
+            .select("id, filename, metadata") \
+            .eq("id", document_id) \
+            .limit(1) \
+            .execute()
+        if not doc_resp.data:
+            raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
+
+        doc = doc_resp.data[0]
+        doc_md = doc.get("metadata") or {}
+        catalog_layout = doc_md.get("catalog_layout") or {}
+        catalog_legends = doc_md.get("catalog_legends") or {}
+
+        # Load all products for the doc
+        prods_resp = supabase.client.table("products") \
+            .select("id, name, description, metadata") \
+            .eq("source_document_id", document_id) \
+            .execute()
+        products = prods_resp.data or []
+
+        # Critical fields we expect every ceramic product to have
+        CRITICAL_FIELDS = [
+            "factory_name",
+            "material_category",
+            "dimensions",
+            "material_properties.finish",
+            "material_properties.body_type",
+            "material_properties.thickness_mm",
+            "packaging.pieces_per_box",
+            "packaging.m2_per_box",
+            "packaging.weight_per_box_kg",
+            "packaging.boxes_per_pallet",
+            "appearance.primary_color_hex",
+            "performance.slip_resistance",
+            "performance.pei_rating",
+            "compliance.certifications",
+            "application.recommended_use",
+        ]
+
+        def _get_nested(md: Dict[str, Any], path: str) -> Any:
+            cur: Any = md
+            for part in path.split("."):
+                if not isinstance(cur, dict):
+                    return None
+                cur = cur.get(part)
+                if cur in (None, "", [], {}):
+                    return None
+            return cur
+
+        def _count_populated(md: Dict[str, Any]) -> int:
+            """Count populated fields across all nested categories."""
+            n = 0
+            for section, val in (md or {}).items():
+                if section.startswith("_") or section == "catalog_layout":
+                    continue
+                if isinstance(val, dict):
+                    n += sum(1 for x in val.values() if x not in (None, "", [], {}))
+                elif val not in (None, "", [], {}):
+                    n += 1
+            return n
+
+        def _source_breakdown(md: Dict[str, Any]) -> Dict[str, int]:
+            em = md.get("_extraction_metadata") or {}
+            breakdown: Dict[str, int] = {}
+            if isinstance(em, dict):
+                for _field, info in em.items():
+                    if isinstance(info, dict):
+                        src = info.get("source") or "unknown"
+                        breakdown[src] = breakdown.get(src, 0) + 1
+            return breakdown
+
+        # Aggregate stats
+        total = len(products)
+        coverage_scores: List[int] = []
+        by_bucket = {"0-25%": 0, "25-50%": 0, "50-75%": 0, "75-100%": 0}
+        samples: List[ProductCoverage] = []
+
+        for p in products:
+            md = p.get("metadata") or {}
+            populated = _count_populated(md)
+            missing_critical = [
+                f for f in CRITICAL_FIELDS if _get_nested(md, f) is None
+            ]
+            # "Coverage" is populated fields / 40 (approx max useful fields per product)
+            pct = min(100, int((populated / 40) * 100))
+            coverage_scores.append(pct)
+            if pct < 25:
+                by_bucket["0-25%"] += 1
+            elif pct < 50:
+                by_bucket["25-50%"] += 1
+            elif pct < 75:
+                by_bucket["50-75%"] += 1
+            else:
+                by_bucket["75-100%"] += 1
+
+            if len(samples) < sample_limit:
+                samples.append(ProductCoverage(
+                    id=p["id"],
+                    name=p.get("name") or "?",
+                    populated_fields=populated,
+                    missing_critical=missing_critical,
+                    source_breakdown=_source_breakdown(md),
+                ))
+
+        avg_pct = sum(coverage_scores) / total if total else 0.0
+
+        # Detect issues
+        issues: List[str] = []
+        if not catalog_layout.get("analyzed_at"):
+            issues.append("Layer 1 (catalog_layout_analyzer) has not run — run /run-catalog-knowledge")
+        if not catalog_legends.get("extracted_at"):
+            issues.append("Layer 2 (catalog_legend_extractor) has not run — run /run-catalog-knowledge")
+        if catalog_layout.get("stats", {}).get("legend_pages", 0) == 0:
+            issues.append("No legend pages detected by Layer 1 — catalog may not expose legends (Type D brochure?) or keywords don't match this catalog's wording")
+        if total == 0:
+            issues.append("No products on this document")
+
+        return DocumentExtractionStatusResponse(
+            success=True,
+            document_id=document_id,
+            filename=doc.get("filename"),
+            catalog_layout_analyzed=bool(catalog_layout.get("analyzed_at")),
+            legends_extracted=bool(catalog_legends.get("extracted_at")),
+            layout_stats=catalog_layout.get("stats"),
+            legend_types_found=list((catalog_legends.get("by_type") or {}).keys()),
+            global_certifications=catalog_legends.get("global_certifications") or [],
+            total_products=total,
+            average_coverage_pct=round(avg_pct, 1),
+            products_by_coverage=by_bucket,
+            issues=issues,
+            products_sample=samples,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ document_extraction_status failed for {document_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Status lookup failed: {str(e)}",
+        )

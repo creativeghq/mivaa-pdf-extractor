@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import httpx
+import sentry_sdk
 from typing import Dict, Any, List, Optional
 
 from app.services.metadata.metadata_normalizer import normalize_factory_keys
@@ -1603,6 +1604,9 @@ async def enrich_products_from_chunks_and_vision(
     target_product_id: Optional[str] = None,
     enable_spec_vision: bool = True,
     enable_description_writer: bool = True,
+    enable_layout_analyzer: bool = True,
+    enable_legend_extractor: bool = True,
+    job_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Stage 4.7: fill null product.metadata fields from chunks and vision_analysis.
 
@@ -1655,6 +1659,90 @@ async def enrich_products_from_chunks_and_vision(
         if not products:
             logger.info("   ℹ️ Enrichment: no products to enrich")
             return stats
+
+        # ── Layers 1 + 2: Catalog Layout + Catalog Legends (once/document) ──
+        # These run BEFORE the per-product loop because every product shares
+        # the same page classification and the same catalog-wide legends.
+        # Both are idempotent — if they already ran for this document, the
+        # calls return the cached result without doing work.
+        catalog_layout: Dict[str, Any] = {}
+        catalog_legends: Dict[str, Any] = {}
+
+        # Resolve PDF path once; both layers need it.
+        pdf_path = None
+        try:
+            from app.services.products.product_spec_vision_extractor import _get_source_pdf_path
+            pdf_path = _get_source_pdf_path(document_id)
+        except Exception as e:
+            logger.warning(f"[{job_id or '-'}] 4.7.a: could not resolve pdf_path: {e}")
+
+        if pdf_path and enable_layout_analyzer and not target_product_id:
+            # Only run Layer 1/2 on whole-document passes, not single-product
+            # backfills (those reuse the existing classification).
+            try:
+                from app.services.discovery.catalog_layout_analyzer import analyze_catalog_layout
+                catalog_layout = await analyze_catalog_layout(
+                    document_id=document_id,
+                    pdf_path=pdf_path,
+                    supabase=supabase,
+                    job_id=job_id,
+                    known_product_names=[p.get("name") for p in products if p.get("name")],
+                )
+                logger.info(
+                    f"[{job_id or '-'}] 4.7.a: layout analyzer done — "
+                    f"{catalog_layout.get('stats', {})}"
+                )
+            except Exception as layout_err:
+                logger.warning(f"[{job_id or '-'}] 4.7.a layout analyzer failed: {layout_err}")
+        else:
+            # Single-product backfill path — load existing layout from DB so
+            # Layer 3 can still use product_pages_by_name.
+            try:
+                row = supabase.client.table("documents") \
+                    .select("metadata") \
+                    .eq("id", document_id).limit(1).execute()
+                if row.data:
+                    catalog_layout = (row.data[0].get("metadata") or {}).get("catalog_layout") or {}
+            except Exception:
+                catalog_layout = {}
+
+        if pdf_path and enable_legend_extractor and not target_product_id:
+            try:
+                from app.services.knowledge.catalog_legend_extractor_v2 import extract_catalog_legends
+                workspace_id = products[0].get("workspace_id") if products else None
+                if workspace_id:
+                    legend_stats = await extract_catalog_legends(
+                        document_id=document_id,
+                        pdf_path=pdf_path,
+                        workspace_id=workspace_id,
+                        supabase=supabase,
+                        job_id=job_id,
+                    )
+                    logger.info(f"[{job_id or '-'}] 4.7.b: legend extractor done — {legend_stats}")
+                    # Reload doc metadata to pick up catalog_legends the service wrote
+                    try:
+                        row = supabase.client.table("documents") \
+                            .select("metadata") \
+                            .eq("id", document_id).limit(1).execute()
+                        if row.data:
+                            catalog_legends = (row.data[0].get("metadata") or {}).get("catalog_legends") or {}
+                    except Exception:
+                        pass
+            except Exception as legend_err:
+                logger.warning(f"[{job_id or '-'}] 4.7.b legend extractor failed: {legend_err}")
+        else:
+            # Load existing legends for single-product backfill
+            try:
+                row = supabase.client.table("documents") \
+                    .select("metadata") \
+                    .eq("id", document_id).limit(1).execute()
+                if row.data:
+                    catalog_legends = (row.data[0].get("metadata") or {}).get("catalog_legends") or {}
+            except Exception:
+                catalog_legends = {}
+
+        # Make them available to the per-product loop via closure-local vars
+        layout_product_pages = (catalog_layout or {}).get("product_pages_by_name") or {}
 
         # ── Fetch document chunks for the whole document ──────────────────
         # document_chunks has a direct `product_id` column AND stores
@@ -1804,36 +1892,58 @@ async def enrich_products_from_chunks_and_vision(
             chunk_candidates = _extract_fields_from_chunk_text(combined_text)
             vision_candidates = _rollup_vision_analysis(product_vision)
 
-            # ── Stage 4.7.c: Claude Vision spec page extractor ─────────────
-            # Runs the PDF source pages through Claude Haiku Vision to pull
-            # packing, tech characteristics, and certifications that chunks
-            # and image vision_analysis don't cover.
+            # ── Stage 4.7.c: Product Spec Extractor v2 (3-tier hybrid) ─────
+            # Tier A: PyMuPDF text-dict parser (free, deterministic)
+            # Tier B: Claude Sonnet Vision (fallback when Tier A insufficient)
+            # Tier C: Catalog legend inheritance (fills fields from Layer 2
+            #         global legends, e.g. certifications, PEI defaults)
+            #
+            # Page resolution priority:
+            #   1. Layer 1's authoritative text-based scan
+            #      (catalog_layout.product_pages_by_name[product_name])
+            #   2. page_set computed earlier from chunks + image associations
             spec_vision_candidates: Dict[str, Any] = {}
-            if enable_spec_vision and page_set:
+            resolved_page_indices: List[int] = []
+            layout_pages = layout_product_pages.get(product_name) or []
+            if layout_pages:
+                # Layer 1 gives us 0-indexed PDF pages directly
+                resolved_page_indices = sorted({int(p) for p in layout_pages})
+            elif page_set:
+                # Fallback to the chunk-derived page_set (1-indexed → 0-indexed)
+                resolved_page_indices = sorted({int(p) - 1 for p in page_set if int(p) > 0})
+
+            if enable_spec_vision and resolved_page_indices and pdf_path:
                 try:
-                    from app.services.products.product_spec_vision_extractor import (
-                        extract_specs_from_pdf_pages,
-                        map_vision_specs_to_product_metadata,
-                        _get_source_pdf_path,
+                    from app.services.products.product_spec_extractor_v2 import extract_product_spec
+                    spec_vision_candidates = await extract_product_spec(
+                        document_id=document_id,
+                        product_id=product_id,
+                        product_name=product_name,
+                        pdf_path=pdf_path,
+                        page_indices=resolved_page_indices,
+                        catalog_legends=catalog_legends,
+                        job_id=job_id,
+                        enable_tier_b=True,
                     )
-                    pdf_path = _get_source_pdf_path(document_id)
-                    if pdf_path:
-                        raw_specs = extract_specs_from_pdf_pages(
-                            pdf_path=pdf_path,
-                            product_page_range=sorted(page_set),
-                            product_name=product_name,
-                        )
-                        if raw_specs:
-                            spec_vision_candidates = map_vision_specs_to_product_metadata(raw_specs)
-                            stats["spec_vision_calls"] += 1
-                    else:
+                    if spec_vision_candidates:
+                        stats["spec_vision_calls"] += 1
+                        tiers = spec_vision_candidates.pop("_source_tiers", [])
                         logger.info(
-                            f"   ℹ️ Spec vision: PDF source not on disk for doc {document_id}, skipping"
+                            f"   ✅ spec_v2 '{product_name}': tiers={tiers}, "
+                            f"pages={resolved_page_indices}"
                         )
                 except Exception as e:
-                    logger.warning(
-                        f"   ⚠️ Spec vision extractor failed for '{product_name}': {e}"
-                    )
+                    logger.warning(f"   ⚠️ spec_v2 failed for '{product_name}': {e}")
+                    with sentry_sdk.configure_scope() as scope:
+                        scope.set_tag("job_id", job_id)
+                        scope.set_tag("document_id", document_id)
+                        scope.set_tag("product_id", product_id)
+                        scope.set_tag("stage", "stage_4.7.c_spec_v2")
+                    sentry_sdk.capture_exception(e)
+            elif not pdf_path:
+                logger.info(
+                    f"   ℹ️ spec_v2: no PDF on disk for doc {document_id}, skipping"
+                )
 
             if not chunk_candidates and not vision_candidates and not spec_vision_candidates:
                 logger.info(
