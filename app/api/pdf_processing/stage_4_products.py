@@ -1674,38 +1674,91 @@ async def enrich_products_from_chunks_and_vision(
             .execute()
         all_vision = vision_resp.data or []
 
+        # ── Fetch image→product associations for page resolution fallback ──
+        # Used when a product has no explicit page_range on its metadata:
+        # every image linked to the product via image_product_associations
+        # gives us a concrete page number to target with the spec vision pass.
+        # Cheap — one query per document — and then in-memory lookups per
+        # product. Keeps pipeline stages decoupled (no dependency on the
+        # YOLO pass populating metadata.page_range up front).
+        try:
+            assoc_resp = supabase.client.table("image_product_associations") \
+                .select("product_id, document_images!inner(page_number, document_id)") \
+                .execute()
+            product_to_image_pages: Dict[str, set] = {}
+            for row in (assoc_resp.data or []):
+                di = row.get("document_images") or {}
+                if di.get("document_id") != document_id:
+                    continue
+                pn = di.get("page_number")
+                if pn is None:
+                    continue
+                pid = row.get("product_id")
+                if not pid:
+                    continue
+                product_to_image_pages.setdefault(pid, set()).add(int(pn))
+        except Exception as e:
+            logger.warning(f"   ⚠️ image→product page fallback unavailable: {e}")
+            product_to_image_pages = {}
+
         # ── Per-product enrichment ────────────────────────────────────────
         for product in products:
             product_id = product["id"]
             product_name = product.get("name") or "(unnamed)"
             metadata = product.get("metadata") or {}
 
-            # Determine the product's page range. Prefer the direct column
-            # on document_chunks (when available); otherwise fall back to
-            # metadata.page_range on the product row, then to chunk metadata.
+            # ── Scope chunks to this product FIRST ───────────────────────
+            # We resolve chunks before pages because chunks are the best
+            # source of page_range when the product row doesn't have one.
+            product_chunks = [c for c in all_chunks if c.get("product_id") == product_id]
+            if not product_chunks:
+                product_chunks = all_chunks  # doc-wide fallback
+
+            # ── Resolve the product's PDF page range ─────────────────────
+            # Priority order (each is tried in turn until we get pages):
+            #   1. products.metadata.page_range  — set by explicit Stage 4.5
+            #   2. Union of document_chunks.metadata.product_pages from the
+            #      chunks linked directly to this product via product_id
+            #   3. Pages from document_images linked through
+            #      image_product_associations
+            #   4. Scan the product's own chunk text for "Page NN" / "---
+            #      # Page NN ---" markers that the MIVAA Markdown extractor
+            #      emits inline
+            # Any of these gives us a concrete list for the spec vision pass.
             page_range = metadata.get("page_range") or []
             if not isinstance(page_range, list):
                 page_range = []
-            page_set = set(page_range)
+            page_set: set = set(int(p) for p in page_range if isinstance(p, (int, str)) and str(p).isdigit())
 
-            # ── Scope chunks to this product ─────────────────────────────
-            # Primary: chunks with product_id matching this product.
-            product_chunks = [c for c in all_chunks if c.get("product_id") == product_id]
+            if not page_set:
+                for c in product_chunks:
+                    cmd = c.get("metadata")
+                    if isinstance(cmd, dict):
+                        for p in (cmd.get("product_pages") or []):
+                            try:
+                                page_set.add(int(p))
+                            except (TypeError, ValueError):
+                                pass
 
-            # Secondary: chunks whose metadata.product_pages overlaps page_set.
-            if not product_chunks and page_set:
-                product_chunks = [
-                    c for c in all_chunks
-                    if isinstance(c.get("metadata"), dict)
-                    and any(
-                        p in page_set
-                        for p in (c["metadata"].get("product_pages") or [])
-                    )
-                ]
+            if not page_set:
+                assoc_pages = product_to_image_pages.get(product_id) or set()
+                page_set |= assoc_pages
 
-            # Tertiary: fall back to all chunks for the document.
-            if not product_chunks:
-                product_chunks = all_chunks
+            if not page_set and product_chunks:
+                # Last resort: scan chunk text for page markers.
+                # MIVAA emits `--- # Page 29 ---` and bare `Page 29` variants.
+                _page_marker_re = _re.compile(
+                    r"(?:---\s*#\s*Page\s+(\d{1,4})\s*---|(?:^|\s)Page\s+(\d{1,4})(?:\s|$))",
+                    _re.IGNORECASE,
+                )
+                for c in product_chunks:
+                    txt = c.get("content") or ""
+                    for m in _page_marker_re.finditer(txt):
+                        raw = m.group(1) or m.group(2)
+                        if raw and raw.isdigit():
+                            n = int(raw)
+                            if 1 <= n <= 10_000:
+                                page_set.add(n)
 
             combined_text = " ".join(
                 c.get("content", "") for c in product_chunks if c.get("content")
