@@ -168,10 +168,25 @@ def _shrink_if_needed(png_bytes: bytes, max_bytes: int = MAX_IMAGE_BYTES) -> byt
     high-res brochure pages with many gradients compress poorly), falls back
     to JPEG at quality 85 which is ~4-6x more efficient for photographic
     catalog content. Icon glyphs and spec table text survive JPEG 85.
+
+    PIL occasionally fails to open a valid-looking PNG produced by PyMuPDF
+    (seen on high-resolution Harmony spread pages — raises "cannot identify
+    image file"). In that case we return the original bytes unchanged and
+    let the caller either send them through to Claude (if under 5 MB) or
+    log a downstream failure. Never propagate the PIL error — a single
+    unreadable page should not abort the rest of the scan.
     """
     if len(png_bytes) <= max_bytes:
         return png_bytes
-    im = Image.open(io.BytesIO(png_bytes))
+    try:
+        im = Image.open(io.BytesIO(png_bytes))
+        im.load()  # force decode so errors surface here, not later
+    except Exception as e:
+        logger.warning(
+            f"product_spec_vision_extractor: PIL could not open {len(png_bytes)//1024} KB "
+            f"PNG from PyMuPDF ({e}); returning raw bytes unchanged"
+        )
+        return png_bytes
     # Flatten alpha to white so JPEG fallback works if we need it.
     if im.mode in ("RGBA", "LA"):
         bg = Image.new("RGB", im.size, (255, 255, 255))
@@ -461,13 +476,23 @@ def extract_specs_from_pdf_pages(
     pages_dropped_other_product = 0
 
     for idx in pdf_indices:
+        # Everything per-page is wrapped in one try/except so that a PIL
+        # open failure, a rendering failure, or a Claude 4xx on one page
+        # does not abort the whole scan. We've seen PyMuPDF produce PNGs
+        # that PIL can't read for high-res Harmony spreads; those pages
+        # get logged and skipped, not propagated.
         try:
             png = _render_pdf_page_to_bytes(pdf_path, idx)
         except Exception as e:
-            logger.warning(f"product_spec_vision_extractor: render page {idx} failed: {e}")
+            logger.warning(f"   ⚠️ render page {idx} failed: {e}")
             continue
 
-        data = _call_claude_vision(png, prompt=product_aware_prompt)
+        try:
+            data = _call_claude_vision(png, prompt=product_aware_prompt)
+        except Exception as e:
+            logger.warning(f"   ⚠️ Claude Vision call failed for page {idx}: {e}")
+            continue
+
         if not data:
             continue
 
