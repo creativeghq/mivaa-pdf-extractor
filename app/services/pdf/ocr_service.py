@@ -671,13 +671,21 @@ class OCRService:
 
                 prompt_template = prompt_result.data[0]['prompt_text']
 
+                # Imports at top of the branch so `json` is bound before
+                # any use below. A previous revision had `import json` AFTER
+                # the f-string at line 675, which made `json` a local variable
+                # for the whole function and raised UnboundLocalError at run
+                # time ("local variable 'json' referenced before assignment"
+                # — Sentry MIVAA-55R, 28 events during last E2E run).
+                import json
+                import re
+                import anthropic
+                import os
+
                 # Build full prompt with OCR data
                 full_prompt = f"{prompt_template}\n\n**OCR Results:**\n\n```json\n{json.dumps(ocr_data, indent=2)}\n```\n\nAnalyze the OCR results and extract icon-based metadata. Return ONLY valid JSON."
 
                 # Call AI (Claude preferred for vision tasks)
-                import anthropic
-                import os
-
                 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
                 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -694,8 +702,6 @@ class OCRService:
                 response_text = response.content[0].text.strip()
 
                 # Extract JSON from response
-                import json
-                import re
                 json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
                 if json_match:
                     result_data = json.loads(json_match.group(0))

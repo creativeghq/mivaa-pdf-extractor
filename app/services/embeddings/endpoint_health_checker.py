@@ -284,29 +284,34 @@ class EndpointHealthChecker:
         """
         import httpx
 
+        # Chandra is a llama.cpp server behind a HuggingFace Inference
+        # Endpoint. It exposes a real `/health` route that returns
+        # `{"status":"ok"}` when the model is loaded and the endpoint is
+        # serving. The previous revision POSTed to `/` (root path) with a
+        # Hugging Face Inference API payload (`{"inputs": "00"}`), which
+        # llama.cpp doesn't route — so every probe returned 404 and
+        # Chandra was reported unhealthy even though the endpoint was up
+        # fine for the last 11+ weeks. (Verified 2026-04-11: GET /health
+        # with a bearer token returns 200 OK with {"status":"ok"}.)
+        base = endpoint_url.rstrip('/')
+        if base.endswith('/health'):
+            health_url = base
+        else:
+            health_url = base + '/health'
+
         for attempt in range(1, self.max_health_check_attempts + 1):
             start_time = time.time()
             try:
                 async with httpx.AsyncClient(timeout=self.health_check_timeout_seconds) as client:
-                    # Simple health check - send minimal request to see if endpoint responds
-                    # Chandra expects POST with image data, but for health check we just
-                    # verify the endpoint is responding (even a 400 is fine - means it's running)
-                    response = await client.post(
-                        endpoint_url,
-                        headers={
-                            "Authorization": f"Bearer {token}",
-                            "Content-Type": "application/json"
-                        },
-                        json={
-                            "inputs": "00",  # Minimal hex payload - will fail but endpoint responds
-                            "parameters": {}
-                        }
+                    response = await client.get(
+                        health_url,
+                        headers={"Authorization": f"Bearer {token}"},
                     )
 
                     response_time_ms = (time.time() - start_time) * 1000
 
-                    # 200 = success, 400 = endpoint running but bad input (healthy!)
-                    # Both indicate the endpoint is up and ready
+                    # 200 = healthy (ok), 400/422 = running but rejected our
+                    # probe shape (still healthy — the endpoint is responding).
                     if response.status_code in [200, 400, 422]:
                         result = HealthCheckResult(
                             endpoint_name="chandra",

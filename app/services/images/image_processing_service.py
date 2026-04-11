@@ -1306,7 +1306,6 @@ class ImageProcessingService:
 
             settings = get_settings()
             qwen_config = settings.get_qwen_config()
-            qwen_endpoint_url = qwen_config["endpoint_url"]
             huggingface_api_key = qwen_config["endpoint_token"]
 
             if not huggingface_api_key or not qwen_config.get("enabled"):
@@ -1322,7 +1321,7 @@ class ImageProcessingService:
                 qwen_manager = None
             if qwen_manager is None:
                 qwen_manager = QwenEndpointManager(
-                    endpoint_url=qwen_endpoint_url,
+                    endpoint_url="",  # resolved dynamically by manager from HF
                     endpoint_name=qwen_config["endpoint_name"],
                     namespace=qwen_config["namespace"],
                     endpoint_token=huggingface_api_key,
@@ -1335,10 +1334,29 @@ class ImageProcessingService:
                 )
                 return None
 
+            # ⚠️ Pull the LIVE endpoint URL from the manager, not from settings.
+            # The classification path already handles this correctly (line ~263).
+            # Settings["endpoint_url"] is typically unset in prod and was causing
+            # APIConnectionError ("Connection error.") on every material analysis
+            # call, which fell through to the Claude Sonnet fallback for EVERY
+            # image — defeating the whole purpose of having Qwen. Root cause of
+            # the "vision_provider = claude_fallback for every image" regression.
+            qwen_endpoint_url = qwen_manager.endpoint_url
+            if not qwen_endpoint_url or not qwen_endpoint_url.startswith(("http://", "https://")):
+                logger.error(
+                    f"   ❌ CRITICAL: qwen_manager.endpoint_url is invalid "
+                    f"({qwen_endpoint_url!r}) for material analysis of {image_id}. "
+                    f"Manager warmup probably did not run before this call."
+                )
+                return None
+
             base_url = qwen_endpoint_url.rstrip('/')
             if not base_url.endswith('/v1'):
                 base_url = base_url + '/v1'
             base_url = base_url + '/'
+            logger.info(
+                f"   🔧 Qwen material analysis base_url: {base_url} (for {image_id})"
+            )
 
             client = AsyncOpenAI(
                 base_url=base_url,
