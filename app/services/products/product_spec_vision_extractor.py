@@ -42,12 +42,15 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 # env var without changing code.
 CLAUDE_VISION_MODEL = os.getenv("PRODUCT_SPEC_VISION_MODEL", "claude-haiku-4-5-20251001")
 
-# Render DPI for PDF pages. 300 is the sweet spot — any higher and the images
-# exceed Claude's 5 MB input limit even after thumbnailing.
-PAGE_RENDER_DPI = 300
+# Render DPI for PDF pages. 220 keeps letterpress / icon strips legible while
+# staying well under Claude's 5 MB input limit on large A4 pages. Anything
+# higher and we frequently have to re-shrink — which wastes time and risks
+# losing icon detail from the downscale pass.
+PAGE_RENDER_DPI = 220
 
-# Max bytes per image before we downscale.
-MAX_IMAGE_BYTES = 4_500_000
+# Max bytes per image before we downscale. 4 MB leaves comfortable headroom
+# under Claude's 5 MB hard limit after base64 expansion overhead.
+MAX_IMAGE_BYTES = 4_000_000
 
 # The single prompt we send for every product spec page. The schema is
 # deliberately flat — nested objects make the post-parse merge harder.
@@ -132,20 +135,60 @@ def _render_pdf_page_to_bytes(pdf_path: str, page_index: int, dpi: int = PAGE_RE
 
 
 def _shrink_if_needed(png_bytes: bytes, max_bytes: int = MAX_IMAGE_BYTES) -> bytes:
-    """Downscale a PNG to fit Claude's 5 MB limit while preserving spec legibility."""
+    """Downscale a PNG (and optionally flatten to JPEG) to fit under max_bytes.
+
+    Guarantees a return value under max_bytes whenever possible. Tries PNG at
+    progressively smaller sizes first; if PNG can't get small enough (very
+    high-res brochure pages with many gradients compress poorly), falls back
+    to JPEG at quality 85 which is ~4-6x more efficient for photographic
+    catalog content. Icon glyphs and spec table text survive JPEG 85.
+    """
     if len(png_bytes) <= max_bytes:
         return png_bytes
     im = Image.open(io.BytesIO(png_bytes))
-    # Start at 2200 longest edge, halve if still too big
-    for edge in (2200, 1800, 1400, 1000):
+    # Flatten alpha to white so JPEG fallback works if we need it.
+    if im.mode in ("RGBA", "LA"):
+        bg = Image.new("RGB", im.size, (255, 255, 255))
+        bg.paste(im, mask=im.split()[-1])
+        im = bg
+    elif im.mode != "RGB":
+        im = im.convert("RGB")
+
+    # Pass 1: PNG at descending sizes.
+    last_png = png_bytes
+    for edge in (2200, 1800, 1400, 1100, 900, 700):
         scaled = im.copy()
         scaled.thumbnail((edge, edge))
         buf = io.BytesIO()
         scaled.save(buf, format="PNG", optimize=True)
         out = buf.getvalue()
+        last_png = out
         if len(out) <= max_bytes:
             return out
-    return out  # last attempt even if still slightly over
+
+    # Pass 2: JPEG fallback — always fits thanks to much better compression.
+    for edge, quality in ((2200, 88), (1800, 88), (1400, 85), (1100, 82)):
+        scaled = im.copy()
+        scaled.thumbnail((edge, edge))
+        buf = io.BytesIO()
+        scaled.save(buf, format="JPEG", quality=quality, optimize=True)
+        out = buf.getvalue()
+        if len(out) <= max_bytes:
+            return out
+
+    # Last resort: return whatever is smallest. _call_claude_vision will still
+    # attempt it; a 400 from Claude is preferable to silently dropping a page.
+    return last_png
+
+
+def _detect_image_media_type(image_bytes: bytes) -> str:
+    """Sniff PNG vs JPEG from the first few bytes so we can tell Claude which
+    media_type to use after _shrink_if_needed may have re-encoded to JPEG."""
+    if image_bytes.startswith(b"\x89PNG"):
+        return "image/png"
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    return "image/png"  # fallback
 
 
 def _call_claude_vision(png_bytes: bytes, prompt: str = SPEC_PROMPT) -> Optional[Dict[str, Any]]:
@@ -154,8 +197,12 @@ def _call_claude_vision(png_bytes: bytes, prompt: str = SPEC_PROMPT) -> Optional
         logger.error("product_spec_vision_extractor: ANTHROPIC_API_KEY not set")
         return None
 
-    png_bytes = _shrink_if_needed(png_bytes)
-    b64 = base64.b64encode(png_bytes).decode("utf-8")
+    image_bytes = _shrink_if_needed(png_bytes)
+    media_type = _detect_image_media_type(image_bytes)
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+    logger.info(
+        f"   📤 spec vision: sending {len(image_bytes)//1024} KB {media_type} to Claude"
+    )
 
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -165,7 +212,7 @@ def _call_claude_vision(png_bytes: bytes, prompt: str = SPEC_PROMPT) -> Optional
             messages=[{
                 "role": "user",
                 "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64}},
+                    {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
                     {"type": "text", "text": prompt},
                 ],
             }],
@@ -216,37 +263,44 @@ def _resolve_pdf_pages_for_product(
     pdf_path: str,
     product_page_range: List[int],
 ) -> List[int]:
-    """Map catalog page numbers to 0-indexed PDF page indices.
+    """Map product page numbers to 0-indexed PDF page indices — deterministic.
 
-    Catalog page numbering often has a 2-page offset from PDF page numbering
-    (covers, TOC, etc. are unnumbered). We can't know the offset a priori
-    without inspecting the PDF, so we try a few common mappings and pick the
-    smallest set that's in range.
+    Input convention: `product_page_range` is a list of PDF page numbers as
+    stored in `document_chunks.metadata.product_pages` — the MIVAA extraction
+    pipeline writes absolute 1-indexed PDF page numbers there (NOT catalog
+    page labels), so the conversion is simply `n - 1` to get 0-indexed
+    PyMuPDF indices. No fuzzy offset guessing.
+
+    The old implementation fanned each page out to four candidate offsets
+    `(-2, -1, 0, 1)` and capped the result at the first 4 — which for a
+    6-page range would shift the window *backwards* past where the spec
+    table actually lives. That was the root cause of VALENOVA picking up
+    the preceding product's spec data on the first backfill run.
 
     Args:
-        pdf_path: Path to the PDF.
-        product_page_range: List of 1-indexed catalog page numbers.
+        pdf_path: Path to the PDF (used only to bounds-check page count).
+        product_page_range: List of 1-indexed PDF page numbers.
 
     Returns:
-        Best guess 0-indexed PDF page indices.
+        Sorted list of 0-indexed PyMuPDF page indices, clamped to document
+        range. Empty list if input is empty or nothing is in range.
     """
+    if not product_page_range:
+        return []
     doc = fitz.open(pdf_path)
     total = doc.page_count
     doc.close()
 
-    # Strategy: catalog page N usually maps to PDF index (N-1) or thereabouts.
-    # For the Harmony signature book specifically, we saw VALENOVA on catalog
-    # pages 24-31 = PDF indices 13-15 (roughly). So the actual relationship is
-    # non-trivial. We send a subset anyway — worst case, Claude returns null
-    # for all fields on a non-matching page and we move on.
-    candidates = set()
-    for p in product_page_range:
-        # Try catalog = PDF, catalog = PDF+1, catalog = PDF-1 (common offsets)
-        for offset in (-2, -1, 0, 1):
-            idx = p - 1 + offset
-            if 0 <= idx < total:
-                candidates.add(idx)
-    return sorted(candidates)
+    resolved = sorted({
+        int(p) - 1
+        for p in product_page_range
+        if isinstance(p, (int, str)) and str(p).isdigit() and 0 <= int(p) - 1 < total
+    })
+    logger.info(
+        f"   🗺  spec vision page map: input={sorted(product_page_range)} "
+        f"→ 0-indexed PDF pages {resolved} (total={total})"
+    )
+    return resolved
 
 
 def _select_best_spec_result(results: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -299,9 +353,12 @@ def extract_specs_from_pdf_pages(
         logger.info(f"product_spec_vision_extractor: no valid pages for {product_name}")
         return {}
 
-    # Cap at 4 pages per product — prevents runaway cost on catalogs that assign
-    # huge page ranges to a single product.
-    pdf_indices = pdf_indices[:4]
+    # Cap at 8 pages per product — most products span 2-4 pages in a ceramic
+    # catalog (intro page + photos + spec page + variants table). Anything
+    # beyond that is usually a sign of over-assignment from chunking, so we
+    # trim. The early-break below still cuts us off once we have the packing
+    # fields, so in practice most products only cost 1-2 Claude calls.
+    pdf_indices = pdf_indices[:8]
 
     logger.info(
         f"📸 product_spec_vision_extractor: {product_name or '?'} "

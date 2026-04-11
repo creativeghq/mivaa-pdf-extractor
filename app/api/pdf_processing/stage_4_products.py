@@ -5,6 +5,7 @@ This module handles product creation in the database for the product-centric pip
 Includes metadata consolidation from AI text extraction, visual analysis, and factory defaults.
 """
 
+import json
 import logging
 import os
 import httpx
@@ -1641,8 +1642,8 @@ async def enrich_products_from_chunks_and_vision(
     }
 
     try:
-        # ── Fetch products (include description column for writer check) ───
-        q = supabase.client.table("products").select("id, name, description, metadata")
+        # ── Fetch products (include description + workspace_id) ────────────
+        q = supabase.client.table("products").select("id, name, description, workspace_id, metadata")
         if target_product_id:
             q = q.eq("id", target_product_id)
         else:
@@ -1715,38 +1716,61 @@ async def enrich_products_from_chunks_and_vision(
                 product_chunks = all_chunks  # doc-wide fallback
 
             # ── Resolve the product's PDF page range ─────────────────────
-            # Priority order (each is tried in turn until we get pages):
-            #   1. products.metadata.page_range  — set by explicit Stage 4.5
-            #   2. Union of document_chunks.metadata.product_pages from the
-            #      chunks linked directly to this product via product_id
-            #   3. Pages from document_images linked through
-            #      image_product_associations
-            #   4. Scan the product's own chunk text for "Page NN" / "---
-            #      # Page NN ---" markers that the MIVAA Markdown extractor
-            #      emits inline
-            # Any of these gives us a concrete list for the spec vision pass.
-            page_range = metadata.get("page_range") or []
-            if not isinstance(page_range, list):
-                page_range = []
-            page_set: set = set(int(p) for p in page_range if isinstance(p, (int, str)) and str(p).isdigit())
+            # We UNION four signals rather than short-circuiting on the first
+            # one that produces output — earlier short-circuit logic silently
+            # fell through to a noisy text-marker scan whenever the chunk
+            # metadata fetch returned metadata as a string (Supabase JSONB
+            # deserialization is not always dict-typed). The union approach
+            # is both cheap and self-healing.
+            #
+            # Signals, in order of authority (all are tried):
+            #   1. products.metadata.page_range      (explicit, if present)
+            #   2. chunks.metadata.product_pages    (MIVAA Stage 2 output)
+            #   3. image_product_associations       (YOLO layout result)
+            #   4. '--- # Page NN ---' markers in chunk text (last resort)
+            page_set: set = set()
 
-            if not page_set:
-                for c in product_chunks:
-                    cmd = c.get("metadata")
-                    if isinstance(cmd, dict):
-                        for p in (cmd.get("product_pages") or []):
-                            try:
-                                page_set.add(int(p))
-                            except (TypeError, ValueError):
-                                pass
+            # Helper: parse a value that might be int, str, list, or serialized.
+            def _to_int(val: Any) -> Optional[int]:
+                try:
+                    if isinstance(val, bool):
+                        return None
+                    if isinstance(val, int):
+                        return val
+                    s = str(val).strip()
+                    return int(s) if s.isdigit() else None
+                except Exception:
+                    return None
 
-            if not page_set:
-                assoc_pages = product_to_image_pages.get(product_id) or set()
-                page_set |= assoc_pages
+            # 1. products.metadata.page_range
+            for p in (metadata.get("page_range") or []):
+                n = _to_int(p)
+                if n is not None:
+                    page_set.add(n)
 
+            # 2. chunks.metadata.product_pages — handle both dict and JSON-string
+            for c in product_chunks:
+                cmd = c.get("metadata")
+                if isinstance(cmd, str):
+                    try:
+                        cmd = json.loads(cmd)
+                    except Exception:
+                        cmd = None
+                if not isinstance(cmd, dict):
+                    continue
+                for p in (cmd.get("product_pages") or []):
+                    n = _to_int(p)
+                    if n is not None:
+                        page_set.add(n)
+
+            # 3. image_product_associations
+            for p in (product_to_image_pages.get(product_id) or set()):
+                n = _to_int(p)
+                if n is not None:
+                    page_set.add(n)
+
+            # 4. Text markers in chunk content (only as a supplement)
             if not page_set and product_chunks:
-                # Last resort: scan chunk text for page markers.
-                # MIVAA emits `--- # Page 29 ---` and bare `Page 29` variants.
                 _page_marker_re = _re.compile(
                     r"(?:---\s*#\s*Page\s+(\d{1,4})\s*---|(?:^|\s)Page\s+(\d{1,4})(?:\s|$))",
                     _re.IGNORECASE,
@@ -1759,6 +1783,11 @@ async def enrich_products_from_chunks_and_vision(
                             n = int(raw)
                             if 1 <= n <= 10_000:
                                 page_set.add(n)
+
+            if page_set:
+                logger.info(
+                    f"   🗺 '{product_name}' page_set resolved: {sorted(page_set)}"
+                )
 
             combined_text = " ".join(
                 c.get("content", "") for c in product_chunks if c.get("content")
@@ -1907,20 +1936,33 @@ async def enrich_products_from_chunks_and_vision(
             # enrichment has populated them, re-invoke the service to produce the KB
             # docs that were skipped the first time.
             try:
-                from app.services.knowledge.auto_kb_document_service import AutoKBDocumentService
-                kb_service = AutoKBDocumentService()
-                kb_stats = await kb_service.create_kb_documents_from_metadata(
-                    product_id=product_id,
-                    product_name=product_name,
-                    workspace_id=new_metadata.get("workspace_id") or product.get("workspace_id") or "",
-                    metadata=new_metadata,
+                # workspace_id lives on the product row itself — prefer that
+                # over the metadata blob which is frequently missing the key.
+                ws_id = (
+                    product.get("workspace_id")
+                    or new_metadata.get("workspace_id")
+                    or None
                 )
-                if kb_stats.get("documents_created"):
-                    stats["kb_docs_created"] += kb_stats["documents_created"]
+                if not ws_id:
                     logger.info(
-                        f"   📚 AutoKBDocumentService created {kb_stats['documents_created']} "
-                        f"KB docs for '{product_name}' from enriched metadata"
+                        f"   ℹ️ Skipping AutoKBDocumentService for '{product_name}' "
+                        f"(no workspace_id resolvable — kb_docs requires a valid UUID)"
                     )
+                else:
+                    from app.services.knowledge.auto_kb_document_service import AutoKBDocumentService
+                    kb_service = AutoKBDocumentService()
+                    kb_stats = await kb_service.create_kb_documents_from_metadata(
+                        product_id=product_id,
+                        product_name=product_name,
+                        workspace_id=ws_id,
+                        metadata=new_metadata,
+                    )
+                    if kb_stats.get("documents_created"):
+                        stats["kb_docs_created"] += kb_stats["documents_created"]
+                        logger.info(
+                            f"   📚 AutoKBDocumentService created {kb_stats['documents_created']} "
+                            f"KB docs for '{product_name}' from enriched metadata"
+                        )
             except Exception as kb_err:
                 logger.warning(
                     f"   ⚠️ AutoKBDocumentService failed for '{product_name}': {kb_err}"
