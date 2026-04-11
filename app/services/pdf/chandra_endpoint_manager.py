@@ -318,12 +318,44 @@ class ChandraEndpointManager:
 
     def _test_inference(self) -> bool:
         """
-        Test if Chandra endpoint can handle requests.
-        Uses the correct /v1/chat/completions path.
+        Test if Chandra endpoint is alive via its /health route.
+
+        2026-04-11: Switched from POST /v1/chat/completions to GET /health.
+        Chandra's chat route returns HTTP 400 "paused, ask a maintainer to
+        restart it" when the LLM is scaled to zero, even though the
+        container itself is up and the /health route responds with
+        {"status":"ok"}. The old behavior never recognized a paused endpoint
+        as "alive" and the warmup loop timed out after 300s on every job
+        that hit a cold Chandra. Verified against the live endpoint
+        today: curl -H "Authorization: Bearer $TOKEN" .../health → 200 OK.
 
         Returns:
-            True if endpoint responds successfully, False otherwise
+            True if endpoint responds with 200, False otherwise.
         """
+        try:
+            base = self.endpoint_url.rstrip('/')
+            health_url = base if base.endswith('/health') else base + '/health'
+
+            response = requests.get(
+                health_url,
+                headers={"Authorization": f"Bearer {self.hf_token}"},
+                timeout=15
+            )
+            if response.status_code == 200:
+                return True
+            # Chandra /chat/completions bad request (400 "paused") still
+            # means the LLM route is scaled to zero — NOT a healthy state
+            # for this manager. Let the outer retry loop keep polling.
+            logger.debug(
+                f"   Chandra /health returned HTTP {response.status_code}"
+            )
+            return False
+        except Exception as e:
+            logger.debug(f"   Chandra /health probe exception: {e}")
+            return False
+
+    def _test_inference_OLD_chat_completions_unused(self, _unused=None) -> bool:
+        """Kept for reference: the old POST /v1/chat/completions path."""
         try:
             # Use correct OpenAI-compatible chat completions endpoint
             api_url = self.endpoint_url.rstrip('/') + '/v1/chat/completions'

@@ -325,6 +325,17 @@ class QwenEndpointManager:
             logger.info("✅ Qwen endpoint already warmed up")
             return True
 
+        # CRITICAL: pull the live URL from HF SDK BEFORE the test loop.
+        # Root cause of the 2026-04-11 pipeline hang: the manager was
+        # initialized with an empty endpoint_url (rag_routes.py:2376 passes
+        # qwen_config["endpoint_url"] which is empty in prod because
+        # QWEN_ENDPOINT_URL env var is not set). `_test_inference` then
+        # skipped every attempt with "endpoint_url not configured" and the
+        # warmup loop never completed. Fix: always call
+        # `_refresh_url_from_endpoint()` at the top so self.endpoint_url
+        # gets populated from `endpoint.url` regardless of current status.
+        self._refresh_url_from_endpoint()
+
         # Defensive check: ensure endpoint is not paused before warmup
         if self._can_pause_resume:
             endpoint = self._get_endpoint()
@@ -336,6 +347,8 @@ class QwenEndpointManager:
                         endpoint.resume().wait(timeout=300)
                         self.resume_count += 1
                         self.last_resume_time = time.time()
+                        # Refresh again post-resume: the URL may have changed.
+                        self._refresh_url_from_endpoint()
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to check/resume endpoint during warmup: {e}")
 
