@@ -1250,16 +1250,29 @@ class ResetJobResponse(BaseModel):
 @router.post("/reset-job/{job_id}", response_model=ResetJobResponse)
 async def reset_job(
     job_id: str,
+    force: bool = False,
     supabase: SupabaseClient = Depends(get_supabase_client)
 ):
     """
-    Reset a stuck or failed processing job back to initialized state.
+    Reset a stuck / failed / stale job back to `pending` so the scheduler
+    can pick it up again.
 
-    Clears error_message, resets progress to 0, and sets status back to
-    'initialized' so the job can be re-triggered from the admin panel.
+    Historical note (2026-04-11): the previous revision wrote
+    `status='initialized'` which violated the
+    `background_jobs_status_check` CHECK constraint (the DB only accepts
+    pending / processing / completed / failed / cancelled / interrupted).
+    Every single reset call has been failing with a 500 ever since that
+    constraint was added. Sentry MIVAA-4ZW, MIVAA-4ZV.
+
+    Also: by default this endpoint refuses to reset a job that's already
+    in a terminal success state (`completed`). Overwriting a completed
+    job means discarding the successful result — almost always a
+    mistake. Pass `?force=true` to override when you actually want that.
 
     Args:
         job_id: Job ID to reset
+        force:  When true, allow resetting jobs in terminal states
+                (`completed`, `failed`, `cancelled`). Defaults to False.
 
     Returns:
         ResetJobResponse with previous status
@@ -1274,20 +1287,37 @@ async def reset_job(
 
         previous_status = job_resp.data.get('status')
 
+        # Guard: refuse to reset completed / cancelled jobs unless force=true.
+        # Safe to reset failed / interrupted / processing / pending without
+        # a flag — those are exactly the cases the endpoint exists for.
+        TERMINAL_SUCCESS = {'completed', 'cancelled'}
+        if previous_status in TERMINAL_SUCCESS and not force:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Refusing to reset job {job_id}: status is "
+                    f"'{previous_status}' (terminal). Pass ?force=true "
+                    f"if you really want to discard the result and "
+                    f"re-run the pipeline."
+                )
+            )
+
         supabase.client.table('background_jobs').update({
-            'status': 'initialized',
+            'status': 'pending',  # was 'initialized' — not in the DB CHECK constraint
             'progress': 0,
             'error_message': None,
             'started_at': None,
             'completed_at': None,
+            'failed_at': None,
+            'interrupted_at': None,
             'updated_at': datetime.utcnow().isoformat()
         }).eq('id', job_id).execute()
 
-        logger.info(f"✅ Reset job {job_id} from '{previous_status}' → 'initialized'")
+        logger.info(f"✅ Reset job {job_id} from '{previous_status}' → 'pending' (force={force})")
 
         return ResetJobResponse(
             success=True,
-            message=f"Job reset from '{previous_status}' to 'initialized'",
+            message=f"Job reset from '{previous_status}' to 'pending'",
             job_id=job_id,
             previous_status=previous_status
         )
