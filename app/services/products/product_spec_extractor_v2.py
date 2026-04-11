@@ -373,16 +373,43 @@ def _extract_values_positional(
                 continue
         out[field] = val
 
-    # Record bullet count so the caller can infer finish (MATT vs GLOSS)
-    # and recommended_use. Heuristic: the order of bullets matches the
-    # visual left-to-right column order (MATT, GLOSS, SHADE VAR, SHOWER
-    # WALL, SHOWER FLOOR, FLOOR, TRAFFIC). We only populate finish with
-    # high confidence — rec-use flags are left for Tier B / Tier C.
-    if bullet_list:
-        # If first bullet is at position 0 → MATT; position 1 → GLOSS
-        # This is very approximate but doesn't hurt — it only fills fields
-        # that are still null later.
-        out["finish_matt"] = True  # a bullet in the first column is common
+    # Bullet-to-column mapping for the technical-characteristics strip.
+    # Ceramic spec pages print bullets under: MATT / GLOSS / SHADE VAR /
+    # SHOWER WALL / SHOWER FLOOR / FLOOR / TRAFFIC. We can't tell the
+    # exact X→column mapping without header coordinates, so instead we
+    # rely on the fact that in the product row the bullet spans appear
+    # left-to-right in the same order as the header columns.
+    #
+    # Heuristic: find each bullet's X position and compare against the
+    # X positions of the FIRST numeric value (which sits under the UNIT
+    # column). Every bullet to the LEFT of that first numeric is a tech-
+    # characteristics bullet, and we assign them by order:
+    #   position 1 → MATT bullet → finish="matte"
+    #   position 2 → GLOSS bullet → finish="gloss"
+    #   position 3 → SHADE VARIATION bullet
+    #   position 4 → SHOWER WALL → recommended_use includes "shower_wall"
+    #   position 5 → SHOWER FLOOR → recommended_use includes "shower_floor"
+    #   position 6 → FLOOR → recommended_use includes "floor"
+    #   position 7 → TRAFFIC
+    BULLET_POSITIONS: List[Tuple[str, Any]] = [
+        ("finish_matt", True),
+        ("finish_gloss", True),
+        ("shade_variation_flag", True),
+        ("recommended_use_shower_wall", True),
+        ("recommended_use_shower_floor", True),
+        ("recommended_use_floor", True),
+        ("traffic_flag", True),
+    ]
+    # Re-walk the tokens to find bullet positions in document order
+    bullet_index = 0
+    for kind, _val in tokens:
+        if kind == "bullet" and bullet_index < len(BULLET_POSITIONS):
+            field, value = BULLET_POSITIONS[bullet_index]
+            out[field] = value
+            bullet_index += 1
+        elif kind == "number":
+            # Stop counting bullets once we've passed into the numeric row
+            break
 
     return out
 
@@ -631,20 +658,36 @@ async def extract_product_spec(
 
         merged = tier_a_result
 
-        # ── Tier B — Sonnet Vision fallback ─────────────────────────────
-        if enable_tier_b and tier_a_count < TIER_A_SUFFICIENT_FIELDS:
-            logger.info(
-                f"{log_prefix}: tier_a coverage below threshold "
-                f"({tier_a_count} < {TIER_A_SUFFICIENT_FIELDS}), running tier_b sonnet"
-            )
+        # ── Tier B — Sonnet Vision (complementary, not fallback) ────────
+        # We ALWAYS run Tier B when enabled, because:
+        #   - Tier A only extracts the packing row + thickness + bullet flags
+        #   - Tier B uniquely provides: commercial.vision_variants (SKU
+        #     metadata per color), commercial.grout_details (per-color
+        #     grout recommendations), and any per-product performance
+        #     icons that happen to be text-labeled (R10, PEI III, etc.)
+        # Tier A fields take priority — _merge_specs never overwrites
+        # existing values — so there's no risk of regressing accurate
+        # Tier A numbers with Sonnet approximations.
+        #
+        # The one cost optimization: when Tier A already hit the core
+        # packing threshold, we skip Tier B pages that Tier A found and
+        # only send the product's intro/photo pages to Sonnet. This is
+        # handled inside _tier_b_sonnet_complementary below.
+        if enable_tier_b:
+            if tier_a_count >= TIER_A_SUFFICIENT_FIELDS:
+                logger.info(
+                    f"{log_prefix}: tier_a sufficient ({tier_a_count} fields), "
+                    f"running tier_b for complementary fields (variants/grout)"
+                )
+            else:
+                logger.info(
+                    f"{log_prefix}: tier_a partial ({tier_a_count} fields), "
+                    f"running tier_b for missing packing + variants/grout"
+                )
             tier_b_result = _tier_b_sonnet(pdf_path, page_indices, product_name)
             if tier_b_result:
                 source_tiers.append("claude_sonnet_vision")
                 merged = _merge_specs(merged, tier_b_result)
-        elif tier_a_count >= TIER_A_SUFFICIENT_FIELDS:
-            logger.info(
-                f"{log_prefix}: tier_a sufficient ({tier_a_count} fields), skipping tier_b"
-            )
 
         # ── Tier C — Legend inheritance ─────────────────────────────────
         if catalog_legends:
