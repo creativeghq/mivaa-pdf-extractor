@@ -2464,6 +2464,26 @@ async def process_document_with_discovery(
         logger.info(f"📌 Registered {len(endpoint_managers)} endpoint managers with singleton registry")
 
         # ============================================================================
+        # UNIFIED ENDPOINT CONTROLLER — align AIMD gates with auto-scaler
+        # ============================================================================
+        # The controller owns per-endpoint concurrency gates (qwen/slig/yolo/chandra).
+        # Calling warm_all() here:
+        #   1. Force-shrinks gates to minimum for any endpoint whose manager is
+        #      missing or whose warmup failed (no piling in on a broken endpoint)
+        #   2. Aligns per-gate maximums with current HF replica counts via the
+        #      auto-scaler (supply-side info feeds demand-side throttling)
+        # This is the last step before Stage 1 starts issuing real work.
+        try:
+            from app.services.core.endpoint_controller import endpoint_controller
+            controller_outcome = await endpoint_controller.warm_all(job_id)
+            endpoint_controller.log_stats(f"   Gates ready for job {job_id}")
+            logger.info(f"🎛️  Endpoint controller aligned: {controller_outcome}")
+        except Exception as e:
+            # Controller alignment is best-effort — the pipeline can still run
+            # with default gate values. Never fail the job on controller init.
+            logger.warning(f"⚠️ Endpoint controller alignment skipped: {e}")
+
+        # ============================================================================
         # HEALTH VALIDATION - Verify endpoints actually respond before processing
         # ============================================================================
         # Unlike warmup (which just waits), health checks verify actual inference works
@@ -2835,6 +2855,7 @@ async def process_document_with_discovery(
         from app.api.pdf_processing.stage_4_products import (
             propagate_common_fields_to_products,
             extract_dimensions_from_document_chunks,
+            enrich_products_from_chunks_and_vision,
         )
 
         propagation_result = await propagate_common_fields_to_products(
@@ -2887,6 +2908,42 @@ async def process_document_with_discovery(
             )
         })
         await tracker._sync_to_database(stage="dimension_extraction")
+
+        # ============================================================================
+        # STAGE 4.7: DETERMINISTIC ENRICHMENT FROM CHUNKS + VISION_ANALYSIS
+        # ============================================================================
+        # For products that still have empty factory_name / designers / SKUs /
+        # grout_suppliers / body_type / material_category / finish after AI
+        # extraction + Stage 4.5 propagation + Stage 4.6 dimension extraction,
+        # run deterministic regex extractors over the chunks AND majority-vote
+        # rollup from document_images.vision_analysis.
+        #
+        # Only fills null/empty fields. Never overwrites AI values. No AI calls.
+        progress_monitor.update_stage("product_enrichment", {
+            "description": "Filling empty fields from chunks and vision_analysis"
+        })
+        await tracker.update_progress(78, {
+            "current_step": "Enriching products from chunks and vision_analysis"
+        })
+
+        enrichment_result = await enrich_products_from_chunks_and_vision(
+            document_id=document_id,
+            supabase=supabase,
+            logger=logger,
+        )
+        logger.info(
+            f"🧩 Product enrichment: "
+            f"{enrichment_result.get('products_updated', 0)}/{enrichment_result.get('products_checked', 0)} "
+            f"products updated — fields_filled: {enrichment_result.get('fields_filled', [])}"
+        )
+
+        await tracker.update_progress(80, {
+            "current_step": (
+                f"Enrichment done — "
+                f"{enrichment_result.get('products_updated', 0)} products filled from chunks/vision"
+            )
+        })
+        await tracker._sync_to_database(stage="product_enrichment")
 
         # ── Factory enrichment trigger (async, non-blocking) ─────────────────
         try:

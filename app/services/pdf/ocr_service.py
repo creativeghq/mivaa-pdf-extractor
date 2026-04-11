@@ -347,8 +347,18 @@ class OCRService:
                         else:
                             pil_image = image
 
-                        # Call Chandra endpoint
-                        chandra_result = self.chandra_manager.run_inference(pil_image)
+                        # Call Chandra endpoint. We don't gate sync OCR through
+                        # the async slot (would require threading the event loop
+                        # into every OCR call site), but we DO report overload
+                        # signals so the Chandra gate can act on the next call.
+                        try:
+                            chandra_result = self.chandra_manager.run_inference(pil_image)
+                            from app.services.core.endpoint_controller import endpoint_controller
+                            endpoint_controller.record_success("chandra")
+                        except Exception as chandra_err:
+                            from app.services.core.endpoint_controller import endpoint_controller
+                            endpoint_controller.record_overload_exception("chandra", chandra_err)
+                            raise
 
                         # Parse Chandra result
                         if isinstance(chandra_result, list) and len(chandra_result) > 0:
@@ -390,7 +400,15 @@ class OCRService:
                     else:
                         pil_image = image
 
-                    chandra_result = self.chandra_manager.run_inference(pil_image)
+                    # Report success/overload to the unified controller.
+                    try:
+                        chandra_result = self.chandra_manager.run_inference(pil_image)
+                        from app.services.core.endpoint_controller import endpoint_controller
+                        endpoint_controller.record_success("chandra")
+                    except Exception as chandra_err:
+                        from app.services.core.endpoint_controller import endpoint_controller
+                        endpoint_controller.record_overload_exception("chandra", chandra_err)
+                        raise
 
                     if isinstance(chandra_result, list) and len(chandra_result) > 0:
                         chandra_text = chandra_result[0].get('generated_text', '')

@@ -1064,3 +1064,488 @@ def _is_empty_value(value) -> bool:
             return _is_empty_value(value['value'])
         return len(value) == 0
     return False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Stage 4.7 — Deterministic product enrichment from chunks + vision_analysis
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# The AI extractor (Stage 0) is probabilistic. When it returns empty sections
+# (which happens regularly on bilingual / narrative-heavy catalogs), this stage
+# fills the gaps deterministically:
+#
+#   - Regex patterns over the product's document_chunks catch factory name
+#     from narrative ("from Harmony", "collaboration with X"), designer full
+#     name ("Stacy Garcia, a New York-based designer"), SKU codes, grout
+#     suppliers with dose, pieces_per_box, patterns_count, body_type.
+#
+#   - Majority-vote over document_images.vision_analysis rolls up per-image
+#     material_type and finish into product-level material_category and finish,
+#     and unions all observed color palettes.
+#
+# Only null/empty fields are filled. Confident AI values are never overwritten.
+# Each written field is tagged with _source so we can trace provenance later.
+
+import re as _re
+
+# Controlled vocabulary map for vision_analysis material_type → products.material_category
+_MATERIAL_TYPE_TO_CATEGORY = {
+    "ceramic tile": "ceramic_tile",
+    "porcelain tile": "porcelain_tile",
+    "stoneware": "stoneware_tile",
+    "stoneware tile": "stoneware_tile",
+    "mosaic": "mosaic_tile",
+    "mosaic tile": "mosaic_tile",
+    "natural stone": "natural_stone",
+    "marble": "marble",
+    "granite": "granite",
+    "slate": "slate",
+    "limestone": "limestone",
+    "wood": "wood_flooring",
+    "wood flooring": "wood_flooring",
+    "laminate": "laminate",
+    "vinyl": "vinyl_flooring",
+    "wall tile": "wall_tile",
+    "floor tile": "floor_tile",
+    "bathroom tile": "bathroom_tile",
+    "outdoor tile": "outdoor_tile",
+}
+
+
+def _normalize_material_category(raw: str) -> Optional[str]:
+    """Map an AI-freeform material_type to our controlled vocab."""
+    if not raw or not isinstance(raw, str):
+        return None
+    key = raw.strip().lower()
+    if key in _MATERIAL_TYPE_TO_CATEGORY:
+        return _MATERIAL_TYPE_TO_CATEGORY[key]
+    # Partial matches
+    for phrase, vocab in _MATERIAL_TYPE_TO_CATEGORY.items():
+        if phrase in key:
+            return vocab
+    return None
+
+
+def _extract_fields_from_chunk_text(text: str) -> Dict[str, Any]:
+    """Pure function: run regex extractors over combined chunk text.
+
+    Returns a dict of candidate field → value pairs. Caller decides whether
+    to apply them (only if the existing value is empty).
+    """
+    if not text:
+        return {}
+
+    candidates: Dict[str, Any] = {}
+
+    # ── Factory name from narrative text ──────────────────────────────────
+    # "collaboration from X", "collaboration with X", "from X.", "by X."
+    # X must be Capitalized (possibly multi-word, but we stop at common words)
+    factory_patterns = [
+        _re.compile(r"collaboration\s+(?:from|with|by)\s+([A-Z][A-Za-z][A-Za-z0-9&'\-]*(?:\s+[A-Z][A-Za-z0-9&'\-]+)?)", _re.IGNORECASE),
+        _re.compile(r"\bproduced\s+by\s+([A-Z][A-Za-z][A-Za-z0-9&'\-]*(?:\s+[A-Z][A-Za-z0-9&'\-]+)?)"),
+        _re.compile(r"\bmade\s+by\s+([A-Z][A-Za-z][A-Za-z0-9&'\-]*(?:\s+[A-Z][A-Za-z0-9&'\-]+)?)"),
+        # "the new Signature collaboration from Harmony" — most common pattern
+        _re.compile(r"Signature\s+collaboration\s+from\s+([A-Z][A-Za-z0-9&'\-]+)"),
+    ]
+    factory_candidates = []
+    for pat in factory_patterns:
+        for m in pat.finditer(text):
+            name = m.group(1).strip()
+            # Reject common false positives (stop words, generic terms)
+            if name.lower() in {"the", "a", "an", "this", "that", "our", "new", "stacy",
+                                 "york", "barcelona", "valencia", "milan", "paris"}:
+                continue
+            if 2 <= len(name) <= 30:
+                factory_candidates.append(name)
+    if factory_candidates:
+        # Pick the most frequent
+        from collections import Counter
+        most_common = Counter(factory_candidates).most_common(1)[0][0]
+        candidates["factory_name"] = most_common
+
+    # ── Designer full name from narrative ─────────────────────────────────
+    # "Stacy Garcia, a New York-based designer"
+    # "designed by Stacy Garcia"
+    # "by Stacy Garcia, a ... designer"
+    designer_patterns = [
+        _re.compile(r"([A-Z][a-z]+\s+[A-Z][a-z]+),?\s+(?:a|an)\s+[^,.]*?(?:designer|architect|creative)"),
+        _re.compile(r"designed\s+by\s+([A-Z][a-z]+\s+[A-Z][a-z]+)"),
+        _re.compile(r"by\s+([A-Z][a-z]+\s+[A-Z][a-z]+),?\s+a\s+[^,.]*?(?:designer|architect)"),
+    ]
+    designer_candidates = []
+    for pat in designer_patterns:
+        for m in pat.finditer(text):
+            name = m.group(1).strip()
+            if 5 <= len(name) <= 40:
+                designer_candidates.append(name)
+    if designer_candidates:
+        from collections import Counter
+        most_common = Counter(designer_candidates).most_common(1)[0][0]
+        candidates["designers"] = [most_common]
+
+    # ── SKU codes: "39656   VALENOVA WHITE LT/11,8X11,8" ─────────────────
+    # Pattern: 5-6 digit code, then a product name in caps (multi-word), then
+    # optional variant indicator
+    sku_pattern = _re.compile(
+        r"\b(\d{5,6})\s+([A-Z][A-Z0-9]+(?:\s+[A-Z0-9]+){0,4})\s+(?:LT|[A-Z]{2,3})\s*/",
+    )
+    sku_codes: Dict[str, str] = {}
+    for m in sku_pattern.finditer(text):
+        code = m.group(1)
+        name = m.group(2).strip()
+        if name not in sku_codes.values():  # avoid duplicate names with different codes
+            sku_codes[name] = code
+    if sku_codes:
+        candidates["sku_codes"] = sku_codes
+
+    # ── Grout suppliers + dose: "100 Mapei", "43 Kerakoll" ──────────────
+    grout_pattern = _re.compile(
+        r"(\d{1,4})\s+(Mapei|Kerakoll|Isomat|Technica|Litokol)\b",
+        _re.IGNORECASE,
+    )
+    grout_suppliers = set()
+    grout_entries = []
+    for m in grout_pattern.finditer(text):
+        dose = int(m.group(1))
+        supplier = m.group(2).capitalize()
+        grout_suppliers.add(supplier.upper())
+        grout_entries.append({"supplier": supplier, "dose": dose})
+    if grout_suppliers:
+        candidates["grout_suppliers"] = sorted(grout_suppliers)
+    if grout_entries and sku_codes:
+        # Try to correlate grout entries with SKU codes by order of appearance.
+        # This is best-effort — the SKU and grout dose often appear on the same
+        # line in catalog tables.
+        codes_in_order = list(sku_codes.values())
+        if len(codes_in_order) == len(grout_entries):
+            candidates["grout_color_codes"] = {
+                codes_in_order[i]: grout_entries[i] for i in range(len(codes_in_order))
+            }
+
+    # ── Pieces per box: "12 pieces" ───────────────────────────────────────
+    pieces_match = _re.search(r"\b(\d{1,3})\s+pieces?\b", text, _re.IGNORECASE)
+    if pieces_match:
+        n = int(pieces_match.group(1))
+        if 1 <= n <= 500:
+            candidates["pieces_per_box"] = n
+
+    # ── Patterns count: "12 patterns" ─────────────────────────────────────
+    patterns_match = _re.search(r"\b(\d{1,3})\s+patterns?\b", text, _re.IGNORECASE)
+    if patterns_match:
+        n = int(patterns_match.group(1))
+        if 1 <= n <= 100:
+            candidates["patterns_count"] = n
+
+    # ── Body type: "white body tile", "full body ceramics", "porcelain stoneware" ─
+    body_type_pattern = _re.compile(
+        r"\b(white body tile|full body(?:\s+ceramics?)?|porcelain stoneware|"
+        r"red body|color(?:ed)?\s+body)\b",
+        _re.IGNORECASE,
+    )
+    bt = body_type_pattern.search(text)
+    if bt:
+        candidates["body_type"] = bt.group(1).lower()
+
+    # ── Dimensions: "11,8x11,8 cm  4.65x4.65"" ────────────────────────────
+    # Look for tight pairs like "11,8x11,8" followed by cm or near imperial equivalent
+    dim_pattern = _re.compile(
+        r"(\d{1,3}(?:[,.]\d{1,2})?)\s*[xX×]\s*(\d{1,3}(?:[,.]\d{1,2})?)\s*cm",
+    )
+    dims = []
+    seen_dims = set()
+    for m in dim_pattern.finditer(text):
+        w = m.group(1).replace(",", ".")
+        h = m.group(2).replace(",", ".")
+        try:
+            wf, hf = float(w), float(h)
+            if 0.5 <= wf <= 300 and 0.5 <= hf <= 300:
+                key = f"{wf}x{hf}"
+                if key not in seen_dims:
+                    seen_dims.add(key)
+                    dims.append({"metric_cm": f"{w}x{h}", "format_label": None})
+        except ValueError:
+            continue
+    if dims:
+        candidates["dimensions"] = dims
+
+    return candidates
+
+
+def _rollup_vision_analysis(vision_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Pure function: majority-vote rollup of per-image vision_analysis into
+    product-level fields.
+
+    Args:
+        vision_rows: List of dicts, each containing a vision_analysis JSON blob.
+
+    Returns:
+        Candidate fields: material_category, finish, appearance_colors.
+    """
+    if not vision_rows:
+        return {}
+
+    from collections import Counter
+
+    material_types: List[str] = []
+    finishes: List[str] = []
+    all_colors: List[str] = []
+
+    for row in vision_rows:
+        va = row.get("vision_analysis") or {}
+        if not isinstance(va, dict):
+            continue
+
+        mt = va.get("material_type")
+        if isinstance(mt, str) and mt.strip():
+            material_types.append(mt.strip().lower())
+
+        finish = va.get("finish")
+        if isinstance(finish, str) and finish.strip():
+            finishes.append(finish.strip().lower())
+
+        palette = va.get("color_palette") or va.get("colors") or []
+        if isinstance(palette, list):
+            for c in palette:
+                if isinstance(c, str) and c.strip():
+                    all_colors.append(c.strip().lower())
+
+    candidates: Dict[str, Any] = {}
+
+    if material_types:
+        most_common_mt, _count = Counter(material_types).most_common(1)[0]
+        normalized = _normalize_material_category(most_common_mt)
+        if normalized:
+            candidates["material_category"] = normalized
+
+    if finishes:
+        most_common_finish, _count = Counter(finishes).most_common(1)[0]
+        candidates["finish"] = most_common_finish
+
+    if all_colors:
+        # Union, deduped, preserving most common order
+        color_counts = Counter(all_colors)
+        unique_colors = [c for c, _ in color_counts.most_common()]
+        candidates["appearance_colors"] = unique_colors[:20]  # cap at 20
+
+    return candidates
+
+
+def _merge_enriched_fields_into_metadata(
+    existing_metadata: Dict[str, Any],
+    chunk_candidates: Dict[str, Any],
+    vision_candidates: Dict[str, Any],
+) -> (Dict[str, Any], List[str]):
+    """Merge chunk + vision candidates into a fresh metadata dict.
+
+    Rules:
+        - Only fill fields where existing value is empty (_is_empty_value).
+        - Never overwrite confident AI values.
+        - Record provenance under metadata['_extraction_metadata'][field]['source'].
+
+    Returns:
+        (new_metadata, list_of_filled_field_names)
+    """
+    new_metadata = dict(existing_metadata or {})
+    filled: List[str] = []
+
+    # Ensure _extraction_metadata exists
+    extraction_meta = dict(new_metadata.get("_extraction_metadata") or {})
+
+    def fill_if_empty(key: str, value: Any, source: str, container: Optional[str] = None):
+        if _is_empty_value(value):
+            return
+        if container:
+            parent = dict(new_metadata.get(container) or {})
+            if _is_empty_value(parent.get(key)):
+                parent[key] = value
+                new_metadata[container] = parent
+                extraction_meta[f"{container}.{key}"] = {"source": source, "confidence": 0.90}
+                filled.append(f"{container}.{key}")
+        else:
+            if _is_empty_value(new_metadata.get(key)):
+                new_metadata[key] = value
+                extraction_meta[key] = {"source": source, "confidence": 0.90}
+                filled.append(key)
+
+    # ── Apply chunk candidates ────────────────────────────────────────────
+    fill_if_empty("factory_name", chunk_candidates.get("factory_name"), "chunk_regex")
+    fill_if_empty("designers", chunk_candidates.get("designers"), "chunk_regex")
+    fill_if_empty("pieces_per_box", chunk_candidates.get("pieces_per_box"), "chunk_regex", container="packaging")
+    fill_if_empty("patterns_count", chunk_candidates.get("patterns_count"), "chunk_regex", container="packaging")
+    fill_if_empty("body_type", chunk_candidates.get("body_type"), "chunk_regex", container="material_properties")
+    fill_if_empty("sku_codes", chunk_candidates.get("sku_codes"), "chunk_regex", container="commercial")
+    fill_if_empty("grout_suppliers", chunk_candidates.get("grout_suppliers"), "chunk_regex", container="commercial")
+    fill_if_empty("grout_color_codes", chunk_candidates.get("grout_color_codes"), "chunk_regex", container="commercial")
+
+    # Dimensions special-case: only fill if currently empty/missing/hallucinated
+    chunk_dims = chunk_candidates.get("dimensions")
+    if chunk_dims and _is_empty_value(new_metadata.get("dimensions")):
+        new_metadata["dimensions"] = chunk_dims
+        extraction_meta["dimensions"] = {"source": "chunk_regex", "confidence": 0.95}
+        filled.append("dimensions")
+
+    # ── Apply vision candidates ───────────────────────────────────────────
+    fill_if_empty("material_category", vision_candidates.get("material_category"), "vision_rollup")
+    fill_if_empty("finish", vision_candidates.get("finish"), "vision_rollup", container="material_properties")
+
+    vision_colors = vision_candidates.get("appearance_colors")
+    if vision_colors:
+        appearance = dict(new_metadata.get("appearance") or {})
+        # Store under appearance.colors_from_vision so it doesn't clobber the
+        # text-extracted colors_from_chunks if both exist.
+        if _is_empty_value(appearance.get("colors_from_vision")):
+            appearance["colors_from_vision"] = vision_colors
+            new_metadata["appearance"] = appearance
+            extraction_meta["appearance.colors_from_vision"] = {"source": "vision_rollup", "confidence": 0.85}
+            filled.append("appearance.colors_from_vision")
+
+    if filled:
+        new_metadata["_extraction_metadata"] = extraction_meta
+
+    return new_metadata, filled
+
+
+async def enrich_products_from_chunks_and_vision(
+    document_id: str,
+    supabase: Any,
+    logger: logging.Logger,
+    target_product_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Stage 4.7: fill null product.metadata fields from chunks and vision_analysis.
+
+    Runs after Stage 0 AI extraction + Stage 4.5 propagation + Stage 4.6 dimension
+    extraction. Only fills empty values. Never overwrites AI-extracted data.
+
+    Args:
+        document_id: Document to enrich.
+        supabase: Supabase client.
+        logger: Logger.
+        target_product_id: If provided, enrich only this product (used by the
+                           backfill endpoint). Otherwise, enrich all products
+                           in the document.
+
+    Returns:
+        Stats: products_checked, products_updated, fields_filled (set),
+               chunk_candidates_found, vision_candidates_found
+    """
+    stats: Dict[str, Any] = {
+        "products_checked": 0,
+        "products_updated": 0,
+        "fields_filled": set(),
+    }
+
+    try:
+        # ── Fetch products ─────────────────────────────────────────────────
+        q = supabase.client.table("products").select("id, name, metadata")
+        if target_product_id:
+            q = q.eq("id", target_product_id)
+        else:
+            q = q.eq("source_document_id", document_id)
+        products_resp = q.execute()
+        products = products_resp.data or []
+        stats["products_checked"] = len(products)
+
+        if not products:
+            logger.info("   ℹ️ Enrichment: no products to enrich")
+            return stats
+
+        # ── Fetch document chunks for the whole document (we filter per-product
+        #    by page_range below) ─────────────────────────────────────────
+        chunks_resp = supabase.client.table("document_chunks") \
+            .select("content, page_number") \
+            .eq("document_id", document_id) \
+            .execute()
+        all_chunks = chunks_resp.data or []
+
+        # ── Fetch vision_analysis rows for the whole document ─────────────
+        vision_resp = supabase.client.table("document_images") \
+            .select("page_number, vision_analysis") \
+            .eq("document_id", document_id) \
+            .not_.is_("vision_analysis", "null") \
+            .execute()
+        all_vision = vision_resp.data or []
+
+        # ── Per-product enrichment ────────────────────────────────────────
+        for product in products:
+            product_id = product["id"]
+            product_name = product.get("name") or "(unnamed)"
+            metadata = product.get("metadata") or {}
+
+            # Determine the product's page range.
+            page_range = metadata.get("page_range") or []
+            if not isinstance(page_range, list):
+                page_range = []
+            page_set = set(page_range)
+
+            # Scope chunks to this product's pages (fall back to full doc if
+            # page_range is unknown).
+            if page_set:
+                product_chunks = [
+                    c for c in all_chunks
+                    if c.get("page_number") in page_set or c.get("page_number") is None
+                ]
+            else:
+                product_chunks = all_chunks
+            combined_text = " ".join(
+                c.get("content", "") for c in product_chunks if c.get("content")
+            )
+
+            # Scope vision rows the same way.
+            if page_set:
+                product_vision = [
+                    v for v in all_vision if v.get("page_number") in page_set
+                ]
+            else:
+                product_vision = all_vision
+
+            chunk_candidates = _extract_fields_from_chunk_text(combined_text)
+            vision_candidates = _rollup_vision_analysis(product_vision)
+
+            if not chunk_candidates and not vision_candidates:
+                logger.info(
+                    f"   ℹ️ Enrichment: no candidates found for '{product_name}' "
+                    f"(pages={sorted(page_set) if page_set else 'all'})"
+                )
+                continue
+
+            new_metadata, filled = _merge_enriched_fields_into_metadata(
+                existing_metadata=metadata,
+                chunk_candidates=chunk_candidates,
+                vision_candidates=vision_candidates,
+            )
+
+            if not filled:
+                logger.info(
+                    f"   ℹ️ Enrichment: '{product_name}' already has all fields — "
+                    f"no empty slots to fill"
+                )
+                continue
+
+            supabase.client.table("products") \
+                .update({"metadata": new_metadata}) \
+                .eq("id", product_id) \
+                .execute()
+
+            stats["products_updated"] += 1
+            stats["fields_filled"].update(filled)
+            logger.info(
+                f"   ✅ Enriched '{product_name}': filled {filled} "
+                f"(chunk_candidates={list(chunk_candidates.keys())}, "
+                f"vision_candidates={list(vision_candidates.keys())})"
+            )
+
+        # Convert fields_filled set to list for JSON serialization
+        stats["fields_filled"] = sorted(stats["fields_filled"])
+
+        logger.info(
+            f"✅ Stage 4.7 enrichment complete: "
+            f"{stats['products_updated']}/{stats['products_checked']} products updated, "
+            f"fields_filled={stats['fields_filled']}"
+        )
+        return stats
+
+    except Exception as e:
+        logger.error(f"❌ Stage 4.7 enrichment failed: {e}", exc_info=True)
+        stats["error"] = str(e)
+        stats["fields_filled"] = sorted(stats["fields_filled"]) if isinstance(stats["fields_filled"], set) else stats["fields_filled"]
+        return stats

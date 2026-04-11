@@ -1721,3 +1721,91 @@ async def validate_pipeline(
     except Exception as e:
         logger.error(f"❌ Pipeline validation failed: {e}")
         raise HTTPException(status_code=500, detail=f"Pipeline validation failed: {str(e)}")
+
+
+# ============================================================================
+# POST /api/internal/enrich-existing-product/{product_id}
+# ============================================================================
+
+class EnrichExistingProductResponse(BaseModel):
+    success: bool
+    product_id: str
+    document_id: Optional[str]
+    products_checked: int
+    products_updated: int
+    fields_filled: List[str]
+    message: str
+
+
+@router.post("/enrich-existing-product/{product_id}", response_model=EnrichExistingProductResponse)
+async def enrich_existing_product(product_id: str) -> EnrichExistingProductResponse:
+    """
+    Retroactively run Stage 4.7 enrichment (chunk regex + vision_analysis rollup)
+    on an existing product row. Only fills null/empty fields — never overwrites.
+
+    Use this to backfill products created before the Stage 4.7 enrichment pass
+    was added to the pipeline. After the next full run, this endpoint becomes
+    unnecessary (the enrichment runs automatically).
+
+    Args:
+        product_id: The product UUID to enrich.
+
+    Returns:
+        Stats about what was filled.
+    """
+    from app.api.pdf_processing.stage_4_products import enrich_products_from_chunks_and_vision
+
+    try:
+        supabase = get_supabase_client()
+
+        # Resolve the product's source_document_id so we can scope chunks/images.
+        product_resp = supabase.client.table("products") \
+            .select("id, source_document_id, name") \
+            .eq("id", product_id) \
+            .limit(1) \
+            .execute()
+        if not product_resp.data:
+            raise HTTPException(status_code=404, detail=f"Product {product_id} not found")
+
+        product_row = product_resp.data[0]
+        document_id = product_row.get("source_document_id")
+        if not document_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Product {product_id} has no source_document_id — cannot enrich from chunks",
+            )
+
+        stats = await enrich_products_from_chunks_and_vision(
+            document_id=document_id,
+            supabase=supabase,
+            logger=logger,
+            target_product_id=product_id,
+        )
+
+        if stats.get("error"):
+            raise HTTPException(
+                status_code=500,
+                detail=f"Enrichment failed: {stats['error']}",
+            )
+
+        return EnrichExistingProductResponse(
+            success=True,
+            product_id=product_id,
+            document_id=document_id,
+            products_checked=stats.get("products_checked", 0),
+            products_updated=stats.get("products_updated", 0),
+            fields_filled=stats.get("fields_filled", []),
+            message=(
+                f"Enrichment complete: {stats.get('products_updated', 0)} product(s) updated, "
+                f"{len(stats.get('fields_filled', []))} fields filled"
+            ),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Backfill enrichment failed for product {product_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Backfill enrichment failed: {str(e)}",
+        )

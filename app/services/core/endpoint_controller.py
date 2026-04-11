@@ -1,0 +1,348 @@
+"""
+Unified endpoint controller for all HuggingFace Inference Endpoints.
+
+This is the single coordination point for:
+  - lifecycle     (resume / warmup / pause of the 4 HF endpoints)
+  - backpressure  (AdaptiveConcurrency gate per endpoint, AIMD)
+  - supply/demand closed loop with EndpointAutoScaler
+  - observability (one stats() call for everything)
+
+Why:
+  We have 4 HF endpoints (Qwen, SLIG, YOLO, Chandra). Each used to have its
+  own scattered warmup path, its own (or no) concurrency gate, and its own
+  call-site pattern. When one endpoint got overloaded, nothing shrank our
+  in-flight request rate; we just piled requests into a saturated queue and
+  timed them out.
+
+  This controller:
+  - Warms all 4 endpoints in parallel at job start (saves 60-180s vs serial).
+  - Gives each endpoint its own AdaptiveConcurrency slot, tuned to its shape.
+  - Per-endpoint failures shrink that endpoint only — a Qwen meltdown does
+    NOT drag SLIG/YOLO/Chandra down with it.
+  - If HF scales replicas up (via EndpointAutoScaler), the controller raises
+    the concurrency cap to match. If HF cannot scale up, the controller
+    AIMD-shrinks our in-flight rate to match whatever capacity exists.
+
+Call-site pattern (same for all 4 endpoints):
+
+    from app.services.core.endpoint_controller import endpoint_controller
+
+    async with endpoint_controller.qwen.slot():
+        try:
+            result = await qwen_call(...)
+            endpoint_controller.record_success("qwen")
+        except (APITimeoutError, APIConnectionError, httpx.TimeoutException):
+            endpoint_controller.record_failure("qwen")
+            raise
+
+That's the entire integration — one import, one `async with`, two signals.
+"""
+
+import asyncio
+import logging
+import os
+from typing import Any, Dict, Optional
+
+from app.services.core.adaptive_concurrency import AdaptiveConcurrency
+
+logger = logging.getLogger(__name__)
+
+
+# Mapping between our short names and the HuggingFace endpoint names used
+# by the auto-scaler. Keep this as the ONLY source of truth for the mapping.
+HF_ENDPOINT_NAMES: Dict[str, str] = {
+    "qwen":    "mh-qwen332binstruct",
+    "slig":    "mh-slig",
+    "yolo":    "mh-yolo",
+    "chandra": "mh-chandra",
+}
+
+VALID_ENDPOINT_KEYS = frozenset(HF_ENDPOINT_NAMES.keys())
+
+
+class EndpointController:
+    """Unified controller — lifecycle + backpressure + scaler cooperation.
+
+    Singleton. Instantiate once per process; every module imports the same
+    `endpoint_controller` instance from the bottom of this file.
+    """
+
+    def __init__(self):
+        # Per-endpoint AdaptiveConcurrency gates.
+        #
+        # Tuning rationale:
+        #   - Qwen (mh-qwen332binstruct): heavy VLM on a single GPU replica by
+        #     default. 4 concurrent is the honest ceiling for one replica;
+        #     8 is achievable only with 2+ replicas.
+        #   - SLIG (mh-slig): lightweight text-guided embeddings, fast responses.
+        #     16 concurrent is fine; failures here usually mean network, not load.
+        #   - YOLO (mh-yolo): layout detection, ~2-5s per page, single-page calls.
+        #     12 concurrent is fine; HF replica typically handles 2-3 RPS.
+        #   - Chandra (mh-chandra): OCR, highly variable latency depending on
+        #     image complexity. 8 concurrent max; 1 minimum. Most runs, it's
+        #     disabled — the controller force_minimum()s if the manager is None.
+        self.qwen    = AdaptiveConcurrency(name="qwen",    initial=4, minimum=1, maximum=8,  failure_threshold=2, success_threshold=10)
+        self.slig    = AdaptiveConcurrency(name="slig",    initial=8, minimum=2, maximum=16, failure_threshold=3, success_threshold=15)
+        self.yolo    = AdaptiveConcurrency(name="yolo",    initial=6, minimum=2, maximum=12, failure_threshold=3, success_threshold=15)
+        self.chandra = AdaptiveConcurrency(name="chandra", initial=4, minimum=1, maximum=8,  failure_threshold=2, success_threshold=10)
+
+        # Track warm state per endpoint so warm_all is idempotent.
+        self._warmed: Dict[str, bool] = {k: False for k in VALID_ENDPOINT_KEYS}
+        self._warm_lock = asyncio.Lock()
+
+    # ────────────────────────────────────────────────────────────────────
+    # Accessors
+    # ────────────────────────────────────────────────────────────────────
+
+    def get_gate(self, endpoint: str) -> AdaptiveConcurrency:
+        """Look up the concurrency gate by short name ('qwen'/'slig'/...)."""
+        if endpoint not in VALID_ENDPOINT_KEYS:
+            raise ValueError(
+                f"Unknown endpoint key {endpoint!r}. Valid keys: {sorted(VALID_ENDPOINT_KEYS)}"
+            )
+        return getattr(self, endpoint)
+
+    def record_success(self, endpoint: str) -> None:
+        """Signal a successful call. Grows the gate toward its maximum."""
+        self.get_gate(endpoint).record_success()
+
+    def record_failure(self, endpoint: str) -> None:
+        """Signal a backpressure-relevant failure. Shrinks the gate.
+
+        Only call for overload-class errors (timeout, 503, connection error,
+        rate limit). DO NOT call for semantic errors (400, invalid payload,
+        empty response) — those are not capacity signals.
+        """
+        self.get_gate(endpoint).record_failure()
+
+    def record_overload_exception(self, endpoint: str, exc: BaseException) -> bool:
+        """Classify an exception and record failure if it's overload-class.
+
+        Returns True if the exception was treated as a backpressure signal.
+        Useful in `except` blocks where you want one-line error classification:
+
+            except Exception as e:
+                endpoint_controller.record_overload_exception("chandra", e)
+                raise
+        """
+        name = type(exc).__name__
+        is_overload = (
+            "Timeout" in name
+            or "Connection" in name
+            or "RateLimit" in name
+            or "ReadError" in name
+            or "RemoteProtocol" in name
+        )
+        # Check for HTTP status codes on errors that carry a response
+        resp = getattr(exc, "response", None)
+        status = getattr(resp, "status_code", None) if resp is not None else None
+        if status is not None and status in (429, 500, 502, 503, 504):
+            is_overload = True
+
+        if is_overload:
+            self.record_failure(endpoint)
+        return is_overload
+
+    # ────────────────────────────────────────────────────────────────────
+    # Warmup — parallel, at job start
+    # ────────────────────────────────────────────────────────────────────
+
+    async def warm_all(self, job_id: str) -> Dict[str, bool]:
+        """Warm up all 4 HF endpoints in parallel.
+
+        Each endpoint manager's `warmup()` method is sync (it uses `requests`,
+        not httpx); we run them in threads so they can overlap without blocking
+        the event loop.
+
+        Any endpoint whose warmup fails (manager missing, URL empty, all resume
+        attempts failed, warmup probe timeout) has its concurrency gate forced
+        to `minimum=1`. That prevents the pipeline from handing out slots that
+        would just pile up against a broken endpoint — calls will either
+        succeed slowly or fail fast into their application-level fallback
+        (e.g. Claude for Qwen, EasyOCR for Chandra).
+
+        Args:
+            job_id: for logging correlation.
+
+        Returns:
+            Dict[endpoint_name, success_bool] — quick at-a-glance result.
+        """
+        async with self._warm_lock:
+            from app.services.embeddings.endpoint_registry import endpoint_registry
+
+            # Serialize access to the auto-scaler's status so we can cooperate.
+            auto_scaler = self._get_auto_scaler()
+
+            tasks = [
+                self._warm_one("qwen",    endpoint_registry.get_qwen_manager(),    job_id),
+                self._warm_one("slig",    endpoint_registry.get_slig_manager(),    job_id),
+                self._warm_one("yolo",    endpoint_registry.get_yolo_manager(),    job_id),
+                self._warm_one("chandra", endpoint_registry.get_chandra_manager(), job_id),
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=False)
+
+            outcome = dict(zip(VALID_ENDPOINT_KEYS, results))
+            healthy = [k for k, v in outcome.items() if v]
+            degraded = [k for k, v in outcome.items() if not v]
+
+            logger.info(
+                "🔥 EndpointController.warm_all(%s): healthy=%s degraded=%s",
+                job_id, healthy, degraded,
+            )
+
+            # Cooperate with the auto-scaler: if it has a fresh replica count
+            # from the HF API, use it to raise concurrency caps above default.
+            if auto_scaler is not None:
+                self._align_caps_with_replica_counts(auto_scaler)
+
+            return outcome
+
+    async def _warm_one(self, key: str, manager: Any, job_id: str) -> bool:
+        """Resume + warmup a single endpoint.
+
+        Any failure force_minimum()s the corresponding gate.
+        """
+        gate = self.get_gate(key)
+
+        if manager is None:
+            logger.warning(
+                "   ⚠️ %s manager not registered — gate forced to minimum (fallback-only)",
+                key,
+            )
+            gate.force_minimum()
+            return False
+
+        try:
+            # warmup() is sync, uses requests. Wrap in a thread so parallel
+            # warmup of 4 endpoints actually runs in parallel.
+            ok: bool = await asyncio.to_thread(manager.warmup)
+            if ok:
+                self._warmed[key] = True
+                logger.info("   ✅ %s warmed up", key)
+                return True
+            else:
+                logger.warning(
+                    "   ⚠️ %s warmup returned False — gate forced to minimum",
+                    key,
+                )
+                gate.force_minimum()
+                return False
+        except Exception as e:
+            logger.warning(
+                "   ⚠️ %s warmup raised %s: %s — gate forced to minimum",
+                key, type(e).__name__, e,
+            )
+            gate.force_minimum()
+            return False
+
+    # ────────────────────────────────────────────────────────────────────
+    # Auto-scaler cooperation
+    # ────────────────────────────────────────────────────────────────────
+
+    def _get_auto_scaler(self) -> Optional[Any]:
+        """Safely fetch the global auto-scaler if initialized."""
+        try:
+            from app.services.embeddings.endpoint_auto_scaler import get_auto_scaler
+            return get_auto_scaler()
+        except Exception:
+            return None
+
+    def _align_caps_with_replica_counts(self, auto_scaler: Any) -> None:
+        """Raise per-gate `maximum` to match actual HF replica counts.
+
+        If the auto-scaler has already scaled Qwen to 2 replicas, we can
+        safely run at 2 × base_max concurrent (8 → 16). This is the "supply
+        side" of the control loop — when HF grants more capacity, we let our
+        demand-side gate use it. AIMD still handles in-run overload; this is
+        just the ceiling.
+        """
+        try:
+            status = auto_scaler.get_status()
+            current = status.get("current_replicas", {}) or {}
+
+            # Map HF endpoint names → our short keys via HF_ENDPOINT_NAMES
+            for short_key, hf_name in HF_ENDPOINT_NAMES.items():
+                replicas = current.get(hf_name, 0)
+                if replicas <= 0:
+                    continue
+
+                gate = self.get_gate(short_key)
+                base_max = gate._max
+                # Scale cap by replica count, but never above 4× the base
+                # (defensive ceiling so a misreported replica count can't
+                # let us DDoS an endpoint).
+                new_max = min(base_max * replicas, base_max * 4)
+                if new_max > gate._max:
+                    logger.info(
+                        "📈 %s cap raised: %d → %d (HF has %d replica(s))",
+                        short_key, gate._max, new_max, replicas,
+                    )
+                    gate._max = new_max
+        except Exception as e:
+            # Cooperation is best-effort; never fail the pipeline on scaler noise.
+            logger.debug("Auto-scaler alignment skipped: %s", e)
+
+    async def request_scale_up(self, endpoint: str, desired_replicas: int) -> bool:
+        """Ask the auto-scaler to add replicas for one endpoint.
+
+        Useful at job start when you know you're about to hit an endpoint
+        hard — e.g. the main pipeline can call `request_scale_up('qwen', 2)`
+        before Stage 3 kicks off. If HF has capacity, we get more replicas;
+        if not, this is a no-op and the adaptive gate still keeps us safe.
+
+        Returns True on success, False on failure/no-op.
+        """
+        auto_scaler = self._get_auto_scaler()
+        if auto_scaler is None or not getattr(auto_scaler, "enabled", False):
+            return False
+
+        hf_name = HF_ENDPOINT_NAMES.get(endpoint)
+        if hf_name is None:
+            return False
+
+        try:
+            # scale_endpoint is sync + uses HF API; run in thread.
+            ok = await asyncio.to_thread(
+                auto_scaler.scale_endpoint, hf_name, desired_replicas
+            )
+            if ok:
+                self._align_caps_with_replica_counts(auto_scaler)
+            return bool(ok)
+        except Exception as e:
+            logger.warning("request_scale_up(%s, %d) failed: %s", endpoint, desired_replicas, e)
+            return False
+
+    # ────────────────────────────────────────────────────────────────────
+    # Observability
+    # ────────────────────────────────────────────────────────────────────
+
+    def stats(self) -> Dict[str, Any]:
+        """Single snapshot of all 4 gates for progress reports + logs."""
+        return {
+            "qwen":    self.qwen.stats(),
+            "slig":    self.slig.stats(),
+            "yolo":    self.yolo.stats(),
+            "chandra": self.chandra.stats(),
+            "warmed":  dict(self._warmed),
+        }
+
+    def log_stats(self, prefix: str = "🎛️  EndpointController") -> None:
+        """Pretty-print gate state at stage boundaries."""
+        s = self.stats()
+        logger.info(
+            "%s: qwen=%d/%d (in=%d) | slig=%d/%d (in=%d) | yolo=%d/%d (in=%d) | chandra=%d/%d (in=%d)",
+            prefix,
+            s["qwen"]["limit"], s["qwen"]["max"], s["qwen"]["in_flight"],
+            s["slig"]["limit"], s["slig"]["max"], s["slig"]["in_flight"],
+            s["yolo"]["limit"], s["yolo"]["max"], s["yolo"]["in_flight"],
+            s["chandra"]["limit"], s["chandra"]["max"], s["chandra"]["in_flight"],
+        )
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Module-level singleton. Import this everywhere:
+#
+#     from app.services.core.endpoint_controller import endpoint_controller
+# ════════════════════════════════════════════════════════════════════════
+
+endpoint_controller = EndpointController()

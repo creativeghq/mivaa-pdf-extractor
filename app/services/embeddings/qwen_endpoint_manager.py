@@ -366,7 +366,16 @@ class QwenEndpointManager:
         """Quick test if Qwen can handle requests."""
         try:
             import requests
-            # Fix URL construction - endpoint_url may already include /v1/
+            # Guard: refuse to probe an empty/non-HTTP URL. An unresolved endpoint_url
+            # is the root cause of MIVAA-507 "UnsupportedProtocol" — 296 Sentry events
+            # from health checks that ran before .resume() populated the URL.
+            if not self.endpoint_url or not self.endpoint_url.startswith(("http://", "https://")):
+                logger.warning(
+                    f"   Qwen warmup test skipped: endpoint_url not configured "
+                    f"(got {self.endpoint_url!r})"
+                )
+                return False
+
             base_url = self.endpoint_url.rstrip('/')
             if base_url.endswith('/v1'):
                 url = f"{base_url}/chat/completions"

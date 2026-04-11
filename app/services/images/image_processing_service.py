@@ -314,6 +314,15 @@ class ImageProcessingService:
                 # ✅ Use OpenAI client for HuggingFace endpoint (llamacpp provides OpenAI-compatible API)
                 from openai import AsyncOpenAI
 
+                # Guard: refuse to build a URL without a scheme. A missing scheme
+                # here is the root cause of MIVAA-507 "UnsupportedProtocol: Request
+                # URL is missing an 'http://' or 'https://' protocol" (296 events).
+                if not qwen_endpoint_url or not qwen_endpoint_url.startswith(("http://", "https://")):
+                    raise RuntimeError(
+                        f"Qwen endpoint URL not configured (got {qwen_endpoint_url!r}). "
+                        "Set QWEN_ENDPOINT_URL env var or wait for qwen_endpoint_manager.resume() to populate it."
+                    )
+
                 # Ensure base_url ends with /v1/ for OpenAI client compatibility
                 # The client will append /chat/completions to this base
                 if not qwen_endpoint_url.endswith('/v1/') and not qwen_endpoint_url.endswith('/v1'):
@@ -323,10 +332,17 @@ class ImageProcessingService:
 
                 logger.info(f"🔧 Qwen OpenAI client base_url: {base_url}")
 
+                # Tightened client config:
+                #   timeout=60  — fast-fail rather than wait 90s for an overloaded replica
+                #   max_retries=0 — kill openai SDK retries. Our app-level retry loop +
+                #                    AdaptiveConcurrency + Claude fallback handle resilience.
+                #                    The SDK's default max_retries=2 used to turn one
+                #                    timeout into 3×90s=270s of wasted queue pressure.
                 client = AsyncOpenAI(
                     base_url=base_url,  # https://...huggingface.cloud/v1/
                     api_key=huggingface_api_key,
-                    timeout=90.0
+                    timeout=60.0,
+                    max_retries=0,
                 )
 
                 # ✅ Call endpoint with retry logic for 503 errors
@@ -490,6 +506,23 @@ class ImageProcessingService:
                     + (f" | HTTP {api_status}: {api_body}" if api_status else "")
                 )
 
+                # Signal the controller so the Qwen gate can shrink on repeated
+                # failures. Only treat overload-class errors as backpressure
+                # signals — semantic / bad-payload errors are filtered out.
+                exc_name = type(e).__name__
+                is_overload = (
+                    "Timeout" in exc_name
+                    or "Connection" in exc_name
+                    or "RateLimit" in exc_name
+                    or (api_status is not None and api_status in (429, 500, 502, 503, 504))
+                )
+                if is_overload:
+                    try:
+                        from app.services.core.endpoint_controller import endpoint_controller
+                        endpoint_controller.record_failure("qwen")
+                    except Exception:
+                        pass  # Never let observability fail the primary path
+
                 return {
                     'is_material': False,
                     'confidence': 0.0,
@@ -541,8 +574,42 @@ class ImageProcessingService:
                     }]
                 )
 
-                result_text = response.content[0].text
-                result = json.loads(result_text)
+                # Diagnose the "Expecting value: line 1 column 1 (char 0)" bug — that
+                # error means Claude returned an empty string, a safety refusal, or a
+                # non-text content block. Log what actually arrived so we can tell the
+                # three cases apart instead of guessing.
+                result_text = response.content[0].text if response.content else ""
+                stop_reason = getattr(response, "stop_reason", "unknown")
+
+                if not result_text or not result_text.strip():
+                    logger.warning(
+                        "⚠️ Claude returned empty content for %s | stop_reason=%s | "
+                        "usage=%s | content_blocks=%d",
+                        image_path, stop_reason,
+                        getattr(response, "usage", None),
+                        len(response.content or []),
+                    )
+                    return {
+                        'is_material': False,
+                        'confidence': 0.0,
+                        'reason': f'Claude returned empty response (stop_reason={stop_reason})',
+                        'model': 'claude_empty_response',
+                    }
+
+                try:
+                    result = json.loads(result_text)
+                except json.JSONDecodeError as parse_err:
+                    logger.warning(
+                        "⚠️ Claude returned non-JSON for %s | stop_reason=%s | "
+                        "raw[:300]=%r | error=%s",
+                        image_path, stop_reason, result_text[:300], parse_err,
+                    )
+                    return {
+                        'is_material': False,
+                        'confidence': 0.0,
+                        'reason': f'Claude returned non-JSON: {parse_err}',
+                        'model': 'claude_not_json',
+                    }
 
                 # Use the category mapping function for consistent classification
                 is_material = is_material_classification(result.get('classification', ''))
@@ -569,17 +636,21 @@ class ImageProcessingService:
                     del image_base64
 
         # ✅ TIER-BASED RATE LIMITING: Dynamically adjust based on vision model tier
-        from app.config.rate_limits import VISION_CONCURRENCY, CLAUDE_CONCURRENCY, CURRENT_TIER
+        from app.config.rate_limits import CLAUDE_CONCURRENCY, CURRENT_TIER
+        from app.services.core.endpoint_controller import endpoint_controller
 
         logger.info(f"🎯 Rate Limiting Configuration:")
         logger.info(f"   Vision Tier: {CURRENT_TIER.tier} (${CURRENT_TIER.total_spend} spent)")
         logger.info(f"   LLM Rate Limit: {CURRENT_TIER.llm_rpm} RPM ({CURRENT_TIER.llm_rps:.1f} RPS)")
-        logger.info(f"   Vision Concurrency: {VISION_CONCURRENCY} concurrent requests")
-        logger.info(f"   Claude Concurrency: {CLAUDE_CONCURRENCY} concurrent requests")
+        endpoint_controller.log_stats("   Endpoint gates")
 
-        # Two-stage classification with tier-based semaphores for rate limiting
-        vision_semaphore = Semaphore(VISION_CONCURRENCY)  # Dynamic based on tier
-        claude_semaphore = Semaphore(CLAUDE_CONCURRENCY)  # Conservative for Claude
+        # Qwen concurrency is gated through the unified EndpointController.
+        # The controller owns the AIMD state across ALL calls (not just this
+        # classify pass), so a bad Qwen day earlier in the pipeline is already
+        # reflected when we get here. Claude fallback stays on a fixed semaphore
+        # — Anthropic's rate limits are published and stable, not a
+        # single-replica bottleneck.
+        claude_semaphore = Semaphore(CLAUDE_CONCURRENCY)
 
         async def classify_with_two_stage(img_data):
             image_path = img_data.get('path')
@@ -612,27 +683,45 @@ class ImageProcessingService:
                     logger.error(f"   Filename: {filename}")
                     return None
 
-            # STAGE 1: Fast primary model classification with retry logic
-            async with vision_semaphore:
+            # STAGE 1: Fast primary model classification with app-level retry.
+            # The unified EndpointController gates in-flight Qwen requests and
+            # learns the endpoint's real capacity across the whole pipeline.
+            # Timeout/503 errors signal overload and shrink the cap; successes
+            # grow it back. Cap also scales with HF replica count via the
+            # auto-scaler cooperation path.
+            async with endpoint_controller.qwen.slot():
                 primary_result = None
-                max_retries = 3
-                retry_delay = 1.0  # Start with 1 second
+                max_retries = 2  # Was 3. With max_retries=0 on the openai client
+                                  # and adaptive concurrency gating the burst, 2 app-level
+                                  # attempts is enough without wasting queue pressure.
+                retry_delay = 1.0
 
                 for attempt in range(max_retries):
                     primary_result = await classify_image_with_vision_model(image_path, primary_model, base64_data=image_base64)
 
-                    # ✅ CRITICAL: Check if we should retry (API errors, service unavailable)
+                    # Signal the controller. Timeout/503/connection errors →
+                    # shrink Qwen concurrency. Clean success → grow back toward max.
+                    result_model = primary_result.get('model', '')
+                    if '_503_fallback' in result_model or '_api_error' in result_model:
+                        endpoint_controller.record_failure("qwen")
+                    elif primary_result.get('confidence', 0) > 0 and '_invalid_response' not in result_model:
+                        endpoint_controller.record_success("qwen")
+
+                    # Only retry on endpoint-level API errors (not semantic failures).
                     should_retry = (
                         primary_result.get('retry_recommended', False) or
-                        '_api_error' in primary_result.get('model', '')
+                        '_api_error' in result_model
                     )
-
                     if not should_retry or attempt == max_retries - 1:
                         break
 
-                    # Exponential backoff with jitter
                     wait_time = retry_delay * (2 ** attempt) + (0.1 * attempt)
-                    logger.warning(f"   🔄 Retrying classification for {filename} (attempt {attempt + 2}/{max_retries}) after {wait_time:.1f}s...")
+                    qwen_gate = endpoint_controller.qwen
+                    logger.warning(
+                        f"   🔄 Retrying classification for {filename} "
+                        f"(attempt {attempt + 2}/{max_retries}) after {wait_time:.1f}s... "
+                        f"[qwen_limit={qwen_gate.limit}, in_flight={qwen_gate.in_flight}]"
+                    )
                     await asyncio.sleep(wait_time)
 
             # ✅ NEW: Check if primary model failed (invalid response or exception)

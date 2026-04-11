@@ -118,25 +118,44 @@ class SLIGClient:
         """
         Make async HTTP request to SLIG endpoint.
         Automatically handles endpoint resume and warmup.
+
+        Gated through the unified EndpointController so that all SLIG call
+        sites downstream automatically participate in AIMD backpressure — one
+        choke point, no per-call-site wiring.
         """
+        from app.services.core.endpoint_controller import endpoint_controller
+
         # Ensure endpoint is ready
         await self._ensure_endpoint_ready()
 
-        # Make inference call
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                self.endpoint_url,
-                headers=self.headers,
-                json=payload
-            )
-            response.raise_for_status()
-            result = response.json()
+        async with endpoint_controller.slig.slot():
+            try:
+                # Make inference call
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.post(
+                        self.endpoint_url,
+                        headers=self.headers,
+                        json=payload
+                    )
+                    response.raise_for_status()
+                    result = response.json()
 
-        # Mark endpoint as used (for auto-pause tracking)
-        if self._endpoint_manager:
-            self._endpoint_manager.mark_used()
+                # Mark endpoint as used (for auto-pause tracking)
+                if self._endpoint_manager:
+                    self._endpoint_manager.mark_used()
 
-        return result
+                endpoint_controller.record_success("slig")
+                return result
+
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError):
+                # Overload-class failure → shrink SLIG concurrency
+                endpoint_controller.record_failure("slig")
+                raise
+            except httpx.HTTPStatusError as e:
+                # Only 5xx / 429 are backpressure signals
+                if e.response.status_code in (429, 500, 502, 503, 504):
+                    endpoint_controller.record_failure("slig")
+                raise
     
     def _image_to_base64(self, image: Image.Image, max_dimension: int = 512) -> str:
         """

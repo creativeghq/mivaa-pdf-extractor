@@ -694,7 +694,13 @@ class DynamicMetadataExtractor:
             raise RuntimeError(f"GPT metadata extraction failed: {str(e)}") from e
     
     def _parse_ai_response(self, response: str) -> Dict[str, Any]:
-        """Parse AI JSON response."""
+        """Parse AI JSON response.
+
+        On parse failure, logs a structured error with the truncated raw response
+        so we can diagnose prompt/model drift from Sentry + journalctl without
+        silently producing an empty metadata skeleton.
+        """
+        original_response = response
         try:
             # Try to extract JSON from markdown code blocks if present
             if "```json" in response:
@@ -708,9 +714,19 @@ class DynamicMetadataExtractor:
 
             return json.loads(response)
         except json.JSONDecodeError as e:
-            self.logger.error(f"Failed to parse AI response as JSON: {e}")
-            self.logger.debug(f"Raw response (first 500 chars): {response[:500]}")
-            return self._get_empty_result()
+            # Log the truncated raw response so we can debug what the AI actually
+            # returned. The empty-result fallback is tagged with the error so it
+            # propagates into products.metadata._extraction_error and surfaces in
+            # the admin UI instead of showing as "just missing data".
+            truncated = (original_response or "")[:800]
+            self.logger.error(
+                "❌ Failed to parse AI metadata response as JSON | error=%s | "
+                "response_len=%d | response[:800]=%r",
+                e, len(original_response or ""), truncated
+            )
+            return self._get_empty_result(
+                error=f"JSONDecodeError: {e} | raw[:200]={truncated[:200]!r}"
+            )
     
     def _fallback_extraction(self, pdf_text: str) -> Dict[str, Any]:
         """Fallback pattern-based extraction when AI unavailable."""

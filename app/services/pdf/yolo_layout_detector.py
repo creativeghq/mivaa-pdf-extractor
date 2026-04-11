@@ -246,15 +246,29 @@ class YoloLayoutDetector:
                 }
             }
 
-            # Call endpoint
-            async with httpx.AsyncClient(timeout=self.inference_timeout) as client:
-                response = await client.post(
-                    self.endpoint_url,
-                    headers=headers,
-                    json=payload
-                )
-                response.raise_for_status()
-                result = response.json()
+            # Call endpoint — gated through the unified EndpointController so
+            # YOLO in-flight requests are AIMD-throttled when the HF replica
+            # saturates.
+            from app.services.core.endpoint_controller import endpoint_controller
+
+            async with endpoint_controller.yolo.slot():
+                try:
+                    async with httpx.AsyncClient(timeout=self.inference_timeout) as client:
+                        response = await client.post(
+                            self.endpoint_url,
+                            headers=headers,
+                            json=payload
+                        )
+                        response.raise_for_status()
+                        result = response.json()
+                    endpoint_controller.record_success("yolo")
+                except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError):
+                    endpoint_controller.record_failure("yolo")
+                    raise
+                except httpx.HTTPStatusError as http_err:
+                    if http_err.response.status_code in (429, 500, 502, 503, 504):
+                        endpoint_controller.record_failure("yolo")
+                    raise
 
             # Parse YOLO output to LayoutRegion objects
             regions = self._parse_yolo_output(result, page_num, image.size)
