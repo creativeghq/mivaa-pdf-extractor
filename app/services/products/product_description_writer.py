@@ -73,6 +73,30 @@ def _clean_chunk_text(text: str) -> str:
     return text.strip()
 
 
+def _is_likely_english(text: str) -> bool:
+    """Quick heuristic: does >40% of the text's words look English?
+
+    Uses a set of common English function words. Spanish/Italian/French
+    catalogs use different articles/prepositions (de, la, un, una, con, que,
+    para, etc.) so this is a reliable split for bilingual ceramic catalogs
+    where one paragraph is in English and the next is the Spanish translation.
+    """
+    if not text:
+        return False
+    english_words = {
+        'the', 'a', 'an', 'is', 'are', 'was', 'were', 'and', 'or', 'of',
+        'to', 'in', 'for', 'with', 'that', 'this', 'from', 'by', 'on', 'it',
+        'its', 'has', 'have', 'be', 'not', 'but', 'which', 'each', 'can',
+        'new', 'our', 'any', 'all', 'will', 'at', 'as', 'their', 'been',
+        'only', 'also', 'into', 'creating', 'collection', 'design', 'tile',
+    }
+    words = re.findall(r'[a-zA-Z]{2,}', text.lower())
+    if not words:
+        return False
+    english_count = sum(1 for w in words if w in english_words)
+    return (english_count / len(words)) > 0.15
+
+
 def write_product_description_from_chunks(
     product_name: str,
     chunks: List[Any],
@@ -94,9 +118,16 @@ def write_product_description_from_chunks(
     if not chunks:
         return None
 
-    # Assemble the raw chunk text (capped)
-    parts: List[str] = []
-    remaining = MAX_INPUT_CHARS
+    # Assemble the raw chunk text (capped).
+    #
+    # Bilingual ceramic catalogs (Harmony, Peronda, ...) place the Spanish
+    # paragraph before the English one on spreads. If we just iterate chunks
+    # in document order, the 6000-char cap can fill up on Spanish text and
+    # the English description never makes it to Claude. We sort English-
+    # looking chunks first so the model always gets the English narrative
+    # within the cap, then any leftover budget goes to the Spanish (which
+    # Claude can translate if needed).
+    cleaned_chunks: List[tuple] = []  # (cleaned_text, is_english)
     for c in chunks:
         if isinstance(c, dict):
             content = c.get("content") or ""
@@ -105,6 +136,14 @@ def write_product_description_from_chunks(
         cleaned = _clean_chunk_text(str(content))
         if not cleaned:
             continue
+        cleaned_chunks.append((cleaned, _is_likely_english(cleaned)))
+
+    # English first, then non-English
+    cleaned_chunks.sort(key=lambda x: (not x[1], len(x[0])))
+
+    parts: List[str] = []
+    remaining = MAX_INPUT_CHARS
+    for cleaned, _is_eng in cleaned_chunks:
         if len(cleaned) > remaining:
             cleaned = cleaned[:remaining]
         parts.append(cleaned)
