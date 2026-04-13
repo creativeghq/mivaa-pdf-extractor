@@ -991,14 +991,14 @@ class RealImageAnalysisService:
                     except Exception:
                         pass
 
-                # SigLIP returns 1152D embeddings
-                if visual_embedding and isinstance(visual_embedding, list) and len(visual_embedding) == 1152:
-                    self.logger.info(f"✅ Generated SigLIP embedding: {len(visual_embedding)}D using {model_name}")
+                # SLIG returns 768D embeddings
+                if visual_embedding and isinstance(visual_embedding, list) and len(visual_embedding) == 768:
+                    self.logger.info(f"✅ Generated SLIG embedding: {len(visual_embedding)}D using {model_name}")
                     return visual_embedding
                 else:
                     actual_len = len(visual_embedding) if visual_embedding else 0
-                    self.logger.error(f"SigLIP embedding has wrong dimensions: expected 1152D, got {actual_len}D from {model_name}")
-                    raise RuntimeError(f"Failed to generate valid SigLIP embedding: expected 1152D, got {actual_len}D")
+                    self.logger.error(f"SLIG embedding has wrong dimensions: expected 768D, got {actual_len}D from {model_name}")
+                    raise RuntimeError(f"Failed to generate valid SLIG embedding: expected 768D, got {actual_len}D")
             else:
                 self.logger.error(f"SigLIP embedding generation returned invalid format: expected tuple(list, str, PIL), got {type(result).__name__}")
                 raise RuntimeError("Failed to generate valid SigLIP embedding: invalid return format")

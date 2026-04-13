@@ -47,7 +47,8 @@ class SearchConfig:
     include_metadata: bool = True
     include_embeddings: bool = False
     enable_hybrid: bool = True
-    mmr_lambda: float = 0.7  # For maximal marginal relevance
+    enable_mmr: bool = False  # Enable MMR diversity re-ranking
+    mmr_lambda: float = 0.7  # MMR relevance/diversity balance (1.0=pure relevance)
 
 
 @dataclass
@@ -232,7 +233,19 @@ class UnifiedSearchService:
 
             # Sort by similarity score
             results.sort(key=lambda x: x.similarity_score, reverse=True)
-            limited_results = results[:self.config.max_results]
+
+            # Apply MMR re-ranking for result diversity (if enabled)
+            if self.config.enable_mmr and len(results) > self.config.max_results:
+                from .mmr_reranker import MMRReranker
+                reranker = MMRReranker(lambda_param=self.config.mmr_lambda)
+                mmr_result = reranker.rerank(results, top_k=self.config.max_results)
+                limited_results = mmr_result.items
+                self.logger.info(
+                    f"MMR re-ranked {len(results)} → {len(limited_results)} results "
+                    f"(λ={self.config.mmr_lambda})"
+                )
+            else:
+                limited_results = results[:self.config.max_results]
 
             # Calculate search time
             search_time_ms = (datetime.utcnow() - start_time).total_seconds() * 1000

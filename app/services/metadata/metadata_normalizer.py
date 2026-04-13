@@ -283,38 +283,101 @@ def normalize_factory_keys(metadata: Dict[str, Any]) -> Dict[str, Any]:
 # Standard material categories - normalize variations to these
 # NOTE: Material type (e.g., "Tile") is separate from composition (e.g., "ceramic", "porcelain")
 MATERIAL_CATEGORY_MAPPING = {
-    # Tiles - all tile variations map to "Tile"
-    "tile": "Tile",
-    "tiles": "Tile",
-    "ceramic": "Tile",  # Composition will be extracted separately
-    "ceramic tile": "Tile",
-    "ceramic tiles": "Tile",
-    "porcelain": "Tile",  # Composition will be extracted separately
-    "porcelain tile": "Tile",
-    "porcelain tiles": "Tile",
-    "stoneware": "Tile",
-    "stoneware tile": "Tile",
-    # Stone
-    "stone": "Natural Stone",
-    "natural stone": "Natural Stone",
-    "marble": "Marble",
-    "granite": "Granite",
-    "limestone": "Limestone",
-    "travertine": "Travertine",
-    "slate": "Slate",
-    # Wood
-    "wood": "Wood",
-    "hardwood": "Hardwood",
-    "laminate": "Laminate",
-    "mdf": "MDF",
-    "plywood": "Plywood",
-    "engineered wood": "Engineered Wood",
+    # Tiles — all tile variations keep their controlled-vocab slug
+    "tile": "floor_tile",
+    "tiles": "floor_tile",
+    "ceramic": "ceramic_tile",
+    "ceramic tile": "ceramic_tile",
+    "ceramic tiles": "ceramic_tile",
+    "porcelain": "porcelain_tile",
+    "porcelain tile": "porcelain_tile",
+    "porcelain tiles": "porcelain_tile",
+    "stoneware": "floor_tile",
+    "stoneware tile": "floor_tile",
+    "floor tile": "floor_tile",
+    "wall tile": "wall_tile",
+    "bathroom tile": "bathroom_tile",
+    "shower tile": "shower_tile",
+    # Wood / Flooring
+    "wood": "wood_flooring",
+    "hardwood": "hardwood",
+    "laminate": "laminate",
+    "mdf": "wood_flooring",
+    "plywood": "wood_flooring",
+    "engineered wood": "engineered_wood",
+    "parquet": "parquet",
+    "vinyl": "vinyl_flooring",
+    "vinyl flooring": "vinyl_flooring",
+    "carpet": "carpet",
+    # Stone / General materials
+    "stone": "stone_slab",
+    "natural stone": "stone_slab",
+    "marble": "stone_slab",
+    "granite": "stone_slab",
+    "limestone": "stone_slab",
+    "travertine": "stone_slab",
+    "slate": "stone_slab",
+    "quartz": "quartz",
+    "terrazzo": "terrazzo",
+    "concrete": "concrete",
+    "countertop": "countertop",
+    # Paint / Wall Decor
+    "paint": "wall_paint",
+    "wall paint": "wall_paint",
+    "wallpaper": "wallpaper",
+    "plaster": "decorative_plaster",
+    "wall panel": "wall_panel",
+    # Furniture
+    "sofa": "sofa",
+    "armchair": "armchair",
+    "chair": "dining_chair",
+    "table": "dining_table",
+    "cabinet": "cabinet",
+    "bed": "bed",
+    "desk": "desk",
+    "shelving": "shelving",
+    "sideboard": "sideboard",
+    # Decor
+    "rug": "rug",
+    "curtain": "curtain",
+    "cushion": "cushion",
+    "vase": "vase",
+    "mirror": "mirror",
+    # Heating
+    "radiator": "radiator",
+    "towel rail": "towel_rail",
+    "boiler": "boiler",
+    "fireplace": "fireplace",
+    "convector": "convector",
+    "heat pump": "heat_pump",
+    # Sanitary
+    "toilet": "toilet",
+    "basin": "basin",
+    "bathtub": "bathtub",
+    "shower tray": "shower_tray",
+    "bidet": "bidet",
+    "tap": "tap",
+    "faucet": "faucet",
+    "mixer": "mixer",
+    # Kitchen
+    "kitchen cabinet": "kitchen_cabinet",
+    "kitchen sink": "kitchen_sink",
+    "kitchen hood": "kitchen_hood",
+    "worktop": "kitchen_worktop",
+    # Lighting
+    "light": "lighting",
+    "lamp": "lighting",
+    "pendant": "pendant_light",
+    "chandelier": "chandelier",
+    "spotlight": "spotlight",
     # Other
-    "glass": "Glass",
-    "metal": "Metal",
-    "composite": "Composite",
-    "concrete": "Concrete",
-    "resin": "Resin",
+    "glass": "glass_panel",
+    "metal": "metal_panel",
+    "composite": "countertop",
+    "resin": "countertop",
+    "fabric": "fabric_swatch",
+    "leather": "leather_swatch",
+    "textile": "fabric_swatch",
 }
 
 # Composition types for tiles (extracted separately from material category)
@@ -351,12 +414,26 @@ def normalize_material_category(category: str) -> Tuple[str, Optional[str]]:
 
     normalized = category.lower().strip()
 
-    # Get the base material category
-    base_category = MATERIAL_CATEGORY_MAPPING.get(normalized, category.title())
+    # Get the base material category (controlled-vocab slug)
+    base_category = MATERIAL_CATEGORY_MAPPING.get(normalized, None)
+
+    # If no mapping found, preserve the original value as-is (it may already
+    # be a valid controlled-vocab slug like "floor_tile" from the AI extractor)
+    if base_category is None:
+        # Keep snake_case slugs unchanged, Title-case free-form text
+        if "_" in normalized or normalized in {
+            "floor_tile", "wall_tile", "wood_flooring", "laminate", "vinyl_flooring",
+            "wall_paint", "wallpaper", "stone_slab", "metal_panel", "glass_panel",
+            "radiator", "towel_rail", "toilet", "basin", "bathtub", "lighting",
+            "pendant_light", "ceiling_light", "kitchen_cabinet", "kitchen_hood",
+        }:
+            base_category = normalized
+        else:
+            base_category = category.title()
 
     # Extract composition for tiles
     composition = None
-    if base_category == "Tile":
+    if "tile" in (base_category or ""):
         for comp_key, comp_value in TILE_COMPOSITION_MAPPING.items():
             if comp_key in normalized:
                 composition = comp_value

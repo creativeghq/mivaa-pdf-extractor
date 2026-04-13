@@ -88,18 +88,24 @@ class PrototypePopulationResponse(BaseModel):
     details: List[Dict[str, Any]]
 
 
-async def generate_clip_text_embedding(texts: List[str]) -> List[float]:
-    """Generate CLIP text embedding by averaging embeddings of multiple descriptions"""
+async def generate_prototype_text_embedding(texts: List[str]) -> List[float]:
+    """Generate Voyage AI text embedding by averaging embeddings of multiple descriptions"""
     try:
-        # Generate embeddings for all texts at once
-        response = await openai_client.embeddings.create(
-            model="text-embedding-3-small",
-            input=texts,
-            dimensions=512
-        )
+        from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+        embedding_service = RealEmbeddingsService()
 
-        # Extract embeddings
-        all_embeddings = [item.embedding for item in response.data]
+        all_embeddings = []
+        for text in texts:
+            embedding = await embedding_service._generate_text_embedding(
+                text=text,
+                dimensions=1024,
+                input_type="document"
+            )
+            if embedding:
+                all_embeddings.append(embedding)
+
+        if not all_embeddings:
+            raise RuntimeError("No embeddings generated")
 
         # Average all embeddings
         avg_embedding = np.mean(all_embeddings, axis=0).tolist()
@@ -116,13 +122,13 @@ async def update_category_prototype(category_key: str, descriptions: List[str]) 
         logger.info(f"Processing category: {category_key}")
         
         # Generate embedding
-        embedding = await generate_clip_text_embedding(descriptions)
+        embedding = await generate_prototype_text_embedding(descriptions)
         
         # Update database
         supabase_client = get_supabase_client()
         result = supabase_client.client.table('material_categories').update({
             'prototype_descriptions': descriptions,
-            'text_embedding_512': embedding,
+            'text_embedding_1024': embedding,
             'prototype_updated_at': datetime.utcnow().isoformat()
         }).eq('category_key', category_key).execute()
 
@@ -195,7 +201,7 @@ async def verify_prototypes():
         supabase_client = get_supabase_client()
         result = supabase_client.client.table('material_categories').select(
             'category_key, prototype_descriptions, prototype_updated_at'
-        ).not_.is_('text_embedding_512', 'null').execute()
+        ).not_.is_('text_embedding_1024', 'null').execute()
 
         if result.data:
             return {

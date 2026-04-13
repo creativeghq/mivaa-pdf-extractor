@@ -12,7 +12,6 @@ This module provides comprehensive administrative and monitoring capabilities in
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
 from fastapi.responses import JSONResponse
 from typing import List, Optional, Dict, Any
-import asyncio
 import logging
 from datetime import datetime, timedelta
 import psutil
@@ -1092,54 +1091,6 @@ async def get_job_product_progress(job_id: str, supabase: SupabaseClient = Depen
             status_code=500,
             detail=f"Failed to get product progress: {str(e)}"
         )
-
-
-@router.get("/jobs/{job_id}/products")
-async def get_job_products(job_id: str):
-    """
-    Get product progress for a specific job.
-
-    Returns detailed progress information for each product being processed,
-    including current stage, metrics, and status.
-
-    Args:
-        job_id: Job ID to get product progress for
-
-    Returns:
-        List of products with their processing status and metrics
-    """
-    try:
-        from app.services.tracking.product_progress_tracker import ProductProgressTracker
-        from app.services.core.supabase_client import get_supabase_client
-
-        supabase = get_supabase_client()
-
-        # Get the product tracker for this job
-        tracker = ProductProgressTracker(job_id=job_id, supabase=supabase)
-
-        # Get all products for this job
-        products = await tracker.get_all_products()
-
-        return {
-            "success": True,
-            "job_id": job_id,
-            "products": products,
-            "count": len(products)
-        }
-
-    except Exception as e:
-        logger.error(f"Error getting products for job {job_id}: {str(e)}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-
-        # Return empty list instead of error to avoid breaking the UI
-        return {
-            "success": True,
-            "job_id": job_id,
-            "products": [],
-            "count": 0,
-            "error": str(e)
-        }
 
 
 @router.post("/test-product-creation")

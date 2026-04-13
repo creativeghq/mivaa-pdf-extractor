@@ -1,834 +1,436 @@
 """
 Enhanced Material Property Extractor for MIVAA
 
-This service provides sophisticated LLM-based extraction of comprehensive 
-material functional properties to match frontend capabilities (60+ properties 
-across 9 categories), replacing basic keyword matching with semantic analysis.
+Extracts 60+ structured material functional properties across 9 categories
+using a single Claude Haiku call per product. Outputs match the frontend
+FunctionalMetadata interface (src/types/materials.ts).
 
-Key Features:
-- LLM-powered semantic understanding using Qwen Vision models
-- Comprehensive property extraction across 9 functional categories
-- Structured output matching frontend filter system requirements
-- Confidence scoring based on extraction quality
-- Integration with existing MIVAA architecture
-
-Author: Roo 🐍 Python Developer
-Created: 2025-09-04
+Integration: Called from stage_4_products.py during Stage 4.7 enrichment.
+The extracted properties are merged into products.metadata.functional_properties.
 """
 
 import json
 import logging
 import re
 import time
-from datetime import datetime
 from dataclasses import dataclass, field
-from typing import Dict, List, Any, Optional, Union, Tuple
+from datetime import datetime
 from enum import Enum
+from typing import Any, Dict, List, Optional
 
 from app.services.core.supabase_client import get_supabase_client
 
-# Set up logging
 logger = logging.getLogger(__name__)
 
 
-class PropertyExtractionCategory(Enum):
-    """Enumeration of functional property categories matching frontend filters."""
-    SLIP_SAFETY_RATINGS = "slipSafetyRatings"
-    SURFACE_GLOSS_REFLECTIVITY = "surfaceGlossReflectivity" 
-    MECHANICAL_PROPERTIES_EXTENDED = "mechanicalPropertiesExtended"
-    THERMAL_PROPERTIES = "thermalProperties"
-    WATER_MOISTURE_RESISTANCE = "waterMoistureResistance"
-    CHEMICAL_HYGIENE_RESISTANCE = "chemicalHygieneResistance"
-    ACOUSTIC_ELECTRICAL_PROPERTIES = "acousticElectricalProperties"
-    ENVIRONMENTAL_SUSTAINABILITY = "environmentalSustainability"
+class PropertyCategory(Enum):
+    """Property categories matching frontend FunctionalMetadata interface."""
+    SLIP_SAFETY = "slipSafetyRatings"
+    GLOSS_REFLECTIVITY = "surfaceGlossReflectivity"
+    MECHANICAL = "mechanicalPropertiesExtended"
+    THERMAL = "thermalProperties"
+    WATER_MOISTURE = "waterMoistureResistance"
+    CHEMICAL_HYGIENE = "chemicalHygieneResistance"
+    ACOUSTIC_ELECTRICAL = "acousticElectricalProperties"
+    SUSTAINABILITY = "environmentalSustainability"
     DIMENSIONAL_AESTHETIC = "dimensionalAesthetic"
 
 
 @dataclass
-class EnhancedMaterialProperties:
-    """Enhanced material properties structure matching frontend filtering capabilities."""
-    
-    # 🦶 Slip/Safety Ratings
-    slip_safety_ratings: Optional[Dict[str, Any]] = None  # R-values, DCOF, certifications
-    
-    # ✨ Surface Gloss/Reflectivity  
-    surface_gloss_reflectivity: Optional[Dict[str, Any]] = None  # Gloss levels, value ranges
-    
-    # 🔧 Mechanical Properties Extended
-    mechanical_properties_extended: Optional[Dict[str, Any]] = None  # Mohs, PEI ratings
-    
-    # 🌡️ Thermal Properties
-    thermal_properties: Optional[Dict[str, Any]] = None  # Conductivity, heat resistance
-    
-    # 💧 Water/Moisture Resistance
-    water_moisture_resistance: Optional[Dict[str, Any]] = None  # Absorption, frost resistance
-    
-    # 🧪 Chemical/Hygiene Resistance
-    chemical_hygiene_resistance: Optional[Dict[str, Any]] = None  # Acid/alkali resistance
-    
-    # 🔊 Acoustic/Electrical Properties
-    acoustic_electrical_properties: Optional[Dict[str, Any]] = None  # NRC, conductivity
-    
-    # 🌱 Environmental/Sustainability
-    environmental_sustainability: Optional[Dict[str, Any]] = None  # LEED, recycled content
-    
-    # 📏 Dimensional/Aesthetic
-    dimensional_aesthetic: Optional[Dict[str, Any]] = None  # Edge types, shade variation
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        return {
-            "slipSafetyRatings": self.slip_safety_ratings,
-            "surfaceGlossReflectivity": self.surface_gloss_reflectivity,
-            "mechanicalPropertiesExtended": self.mechanical_properties_extended,
-            "thermalProperties": self.thermal_properties,
-            "waterMoistureResistance": self.water_moisture_resistance,
-            "chemicalHygieneResistance": self.chemical_hygiene_resistance,
-            "acousticElectricalProperties": self.acoustic_electrical_properties,
-            "environmentalSustainability": self.environmental_sustainability,
-            "dimensionalAesthetic": self.dimensional_aesthetic
-        }
-
-
-@dataclass 
 class PropertyExtractionResult:
     """Result of enhanced material property extraction."""
-    enhanced_properties: EnhancedMaterialProperties
-    extraction_confidence: float
-    property_coverage_percentage: float  # % of expected properties extracted
-    processing_time: float
-    extraction_method: str
-    raw_llm_response: str
-    timestamp: datetime = field(default_factory=datetime.utcnow)
-    
+    properties: Dict[str, Any]  # keyed by PropertyCategory.value
+    confidence: float
+    coverage_pct: float
+    processing_time_ms: int
+    method: str  # "claude_haiku" or "rule_based"
+
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
         return {
-            "enhanced_properties": self.enhanced_properties.to_dict(),
-            "extraction_confidence": self.extraction_confidence,
-            "property_coverage_percentage": self.property_coverage_percentage,
-            "processing_time": self.processing_time,
-            "extraction_method": self.extraction_method,
-            "raw_llm_response": self.raw_llm_response,
-            "timestamp": self.timestamp.isoformat()
+            "properties": self.properties,
+            "confidence": self.confidence,
+            "coverage_pct": self.coverage_pct,
+            "processing_time_ms": self.processing_time_ms,
+            "method": self.method,
         }
+
+
+# ─── Single-call extraction prompt ───────────────────────────────────────────
+
+EXTRACTION_SYSTEM_PROMPT = """\
+You are a technical material specification analyst. Extract ALL functional \
+properties you can find from the provided text. Return ONLY a JSON object \
+with exactly these top-level keys (omit a key entirely if no data found):
+
+{
+  "slipSafetyRatings": {
+    "rValue": ["R10"],           // DIN 51130: R9-R13
+    "barefootRampTest": ["B"],   // DIN 51097: A/B/C
+    "dcofRange": [0.45, 0.62],   // Dynamic Coefficient of Friction 0-1
+    "pendulumTestRange": [25, 45],// PTV 0-100
+    "safetyCertifications": []   // ANSI A137.1, DIN 51130, etc.
+  },
+  "surfaceGlossReflectivity": {
+    "glossLevel": ["polished"],  // super-polished/polished/satin/matte/velvet/anti-glare
+    "glossValueRange": [15, 35]  // gloss meter 0-100
+  },
+  "mechanicalPropertiesExtended": {
+    "mohsHardnessRange": [6.5, 7.0],  // 1-10
+    "peiRating": [3, 4],         // PEI Class 0-5
+    "breakingStrength": 2000,    // N
+    "modulusOfRupture": 45       // MPa
+  },
+  "thermalProperties": {
+    "thermalConductivityRange": [0.8, 1.2],  // W/mK
+    "heatResistanceRange": [200, 300],        // °C
+    "radiantHeatingCompatible": true,
+    "fireRating": "A1"           // Euroclass
+  },
+  "waterMoistureResistance": {
+    "waterAbsorptionRange": [0.1, 0.5],  // %
+    "frostResistance": true,
+    "moldMildewResistant": true
+  },
+  "chemicalHygieneResistance": {
+    "acidResistance": "high",    // low/medium/high/excellent
+    "alkaliResistance": "high",
+    "stainResistanceClass": [4, 5],  // EN ISO 10545-14 Class 1-5
+    "foodSafeCertified": false
+  },
+  "acousticElectricalProperties": {
+    "nrcRange": [0.15, 0.25],    // NRC 0-1
+    "antiStatic": false,
+    "soundAbsorption": 0.22
+  },
+  "environmentalSustainability": {
+    "greenguardLevel": "gold",   // none/certified/gold
+    "totalRecycledContentRange": [25, 40],  // %
+    "leedCreditsRange": [2, 4],
+    "vocEmissions": "low"        // none/low/medium/high
+  },
+  "dimensionalAesthetic": {
+    "rectifiedEdges": true,
+    "shadeVariation": "V2",      // V1-V4
+    "nominalSizes": ["60x60", "30x60"]  // cm
+  }
+}
+
+Rules:
+- Extract ONLY properties explicitly stated or clearly implied in the text
+- Use null for ambiguous values, omit keys with no data
+- Ranges are [min, max] arrays
+- Return raw JSON only — no markdown fences, no explanation"""
 
 
 class EnhancedMaterialPropertyExtractor:
     """
-    Enhanced material property extractor using sophisticated LLM-based semantic analysis.
+    Single-call LLM property extractor using Claude Haiku.
 
-    This class replaces basic keyword matching with comprehensive property extraction
-    that leverages Qwen Vision models for sophisticated document understanding.
+    Makes ONE Claude call per product to extract all 9 property categories,
+    with rule-based fallback if Claude is unavailable.
     """
-    
-    def __init__(self, llm_client=None, confidence_threshold: float = 0.7, workspace_id: str = None):
-        """Initialize the enhanced property extractor.
 
-        Args:
-            llm_client: LLM service client for semantic analysis
-            confidence_threshold: Minimum confidence for property extraction
-            workspace_id: Workspace ID for loading custom prompts
-        """
+    def __init__(self, confidence_threshold: float = 0.5, workspace_id: str = None):
         from app.config import get_settings
-        self.llm_client = llm_client
         self.confidence_threshold = confidence_threshold
         self.workspace_id = workspace_id or get_settings().default_workspace_id
         self.supabase = get_supabase_client()
-        self._setup_property_extractors()
-        
-    def _setup_property_extractors(self) -> None:
-        """Set up property extraction with single prompt for all categories."""
-        # Load the LATEST version prompt from database (single prompt for all categories)
-        self.extraction_prompt = self._load_prompt_from_database()
+        self._db_prompt: Optional[str] = None
+        self._load_db_prompt()
 
-        if self.extraction_prompt:
-            logger.info("✅ Loaded material property extraction prompt from database")
-        else:
-            logger.warning("⚠️ Material property extraction prompt not found in database - extraction will fail!")
-
-    def _load_prompt_from_database(self) -> Optional[str]:
-        """Load the latest material property prompt from database.
-
-        Returns:
-            The latest version prompt text, or None if not found
-        """
+    def _load_db_prompt(self) -> None:
+        """Load custom prompt from database if available, else use built-in."""
         try:
-            # Get the LATEST version (highest version number)
-            result = self.supabase.client.table('prompts')\
-                .select('prompt_text')\
-                .eq('workspace_id', self.workspace_id)\
-                .eq('prompt_type', 'extraction')\
-                .eq('stage', 'entity_creation')\
-                .eq('category', 'material_properties')\
-                .eq('is_active', True)\
-                .order('version', desc=True)\
-                .limit(1)\
+            result = self.supabase.client.table("prompts") \
+                .select("prompt_text") \
+                .eq("workspace_id", self.workspace_id) \
+                .eq("prompt_type", "extraction") \
+                .eq("stage", "entity_creation") \
+                .eq("category", "material_properties") \
+                .eq("is_active", True) \
+                .order("version", desc=True) \
+                .limit(1) \
                 .execute()
 
-            if result.data and len(result.data) > 0:
-                logger.info("✅ Loaded material property prompt from database (latest version)")
-                return result.data[0]['prompt_text']
-            else:
-                logger.warning("⚠️ No material property prompts found in database. Add via /admin/ai-configs with prompt_type='extraction', stage='entity_creation', category='material_properties'")
-                return None
-
+            if result.data:
+                self._db_prompt = result.data[0]["prompt_text"]
+                logger.info("Loaded material property prompt from database")
         except Exception as e:
-            logger.error(f"❌ Failed to load prompt from database: {e}")
-            return None
-        
-    def _create_slip_safety_prompt(self) -> str:
-        """Create specialized prompt for slip/safety property extraction."""
-        return """
-        Analyze this material document for slip resistance and safety properties. Extract the following:
-        
-        SLIP SAFETY RATINGS:
-        1. R-Value (DIN 51130): Look for R9, R10, R11, R12, R13 ratings
-        2. Barefoot Ramp Test (DIN 51097): Look for Class A, B, or C ratings  
-        3. DCOF Range: Dynamic Coefficient of Friction values (0.0-1.0, ≥0.42 recommended)
-        4. Pendulum Test Range (PTV): Pendulum Test Values (0-100)
-        5. Safety Certifications: ANSI A137.1, DIN 51130, DIN 51097, BS 7976, AS/NZS 4586
-        
-        Return as JSON:
-        {
-            "rValue": ["R10", "R11"], // found R-values
-            "barefootRampTest": ["A", "B"], // found classifications  
-            "dcofRange": [0.45, 0.62], // min/max values if found
-            "pendulumTestRange": [25, 45], // min/max PTV if found
-            "safetyCertifications": ["DIN 51130"], // found certifications
-            "confidence": 0.85 // extraction confidence 0.0-1.0
-        }
-        """
-        
-    def _create_gloss_prompt(self) -> str:
-        """Create specialized prompt for surface gloss/reflectivity extraction."""
-        return """
-        Analyze this material document for surface gloss and reflectivity properties:
-        
-        SURFACE GLOSS/REFLECTIVITY:
-        1. Gloss Level: super-polished, polished, satin, semi-polished, matte, velvet, anti-glare
-        2. Gloss Value Range: Numerical values 0-100 (gloss meter readings)
-        3. Surface Finish descriptions and specifications
-        
-        Return as JSON:
-        {
-            "glossLevel": ["polished", "satin"], // detected gloss levels
-            "glossValueRange": [15, 35], // min/max gloss values if specified
-            "confidence": 0.90
-        }
-        """
-        
-    def _create_mechanical_prompt(self) -> str:
-        """Create specialized prompt for mechanical properties extraction."""  
-        return """
-        Analyze this material document for mechanical properties:
-        
-        MECHANICAL PROPERTIES:
-        1. Mohs Hardness: Scale 1-10 (1=talc, 10=diamond)
-        2. PEI Rating: Abrasion resistance Class 0-5 (porcelain enamel institute)
-        3. Tensile strength, compressive strength, elastic modulus if mentioned
-        4. Durability ratings and wear resistance classifications
-        
-        Return as JSON:
-        {
-            "mohsHardnessRange": [6.5, 7.0], // hardness range if found
-            "peiRating": [3, 4], // PEI classes if found  
-            "tensileStrength": 45.5, // MPa if specified
-            "compressiveStrength": 120.0, // MPa if specified
-            "confidence": 0.88
-        }
-        """
-        
-    def _create_thermal_prompt(self) -> str:
-        """Create specialized prompt for thermal properties extraction."""
-        return """
-        Analyze this material document for thermal properties:
-        
-        THERMAL PROPERTIES:
-        1. Thermal Conductivity: W/mK values (0-10+ range)
-        2. Heat Resistance: Temperature range in °C (0-500°C+)
-        3. Radiant Heating Compatibility: Yes/No/Compatible
-        4. Thermal expansion coefficient if mentioned
-        5. Fire resistance ratings or classifications
-        
-        Return as JSON:
-        {
-            "thermalConductivityRange": [0.8, 1.2], // W/mK if found
-            "heatResistanceRange": [200, 300], // °C min/max if found
-            "radiantHeatingCompatible": true, // compatibility
-            "thermalExpansion": 8.6e-6, // coefficient if found
-            "confidence": 0.82
-        }
-        """
-        
-    def _create_water_resistance_prompt(self) -> str:
-        """Create specialized prompt for water/moisture resistance extraction."""
-        return """
-        Analyze this material document for water and moisture resistance:
-        
-        WATER/MOISTURE RESISTANCE:
-        1. Water Absorption Range: Percentage 0-20%
-        2. Frost Resistance: Yes/No/Rated
-        3. Mold/Mildew Resistance: Yes/No/Treated
-        4. Porosity levels and permeability ratings
-        5. Waterproof vs water-resistant classifications
-        
-        Return as JSON:
-        {
-            "waterAbsorptionRange": [0.1, 0.5], // % range if found
-            "frostResistance": true, // frost resistant
-            "moldMildewResistant": true, // mold resistant  
-            "porosity": "low", // porosity level if mentioned
-            "confidence": 0.91
-        }
-        """
-        
-    def _create_chemical_prompt(self) -> str:
-        """Create specialized prompt for chemical/hygiene resistance extraction."""
-        return """
-        Analyze this material document for chemical and hygiene resistance:
-        
-        CHEMICAL/HYGIENE RESISTANCE:
-        1. Acid Resistance Level: low, medium, high, excellent
-        2. Alkali Resistance Level: low, medium, high, excellent  
-        3. Stain Resistance Class: Class 1-5 ratings
-        4. Food Safe Certification: FDA approved, food contact safe
-        5. Chemical compatibility with cleaners, solvents
-        
-        Return as JSON:
-        {
-            "acidResistance": ["high"], // resistance levels
-            "alkaliResistance": ["medium", "high"], // resistance levels
-            "stainResistanceClass": [4, 5], // class ratings if found
-            "foodSafeCertified": true, // food safety status
-            "confidence": 0.86
-        }
-        """
-        
-    def _create_acoustic_prompt(self) -> str:
-        """Create specialized prompt for acoustic/electrical properties extraction."""
-        return """
-        Analyze this material document for acoustic and electrical properties:
-        
-        ACOUSTIC/ELECTRICAL PROPERTIES:
-        1. NRC Range: Noise Reduction Coefficient 0.0-1.0
-        2. Anti-Static Properties: Yes/No/ESD safe
-        3. Electrical Conductivity: Conductive/Non-conductive/Semi-conductive
-        4. Sound absorption coefficients and ratings
-        5. EMI/EMC shielding properties if applicable
-        
-        Return as JSON:
-        {
-            "nrcRange": [0.15, 0.25], // NRC values if found
-            "antiStatic": true, // anti-static properties
-            "conductive": false, // electrical conductivity
-            "soundAbsorption": 0.22, // coefficient if specified
-            "confidence": 0.79
-        }
-        """
-        
-    def _create_environmental_prompt(self) -> str:
-        """Create specialized prompt for environmental/sustainability extraction."""
-        return """
-        Analyze this material document for environmental and sustainability properties:
-        
-        ENVIRONMENTAL/SUSTAINABILITY:
-        1. Greenguard Certification: certified, gold, none
-        2. Total Recycled Content Range: Percentage 0-100%
-        3. LEED Credits Range: Available credits 0-10
-        4. VOC emissions, off-gassing properties
-        5. Carbon footprint, lifecycle assessment data
-        6. Recyclability and end-of-life properties
-        
-        Return as JSON:
-        {
-            "greenguardLevel": ["certified"], // certification levels
-            "totalRecycledContentRange": [25, 40], // % recycled content
-            "leedCreditsRange": [2, 4], // LEED credits available
-            "vocEmissions": "low", // emission levels
-            "confidence": 0.84
-        }
-        """
-        
-    def _create_aesthetic_prompt(self) -> str:
-        """Create specialized prompt for dimensional/aesthetic properties extraction."""
-        return """
-        Analyze this material document for dimensional and aesthetic properties:
-        
-        DIMENSIONAL/AESTHETIC:
-        1. Rectified Edges: Yes/No/Available
-        2. Texture Rating Range: If texture is rated/classified
-        3. Shade Variation: V1 (Uniform), V2 (Slight), V3 (Moderate), V4 (Substantial)
-        4. Dimensional stability and tolerances
-        5. Color consistency and variation specifications
-        
-        Return as JSON:
-        {
-            "rectifiedEdges": true, // edge treatment
-            "textureRatingRange": true, // if texture is rated
-            "shadeVariation": ["V2", "V3"], // variation classifications
-            "dimensionalStability": "high", // stability rating
-            "confidence": 0.88
-        }
-        """
+            logger.warning(f"Could not load DB prompt, using built-in: {e}")
 
-    async def extract_comprehensive_properties(
-        self, 
+    @property
+    def system_prompt(self) -> str:
+        return self._db_prompt or EXTRACTION_SYSTEM_PROMPT
+
+    async def extract(
+        self,
         analysis_text: str,
-        document_context: Optional[str] = None,
-        extraction_categories: Optional[List[PropertyExtractionCategory]] = None
+        product_name: str = "",
+        document_context: str = "",
+        job_id: str = None,
     ) -> PropertyExtractionResult:
         """
-        Extract comprehensive material properties using enhanced LLM-based analysis.
-        
-        This method replaces the basic keyword matching in _parse_analysis_response
-        with sophisticated semantic understanding across all property categories.
-        
+        Extract all material properties in a single LLM call.
+
         Args:
-            analysis_text: Raw text from document analysis
-            document_context: Additional context about the document
-            extraction_categories: Specific categories to extract (None = all)
-            
+            analysis_text: Combined chunk text + vision analysis for the product
+            product_name: Product name for context
+            document_context: Additional document-level context
+            job_id: For logging
+
         Returns:
-            PropertyExtractionResult with comprehensive property data
+            PropertyExtractionResult with structured properties
         """
-        start_time = time.time()
-        
-        # Default to extracting all categories
-        if extraction_categories is None:
-            extraction_categories = list(PropertyExtractionCategory)
-            
-        logger.info(f"Starting enhanced property extraction for {len(extraction_categories)} categories")
-        
-        enhanced_properties = EnhancedMaterialProperties()
-        category_confidences = []
-        successful_extractions = 0
-        total_expected_properties = len(extraction_categories)
-        
+        start_ms = int(time.time() * 1000)
+
+        # Build user message
+        user_content = f"Product: {product_name}\n\n" if product_name else ""
+        user_content += analysis_text
+        if document_context:
+            user_content += f"\n\nAdditional context:\n{document_context}"
+
+        # Truncate to ~12k chars to stay within Haiku limits
+        if len(user_content) > 12000:
+            user_content = user_content[:12000] + "\n...[truncated]"
+
+        # Try Claude Haiku first
+        properties = await self._extract_with_claude(user_content, job_id)
+        method = "claude_haiku"
+
+        # Fallback to rule-based if Claude fails
+        if properties is None:
+            properties = self._rule_based_extraction(analysis_text)
+            method = "rule_based"
+
+        elapsed_ms = int(time.time() * 1000) - start_ms
+
+        # Calculate coverage and confidence
+        filled_categories = sum(
+            1 for cat in PropertyCategory
+            if cat.value in properties and properties[cat.value]
+        )
+        total_categories = len(PropertyCategory)
+        coverage_pct = round((filled_categories / total_categories) * 100, 1)
+
+        # Average per-category confidence
+        confidences = []
+        for cat in PropertyCategory:
+            cat_data = properties.get(cat.value)
+            if isinstance(cat_data, dict):
+                conf = cat_data.pop("confidence", None)
+                if conf is not None:
+                    confidences.append(float(conf))
+                # Remove empty categories
+                if not cat_data:
+                    properties.pop(cat.value, None)
+
+        avg_confidence = round(sum(confidences) / len(confidences), 3) if confidences else 0.0
+
+        logger.info(
+            f"Property extraction for '{product_name}': "
+            f"{filled_categories}/{total_categories} categories, "
+            f"{coverage_pct}% coverage, {avg_confidence:.2f} confidence, "
+            f"{elapsed_ms}ms ({method})"
+        )
+
+        return PropertyExtractionResult(
+            properties=properties,
+            confidence=avg_confidence,
+            coverage_pct=coverage_pct,
+            processing_time_ms=elapsed_ms,
+            method=method,
+        )
+
+    async def _extract_with_claude(
+        self, user_content: str, job_id: str = None
+    ) -> Optional[Dict[str, Any]]:
+        """Single Claude Haiku call to extract all property categories."""
         try:
-            # Process each category with specialized extraction
-            for category in extraction_categories:
-                try:
-                    category_result = await self._extract_category_properties(
-                        category, analysis_text, document_context
-                    )
-                    
-                    if category_result and category_result.get("confidence", 0) >= self.confidence_threshold:
-                        self._apply_category_result(enhanced_properties, category, category_result)
-                        category_confidences.append(category_result["confidence"])
-                        successful_extractions += 1
-                        
-                        logger.debug(f"Successfully extracted {category.value} properties")
-                    else:
-                        logger.warning(f"Low confidence extraction for {category.value}")
-                        category_confidences.append(0.0)
-                        
-                except Exception as e:
-                    logger.error(f"Failed to extract {category.value} properties: {e}")
-                    category_confidences.append(0.0)
-                    
-            # Calculate overall metrics
-            processing_time = time.time() - start_time
-            overall_confidence = sum(category_confidences) / len(category_confidences) if category_confidences else 0.0
-            coverage_percentage = (successful_extractions / total_expected_properties) * 100
-            
-            logger.info(f"Enhanced extraction completed: {coverage_percentage:.1f}% coverage, {overall_confidence:.3f} confidence")
-            
-            return PropertyExtractionResult(
-                enhanced_properties=enhanced_properties,
-                extraction_confidence=overall_confidence,
-                property_coverage_percentage=coverage_percentage,
-                processing_time=processing_time,
-                extraction_method="llm_semantic_analysis",
-                raw_llm_response=analysis_text[:1000] + "..." if len(analysis_text) > 1000 else analysis_text
+            from app.services.core.ai_client_service import get_ai_client_service
+            from app.services.core.ai_call_logger import AICallLogger
+
+            ai_service = get_ai_client_service()
+            client = ai_service.anthropic
+            ai_logger = AICallLogger()
+
+            start = time.time()
+
+            response = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=2048,
+                temperature=0.1,
+                system=self.system_prompt,
+                messages=[{"role": "user", "content": user_content}],
             )
-            
-        except Exception as e:
-            processing_time = time.time() - start_time
-            logger.error(f"Enhanced property extraction failed after {processing_time:.2f}s: {e}")
-            raise
-            
-    async def _extract_category_properties(
-        self,
-        category: PropertyExtractionCategory,
-        analysis_text: str,
-        context: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Extract properties for a specific category using targeted LLM analysis.
 
-        Uses the single database prompt with category context for extraction.
-        """
-        try:
-            # Use database prompt - NO FALLBACK
-            if not self.extraction_prompt:
-                error_msg = "CRITICAL: Material property extraction prompt not found in database. Add via /admin/ai-configs with prompt_type='extraction', stage='entity_creation', category='material_properties'"
-                logger.error(f"❌ {error_msg}")
-                raise ValueError(error_msg)
+            text = response.content[0].text if response.content else ""
+            latency_ms = int((time.time() - start) * 1000)
 
-            # Add category context to the prompt
-            category_context = f"\n\nFOCUS ON EXTRACTING: {category.value} properties specifically."
-            system_prompt = self.extraction_prompt + category_context
+            # Parse JSON from response
+            parsed = self._parse_json_response(text)
 
-            # Combine document text with context for comprehensive analysis
-            full_context = f"Document Content:\n{analysis_text}"
-            if context:
-                full_context += f"\n\nAdditional Context:\n{context}"
-
-            # Use LLM client for sophisticated semantic analysis
-            if self.llm_client:
-                extraction_result = await self._llm_property_extraction(
-                    system_prompt, full_context, category
-                )
-            else:
-                # Fallback to enhanced rule-based extraction
-                extraction_result = self._enhanced_rule_based_extraction(
-                    category, analysis_text, context
+            if parsed is not None:
+                # Log success
+                await ai_logger.log_claude_call(
+                    task="material_property_extraction",
+                    model="claude-haiku-4-5",
+                    response=response,
+                    latency_ms=latency_ms,
+                    confidence_score=0.8,
+                    confidence_breakdown={
+                        "model_confidence": 0.85,
+                        "completeness": 0.80,
+                    },
+                    action="use_ai_result",
+                    job_id=job_id,
                 )
 
-            return extraction_result
+            return parsed
 
         except Exception as e:
-            logger.error(f"Category extraction failed for {category.value}: {e}")
+            logger.warning(f"Claude property extraction failed: {e}")
             return None
-            
-    async def _llm_property_extraction(
-        self,
-        system_prompt: str,
-        document_content: str,
-        category: PropertyExtractionCategory
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Perform LLM-based property extraction.
-        
-        This method leverages Qwen Vision models for sophisticated
-        semantic understanding of technical material specifications.
-        """
+
+    def _parse_json_response(self, text: str) -> Optional[Dict[str, Any]]:
+        """Parse JSON from Claude response, handling markdown fences."""
+        # Strip markdown code fences if present
+        text = text.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text)
+
+        # Try direct parse first
         try:
-            # Construct focused analysis prompt
-            analysis_prompt = f"""
-            {system_prompt}
-            
-            DOCUMENT TO ANALYZE:
-            {document_content}
-            
-            IMPORTANT: 
-            - Return ONLY valid JSON as specified above
-            - If a property is not clearly mentioned, omit it from the JSON
-            - Set confidence based on clarity and specificity of found information
-            - Higher confidence (0.8-1.0) for explicit technical specifications
-            - Lower confidence (0.4-0.7) for implied or general mentions
-            - Very low confidence (0.1-0.3) for uncertain or ambiguous references
-            """
-            
-            # Call LLM for semantic analysis
-            if hasattr(self.llm_client, 'analyze_semantic_content'):
-                response = await self.llm_client.analyze_semantic_content({
-                    "content": analysis_prompt,
-                    "analysis_type": "property_extraction",
-                    "category": category.value
-                })
-                
-                # Parse LLM response into structured format
-                return self._parse_llm_response(response, category)
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # Fallback: find first { ... } block
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                pass
+
+        logger.warning("Could not parse JSON from Claude response")
+        return None
+
+    def _rule_based_extraction(self, text: str) -> Dict[str, Any]:
+        """Regex-based fallback extraction when Claude is unavailable."""
+        text_lower = text.lower()
+        properties: Dict[str, Any] = {}
+
+        # Slip safety
+        slip = {}
+        r_matches = re.findall(r"\b(R(?:9|10|11|12|13))\b", text, re.IGNORECASE)
+        if r_matches:
+            slip["rValue"] = list({m.upper() for m in r_matches})
+        dcof = re.findall(r"dcof[:\s]*([0-9]+\.?[0-9]*)", text_lower)
+        if dcof:
+            vals = [float(v) for v in dcof if 0 <= float(v) <= 1]
+            if vals:
+                slip["dcofRange"] = [min(vals), max(vals)]
+        if slip:
+            slip["confidence"] = 0.65
+            properties[PropertyCategory.SLIP_SAFETY.value] = slip
+
+        # Mechanical
+        mech = {}
+        mohs = re.findall(r"mohs[:\s]+(?:hardness[:\s]+)?([0-9]+\.?[0-9]*)", text_lower)
+        if mohs:
+            vals = [float(v) for v in mohs if 1 <= float(v) <= 10]
+            if vals:
+                mech["mohsHardnessRange"] = [min(vals), max(vals)]
+        pei = re.findall(r"pei[:\s]+(?:rating[:\s]+)?(?:class[:\s]+)?([0-5])", text_lower)
+        if pei:
+            vals = [int(v) for v in pei]
+            if vals:
+                mech["peiRating"] = sorted(set(vals))
+        if mech:
+            mech["confidence"] = 0.6
+            properties[PropertyCategory.MECHANICAL.value] = mech
+
+        # Water absorption
+        water = {}
+        abs_match = re.findall(r"water\s+absorption[:\s]*([0-9]+\.?[0-9]*)\s*%", text_lower)
+        if abs_match:
+            vals = [float(v) for v in abs_match if 0 <= float(v) <= 100]
+            if vals:
+                water["waterAbsorptionRange"] = [min(vals), max(vals)]
+        if "frost" in text_lower and ("resist" in text_lower or "proof" in text_lower):
+            water["frostResistance"] = True
+        if water:
+            water["confidence"] = 0.6
+            properties[PropertyCategory.WATER_MOISTURE.value] = water
+
+        # Gloss
+        gloss = {}
+        gloss_keywords = ["super-polished", "polished", "satin", "semi-polished", "matte", "velvet", "anti-glare"]
+        found_gloss = [g for g in gloss_keywords if g in text_lower]
+        if found_gloss:
+            gloss["glossLevel"] = found_gloss
+            gloss["confidence"] = 0.7
+            properties[PropertyCategory.GLOSS_REFLECTIVITY.value] = gloss
+
+        # Shade variation
+        aesthetic = {}
+        shade = re.findall(r"\b(V[1-4])\b", text)
+        if shade:
+            aesthetic["shadeVariation"] = shade[0]
+        if "rectified" in text_lower:
+            aesthetic["rectifiedEdges"] = True
+        if aesthetic:
+            aesthetic["confidence"] = 0.7
+            properties[PropertyCategory.DIMENSIONAL_AESTHETIC.value] = aesthetic
+
+        # Sustainability
+        sustainability = {}
+        if "greenguard" in text_lower:
+            if "gold" in text_lower:
+                sustainability["greenguardLevel"] = "gold"
             else:
-                logger.warning("LLM client not properly configured for property extraction")
-                return None
-                
-        except Exception as e:
-            logger.error(f"LLM property extraction failed for {category.value}: {e}")
-            return None
-            
-    def _parse_llm_response(
-        self, 
-        llm_response: Any, 
-        category: PropertyExtractionCategory
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Parse LLM response into structured property data.
-        
-        This method handles the conversion of LLM output into the standardized
-        property format expected by the frontend filtering system.
-        """
-        try:
-            # Handle different response formats from LLM
-            response_text = ""
-            if hasattr(llm_response, 'description'):
-                response_text = llm_response.description
-            elif isinstance(llm_response, dict) and 'content' in llm_response:
-                response_text = llm_response['content']
-            elif isinstance(llm_response, str):
-                response_text = llm_response
-            else:
-                logger.warning(f"Unexpected LLM response format for {category.value}")
-                return None
-                
-            # Extract JSON from LLM response
-            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(0)
-                try:
-                    parsed_data = json.loads(json_str)
-                    
-                    # Validate and sanitize the parsed data
-                    validated_data = self._validate_category_data(parsed_data, category)
-                    return validated_data
-                    
-                except json.JSONDecodeError as e:
-                    logger.error(f"Failed to parse JSON for {category.value}: {e}")
-                    # Fallback to text-based extraction
-                    return self._extract_from_text(response_text, category)
-            else:
-                logger.warning(f"No JSON found in LLM response for {category.value}")
-                return self._extract_from_text(response_text, category)
-                
-        except Exception as e:
-            logger.error(f"LLM response parsing failed for {category.value}: {e}")
-            return None
-            
-    def _validate_category_data(
-        self, 
-        data: Dict[str, Any], 
-        category: PropertyExtractionCategory
-    ) -> Dict[str, Any]:
-        """
-        Validate and sanitize extracted property data for a specific category.
-        
-        This ensures the data format matches frontend expectations and 
-        handles edge cases or malformed extractions.
-        """
-        validated = {}
-        confidence = data.get("confidence", 0.5)
-        
-        if category == PropertyExtractionCategory.SLIP_SAFETY_RATINGS:
-            # Validate R-Values
-            if "rValue" in data and isinstance(data["rValue"], list):
-                valid_r_values = [r for r in data["rValue"] if r in ["R9", "R10", "R11", "R12", "R13"]]
-                if valid_r_values:
-                    validated["rValue"] = valid_r_values
-                    
-            # Validate DCOF range
-            if "dcofRange" in data and isinstance(data["dcofRange"], list) and len(data["dcofRange"]) == 2:
-                dcof_min, dcof_max = data["dcofRange"]
-                if 0 <= dcof_min <= dcof_max <= 1:
-                    validated["dcofRange"] = [float(dcof_min), float(dcof_max)]
-                    
-            # Validate other slip safety properties...
-            
-        elif category == PropertyExtractionCategory.MECHANICAL_PROPERTIES_EXTENDED:
-            # Validate Mohs hardness
-            if "mohsHardnessRange" in data and isinstance(data["mohsHardnessRange"], list):
-                mohs_values = data["mohsHardnessRange"]
-                if len(mohs_values) == 2 and 1 <= min(mohs_values) <= max(mohs_values) <= 10:
-                    validated["mohsHardnessRange"] = [float(v) for v in mohs_values]
-                    
-            # Validate PEI ratings
-            if "peiRating" in data and isinstance(data["peiRating"], list):
-                valid_pei = [p for p in data["peiRating"] if isinstance(p, int) and 0 <= p <= 5]
-                if valid_pei:
-                    validated["peiRating"] = valid_pei
-                    
-        # Add validation for other categories...
-        
-        validated["confidence"] = max(0.0, min(1.0, float(confidence)))
-        return validated
-        
-    def _enhanced_rule_based_extraction(
-        self, 
-        category: PropertyExtractionCategory,
-        analysis_text: str, 
-        context: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Enhanced rule-based extraction as fallback when LLM is unavailable.
-        
-        This provides more sophisticated pattern matching than the original
-        keyword lists, using regex and contextual analysis.
-        """
-        text_lower = analysis_text.lower()
-        result = {"confidence": 0.0}
-        
-        if category == PropertyExtractionCategory.SLIP_SAFETY_RATINGS:
-            # Enhanced R-value detection
-            r_pattern = r'r[-\s]?(?:value|rating)?\s*[:\-]?\s*(r?(?:9|10|11|12|13))'
-            r_matches = re.findall(r_pattern, text_lower, re.IGNORECASE)
-            if r_matches:
-                r_values = [f"R{m.replace('r', '')}" for m in r_matches]
-                result["rValue"] = list(set(r_values))  # Remove duplicates
-                result["confidence"] = 0.75
-                
-            # DCOF pattern detection
-            dcof_pattern = r'dcof[:\s]*([0-9]+\.?[0-9]*)'
-            dcof_matches = re.findall(dcof_pattern, text_lower)
-            if dcof_matches:
-                dcof_values = [float(m) for m in dcof_matches if 0 <= float(m) <= 1]
-                if dcof_values:
-                    result["dcofRange"] = [min(dcof_values), max(dcof_values)]
-                    result["confidence"] = max(result["confidence"], 0.7)
-                    
-        elif category == PropertyExtractionCategory.MECHANICAL_PROPERTIES_EXTENDED:
-            # Mohs hardness pattern
-            mohs_pattern = r'mohs[:\s]+(?:hardness[:\s]+)?([0-9]+\.?[0-9]*)'
-            mohs_matches = re.findall(mohs_pattern, text_lower)
-            if mohs_matches:
-                mohs_values = [float(m) for m in mohs_matches if 1 <= float(m) <= 10]
-                if mohs_values:
-                    result["mohsHardnessRange"] = [min(mohs_values), max(mohs_values)]
-                    result["confidence"] = 0.8
-                    
-            # PEI rating pattern
-            pei_pattern = r'pei[:\s]+(?:rating[:\s]+)?(?:class[:\s]+)?([0-5])'
-            pei_matches = re.findall(pei_pattern, text_lower)
-            if pei_matches:
-                pei_values = [int(m) for m in pei_matches if 0 <= int(m) <= 5]
-                if pei_values:
-                    result["peiRating"] = max(pei_values)  # Use highest PEI rating found
-                    result["confidence"] = 0.8
+                sustainability["greenguardLevel"] = "certified"
+        recycled = re.findall(r"(\d+)\s*%\s*recycled", text_lower)
+        if recycled:
+            vals = [int(v) for v in recycled if 0 <= int(v) <= 100]
+            if vals:
+                sustainability["totalRecycledContentRange"] = [min(vals), max(vals)]
+        if sustainability:
+            sustainability["confidence"] = 0.6
+            properties[PropertyCategory.SUSTAINABILITY.value] = sustainability
 
-        return result
+        return properties
 
 
-# Utility functions for integration with existing MIVAA services
-
-def create_enhanced_extractor(llm_client=None) -> EnhancedMaterialPropertyExtractor:
-    """Factory function to create an enhanced material property extractor."""
-    return EnhancedMaterialPropertyExtractor(
-        llm_client=llm_client,
-        confidence_threshold=0.7
-    )
-
-
-async def extract_enhanced_properties_from_analysis(
+async def extract_functional_properties(
     analysis_text: str,
-    llm_client=None,
-    document_context: Optional[str] = None
+    product_name: str = "",
+    document_context: str = "",
+    job_id: str = None,
+    workspace_id: str = None,
 ) -> PropertyExtractionResult:
     """
-    Convenience function for extracting enhanced properties from analysis text.
+    Convenience function for stage_4_products.py integration.
 
-    This provides a simple interface for integrating enhanced property
-    extraction into existing MIVAA workflows.
+    Usage in stage_4_products.py:
+        from app.services.products.enhanced_material_property_extractor import (
+            extract_functional_properties,
+        )
+        result = await extract_functional_properties(
+            analysis_text=combined_chunk_text,
+            product_name=product_name,
+            job_id=job_id,
+        )
+        if result.coverage_pct > 0:
+            new_metadata["functional_properties"] = result.properties
     """
-    extractor = create_enhanced_extractor(llm_client)
-    return await extractor.extract_comprehensive_properties(
-        analysis_text=analysis_text,
-        document_context=document_context
+    extractor = EnhancedMaterialPropertyExtractor(
+        workspace_id=workspace_id,
     )
-
-
-def convert_to_legacy_format(extraction_result: PropertyExtractionResult) -> Dict[str, Any]:
-    """
-    Convert enhanced extraction result to standard material_properties format.
-    """
-    enhanced_props = extraction_result.enhanced_properties
-
-    # Map enhanced properties to standard format
-    legacy_format = {}
-    
-    # Determine material family from enhanced analysis
-    if enhanced_props.mechanical_properties_extended:
-        legacy_format['material_family'] = 'advanced_material'
-    elif enhanced_props.dimensional_aesthetic:
-        legacy_format['material_family'] = 'building_material'
-    else:
-        legacy_format['material_family'] = 'unknown'
-        
-    # Extract surface textures from enhanced gloss analysis
-    surface_textures = []
-    if enhanced_props.surface_gloss_reflectivity:
-        gloss_levels = enhanced_props.surface_gloss_reflectivity.get('glossLevel', [])
-        surface_textures.extend([level.replace('-', '_') for level in gloss_levels])
-    if enhanced_props.dimensional_aesthetic:
-        if enhanced_props.dimensional_aesthetic.get('textureRatingRange'):
-            surface_textures.append('rated_texture')
-    if surface_textures:
-        legacy_format['surface_textures'] = surface_textures
-        
-    # Add comprehensive property summary for monitoring
-    legacy_format['enhanced_extraction'] = {
-        'coverage_percentage': extraction_result.property_coverage_percentage,
-        'extraction_confidence': extraction_result.extraction_confidence,
-        'categories_extracted': len([k for k, v in enhanced_props.to_dict().items() if v]),
-        'extraction_method': extraction_result.extraction_method
-    }
-    
-    return legacy_format
-
-    def _apply_category_result(
-        self, 
-        enhanced_properties: EnhancedMaterialProperties,
-        category: PropertyExtractionCategory,
-        category_result: Dict[str, Any]
-    ) -> None:
-        """Apply extracted category results to the enhanced properties structure."""
-        # Remove confidence from result before applying
-        result_data = {k: v for k, v in category_result.items() if k != "confidence"}
-        
-        if category == PropertyExtractionCategory.SLIP_SAFETY_RATINGS:
-            enhanced_properties.slip_safety_ratings = result_data
-        elif category == PropertyExtractionCategory.SURFACE_GLOSS_REFLECTIVITY:
-            enhanced_properties.surface_gloss_reflectivity = result_data
-        elif category == PropertyExtractionCategory.MECHANICAL_PROPERTIES_EXTENDED:
-            enhanced_properties.mechanical_properties_extended = result_data
-        elif category == PropertyExtractionCategory.THERMAL_PROPERTIES:
-            enhanced_properties.thermal_properties = result_data
-        elif category == PropertyExtractionCategory.WATER_MOISTURE_RESISTANCE:
-            enhanced_properties.water_moisture_resistance = result_data
-        elif category == PropertyExtractionCategory.CHEMICAL_HYGIENE_RESISTANCE:
-            enhanced_properties.chemical_hygiene_resistance = result_data
-        elif category == PropertyExtractionCategory.ACOUSTIC_ELECTRICAL_PROPERTIES:
-            enhanced_properties.acoustic_electrical_properties = result_data
-        elif category == PropertyExtractionCategory.ENVIRONMENTAL_SUSTAINABILITY:
-            enhanced_properties.environmental_sustainability = result_data
-        elif category == PropertyExtractionCategory.DIMENSIONAL_AESTHETIC:
-            enhanced_properties.dimensional_aesthetic = result_data
-            
-        logger.debug(f"Applied {category.value} results: {len(result_data)} properties")
-        
-    def _extract_from_text(
-        self, 
-        text: str, 
-        category: PropertyExtractionCategory
-    ) -> Optional[Dict[str, Any]]:
-        """Fallback text-based extraction when JSON parsing fails."""
-        # Use enhanced rule-based extraction as fallback
-        return self._enhanced_rule_based_extraction(category, text, None)
-        
-    def get_expected_properties_count(self) -> int:
-        """Return the expected number of extractable properties across all categories."""
-        return 60  # Based on frontend capability analysis
-        
-    def get_supported_categories(self) -> List[str]:
-        """Return list of supported property extraction categories."""
-        return [cat.value for cat in PropertyExtractionCategory]
-        
-    def calculate_coverage_score(
-        self, 
-        extraction_result: PropertyExtractionResult
-    ) -> Dict[str, Any]:
-        """Calculate detailed coverage score for the extraction result."""
-        coverage_details = {
-            "total_categories": len(PropertyExtractionCategory),
-            "extracted_categories": 0,
-            "category_breakdown": {},
-            "overall_coverage_percentage": extraction_result.property_coverage_percentage,
-            "confidence_score": extraction_result.extraction_confidence
-        }
-        
-        properties_dict = extraction_result.enhanced_properties.to_dict()
-        
-        for category in PropertyExtractionCategory:
-            category_data = properties_dict.get(category.value)
-            if category_data and any(v is not None for v in category_data.values()):
-                coverage_details["extracted_categories"] += 1
-                coverage_details["category_breakdown"][category.value] = {
-                    "extracted": True,
-                    "property_count": len([k for k, v in category_data.items() if v is not None])
-                }
-            else:
-                coverage_details["category_breakdown"][category.value] = {
-                    "extracted": False,
-                    "property_count": 0
-                }
-                
-        return coverage_details
+    return await extractor.extract(
+        analysis_text=analysis_text,
+        product_name=product_name,
+        document_context=document_context,
+        job_id=job_id,
+    )

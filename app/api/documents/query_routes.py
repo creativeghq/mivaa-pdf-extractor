@@ -409,10 +409,10 @@ async def search_documents(
       - Text (15%) - Voyage AI 1024D semantic understanding
       - Visual (15%) - SLIG 768D visual similarity
       - Understanding (20%) - Voyage AI 1024D from Qwen3-VL vision analysis
-      - Color (12.5%) - SLIG 1152D color palette matching
-      - Texture (12.5%) - SLIG 1152D texture pattern matching
-      - Style (12.5%) - SLIG 1152D design style matching
-      - Material (12.5%) - SLIG 1152D material type matching
+      - Color (12.5%) - SLIG 768D color palette matching
+      - Texture (12.5%) - SLIG 768D texture pattern matching
+      - Style (12.5%) - SLIG 768D design style matching
+      - Material (12.5%) - SLIG 768D material type matching
     - **+ JSONB Metadata Filtering**: Supports `material_filters` for property-based filtering
     - **+ Query Understanding**: ✅ **ENABLED BY DEFAULT** - Auto-extracts filters from natural language
     - **Performance**: Fast (~250-350ms with query understanding, ~200-300ms without)
@@ -747,16 +747,16 @@ async def search_knowledge_base(
     - Text (15%) - Voyage AI 1024D semantic understanding
     - Visual (15%) - SLIG 768D visual similarity
     - Understanding (20%) - Voyage AI 1024D from Qwen3-VL analysis
-    - Color (12.5%) - SLIG 1152D color palette matching
-    - Texture (12.5%) - SLIG 1152D texture pattern matching
-    - Style (12.5%) - SLIG 1152D design style matching
-    - Material (12.5%) - SLIG 1152D material type matching
+    - Color (12.5%) - SLIG 768D color palette matching
+    - Texture (12.5%) - SLIG 768D texture pattern matching
+    - Style (12.5%) - SLIG 768D design style matching
+    - Material (12.5%) - SLIG 768D material type matching
 
     Performs unified semantic search across:
     - **Products** (with all metadata, embeddings, and material properties)
     - **Document entities** (certificates, logos, specifications)
     - **Chunks** (text content from PDFs with category tags)
-    - **Images** (visual content with CLIP embeddings)
+    - **Images** (visual content with SLIG embeddings)
 
     Supports:
     - Category filtering (product, certificate, logo, specification, general)

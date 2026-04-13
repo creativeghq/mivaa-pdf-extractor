@@ -526,7 +526,7 @@ class RealEmbeddingsService:
 
         Args:
             texts: List of texts to embed
-            dimensions: Embedding dimensions (256, 512, 1024, 2048 for Voyage; 512, 1536 for OpenAI)
+            dimensions: Embedding dimensions (default 1024 for Voyage AI; 256, 512, 1024, 2048 supported)
             input_type: "document" for indexing, "query" for search (Voyage AI only)
             truncation: Whether to truncate text to fit context length (Voyage AI only)
             output_dtype: Output data type (Voyage AI only)
@@ -765,7 +765,7 @@ class RealEmbeddingsService:
         Args:
             text: Text to embed
             job_id: Optional job ID for logging
-            dimensions: Embedding dimensions (256, 512, 1024, 2048 for Voyage; 512, 1536 for OpenAI)
+            dimensions: Embedding dimensions (default 1024 for Voyage AI; 256, 512, 1024, 2048 supported)
             input_type: None (default), "document" for indexing, "query" for search (Voyage AI only)
             truncation: Whether to truncate text to fit context length (Voyage AI only, default: True)
             output_dtype: Output data type - 'float', 'int8', 'uint8', 'binary', 'ubinary' (Voyage AI only)

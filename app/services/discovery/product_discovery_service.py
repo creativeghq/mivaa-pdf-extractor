@@ -1102,6 +1102,25 @@ class ProductDiscoveryService:
             # Initialize metadata extractor with workspace_id for custom prompts
             metadata_extractor = DynamicMetadataExtractor(model=self.model, job_id=job_id, workspace_id=workspace_id)
 
+            # ── Fetch upload material_category from job metadata ──────────
+            # This is set when the user selects a category during PDF upload
+            # (e.g. "tiles", "lighting", "heating"). Used as fallback for
+            # category_hint so the extraction prompt gets category-specific
+            # priority fields and extraction hints.
+            upload_material_category = None
+            if job_id:
+                try:
+                    from app.services.core.supabase_client import get_supabase_client
+                    _sb = get_supabase_client()
+                    job_result = _sb.client.table('background_jobs').select('metadata').eq('id', job_id).limit(1).execute()
+                    if job_result.data and len(job_result.data) > 0:
+                        job_meta = job_result.data[0].get('metadata') or {}
+                        upload_material_category = job_meta.get('material_category')
+                        if upload_material_category:
+                            self.logger.info(f"📋 Upload material_category for extraction hints: {upload_material_category}")
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Could not fetch material_category from job: {e}")
+
             # Store tracker for heartbeat updates
             self.tracker = tracker
 
@@ -1440,8 +1459,13 @@ class ProductDiscoveryService:
 
                     self.logger.info(f"      Using {len(product_text):,} characters ({len(page_indices)} product pages + supplementary)")
 
-                    # Get category hint from existing metadata
-                    category_hint = product.metadata.get("category") or product.metadata.get("material")
+                    # Get category hint: product-level metadata first, then upload-level fallback
+                    category_hint = (
+                        product.metadata.get("material_category")
+                        or product.metadata.get("category")
+                        or product.metadata.get("material")
+                        or upload_material_category
+                    )
 
                     # Extract comprehensive metadata from focused text
                     extracted = await metadata_extractor.extract_metadata(
@@ -1452,12 +1476,17 @@ class ProductDiscoveryService:
 
                     # Merge extracted metadata with existing metadata
                     # Priority: existing metadata > extracted critical > extracted discovered
+                    # unknown_attributes are preserved under their own key so the
+                    # frontend "Additional Properties" card can render them.
+                    unknown_attrs = extracted.get("unknown_attributes", extracted.get("unknown", {}))
                     enriched_metadata = {
                         **extracted.get("discovered", {}),  # Lowest priority
                         **extracted.get("critical", {}),    # Medium priority
                         **product.metadata,                 # Highest priority (from discovery)
-                        "_extraction_metadata": extracted.get("metadata", {})
+                        "_extraction_metadata": extracted.get("metadata", {}),
                     }
+                    if unknown_attrs and isinstance(unknown_attrs, dict) and len(unknown_attrs) > 0:
+                        enriched_metadata["_discovered_extra"] = unknown_attrs
 
                     # Flatten nested values (extract "value" from {"value": "...", "confidence": ...})
                     flattened_metadata = {}
@@ -1543,6 +1572,19 @@ class ProductDiscoveryService:
             # Initialize metadata extractor with same model as discovery and workspace_id
             metadata_extractor = DynamicMetadataExtractor(model=self.model, job_id=job_id, workspace_id=workspace_id)
 
+            # Fetch upload material_category from job metadata (same as focused extraction path)
+            upload_material_category_fb = None
+            if job_id:
+                try:
+                    from app.services.core.supabase_client import get_supabase_client
+                    _sb = get_supabase_client()
+                    job_result = _sb.client.table('background_jobs').select('metadata').eq('id', job_id).limit(1).execute()
+                    if job_result.data and len(job_result.data) > 0:
+                        job_meta = job_result.data[0].get('metadata') or {}
+                        upload_material_category_fb = job_meta.get('material_category')
+                except Exception:
+                    pass
+
             enriched_products = []
 
             for product in catalog.products:
@@ -1550,8 +1592,13 @@ class ProductDiscoveryService:
                     # Extract product-specific text from page range (limited)
                     product_text = self._extract_product_text(pdf_text, product.page_range)
 
-                    # Get category hint from existing metadata
-                    category_hint = product.metadata.get("category") or product.metadata.get("material")
+                    # Get category hint: product-level first, then upload-level fallback
+                    category_hint = (
+                        product.metadata.get("material_category")
+                        or product.metadata.get("category")
+                        or product.metadata.get("material")
+                        or upload_material_category_fb
+                    )
 
                     # Extract comprehensive metadata
                     self.logger.info(f"   🔍 Extracting metadata for: {product.name}")
@@ -1577,22 +1624,31 @@ class ProductDiscoveryService:
                         self.logger.info(f"      ✅ Validated {len(validation_info)} metadata fields")
                     except Exception as e:
                         self.logger.warning(f"Metadata validation failed, using unvalidated: {e}")
-                        # Fallback: flatten without validation
+                        # Fallback: flatten without validation (include unknown_attributes)
                         validated_metadata = {}
                         for category, fields in extracted.get("discovered", {}).items():
                             if isinstance(fields, dict):
                                 validated_metadata.update(fields)
                         validated_metadata.update(extracted.get("critical", {}))
+                        # Carry unknown_attributes into the fallback path too
+                        fallback_unknown = extracted.get("unknown_attributes", extracted.get("unknown", {}))
+                        if fallback_unknown and isinstance(fallback_unknown, dict):
+                            validated_metadata["_discovered_extra"] = fallback_unknown
                         validation_info = {}
 
                     # Merge validated metadata with existing metadata
                     # Priority: existing metadata > validated metadata > extraction metadata
+                    # unknown_attributes are preserved under their own key so the
+                    # frontend "Additional Properties" card can render them.
+                    unknown_attrs_v = extracted.get("unknown_attributes", extracted.get("unknown", {}))
                     enriched_metadata = {
                         **validated_metadata,               # Validated extracted metadata
                         **product.metadata,                 # Highest priority (from discovery)
                         "_extraction_metadata": extracted.get("metadata", {}),
                         "_validation": validation_info      # Track validation details
                     }
+                    if unknown_attrs_v and isinstance(unknown_attrs_v, dict) and len(unknown_attrs_v) > 0:
+                        enriched_metadata["_discovered_extra"] = unknown_attrs_v
 
                     # Flatten nested values (extract "value" from {"value": "...", "confidence": ...})
                     flattened_metadata = {}

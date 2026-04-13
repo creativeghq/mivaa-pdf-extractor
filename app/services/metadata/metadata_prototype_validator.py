@@ -1,12 +1,12 @@
 """
 Metadata Prototype Validation Service
 
-This service validates AI-extracted metadata against prototype values using CLIP embeddings.
+This service validates AI-extracted metadata against prototype values using Voyage AI embeddings (1024D).
 It standardizes free-text metadata to consistent, validated property values.
 
 Architecture:
 - Loads prototype embeddings from material_properties table
-- Generates CLIP embeddings for extracted values
+- Generates Voyage AI 1024D embeddings for extracted values
 - Compares using cosine similarity
 - Returns validated value if confidence > threshold
 
@@ -53,14 +53,14 @@ class MetadataPrototypeValidator:
         try:
             # Fetch all properties with prototypes
             result = self.supabase.client.table('material_properties').select(
-                'property_key, name, prototype_descriptions, text_embedding_512'
-            ).not_.is_('prototype_descriptions', 'null').not_.is_('text_embedding_512', 'null').execute()
+                'property_key, name, prototype_descriptions, text_embedding_1024'
+            ).not_.is_('prototype_descriptions', 'null').not_.is_('text_embedding_1024', 'null').execute()
             
             for prop in result.data:
                 self._prototype_cache[prop['property_key']] = {
                     'name': prop['name'],
                     'prototypes': prop['prototype_descriptions'],
-                    'embedding': np.array(prop['text_embedding_512'])
+                    'embedding': np.array(prop['text_embedding_1024'])
                 }
             
             self._cache_loaded = True
@@ -134,11 +134,11 @@ class MetadataPrototypeValidator:
             (validated_value, validation_details)
         """
         try:
-            # Generate embedding for extracted value (512D)
+            # Generate embedding for extracted value (1024D Voyage AI)
             value_embedding = await self.embeddings_service._generate_text_embedding(
                 text=field_value,
                 job_id=self.job_id,
-                dimensions=512
+                dimensions=1024
             )
             
             if not value_embedding:
@@ -239,7 +239,7 @@ class MetadataPrototypeValidator:
             prototype_embedding = await self.embeddings_service._generate_text_embedding(
                 text=prototype_value,
                 job_id=self.job_id,
-                dimensions=512
+                dimensions=1024
             )
 
             if prototype_embedding:

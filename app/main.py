@@ -762,14 +762,14 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 - **Products + Metadata**: Inseparable extraction (Stage 0A) - all metadata stored in product.metadata JSONB
 - **Document Entities**: Certificates, logos, specifications as separate knowledge base (Stage 0B)
 - **AI Analysis**: 13 AI models across 7 pipeline stages
-- 🎯 **Enhanced Multi-Vector Search**: 6 specialized CLIP embeddings (text 20%, visual 20%, color 15%, texture 15%, style 15%, material 15%) + JSONB metadata filtering + query understanding
+- 🎯 **Enhanced Multi-Vector Search**: 7 specialized embeddings (text 15%, visual 15%, understanding 20%, color 12.5%, texture 12.5%, style 12.5%, material 12.5%) + JSONB metadata filtering + query understanding
 - **Query Understanding**: GPT-4o-mini parses natural language queries to auto-extract filters (enabled by default)
 - **Knowledge Base**: Semantic chunking, quality scoring, deduplication
-- **Image Analysis**: CLIP + Qwen3-VL vision models (cost-effective, high accuracy)
+- **Image Analysis**: SLIG + Qwen3-VL vision models (cost-effective, high accuracy)
 - **Agentic Queries**: Factory/group filtering for certificates, logos, specifications
 
 ### AI Models
-1. **OpenAI**: text-embedding-3-small (1536D embeddings), GPT-4o-mini (query understanding)
+1. **Voyage AI**: voyage-3.5 (1024D text embeddings), GPT-4o-mini (query understanding)
 2. **Anthropic**: Claude Haiku 4.5 (fast classification), Claude Sonnet 4.5 (deep enrichment)
 3. **HuggingFace Endpoint**: Qwen3-VL-32B-Instruct (vision analysis)
 4. **SigLIP2**: 5 specialized visual embeddings (visual, color, texture, style, material) - 768D each
@@ -873,10 +873,10 @@ Get your token from the frontend application or Supabase authentication.
 - Recommendations
 
 ### 🔗 Embedding APIs (`/api/embeddings/*`)
-- Generate text embeddings (1536D)
-- Generate CLIP embeddings (512D)
+- Generate text embeddings (1024D Voyage AI)
+- Generate visual embeddings (768D SLIG)
 - Batch processing
-- Multi-vector generation (6 types)
+- Multi-vector generation (7 types)
 
 ### 💬 Chat APIs (`/api/chat/*`)
 - Chat completions
@@ -925,7 +925,7 @@ Get your token from the frontend application or Supabase authentication.
         openapi_tags=[
             {
                 "name": "Knowledge Base",
-                "description": "📚 **NEW v2.3.0** Knowledge Base & Documentation System - Document management with AI embeddings (1536D), semantic search, PDF text extraction, category hierarchy, product attachments, version history, and comments. Smart embedding regeneration on content changes."
+                "description": "📚 **NEW v2.3.0** Knowledge Base & Documentation System - Document management with AI embeddings (1024D Voyage AI), semantic search, PDF text extraction, category hierarchy, product attachments, version history, and comments. Smart embedding regeneration on content changes."
             },
             {
                 "name": "PDF Processing",
@@ -945,7 +945,7 @@ Get your token from the frontend application or Supabase authentication.
             },
             {
                 "name": "Embeddings",
-                "description": "🔗 Multi-vector embedding generation - 6 embedding types (text 1536D, visual CLIP 512D, multimodal 2048D, color 256D, texture 256D, application 512D) for comprehensive material understanding"
+                "description": "🔗 Multi-vector embedding generation - 7 embedding types (text 1024D Voyage AI, visual 768D SLIG, understanding 1024D, color 768D, texture 768D, style 768D, material 768D) for comprehensive material understanding"
             },
             {
                 "name": "Chat",
@@ -2038,7 +2038,7 @@ async def root() -> Dict[str, Any]:
         "api_info": {
             "total_endpoints": 123,
             "authentication": "JWT Bearer Token Required",
-            "embedding_model": "text-embedding-3-small (1536 dimensions)",
+            "embedding_model": "voyage-3.5 (1024 dimensions)",
             "recent_enhancements": "Price Monitoring with Firecrawl (December 2025)",
             "performance_improvements": "Competitor price scraping, alerts, scheduled monitoring"
         },
@@ -2234,11 +2234,11 @@ def custom_openapi():
         "prompt_enhancement": "Admin templates + agent prompt enhancement (PRESERVED)",
         "category_extraction": "Products, certificates, logos, specifications (PRESERVED)",
         "rag_system": "Retrieval-Augmented Generation with enhanced multi-vector search",
-        "vector_search": "6 specialized CLIP embedding types (text, visual, color, texture, style, material)",
+        "vector_search": "7 specialized embedding types (text, visual, understanding, color, texture, style, material)",
         "search_strategies": "10 strategies: multi_vector (⭐ default), semantic, vector, hybrid, material, keyword, color, texture, style, material_type",
-        "ai_models": "13 models: Claude Sonnet 4.5, Haiku 4.5, GPT-4o-mini, GPT-5, Qwen3-VL-8B, CLIP",
+        "ai_models": "13 models: Claude Sonnet 4.5, Haiku 4.5, GPT-4o-mini, Qwen3-VL-32B, SLIG, Voyage AI",
         "material_recognition": "Qwen3-VL-8B-Instruct (configurable vision model)",
-        "embedding_models": "OpenAI text-embedding-3-small (1536D), SigLIP ViT-SO400M (512D) for 6 specialized embeddings",
+        "embedding_models": "Voyage AI voyage-3.5 (1024D text + understanding), SLIG SigLIP2 (768D) for 5 visual embeddings",
         "performance": "95%+ product detection, 85%+ search accuracy, 250-350ms response time (with query understanding)",
         "scalability": "5,000+ users, 99.5%+ uptime",
         "agentic_queries": "Factory/group filtering for certificates, logos, specifications"

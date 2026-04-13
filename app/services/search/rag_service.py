@@ -1041,8 +1041,19 @@ class RAGService:
                 # Sort by final score (descending)
                 results.sort(key=lambda x: x['score'], reverse=True)
 
-                # Limit to top_k
-                results = results[:top_k]
+                # Apply MMR re-ranking for diversity (if enabled via search_config)
+                enable_mmr = (search_config or {}).get("enable_mmr", False)
+                mmr_lambda = (search_config or {}).get("mmr_lambda", 0.7)
+                if enable_mmr and len(results) > top_k:
+                    from .mmr_reranker import MMRReranker
+                    reranker = MMRReranker(lambda_param=mmr_lambda)
+                    mmr_result = reranker.rerank(results, top_k=top_k)
+                    results = mmr_result.items
+                    self.logger.info(
+                        f"MMR re-ranked → {len(results)} diverse results (λ={mmr_lambda})"
+                    )
+                else:
+                    results = results[:top_k]
 
                 self.logger.info(f"✅ Returning {len(results)} results (top {top_k})")
 

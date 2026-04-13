@@ -447,7 +447,7 @@ class DocumentEntityService:
 
                     if embedding_result and embedding_result.get('success'):
                         embeddings = embedding_result.get('embeddings', {})
-                        text_embedding = embeddings.get('text_512')
+                        text_embedding = embeddings.get('text_1024')
 
                         if text_embedding:
                             embeddings_generated += 1

@@ -131,13 +131,44 @@ async def _trigger_factory_enrichment(
         logger.warning(f"   ⚠️ Factory enrichment trigger failed (non-blocking): {exc}")
 
 # ── Controlled vocabulary ────────────────────────────────────────────────────
+# Fine-grained material_category values that the AI classifier can assign.
+# These map to the 10 upload categories via resolveUploadCategory() on the frontend
+# and get_category_config() on the backend.
 MATERIAL_CATEGORY_VOCAB = {
-    "floor_tile", "wall_tile", "wood_flooring", "laminate", "vinyl_flooring", "carpet",
-    "wall_paint", "wallpaper", "countertop", "kitchen_worktop", "bathroom_tile", "shower_tile",
-    "sofa", "armchair", "dining_chair", "accent_chair", "rug", "curtain", "cushion",
-    "dining_table", "coffee_table", "side_table", "cabinet", "shelving", "sideboard",
-    "door", "window", "fabric_swatch", "leather_swatch", "stone_slab", "metal_panel",
-    "glass_panel", "outdoor_furniture", "lighting",
+    # Tiles
+    "floor_tile", "wall_tile", "bathroom_tile", "shower_tile",
+    "porcelain_tile", "ceramic_tile",
+    # Wood / Flooring
+    "wood_flooring", "laminate", "vinyl_flooring", "carpet",
+    "hardwood", "engineered_wood", "parquet",
+    # Paint / Wall Decor
+    "wall_paint", "wallpaper", "decorative_plaster", "wall_panel", "wall_coating",
+    # Furniture
+    "sofa", "armchair", "dining_chair", "accent_chair",
+    "dining_table", "coffee_table", "side_table",
+    "cabinet", "shelving", "sideboard", "bed", "desk",
+    "outdoor_furniture",
+    # Decor
+    "rug", "curtain", "cushion", "vase", "mirror",
+    "wall_art", "sculpture", "candle_holder", "planter",
+    # General Materials
+    "countertop", "kitchen_worktop", "stone_slab", "metal_panel",
+    "glass_panel", "concrete", "terrazzo", "quartz",
+    # Sanitary
+    "toilet", "basin", "bathtub", "shower_tray", "bidet", "urinal",
+    "vanity_unit", "shower_enclosure", "tap", "faucet", "mixer", "shower_head",
+    # Kitchen
+    "kitchen_cabinet", "kitchen_sink", "kitchen_tap", "kitchen_hood",
+    "kitchen_appliance", "kitchen_handle", "kitchen_organiser",
+    # Heating
+    "radiator", "towel_rail", "underfloor_heating",
+    "heat_pump", "boiler", "fireplace", "convector",
+    # Lighting
+    "lighting", "pendant_light", "ceiling_light", "wall_light",
+    "floor_lamp", "table_lamp", "spotlight", "track_light",
+    "recessed_light", "outdoor_light", "chandelier",
+    # Legacy / generic
+    "door", "window", "fabric_swatch", "leather_swatch",
 }
 ZONE_INTENT_VOCAB = {"surface", "full_object", "upholstery", "sub_element"}
 
@@ -162,18 +193,22 @@ Current category (may be wrong or missing): {existing_category or 'N/A'}
 CONTROLLED VOCABULARY — respond ONLY with a JSON object, no explanation:
 
 material_category (pick exactly one):
-  floor_tile | wall_tile | wood_flooring | laminate | vinyl_flooring | carpet |
-  wall_paint | wallpaper | countertop | kitchen_worktop | bathroom_tile | shower_tile |
-  sofa | armchair | dining_chair | accent_chair | rug | curtain | cushion |
-  dining_table | coffee_table | side_table | cabinet | shelving | sideboard |
-  door | window | fabric_swatch | leather_swatch | stone_slab | metal_panel |
-  glass_panel | outdoor_furniture | lighting
+  TILES: floor_tile | wall_tile | bathroom_tile | shower_tile | porcelain_tile | ceramic_tile
+  WOOD: wood_flooring | laminate | vinyl_flooring | carpet | hardwood | engineered_wood | parquet
+  PAINT/WALL: wall_paint | wallpaper | decorative_plaster | wall_panel
+  FURNITURE: sofa | armchair | dining_chair | accent_chair | dining_table | coffee_table | side_table | cabinet | shelving | sideboard | bed | desk | outdoor_furniture
+  DECOR: rug | curtain | cushion | vase | mirror | wall_art | sculpture | planter
+  GENERAL: countertop | kitchen_worktop | stone_slab | metal_panel | glass_panel | concrete | terrazzo | quartz
+  SANITARY: toilet | basin | bathtub | shower_tray | bidet | vanity_unit | shower_enclosure | tap | faucet | mixer | shower_head
+  KITCHEN: kitchen_cabinet | kitchen_sink | kitchen_tap | kitchen_hood | kitchen_appliance
+  HEATING: radiator | towel_rail | underfloor_heating | heat_pump | boiler | fireplace | convector
+  LIGHTING: lighting | pendant_light | ceiling_light | wall_light | floor_lamp | table_lamp | spotlight | chandelier | recessed_light
 
 zone_intent (pick exactly one):
   surface     — floor/wall/ceiling tiles, paint, wallpaper, countertops, cladding
-  full_object — sofa, chair, rug, curtain, table, cabinet, lamp
+  full_object — sofa, chair, rug, curtain, table, cabinet, lamp, radiator, toilet, basin
   upholstery  — fabric/leather swatches for covering furniture
-  sub_element — hardware, handles, trims, brackets
+  sub_element — hardware, handles, trims, brackets, taps, faucets
 
 Respond with exactly: {{"material_category": "...", "zone_intent": "..."}}"""
 
@@ -1091,26 +1126,67 @@ def _is_empty_value(value) -> bool:
 import re as _re
 
 # Controlled vocabulary map for vision_analysis material_type → products.material_category
+# Maps AI-freeform material_type strings (from vision analysis) to
+# controlled-vocab values that exist in MATERIAL_CATEGORY_VOCAB.
+# Every value here MUST be present in the vocab set above.
 _MATERIAL_TYPE_TO_CATEGORY = {
+    # Tiles
     "ceramic tile": "ceramic_tile",
     "porcelain tile": "porcelain_tile",
-    "stoneware": "stoneware_tile",
-    "stoneware tile": "stoneware_tile",
-    "mosaic": "mosaic_tile",
-    "mosaic tile": "mosaic_tile",
-    "natural stone": "natural_stone",
-    "marble": "marble",
-    "granite": "granite",
-    "slate": "slate",
-    "limestone": "limestone",
-    "wood": "wood_flooring",
-    "wood flooring": "wood_flooring",
-    "laminate": "laminate",
-    "vinyl": "vinyl_flooring",
+    "stoneware": "floor_tile",       # normalize to floor_tile (in vocab)
+    "stoneware tile": "floor_tile",
+    "mosaic": "wall_tile",           # normalize to wall_tile (in vocab)
+    "mosaic tile": "wall_tile",
+    "outdoor tile": "floor_tile",    # normalize to floor_tile (in vocab)
     "wall tile": "wall_tile",
     "floor tile": "floor_tile",
     "bathroom tile": "bathroom_tile",
-    "outdoor tile": "outdoor_tile",
+    "shower tile": "shower_tile",
+    # Stone / general materials
+    "natural stone": "stone_slab",
+    "marble": "stone_slab",
+    "granite": "stone_slab",
+    "slate": "stone_slab",
+    "limestone": "stone_slab",
+    "travertine": "stone_slab",
+    "quartz": "quartz",
+    "terrazzo": "terrazzo",
+    "concrete": "concrete",
+    # Wood
+    "wood": "wood_flooring",
+    "wood flooring": "wood_flooring",
+    "hardwood": "hardwood",
+    "engineered wood": "engineered_wood",
+    "parquet": "parquet",
+    "laminate": "laminate",
+    "vinyl": "vinyl_flooring",
+    "bamboo": "wood_flooring",
+    # Furniture
+    "sofa": "sofa",
+    "chair": "dining_chair",
+    "table": "dining_table",
+    "cabinet": "cabinet",
+    # Sanitary
+    "toilet": "toilet",
+    "basin": "basin",
+    "bathtub": "bathtub",
+    "tap": "tap",
+    "faucet": "faucet",
+    # Heating
+    "radiator": "radiator",
+    "towel rail": "towel_rail",
+    "boiler": "boiler",
+    # Lighting
+    "light": "lighting",
+    "lamp": "lighting",
+    "pendant": "pendant_light",
+    "chandelier": "chandelier",
+    # Paint / Wall
+    "paint": "wall_paint",
+    "wallpaper": "wallpaper",
+    # Kitchen
+    "worktop": "kitchen_worktop",
+    "countertop": "countertop",
 }
 
 
@@ -2013,6 +2089,38 @@ async def enrich_products_from_chunks_and_vision(
                 except Exception as e:
                     logger.warning(
                         f"   ⚠️ Description writer failed for '{product_name}': {e}"
+                    )
+
+            # ── Stage 4.7.e: Enhanced functional property extraction ─────
+            # Single Claude Haiku call extracts 60+ structured properties
+            # across 9 categories (slip safety, mechanical, thermal, etc.)
+            # matching the frontend FunctionalMetadata interface.
+            existing_functional = new_metadata.get("functional_metadata")
+            if not existing_functional:
+                try:
+                    from app.services.products.enhanced_material_property_extractor import (
+                        extract_functional_properties,
+                    )
+                    prop_result = await extract_functional_properties(
+                        analysis_text=combined_text,
+                        product_name=product_name,
+                        job_id=job_id,
+                        workspace_id=product.get("workspace_id"),
+                    )
+                    if prop_result.coverage_pct > 0:
+                        new_metadata["functional_metadata"] = prop_result.properties
+                        new_metadata.setdefault("_extraction_metadata", {})["functional_metadata"] = {
+                            "source": prop_result.method,
+                            "confidence": prop_result.confidence,
+                            "coverage_pct": prop_result.coverage_pct,
+                            "processing_time_ms": prop_result.processing_time_ms,
+                        }
+                        filled.append("functional_metadata")
+                        stats.setdefault("functional_property_extractions", 0)
+                        stats["functional_property_extractions"] += 1
+                except Exception as e:
+                    logger.warning(
+                        f"   ⚠️ Functional property extraction failed for '{product_name}': {e}"
                     )
 
             if not filled:

@@ -1052,7 +1052,7 @@ async def material_visual_search(
     Perform material-specific visual search with advanced filtering and analysis.
     
     This endpoint provides:
-    - Visual similarity search using CLIP embeddings
+    - Visual similarity search using SLIG embeddings
     - Material property filtering (spectral, chemical, mechanical, thermal)
     - Qwen Vision analysis for material understanding
     - Multi-modal fusion with configurable weights
@@ -1100,7 +1100,7 @@ async def analyze_material_image(
     - Visual feature extraction
     - Material identification and classification
     - Spectral, chemical, and mechanical property analysis
-    - CLIP embedding generation
+    - SLIG embedding generation
     - Qwen Vision material understanding
     """
     try:
@@ -1155,7 +1155,7 @@ async def generate_material_embeddings(
     Generate embeddings for material images.
     
     This endpoint provides:
-    - CLIP embedding generation for visual similarity
+    - SLIG embedding generation for visual similarity
     - Custom material-specific embeddings
     - Batch processing for multiple images
     - Embedding metadata and quality metrics
@@ -1227,7 +1227,7 @@ async def find_similar_materials(
     Find materials similar to a reference material.
     
     This endpoint performs:
-    - Visual similarity analysis using CLIP embeddings
+    - Visual similarity analysis using SLIG embeddings
     - Material property comparison
     - Multi-modal similarity scoring
     - Ranked results with confidence scores
@@ -1283,7 +1283,7 @@ async def material_search_health_check(
     - Material Visual Search service status
     - Supabase visual search function connectivity
     - Material Kai service integration status
-    - CLIP embedding service availability
+    - SLIG embedding service availability
     - Overall system health
     """
     try:
@@ -1311,7 +1311,7 @@ async def material_search_health_check(
     "/search/by-color",
     response_model=ImageSearchResponse,
     summary="Search images by color palette",
-    description="Search for images with similar color palettes using specialized CLIP embeddings"
+    description="Search for images with similar color palettes using specialized SLIG embeddings"
 )
 async def search_by_color(
     request: ImageSearchRequest,
@@ -1320,7 +1320,7 @@ async def search_by_color(
     """
     **🎨 Color Palette Search**
 
-    Search for images with similar color palettes using specialized color CLIP embeddings.
+    Search for images with similar color palettes using specialized color SLIG embeddings.
 
     ## Use Cases
     - Find materials with matching color schemes
@@ -1391,7 +1391,7 @@ async def search_by_color(
     "/search/by-texture",
     response_model=ImageSearchResponse,
     summary="Search images by texture pattern",
-    description="Search for images with similar textures using specialized CLIP embeddings"
+    description="Search for images with similar textures using specialized SLIG embeddings"
 )
 async def search_by_texture(
     request: ImageSearchRequest,
@@ -1400,7 +1400,7 @@ async def search_by_texture(
     """
     **🔲 Texture Pattern Search**
 
-    Search for images with similar texture patterns using specialized texture CLIP embeddings.
+    Search for images with similar texture patterns using specialized texture SLIG embeddings.
 
     ## Use Cases
     - Find materials with similar surface textures
@@ -1458,7 +1458,7 @@ async def search_by_texture(
     "/search/by-style",
     response_model=ImageSearchResponse,
     summary="Search images by design style",
-    description="Search for images with similar design styles using specialized CLIP embeddings"
+    description="Search for images with similar design styles using specialized SLIG embeddings"
 )
 async def search_by_style(
     request: ImageSearchRequest,
@@ -1467,7 +1467,7 @@ async def search_by_style(
     """
     **✨ Design Style Search**
 
-    Search for images with similar design styles using specialized style CLIP embeddings.
+    Search for images with similar design styles using specialized style SLIG embeddings.
 
     ## Use Cases
     - Find materials in modern/classic/minimalist styles
@@ -1525,7 +1525,7 @@ async def search_by_style(
     "/search/by-material",
     response_model=ImageSearchResponse,
     summary="Search images by material type",
-    description="Search for images with similar material types using specialized CLIP embeddings"
+    description="Search for images with similar material types using specialized SLIG embeddings"
 )
 async def search_by_material(
     request: ImageSearchRequest,
@@ -1534,7 +1534,7 @@ async def search_by_material(
     """
     **🪨 Material Type Search**
 
-    Search for images with similar material types using specialized material CLIP embeddings.
+    Search for images with similar material types using specialized material SLIG embeddings.
 
     ## Use Cases
     - Find wood/metal/stone/fabric materials

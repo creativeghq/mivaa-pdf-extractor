@@ -252,6 +252,10 @@ class SearchRequest(BaseModel):
     image_url: Optional[str] = Field(None, description="Image URL for image similarity search strategy")
     image_base64: Optional[str] = Field(None, description="Base64-encoded image for image similarity search strategy")
 
+    # MMR diversity re-ranking
+    enable_mmr: bool = Field(False, description="Enable MMR diversity re-ranking on results")
+    mmr_lambda: float = Field(0.7, ge=0.0, le=1.0, description="MMR relevance/diversity balance (1.0=pure relevance, 0.0=pure diversity)")
+
 class SearchResponse(BaseModel):
     """Response model for semantic search."""
     query: str = Field(..., description="Original search query")
@@ -3681,10 +3685,10 @@ async def search_documents(
       - Text (15%) - Voyage AI 1024D semantic understanding
       - Visual (15%) - SLIG 768D visual similarity
       - Understanding (20%) - Voyage AI 1024D from Qwen3-VL vision analysis
-      - Color (12.5%) - SLIG 1152D color palette matching
-      - Texture (12.5%) - SLIG 1152D texture pattern matching
-      - Style (12.5%) - SLIG 1152D design style matching
-      - Material (12.5%) - SLIG 1152D material type matching
+      - Color (12.5%) - SLIG 768D color palette matching
+      - Texture (12.5%) - SLIG 768D texture pattern matching
+      - Style (12.5%) - SLIG 768D design style matching
+      - Material (12.5%) - SLIG 768D material type matching
     - **+ JSONB Metadata Filtering**: Supports `material_filters` for property-based filtering
     - **+ Query Understanding**: ✅ **ENABLED BY DEFAULT** - Auto-extracts filters from natural language
     - **Performance**: Fast (~250-350ms with query understanding, ~200-300ms without)
@@ -3917,12 +3921,19 @@ async def search_documents(
                     "material": dynamic_weights.get("material", 0.125),
                 }
             material_filters = getattr(request, 'material_filters', None)
+            # Build search config with optional MMR and weight overrides
+            sc = {}
+            if rag_weights:
+                sc["weights"] = rag_weights
+            if getattr(request, 'enable_mmr', False):
+                sc["enable_mmr"] = True
+                sc["mmr_lambda"] = getattr(request, 'mmr_lambda', 0.7)
             results = await rag_service.multi_vector_search(
                 query=query_to_use,
                 workspace_id=request.workspace_id,
                 top_k=request.top_k,
                 material_filters=material_filters,
-                search_config={"weights": rag_weights} if rag_weights else None,
+                search_config=sc or None,
                 image_base64=getattr(request, 'image_base64', None),
             )
 
@@ -4244,7 +4255,7 @@ async def get_rag_statistics(
                 "advanced_rag_query"
             ],
             "ai_models": {
-                "embeddings": "SigLIP-SO400M-14-384 / CLIP",
+                "embeddings": "SLIG SigLIP2 768D / Voyage AI 1024D",
                 "rag_synthesis": "Claude 4.5 Sonnet",
                 "vision": "Qwen3-VL-32B-Instruct"
             }
@@ -4618,16 +4629,16 @@ async def search_knowledge_base(
     - Text (15%) - Voyage AI 1024D semantic understanding
     - Visual (15%) - SLIG 768D visual similarity
     - Understanding (20%) - Voyage AI 1024D from Qwen3-VL analysis
-    - Color (12.5%) - SLIG 1152D color palette matching
-    - Texture (12.5%) - SLIG 1152D texture pattern matching
-    - Style (12.5%) - SLIG 1152D design style matching
-    - Material (12.5%) - SLIG 1152D material type matching
+    - Color (12.5%) - SLIG 768D color palette matching
+    - Texture (12.5%) - SLIG 768D texture pattern matching
+    - Style (12.5%) - SLIG 768D design style matching
+    - Material (12.5%) - SLIG 768D material type matching
 
     Performs unified semantic search across:
     - **Products** (with all metadata, embeddings, and material properties)
     - **Document entities** (certificates, logos, specifications)
     - **Chunks** (text content from PDFs with category tags)
-    - **Images** (visual content with CLIP embeddings)
+    - **Images** (visual content with SLIG embeddings)
 
     Supports:
     - Category filtering (product, certificate, logo, specification, general)

@@ -66,7 +66,7 @@ class ClipTextRequest(BaseModel):
     )
     dimensions: int = Field(
         default=1024,
-        description="Embedding dimensions (256, 512, 1024, 2048 for Voyage; 512, 1536 for OpenAI)"
+        description="Embedding dimensions (default 1024 for Voyage AI; 256, 512, 1024, 2048 supported)"
     )
     truncation: bool = Field(
         default=True,
@@ -113,8 +113,8 @@ async def generate_clip_image_embedding(
     """
     **🖼️ Visual Image Embedding - Powered by SigLIP2**
 
-    Generate 1152-dimensional visual embedding using Google SigLIP2 ViT-SO400M
-    for superior material image similarity search (+19-29% accuracy improvement).
+    Generate 768-dimensional visual embedding using SLIG (SigLIP2) cloud endpoint
+    for superior material image similarity search.
 
     ## 🎯 Use Cases
 

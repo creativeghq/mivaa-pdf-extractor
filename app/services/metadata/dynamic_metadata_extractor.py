@@ -28,6 +28,12 @@ import openai
 from app.services.core.ai_call_logger import AICallLogger
 from app.services.core.ai_client_service import get_ai_client_service
 from app.services.metadata.metadata_normalizer import normalize_metadata, get_normalization_report
+from app.services.metadata.category_field_registry import (
+    get_category_config,
+    get_priority_fields_for_prompt,
+    get_extraction_hints_for_prompt,
+    get_skip_fields,
+)
 from app.services.core.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
@@ -43,9 +49,20 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 CRITICAL_METADATA_SCHEMA = {
     "material_category": {
-        "description": "Primary material category (tile, porcelain, ceramic, stone, marble, granite, wood, metal, etc.)",
+        "description": "Primary material category — covers tiles, wood, furniture, lighting, heating, sanitary, kitchen, paint, decor, and general materials",
         "extraction_method": "ai_with_keywords",
-        "keywords": ["tile", "porcelain", "ceramic", "stone", "marble", "granite", "wood", "metal", "glass", "composite"],
+        "keywords": [
+            "tile", "porcelain", "ceramic", "stone", "marble", "granite",
+            "wood", "laminate", "parquet", "vinyl", "hardwood",
+            "metal", "glass", "composite", "concrete", "quartz",
+            "paint", "wallpaper", "plaster",
+            "sofa", "chair", "table", "cabinet", "bed", "desk", "shelf",
+            "radiator", "boiler", "fireplace", "towel_rail", "convector",
+            "toilet", "basin", "bathtub", "shower", "bidet", "tap", "faucet",
+            "kitchen", "hood", "sink", "worktop",
+            "light", "lamp", "pendant", "chandelier", "spotlight",
+            "rug", "curtain", "cushion", "vase", "mirror", "sculpture",
+        ],
         "required": True,
         "source_options": ["auto_detected", "manual_override"],
         "validation": lambda x: x and len(x) > 0
@@ -140,12 +157,16 @@ def get_dynamic_extraction_prompt(pdf_text: str, category_hint: Optional[str] = 
 
 CRITICAL FIELDS (MUST extract these):
 1. material_category - MUST be exactly one value from this controlled vocabulary:
-   floor_tile | wall_tile | wood_flooring | laminate | vinyl_flooring | carpet |
-   wall_paint | wallpaper | countertop | kitchen_worktop | bathroom_tile | shower_tile |
-   sofa | armchair | dining_chair | accent_chair | rug | curtain | cushion |
-   dining_table | coffee_table | side_table | cabinet | shelving | sideboard |
-   door | window | fabric_swatch | leather_swatch | stone_slab | metal_panel |
-   glass_panel | outdoor_furniture | lighting
+   TILES: floor_tile | wall_tile | bathroom_tile | shower_tile | porcelain_tile | ceramic_tile
+   WOOD: wood_flooring | laminate | vinyl_flooring | carpet | hardwood | engineered_wood | parquet
+   PAINT/WALL: wall_paint | wallpaper | decorative_plaster | wall_panel
+   FURNITURE: sofa | armchair | dining_chair | accent_chair | dining_table | coffee_table | side_table | cabinet | shelving | sideboard | bed | desk | outdoor_furniture
+   DECOR: rug | curtain | cushion | vase | mirror | wall_art | sculpture | planter
+   GENERAL: countertop | kitchen_worktop | stone_slab | metal_panel | glass_panel | concrete | terrazzo | quartz
+   SANITARY: toilet | basin | bathtub | shower_tray | bidet | vanity_unit | shower_enclosure | tap | faucet | mixer | shower_head
+   KITCHEN: kitchen_cabinet | kitchen_sink | kitchen_tap | kitchen_hood | kitchen_appliance
+   HEATING: radiator | towel_rail | underfloor_heating | heat_pump | boiler | fireplace | convector
+   LIGHTING: lighting | pendant_light | ceiling_light | wall_light | floor_lamp | table_lamp | spotlight | chandelier | recessed_light
    Choose the best single match. If uncertain between floor_tile/wall_tile/bathroom_tile, use context clues (residential bath context → bathroom_tile, etc.)
 2. zone_intent - MUST be exactly one of: surface | full_object | upholstery | sub_element
    Rules:
@@ -485,12 +506,50 @@ class DynamicMetadataExtractor:
                     )
                 else:
                     product_name_context = ""
+
+                # ── Category-specific field guidance ─────────────────────────
+                # Inject priority fields + extraction hints based on the upload
+                # category so the AI knows what to hunt for (e.g. grout codes
+                # for tiles, lumens for lighting) and what to skip.
+                category_fields_context = ""
+                if category_hint:
+                    cat_key = category_hint.lower().strip()
+                    priority_text = get_priority_fields_for_prompt(cat_key)
+                    hints_text = get_extraction_hints_for_prompt(cat_key)
+                    skip_list = get_skip_fields(cat_key)
+
+                    category_fields_context = f"\n\n{priority_text}"
+                    if hints_text:
+                        category_fields_context += f"\n\n{hints_text}"
+                    if skip_list:
+                        category_fields_context += (
+                            f"\n\nFIELDS TO SKIP (not relevant for {category_hint} products — "
+                            f"do NOT extract or hallucinate these): {', '.join(skip_list)}"
+                        )
+                    category_fields_context += (
+                        "\n\nIMPORTANT: Beyond the priority fields above, also extract ANY other "
+                        "attributes you discover in the document. Capture everything — the priority "
+                        "list tells you what to look for specifically, but never ignore useful data "
+                        "just because it's not on the list. Place unexpected attributes in the "
+                        "'unknown_attributes' section with a descriptive key name."
+                    )
+                    self.logger.info(f"📋 Injected category-specific fields for '{cat_key}' ({len(skip_list)} skip-fields)")
+
                 prompt = (
                     db_prompt_template
                     .replace("{category_context}", category_context)
+                    .replace("{category_fields}", category_fields_context)
                     .replace("{product_name_context}", product_name_context)
                     .replace("{pdf_text}", smart_text)
                 )
+                # If the DB prompt template doesn't have the {category_fields}
+                # placeholder yet, append category guidance before the PDF text
+                # so it still takes effect without requiring a prompt update.
+                if "{category_fields}" not in db_prompt_template and category_fields_context:
+                    # Insert before the PDF content (last section of the prompt)
+                    prompt = prompt + "\n" + category_fields_context
+                    self.logger.info("📋 Appended category fields (DB prompt missing {category_fields} placeholder)")
+
                 self.logger.info(f"✅ Using DATABASE prompt for metadata extraction (product='{product_name or 'unknown'}')")
             else:
                 error_msg = "CRITICAL: Metadata extraction prompt not found in database. Add prompt via /admin/ai-configs with prompt_type='extraction', stage='entity_creation', category='products'"
