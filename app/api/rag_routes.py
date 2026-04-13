@@ -2987,7 +2987,6 @@ async def process_document_with_discovery(
                 f"⚠️ Catalog-wide icon pass failed (non-blocking): {cat_icons_err}"
             )
             try:
-                import sentry_sdk
                 sentry_sdk.capture_exception(cat_icons_err)
             except Exception:
                 pass

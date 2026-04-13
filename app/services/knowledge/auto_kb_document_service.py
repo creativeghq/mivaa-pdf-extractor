@@ -172,24 +172,27 @@ class AutoKBDocumentService:
             Document ID if created, None otherwise
         """
         try:
-            # Create KB document
-            result = self.supabase.client.table("kb_docs").insert({
-                "workspace_id": workspace_id,
-                "title": title,
-                "content": content,
-                "status": "published",
-                "metadata": {
-                    "auto_generated": True,
-                    "category": category,
-                    "product_id": product_id,
-                    "generated_at": datetime.utcnow().isoformat()
-                }
-            }).execute()
+            # Upsert KB document via RPC (idempotent on product_id + category + title).
+            # The DB trigger auto-fires kb-generate-embedding for pending docs.
+            rpc_result = self.supabase.client.rpc(
+                "upsert_kb_doc",
+                {
+                    "p_workspace_id": workspace_id,
+                    "p_title": title,
+                    "p_content": content,
+                    "p_metadata": {
+                        "auto_generated": True,
+                        "category": category,
+                        "product_id": product_id,
+                        "generated_at": datetime.utcnow().isoformat(),
+                    },
+                },
+            ).execute()
+            doc_id = rpc_result.data if isinstance(rpc_result.data, str) else None
 
-            if result.data:
-                doc_id = result.data[0]['id']
+            if doc_id:
 
-                # Link document to product.
+                # Link document to product (idempotent — skip if already linked).
                 #
                 # kb_doc_attachments.relationship_type has a CHECK constraint
                 # limiting it to one of: primary, supplementary, related,
@@ -203,12 +206,28 @@ class AutoKBDocumentService:
                     "care":          "supplementary",
                 }
                 relationship_type = CATEGORY_TO_RELATIONSHIP.get(category, "related")
-                self.supabase.client.table("kb_doc_attachments").insert({
-                    "workspace_id": workspace_id,
-                    "document_id": doc_id,
-                    "product_id": product_id,
-                    "relationship_type": relationship_type
-                }).execute()
+                try:
+                    self.supabase.client.table("kb_doc_attachments").upsert(
+                        {
+                            "workspace_id": workspace_id,
+                            "document_id": doc_id,
+                            "product_id": product_id,
+                            "relationship_type": relationship_type,
+                        },
+                        on_conflict="document_id,product_id",
+                    ).execute()
+                except Exception as att_err:
+                    # Fall back to a duplicate-tolerant insert if no constraint exists yet
+                    logger.debug(f"kb_doc_attachments upsert failed ({att_err}); trying plain insert")
+                    try:
+                        self.supabase.client.table("kb_doc_attachments").insert({
+                            "workspace_id": workspace_id,
+                            "document_id": doc_id,
+                            "product_id": product_id,
+                            "relationship_type": relationship_type,
+                        }).execute()
+                    except Exception:
+                        pass  # ignore duplicate-link errors — attachment already exists
 
                 # Generate embedding for the new doc
                 try:

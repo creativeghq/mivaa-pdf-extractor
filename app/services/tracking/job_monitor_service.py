@@ -110,6 +110,11 @@ class JobMonitorService:
             self.stats["checks_performed"] += 1
             self.stats["last_check"] = datetime.utcnow().isoformat()
 
+            # 0. FAST-FAIL: Detect jobs that crashed at startup (progress=0, no checkpoints, >3min old)
+            #    These jobs crashed before the heartbeat loop started, so heartbeat timeout won't catch
+            #    them for 15 minutes. This catches them in ~3 minutes instead.
+            crashed_at_startup = await self._detect_crashed_at_startup_jobs()
+
             # 1. Detect stuck PDF processing jobs (by heartbeat timeout - 15min detection)
             heartbeat_stuck_jobs = await self._detect_heartbeat_timeout_jobs()
 
@@ -124,8 +129,14 @@ class JobMonitorService:
             # 4. Detect stuck XML import jobs
             stuck_import_jobs = await self._detect_stuck_import_jobs()
 
-            # Combine all detection methods
-            all_stuck_jobs = heartbeat_stuck_jobs + stuck_jobs
+            # Combine all detection methods (deduplicate by job ID)
+            seen_ids = set()
+            all_stuck_jobs = []
+            for job in crashed_at_startup + heartbeat_stuck_jobs + stuck_jobs:
+                jid = job.get("id")
+                if jid and jid not in seen_ids:
+                    seen_ids.add(jid)
+                    all_stuck_jobs.append(job)
 
             if all_stuck_jobs:
                 self.stats["stuck_jobs_detected"] += len(all_stuck_jobs)
@@ -157,6 +168,64 @@ class JobMonitorService:
 
         except Exception as e:
             logger.error(f"❌ Error in check_and_recover: {e}", exc_info=True)
+
+    async def _detect_crashed_at_startup_jobs(self, max_age_seconds: int = 180) -> List[Dict[str, Any]]:
+        """
+        Fast-fail detection for jobs that crashed immediately at startup.
+
+        These jobs have:
+        - status = 'processing'
+        - progress = 0
+        - No metadata.stage (null)
+        - Heartbeat only from creation (same second)
+        - Been alive > max_age_seconds (default: 3 minutes)
+
+        This catches the scenario where the background task crashes before
+        the heartbeat loop or progress tracker starts (e.g., import errors,
+        missing dependencies, unhandled exceptions at function entry).
+        Normal jobs always write at least one checkpoint within 60 seconds.
+        """
+        try:
+            cutoff_time = (datetime.utcnow() - timedelta(seconds=max_age_seconds)).isoformat()
+
+            result = self.supabase_client.client.table("background_jobs")\
+                .select("*")\
+                .eq("status", "processing")\
+                .eq("progress", 0)\
+                .lt("created_at", cutoff_time)\
+                .execute()
+
+            candidates = result.data or [] if hasattr(result, 'data') else []
+
+            crashed_jobs = []
+            for job in candidates:
+                job_id = job.get("id")
+                metadata = job.get("metadata") or {}
+
+                # If metadata.stage is already set, the pipeline is running — skip
+                if metadata.get("stage") or metadata.get("current_stage"):
+                    continue
+
+                # Double-check: no checkpoints written
+                cp_result = self.supabase_client.client.table("job_checkpoints")\
+                    .select("id")\
+                    .eq("job_id", job_id)\
+                    .limit(1)\
+                    .execute()
+
+                cp_count = len(cp_result.data) if hasattr(cp_result, 'data') and cp_result.data else 0
+                if cp_count == 0:
+                    age_seconds = (datetime.utcnow() - datetime.fromisoformat(job["created_at"].replace("+00:00", "").replace("Z", ""))).total_seconds()
+                    logger.warning(
+                        f"💀 Crashed-at-startup detected: job {job_id} "
+                        f"(progress=0, no stage, no checkpoints, age={age_seconds:.0f}s)"
+                    )
+                    crashed_jobs.append(job)
+
+            return crashed_jobs
+        except Exception as e:
+            logger.error(f"❌ Error detecting crashed-at-startup jobs: {e}")
+            return []
 
     @retry_async(
         max_attempts=3,
