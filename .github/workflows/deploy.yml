@@ -92,7 +92,7 @@ jobs:
           echo ""
           echo "🏗️ Application Architecture:"
           echo "  • Service: MIVAA PDF Extractor (FastAPI)"
-          echo "  • Runtime: Python 3.9 with pyenv"
+          echo "  • Runtime: Python 3.12 with pyenv"
           echo "  • Package Manager: uv (ultrafast Python package installer)"
           echo "  • Process Manager: systemd (mivaa-pdf-extractor.service)"
           echo "  • Deployment Path: /var/www/mivaa-pdf-extractor"
@@ -112,7 +112,7 @@ jobs:
           echo "| Component | Details |" >> $GITHUB_STEP_SUMMARY
           echo "|-----------|---------|" >> $GITHUB_STEP_SUMMARY
           echo "| **🚀 Service** | MIVAA PDF Extractor (FastAPI) |" >> $GITHUB_STEP_SUMMARY
-          echo "| **🐍 Runtime** | Python 3.9 with pyenv |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🐍 Runtime** | Python 3.12 with pyenv |" >> $GITHUB_STEP_SUMMARY
           echo "| **📦 Package Manager** | uv (ultrafast Python package installer) |" >> $GITHUB_STEP_SUMMARY
           echo "| **⚙️ Process Manager** | systemd (mivaa-pdf-extractor.service) |" >> $GITHUB_STEP_SUMMARY
           echo "| **📁 Deployment Path** | /var/www/mivaa-pdf-extractor |" >> $GITHUB_STEP_SUMMARY
@@ -247,7 +247,7 @@ jobs:
           eval \"\$(pyenv virtualenv-init -)\"
 
           # Use pyenv Python
-          PYTHON=python3.9
+          PYTHON=python3.12
 
           # --- Create virtual environment ---
           if [ ! -d \".venv\" ] || [ ! -f \".venv/pyvenv.cfg\" ]; then
