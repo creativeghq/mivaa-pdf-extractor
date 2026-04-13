@@ -1,6 +1,6 @@
 # MIVAA PDF Extractor Dependencies
 # Cloud-only architecture - all ML inference via HuggingFace endpoints (SLIG, Qwen, OCR, YOLO)
-# No local model loading - PyTorch/transformers removed for faster builds and lower memory usage
+# OCR: Chandra (cloud, primary) → EasyOCR (local fallback, lazy-loaded) → Pytesseract (last resort)
 
 # Core FastAPI and server dependencies
 fastapi[standard]>=0.104.1
@@ -13,7 +13,7 @@ pypdf>=4.0.1,<5.0.0
 pandas==2.1.4
 
 # Table extraction with pdfplumber
-pdfplumber>=0.10.0  # Table extraction from PDFs
+pdfplumber>=0.10.0
 
 # Essential scientific computing
 numpy==1.26.4
@@ -21,21 +21,19 @@ scipy>=1.11.0
 
 # Computer Vision libraries (cloud-only architecture - no local ML models)
 scikit-learn>=1.5.0
-# OpenCV headless version for server deployment (no GUI dependencies)
 opencv-python-headless>=4.8.0
 Pillow>=10.2.0,<11.0.0
 scikit-image>=0.21.0
 imageio>=2.31.0,<2.32.0
 imagehash==4.3.1
 
-# AI/ML API clients - exact compatible versions
+# AI/ML API clients
 openai>=1.52.0
 anthropic==0.23.1
-voyageai==0.3.7  # Voyage AI for text embeddings (primary provider)
+voyageai==0.3.7
 
 # HuggingFace Hub for cloud endpoint management (SLIG + Qwen endpoints)
-# Note: No local model loading - all inference via cloud endpoints
-huggingface-hub>=0.20.0  # Required for endpoint authentication and management
+huggingface-hub>=0.20.0
 
 # Supabase integration
 supabase==2.3.0
@@ -56,36 +54,23 @@ requests>=2.32.2
 aiohttp>=3.9.3
 
 # Async support
-asyncio-mqtt==0.13.0
 aiofiles==23.2.1
 
-# Logging and monitoring
-structlog==23.2.0
-python-json-logger==2.0.7
+# Monitoring
 sentry-sdk[fastapi]>=2.35.0
 
 # Security and validation
 python-multipart>=0.0.6
 email-validator>=2.1.0
 
-# OCR Dependencies
+# OCR Dependencies (EasyOCR is lazy-loaded fallback — torch pulled in only when needed)
 easyocr>=1.7.0
 pytesseract>=0.3.10
-# Note: huggingface-hub already included above for SLIG + Qwen + OCR + YOLO endpoint management
 
 # NLP Dependencies
 nltk>=3.9.3
 
-# Cloud endpoint integration dependencies
-# Note: Using httpx for HuggingFace endpoint calls (Qwen, SLIG, OCR, YOLO)
-tenacity>=8.2.0  # Retry logic for API calls
-
-# Visualization
-matplotlib>=3.7.0
-
 # Additional utilities
 python-dateutil==2.8.2
-typing-extensions>=4.8.0
 psutil==5.9.6
-
 PyJWT>=2.8.0

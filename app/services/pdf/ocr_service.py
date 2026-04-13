@@ -1,8 +1,8 @@
 """
 OCR Service for multi-modal text extraction from images.
 
-This module provides OCR capabilities using EasyOCR and Pytesseract
-for extracting text from images with preprocessing and multi-language support.
+This module provides OCR capabilities using Chandra (HuggingFace cloud endpoint)
+as primary OCR, with EasyOCR as local fallback when Chandra is unavailable.
 Integrates with the Material Kai Vision Platform for enhanced multi-modal processing.
 """
 
@@ -15,7 +15,6 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
-import easyocr
 import pytesseract
 from dataclasses import dataclass
 
@@ -28,9 +27,18 @@ try:
 except ImportError:
     REGISTRY_AVAILABLE = False
 
-# Fix for Pillow 10.0+ compatibility with EasyOCR
-if not hasattr(Image, 'ANTIALIAS'):
-    Image.ANTIALIAS = Image.LANCZOS
+# Lazy import for EasyOCR (fallback only — avoids loading torch at startup)
+_easyocr_module = None
+
+def _get_easyocr():
+    global _easyocr_module
+    if _easyocr_module is None:
+        import easyocr as _eo
+        _easyocr_module = _eo
+        # Fix for Pillow 10.0+ compatibility with EasyOCR
+        if not hasattr(Image, 'ANTIALIAS'):
+            Image.ANTIALIAS = Image.LANCZOS
+    return _easyocr_module
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +60,7 @@ class OCRResult:
     confidence: float
     bbox: Optional[List[int]] = None  # [x1, y1, x2, y2]
     language: Optional[str] = None
-    method: Optional[str] = None  # 'easyocr' or 'tesseract'
+    method: Optional[str] = None  # 'chandra', 'easyocr', or 'tesseract'
 
 
 @dataclass
@@ -164,16 +172,14 @@ class ImagePreprocessor:
 
 class OCRService:
     """
-    OCR Service providing text extraction from images using EasyOCR and Pytesseract.
-    
-    Features:
-    - EasyOCR integration for local text extraction
-    - Pytesseract fallback support
-    - Multi-language OCR capabilities
-    - Image preprocessing for better accuracy
-    - Integration with Material Kai Vision Platform
+    OCR Service providing text extraction from images.
+
+    Strategy (Chandra-first):
+    1. Try Chandra cloud endpoint first (high quality, GPU-accelerated)
+    2. Fall back to EasyOCR if Chandra unavailable/fails (local, CPU)
+    3. Pytesseract as last resort
     """
-    
+
     def __init__(self, config: Optional[OCRConfig] = None):
         """
         Initialize OCR Service.
@@ -183,7 +189,7 @@ class OCRService:
         """
         self.config = config or OCRConfig()
         self.preprocessor = ImagePreprocessor()
-        self._easyocr_reader: Optional[easyocr.Reader] = None
+        self._easyocr_reader = None
         self._initialized = False
 
         # Initialize Chandra Endpoint Manager - prefer warmed-up manager from registry
@@ -218,41 +224,41 @@ class OCRService:
                     self.chandra_manager = None
 
         logger.info(f"OCR Service initialized with languages: {self.config.languages}")
-    
-    def initialize(self) -> None:
-        """
-        Initialize OCR engines and validate dependencies.
-        
-        Raises:
-            RuntimeError: If OCR engines cannot be initialized
-        """
-        try:
-            # Initialize EasyOCR reader
-            self._easyocr_reader = easyocr.Reader(
-                self.config.languages,
-                gpu=self.config.use_gpu
-            )
+        self._initialized = True
 
-            self._initialized = True
-            logger.info("OCR Service initialized successfully")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize OCR Service: {str(e)}")
-            raise RuntimeError(f"OCR Service initialization failed: {str(e)}")
+    def _ensure_easyocr(self) -> None:
+        """Lazy-load EasyOCR reader on first use (avoids loading torch at startup)."""
+        if self._easyocr_reader is None:
+            try:
+                easyocr = _get_easyocr()
+                self._easyocr_reader = easyocr.Reader(
+                    self.config.languages,
+                    gpu=self.config.use_gpu
+                )
+                logger.info("EasyOCR reader initialized (fallback)")
+            except Exception as e:
+                logger.warning(f"EasyOCR initialization failed: {e}")
+                self._easyocr_reader = None
+
+    def initialize(self) -> None:
+        """Initialize OCR service. Chandra is ready from __init__; EasyOCR is lazy."""
+        self._initialized = True
+        logger.info("OCR Service initialized (Chandra primary, EasyOCR lazy fallback)")
     
     def extract_text_easyocr(self, image: np.ndarray) -> List[OCRResult]:
         """
-        Extract text using EasyOCR.
-        
+        Extract text using EasyOCR (local fallback).
+
         Args:
             image: Input image as numpy array
-            
+
         Returns:
             List of OCR results with text, confidence, and bounding boxes
         """
-        if not self._initialized:
-            self.initialize()
-        
+        self._ensure_easyocr()
+        if self._easyocr_reader is None:
+            raise RuntimeError("EasyOCR not available")
+
         try:
             results = self._easyocr_reader.readtext(image)
             ocr_results = []
@@ -282,19 +288,61 @@ class OCRService:
             raise
     
 
+    def _call_chandra(self, image: np.ndarray) -> Optional[List[OCRResult]]:
+        """Try Chandra cloud endpoint. Returns results or None on failure."""
+        if not self.chandra_manager:
+            return None
+
+        try:
+            if isinstance(image, np.ndarray):
+                pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+            else:
+                pil_image = image
+
+            try:
+                chandra_result = self.chandra_manager.run_inference(pil_image)
+                from app.services.core.endpoint_controller import endpoint_controller
+                endpoint_controller.record_success("chandra")
+            except Exception as chandra_err:
+                from app.services.core.endpoint_controller import endpoint_controller
+                endpoint_controller.record_overload_exception("chandra", chandra_err)
+                raise
+
+            # Parse Chandra result
+            if isinstance(chandra_result, list) and len(chandra_result) > 0:
+                chandra_text = chandra_result[0].get('generated_text', '')
+            elif isinstance(chandra_result, dict):
+                chandra_text = chandra_result.get('generated_text', '')
+            else:
+                chandra_text = str(chandra_result)
+
+            if chandra_text.strip():
+                logger.info(f"✅ Chandra OCR succeeded ({len(chandra_text)} chars)")
+                return [OCRResult(
+                    text=chandra_text,
+                    confidence=0.85,
+                    method='chandra'
+                )]
+            else:
+                logger.warning("Chandra returned empty text")
+                return None
+
+        except Exception as e:
+            logger.warning(f"Chandra endpoint failed: {e}")
+            return None
+
     def extract_text_from_image(
         self,
         image_input: Union[str, Path, np.ndarray, Image.Image],
         use_preprocessing: bool = None
     ) -> List[OCRResult]:
         """
-        Extract text from image using EasyOCR with Chandra endpoint fallback.
+        Extract text from image using Chandra-first strategy.
 
         Strategy:
-        1. Try EasyOCR FIRST (fast, local, free)
-        2. If confidence >= threshold (0.7), use EasyOCR result
-        3. If confidence < threshold, try Chandra endpoint (GPU, high accuracy)
-        4. Use whichever has higher confidence
+        1. Try Chandra cloud endpoint FIRST (high quality, GPU)
+        2. Fall back to EasyOCR if Chandra unavailable/fails (local, CPU)
+        3. Pytesseract as last resort
 
         Args:
             image_input: Image file path, numpy array, or PIL Image
@@ -305,11 +353,7 @@ class OCRService:
 
         Raises:
             ValueError: If image input is invalid
-            RuntimeError: If all OCR engines fail
         """
-        if not self._initialized:
-            self.initialize()
-
         # Load and convert image to numpy array
         image = self._load_image(image_input)
 
@@ -318,119 +362,40 @@ class OCRService:
             image = self.preprocessor.enhance_image(image)
             image = self.preprocessor.preprocess_for_ocr(image)
 
-        # Step 1: Try EasyOCR FIRST
+        # Step 1: Try Chandra FIRST (primary — high quality cloud OCR)
+        chandra_results = self._call_chandra(image)
+        if chandra_results:
+            return chandra_results
+
+        # Step 2: Fall back to EasyOCR (local)
+        logger.info("Chandra unavailable, falling back to EasyOCR")
         try:
             easyocr_results = self.extract_text_easyocr(image)
-
             if easyocr_results:
-                # Calculate average confidence
                 avg_confidence = sum(r.confidence for r in easyocr_results) / len(easyocr_results)
-
-                # Step 2: If confidence >= threshold, use EasyOCR
-                if avg_confidence >= self.config.chandra_confidence_threshold:
-                    logger.info(
-                        f"✅ EasyOCR confidence {avg_confidence:.2f} >= {self.config.chandra_confidence_threshold}, "
-                        f"using EasyOCR ({len(easyocr_results)} regions)"
-                    )
-                    return easyocr_results
-
-                # Step 3: Low confidence → Try Chandra endpoint
-                logger.warning(
-                    f"⚠️ EasyOCR low confidence ({avg_confidence:.2f}), trying Chandra endpoint"
+                logger.info(
+                    f"✅ EasyOCR fallback succeeded: {len(easyocr_results)} regions, "
+                    f"avg confidence {avg_confidence:.2f}"
                 )
-
-                if self.chandra_manager:
-                    try:
-                        # Convert image to PIL for Chandra
-                        if isinstance(image, np.ndarray):
-                            pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-                        else:
-                            pil_image = image
-
-                        # Call Chandra endpoint. We don't gate sync OCR through
-                        # the async slot (would require threading the event loop
-                        # into every OCR call site), but we DO report overload
-                        # signals so the Chandra gate can act on the next call.
-                        try:
-                            chandra_result = self.chandra_manager.run_inference(pil_image)
-                            from app.services.core.endpoint_controller import endpoint_controller
-                            endpoint_controller.record_success("chandra")
-                        except Exception as chandra_err:
-                            from app.services.core.endpoint_controller import endpoint_controller
-                            endpoint_controller.record_overload_exception("chandra", chandra_err)
-                            raise
-
-                        # Parse Chandra result
-                        if isinstance(chandra_result, list) and len(chandra_result) > 0:
-                            chandra_text = chandra_result[0].get('generated_text', '')
-                        elif isinstance(chandra_result, dict):
-                            chandra_text = chandra_result.get('generated_text', '')
-                        else:
-                            chandra_text = str(chandra_result)
-
-                        chandra_confidence = 0.85  # Chandra typically high quality
-
-                        # Step 4: Use whichever is better
-                        if chandra_confidence > avg_confidence and chandra_text.strip():
-                            logger.info(
-                                f"✅ Using Chandra result (conf: {chandra_confidence:.2f} > {avg_confidence:.2f})"
-                            )
-                            return [OCRResult(
-                                text=chandra_text,
-                                confidence=chandra_confidence,
-                                method='chandra'
-                            )]
-                        else:
-                            logger.info(f"Using EasyOCR result (better than Chandra)")
-                            return easyocr_results
-
-                    except Exception as e:
-                        logger.error(f"❌ Chandra endpoint failed: {e}, falling back to EasyOCR")
-                        return easyocr_results
-                else:
-                    logger.warning("Chandra endpoint not available, using EasyOCR result")
-                    return easyocr_results
-
-            # No EasyOCR results → Try Chandra
-            logger.warning("EasyOCR found no text, trying Chandra endpoint")
-            if self.chandra_manager:
-                try:
-                    if isinstance(image, np.ndarray):
-                        pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-                    else:
-                        pil_image = image
-
-                    # Report success/overload to the unified controller.
-                    try:
-                        chandra_result = self.chandra_manager.run_inference(pil_image)
-                        from app.services.core.endpoint_controller import endpoint_controller
-                        endpoint_controller.record_success("chandra")
-                    except Exception as chandra_err:
-                        from app.services.core.endpoint_controller import endpoint_controller
-                        endpoint_controller.record_overload_exception("chandra", chandra_err)
-                        raise
-
-                    if isinstance(chandra_result, list) and len(chandra_result) > 0:
-                        chandra_text = chandra_result[0].get('generated_text', '')
-                    elif isinstance(chandra_result, dict):
-                        chandra_text = chandra_result.get('generated_text', '')
-                    else:
-                        chandra_text = str(chandra_result)
-
-                    return [OCRResult(
-                        text=chandra_text,
-                        confidence=0.85,
-                        method='chandra'
-                    )]
-                except Exception as e:
-                    logger.error(f"❌ Chandra endpoint failed: {e}")
-                    return []
-
-            return []
-
+                return easyocr_results
         except Exception as e:
-            logger.error(f"EasyOCR extraction failed: {str(e)}")
-            raise
+            logger.warning(f"EasyOCR fallback failed: {e}")
+
+        # Step 3: Last resort — pytesseract
+        logger.warning("EasyOCR failed, trying pytesseract as last resort")
+        try:
+            if isinstance(image, np.ndarray):
+                pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB) if len(image.shape) == 3 else image)
+            else:
+                pil_image = image
+            text = pytesseract.image_to_string(pil_image, lang='+'.join(self.config.languages))
+            if text.strip():
+                logger.info(f"✅ Pytesseract last-resort succeeded ({len(text)} chars)")
+                return [OCRResult(text=text.strip(), confidence=0.5, method='tesseract')]
+        except Exception as e:
+            logger.error(f"Pytesseract also failed: {e}")
+
+        return []
     
     def extract_text_simple(
         self, 
@@ -552,33 +517,27 @@ class OCRService:
     def health_check(self) -> Dict[str, Any]:
         """
         Perform health check on OCR service.
-        
+
         Returns:
             Dictionary with health status and capabilities
         """
         status = {
             'initialized': self._initialized,
-            'easyocr_available': False,
+            'chandra_available': self.chandra_manager is not None,
+            'easyocr_available': self._easyocr_reader is not None,
             'tesseract_available': False,
             'languages': self.config.languages,
             'gpu_enabled': self.config.use_gpu
         }
-        
-        # Check EasyOCR
-        try:
-            if self._easyocr_reader is not None:
-                status['easyocr_available'] = True
-        except Exception:
-            pass
-        
+
         # Check Tesseract
         try:
             pytesseract.get_tesseract_version()
             status['tesseract_available'] = True
         except Exception:
             pass
-        
-        status['healthy'] = status['easyocr_available'] or status['tesseract_available']
+
+        status['healthy'] = status['chandra_available'] or status['easyocr_available'] or status['tesseract_available']
 
         return status
 

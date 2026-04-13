@@ -334,13 +334,8 @@ jobs:
           pip install --no-deps pandas==2.1.4
           pip install --no-deps scipy==1.11.4
 
-          # Step 2: PyTorch ecosystem with exact versions
-          echo 'Step 2: Installing PyTorch ecosystem...'
-          pip install --no-deps torch==2.2.2
-          pip install --no-deps torchvision==0.17.2
-
-          # Step 3: HTTP and API clients with exact versions
-          echo 'Step 3: Installing HTTP and API clients...'
+          # Step 2: HTTP and API clients with exact versions
+          echo 'Step 2: Installing HTTP and API clients...'
           pip install --no-deps httpx==0.27.0
           pip install --no-deps requests==2.31.0
           pip install --no-deps openai==1.51.0
@@ -387,23 +382,18 @@ jobs:
           pip install python-dotenv==1.0.1
           pip install python-multipart==0.0.6
           pip install python-dateutil==2.8.2
-          pip install typing-extensions==4.11.0
           pip install PyJWT==2.10.1
           pip install cryptography==41.0.7
           pip install email-validator==2.1.0
           pip install aiofiles==23.2.1
           pip install bcrypt==4.1.2
           pip install psutil==5.9.6
-          pip install tenacity==8.5.0
-          pip install matplotlib==3.7.5
           pip install nltk==3.9.1
+          # PyTorch CPU-only (~200MB instead of ~800MB with CUDA) — needed by EasyOCR fallback
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install easyocr==1.7.0
           pip install pytesseract==0.3.10
           pip install scikit-learn==1.3.2
-          pip install transformers==4.41.0
-          pip install sentence-transformers==3.0.0
-          pip install sentencepiece==0.2.1  # Required by SigLIP tokenizer for visual embeddings
-          pip install asyncio-mqtt==0.13.0
           pip install aiohttp==3.9.3
 
           echo 'All dependencies installed with exact versions - no conflicts!'
