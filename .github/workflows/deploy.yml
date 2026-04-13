@@ -847,14 +847,7 @@ jobs:
 
           # Wait for service to fully initialize (app loads ML models, circuit breakers, etc.)
           echo 'Waiting for service to initialize...'
-          for i in 1 2 3 4 5 6; do
-            sleep 5
-            if sudo systemctl is-active --quiet mivaa-pdf-extractor; then
-              echo 'Service is active after '"\$((i * 5))"'s'
-              break
-            fi
-            echo 'Still starting... '"\$((i * 5))"'s elapsed'
-          done
+          sleep 10
 
           # Check service status
           sudo systemctl status mivaa-pdf-extractor --no-pager
