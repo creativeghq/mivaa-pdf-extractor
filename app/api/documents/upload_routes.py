@@ -22,14 +22,15 @@ import aiohttp
 from app.services.core.supabase_client import get_supabase_client
 from app.orchestration import process_document_with_discovery, run_async_in_background
 from app.utils.resource_manager import get_resource_manager
+from app.schemas.api_responses import DataResponse
 
 logger = logging.getLogger(__name__)
 
 # Initialize router
-router = APIRouter(prefix="/documents", tags=["documents"])
+router = APIRouter(prefix="/documents", tags=["Documents"])
 
 
-@router.post("/upload")
+@router.post("/upload", response_model=DataResponse)
 async def upload_document(
     background_tasks: BackgroundTasks,
     file: Optional[UploadFile] = File(None, description="PDF file to upload (required unless file_url is provided)"),

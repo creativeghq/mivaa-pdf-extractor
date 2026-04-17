@@ -11,9 +11,10 @@ from pydantic import BaseModel
 import uuid
 
 from app.services.core.supabase_client import get_supabase_client
+from app.schemas.api_responses import StatusResponse, LogStatsResponse
 
 
-router = APIRouter(prefix="/api/admin/logs", tags=["admin", "logs"])
+router = APIRouter(prefix="/api/admin/logs", tags=["Admin", "Logs"])
 
 
 class LogEntry(BaseModel):
@@ -50,7 +51,7 @@ class LogsResponse(BaseModel):
     has_more: bool
 
 
-@router.post("/frontend")
+@router.post("/frontend", responses={200: {"model": StatusResponse}})
 async def log_frontend_error(log_request: FrontendLogRequest, request: Request):
     """
     Log a frontend error to the database.
@@ -177,7 +178,7 @@ async def get_logs(
         raise HTTPException(status_code=500, detail=f"Failed to fetch logs: {str(e)}")
 
 
-@router.delete("")
+@router.delete("", responses={200: {"model": StatusResponse}})
 async def clear_logs(
     hours: Optional[int] = Query(None, description="Clear logs older than N hours (if not specified, clears all)")
 ):
@@ -210,7 +211,7 @@ async def clear_logs(
         raise HTTPException(status_code=500, detail=f"Failed to clear logs: {str(e)}")
 
 
-@router.get("/stats")
+@router.get("/stats", responses={200: {"model": LogStatsResponse}})
 async def get_log_stats(
     hours: int = Query(24, description="Number of hours to analyze")
 ):

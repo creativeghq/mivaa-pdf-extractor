@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from app.services.core.supabase_client import SupabaseClient
 from app.services.search.duplicate_detection_service import DuplicateDetectionService
 from app.services.products.product_merge_service import ProductMergeService
+from app.schemas.api_responses import DuplicateDetectionResponse, StatusResponse, MergeResponse, MergeHistoryResponse
 from app.dependencies import get_supabase_client
 
 logger = logging.getLogger(__name__)
@@ -103,7 +104,7 @@ def get_merge_service(
 # API Endpoints
 # ============================================================================
 
-@router.post("/detect")
+@router.post("/detect", responses={200: {"model": DuplicateDetectionResponse}})
 async def detect_duplicates_for_product(
     request: DetectDuplicatesRequest,
     service: DuplicateDetectionService = Depends(get_duplicate_service)
@@ -142,7 +143,7 @@ async def detect_duplicates_for_product(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/batch-detect")
+@router.post("/batch-detect", responses={200: {"model": DuplicateDetectionResponse}})
 async def batch_detect_duplicates(
     request: BatchDetectRequest,
     service: DuplicateDetectionService = Depends(get_duplicate_service)
@@ -183,7 +184,7 @@ async def batch_detect_duplicates(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/cached")
+@router.get("/cached", responses={200: {"model": DuplicateDetectionResponse}})
 async def get_cached_duplicates(
     workspace_id: str,
     status: Optional[str] = None,
@@ -220,7 +221,7 @@ async def get_cached_duplicates(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/update-status")
+@router.post("/update-status", responses={200: {"model": StatusResponse}})
 async def update_duplicate_status(
     request: UpdateDuplicateStatusRequest,
     service: DuplicateDetectionService = Depends(get_duplicate_service)
@@ -254,7 +255,7 @@ async def update_duplicate_status(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/merge")
+@router.post("/merge", responses={200: {"model": MergeResponse}})
 async def merge_products(
     request: MergeProductsRequest,
     service: ProductMergeService = Depends(get_merge_service)
@@ -298,7 +299,7 @@ async def merge_products(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/undo-merge")
+@router.post("/undo-merge", responses={200: {"model": MergeResponse}})
 async def undo_merge(
     request: UndoMergeRequest,
     service: ProductMergeService = Depends(get_merge_service)
@@ -329,7 +330,7 @@ async def undo_merge(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/merge-history")
+@router.get("/merge-history", responses={200: {"model": MergeHistoryResponse}})
 async def get_merge_history(
     workspace_id: str,
     limit: int = 50,

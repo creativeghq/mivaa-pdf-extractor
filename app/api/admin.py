@@ -19,6 +19,10 @@ import os
 from pathlib import Path
 
 from app.utils.timestamp_utils import normalize_timestamp
+from app.schemas.api_responses import (
+    StatusResponse, DataResponse, SystemHealthResponse, SystemMetricsResponse,
+    CleanupResponse, PackageStatusResponse, ProductTestResponse, OCRProcessResponse,
+)
 
 from ..schemas.jobs import (
     JobResponse, JobStatusResponse, JobListResponse, JobListItem,
@@ -296,7 +300,7 @@ async def get_job_statistics():
 
 # Bulk Operations
 
-@router.get("/jobs/health")
+@router.get("/jobs/health", response_model=DataResponse)
 async def jobs_health_check():
     """
     Health check endpoint for the jobs subsystem.
@@ -371,7 +375,7 @@ async def get_job_status(
         logger.error(f"Error getting job status: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get job status: {str(e)}")
 
-@router.get("/jobs/{job_id}/status")
+@router.get("/jobs/{job_id}/status", response_model=DataResponse)
 async def get_job_status_alt(
     job_id: str,
 ):
@@ -425,7 +429,7 @@ async def get_job_status_alt(
         logger.error(f"Error getting job status: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get job status: {str(e)}")
 
-@router.delete("/jobs/{job_id}")
+@router.delete("/jobs/{job_id}", response_model=StatusResponse)
 async def cancel_job(
     job_id: str,
     cleanup: bool = Query(True, description="Clean up partial data created by the job")
@@ -532,7 +536,7 @@ async def cancel_job(
 
 # System Monitoring
 
-@router.get("/system/health")
+@router.get("/system/health", response_model=SystemHealthResponse)
 async def get_system_health(
 
 ):
@@ -630,7 +634,7 @@ async def get_system_health(
         logger.error(f"Error getting system health: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get system health: {str(e)}")
 
-@router.get("/system/metrics")
+@router.get("/system/metrics", response_model=SystemMetricsResponse)
 async def get_system_metrics():
     """
     Get detailed system performance metrics
@@ -708,7 +712,7 @@ async def get_system_metrics():
 
 # Administrative Data Management
 
-@router.delete("/data/cleanup")
+@router.delete("/data/cleanup", response_model=CleanupResponse)
 async def cleanup_old_data(
     days_old: int = Query(30, description="Delete data older than this many days"),
     dry_run: bool = Query(True, description="Preview what would be deleted without actually deleting")
@@ -754,7 +758,7 @@ async def cleanup_old_data(
         logger.error(f"Error during data cleanup: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to cleanup data: {str(e)}")
 
-@router.post("/data/backup")
+@router.post("/data/backup", response_model=CleanupResponse)
 async def create_data_backup():
     """
     Create a backup of system data
@@ -790,7 +794,7 @@ async def create_data_backup():
         logger.error(f"Error creating data backup: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to create data backup: {str(e)}")
 
-@router.get("/data/export")
+@router.get("/data/export", responses={200: {"model": CleanupResponse}})
 async def export_system_data(
     format: str = Query("json", description="Export format (json, csv)"),
     data_type: str = Query("jobs", description="Type of data to export (jobs, metrics)")
@@ -838,7 +842,7 @@ async def export_system_data(
         raise HTTPException(status_code=500, detail=f"Failed to export data: {str(e)}")
 
 
-@router.post("/system/cleanup-temp-files")
+@router.post("/system/cleanup-temp-files", response_model=CleanupResponse)
 async def cleanup_temp_files(
     max_age_hours: int = Query(24, description="Maximum age of files to keep in hours"),
     dry_run: bool = Query(True, description="Preview what would be deleted without actually deleting")
@@ -880,7 +884,7 @@ async def cleanup_temp_files(
         logger.error(f"Error during temp file cleanup: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to cleanup temp files: {str(e)}")
 
-@router.get("/packages/status")
+@router.get("/packages/status", response_model=PackageStatusResponse)
 async def get_package_status():
     """
     Get the status of all system packages and dependencies.
@@ -1002,7 +1006,7 @@ async def get_basic_package_status():
     }
 
 
-@router.get("/jobs/{job_id}/products")
+@router.get("/jobs/{job_id}/products", response_model=DataResponse)
 async def get_job_product_progress(job_id: str, supabase: SupabaseClient = Depends(get_supabase_client)):
     """
     Get product-level progress for a PDF processing job.
@@ -1093,7 +1097,7 @@ async def get_job_product_progress(job_id: str, supabase: SupabaseClient = Depen
         )
 
 
-@router.post("/test-product-creation")
+@router.post("/test-product-creation", response_model=ProductTestResponse)
 async def test_product_creation(
     document_id: str,
     workspace_id: str = None
@@ -1141,7 +1145,7 @@ async def test_product_creation(
 # PHASE 4: MANUAL OCR REPROCESSING ENDPOINT
 # ============================================================================
 
-@router.post("/admin/images/{image_id}/process-ocr")
+@router.post("/admin/images/{image_id}/process-ocr", response_model=OCRProcessResponse)
 async def reprocess_image_ocr(
     image_id: str,
     workspace_context: WorkspaceContext = Depends(get_workspace_context),

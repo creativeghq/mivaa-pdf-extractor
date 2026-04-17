@@ -37,11 +37,15 @@ import httpx
 import tempfile
 
 from app.utils.resource_manager import get_resource_manager
+from app.schemas.api_responses import (
+    StatusResponse, ListDataResponse, JobInfoResponse,
+    CheckpointListResponse, AITrackingResponse, DocumentContentResponse,
+)
 
 logger = logging.getLogger(__name__)
 
 # Initialize router
-router = APIRouter(tags=["documents"])
+router = APIRouter(tags=["Documents"])
 
 # Initialize services
 checkpoint_recovery_service = CheckpointRecoveryService()
@@ -55,7 +59,7 @@ from app.api.rag_routes import job_storage
 # Job Status and Management Endpoints
 # ============================================================================
 
-@router.get("/documents/job/{job_id}")
+@router.get("/documents/job/{job_id}", responses={200: {"model": JobInfoResponse}})
 async def get_job_status(job_id: str):
     """
     Get the status of an async document processing job with checkpoint information.
@@ -190,7 +194,7 @@ async def get_job_status(job_id: str):
     )
 
 
-@router.get("/jobs/{job_id}/checkpoints")
+@router.get("/jobs/{job_id}/checkpoints", responses={200: {"model": CheckpointListResponse}})
 async def get_job_checkpoints(job_id: str):
     """
     Get all checkpoints for a job.
@@ -217,7 +221,7 @@ async def get_job_checkpoints(job_id: str):
         )
 
 
-@router.post("/jobs/{job_id}/restart")
+@router.post("/jobs/{job_id}/restart", response_model=StatusResponse)
 async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundTasks):
     """
     Manually restart a job from its last checkpoint.
@@ -436,7 +440,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
         )
 
 
-@router.post("/documents/job/{job_id}/resume")
+@router.post("/documents/job/{job_id}/resume", response_model=StatusResponse)
 async def resume_job(job_id: str, background_tasks: BackgroundTasks):
     """
     Resume a job from its last checkpoint (alias for restart).
@@ -446,7 +450,7 @@ async def resume_job(job_id: str, background_tasks: BackgroundTasks):
     return await restart_job_from_checkpoint(job_id, background_tasks)
 
 
-@router.get("/documents/jobs")
+@router.get("/documents/jobs", responses={200: {"model": ListDataResponse}})
 async def list_jobs(
     limit: int = 10,
     offset: int = 0,
@@ -506,7 +510,7 @@ async def list_jobs(
         )
 
 
-@router.delete("/documents/jobs/{job_id}")
+@router.delete("/documents/jobs/{job_id}", response_model=StatusResponse)
 async def delete_job(job_id: str):
     """
     Delete a job and ALL its associated data.
@@ -589,7 +593,7 @@ async def delete_job(job_id: str):
 # Document Content Endpoints
 # ============================================================================
 
-@router.get("/documents/documents/{document_id}/content")
+@router.get("/documents/documents/{document_id}/content", responses={200: {"model": DocumentContentResponse}})
 async def get_document_content(
     document_id: str,
     include_chunks: bool = Query(True, description="Include document chunks"),
@@ -705,7 +709,7 @@ async def get_document_content(
 # AI Tracking Endpoints
 # ============================================================================
 
-@router.get("/job/{job_id}/ai-tracking")
+@router.get("/job/{job_id}/ai-tracking", responses={200: {"model": AITrackingResponse}})
 async def get_job_ai_tracking(job_id: str):
     """
     Get detailed AI model tracking information for a job.
@@ -755,7 +759,7 @@ async def get_job_ai_tracking(job_id: str):
         )
 
 
-@router.get("/job/{job_id}/ai-tracking/stage/{stage}")
+@router.get("/job/{job_id}/ai-tracking/stage/{stage}", responses={200: {"model": AITrackingResponse}})
 async def get_job_ai_tracking_by_stage(job_id: str, stage: str):
     """
     Get AI model tracking information for a specific processing stage.
@@ -803,7 +807,7 @@ async def get_job_ai_tracking_by_stage(job_id: str, stage: str):
         )
 
 
-@router.get("/job/{job_id}/ai-tracking/model/{model_name}")
+@router.get("/job/{job_id}/ai-tracking/model/{model_name}", responses={200: {"model": AITrackingResponse}})
 async def get_job_ai_tracking_by_model(job_id: str, model_name: str):
     """
     Get AI model tracking information for a specific AI model.

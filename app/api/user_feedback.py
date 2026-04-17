@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from ..services.core.supabase_client import get_supabase_client, SupabaseClient
 from ..services.integrations.sentiment_analysis_service import SentimentAnalysisService
+from ..schemas.api_responses import StatusResponse, ServiceHealthResponse
 from ..config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -236,7 +237,7 @@ async def get_sentiment_trends(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/{feedback_id}/helpful")
+@router.post("/{feedback_id}/helpful", responses={200: {"model": StatusResponse}})
 async def mark_feedback_helpful(
     feedback_id: str,
     supabase_client: SupabaseClient = Depends(get_supabase_client)
@@ -267,7 +268,7 @@ async def mark_feedback_helpful(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/health")
+@router.get("/health", response_model=ServiceHealthResponse)
 async def feedback_health_check() -> dict:
     """Health check endpoint for User Feedback API"""
     return {

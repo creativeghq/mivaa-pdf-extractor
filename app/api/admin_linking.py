@@ -14,7 +14,7 @@ from app.services.discovery.entity_linking_service import EntityLinkingService
 from app.services.core.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/admin/linking", tags=["admin-linking"])
+router = APIRouter(prefix="/api/admin/linking", tags=["Admin - Linking"])
 
 
 class LinkChunksToProductsRequest(BaseModel):

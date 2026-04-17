@@ -13,15 +13,19 @@ from datetime import datetime
 
 from app.services.core.supabase_client import SupabaseClient
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+from app.schemas.api_responses import KBHealthResponse
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/kb", tags=["knowledge-base"])
+router = APIRouter(prefix="/api/kb", tags=["Knowledge Base"])
 
 
 # ============================================================================
 # Request/Response Models
 # ============================================================================
+
+PRICE_DOC_TYPES = {"price_list", "discount_rule", "contract_terms", "promotion"}
+
 
 class CreateKBDocRequest(BaseModel):
     """Request model for creating a knowledge base document."""
@@ -35,6 +39,10 @@ class CreateKBDocRequest(BaseModel):
     status: str = Field(default="draft", description="Document status")
     visibility: str = Field(default="workspace", description="Document visibility")
     metadata: Optional[Dict[str, Any]] = Field(default={}, description="Custom metadata")
+    price_doc_type: Optional[str] = Field(
+        None,
+        description="Sub-type for pricing docs: price_list | discount_rule | contract_terms | promotion"
+    )
 
     class Config:
         schema_extra = {
@@ -60,6 +68,10 @@ class UpdateKBDocRequest(BaseModel):
     status: Optional[str] = Field(None, description="Document status")
     visibility: Optional[str] = Field(None, description="Document visibility")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Custom metadata")
+    price_doc_type: Optional[str] = Field(
+        None,
+        description="Sub-type for pricing docs: price_list | discount_rule | contract_terms | promotion"
+    )
 
 
 class KBDocResponse(BaseModel):
@@ -78,6 +90,7 @@ class KBDocResponse(BaseModel):
     created_at: str
     updated_at: str
     view_count: int
+    price_doc_type: Optional[str] = None
 
 
 
@@ -98,28 +111,91 @@ async def create_kb_document(
     request: CreateKBDocRequest,
     supabase_client: SupabaseClient = Depends()
 ) -> KBDocResponse:
-    """Create a new knowledge base document with embeddings."""
+    """Create a new knowledge base document with embeddings.
+
+    Upserts by (workspace_id, title, category_id): if a doc with the same title
+    and category already exists, updates it in place and re-embeds if content changed.
+    """
     try:
-        # Generate embedding
+        if request.price_doc_type is not None and request.price_doc_type not in PRICE_DOC_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid price_doc_type. Must be one of: {sorted(PRICE_DOC_TYPES)}"
+            )
+
+        existing_query = (
+            supabase_client.client.table("kb_docs")
+            .select("id, content, title, summary, category_id")
+            .eq("workspace_id", request.workspace_id)
+            .eq("title", request.title)
+        )
+        if request.category_id:
+            existing_query = existing_query.eq("category_id", request.category_id)
+        else:
+            existing_query = existing_query.is_("category_id", "null")
+        existing = existing_query.execute()
+
+        if existing.data:
+            existing_doc = existing.data[0]
+            content_changed = existing_doc.get("content") != request.content
+            update_payload: Dict[str, Any] = {
+                "content": request.content,
+                "content_markdown": request.content_markdown,
+                "summary": request.summary,
+                "category_id": request.category_id,
+                "seo_keywords": request.seo_keywords,
+                "status": request.status,
+                "visibility": request.visibility,
+                "metadata": request.metadata,
+                "price_doc_type": request.price_doc_type,
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+
+            if content_changed:
+                embeddings_service = RealEmbeddingsService()
+                embedding_result = await embeddings_service.generate_all_embeddings(
+                    entity_id="temp",
+                    entity_type="kb_doc",
+                    text_content=request.content,
+                )
+                if embedding_result.get("success"):
+                    update_payload["text_embedding"] = embedding_result.get("embeddings", {}).get("text_1024")
+                    update_payload["embedding_status"] = "success"
+                    update_payload["embedding_generated_at"] = datetime.utcnow().isoformat()
+                    update_payload["embedding_error_message"] = None
+                else:
+                    update_payload["embedding_status"] = "failed"
+                    update_payload["embedding_error_message"] = embedding_result.get("error", "Unknown error")
+
+            result = (
+                supabase_client.client.table("kb_docs")
+                .update(update_payload)
+                .eq("id", existing_doc["id"])
+                .execute()
+            )
+            if not result.data:
+                raise HTTPException(status_code=500, detail="Failed to update existing document")
+            return KBDocResponse(**result.data[0])
+
+        # Fresh insert path — generate embedding
         embeddings_service = RealEmbeddingsService()
         embedding_result = await embeddings_service.generate_all_embeddings(
             entity_id="temp",
             entity_type="kb_doc",
             text_content=request.content
         )
-        
+
         text_embedding = None
         embedding_status = "pending"
         embedding_error = None
-        
+
         if embedding_result.get("success"):
             text_embedding = embedding_result.get("embeddings", {}).get("text_1024")
             embedding_status = "success"
         else:
             embedding_error = embedding_result.get("error", "Unknown error")
             embedding_status = "failed"
-        
-        # Insert document
+
         doc_data = {
             "workspace_id": request.workspace_id,
             "title": request.title,
@@ -131,21 +207,24 @@ async def create_kb_document(
             "status": request.status,
             "visibility": request.visibility,
             "metadata": request.metadata,
+            "price_doc_type": request.price_doc_type,
             "text_embedding": text_embedding,
             "embedding_status": embedding_status,
             "embedding_model": "text-embedding-3-small",
             "embedding_generated_at": datetime.utcnow().isoformat() if embedding_status == "success" else None,
             "embedding_error_message": embedding_error
         }
-        
+
         result = supabase_client.client.table("kb_docs").insert(doc_data).execute()
-        
+
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create document")
-        
+
         doc = result.data[0]
         return KBDocResponse(**doc)
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error creating KB document: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -207,6 +286,12 @@ async def update_kb_document(
             request.category_id and request.category_id != current_doc.get("category_id")
         )
 
+        if request.price_doc_type is not None and request.price_doc_type not in PRICE_DOC_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid price_doc_type. Must be one of: {sorted(PRICE_DOC_TYPES)}"
+            )
+
         update_data = {}
         if request.title:
             update_data["title"] = request.title
@@ -229,6 +314,8 @@ async def update_kb_document(
             meta = {k: v for k, v in request.metadata.items() if k != "force_regenerate"}
             if meta:
                 update_data["metadata"] = meta
+        if request.price_doc_type is not None:
+            update_data["price_doc_type"] = request.price_doc_type
 
         # Regenerate embedding if content changed, embedding is missing, or explicitly forced
         if content_changed or embedding_missing or force_regenerate:
@@ -517,6 +604,23 @@ class SearchKBRequest(BaseModel):
     query: str = Field(..., description="Search query", min_length=1)
     search_type: str = Field(default="semantic", description="Search type: semantic, full_text, or hybrid")
     limit: int = Field(default=20, description="Maximum number of results", ge=1, le=100)
+    category_id: Optional[str] = Field(None, description="Restrict search to a single category UUID")
+    category_slug: Optional[str] = Field(None, description="Restrict search to a category by slug (e.g. 'pricing')")
+    price_doc_type: Optional[str] = Field(
+        None,
+        description="Restrict to pricing sub-type: price_list | discount_rule | contract_terms | promotion"
+    )
+    allowed_access_levels: Optional[List[str]] = Field(
+        None,
+        description="Overrides category access gating. Defaults to admin+agent+public."
+    )
+    require_published: bool = Field(
+        default=False,
+        description="When true, only published docs are returned (semantic only). "
+                    "Default False preserves admin management search behavior — "
+                    "agent-facing search should pass True explicitly."
+    )
+    match_threshold: float = Field(default=0.5, description="Minimum similarity for semantic search", ge=0.0, le=1.0)
 
 
 class SearchKBDocResult(BaseModel):
@@ -527,6 +631,8 @@ class SearchKBDocResult(BaseModel):
     content: str
     summary: Optional[str] = None
     category_id: Optional[str] = None
+    category_slug: Optional[str] = None
+    category_name: Optional[str] = None
     status: str
     visibility: str
     embedding_status: str
@@ -535,6 +641,7 @@ class SearchKBDocResult(BaseModel):
     created_at: str
     updated_at: str
     view_count: int
+    price_doc_type: Optional[str] = None
     similarity: Optional[float] = None  # Only for semantic search
 
 
@@ -632,29 +739,44 @@ async def search_kb_documents(
                 )
 
             # Perform vector similarity search
-            response = supabase_client.client.rpc(
-                'kb_match_docs',
-                {
-                    'query_embedding': query_embedding,
-                    'match_workspace_id': request.workspace_id,
-                    'match_threshold': 0.5,
-                    'match_count': request.limit
-                }
-            ).execute()
+            rpc_args: Dict[str, Any] = {
+                'query_embedding': query_embedding,
+                'match_workspace_id': request.workspace_id,
+                'match_threshold': request.match_threshold,
+                'match_count': request.limit,
+                'require_published': request.require_published,
+            }
+            if request.allowed_access_levels:
+                rpc_args['allowed_access_levels'] = request.allowed_access_levels
+            if request.category_id:
+                rpc_args['match_category_id'] = request.category_id
+            if request.category_slug:
+                rpc_args['match_category_slug'] = request.category_slug
+            if request.price_doc_type:
+                rpc_args['match_price_doc_type'] = request.price_doc_type
+
+            response = supabase_client.client.rpc('kb_match_docs', rpc_args).execute()
 
             raw_results = response.data if response.data else []
 
         else:
             # Use the kb_search_docs RPC function for full-text and hybrid
-            response = supabase_client.client.rpc(
-                'kb_search_docs',
-                {
-                    'search_query': request.query,
-                    'search_workspace_id': request.workspace_id,
-                    'search_type': request.search_type,
-                    'result_limit': request.limit
-                }
-            ).execute()
+            rpc_args = {
+                'search_query': request.query,
+                'search_workspace_id': request.workspace_id,
+                'search_type': request.search_type,
+                'result_limit': request.limit,
+            }
+            if request.allowed_access_levels:
+                rpc_args['allowed_access_levels'] = request.allowed_access_levels
+            if request.category_id:
+                rpc_args['match_category_id'] = request.category_id
+            if request.category_slug:
+                rpc_args['match_category_slug'] = request.category_slug
+            if request.price_doc_type:
+                rpc_args['match_price_doc_type'] = request.price_doc_type
+
+            response = supabase_client.client.rpc('kb_search_docs', rpc_args).execute()
 
             raw_results = response.data if response.data else []
 
@@ -673,6 +795,8 @@ async def search_kb_documents(
                     'content': raw_doc.get('content', ''),
                     'summary': raw_doc.get('summary'),
                     'category_id': raw_doc.get('category_id'),
+                    'category_slug': raw_doc.get('category_slug'),
+                    'category_name': raw_doc.get('category_name'),
                     'status': raw_doc.get('status', 'draft'),
                     'visibility': raw_doc.get('visibility', 'workspace'),
                     'embedding_status': raw_doc.get('embedding_status', 'pending'),
@@ -681,6 +805,7 @@ async def search_kb_documents(
                     'created_at': raw_doc.get('created_at', datetime.now().isoformat()),
                     'updated_at': raw_doc.get('updated_at', datetime.now().isoformat()),
                     'view_count': raw_doc.get('view_count', 0),
+                    'price_doc_type': raw_doc.get('price_doc_type'),
                     'similarity': raw_doc.get('similarity')  # Only present in semantic search
                 }
                 validated_results.append(SearchKBDocResult(**doc_data))
@@ -704,7 +829,7 @@ async def search_kb_documents(
         )
 
 
-@router.get("/health")
+@router.get("/health", response_model=KBHealthResponse)
 async def kb_health_check() -> Dict[str, Any]:
     """Health check endpoint for Knowledge Base API."""
     return {

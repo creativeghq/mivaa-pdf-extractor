@@ -42,6 +42,11 @@ from app.utils.timeout_guard import with_timeout, TimeoutConstants, TimeoutError
 from app.utils.circuit_breaker import claude_breaker, vision_breaker, clip_breaker, CircuitBreakerError
 from app.utils.memory_monitor import memory_monitor
 from app.utils.resource_manager import get_resource_manager
+from app.schemas.api_responses import (
+    StatusResponse, DataResponse, ListDataResponse, JobInfoResponse,
+    CheckpointListResponse, RelevancyListResponse, StatsResponse,
+    AITrackingResponse, StuckJobsResponse, DocumentContentResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -350,7 +355,7 @@ async def get_embedding_service() -> RealEmbeddingsService:
 # CONSOLIDATED UPLOAD ENDPOINT - Replaces all upload endpoints
 # ============================================================================
 
-@router.post("/documents/upload")
+@router.post("/documents/upload", response_model=DataResponse)
 async def upload_document(
     background_tasks: BackgroundTasks,
     file: Optional[UploadFile] = File(None, description="PDF file to upload (required unless file_url is provided)"),
@@ -880,7 +885,7 @@ async def upload_document(
         )
 
 
-@router.get("/documents/job/{job_id}")
+@router.get("/documents/job/{job_id}", responses={200: {"model": JobInfoResponse}})
 async def get_job_status(job_id: str):
     """
     Get the status of an async document processing job with checkpoint information.
@@ -1015,7 +1020,7 @@ async def get_job_status(job_id: str):
     )
 
 
-@router.get("/jobs/{job_id}/checkpoints")
+@router.get("/jobs/{job_id}/checkpoints", responses={200: {"model": CheckpointListResponse}})
 async def get_job_checkpoints(job_id: str):
     """
     Get all checkpoints for a job.
@@ -1042,7 +1047,7 @@ async def get_job_checkpoints(job_id: str):
         )
 
 
-@router.post("/jobs/{job_id}/restart")
+@router.post("/jobs/{job_id}/restart", response_model=StatusResponse)
 async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundTasks):
     """
     Manually restart a job from its last checkpoint.
@@ -1264,7 +1269,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
         )
 
 
-@router.post("/documents/job/{job_id}/resume")
+@router.post("/documents/job/{job_id}/resume", response_model=StatusResponse)
 async def resume_job(job_id: str, background_tasks: BackgroundTasks):
     """
     Resume a job from its last checkpoint (alias for restart).
@@ -1274,7 +1279,7 @@ async def resume_job(job_id: str, background_tasks: BackgroundTasks):
     return await restart_job_from_checkpoint(job_id, background_tasks)
 
 
-@router.post("/documents/{document_id}/reprocess")
+@router.post("/documents/{document_id}/reprocess", response_model=DataResponse)
 async def reprocess_document(
     document_id: str,
     background_tasks: BackgroundTasks,
@@ -1452,7 +1457,7 @@ async def reprocess_document(
         )
 
 
-@router.get("/documents/jobs")
+@router.get("/documents/jobs", responses={200: {"model": ListDataResponse}})
 async def list_jobs(
     limit: int = 10,
     offset: int = 0,
@@ -1512,7 +1517,7 @@ async def list_jobs(
         )
 
 
-@router.delete("/documents/jobs/{job_id}")
+@router.delete("/documents/jobs/{job_id}", response_model=StatusResponse)
 async def delete_job(job_id: str):
     """
     Delete a job and ALL its associated data.
@@ -1590,7 +1595,7 @@ async def delete_job(job_id: str):
         )
 
 
-@router.get("/chunks")
+@router.get("/chunks", responses={200: {"model": ListDataResponse}})
 async def get_chunks(
     document_id: Optional[str] = Query(None, description="Filter by document ID"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of chunks to return"),
@@ -1653,7 +1658,7 @@ async def get_chunks(
         )
 
 
-@router.get("/images")
+@router.get("/images", responses={200: {"model": ListDataResponse}})
 async def get_images(
     document_id: Optional[str] = Query(None, description="Filter by document ID"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of images to return"),
@@ -1704,7 +1709,7 @@ async def get_images(
         )
 
 
-@router.get("/products")
+@router.get("/products", responses={200: {"model": ListDataResponse}})
 async def get_products(
     document_id: Optional[str] = Query(None, description="Filter by document ID"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of products to return"),
@@ -1778,7 +1783,7 @@ async def get_products(
         )
 
 
-@router.get("/embeddings")
+@router.get("/embeddings", responses={200: {"model": ListDataResponse}})
 async def get_embeddings(
     document_id: Optional[str] = Query(None, description="Filter by document ID"),
     embedding_type: Optional[str] = Query(None, description="Filter by embedding type (text, visual, color, texture, style, material, understanding)"),
@@ -1897,7 +1902,7 @@ async def get_embeddings(
         )
 
 
-@router.get("/relevancies")
+@router.get("/relevancies", responses={200: {"model": RelevancyListResponse}})
 async def get_relevancies(
     document_id: Optional[str] = Query(None, description="Filter by document ID"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of relevancies to return"),
@@ -4068,7 +4073,7 @@ async def search_documents(
             detail=f"Search processing failed: {str(e)}"
         )
 
-@router.get("/documents/documents/{document_id}/content")
+@router.get("/documents/documents/{document_id}/content", responses={200: {"model": DocumentContentResponse}})
 async def get_document_content(
     document_id: str,
     include_chunks: bool = Query(True, description="Include document chunks"),
@@ -4229,7 +4234,7 @@ async def rag_health_check(
             timestamp=datetime.utcnow().isoformat()
         )
 
-@router.get("/stats")
+@router.get("/stats", responses={200: {"model": StatsResponse}})
 async def get_rag_statistics(
     rag_service: RAGService = Depends(get_rag_service)
 ):
@@ -4277,7 +4282,7 @@ async def get_rag_statistics(
             detail=f"Statistics retrieval failed: {str(e)}"
         )
 
-@router.get("/workspace-stats")
+@router.get("/workspace-stats", responses={200: {"model": StatsResponse}})
 async def get_workspace_statistics(
     workspace_id: str,
     supabase: SupabaseClient = Depends(get_supabase_client)
@@ -4359,7 +4364,7 @@ async def get_workspace_statistics(
 
 
 
-@router.get("/job/{job_id}/ai-tracking")
+@router.get("/job/{job_id}/ai-tracking", responses={200: {"model": AITrackingResponse}})
 async def get_job_ai_tracking(job_id: str):
     """
     Get detailed AI model tracking information for a job.
@@ -4409,7 +4414,7 @@ async def get_job_ai_tracking(job_id: str):
         )
 
 
-@router.get("/job/{job_id}/ai-tracking/stage/{stage}")
+@router.get("/job/{job_id}/ai-tracking/stage/{stage}", responses={200: {"model": AITrackingResponse}})
 async def get_job_ai_tracking_by_stage(job_id: str, stage: str):
     """
     Get AI model tracking information for a specific processing stage.
@@ -4457,7 +4462,7 @@ async def get_job_ai_tracking_by_stage(job_id: str, stage: str):
         )
 
 
-@router.get("/job/{job_id}/ai-tracking/model/{model_name}")
+@router.get("/job/{job_id}/ai-tracking/model/{model_name}", responses={200: {"model": AITrackingResponse}})
 async def get_job_ai_tracking_by_model(job_id: str, model_name: str):
     """
     Get AI model tracking information for a specific AI model.
@@ -4531,7 +4536,7 @@ async def get_job_ai_tracking_by_model(job_id: str, model_name: str):
         )
 
 
-@router.get("/admin/stuck-jobs/analyze/{job_id}")
+@router.get("/admin/stuck-jobs/analyze/{job_id}", responses={200: {"model": StuckJobsResponse}})
 async def analyze_stuck_job(job_id: str):
     """
     Analyze a stuck job to determine root cause and get recommendations.
@@ -4554,7 +4559,7 @@ async def analyze_stuck_job(job_id: str):
         )
 
 
-@router.get("/admin/stuck-jobs/statistics")
+@router.get("/admin/stuck-jobs/statistics", responses={200: {"model": StuckJobsResponse}})
 async def get_stuck_job_statistics():
     """
     Get overall statistics about stuck jobs.
@@ -4601,6 +4606,18 @@ class KnowledgeBaseSearchRequest(BaseModel):
     caller: str = Field(
         default="agent",
         description="Caller context: 'admin' (all levels), 'agent' (agent+public), 'public' (public only)"
+    )
+    category_id: Optional[str] = Field(
+        default=None,
+        description="Restrict kb_docs search to a single category UUID"
+    )
+    category_slug: Optional[str] = Field(
+        default=None,
+        description="Restrict kb_docs search to a category by slug (e.g. 'pricing')"
+    )
+    price_doc_type: Optional[str] = Field(
+        default=None,
+        description="Restrict to pricing sub-type: price_list | discount_rule | contract_terms | promotion"
     )
 
 
@@ -4865,16 +4882,21 @@ async def search_knowledge_base(
                 if embedding_result.get("success"):
                     query_embedding = embedding_result.get("embeddings", {}).get("text_1024")
                     if query_embedding:
-                        kb_response = supabase.client.rpc(
-                            "kb_match_docs",
-                            {
-                                "query_embedding": query_embedding,
-                                "match_workspace_id": request.workspace_id,
-                                "match_threshold": 0.5,
-                                "match_count": request.top_k * 2,  # fetch extra, will post-filter
-                                "allowed_access_levels": allowed_access_levels,
-                            }
-                        ).execute()
+                        rpc_args: Dict[str, Any] = {
+                            "query_embedding": query_embedding,
+                            "match_workspace_id": request.workspace_id,
+                            "match_threshold": 0.5,
+                            "match_count": request.top_k * 2,  # fetch extra, will post-filter
+                            "allowed_access_levels": allowed_access_levels,
+                        }
+                        if request.category_id:
+                            rpc_args["match_category_id"] = request.category_id
+                        if request.category_slug:
+                            rpc_args["match_category_slug"] = request.category_slug
+                        if request.price_doc_type:
+                            rpc_args["match_price_doc_type"] = request.price_doc_type
+
+                        kb_response = supabase.client.rpc("kb_match_docs", rpc_args).execute()
 
                         if kb_response.data:
                             kb_count = 0
@@ -4892,6 +4914,9 @@ async def search_knowledge_base(
                                     "content": (doc.get("content") or "")[:800],
                                     "document_title": doc.get("title"),
                                     "category": cat_id,
+                                    "category_slug": doc.get("category_slug"),
+                                    "category_name": doc.get("category_name"),
+                                    "price_doc_type": doc.get("price_doc_type"),
                                     "metadata": {"source": "kb_docs", "visibility": doc.get("visibility")},
                                     "relevance_score": doc.get("similarity", 0.0),
                                     "type": "kb_doc",

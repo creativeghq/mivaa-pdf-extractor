@@ -14,9 +14,13 @@ import logging
 from datetime import datetime
 
 from app.services.core.supabase_client import get_supabase_client
+from app.schemas.api_responses import (
+    PerformanceMetricsResponse, ServiceHealthResponse,
+    StorageEstimateResponse, PDFHealthResponse,
+)
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/monitoring", tags=["monitoring"])
+router = APIRouter(prefix="/api/monitoring", tags=["Monitoring"])
 
 
 # Tables to monitor
@@ -106,7 +110,7 @@ async def get_bucket_stats(bucket_name: str) -> Dict[str, Any]:
 
 @router.get(
     "/supabase-status",
-    response_model=Dict[str, Any],
+    response_model=PerformanceMetricsResponse,
     summary="Get comprehensive Supabase resource usage and health status",
     description="""
     Monitor all Supabase resources including database, storage, and usage limits.
@@ -192,7 +196,7 @@ async def get_bucket_stats(bucket_name: str) -> Dict[str, Any]:
     - 200: Success
     - 500: Failed to retrieve status (check logs)
     """,
-    tags=["monitoring"],
+    tags=["Monitoring"],
     responses={
         200: {"description": "Comprehensive resource status"},
         500: {"description": "Failed to retrieve status"}
@@ -300,7 +304,7 @@ async def get_supabase_status() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Failed to get Supabase status: {str(e)}")
 
 
-@router.get("/health")
+@router.get("/health", response_model=ServiceHealthResponse)
 async def health_check() -> Dict[str, Any]:
     """
     Quick health check for monitoring systems.
@@ -358,7 +362,7 @@ async def health_check() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Health check failed: {str(e)}")
 
 
-@router.get("/storage-estimate")
+@router.get("/storage-estimate", response_model=StorageEstimateResponse)
 async def estimate_storage_for_upload(
     file_size_mb: float,
     estimated_images: int = 50
@@ -409,7 +413,7 @@ async def estimate_storage_for_upload(
         raise HTTPException(status_code=500, detail=f"Failed to estimate storage: {str(e)}")
 
 
-@router.get("/pdf/health", tags=["health"])
+@router.get("/pdf/health", tags=["Health & Monitoring"], response_model=PDFHealthResponse)
 async def pdf_health():
     """
     PDF service health check endpoint.

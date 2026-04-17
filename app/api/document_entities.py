@@ -22,7 +22,7 @@ from app.services.core.supabase_client import SupabaseClient
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/document-entities", tags=["document-entities"])
+router = APIRouter(prefix="/api/document-entities", tags=["Document Entities"])
 
 
 # ============================================================================

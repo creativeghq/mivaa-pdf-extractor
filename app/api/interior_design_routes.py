@@ -16,8 +16,9 @@ import uuid
 import io
 from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations.credits_integration_service import get_credits_service
+from app.schemas.api_responses import InteriorDesignResponse
 
-router = APIRouter(prefix="/api", tags=["interior-design"])
+router = APIRouter(prefix="/api", tags=["Interior Design"])
 
 # Room type → readable English name
 _ROOM_NAMES: dict = {
@@ -586,7 +587,7 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
         }).eq('id', job_id).execute()
 
 
-@router.post("/interior")
+@router.post("/interior", responses={200: {"model": InteriorDesignResponse}})
 async def create_interior_design(request: InteriorRequest):
     """
     Generate interior design images using multiple AI models.

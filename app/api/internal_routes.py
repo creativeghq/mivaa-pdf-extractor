@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api/internal",
-    tags=["Internal Pipeline Stages"],
+    tags=["Internal Pipeline"],
     responses={
         500: {"description": "Internal server error"},
         404: {"description": "Job not found"}

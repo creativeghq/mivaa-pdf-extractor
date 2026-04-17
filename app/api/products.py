@@ -13,10 +13,11 @@ from pydantic import BaseModel, Field
 
 from app.services.products.product_creation_service import ProductCreationService
 from app.services.core.supabase_client import SupabaseClient
+from app.schemas.api_responses import ServiceHealthResponse
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/products", tags=["products"])
+router = APIRouter(prefix="/api/products", tags=["Products"])
 
 
 # ============================================================================
@@ -158,7 +159,7 @@ class ProductCreationResponse(BaseModel):
     **Rate Limits:**
     - 5 requests/minute (processing intensive)
     """,
-    tags=["products"],
+    tags=["Products"],
     responses={
         200: {"description": "Products created successfully"},
         400: {"description": "Invalid request parameters"},
@@ -445,7 +446,7 @@ async def batch_categorize_products(request: BatchCategorizeRequest) -> BatchCat
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/health")
+@router.get("/health", response_model=ServiceHealthResponse)
 async def products_health_check() -> Dict[str, Any]:
     """
     Health check endpoint for the products API.

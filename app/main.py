@@ -923,63 +923,41 @@ Get your token from the frontend application or Supabase authentication.
         docs_url="/docs",  # Always enable docs
         redoc_url=None,  # Disable default ReDoc (we'll create custom one with stable CDN)
         openapi_tags=[
-            {
-                "name": "Knowledge Base",
-                "description": "📚 **NEW v2.3.0** Knowledge Base & Documentation System - Document management with AI embeddings (1024D Voyage AI), semantic search, PDF text extraction, category hierarchy, product attachments, version history, and comments. Smart embedding regeneration on content changes."
-            },
-            {
-                "name": "PDF Processing",
-                "description": "📄 Advanced PDF extraction using PyMuPDF4LLM - Extract markdown, tables, and images from PDF documents with 14-stage processing pipeline"
-            },
-            {
-                "name": "RAG",
-                "description": "🧠 **CONSOLIDATED** Retrieval-Augmented Generation - Single `/upload` endpoint with modes (quick/standard/deep) + categories (products/certificates/logos/specifications). Single `/search` endpoint with 6 strategies. Prompt enhancement preserved."
-            },
-            {
-                "name": "AI Analysis",
-                "description": "🤖 Multi-modal AI analysis - Vision models (Qwen3-VL-8B default) for material recognition, entity extraction, and semantic understanding"
-            },
-            {
-                "name": "Search",
-                "description": "🔍 **ALL 6 STRATEGIES IMPLEMENTED** - Single `/api/rag/search?strategy={strategy}` endpoint with complete multi-strategy search system (100% complete). Strategies: semantic (<150ms), vector (<100ms), multi_vector (<200ms - RECOMMENDED), hybrid (<180ms), material (<50ms), image (<150ms). 85-95% accuracy across strategies."
-            },
-            {
-                "name": "Embeddings",
-                "description": "🔗 Multi-vector embedding generation - 7 embedding types (text 1024D Voyage AI, visual 768D SLIG, understanding 1024D, color 768D, texture 768D, style 768D, material 768D) for comprehensive material understanding"
-            },
-            {
-                "name": "Chat",
-                "description": "💬 AI chat interface - Contextual chat completions, conversation history, and intelligent material assistance"
-            },
-            {
-                "name": "Products",
-                "description": "📦 Product management - Two-stage AI classification (Claude Haiku 4.5 + Sonnet 4.5), product enrichment, and metadata extraction with 60% performance improvement"
-            },
-            {
-                "name": "Admin",
-                "description": "👨‍💼 Admin operations - Chunk quality dashboard, quality statistics, flagged chunks review, and metadata management for platform administrators"
-            },
-
-            {
-                "name": "Anthropic Claude",
-                "description": "🎨 Anthropic Claude integration - Image validation and product enrichment using Claude Haiku 4.5 (fast classification) and Claude Sonnet 4.5 (deep enrichment)"
-            },
-            {
-                "name": "HuggingFace Endpoint",
-                "description": "🤗 HuggingFace Endpoint integration - Qwen3-VL-32B vision model for advanced image analysis and material recognition"
-            },
-            {
-                "name": "Images",
-                "description": "🖼️ Image processing - Extract, analyze, and generate embeddings for images with CLIP and vision models"
-            },
-            {
-                "name": "Health & Monitoring",
-                "description": "🏥 **ENHANCED v2.4.0** System Health & Monitoring - Comprehensive health checks with database connection pool monitoring, job monitor status, query performance metrics (avg/max/slow queries), circuit breaker status, and real-time system health. Includes retry logic with exponential backoff and circuit breaker pattern for resilience. Endpoints: `/health/` (basic), `/health/detailed` (full status), `/health/database`, `/health/job-monitor`, `/health/metrics`, `/health/circuit-breakers`"
-            },
-            {
-                "name": "price-monitoring",
-                "description": "💰 **NEW v2.5.0** Price Monitoring with Firecrawl - Competitor price tracking with on-demand and scheduled monitoring. Features: Multi-source scraping (5-10 competitors), price history tracking, price alerts (drop/increase/change), statistics & trends, credit-based usage (1 credit/scrape), unified AI analytics. Supports hourly/daily/weekly schedules. Factory & Store roles only."
-            }
+            {"name": "RAG", "description": "Retrieval-Augmented Generation - Document upload (quick/standard/deep modes), 6-strategy search, prompt enhancement, job management, chunk/image/product/embedding/relevancy listing, workspace stats, and AI tracking."},
+            {"name": "Documents", "description": "Document lifecycle management - Job status polling, checkpoint inspection, restart/resume, content retrieval, and AI tracking per stage/model."},
+            {"name": "Search", "description": "Multi-strategy search - Strategies: semantic, vector, multi_vector (recommended), hybrid, material, image. 85-95% accuracy, <200ms latency."},
+            {"name": "Search Suggestions", "description": "Search UX helpers - Auto-complete, trending searches, typo correction, query expansion, popular searches, and personalized suggestions."},
+            {"name": "Embeddings", "description": "Multi-vector embedding generation - 7 types: text (1024D Voyage AI), visual (768D SLIG), understanding (1024D), color/texture/style/material (768D each)."},
+            {"name": "Chat", "description": "AI chat interface - Contextual completions, conversation history, and intelligent material assistance."},
+            {"name": "Products", "description": "Product management - Two-stage AI classification (Claude Haiku 4.5 + Sonnet 4.5), enrichment, metadata extraction, and product creation from chunks."},
+            {"name": "Image Analysis", "description": "Image processing - Extraction, analysis, embedding generation, OCR, reclassification, and segmentation for material images."},
+            {"name": "Knowledge Base", "description": "Documentation system - CRUD documents with AI embeddings (1024D Voyage AI), semantic search, category hierarchy, product attachments, version history, and comments."},
+            {"name": "Saved Searches", "description": "Saved search management - Create, list, execute, and delete saved searches with AI-powered deduplication."},
+            {"name": "Duplicate Detection", "description": "Product duplicate detection - Single and batch detection, merge/undo operations, status tracking, and merge history (same-factory scope)."},
+            {"name": "Anthropic Claude", "description": "Claude integration - Image validation and product enrichment using Claude Haiku 4.5 (fast) and Sonnet 4.5 (deep)."},
+            {"name": "Interior Design", "description": "Interior design generation - AI-powered room renders with streaming progress feedback."},
+            {"name": "Price Monitoring", "description": "Competitor price tracking - On-demand and scheduled monitoring via Firecrawl. Price history, alerts (drop/increase/change), statistics, source management. 1 credit/scrape."},
+            {"name": "Data Import", "description": "Batch data import - XML and web-scraping sources with job tracking, processing history, and health checks."},
+            {"name": "Web Scraping", "description": "Web scraping sessions - Firecrawl-powered session management for product catalog ingestion."},
+            {"name": "Category Prototypes", "description": "Category prototype management - CRUD prototypes for material validation, population from existing data, and schema verification."},
+            {"name": "Document Entities", "description": "Entity extraction - List, search, and manage entities extracted from documents with relationship mapping."},
+            {"name": "Background Agents", "description": "Long-running AI task delegation - Agent catalog, run status, and task management for background processing."},
+            {"name": "User Feedback", "description": "User feedback system - Submit feedback with AI-powered sentiment analysis (aspect-based), trend tracking, and analytics."},
+            {"name": "Segmentation", "description": "SAM mask generation - Segment Anything Model for material region detection and inpainting masks."},
+            {"name": "Health & Monitoring", "description": "System health - Basic and detailed health checks, database pool status, job monitor, query metrics, circuit breakers, and PDF processor health."},
+            {"name": "Monitoring", "description": "Performance monitoring - Metrics dashboard, storage estimates, and PDF processing health."},
+            {"name": "Job Health", "description": "Job health monitoring - Dashboard overview, stuck job detection, per-job diagnostics with heartbeat tracking."},
+            {"name": "AI Metrics", "description": "AI usage analytics - Token consumption, cost tracking, and per-job AI metrics across all models."},
+            {"name": "AI Services", "description": "AI service endpoints - Document classification, boundary detection, product grouping/validation, consensus validation, escalation stats, and service health."},
+            {"name": "Admin", "description": "Admin operations - System management, job control, data cleanup/backup/export, package status, and restart protection."},
+            {"name": "Admin - Prompts", "description": "Prompt management - CRUD extraction prompts, version history, and prompt testing for AI pipeline stages."},
+            {"name": "Admin - Config", "description": "Extraction configuration - Manage field extraction configs per document category."},
+            {"name": "Admin - Prompt Templates", "description": "Prompt templates - Customizable AI prompt templates for different industries and use cases."},
+            {"name": "Admin - Linking", "description": "Entity linking - Manual chunk-product relationship management for debugging and quality assurance."},
+            {"name": "Chunk Quality", "description": "Chunk quality metrics - Quality dashboard, flagged content review, and content quality scoring."},
+            {"name": "Logs", "description": "System logs - Fetch, filter, clear application logs. Frontend error reporting endpoint."},
+            {"name": "WebSocket", "description": "Real-time updates - WebSocket endpoint for job progress streaming and system health notifications."},
+            {"name": "Internal Pipeline", "description": "Internal modular endpoints for the 14-stage PDF processing pipeline. Not for external consumption."},
         ],
         contact={
             "name": "MIVAA Team",
@@ -996,7 +974,7 @@ Get your token from the frontend application or Supabase authentication.
                 "description": "Development server"
             },
             {
-                "url": "https://your-domain.com",
+                "url": "https://mivaa.materialshub.gr",
                 "description": "Production server"
             }
         ],

@@ -14,6 +14,11 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 import logging
 
+from app.schemas.api_responses import (
+    DataResponse, ClassificationResponse, BatchClassificationResponse,
+    BoundaryDetectionResponse, ProductGroupingResponse, ValidationResponse,
+    EscalationStatsResponse, ServiceHealthResponse,
+)
 from app.services.ai_validation.document_classifier import DocumentClassifier
 from app.services.ai_validation.boundary_detector import BoundaryDetector
 from app.services.products.product_validator import ProductValidator
@@ -77,6 +82,7 @@ class ConsensusValidateRequest(BaseModel):
 
 @router.post(
     "/classify-document",
+    response_model=ClassificationResponse,
     summary="Classify document content into semantic categories",
     description="""
     AI-powered content classification using Claude 4.5 Haiku for fast, accurate categorization.
@@ -196,7 +202,7 @@ async def classify_document(request: ClassifyRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/classify-batch")
+@router.post("/classify-batch", response_model=BatchClassificationResponse)
 async def classify_batch(request: ClassifyBatchRequest):
     """
     Classify multiple document contents in parallel.
@@ -226,7 +232,7 @@ async def classify_batch(request: ClassifyBatchRequest):
 # BOUNDARY DETECTION ENDPOINTS
 # ============================================================================
 
-@router.post("/detect-boundaries")
+@router.post("/detect-boundaries", response_model=BoundaryDetectionResponse)
 async def detect_boundaries(request: DetectBoundariesRequest):
     """
     Detect product boundaries in document chunks.
@@ -251,7 +257,7 @@ async def detect_boundaries(request: DetectBoundariesRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/group-by-product")
+@router.post("/group-by-product", response_model=ProductGroupingResponse)
 async def group_by_product(request: DetectBoundariesRequest):
     """
     Detect boundaries and group chunks into products.
@@ -287,7 +293,7 @@ async def group_by_product(request: DetectBoundariesRequest):
 # PRODUCT VALIDATION ENDPOINTS
 # ============================================================================
 
-@router.post("/validate-product")
+@router.post("/validate-product", response_model=ValidationResponse)
 async def validate_product(request: ValidateProductRequest):
     """
     Validate product extraction quality.
@@ -320,7 +326,7 @@ async def validate_product(request: ValidateProductRequest):
 # CONSENSUS VALIDATION ENDPOINTS
 # ============================================================================
 
-@router.post("/consensus-validate")
+@router.post("/consensus-validate", response_model=ValidationResponse)
 async def consensus_validate(request: ConsensusValidateRequest):
     """
     Validate extraction using multi-model consensus.
@@ -353,7 +359,7 @@ async def consensus_validate(request: ConsensusValidateRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/consensus/is-critical/{task_type}")
+@router.get("/consensus/is-critical/{task_type}", response_model=DataResponse)
 async def check_if_critical(task_type: str):
     """
     Check if a task type requires consensus validation.
@@ -374,7 +380,7 @@ async def check_if_critical(task_type: str):
 # ESCALATION METRICS ENDPOINTS
 # ============================================================================
 
-@router.get("/escalation/stats")
+@router.get("/escalation/stats", response_model=EscalationStatsResponse)
 async def get_escalation_stats():
     """
     Get escalation engine statistics.
@@ -397,7 +403,7 @@ async def get_escalation_stats():
 # ENHANCED PDF PROCESSING ENDPOINT
 # ============================================================================
 
-@router.post("/process-pdf-enhanced")
+@router.post("/process-pdf-enhanced", response_model=DataResponse)
 async def process_pdf_enhanced(
     document_id: str,
     job_id: Optional[str] = None,
@@ -432,7 +438,7 @@ async def process_pdf_enhanced(
 # HEALTH CHECK
 # ============================================================================
 
-@router.get("/health")
+@router.get("/health", response_model=ServiceHealthResponse)
 async def health_check():
     """Health check for AI services."""
     return {

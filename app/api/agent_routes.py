@@ -22,10 +22,11 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Header
 from pydantic import BaseModel, Field
 
 from app.services.core.supabase_client import get_supabase_client
+from app.schemas.api_responses import AgentCatalogResponse, DataResponse
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/agents", tags=["background-agents"])
+router = APIRouter(prefix="/api/agents", tags=["Background Agents"])
 
 
 # ── Request / Response models ────────────────────────────────────────────────
@@ -71,12 +72,12 @@ AGENT_CATALOG = [
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
-@router.get("/catalog")
+@router.get("/catalog", responses={200: {"model": AgentCatalogResponse}})
 async def get_catalog():
     return {"catalog": AGENT_CATALOG}
 
 
-@router.get("/runs/{run_id}")
+@router.get("/runs/{run_id}", responses={200: {"model": DataResponse}})
 async def get_run_status(run_id: str):
     supabase = get_supabase_client()
     result = supabase.table("agent_runs").select("*").eq("id", run_id).single().execute()
@@ -152,6 +153,15 @@ async def _execute_agent(req: AgentRunRequest) -> None:
              f"Agent completed in {duration_ms}ms",
              {"output": result.get("output", {})})
 
+    except AgentCancelled:
+        duration_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
+        supabase.table("agent_runs").update({
+            "status":       "cancelled",
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "duration_ms":  duration_ms,
+        }).eq("id", req.run_id).execute()
+        _log(supabase, req.run_id, "warn", "Agent run cancelled by admin")
+
     except Exception as exc:
         logger.exception("Background agent '%s' failed: %s", req.agent_type, exc)
         duration_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
@@ -168,10 +178,28 @@ async def _execute_agent(req: AgentRunRequest) -> None:
 
 # ── Heartbeat helper ─────────────────────────────────────────────────────────
 
+class AgentCancelled(Exception):
+    """Raised by _heartbeat when the run has been cancelled out-of-band."""
+    pass
+
+
 def _heartbeat(supabase, run_id: str) -> None:
-    supabase.table("agent_runs").update({
-        "last_heartbeat": datetime.now(timezone.utc).isoformat()
-    }).eq("id", run_id).execute()
+    """Bump last_heartbeat; raise AgentCancelled if admin cancelled the run.
+
+    Long batch handlers call this every few items so an admin-cancel from the
+    dashboard actually stops work instead of burning credits to the end.
+    """
+    (supabase.table("agent_runs")
+     .update({"last_heartbeat": datetime.now(timezone.utc).isoformat()})
+     .eq("id", run_id)
+     .execute())
+    status_resp = (supabase.table("agent_runs")
+                   .select("status")
+                   .eq("id", run_id)
+                   .single()
+                   .execute())
+    if (status_resp.data or {}).get("status") == "cancelled":
+        raise AgentCancelled(f"Run {run_id} was cancelled")
 
 
 def _log(supabase, run_id: str, level: str, message: str, data: Optional[Dict] = None) -> None:

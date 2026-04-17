@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from ..services.embeddings.real_embeddings_service import RealEmbeddingsService
 from ..services.core.supabase_client import get_supabase_client
+from ..schemas.api_responses import EmbeddingHealthResponse
 from ..config import get_settings
 
 # Configure logging
@@ -313,7 +314,7 @@ async def generate_clip_text_embedding(
         )
 
 
-@router.get("/health")
+@router.get("/health", response_model=EmbeddingHealthResponse)
 async def health_check():
     """Health check endpoint for embeddings service."""
     try:

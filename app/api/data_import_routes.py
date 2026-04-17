@@ -15,10 +15,11 @@ from datetime import datetime
 
 from app.services.integrations.data_import_service import DataImportService
 from app.services.core.supabase_client import get_supabase_client
+from app.schemas.api_responses import ImportProcessResponse, ImportHistoryListResponse, ServiceHealthResponse
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/import", tags=["data-import"])
+router = APIRouter(prefix="/api/import", tags=["Data Import"])
 
 
 # ============================================================================
@@ -73,7 +74,7 @@ class ImportHistoryResponse(BaseModel):
 # API Endpoints
 # ============================================================================
 
-@router.post("/process")
+@router.post("/process", response_model=ImportProcessResponse)
 async def process_import_job(
     request: ProcessImportRequest,
     background_tasks: BackgroundTasks
@@ -178,7 +179,7 @@ async def get_import_job_status(job_id: str) -> ImportJobStatus:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/history")
+@router.get("/history", response_model=ImportHistoryListResponse)
 async def get_import_history(
     workspace_id: str = Query(..., description="Workspace ID"),
     page: int = Query(1, ge=1, description="Page number"),
@@ -246,7 +247,7 @@ async def get_import_history(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/health")
+@router.get("/health", response_model=ServiceHealthResponse)
 async def import_health_check() -> Dict[str, Any]:
     """
     Health check endpoint for the data import API.

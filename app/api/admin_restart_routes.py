@@ -14,7 +14,7 @@ from app.services.core.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/admin", tags=["admin"])
+router = APIRouter(prefix="/api/admin", tags=["Admin"])
 
 
 class RestartRequest(BaseModel):

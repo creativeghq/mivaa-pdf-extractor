@@ -18,7 +18,7 @@ from app.services.core.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/scraping", tags=["web-scraping"])
+router = APIRouter(prefix="/api/scraping", tags=["Web Scraping"])
 
 
 # ============================================================================
@@ -62,7 +62,7 @@ class ProcessSessionResponse(BaseModel):
 # API Endpoints
 # ============================================================================
 
-@router.post("/process-session")
+@router.post("/process-session", response_model=ProcessSessionResponse)
 async def process_scraping_session(
     request: ProcessSessionRequest,
     background_tasks: BackgroundTasks
@@ -139,7 +139,7 @@ async def process_scraping_session(
         raise HTTPException(status_code=500, detail=f"Failed to start session processing: {str(e)}")
 
 
-@router.get("/session/{session_id}/status")
+@router.get("/session/{session_id}/status", response_model=SessionStatusResponse)
 async def get_session_status(
     session_id: str = Path(..., description="Scraping session ID")
 ) -> SessionStatusResponse:
@@ -178,7 +178,7 @@ async def get_session_status(
         raise HTTPException(status_code=500, detail=f"Failed to get session status: {str(e)}")
 
 
-@router.post("/session/{session_id}/retry")
+@router.post("/session/{session_id}/retry", response_model=ProcessSessionResponse)
 async def retry_session_processing(
     session_id: str = Path(..., description="Scraping session ID"),
     background_tasks: BackgroundTasks = None

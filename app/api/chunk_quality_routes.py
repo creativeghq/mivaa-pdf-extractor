@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.services.core.supabase_client import get_supabase_client, SupabaseClient
+from app.schemas.api_responses import FlagReviewResponse
 
 logger = logging.getLogger(__name__)
 
@@ -353,7 +354,7 @@ async def get_flagged_chunks(
         raise HTTPException(status_code=500, detail=f"Failed to fetch flagged chunks: {str(e)}")
 
 
-@router.post("/flagged/{flag_id}/review")
+@router.post("/flagged/{flag_id}/review", responses={200: {"model": FlagReviewResponse}})
 async def review_flagged_chunk(
     flag_id: str,
     action: str,

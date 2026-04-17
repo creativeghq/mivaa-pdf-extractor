@@ -7,6 +7,7 @@ Endpoints for populating and managing material category prototypes
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import List, Dict, Optional, Any
+from app.schemas.api_responses import PrototypeVerifyResponse
 import numpy as np
 from datetime import datetime
 import logging
@@ -184,7 +185,7 @@ async def populate_category_prototypes(background_tasks: BackgroundTasks):
     )
 
 
-@router.get("/verify")
+@router.get("/verify", responses={200: {"model": PrototypeVerifyResponse}})
 async def verify_prototypes():
     """
     Verify that prototypes were populated correctly

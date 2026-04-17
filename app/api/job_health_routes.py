@@ -18,12 +18,15 @@ from app.services.core.supabase_client import get_supabase_client
 from app.services.tracking.job_monitor_service import job_monitor_service
 from app.services.tracking.stuck_job_analyzer import stuck_job_analyzer
 from app.utils.timestamp_utils import normalize_timestamp
+from app.schemas.api_responses import (
+    JobDashboardResponse, StuckJobListResponse, JobDiagnosticsResponse,
+)
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/job-health", tags=["job-health"])
+router = APIRouter(prefix="/api/job-health", tags=["Job Health"])
 
 
-@router.get("/dashboard")
+@router.get("/dashboard", response_model=JobDashboardResponse)
 async def get_job_health_dashboard() -> Dict[str, Any]:
     """
     Get comprehensive job health dashboard data.
@@ -128,7 +131,7 @@ async def get_job_health_dashboard() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/stuck-jobs")
+@router.get("/stuck-jobs", response_model=StuckJobListResponse)
 async def get_stuck_jobs() -> Dict[str, Any]:
     """Get all currently stuck jobs with analysis."""
     try:
@@ -146,7 +149,7 @@ async def get_stuck_jobs() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/job/{job_id}")
+@router.get("/job/{job_id}", response_model=JobDiagnosticsResponse)
 async def get_job_details(job_id: str) -> Dict[str, Any]:
     """Get detailed information about a specific job."""
     try:

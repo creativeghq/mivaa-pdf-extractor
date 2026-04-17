@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from app.services.utilities.prompt_template_service import PromptTemplateService
 from app.dependencies import get_current_user
+from app.schemas.api_responses import StatusResponse
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +197,7 @@ async def update_prompt_template(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/{template_id}")
+@router.delete("/{template_id}", response_model=StatusResponse)
 async def delete_prompt_template(
     template_id: str,
     workspace_id: str,

@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from ..services.core.supabase_client import get_supabase_client, SupabaseClient
+from app.schemas.api_responses import DataResponse
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -395,6 +396,7 @@ async def get_ai_metrics_summary(
 
 @router.get(
     "/external-service-usage",
+    response_model=DataResponse,
     summary="Get external service usage and credit consumption",
     description="Returns usage, cost, and credit data for external services (Twilio, Apollo, Hunter, ZeroBounce, Firecrawl) from ai_usage_logs.",
 )
@@ -504,7 +506,7 @@ async def get_external_service_usage(
         )
 
 
-@router.get("/job/{job_id}")
+@router.get("/job/{job_id}", response_model=DataResponse)
 async def get_job_ai_metrics(
     job_id: str,
     supabase: SupabaseClient = Depends(get_supabase_client)

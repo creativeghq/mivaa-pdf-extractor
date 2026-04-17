@@ -19,12 +19,17 @@ from app.services.integrations.price_monitoring_service import get_price_monitor
 from app.services.core.supabase_client import get_supabase_client
 from app.dependencies import get_current_user, get_workspace_context
 from app.middleware.jwt_auth import User, WorkspaceContext
+from app.schemas.api_responses import (
+    StatusResponse, DataResponse, MonitoringActionResponse,
+    PriceHistoryResponse, PriceStatisticsResponse,
+    PriceSourceResponse, PriceAlertResponse, PriceJobsResponse,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api/v1/price-monitoring",
-    tags=["price-monitoring"],
+    tags=["Price Monitoring"],
     responses={
         401: {"description": "Unauthorized"},
         403: {"description": "Forbidden"},
@@ -89,7 +94,7 @@ class CreatePriceAlertRequest(BaseModel):
 # MONITORING ENDPOINTS
 # ============================================================================
 
-@router.post("/start")
+@router.post("/start", response_model=MonitoringActionResponse)
 async def start_monitoring(
     request: StartMonitoringRequest,
     user: User = Depends(get_current_user),
@@ -131,7 +136,7 @@ async def start_monitoring(
         )
 
 
-@router.post("/stop")
+@router.post("/stop", response_model=MonitoringActionResponse)
 async def stop_monitoring(
     product_id: str = Query(..., description="Product UUID"),
     user: User = Depends(get_current_user)
@@ -166,7 +171,7 @@ async def stop_monitoring(
         )
 
 
-@router.post("/check-now")
+@router.post("/check-now", response_model=MonitoringActionResponse)
 async def check_prices_now(
     request: CheckPricesRequest,
     user: User = Depends(get_current_user),
@@ -211,7 +216,7 @@ async def check_prices_now(
         )
 
 
-@router.get("/status/{product_id}")
+@router.get("/status/{product_id}", response_model=DataResponse)
 async def get_monitoring_status(
     product_id: str,
     user: User = Depends(get_current_user)
@@ -250,7 +255,7 @@ async def get_monitoring_status(
 # PRICE HISTORY ENDPOINTS
 # ============================================================================
 
-@router.get("/history/{product_id}")
+@router.get("/history/{product_id}", response_model=PriceHistoryResponse)
 async def get_price_history(
     product_id: str,
     limit: int = Query(default=50, ge=1, le=500),
@@ -288,7 +293,7 @@ async def get_price_history(
         )
 
 
-@router.get("/statistics/{product_id}")
+@router.get("/statistics/{product_id}", response_model=PriceStatisticsResponse)
 async def get_price_statistics(
     product_id: str,
     user: User = Depends(get_current_user)
@@ -320,7 +325,7 @@ async def get_price_statistics(
 # COMPETITOR SOURCES ENDPOINTS
 # ============================================================================
 
-@router.post("/sources")
+@router.post("/sources", response_model=PriceSourceResponse)
 async def add_competitor_source(
     request: AddCompetitorSourceRequest,
     user: User = Depends(get_current_user)
@@ -361,7 +366,7 @@ async def add_competitor_source(
         )
 
 
-@router.get("/sources/{product_id}")
+@router.get("/sources/{product_id}", response_model=PriceSourceResponse)
 async def get_competitor_sources(
     product_id: str,
     user: User = Depends(get_current_user)
@@ -390,7 +395,7 @@ async def get_competitor_sources(
         )
 
 
-@router.delete("/sources/{source_id}")
+@router.delete("/sources/{source_id}", response_model=StatusResponse)
 async def delete_competitor_source(
     source_id: str,
     user: User = Depends(get_current_user)
@@ -422,7 +427,7 @@ async def delete_competitor_source(
 # PRICE ALERTS ENDPOINTS
 # ============================================================================
 
-@router.post("/alerts")
+@router.post("/alerts", response_model=PriceAlertResponse)
 async def create_price_alert(
     request: CreatePriceAlertRequest,
     user: User = Depends(get_current_user)
@@ -464,7 +469,7 @@ async def create_price_alert(
         )
 
 
-@router.get("/alerts/{product_id}")
+@router.get("/alerts/{product_id}", response_model=PriceAlertResponse)
 async def get_price_alerts(
     product_id: str,
     user: User = Depends(get_current_user)
@@ -493,7 +498,7 @@ async def get_price_alerts(
         )
 
 
-@router.delete("/alerts/{alert_id}")
+@router.delete("/alerts/{alert_id}", response_model=StatusResponse)
 async def delete_price_alert(
     alert_id: str,
     user: User = Depends(get_current_user)
@@ -525,7 +530,7 @@ async def delete_price_alert(
 # JOB MONITORING ENDPOINTS
 # ============================================================================
 
-@router.get("/jobs/{product_id}")
+@router.get("/jobs/{product_id}", response_model=PriceJobsResponse)
 async def get_monitoring_jobs(
     product_id: str,
     limit: int = Query(default=20, ge=1, le=100),

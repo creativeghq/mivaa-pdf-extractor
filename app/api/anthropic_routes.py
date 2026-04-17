@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from ..services.core.supabase_client import get_supabase_client, SupabaseClient
 from ..services.core.ai_call_logger import AICallLogger
+from ..schemas.api_responses import DataResponse
 from ..config import get_settings
 import anthropic
 
@@ -377,7 +378,7 @@ Focus on:
 # Test Endpoints
 # ============================================================================
 
-@router.post("/test/claude-integration")
+@router.post("/test/claude-integration", responses={200: {"model": DataResponse}})
 async def test_claude_integration(supabase: SupabaseClient = Depends(get_supabase_client)):
     """Test Claude Vision API integration."""
     ai_logger = AICallLogger(supabase)

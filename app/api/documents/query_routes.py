@@ -25,7 +25,7 @@ from app.services.search.search_prompt_service import SearchPromptService
 logger = logging.getLogger(__name__)
 
 # Initialize router
-router = APIRouter(tags=["documents"])
+router = APIRouter(tags=["Documents"])
 
 
 # ============================================================================
