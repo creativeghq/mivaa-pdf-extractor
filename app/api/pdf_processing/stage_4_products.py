@@ -222,7 +222,7 @@ Respond with exactly: {{"material_category": "...", "zone_intent": "..."}}"""
                     "content-type": "application/json",
                 },
                 json={
-                    "model": "claude-haiku-4-5-20251001",
+                    "model": "claude-haiku-4-5",
                     "max_tokens": 64,
                     "messages": [{"role": "user", "content": prompt}],
                 },

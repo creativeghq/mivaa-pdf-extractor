@@ -159,7 +159,7 @@ class ImageProcessingService:
         extracted_images: List[Dict[str, Any]],
         confidence_threshold: float = 0.6,  # OPTIMIZED: Lowered from 0.7 to reduce validation calls
         primary_model: str = "Qwen/Qwen3-VL-32B-Instruct",  # PRIMARY: Qwen3-VL-32B (reliable, high accuracy)
-        validation_model: str = "claude-sonnet-4-6",  # FALLBACK: Claude Sonnet 4.5 (highest quality)
+        validation_model: str = "claude-sonnet-4-7",  # FALLBACK: Claude Sonnet 4.5 (highest quality)
         batch_size: int = 15,  # NEW: Process images in batches to prevent OOM
         job_id: Optional[str] = None  # NEW: Job ID for AI cost tracking
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -168,7 +168,7 @@ class ImageProcessingService:
 
         SUPPORTED MODELS:
         - Qwen/Qwen3-VL-32B-Instruct: PRIMARY - High accuracy, reliable ($0.50/1M input, $1.50/1M output)
-        - claude-sonnet-4-6: FALLBACK - Highest quality vision model (for failures/low confidence)
+        - claude-sonnet-4-7: FALLBACK - Highest quality vision model (for failures/low confidence)
 
         MEMORY OPTIMIZATIONS:
         - Processes images in batches (default: 15) to prevent OOM crashes
@@ -461,20 +461,22 @@ class ImageProcessingService:
                     'usage': {'prompt_tokens': input_tokens, 'completion_tokens': output_tokens}
                 }
 
-                await ai_logger.log_qwen_call(
+                # Qwen runs on a HuggingFace endpoint (time-based GPU billing).
+                # log_qwen_call uses token-based math which records $0 for these
+                # endpoints. log_time_based_call computes cost from latency × $/hr.
+                await ai_logger.log_time_based_call(
                     task="image_classification",
                     model=model_short,
-                    response=response_dict,
                     latency_ms=latency_ms,
                     confidence_score=result.get('confidence', 0.5),
                     confidence_breakdown={
                         "model_confidence": result.get('confidence', 0.5),
                         "completeness": 1.0,
                         "consistency": 0.95,
-                        "validation": 0.90
+                        "validation": 0.90,
                     },
                     action="use_ai_result",
-                    job_id=job_id  # Track cost per job
+                    job_id=job_id,
                 )
 
                 # Determine is_material using category mapping
@@ -562,8 +564,10 @@ class ImageProcessingService:
                     logger.error(f"❌ {error_msg}")
                     raise ValueError(error_msg)
 
-                response = await ai_service.anthropic_async.messages.create(
-                    model="claude-sonnet-4-6",
+                from app.services.core.claude_helper import tracked_claude_call_async
+                response = await tracked_claude_call_async(
+                    task="image_classification_vision",
+                    model="claude-sonnet-4-7",
                     max_tokens=1024,
                     messages=[{
                         "role": "user",
@@ -571,7 +575,7 @@ class ImageProcessingService:
                             {"type": "image", "source": {"type": "base64", "media_type": detected_media_type, "data": image_base64}},
                             {"type": "text", "text": classification_prompt}
                         ]
-                    }]
+                    }],
                 )
 
                 # Diagnose the "Expecting value: line 1 column 1 (char 0)" bug — that
@@ -1177,7 +1181,7 @@ class ImageProcessingService:
     #   1. Try Qwen3-VL via the warmed-up endpoint, with N retries on
     #      transient (5xx / connection) failures.
     #   2. If Qwen returns nothing parseable after retries, fall back to
-    #      Claude Sonnet 4.6 which is highly reliable for strict JSON.
+    #      Claude Sonnet 4.7 which is highly reliable for strict JSON.
     #   3. Parse the response into a dict, validate against the expected
     #      schema, and return None if both providers failed.
     #
@@ -1470,7 +1474,7 @@ class ImageProcessingService:
         image_id: str,
     ) -> Optional[Dict[str, Any]]:
         """
-        Fallback path: call Claude Sonnet 4.6 with the same prompt when
+        Fallback path: call Claude Sonnet 4.7 with the same prompt when
         Qwen has failed. Claude is more reliable for strict JSON output
         and acts as a safety net so we don't lose the understanding
         embedding for an image just because Qwen had a bad day.
@@ -1517,14 +1521,22 @@ class ImageProcessingService:
             ]
 
             kwargs = {
-                "model": "claude-sonnet-4-6",
+                "model": "claude-sonnet-4-7",
                 "max_tokens": 1024,
                 "messages": [{"role": "user", "content": content}],
             }
             if self.material_analyzer_system_prompt:
                 kwargs["system"] = self.material_analyzer_system_prompt
 
-            response = await ai_service.anthropic_async.messages.create(**kwargs)
+            # Wrap into helper signature; helper rebuilds the api kwargs internally
+            from app.services.core.claude_helper import tracked_claude_call_async
+            response = await tracked_claude_call_async(
+                task="image_material_analysis_fallback",
+                model=kwargs["model"],
+                max_tokens=kwargs["max_tokens"],
+                messages=kwargs["messages"],
+                system=kwargs.get("system"),
+            )
 
             # Anthropic SDK returns a list of content blocks; concatenate
             # any text blocks.
@@ -1566,7 +1578,7 @@ class ImageProcessingService:
 
         Strategy:
           1. Try Qwen3-VL (warm endpoint, with retries) — primary path.
-          2. On failure, fall back to Claude Sonnet 4.6 — secondary path.
+          2. On failure, fall back to Claude Sonnet 4.7 — secondary path.
           3. If both fail, return (None, FAILED) so the caller can record
              the failure in job-level stats and the image gets all other
              vectors except `understanding_1024`.
@@ -1710,7 +1722,7 @@ class ImageProcessingService:
                     image_base64_raw = base64.b64encode(image_bytes).decode('utf-8')
                     image_base64_data = f"data:image/jpeg;base64,{image_base64_raw}"
 
-                # Run rich material analysis (Qwen3-VL primary, Claude Sonnet 4.6
+                # Run rich material analysis (Qwen3-VL primary, Claude Sonnet 4.7
                 # fallback) to produce the structured `vision_analysis` JSON. This
                 # is the input the Voyage understanding embedding consumes — without
                 # it, the 1024D understanding branch is skipped and we lose the 7th

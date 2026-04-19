@@ -472,9 +472,10 @@ async def generate_inpainting_prompt(request: GeneratePromptRequest) -> Generate
         "Max 80 words. Return only the prompt text."
     )
 
-    client = anthropic.Anthropic(api_key=api_key)
-    message = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+    from app.services.core.claude_helper import tracked_claude_call
+    message = tracked_claude_call(
+        task="sam_inpainting_prompt_generation",
+        model="claude-haiku-4-5",
         max_tokens=200,
         messages=[{"role": "user", "content": user_message}],
     )

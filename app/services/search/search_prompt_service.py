@@ -27,7 +27,7 @@ class SearchPromptService:
     ENRICHMENT = "enrichment"
 
     # Haiku — cheap and fast for search augmentation tasks
-    _MODEL = "claude-haiku-4-5-20251001"
+    _MODEL = "claude-haiku-4-5"
 
     def __init__(self, supabase_client):
         self.supabase = supabase_client
@@ -306,7 +306,9 @@ class SearchPromptService:
     async def _apply_llm_enhancement(self, query: str, prompt_text: str) -> str:
         """Expand/rewrite the search query using an admin-configured prompt."""
         try:
-            response = await self._ai.anthropic_async.messages.create(
+            from app.services.core.claude_helper import tracked_claude_call_async
+            response = await tracked_claude_call_async(
+                task="search_prompt_enhancement",
                 model=self._MODEL,
                 max_tokens=256,
                 messages=[{
@@ -316,7 +318,7 @@ class SearchPromptService:
                         f"Search query: {query}\n\n"
                         "Return ONLY the enhanced query text, nothing else."
                     )
-                }]
+                }],
             )
             enhanced = response.content[0].text.strip()
             logger.info(f"LLM enhanced query: '{query}' -> '{enhanced}'")
@@ -339,7 +341,9 @@ class SearchPromptService:
                 {"index": i, "id": r.get("id", i), "name": r.get("name", ""), "score": r.get("score", 0)}
                 for i, r in enumerate(results)
             ]
-            response = await self._ai.anthropic_async.messages.create(
+            from app.services.core.claude_helper import tracked_claude_call_async
+            response = await tracked_claude_call_async(
+                task="search_prompt_formatting",
                 model=self._MODEL,
                 max_tokens=512,
                 messages=[{
@@ -350,7 +354,7 @@ class SearchPromptService:
                         "Return a JSON array of the original index values in the preferred order. "
                         "Example: [2, 0, 1]. Return ONLY the JSON array."
                     )
-                }]
+                }],
             )
             raw = response.content[0].text.strip()
             order = json.loads(raw)
@@ -378,7 +382,9 @@ class SearchPromptService:
                  "metadata": r.get("metadata", {})}
                 for i, r in enumerate(results)
             ]
-            response = await self._ai.anthropic_async.messages.create(
+            from app.services.core.claude_helper import tracked_claude_call_async
+            response = await tracked_claude_call_async(
+                task="search_prompt_filtering",
                 model=self._MODEL,
                 max_tokens=512,
                 messages=[{
@@ -389,7 +395,7 @@ class SearchPromptService:
                         "Return a JSON array of the index values that PASS the filter. "
                         "Example: [0, 2]. Return ONLY the JSON array."
                     )
-                }]
+                }],
             )
             raw = response.content[0].text.strip()
             keep = json.loads(raw)
@@ -420,7 +426,9 @@ class SearchPromptService:
                      "description": r.get("description", ""), "metadata": r.get("metadata", {})}
                     for i, r in enumerate(batch)
                 ]
-                response = await self._ai.anthropic_async.messages.create(
+                from app.services.core.claude_helper import tracked_claude_call_async
+                response = await tracked_claude_call_async(
+                    task="search_prompt_enrichment",
                     model=self._MODEL,
                     max_tokens=1024,
                     messages=[{
@@ -433,7 +441,7 @@ class SearchPromptService:
                             "Example: [{\"index\": 0, \"enrichment\": {\"ai_summary\": \"...\"}}]. "
                             "Return ONLY the JSON array."
                         )
-                    }]
+                    }],
                 )
                 raw = response.content[0].text.strip()
                 enrichments = json.loads(raw)

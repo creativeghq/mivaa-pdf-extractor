@@ -218,14 +218,15 @@ class AdminPromptService:
         try:
             start_time = datetime.utcnow()
 
-            ai = get_ai_client_service()
-            response = await ai.anthropic_async.messages.create(
-                model="claude-haiku-4-5-20251001",
+            from app.services.core.claude_helper import tracked_claude_call_async
+            response = await tracked_claude_call_async(
+                task="admin_prompt_test",
+                model="claude-haiku-4-5",
                 max_tokens=1024,
                 messages=[{
                     "role": "user",
-                    "content": f"{prompt_template}\n\nContent to process:\n{test_content}"
-                }]
+                    "content": f"{prompt_template}\n\nContent to process:\n{test_content}",
+                }],
             )
 
             end_time = datetime.utcnow()

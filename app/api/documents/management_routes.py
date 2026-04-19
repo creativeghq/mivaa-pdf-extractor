@@ -380,7 +380,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
 
             # Extract parameters from job metadata (works for both legacy and discovery jobs)
             job_metadata = job_data.get('metadata', {})
-            discovery_model = job_metadata.get('discovery_model', 'claude-sonnet-4.5')
+            discovery_model = job_metadata.get('discovery_model', 'claude-sonnet-4-7')
             categories = job_metadata.get('categories', ['products'])
             enable_prompt_enhancement = job_metadata.get('prompt_enhancement_enabled', False)
             agent_prompt = job_metadata.get('agent_prompt')

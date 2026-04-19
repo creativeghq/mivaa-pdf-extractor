@@ -42,7 +42,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 # Haiku 4.5 is plenty capable for ceramic tile spec extraction and 10x cheaper
 # than Sonnet. If results are weak on a specific catalog, we can override via
 # env var without changing code.
-CLAUDE_VISION_MODEL = os.getenv("PRODUCT_SPEC_VISION_MODEL", "claude-haiku-4-5-20251001")
+CLAUDE_VISION_MODEL = os.getenv("PRODUCT_SPEC_VISION_MODEL", "claude-haiku-4-5")
 
 # Render DPI for PDF pages. 280 is high enough for the technical-characteristics
 # icon strip (slip resistance / PEI / water absorption glyphs are ~20-30 px tall
@@ -332,8 +332,9 @@ def _call_claude_vision(png_bytes: bytes, prompt: Optional[str] = None) -> Optio
     )
 
     try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        resp = client.messages.create(
+        from app.services.core.claude_helper import tracked_claude_call
+        resp = tracked_claude_call(
+            task="product_spec_vision_extraction",
             model=CLAUDE_VISION_MODEL,
             max_tokens=3000,
             messages=[{

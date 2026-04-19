@@ -319,6 +319,8 @@ async def generate_with_replicate(model: dict, prompt: str, width: int, height: 
                     prediction_payload = {"input": input_data}
                     url = f"https://api.replicate.com/v1/models/{model_name}/predictions"
 
+                _replicate_start = asyncio.get_event_loop().time()
+
                 # Create prediction
                 response = await client.post(
                     url,
@@ -350,6 +352,20 @@ async def generate_with_replicate(model: dict, prompt: str, width: int, height: 
                         if result["status"] == "succeeded":
                             # Extract image URL
                             output = result.get("output")
+                            # Track per-generation cost (model-specific Replicate pricing)
+                            try:
+                                from app.services.core.ai_call_logger import AICallLogger
+                                _replicate_latency_ms = int((asyncio.get_event_loop().time() - _replicate_start) * 1000)
+                                _model_key = (model_name.split("/")[-1] if model_name else model.get("name", "replicate-unknown"))
+                                await AICallLogger().log_replicate_call(
+                                    task="interior_design_generation",
+                                    model=_model_key,
+                                    latency_ms=_replicate_latency_ms,
+                                    confidence_score=0.9,
+                                )
+                            except Exception as _log_err:
+                                print(f"⚠️ Replicate logging failed (non-fatal): {_log_err}")
+
                             if isinstance(output, list):
                                 return output[0]
                             return output

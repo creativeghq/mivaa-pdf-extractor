@@ -310,7 +310,7 @@ class DynamicMetadataExtractor:
         Initialize extractor.
 
         Args:
-            model: AI model to use - supports "claude", "claude-vision", "claude-haiku-vision", "gpt", "gpt-vision"
+            model: AI model family — supports "claude", "claude-vision", "claude-haiku-vision"
             job_id: Optional job ID for AI call logging
             workspace_id: Workspace ID for loading custom prompts from database
         """
@@ -322,11 +322,8 @@ class DynamicMetadataExtractor:
         self.ai_logger = AICallLogger()
         self.supabase = get_supabase_client()
 
-        # Check API keys based on model family (claude/gpt)
-        if "claude" in model.lower() and not ANTHROPIC_API_KEY:
+        if not ANTHROPIC_API_KEY:
             raise ValueError("ANTHROPIC_API_KEY not set - cannot use Claude")
-        if "gpt" in model.lower() and not OPENAI_API_KEY:
-            raise ValueError("OPENAI_API_KEY not set - cannot use GPT")
 
     async def _load_prompt_from_database(self, stage: str = "entity_creation", category: str = "products") -> Optional[str]:
         """
@@ -556,11 +553,8 @@ class DynamicMetadataExtractor:
                 self.logger.error(f"❌ {error_msg}")
                 raise ValueError(error_msg)
 
-            # Step 2: Call AI model based on model family
-            if "claude" in self.model.lower():
-                ai_response = await self._call_claude(prompt)
-            else:
-                ai_response = await self._call_gpt(prompt)
+            # Step 2: Always use Claude for metadata extraction
+            ai_response = await self._call_claude(prompt)
 
             extracted_data = self._parse_ai_response(ai_response)
 
@@ -652,7 +646,7 @@ class DynamicMetadataExtractor:
             return self._get_empty_result(error=str(e))
     
     async def _call_claude(self, prompt: str) -> str:
-        """Call Claude Sonnet 4.5 for metadata extraction."""
+        """Call Claude Sonnet 4.7 for metadata extraction."""
         start_time = datetime.now()
 
         try:
@@ -661,7 +655,7 @@ class DynamicMetadataExtractor:
             client = ai_service.anthropic
 
             response = client.messages.create(
-                model="claude-sonnet-4-5",
+                model="claude-sonnet-4-7",
                 max_tokens=16000,
                 temperature=0.1,  # Low temperature for consistent extraction
                 messages=[
@@ -678,7 +672,7 @@ class DynamicMetadataExtractor:
             latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
             await self.ai_logger.log_claude_call(
                 task="dynamic_metadata_extraction",
-                model="claude-sonnet-4-5",
+                model="claude-sonnet-4-7",
                 response=response,
                 latency_ms=latency_ms,
                 confidence_score=0.9,
@@ -693,65 +687,6 @@ class DynamicMetadataExtractor:
             self.logger.error(f"Claude metadata extraction failed: {e}")
             raise RuntimeError(f"Claude metadata extraction failed: {str(e)}") from e
 
-    async def _call_gpt(self, prompt: str) -> str:
-        """Call GPT-5.2 for metadata extraction."""
-        start_time = datetime.now()
-
-        try:
-            # Use centralized AI client service
-            ai_service = get_ai_client_service()
-            client = ai_service.openai
-
-            response = client.chat.completions.create(
-                model="gpt-5.2",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert at extracting structured metadata from product specifications. Always respond with valid JSON."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                temperature=0.1,
-                max_tokens=16000
-            )
-
-            content = response.choices[0].message.content
-
-            # Log AI call
-            latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-
-            # Calculate cost
-            input_cost = (response.usage.prompt_tokens / 1_000_000) * 7.00  # GPT-5.2 pricing
-            output_cost = (response.usage.completion_tokens / 1_000_000) * 21.00
-            total_cost = input_cost + output_cost
-
-            await self.ai_logger.log_ai_call(
-                task="dynamic_metadata_extraction",
-                model="gpt-5.2",
-                input_tokens=response.usage.prompt_tokens,
-                output_tokens=response.usage.completion_tokens,
-                cost=total_cost,
-                latency_ms=latency_ms,
-                confidence_score=0.9,
-                confidence_breakdown={
-                    "model_confidence": 0.9,
-                    "completeness": 0.9,
-                    "consistency": 0.9,
-                    "validation": 0.9
-                },
-                action="use_ai_result",
-                job_id=self.job_id
-            )
-
-            return content
-
-        except Exception as e:
-            self.logger.error(f"GPT metadata extraction failed: {e}")
-            raise RuntimeError(f"GPT metadata extraction failed: {str(e)}") from e
-    
     def _parse_ai_response(self, response: str) -> Dict[str, Any]:
         """Parse AI JSON response.
 
@@ -1143,11 +1078,12 @@ Analyze now:"""
 
     async def _call_ai(self, prompt: str) -> str:
         """Call AI service for scope detection."""
-        ai_service = get_ai_client_service()
-        response = await ai_service.anthropic_async.messages.create(
-            model="claude-haiku-4-5-20251001",
+        from app.services.core.claude_helper import tracked_claude_call_async
+        response = await tracked_claude_call_async(
+            task="metadata_scope_detection",
+            model="claude-haiku-4-5",
             max_tokens=512,
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{"role": "user", "content": prompt}],
         )
         return response.content[0].text
 

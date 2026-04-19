@@ -769,11 +769,11 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 - **Agentic Queries**: Factory/group filtering for certificates, logos, specifications
 
 ### AI Models
-1. **Voyage AI**: voyage-3.5 (1024D text embeddings), GPT-4o-mini (query understanding)
+1. **Voyage AI**: voyage-4 (1024D text embeddings), GPT-4o-mini (query understanding)
 2. **Anthropic**: Claude Haiku 4.5 (fast classification), Claude Sonnet 4.5 (deep enrichment)
 3. **HuggingFace Endpoint**: Qwen3-VL-32B-Instruct (vision analysis)
 4. **SigLIP2**: 5 specialized visual embeddings (visual, color, texture, style, material) - 768D each
-5. **Voyage AI**: voyage-3.5 (text + understanding embeddings, 1024D)
+5. **Voyage AI**: voyage-4 (text + understanding embeddings, 1024D)
 
 ### API Endpoints
 - **Total**: 125+ endpoints across 16 categories (18 legacy endpoints removed)
@@ -1287,16 +1287,17 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
             else:
                 # Actually test the API with a minimal request
                 try:
-                    from anthropic import Anthropic
-                    client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+                    from app.services.core.claude_helper import tracked_claude_call
                     start_time = time.time()
 
-                    # Minimal test: just check if we can authenticate
-                    # Using a very small request to minimize cost
-                    response = client.messages.create(
-                        model="claude-haiku-4-5-20251001",  # Cheapest model
+                    # Minimal test: just check if we can authenticate (~$0.000002/call)
+                    # Logged via tracked_claude_call so the system-internal cost is
+                    # visible alongside everything else in ai_usage_logs.
+                    response = tracked_claude_call(
+                        task="anthropic_health_check",
+                        model="claude-haiku-4-5",
                         max_tokens=1,
-                        messages=[{"role": "user", "content": "hi"}]
+                        messages=[{"role": "user", "content": "hi"}],
                     )
                     latency_ms = int((time.time() - start_time) * 1000)
 
@@ -1366,13 +1367,14 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
                     start_time = time.time()
 
-                    # Just list models to verify API key works (free, no tokens consumed)
-                    client.models.retrieve("gpt-5-mini")
+                    # Just retrieve an embedding model to verify API key works (free, no tokens consumed).
+                    # Platform uses OpenAI only for embeddings — chat models are Claude exclusively.
+                    client.models.retrieve("text-embedding-3-small")
                     latency_ms = int((time.time() - start_time) * 1000)
 
                     status_result = {
                         "status": "healthy",
-                        "message": "OpenAI API operational",
+                        "message": "OpenAI Embeddings API operational",
                         "latency_ms": latency_ms,
                         "last_checked": datetime.fromtimestamp(current_time).isoformat(),
                         "cached": False
@@ -1569,7 +1571,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                                 "Content-Type": "application/json"
                             },
                             json={
-                                "model": "voyage-3.5",
+                                "model": "voyage-4",
                                 "input": ["test"],
                                 "output_dimension": 1024
                             }
@@ -2016,7 +2018,7 @@ async def root() -> Dict[str, Any]:
         "api_info": {
             "total_endpoints": 123,
             "authentication": "JWT Bearer Token Required",
-            "embedding_model": "voyage-3.5 (1024 dimensions)",
+            "embedding_model": "voyage-4 (1024 dimensions)",
             "recent_enhancements": "Price Monitoring with Firecrawl (December 2025)",
             "performance_improvements": "Competitor price scraping, alerts, scheduled monitoring"
         },
@@ -2216,7 +2218,7 @@ def custom_openapi():
         "search_strategies": "10 strategies: multi_vector (⭐ default), semantic, vector, hybrid, material, keyword, color, texture, style, material_type",
         "ai_models": "13 models: Claude Sonnet 4.5, Haiku 4.5, GPT-4o-mini, Qwen3-VL-32B, SLIG, Voyage AI",
         "material_recognition": "Qwen3-VL-8B-Instruct (configurable vision model)",
-        "embedding_models": "Voyage AI voyage-3.5 (1024D text + understanding), SLIG SigLIP2 (768D) for 5 visual embeddings",
+        "embedding_models": "Voyage AI voyage-4 (1024D text + understanding), SLIG SigLIP2 (768D) for 5 visual embeddings",
         "performance": "95%+ product detection, 85%+ search accuracy, 250-350ms response time (with query understanding)",
         "scalability": "5,000+ users, 99.5%+ uptime",
         "agentic_queries": "Factory/group filtering for certificates, logos, specifications"

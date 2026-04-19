@@ -1209,7 +1209,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
 
             # Extract parameters from job metadata (works for both legacy and discovery jobs)
             job_metadata = job_data.get('metadata', {})
-            discovery_model = job_metadata.get('discovery_model', 'claude-sonnet-4.5')
+            discovery_model = job_metadata.get('discovery_model', 'claude-sonnet-4-7')
             categories = job_metadata.get('categories', ['products'])
             enable_prompt_enhancement = job_metadata.get('prompt_enhancement_enabled', False)
             agent_prompt = job_metadata.get('agent_prompt')
@@ -1332,7 +1332,7 @@ async def reprocess_document(
             .execute()
         prev_job = (jobs_resp.data or [{}])[0] if jobs_resp.data else {}
 
-        discovery_model = prev_job.get("discovery_model") or "claude-sonnet-4-6"
+        discovery_model = prev_job.get("discovery_model") or "claude-sonnet-4-7"
         focused_extraction = prev_job.get("focused_extraction", True)
         extract_categories = prev_job.get("extract_categories") or []
 
@@ -1837,7 +1837,7 @@ async def get_embeddings(
                 'has_texture_slig':           ('texture_slig_768',       768,  'siglip2',            'texture'),
                 'has_style_slig':             ('style_slig_768',         768,  'siglip2',            'style'),
                 'has_material_slig':          ('material_slig_768',      768,  'siglip2',            'material'),
-                'has_understanding_embedding':('understanding_1024',     1024, 'voyage-3.5',         'understanding'),
+                'has_understanding_embedding':('understanding_1024',     1024, 'voyage-4',           'understanding'),
             }
 
             for img in (image_result.data or []):
@@ -1875,7 +1875,7 @@ async def get_embeddings(
                         'entity_type': 'chunk',
                         'embedding_type': f'text_{dimension}',
                         'dimension': dimension,
-                        'model': 'voyage-3.5',
+                        'model': 'voyage-4',
                         'embedding': chunk['text_embedding']
                     })
                     embedding_stats[f'text_{dimension}'] = embedding_stats.get(f'text_{dimension}', 0) + 1

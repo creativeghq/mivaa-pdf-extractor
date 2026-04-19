@@ -2,13 +2,13 @@
 Real Embeddings Service - Step 4 Implementation (Updated for Voyage AI)
 
 Generates embedding types using AI models:
-1. Text (1024D) - Voyage AI voyage-3.5 (primary) with OpenAI fallback (both 1024D)
+1. Text (1024D) - Voyage AI voyage-4 (primary) with OpenAI fallback (both 1024D)
 2. Visual Embeddings (768D) - SLIG (SigLIP2) via HuggingFace Cloud Endpoint
 3. Understanding (1024D) - Qwen vision_analysis JSON → Voyage AI text embedding
 4. Multimodal Fusion (1792D) - Combined text+visual (1024D + 768D = 1792D)
 
 Text Embedding Strategy:
-- Primary: Voyage AI voyage-3.5 (1024D default, supports 256/512/1024/2048)
+- Primary: Voyage AI voyage-4 (1024D default, supports 256/512/1024/2048)
 - Supports input_type parameter: "document" for indexing, "query" for search
 - Fallback: OpenAI text-embedding-3-small (1024D) if Voyage fails - matches DB schema vector(1024)
 
@@ -161,7 +161,7 @@ class RealEmbeddingsService:
             )
             if text_embedding:
                 embeddings["embeddings"]["text_1024"] = text_embedding
-                embeddings["metadata"]["model_versions"]["text"] = "voyage-3.5" if self.voyage_enabled else "text-embedding-3-small"
+                embeddings["metadata"]["model_versions"]["text"] = "voyage-4" if self.voyage_enabled else "text-embedding-3-small"
                 embeddings["metadata"]["confidence_scores"]["text"] = 0.95
                 self.logger.info(f"✅ Text embedding generated (1024D, input_type={input_type})")
             
@@ -208,7 +208,7 @@ class RealEmbeddingsService:
                 )
                 if understanding_embedding:
                     embeddings["embeddings"]["understanding_1024"] = understanding_embedding
-                    embeddings["metadata"]["model_versions"]["understanding"] = "voyage-3.5"
+                    embeddings["metadata"]["model_versions"]["understanding"] = "voyage-4"
                     embeddings["metadata"]["confidence_scores"]["understanding"] = 0.93
                     self.logger.info("✅ Understanding embedding generated (1024D)")
 
@@ -566,7 +566,7 @@ class RealEmbeddingsService:
                     )
 
                 request_data = {
-                    "model": "voyage-3.5",
+                    "model": "voyage-4",
                     "input": processed_texts,  # Use processed texts (no empty strings)
                     "truncation": truncation
                 }
@@ -598,12 +598,12 @@ class RealEmbeddingsService:
                     input_tokens = usage.get("total_tokens", 0)
 
                     # Voyage AI Pricing (as of Dec 2024)
-                    cost_per_million = 0.06  # voyage-3.5
+                    cost_per_million = 0.06  # voyage-4
                     cost = (input_tokens / 1_000_000) * cost_per_million
 
                     await self.ai_logger.log_ai_call(
                         task="batch_text_embedding_generation",
-                        model=f"voyage-3.5-{voyage_dimensions}d",
+                        model=f"voyage-4-{voyage_dimensions}d",
                         input_tokens=input_tokens,
                         output_tokens=0,
                         cost=cost,
@@ -636,7 +636,7 @@ class RealEmbeddingsService:
                 voyage_dimensions = 1024 if dimensions == 1536 else dimensions
                 await self.ai_logger.log_ai_call(
                     task="batch_text_embedding_generation",
-                    model=f"voyage-3.5-{voyage_dimensions}d",
+                    model=f"voyage-4-{voyage_dimensions}d",
                     input_tokens=0,
                     output_tokens=0,
                     cost=0.0,
@@ -793,7 +793,7 @@ class RealEmbeddingsService:
                 # Call Voyage AI API
                 async with httpx.AsyncClient() as client:
                     request_data = {
-                        "model": "voyage-3.5",
+                        "model": "voyage-4",
                         "input": [text],  # Voyage AI handles truncation
                         "truncation": truncation
                     }
@@ -826,14 +826,14 @@ class RealEmbeddingsService:
                         input_tokens = usage.get("total_tokens", 0)
 
                         # Voyage AI Pricing (as of Dec 2024)
-                        # voyage-3.5: $0.06 per 1M tokens
+                        # voyage-4: $0.06 per 1M tokens
                         # voyage-3-large: $0.18 per 1M tokens
-                        cost_per_million = 0.06  # voyage-3.5
+                        cost_per_million = 0.06  # voyage-4
                         cost = (input_tokens / 1_000_000) * cost_per_million
 
                         await self.ai_logger.log_ai_call(
                             task="text_embedding_generation",
-                            model=f"voyage-3.5-{voyage_dimensions}d",
+                            model=f"voyage-4-{voyage_dimensions}d",
                             input_tokens=input_tokens,
                             output_tokens=0,
                             cost=cost,
@@ -865,7 +865,7 @@ class RealEmbeddingsService:
                 voyage_dimensions = 1024 if dimensions == 1536 else dimensions
                 await self.ai_logger.log_ai_call(
                     task="text_embedding_generation",
-                    model=f"voyage-3.5-{voyage_dimensions}d",
+                    model=f"voyage-4-{voyage_dimensions}d",
                     input_tokens=0,
                     output_tokens=0,
                     cost=0.0,

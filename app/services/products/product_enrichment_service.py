@@ -259,12 +259,14 @@ Generate a professional, engaging product description that:
 
 RESPOND WITH ONLY THE DESCRIPTION, NO ADDITIONAL TEXT."""
 
-            response = self.anthropic_client.messages.create(
-                model="claude-sonnet-4-6",
+            from app.services.core.claude_helper import tracked_claude_call
+            response = tracked_claude_call(
+                task="product_enrichment_description",
+                model="claude-sonnet-4-7",
                 max_tokens=500,
-                messages=[{"role": "user", "content": prompt}]
+                messages=[{"role": "user", "content": prompt}],
             )
-            
+
             return response.content[0].text if response.content else product_data.get('description', '')
             
         except Exception as e:

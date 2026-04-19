@@ -252,6 +252,8 @@ class YoloLayoutDetector:
             from app.services.core.endpoint_controller import endpoint_controller
 
             async with endpoint_controller.yolo.slot():
+                import time as _time
+                _yolo_start = _time.time()
                 try:
                     async with httpx.AsyncClient(timeout=self.inference_timeout) as client:
                         response = await client.post(
@@ -269,6 +271,20 @@ class YoloLayoutDetector:
                     if http_err.response.status_code in (429, 500, 502, 503, 504):
                         endpoint_controller.record_failure("yolo")
                     raise
+
+            # Track GPU time-based cost (L4 endpoint, $0.80/hr) — fire-and-forget
+            try:
+                from app.services.core.ai_call_logger import AICallLogger
+                _yolo_latency_ms = int((_time.time() - _yolo_start) * 1000)
+                await AICallLogger().log_time_based_call(
+                    task="pdf_layout_detection_yolo",
+                    model="yolo-docparser",
+                    latency_ms=_yolo_latency_ms,
+                    confidence_score=0.85,
+                    confidence_breakdown={},
+                )
+            except Exception as _log_err:
+                logger.debug(f"YOLO logging failed (non-fatal): {_log_err}")
 
             # Parse YOLO output to LayoutRegion objects
             regions = self._parse_yolo_output(result, page_num, image.size)

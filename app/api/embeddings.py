@@ -58,8 +58,8 @@ class ClipTextRequest(BaseModel):
         description="Text to generate embedding for"
     )
     model: str = Field(
-        default="voyage-3.5",
-        description="Embedding model to use (voyage-3.5 or text-embedding-3-small)"
+        default="voyage-4",
+        description="Embedding model to use (voyage-4 or text-embedding-3-small)"
     )
     input_type: str = Field(
         default="document",
@@ -223,7 +223,7 @@ async def generate_clip_text_embedding(
     ```json
     {
       "text": "modern minimalist oak dining table",
-      "model": "voyage-3.5",
+      "model": "voyage-4",
       "input_type": "document",
       "dimensions": 1024
     }
@@ -235,14 +235,14 @@ async def generate_clip_text_embedding(
     {
       "embedding": [0.234, -0.567, 0.891, ...],
       "dimensions": 1024,
-      "model": "voyage-3.5",
+      "model": "voyage-4",
       "success": true
     }
     ```
 
     ## 📊 Technical Details
 
-    - **Primary Model**: Voyage AI voyage-3.5
+    - **Primary Model**: Voyage AI voyage-4
     - **Fallback Model**: OpenAI text-embedding-3-small
     - **Default Dimension**: 1024 (Voyage AI)
     - **Supported Dimensions**: 256, 512, 1024, 2048 (Voyage) or 512, 1536 (OpenAI)

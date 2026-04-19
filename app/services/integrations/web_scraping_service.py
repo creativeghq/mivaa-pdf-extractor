@@ -903,7 +903,7 @@ class WebScrapingService:
                 if not content:
                     continue
 
-                # Generate embedding (Voyage AI voyage-3.5, fallback OpenAI)
+                # Generate embedding (Voyage AI voyage-4, fallback OpenAI)
                 embedding = await self.embedding_service.generate_text_embedding(content)
                 if embedding:
                     await self.db.table('document_chunks').update({

@@ -1204,32 +1204,34 @@ Return ONLY valid JSON. Use null for missing fields."""
                 parsed_data = await self._parse_query_with_qwen(query, system_prompt)
                 self.logger.debug(f"🤖 Query parsed with Qwen")
             except Exception as qwen_err:
-                self.logger.debug(f"Qwen unavailable ({qwen_err}), falling back to GPT-4o-mini")
+                self.logger.debug(f"Qwen unavailable ({qwen_err}), falling back to Claude Haiku")
 
-            # Fallback: GPT-4o-mini
+            # Fallback: Claude Haiku 4.5
             if parsed_data is None:
-                model_used = "gpt-5-mini"
+                model_used = "claude-haiku-4-5"
                 ai_service = get_ai_client_service()
-                client = ai_service.openai_async
-                response = await client.chat.completions.create(
-                    model="gpt-5-mini",
+                client = ai_service.anthropic_async
+                response = await client.messages.create(
+                    model="claude-haiku-4-5",
+                    max_tokens=1024,
+                    temperature=0.1,
+                    system=system_prompt + "\n\nIMPORTANT: Respond with ONLY a JSON object, no markdown fences, no explanation.",
                     messages=[
-                        {"role": "system", "content": system_prompt},
                         {"role": "user", "content": f"Parse this query: {query}"},
                     ],
-                    response_format={"type": "json_object"},
-                    temperature=0.1,
                 )
-                parsed_data = json.loads(response.choices[0].message.content)
+                content = response.content[0].text.strip()
+                # Strip markdown fences if present
+                if content.startswith("```"):
+                    content = content.split("```", 2)[1].lstrip("json\n").rstrip("`").strip()
+                parsed_data = json.loads(content)
 
-                # Log cost (GPT-4o-mini pricing: $0.15/1M input, $0.60/1M output)
+                # Log Claude call (cost calculated from token usage)
                 ai_logger = AICallLogger()
-                input_tokens = response.usage.prompt_tokens if hasattr(response, 'usage') else 0
-                output_tokens = response.usage.completion_tokens if hasattr(response, 'usage') else 0
                 latency_ms = int((time.time() - start_time) * 1000)
-                await ai_logger.log_gpt_call(
+                await ai_logger.log_claude_call(
                     task="query_understanding",
-                    model="gpt-5-mini",
+                    model="claude-haiku-4-5",
                     response=response,
                     latency_ms=latency_ms,
                     confidence_score=0.90,

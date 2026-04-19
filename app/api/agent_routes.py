@@ -261,7 +261,9 @@ async def handle_product_enrichment(req: AgentRunRequest, supabase) -> Dict[str,
             _heartbeat(supabase, req.run_id)
 
         try:
-            msg = client.messages.create(
+            from app.services.core.claude_helper import tracked_claude_call
+            msg = tracked_claude_call(
+                task="agent_product_enrichment",
                 model=req.model or "claude-haiku-4-5",
                 max_tokens=512,
                 system=system,
@@ -270,6 +272,7 @@ async def handle_product_enrichment(req: AgentRunRequest, supabase) -> Dict[str,
                     f"Category: {product.get('category','unknown')}\n"
                     f"Description: {product.get('description','(none)')}\n"
                     f"Material: {product.get('material_type','unknown')}"}],
+                job_id=req.run_id,
             )
             total_in  += msg.usage.input_tokens
             total_out += msg.usage.output_tokens
@@ -338,7 +341,9 @@ async def handle_material_tagger(req: AgentRunRequest, supabase) -> Dict[str, An
             _heartbeat(supabase, req.run_id)
 
         try:
-            msg = client.messages.create(
+            from app.services.core.claude_helper import tracked_claude_call
+            msg = tracked_claude_call(
+                task="agent_material_tagger",
                 model=req.model or "claude-haiku-4-5",
                 max_tokens=256,
                 system=system,
@@ -346,6 +351,7 @@ async def handle_material_tagger(req: AgentRunRequest, supabase) -> Dict[str, An
                     f"Name: {product['name']}\n"
                     f"Category: {product.get('category','unknown')}\n"
                     f"Description: {product.get('description','(none)')}"}],
+                job_id=req.run_id,
             )
             total_in  += msg.usage.input_tokens
             total_out += msg.usage.output_tokens

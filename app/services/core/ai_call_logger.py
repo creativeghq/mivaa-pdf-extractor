@@ -67,7 +67,7 @@ class AICallLogger:
         
         Args:
             task: Type of task (document_classification, product_extraction, etc.)
-            model: AI model used (claude-sonnet-4.5, gpt-5, qwen3-vl-8b, etc.)
+            model: AI model used (claude-sonnet-4-7, claude-haiku-4-5, qwen3-vl-32b, etc.)
             input_tokens: Number of input tokens
             output_tokens: Number of output tokens
             cost: Cost in USD
@@ -171,7 +171,7 @@ class AICallLogger:
 
         Args:
             task: Type of task
-            model: Claude model (claude-haiku-4-5, claude-sonnet-4-5)
+            model: Claude model (claude-opus-4-7, claude-sonnet-4-7, claude-haiku-4-5)
             response: Claude API response object
             latency_ms: Latency in milliseconds
             confidence_score: Calculated confidence score
@@ -396,6 +396,133 @@ class AICallLogger:
             self.logger.error(f"❌ Failed to log Qwen call: {e}")
             return False
     
+    async def log_replicate_call(
+        self,
+        task: str,
+        model: str,
+        latency_ms: int,
+        cost_per_generation_usd: Optional[float] = None,
+        action: str = "use_ai_result",
+        confidence_score: float = 0.9,
+        confidence_breakdown: Optional[Dict[str, float]] = None,
+        job_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+        request_data: Optional[Dict[str, Any]] = None,
+        response_data: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """
+        Log a Replicate per-generation API call.
+
+        If cost_per_generation_usd is None, looks up the model's price from
+        ai_pricing's per-generation pricing table (REPLICATE_PRICING).
+        """
+        try:
+            if cost_per_generation_usd is None:
+                cost_data = ai_pricing.calculate_replicate_cost(model=model, num_generations=1)
+                cost = float(cost_data.get("billed_cost_usd", 0.0))
+            else:
+                # Apply markup manually
+                cost = float(cost_per_generation_usd) * float(ai_pricing.MARKUP_MULTIPLIER)
+
+            if user_id and cost > 0:
+                await self.credits_service.debit_credits_for_ai_operation(
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    operation_type=task,
+                    model_name=model,
+                    input_tokens=0,
+                    output_tokens=0,
+                    job_id=job_id,
+                    metadata={'source': 'replicate', 'billing': 'per_generation'},
+                )
+
+            return await self.log_ai_call(
+                task=task,
+                model=model,
+                input_tokens=0,
+                output_tokens=0,
+                cost=cost,
+                latency_ms=latency_ms,
+                confidence_score=confidence_score,
+                confidence_breakdown=confidence_breakdown or {},
+                action=action,
+                job_id=job_id,
+                request_data=request_data,
+                response_data=response_data,
+                user_id=user_id,
+                workspace_id=workspace_id,
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Failed to log Replicate call: {e}")
+            return False
+
+    async def log_time_based_call(
+        self,
+        task: str,
+        model: str,
+        latency_ms: int,
+        action: str = "use_ai_result",
+        confidence_score: float = 0.9,
+        confidence_breakdown: Optional[Dict[str, float]] = None,
+        job_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+        request_data: Optional[Dict[str, Any]] = None,
+        response_data: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """
+        Log a time-based (HuggingFace GPU endpoint) call: Qwen, SLIG, OCR, YOLO.
+
+        Cost is computed from latency × hourly_rate (no token math, since
+        these endpoints bill per GPU-second). Uses ai_pricing.calculate_cost
+        with provider='huggingface' which routes to the time-based branch.
+
+        IMPORTANT: This is the ONLY correct logger for time-based models.
+        Calling log_qwen_call (which uses token-based math) would record
+        $0.00 cost for these endpoints.
+        """
+        try:
+            # ai_pricing handles time_based billing internally — pass duration as
+            # input_tokens placeholder isn't right; use the dedicated path.
+            duration_seconds = max(latency_ms / 1000.0, 0.001)
+            cost_data = ai_pricing.calculate_time_based_cost(
+                model=model, duration_seconds=duration_seconds
+            )
+            cost = float(cost_data.get("billed_cost_usd", 0.0))
+
+            if user_id and cost > 0:
+                await self.credits_service.debit_credits_for_ai_operation(
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    operation_type=task,
+                    model_name=model,
+                    input_tokens=0,
+                    output_tokens=0,
+                    job_id=job_id,
+                    metadata={'source': 'huggingface_endpoint', 'duration_s': duration_seconds, 'billing': 'time_based'},
+                )
+
+            return await self.log_ai_call(
+                task=task,
+                model=model,
+                input_tokens=0,
+                output_tokens=0,
+                cost=cost,
+                latency_ms=latency_ms,
+                confidence_score=confidence_score,
+                confidence_breakdown=confidence_breakdown or {},
+                action=action,
+                job_id=job_id,
+                request_data=request_data,
+                response_data=response_data,
+                user_id=user_id,
+                workspace_id=workspace_id,
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Failed to log time-based call: {e}")
+            return False
+
     def _calculate_claude_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
         """Calculate cost for Claude API call using centralized pricing (returns billed cost with markup)"""
         cost_data = ai_pricing.calculate_cost(model, input_tokens, output_tokens, provider="anthropic")
@@ -538,7 +665,7 @@ class AICallLogger:
 
         Args:
             page_num: PDF page number processed
-            model: Vision model used (claude-sonnet-4-5, gpt-4o-vision, etc.)
+            model: Vision model used (claude-sonnet-4-7, claude-opus-4-7, qwen3-vl-32b, etc.)
             detections: Number of products detected on page
             confidence: Average detection confidence (0.0-1.0)
             latency_ms: Latency in milliseconds

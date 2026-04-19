@@ -99,10 +99,12 @@ Rules:
 - Normalize colors (gray→grey, etc)"""
 
         try:
-            response = await self.anthropic.messages.create(
-                model="claude-haiku-4-5-20251001",
+            from app.services.core.claude_helper import tracked_claude_call_async
+            response = await tracked_claude_call_async(
+                task="search_query_dedup_analysis",
+                model="claude-haiku-4-5",
                 max_tokens=500,
-                messages=[{"role": "user", "content": prompt}]
+                messages=[{"role": "user", "content": prompt}],
             )
             
             # Parse AI response

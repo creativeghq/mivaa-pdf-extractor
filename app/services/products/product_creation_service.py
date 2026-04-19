@@ -1457,7 +1457,7 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
             settings = get_settings()
 
             response = client.messages.create(
-                model=settings.anthropic_model_enrichment,  # claude-sonnet-4-6
+                model=settings.anthropic_model_enrichment,  # claude-sonnet-4-7
                 max_tokens=4096,
                 temperature=0.1,
                 messages=[{"role": "user", "content": prompt}]
@@ -1483,7 +1483,7 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
             # Log AI call
             await self.ai_logger.log_claude_call(
                 task="product_enrichment_stage2",
-                model="claude-sonnet-4-5",
+                model="claude-sonnet-4-7",
                 response=response,
                 latency_ms=latency_ms,
                 confidence_score=confidence_score,
@@ -1502,7 +1502,7 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
             latency_ms = int((time.time() - start_time) * 1000)
             await self.ai_logger.log_ai_call(
                 task="product_enrichment_stage2",
-                model="claude-sonnet-4-5",
+                model="claude-sonnet-4-7",
                 input_tokens=0,
                 output_tokens=0,
                 cost=0.0,

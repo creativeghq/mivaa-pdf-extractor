@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 SONNET_FALLBACK_MODEL = os.getenv(
     "PRODUCT_SPEC_SONNET_MODEL",
-    "claude-sonnet-4-6",
+    "claude-sonnet-4-7",
 )
 
 # Tier A coverage threshold — if PyMuPDF parser fills at least this many

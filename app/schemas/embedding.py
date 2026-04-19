@@ -13,8 +13,8 @@ class EmbeddingConfig(BaseModel):
     """Configuration for embedding service."""
 
     model_name: str = Field(
-        default="voyage-3.5",
-        description="Embedding model name (voyage-3.5 or text-embedding-3-small)"
+        default="voyage-4",
+        description="Embedding model name (voyage-4 or text-embedding-3-small)"
     )
     model_type: str = Field(
         default="voyage",
@@ -61,7 +61,7 @@ class EmbeddingConfig(BaseModel):
         """Pydantic configuration."""
         json_schema_extra = {
             "example": {
-                "model_name": "voyage-3.5",
+                "model_name": "voyage-4",
                 "model_type": "voyage",
                 "dimension": 1024,
                 "input_type": "document",
@@ -84,7 +84,7 @@ class EmbeddingRequest(BaseModel):
     )
     model: Optional[str] = Field(
         default=None,
-        description="Override model name (voyage-3.5 or text-embedding-3-small)"
+        description="Override model name (voyage-4 or text-embedding-3-small)"
     )
     input_type: Optional[str] = Field(
         default="document",
@@ -100,7 +100,7 @@ class EmbeddingRequest(BaseModel):
         json_schema_extra = {
             "example": {
                 "text": "This is a sample text for embedding generation",
-                "model": "voyage-3.5",
+                "model": "voyage-4",
                 "input_type": "document",
                 "dimensions": 1024
             }
@@ -125,7 +125,7 @@ class EmbeddingResponse(BaseModel):
         json_schema_extra = {
             "example": {
                 "embedding": [0.1, 0.2, 0.3],
-                "model": "voyage-3.5",
+                "model": "voyage-4",
                 "usage": {
                     "prompt_tokens": 10,
                     "total_tokens": 10
@@ -142,7 +142,7 @@ class BatchEmbeddingRequest(BaseModel):
     )
     model: Optional[str] = Field(
         default=None,
-        description="Override model name (voyage-3.5 or text-embedding-3-small)"
+        description="Override model name (voyage-4 or text-embedding-3-small)"
     )
     input_type: Optional[str] = Field(
         default="document",
@@ -161,7 +161,7 @@ class BatchEmbeddingRequest(BaseModel):
                     "First text for embedding",
                     "Second text for embedding"
                 ],
-                "model": "voyage-3.5",
+                "model": "voyage-4",
                 "input_type": "document",
                 "dimensions": 1024
             }
@@ -185,7 +185,7 @@ class BatchEmbeddingResponse(BaseModel):
                 "results": [
                     {
                         "embedding": [0.1, 0.2, 0.3],
-                        "model": "voyage-3.5",
+                        "model": "voyage-4",
                         "usage": {"prompt_tokens": 5, "total_tokens": 5}
                     }
                 ],

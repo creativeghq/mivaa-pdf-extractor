@@ -32,7 +32,7 @@ Design notes
   (degraded but still correct).
 - Model: Claude Haiku 4.5 by default (good enough for legends which
   are mostly text/logos). Override via env var
-  `CATALOG_LEGEND_VISION_MODEL=claude-sonnet-4-6` for tough catalogs.
+  `CATALOG_LEGEND_VISION_MODEL=claude-sonnet-4-7` for tough catalogs.
 - Per-page cost: ~$0.002-0.005 Haiku. A typical catalog has 4-8 legend
   pages → ~$0.02-0.04 total.
 - Idempotent: checks `documents.metadata.catalog_legends.extracted_at`
@@ -60,7 +60,7 @@ logger = logging.getLogger(__name__)
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 LEGEND_VISION_MODEL = os.getenv(
     "CATALOG_LEGEND_VISION_MODEL",
-    "claude-haiku-4-5-20251001",
+    "claude-haiku-4-5",
 )
 
 PAGE_RENDER_DPI = 220
@@ -243,8 +243,9 @@ def _call_claude(image_bytes: bytes, prompt: str) -> Optional[Dict[str, Any]]:
     b64 = base64.b64encode(image_bytes).decode("utf-8")
 
     try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        resp = client.messages.create(
+        from app.services.core.claude_helper import tracked_claude_call
+        resp = tracked_claude_call(
+            task="catalog_legend_extraction",
             model=LEGEND_VISION_MODEL,
             max_tokens=3500,
             messages=[{

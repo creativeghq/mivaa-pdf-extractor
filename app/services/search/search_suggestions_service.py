@@ -507,11 +507,13 @@ class SearchSuggestionsService:
 Focus on materials, textures, colors, patterns, and applications.
 Return as JSON: {{"related": [], "broader": [], "narrower": []}}"""
 
-                    response = await ai_service.anthropic_async.messages.create(
-                        model="claude-haiku-4-5-20251001",  # Fast, cheap model
+                    from app.services.core.claude_helper import tracked_claude_call_async
+                    response = await tracked_claude_call_async(
+                        task="search_suggestions_semantic_expansion",
+                        model="claude-haiku-4-5",
                         max_tokens=500,
                         temperature=0.3,
-                        messages=[{"role": "user", "content": prompt}]
+                        messages=[{"role": "user", "content": prompt}],
                     )
 
                     import json

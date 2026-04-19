@@ -96,8 +96,10 @@ Rules:
 Respond ONLY with valid JSON, no additional text."""
 
         try:
-            response = self.anthropic_client.messages.create(
-                model="claude-haiku-4-5-20251001",  # Fast and cost-effective for text analysis
+            from app.services.core.claude_helper import tracked_claude_call
+            response = tracked_claude_call(
+                task="sentiment_analysis",
+                model="claude-haiku-4-5",
                 max_tokens=500,
                 temperature=0.1,
                 system="You are an expert sentiment analysis AI. Analyze user feedback and provide structured JSON responses.",
@@ -106,7 +108,7 @@ Respond ONLY with valid JSON, no additional text."""
                         "role": "user",
                         "content": prompt
                     }
-                ]
+                ],
             )
 
             # Parse JSON response

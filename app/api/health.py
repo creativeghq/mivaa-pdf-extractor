@@ -9,11 +9,12 @@ Provides health status for monitoring systems:
 - Circuit breaker status
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from typing import Dict, Any, Literal
 from pydantic import BaseModel, Field
 import logging
 
+from app.dependencies import require_admin
 from app.services.core.database_health_service import database_health_service
 from app.services.tracking.job_monitor_service import job_monitor_service
 from app.utils.query_metrics import query_metrics
@@ -316,7 +317,7 @@ async def circuit_breaker_status() -> Dict[str, CircuitBreakerState]:
     summary="Reset Query Metrics",
     description="Reset query performance metrics (admin only)"
 )
-async def reset_metrics() -> Dict[str, str]:
+async def reset_metrics(_admin = Depends(require_admin)) -> Dict[str, str]:
     """
     **Reset Query Performance Metrics**
 
@@ -325,6 +326,7 @@ async def reset_metrics() -> Dict[str, str]:
     **Use Case**: Testing, post-maintenance cleanup
 
     **⚠️ Warning**: This will reset all historical query metrics.
+    Requires admin permission.
     """
     query_metrics.reset_metrics()
     return {"status": "metrics_reset", "message": "Query metrics have been reset"}

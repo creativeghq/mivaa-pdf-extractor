@@ -286,7 +286,7 @@ class ProductDiscoveryService:
         Initialize service.
 
         Args:
-            model: AI model to use - supports "claude", "gpt"
+            model: AI model family to use. Only "claude" is supported.
         """
         self.logger = logger
         self.model = model
@@ -776,7 +776,7 @@ class ProductDiscoveryService:
         prompt: str,
         job_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Use Claude Sonnet 4.5 for product discovery"""
+        """Use Claude Sonnet 4.7 for product discovery"""
         start_time = datetime.now()
 
         try:
@@ -785,7 +785,7 @@ class ProductDiscoveryService:
             client = ai_service.anthropic
 
             response = client.messages.create(
-                model="claude-sonnet-4-5",
+                model="claude-sonnet-4-7",
                 max_tokens=16000,  # Large response for comprehensive catalog
                 temperature=0,  # Zero temperature for maximum consistency
                 messages=[
@@ -825,7 +825,7 @@ class ProductDiscoveryService:
 
                 # DEBUG: Log how many products Claude found
                 products_found = len(result.get("products", []))
-                self.logger.info(f"🔍 Claude Sonnet 4.5 discovered {products_found} products")
+                self.logger.info(f"🔍 Claude Sonnet 4.7 discovered {products_found} products")
                 if products_found > 0:
                     product_names = [p.get("name", "Unknown") for p in result.get("products", [])]
                     self.logger.info(f"   Product names: {product_names}")
@@ -834,7 +834,7 @@ class ProductDiscoveryService:
                 latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
                 await self.ai_logger.log_claude_call(
                     task="product_discovery",
-                    model="claude-sonnet-4-5",
+                    model="claude-sonnet-4-7",
                     response=response,
                     latency_ms=latency_ms,
                     confidence_score=result.get("confidence_score", 0.9),
@@ -853,74 +853,6 @@ class ProductDiscoveryService:
         except Exception as e:
             self.logger.error(f"Claude product discovery failed: {e}")
             raise RuntimeError(f"Claude product discovery failed: {str(e)}") from e
-    
-    async def _discover_with_gpt(
-        self,
-        prompt: str,
-        job_id: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Use GPT-5 for product discovery"""
-        start_time = datetime.now()
-
-        try:
-            # Use centralized AI client service
-            ai_service = get_ai_client_service()
-            client = ai_service.openai
-
-            response = client.chat.completions.create(
-                model="gpt-5.2",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert at analyzing product catalogs and extracting structured product information. Always respond with valid JSON."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                max_tokens=8000,
-                temperature=0.1,
-                response_format={"type": "json_object"}
-            )
-            
-            content = response.choices[0].message.content.strip()
-            result = json.loads(content)
-
-            # DEBUG: Log how many products GPT found
-            products_found = len(result.get("products", []))
-            self.logger.info(f"🔍 GPT-5.2 discovered {products_found} products")
-            if products_found > 0:
-                product_names = [p.get("name", "Unknown") for p in result.get("products", [])]
-                self.logger.info(f"   Product names: {product_names}")
-
-            # Log AI call
-            latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-            confidence_score = result.get("confidence_score", 0.9)
-
-            # Calculate cost
-            input_cost = (response.usage.prompt_tokens / 1_000_000) * 7.00  # GPT-5.2 pricing
-            output_cost = (response.usage.completion_tokens / 1_000_000) * 21.00
-            total_cost = input_cost + output_cost
-
-            await self.ai_logger.log_ai_call(
-                task="product_discovery",
-                model="gpt-5.2",
-                input_tokens=response.usage.prompt_tokens,
-                output_tokens=response.usage.completion_tokens,
-                cost=total_cost,
-                latency_ms=latency_ms,
-                confidence_score=confidence_score,
-                confidence_breakdown={"overall": confidence_score},
-                action="use_ai_result",
-                job_id=job_id
-            )
-
-            return result
-            
-        except Exception as e:
-            self.logger.error(f"GPT product discovery failed: {e}")
-            raise RuntimeError(f"GPT product discovery failed: {str(e)}") from e
     
     def _parse_discovery_results(
         self,
@@ -1775,11 +1707,8 @@ class ProductDiscoveryService:
                 enable_prompt_enhancement
             )
 
-            # Call AI model based on model family
-            if "claude" in self.model.lower():
-                batch_result = await self._discover_with_claude(index_prompt, job_id)
-            else:
-                batch_result = await self._discover_with_gpt(index_prompt, job_id)
+            # Always use Claude for product discovery
+            batch_result = await self._discover_with_claude(index_prompt, job_id)
 
             # Parse results
             batch_catalog = self._parse_discovery_results(batch_result, total_pages, categories)
@@ -2233,38 +2162,4 @@ class ProductDiscoveryService:
             )
 
         return sorted(validated_pages)
-
-    async def _validate_pages_with_yolo(
-        self,
-        pdf_path: str,
-        detected_pages: List[int],
-        product_name: str
-    ) -> List[int]:
-        """
-        DEPRECATED: Use _validate_pages_with_yolo_optimized with pre-initialized detector.
-
-        This method initializes YOLO detector each time, which is inefficient.
-        """
-        try:
-            from app.config import get_settings
-            settings = get_settings()
-
-            # Skip YOLO validation if disabled
-            if not settings.yolo_enabled:
-                self.logger.debug(f"   YOLO disabled, skipping validation for '{product_name}'")
-                return detected_pages
-
-            from app.services.pdf.yolo_layout_detector import YoloLayoutDetector
-
-            # Initialize YOLO detector (inefficient - called for each product)
-            yolo_config = settings.get_yolo_config()
-            detector = YoloLayoutDetector(config=yolo_config)
-
-            return await self._validate_pages_with_yolo_optimized(
-                pdf_path, detected_pages, product_name, detector
-            )
-
-        except Exception as e:
-            self.logger.warning(f"   ⚠️ YOLO validation failed for '{product_name}': {e}, using text-detected pages")
-            return detected_pages
 

@@ -77,25 +77,3 @@ async def get_prompt_template_from_db(
     except Exception as e:
         logger.error(f"Error fetching prompt template: {str(e)}")
         raise
-
-
-def get_prompt_template(stage: str, category: str) -> str:
-    """
-    DEPRECATED: This synchronous function is deprecated.
-    Use get_prompt_template_from_db() instead.
-
-    This function raises an error to ensure all callers migrate to the async database version.
-
-    Args:
-        stage: Extraction stage
-        category: Content category
-
-    Raises:
-        NotImplementedError: Always - use get_prompt_template_from_db instead
-    """
-    raise NotImplementedError(
-        "get_prompt_template() is deprecated. "
-        "Use await get_prompt_template_from_db(workspace_id, stage, category) instead. "
-        "All prompts must be fetched from the database. "
-        "Add prompts via /admin/ai-configs."
-    )

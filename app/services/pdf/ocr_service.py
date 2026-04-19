@@ -299,6 +299,8 @@ class OCRService:
             else:
                 pil_image = image
 
+            import time as _time
+            _chandra_start = _time.time()
             try:
                 chandra_result = self.chandra_manager.run_inference(pil_image)
                 from app.services.core.endpoint_controller import endpoint_controller
@@ -307,6 +309,26 @@ class OCRService:
                 from app.services.core.endpoint_controller import endpoint_controller
                 endpoint_controller.record_overload_exception("chandra", chandra_err)
                 raise
+
+            # Track GPU time-based cost (L4 endpoint, $0.80/hr) — sync-safe
+            try:
+                import asyncio as _asyncio
+                from app.services.core.ai_call_logger import AICallLogger
+                _chandra_latency_ms = int((_time.time() - _chandra_start) * 1000)
+                _log_coro = AICallLogger().log_time_based_call(
+                    task="pdf_ocr_chandra",
+                    model="chandra-ocr",
+                    latency_ms=_chandra_latency_ms,
+                    confidence_score=0.85,
+                    confidence_breakdown={},
+                )
+                try:
+                    _loop = _asyncio.get_running_loop()
+                    _loop.create_task(_log_coro)
+                except RuntimeError:
+                    _asyncio.run(_log_coro)
+            except Exception as _log_err:
+                logger.debug(f"Chandra logging failed (non-fatal): {_log_err}")
 
             # Parse Chandra result
             if isinstance(chandra_result, list) and len(chandra_result) > 0:
@@ -644,17 +666,16 @@ class OCRService:
                 # Build full prompt with OCR data
                 full_prompt = f"{prompt_template}\n\n**OCR Results:**\n\n```json\n{json.dumps(ocr_data, indent=2)}\n```\n\nAnalyze the OCR results and extract icon-based metadata. Return ONLY valid JSON."
 
-                # Call AI (Claude preferred for vision tasks)
-                ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-                client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-
-                response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                # Call AI (Claude preferred for vision tasks) — tracked
+                from app.services.core.claude_helper import tracked_claude_call
+                response = tracked_claude_call(
+                    task="ocr_icon_metadata_extraction",
+                    model="claude-sonnet-4-7",
                     max_tokens=2048,
                     messages=[{
                         "role": "user",
                         "content": full_prompt
-                    }]
+                    }],
                 )
 
                 # Parse AI response

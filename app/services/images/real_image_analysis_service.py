@@ -590,15 +590,16 @@ class RealImageAnalysisService:
                             0.15 * confidence_breakdown["validation"]
                         )
 
-                        await self.ai_logger.log_qwen_call(
+                        # Time-based GPU billing — use log_time_based_call so cost is computed
+                        # from latency × hourly_rate (Qwen on HF endpoint).
+                        await self.ai_logger.log_time_based_call(
                             task="image_vision_analysis",
-                            model="qwen3-vl-8b",
-                            response=result,
+                            model="qwen3-vl-32b",
                             latency_ms=latency_ms,
                             confidence_score=confidence_score,
                             confidence_breakdown=confidence_breakdown,
                             action="use_ai_result",
-                            job_id=job_id
+                            job_id=job_id,
                         )
 
                         return {
@@ -750,7 +751,7 @@ class RealImageAnalysisService:
 
             # Call Claude Vision API
             response = client.messages.create(
-                model="claude-sonnet-4-6",
+                model="claude-sonnet-4-7",
                 max_tokens=1024,
                 messages=[
                     {
@@ -831,7 +832,7 @@ class RealImageAnalysisService:
 
                 await self.ai_logger.log_claude_call(
                     task="image_vision_validation",
-                    model="claude-sonnet-4-6",
+                    model="claude-sonnet-4-7",
                     response=response,
                     latency_ms=latency_ms,
                     confidence_score=confidence_score,
@@ -841,7 +842,7 @@ class RealImageAnalysisService:
                 )
 
                 return {
-                    "model": "claude-sonnet-4-6",
+                    "model": "claude-sonnet-4-7",
                     "validation": validation,
                     "success": True
                 }
@@ -871,7 +872,7 @@ class RealImageAnalysisService:
             latency_ms = int((time.time() - start_time) * 1000)
             await self.ai_logger.log_ai_call(
                 task="image_vision_validation",
-                model="claude-sonnet-4-6",
+                model="claude-sonnet-4-7",
                 input_tokens=0,
                 output_tokens=0,
                 cost=0.0,
@@ -911,9 +912,11 @@ class RealImageAnalysisService:
                 logger.error(f"❌ {error_msg}")
                 raise ValueError(error_msg)
 
-            # Call Claude Vision API with base64 image
-            response = client.messages.create(
-                model="claude-sonnet-4-6",
+            # Call Claude Vision API with base64 image (tracked)
+            from app.services.core.claude_helper import tracked_claude_call
+            response = tracked_claude_call(
+                task="real_image_vision_validation",
+                model="claude-sonnet-4-7",
                 max_tokens=1024,
                 messages=[
                     {
@@ -933,7 +936,7 @@ class RealImageAnalysisService:
                             }
                         ]
                     }
-                ]
+                ],
             )
 
             content = response.content[0].text.strip()
@@ -950,7 +953,7 @@ class RealImageAnalysisService:
                     raise json.JSONDecodeError("No JSON object found", content, 0)
 
                 return {
-                    "model": "claude-sonnet-4-6",
+                    "model": "claude-sonnet-4-7",
                     "validation": validation,
                     "success": True
                 }

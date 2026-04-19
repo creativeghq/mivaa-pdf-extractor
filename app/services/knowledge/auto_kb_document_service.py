@@ -242,7 +242,7 @@ class AutoKBDocumentService:
                         self.supabase.client.table("kb_docs").update({
                             "text_embedding": text_embedding,
                             "embedding_status": "success",
-                            "embedding_model": "voyage-3.5",
+                            "embedding_model": "voyage-4",
                             "embedding_generated_at": datetime.utcnow().isoformat()
                         }).eq("id", doc_id).execute()
                     else:

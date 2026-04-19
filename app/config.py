@@ -140,7 +140,7 @@ class Settings(BaseSettings):
 
     # LLM Reranking
     llm_reranking_top_k: int = Field(default=5, env="LLM_RERANKING_TOP_K")
-    llm_reranking_model: str = Field(default="gpt-5-mini", env="LLM_RERANKING_MODEL")
+    llm_reranking_model: str = Field(default="claude-haiku-4-5", env="LLM_RERANKING_MODEL")
 
     # Sliding Window Retrieval
     sliding_window_max_tokens: int = Field(default=4000, env="SLIDING_WINDOW_MAX_TOKENS")
@@ -174,7 +174,8 @@ class Settings(BaseSettings):
     # OpenAI API Settings (Fallback for Voyage AI text embeddings)
     # ============================================================================
     openai_api_key: str = Field(default="", env="OPENAI_API_KEY")
-    openai_model: str = Field(default="gpt-5.2", env="OPENAI_MODEL")
+    # OpenAI chat models removed — platform uses Claude exclusively. Field kept for env-var compat.
+    openai_model: str = Field(default="", env="OPENAI_MODEL")
     openai_embedding_model: str = Field(default="text-embedding-3-small", env="OPENAI_EMBEDDING_MODEL")
     openai_max_tokens: int = Field(default=4096, env="OPENAI_MAX_TOKENS")
     openai_temperature: float = Field(default=0.1, env="OPENAI_TEMPERATURE")
@@ -185,7 +186,7 @@ class Settings(BaseSettings):
     # ============================================================================
     # API key set via GitHub Secrets: VOYAGE_API_KEY
     voyage_api_key: str = Field(default="", env="VOYAGE_API_KEY")
-    voyage_model: str = Field(default="voyage-3.5", env="VOYAGE_MODEL")
+    voyage_model: str = Field(default="voyage-4", env="VOYAGE_MODEL")
     voyage_embedding_dimension: int = Field(default=1024, env="VOYAGE_EMBEDDING_DIMENSION")
     voyage_timeout: int = Field(default=30, env="VOYAGE_TIMEOUT")
     voyage_enabled: bool = Field(default=True, env="VOYAGE_ENABLED")
@@ -198,7 +199,7 @@ class Settings(BaseSettings):
         env="RAG_EMBEDDING_MODEL"
     )
     rag_llm_model: str = Field(
-        default="claude-sonnet-4.5",
+        default="claude-sonnet-4-7",
         env="RAG_LLM_MODEL"
     )
     rag_chunk_size: int = Field(
@@ -228,7 +229,7 @@ class Settings(BaseSettings):
         env="ENABLE_MULTIMODAL"
     )
     multimodal_llm_model: str = Field(
-        default="gpt-5.2",
+        default="claude-sonnet-4-7",
         env="MULTIMODAL_LLM_MODEL"
     )
     multimodal_max_tokens: int = Field(
@@ -292,7 +293,7 @@ class Settings(BaseSettings):
         env="IMAGE_PROCESSING_ENABLED"
     )
     image_analysis_model: str = Field(
-        default="gpt-5.2",
+        default="claude-sonnet-4-7",
         env="IMAGE_ANALYSIS_MODEL"
     )
     image_resize_max_width: int = Field(
@@ -374,15 +375,15 @@ class Settings(BaseSettings):
         env="ANTHROPIC_API_KEY"
     )
     anthropic_model_classification: str = Field(
-        default="claude-haiku-4-5-20251001",
+        default="claude-haiku-4-5",
         env="ANTHROPIC_MODEL_CLASSIFICATION"
     )
     anthropic_model_validation: str = Field(
-        default="claude-sonnet-4-6",
+        default="claude-sonnet-4-7",
         env="ANTHROPIC_MODEL_VALIDATION"
     )
     anthropic_model_enrichment: str = Field(
-        default="claude-sonnet-4-6",
+        default="claude-sonnet-4-7",
         env="ANTHROPIC_MODEL_ENRICHMENT"
     )
     anthropic_max_tokens: int = Field(
@@ -403,7 +404,7 @@ class Settings(BaseSettings):
     )
     # NEW: Claude for RAG Queries
     anthropic_model_rag_query: str = Field(
-        default="claude-sonnet-4-6",
+        default="claude-sonnet-4-7",
         env="ANTHROPIC_MODEL_RAG_QUERY",
         description="Claude model for RAG question answering"
     )
@@ -423,7 +424,7 @@ class Settings(BaseSettings):
         description="Vision model provider: 'anthropic' (Claude), 'openai' (GPT-4o), 'huggingface' (Qwen)"
     )
     vision_guided_model: str = Field(
-        default="claude-sonnet-4-6",
+        default="claude-sonnet-4-7",
         env="VISION_GUIDED_MODEL",
         description="Vision model to use (provider-specific model name)"
     )
@@ -637,7 +638,7 @@ class Settings(BaseSettings):
         description="Voyage AI API key for text embeddings"
     )
     voyage_model: str = Field(
-        default="voyage-3.5",
+        default="voyage-4",
         env="VOYAGE_MODEL",
         description="Voyage AI model for text embeddings"
     )

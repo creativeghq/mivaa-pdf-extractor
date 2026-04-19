@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
-DESCRIPTION_MODEL = os.getenv("PRODUCT_DESCRIPTION_MODEL", "claude-haiku-4-5-20251001")
+DESCRIPTION_MODEL = os.getenv("PRODUCT_DESCRIPTION_MODEL", "claude-haiku-4-5")
 
 MAX_INPUT_CHARS = 6000  # ~1500 tokens — plenty for product context without overspend
 
@@ -157,8 +157,9 @@ def write_product_description_from_chunks(
     chunks_text = "\n\n".join(parts)
 
     try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        resp = client.messages.create(
+        from app.services.core.claude_helper import tracked_claude_call
+        resp = tracked_claude_call(
+            task="product_description_write",
             model=DESCRIPTION_MODEL,
             max_tokens=400,
             messages=[{

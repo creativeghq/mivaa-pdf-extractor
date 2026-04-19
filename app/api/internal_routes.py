@@ -210,7 +210,7 @@ async def classify_images(
       "extracted_images": [...],
       "ai_config": {
         "classification_primary_model": "Qwen/Qwen3-VL-8B-Instruct",
-        "classification_validation_model": "claude-sonnet-4-6",
+        "classification_validation_model": "claude-sonnet-4-7",
         "classification_confidence_threshold": 0.8
       }
     }

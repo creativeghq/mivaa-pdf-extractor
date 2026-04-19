@@ -18,7 +18,7 @@ import logging
 from collections import Counter
 import httpx
 
-from app.services.core.gpt5_service import GPT5Service
+from app.services.core.ai_client_service import get_ai_client_service
 from app.services.core.ai_call_logger import AICallLogger
 from app.config import get_settings
 
@@ -44,8 +44,8 @@ class ConsensusValidator:
     MODEL_WEIGHTS = {
         "qwen3-vl-8b": 0.7,
         "claude-haiku-4-5": 0.85,
-        "claude-sonnet-4-5": 0.95,
-        "gpt-5": 1.0,
+        "claude-sonnet-4-7": 0.95,
+        "claude-opus-4-7": 1.0,
     }
     
     # Critical tasks requiring consensus validation
@@ -69,7 +69,6 @@ class ConsensusValidator:
         qwen_config = settings.get_qwen_config()
         self.qwen_endpoint_url = qwen_config["endpoint_url"]
         self.qwen_endpoint_token = qwen_config["endpoint_token"]
-        self.gpt5 = GPT5Service()
         self.ai_logger = ai_logger or AICallLogger()
     
     async def validate_with_consensus(
@@ -306,27 +305,38 @@ class ConsensusValidator:
                     "confidence_score": 0.0
                 }
 
-        async def gpt5_extract(data):
-            result = await self.gpt5.generate_completion(
-                prompt=f"Extract {extraction_type} from: {data['content'][:1000]}",
-                model="gpt-5",
-                max_tokens=200,
-                job_id=job_id,
-            )
-            return {
-                "success": result.get("success", False),
-                "extracted_value": result.get("text", ""),
-                "confidence_score": 0.9,  # Higher confidence for GPT-5
-            }
+        async def claude_opus_extract(data):
+            try:
+                from app.services.core.claude_helper import tracked_claude_call_async
+                response = await tracked_claude_call_async(
+                    task=f"consensus_{extraction_type}_extraction",
+                    model="claude-opus-4-7",
+                    max_tokens=200,
+                    temperature=0,
+                    messages=[{
+                        "role": "user",
+                        "content": f"Extract {extraction_type} from: {data['content'][:1000]}",
+                    }],
+                    job_id=job_id,
+                    confidence_score=0.95,
+                )
+                return {
+                    "success": True,
+                    "extracted_value": response.content[0].text.strip(),
+                    "confidence_score": 0.95,  # Highest confidence — Opus
+                }
+            except Exception as e:
+                logger.error(f"Claude Opus extraction failed: {e}")
+                return {"success": False, "extracted_value": "", "confidence_score": 0.0}
 
         # Run consensus validation
         task_data = {"content": content}
 
         result = await self.validate_with_consensus(
             task_type=f"{extraction_type}_extraction",
-            task_functions=[qwen_extract, gpt5_extract],
+            task_functions=[qwen_extract, claude_opus_extract],
             task_data=task_data,
-            model_names=["qwen3-vl-8b", "gpt-5"],
+            model_names=["qwen3-vl-8b", "claude-opus-4-7"],
             job_id=job_id,
         )
         

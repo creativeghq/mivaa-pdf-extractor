@@ -53,7 +53,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 KNOWLEDGE_VISION_MODEL = os.getenv(
     "CATALOG_KNOWLEDGE_VISION_MODEL",
-    "claude-haiku-4-5-20251001",
+    "claude-haiku-4-5",
 )
 
 PAGE_RENDER_DPI = 200  # lower than spec extraction — knowledge pages are text-heavy
@@ -157,8 +157,9 @@ def _call_claude_vision_knowledge(png_bytes: bytes) -> Optional[Dict[str, Any]]:
     b64 = base64.b64encode(png_bytes).decode("utf-8")
 
     try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        resp = client.messages.create(
+        from app.services.core.claude_helper import tracked_claude_call
+        resp = tracked_claude_call(
+            task="catalog_knowledge_extraction",
             model=KNOWLEDGE_VISION_MODEL,
             max_tokens=3000,
             messages=[{
@@ -383,7 +384,7 @@ async def extract_catalog_knowledge_from_pdf(
                         supabase.client.table("kb_docs").update({
                             "text_embedding": text_embedding,
                             "embedding_status": "success",
-                            "embedding_model": "voyage-3.5",
+                            "embedding_model": "voyage-4",
                             "embedding_generated_at": datetime.utcnow().isoformat(),
                         }).eq("id", doc_id).execute()
                 else:

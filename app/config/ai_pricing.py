@@ -33,85 +33,32 @@ class AIPricingConfig:
     # Users are billed at raw_cost * MARKUP_MULTIPLIER
     MARKUP_MULTIPLIER = Decimal("1.50")
 
-    # Anthropic Claude Pricing (per 1M tokens)
+    # Anthropic Claude Pricing (per 1M tokens) — canonical 3 latest-tier models
     CLAUDE_PRICING = {
+        "claude-opus-4-7": {
+            "input": Decimal("15.00"),
+            "output": Decimal("75.00"),
+            "last_verified": "2026-04-18",
+            "source": "https://www.anthropic.com/pricing",
+            "note": "Highest-quality tier — used for consensus validation, critical extraction"
+        },
+        "claude-sonnet-4-7": {
+            "input": Decimal("3.00"),
+            "output": Decimal("15.00"),
+            "last_verified": "2026-04-18",
+            "source": "https://www.anthropic.com/pricing",
+            "note": "Default Sonnet — agent chat, discovery, metadata extraction"
+        },
         "claude-haiku-4-5": {
             "input": Decimal("1.00"),
             "output": Decimal("5.00"),
-            "last_verified": "2026-01-24",
-            "source": "https://www.anthropic.com/pricing"
-        },
-        "claude-sonnet-4-5": {
-            "input": Decimal("3.00"),
-            "output": Decimal("15.00"),
-            "last_verified": "2026-01-24",
-            "source": "https://www.anthropic.com/pricing"
-        },
-        "claude-opus-4-5": {
-            "input": Decimal("5.00"),
-            "output": Decimal("25.00"),
-            "last_verified": "2026-01-24",
-            "source": "https://www.anthropic.com/pricing"
-        },
-        # Previous generation models
-        "claude-3-5-sonnet-20241022": {
-            "input": Decimal("3.00"),
-            "output": Decimal("15.00"),
-        },
-        "claude-sonnet-4-6": {
-            "input": Decimal("3.00"),
-            "output": Decimal("15.00"),
-            "last_verified": "2026-03-30",
-            "source": "https://www.anthropic.com/pricing"
-        },
-        "claude-4-5-haiku-20250514": {
-            "input": Decimal("1.00"),
-            "output": Decimal("5.00"),
-            "last_verified": "2026-01-24",
-            "source": "https://www.anthropic.com/pricing"
-        },
-        "claude-sonnet-4-6": {
-            "input": Decimal("3.00"),
-            "output": Decimal("15.00"),
-            "last_verified": "2026-01-24",
-            "source": "https://www.anthropic.com/pricing"
-        },
-        "claude-haiku-4-5-20251001": {
-            "input": Decimal("1.00"),
-            "output": Decimal("5.00"),
-            "last_verified": "2026-01-24",
+            "last_verified": "2026-04-18",
             "source": "https://www.anthropic.com/pricing",
-            "note": "Used in agent-chat edge function"
+            "note": "Default Haiku — background agents, query parsing, reranking"
         }
     }
-    
-    # OpenAI GPT Pricing (per 1M tokens)
-    # Only models actually used in the platform
-    GPT_PRICING = {
-        "gpt-5": {
-            "input": Decimal("5.00"),
-            "output": Decimal("15.00"),
-            "last_verified": "2026-01-24",
-            "source": "https://openai.com/api/pricing/",
-            "note": "Used in GPT5Service for high-accuracy tasks"
-        },
-        "gpt-5.2": {
-            "input": Decimal("7.00"),
-            "output": Decimal("21.00"),
-            "last_verified": "2026-03-29",
-            "source": "https://openai.com/api/pricing/",
-            "note": "Main production model for discovery & metadata"
-        },
-        "gpt-5-mini": {
-            "input": Decimal("1.00"),
-            "output": Decimal("3.00"),
-            "last_verified": "2026-03-29",
-            "source": "https://openai.com/api/pricing/",
-            "note": "Cost-effective model for reranking & query expansion"
-        }
-    }
-    
-    # OpenAI Embedding Pricing (per 1M tokens)
+
+    # OpenAI Embedding Pricing (per 1M tokens) — embeddings only, chat models removed
     EMBEDDING_PRICING = {
         "text-embedding-3-small": {
             "input": Decimal("0.02"),
@@ -126,59 +73,30 @@ class AIPricingConfig:
             "last_verified": "2026-01-24",
             "source": "https://openai.com/api/pricing/",
             "dimensions": 3072
-        },
-        "text-embedding-ada-002": {
-            "input": Decimal("0.10"),
-            "output": Decimal("0.00"),
-            "last_verified": "2026-01-24",
-            "source": "https://openai.com/api/pricing/",
-            "dimensions": 1536
         }
     }
 
-    # Voyage AI Embedding Pricing (per 1M tokens)
+    # Voyage AI Embedding Pricing (per 1M tokens) — voyage-4 is primary (voyage-3.5 retained for historical usage logs)
     VOYAGE_PRICING = {
+        "voyage-4": {
+            "input": Decimal("0.06"),
+            "output": Decimal("0.00"),
+            "last_verified": "2026-04-19",
+            "source": "https://docs.voyageai.com/docs/pricing",
+            "dimensions": 1024,
+            "note": "PRIMARY text embedding model (Voyage 4 family, 1024D via Matryoshka)"
+        },
         "voyage-3.5": {
             "input": Decimal("0.06"),
             "output": Decimal("0.00"),
-            "last_verified": "2026-01-24",
+            "last_verified": "2026-04-19",
             "source": "https://docs.voyageai.com/docs/pricing",
             "dimensions": 1024,
-            "note": "PRIMARY text embedding model"
-        },
-        "voyage-3.5-lite": {
-            "input": Decimal("0.02"),
-            "output": Decimal("0.00"),
-            "last_verified": "2026-01-24",
-            "source": "https://docs.voyageai.com/docs/pricing",
-            "dimensions": 512,
-            "note": "Cost-effective embedding model"
-        },
-        "voyage-3": {
-            "input": Decimal("0.06"),
-            "output": Decimal("0.00"),
-            "last_verified": "2026-01-24",
-            "source": "https://docs.voyageai.com/docs/pricing",
-            "dimensions": 1024
-        },
-        "voyage-3-lite": {
-            "input": Decimal("0.02"),
-            "output": Decimal("0.00"),
-            "last_verified": "2026-01-24",
-            "source": "https://docs.voyageai.com/docs/pricing",
-            "dimensions": 512
-        },
-        "voyage-large-2-instruct": {
-            "input": Decimal("0.12"),
-            "output": Decimal("0.00"),
-            "last_verified": "2026-01-24",
-            "source": "https://docs.voyageai.com/docs/pricing",
-            "dimensions": 1024
+            "note": "LEGACY — kept for historical usage logs; replaced by voyage-4 on 2026-04-19"
         }
     }
     
-    # OpenAI Vision/Image Pricing
-    # Note: gpt-4o now handles vision, gpt-4-vision is deprecated
+    # Vision/Image Pricing — Claude Sonnet/Opus now handle vision; OpenAI vision removed.
     VISION_PRICING = {
         "clip-vit-large-patch14": {
             "per_image": Decimal("0.00"),  # Free via OpenAI CLIP
@@ -448,7 +366,6 @@ class AIPricingConfig:
         """Get all pricing dictionaries merged together."""
         return {
             **cls.CLAUDE_PRICING,
-            **cls.GPT_PRICING,
             **cls.EMBEDDING_PRICING,
             **cls.VOYAGE_PRICING,
             **cls.VISION_PRICING,
@@ -467,7 +384,7 @@ class AIPricingConfig:
         Get pricing for a specific model.
 
         Args:
-            model: Model name (e.g., 'claude-haiku-4-5', 'gpt-4o', 'qwen3-vl-32b')
+            model: Model name (e.g., 'claude-haiku-4-5', 'qwen3-vl-32b')
             provider: Optional provider hint ('anthropic', 'openai', 'huggingface', 'firecrawl')
 
         Returns:

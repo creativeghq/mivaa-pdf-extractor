@@ -375,7 +375,7 @@ async def process_product_images(
             extracted_images=extracted_images_list,
             confidence_threshold=0.6,
             primary_model="Qwen/Qwen3-VL-32B-Instruct",
-            validation_model="claude-sonnet-4-6",
+            validation_model="claude-sonnet-4-7",
             batch_size=15
         )
     except Exception as e:

@@ -272,7 +272,7 @@ class AdvancedSearchService:
             List of query variations including the original
         """
         try:
-            from app.services.core.ai_client_service import AIClientService
+            from app.services.core.ai_client_service import get_ai_client_service
 
             # Check if multi-query is enabled
             if not hasattr(self, 'enable_multi_query') or not self.enable_multi_query:
@@ -283,8 +283,8 @@ class AdvancedSearchService:
             if cache_key in self.query_expansion_cache:
                 return self.query_expansion_cache[cache_key]
 
-            # Generate variations using LLM
-            ai_client = AIClientService()
+            # Generate variations using Claude Haiku (cheap and fast for query expansion)
+            ai_service = get_ai_client_service()
             prompt = f"""Generate {num_variations} different ways to ask this question.
 Each variation should preserve the original intent but use different wording.
 
@@ -293,12 +293,15 @@ Original question: {query}
 Variations:
 1."""
 
-            response = await ai_client.generate_text(
-                prompt=prompt,
-                model="gpt-5-mini",  # Use cheaper model for query expansion
+            from app.services.core.claude_helper import tracked_claude_call_async
+            claude_response = await tracked_claude_call_async(
+                task="search_query_expansion",
+                model="claude-haiku-4-5",
                 max_tokens=200,
-                temperature=0.7  # Higher temperature for diversity
+                temperature=0.7,
+                messages=[{"role": "user", "content": prompt}],
             )
+            response = claude_response.content[0].text
 
             # Parse variations from response
             variations = [query]  # Always include original
