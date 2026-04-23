@@ -12,7 +12,9 @@ Why Claude web_search over Firecrawl for this:
 - Same ANTHROPIC_API_KEY we already use platform-wide — no new vendor
 
 Design:
-- Model: claude-haiku-4-5 (fast, cheap for factual search)
+- Model: claude-opus-4-7 — matches claude.ai's default backend for web_search
+  quality. Haiku was tried first (cheaper) but returned empty for niche B2B
+  products that Opus finds reliably.
 - Tools: web_search_20250305 (Anthropic built-in) + a forced-output `submit_price_results` tool
   that Claude must call at the end to emit structured JSON — no regex parsing.
 - Credit logging via AICallLogger.log_claude_call (handles tokens + per-token billing).
@@ -39,18 +41,20 @@ logger = logging.getLogger(__name__)
 # ────────────────────────────────────────────────────────────────────────────
 
 ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1/messages"
-MODEL = "claude-haiku-4-5"
+# Opus — more thorough at web_search reasoning + extracting prices from page content.
+# Haiku (prior choice) was missing prices that claude.ai's Opus backend finds.
+MODEL = "claude-opus-4-7"
 WEB_SEARCH_BETA_HEADER = "web-search-2025-03-05"
 WEB_SEARCH_TOOL_TYPE = "web_search_20250305"
-MAX_WEB_SEARCHES = 5
+MAX_WEB_SEARCHES = 10  # was 5 — more coverage for niche products
 MAX_TOKENS = 4096
-HTTP_TIMEOUT_S = 90.0
+HTTP_TIMEOUT_S = 120.0  # Opus is slower
 THROTTLE_HOURS = 6
 
-# Haiku 4.5 pricing (from app/config/ai_pricing.py — ballpark for logging).
+# Opus 4.7 pricing (from app/config/ai_pricing.py — ballpark for logging).
 # Real debit happens via AICallLogger; these are just fallback estimates.
-HAIKU_INPUT_PER_1K = 0.0008
-HAIKU_OUTPUT_PER_1K = 0.004
+OPUS_INPUT_PER_1K = 0.015
+OPUS_OUTPUT_PER_1K = 0.075
 WEB_SEARCH_PER_CALL = 0.010  # $10 / 1000 web searches
 
 
@@ -189,8 +193,8 @@ class ClaudePriceSearchService:
         web_searches = int(server_tool_use.get("web_search_requests", 0) or 0)
 
         cost_usd = (
-            (input_tokens / 1000) * HAIKU_INPUT_PER_1K
-            + (output_tokens / 1000) * HAIKU_OUTPUT_PER_1K
+            (input_tokens / 1000) * OPUS_INPUT_PER_1K
+            + (output_tokens / 1000) * OPUS_OUTPUT_PER_1K
             + web_searches * WEB_SEARCH_PER_CALL
         )
         # Platform credits: 1 credit = $0.01 (same convention as Firecrawl path).
@@ -374,8 +378,8 @@ class ClaudePriceSearchService:
                     "model_name": MODEL,
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
-                    "input_cost_usd": round((input_tokens / 1000) * HAIKU_INPUT_PER_1K, 6),
-                    "output_cost_usd": round((output_tokens / 1000) * HAIKU_OUTPUT_PER_1K, 6),
+                    "input_cost_usd": round((input_tokens / 1000) * OPUS_INPUT_PER_1K, 6),
+                    "output_cost_usd": round((output_tokens / 1000) * OPUS_OUTPUT_PER_1K, 6),
                     "total_cost_usd": round(cost_usd, 6),
                     "credits_debited": platform_credits,
                     "metadata": {
