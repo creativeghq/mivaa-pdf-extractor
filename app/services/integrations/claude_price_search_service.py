@@ -243,34 +243,26 @@ class ClaudePriceSearchService:
     def _build_prompt(
         self, product_name: str, dimensions: Optional[str], country_code: Optional[str], limit: int
     ) -> str:
+        """
+        Short, directive prompt. Prior versions were verbose with lots of
+        'hard requirements' — Claude over-filtered and returned empty lists
+        for products that do have retailer prices when asked simply.
+        Lesson: trust web_search, keep the instruction direct.
+        """
         size_part = f" {dimensions}" if dimensions else ""
-        local_hint = (
-            f"The user is in {country_code}. PREFER retailers that ship to or list prices in {country_code}, "
-            "but DO include international retailers if local coverage is thin — do not silently drop global results."
-            if country_code
-            else "Do not restrict to any specific country — include global retailer results."
-        )
+        country_part = f" (prices available in {country_code} or shipping to {country_code})" if country_code else ""
 
         return (
-            f"I need current prices for the product: \"{product_name}{size_part}\".\n\n"
-            f"Use web search to find up to {limit} distinct retailers with visible prices for this product. "
-            "Prioritize in this order: (1) Google Shopping / Sponsored listings, (2) dedicated retailer "
-            "sites (their own domain), (3) marketplaces (Amazon, eBay), (4) price-comparison aggregators "
-            "ONLY as a last resort. Skip blog posts, forums, manufacturer PDFs.\n\n"
-            f"{local_hint}\n\n"
-            "REQUIREMENTS for each entry:\n"
-            "  1. A URL that leads to the specific product (product page, listing page, or Google Shopping "
-            "     result page is fine — as long as the price is tied to THAT product, not a category).\n"
-            "  2. A visible numeric price with a clear currency. Skip 'price on request' / 'trade only' listings.\n"
-            "  3. Prefer the exact size match when dimensions are specified; for close-but-not-exact sizes "
-            "     (±20%), include them and note the size mismatch in the `notes` field.\n"
-            "  4. If the same retailer shows up multiple times, keep only the cheapest matching variant.\n\n"
-            "Be inclusive, not strict. It is better to return a marketplace listing with a real price than "
-            "to return nothing. For niche B2B products (stone, tiles, fabric, trade materials), include "
-            "trade-focused retailers even if prices are wholesale. Only return an empty array if you truly "
-            "found zero prices anywhere on the web.\n\n"
-            "After your web searches, call the `submit_price_results` tool EXACTLY ONCE with the final "
-            "deduplicated list. Do NOT fabricate URLs or prices — only submit what you actually saw."
+            f"{product_name}{size_part}{country_part} — create a list of up to {limit} retailers "
+            f"currently selling this product with visible prices.\n\n"
+            "Exclude the manufacturer's own website — they typically require quote requests and do not "
+            "show retail prices. Include online retailers, tile shops, home improvement stores, "
+            "marketplaces (Amazon, eBay), and trade distributors who do list prices publicly.\n\n"
+            "For each retailer, provide: retailer name, product page URL, price, currency, and (if visible) "
+            "stock availability. One entry per retailer — keep the cheapest matching variant if they list "
+            "multiple sizes.\n\n"
+            "When done, call submit_price_results with the list. Only submit prices you actually saw — do "
+            "not invent any."
         )
 
     def _build_tools(self, limit: int) -> List[Dict[str, Any]]:
