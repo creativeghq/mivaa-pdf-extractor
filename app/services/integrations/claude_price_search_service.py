@@ -67,16 +67,41 @@ class PriceHit(BaseModel):
     """Single retailer result returned by Claude for a product."""
     retailer_name: str = Field(..., description="Retailer display name, e.g. 'Topps Tiles', 'Mandarin Stone'.")
     product_url: str = Field(..., description="Direct product page URL. Must be a product page, not a search results page.")
-    price: float = Field(..., description="Numeric price.")
-    currency: str = Field(..., description="ISO 4217 currency code (USD, EUR, GBP, etc.)")
+    price: Optional[float] = Field(
+        default=None,
+        description="Numeric price. None ONLY when is_quote_only=true (retailer carries product but shows 'quote on request').",
+    )
+    currency: Optional[str] = Field(default=None, description="ISO 4217 currency code (USD, EUR, GBP, etc.)")
+    price_unit: Optional[str] = Field(
+        default="m2",
+        description="Unit the price refers to: 'm2', 'box', 'piece', 'linear_meter'. Default 'm2' for tiles.",
+    )
     availability: Optional[str] = Field(default=None, description="in_stock | out_of_stock | limited | unknown")
-    notes: Optional[str] = Field(default=None, description="Optional short note (e.g. 'per box', 'shipping included').")
+    city: Optional[str] = Field(default=None, description="Retailer city/region if known.")
+    ships_from_abroad: bool = Field(
+        default=False,
+        description="True if retailer is outside the requested country but will ship to it.",
+    )
+    is_quote_only: bool = Field(
+        default=False,
+        description="True if retailer carries product but shows 'Quote on request' / 'Contact for price' instead of a number.",
+    )
+    last_verified: Optional[str] = Field(
+        default=None,
+        description="ISO date when the retailer's page was last verified to have this product. Usually today's date.",
+    )
+    notes: Optional[str] = Field(default=None, description="Short context note (promo valid dates, per-box vs per-m², shipping, etc.)")
 
 
 class PriceSearchResult(BaseModel):
     """Wrapper for results + metadata."""
     success: bool
     hits: List[PriceHit] = []
+    summary: Optional[str] = Field(
+        default=None,
+        description="2-3 sentence human-readable summary from Claude: closest retailer, manufacturer "
+                    "showroom presence, pricing anomalies. Rendered below the table in the UI.",
+    )
     credits_used: int = 0
     latency_ms: int = 0
     input_tokens: int = 0
@@ -175,7 +200,7 @@ class ClaudePriceSearchService:
             )
 
         data = resp.json()
-        hits = self._extract_structured_hits(data)
+        hits, summary = self._extract_structured_hits(data)
         debug_reasoning: Optional[str] = None
         if not hits:
             # Collect any text content blocks so callers can see Claude's reasoning.
@@ -219,6 +244,7 @@ class ClaudePriceSearchService:
         return PriceSearchResult(
             success=True,
             hits=hits,
+            summary=summary,
             credits_used=platform_credits,
             latency_ms=latency_ms,
             input_tokens=input_tokens,
@@ -247,26 +273,48 @@ class ClaudePriceSearchService:
     def _build_prompt(
         self, product_name: str, dimensions: Optional[str], country_code: Optional[str], limit: int
     ) -> str:
-        """
-        Short, directive prompt. Prior versions were verbose with lots of
-        'hard requirements' — Claude over-filtered and returned empty lists
-        for products that do have retailer prices when asked simply.
-        Lesson: trust web_search, keep the instruction direct.
-        """
+        """Template derived from user-tested claude.ai prompt that worked in practice."""
         size_part = f" {dimensions}" if dimensions else ""
-        country_part = f" (prices available in {country_code} or shipping to {country_code})" if country_code else ""
+        product_spec = f"{product_name}{size_part}".strip()
+        country = country_code or "any country (global search)"
+        today = datetime.now(timezone.utc).date().isoformat()
 
         return (
-            f"{product_name}{size_part}{country_part} — create a list of up to {limit} retailers "
-            f"currently selling this product with visible prices.\n\n"
-            "Exclude the manufacturer's own website — they typically require quote requests and do not "
-            "show retail prices. Include online retailers, tile shops, home improvement stores, "
-            "marketplaces (Amazon, eBay), and trade distributors who do list prices publicly.\n\n"
-            "For each retailer, provide: retailer name, product page URL, price, currency, and (if visible) "
-            "stock availability. One entry per retailer — keep the cheapest matching variant if they list "
-            "multiple sizes.\n\n"
-            "When done, call submit_price_results with the list. Only submit prices you actually saw — do "
-            "not invent any."
+            f"Find current retail prices for {product_spec} in {country}. "
+            f"Return exactly {limit} results.\n\n"
+            "Requirements:\n"
+            "1. One row per unique retailer — never list the same website twice, even if they have "
+            "   multiple variants or promo prices. Pick the cheapest available variant per retailer.\n"
+            f"2. Only retailers that ship to or operate in {country}. Prioritize local-language sites "
+            "   (.gr, .bg, .ro, .it, .es, .de, etc.) over international ones.\n"
+            f"3. Exactly {limit} entries. If you find fewer than {limit} with published prices, fill "
+            "   the remaining rows with retailers that carry the product but show 'Quote on request' — "
+            "   mark these with is_quote_only=true and leave price/currency null.\n\n"
+            "For each row include:\n"
+            "- retailer_name\n"
+            "- city (if known from the retailer page or address)\n"
+            "- price per m² in local currency (or leave null if is_quote_only)\n"
+            "- currency (ISO code)\n"
+            "- product_url (direct product page)\n"
+            "- availability (in_stock | out_of_stock | limited | unknown)\n"
+            f"- last_verified ({today} unless you have a more specific date)\n"
+            "- ships_from_abroad=true if retailer is outside the requested country\n"
+            "- notes (promo valid dates, per-box vs per-m², shipping, etc.)\n\n"
+            "Sort order: published prices first (cheapest to most expensive), then quote-only retailers "
+            "at the bottom.\n\n"
+            "Do not include:\n"
+            "- Aggregator marketplaces (Skroutz, BestPrice, Idealo, PriceRunner, Google Shopping) that just "
+            "  relist other retailers' products. DO include Amazon/eBay as separate retailers when they "
+            "  have the product themselves.\n"
+            "- The manufacturer's own website unless they sell direct-to-consumer with published prices.\n"
+            f"- Retailers outside {country} unless fewer than {limit} local options exist — in that "
+            "  case, include them and set ships_from_abroad=true.\n\n"
+            "After compiling the list, write 2-3 sentences as a `summary` that notes:\n"
+            "- Which retailer is geographically closest to the user (if they're in a specific country)\n"
+            "- Whether the manufacturer has a direct showroom in-country\n"
+            "- Any pricing anomalies (unusually cheap/expensive outliers worth questioning)\n\n"
+            "Call the submit_price_results tool EXACTLY ONCE with {retailers: [...], summary: '...'}. "
+            "Only submit prices you actually saw — do not fabricate."
         )
 
     def _build_tools(self, limit: int) -> List[Dict[str, Any]]:
@@ -276,9 +324,9 @@ class ClaudePriceSearchService:
             {
                 "name": "submit_price_results",
                 "description": (
-                    "Submit the final structured list of retailers and prices. Call this exactly once "
-                    "at the end of your research, after all web searches. Empty list is valid if nothing "
-                    "qualifying was found."
+                    "Submit the final structured list of retailers. Call this exactly once at the end "
+                    "of your research. Include rows with is_quote_only=true to reach the requested "
+                    "count when published prices are scarce. Always include the summary text."
                 ),
                 "input_schema": {
                     "type": "object",
@@ -291,44 +339,70 @@ class ClaudePriceSearchService:
                                 "properties": {
                                     "retailer_name": {"type": "string"},
                                     "product_url": {"type": "string"},
-                                    "price": {"type": "number"},
-                                    "currency": {"type": "string", "description": "ISO 4217 code."},
-                                    "availability": {
-                                        "type": "string",
-                                        "enum": ["in_stock", "out_of_stock", "limited", "unknown"],
-                                    },
+                                    "price": {"type": ["number", "null"], "description": "Price per unit (usually per m²). Null only when is_quote_only."},
+                                    "currency": {"type": ["string", "null"], "description": "ISO 4217 code. Null when is_quote_only."},
+                                    "price_unit": {"type": "string", "enum": ["m2", "box", "piece", "linear_meter"], "default": "m2"},
+                                    "availability": {"type": "string", "enum": ["in_stock", "out_of_stock", "limited", "unknown"]},
+                                    "city": {"type": "string"},
+                                    "ships_from_abroad": {"type": "boolean", "default": False},
+                                    "is_quote_only": {"type": "boolean", "default": False},
+                                    "last_verified": {"type": "string", "description": "ISO date."},
                                     "notes": {"type": "string"},
                                 },
-                                "required": ["retailer_name", "product_url", "price", "currency"],
+                                "required": ["retailer_name", "product_url"],
                             },
                         },
+                        "summary": {
+                            "type": "string",
+                            "description": "2-3 sentences: closest retailer, manufacturer showroom presence in-country, pricing anomalies.",
+                        },
                     },
-                    "required": ["retailers"],
+                    "required": ["retailers", "summary"],
                 },
             },
         ]
 
-    def _extract_structured_hits(self, response: Dict[str, Any]) -> List[PriceHit]:
-        """Pull the submit_price_results tool_use block. Ignore any text commentary."""
+    def _extract_structured_hits(
+        self, response: Dict[str, Any]
+    ) -> Tuple[List[PriceHit], Optional[str]]:
+        """Pull the submit_price_results tool_use block. Returns (hits, summary)."""
         for block in response.get("content", []) or []:
             if block.get("type") == "tool_use" and block.get("name") == "submit_price_results":
-                raw_list = (block.get("input") or {}).get("retailers") or []
+                payload = block.get("input") or {}
+                raw_list = payload.get("retailers") or []
+                summary = payload.get("summary")
                 hits: List[PriceHit] = []
-                seen_urls = set()
+                seen_domains = set()
                 for raw in raw_list:
                     try:
                         hit = PriceHit(**raw)
                     except Exception as e:
                         logger.debug(f"Skipped malformed retailer entry: {e}")
                         continue
-                    url_key = self._normalize_url(hit.product_url)
-                    if url_key in seen_urls:
+                    # Dedupe by retailer domain (per spec: "one row per unique retailer")
+                    domain = self._domain_of(hit.product_url)
+                    if domain in seen_domains:
                         continue
-                    seen_urls.add(url_key)
+                    seen_domains.add(domain)
                     hits.append(hit)
-                return hits
+                # Sort: published prices first (cheapest → most expensive), then quote-only.
+                hits = self._sort_hits(hits)
+                return hits, summary
         # Fallback: if the model forgot to call the tool but dumped JSON in text.
-        return self._extract_from_text(response)
+        return self._extract_from_text(response), None
+
+    @staticmethod
+    def _domain_of(url: str) -> str:
+        m = re.match(r"^https?://([^/]+)", (url or "").strip(), flags=re.IGNORECASE)
+        return (m.group(1) if m else url or "").lower().removeprefix("www.")
+
+    @staticmethod
+    def _sort_hits(hits: List[PriceHit]) -> List[PriceHit]:
+        """Published prices first (ascending), then quote-only rows."""
+        priced = [h for h in hits if not h.is_quote_only and h.price is not None]
+        quote = [h for h in hits if h.is_quote_only or h.price is None]
+        priced.sort(key=lambda h: (h.price or float("inf")))
+        return priced + quote
 
     @staticmethod
     def _normalize_url(url: str) -> str:

@@ -238,6 +238,7 @@ class PriceLookupResponse(BaseModel):
     # Claude-mode fields
     results: Optional[List[PriceHit]] = None
     query: Optional[str] = None
+    summary: Optional[str] = None  # Claude's 2-3 sentence summary (closest retailer, anomalies, etc.)
     debug_reasoning: Optional[str] = None  # populated when results is empty
 
 
@@ -389,6 +390,7 @@ async def _claude_mode(
         source="claude_web_search",
         query=body.search_query,
         results=result.hits,
+        summary=result.summary,
         credits_used=result.credits_used,
         latency_ms=result.latency_ms,
         scraped_at=datetime.now(timezone.utc).isoformat(),
