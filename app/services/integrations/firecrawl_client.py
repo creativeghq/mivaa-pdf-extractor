@@ -194,15 +194,21 @@ class FirecrawlClient:
         if extraction_prompt:
             prompt_parts.append(extraction_prompt)
 
+        # Firecrawl v2 rejects a top-level `extract` key — structured extraction
+        # is expressed as an object inside `formats`: {type: "json", schema, prompt}.
+        # The result lands at data_envelope["json"], not data_envelope["extract"].
         body: Dict[str, Any] = {
             "url": url,
-            "formats": ["markdown"],
+            "formats": [
+                "markdown",
+                {
+                    "type": "json",
+                    "schema": schema,
+                    "prompt": " ".join(prompt_parts),
+                },
+            ],
             "onlyMainContent": only_main_content,
             "timeout": self.JS_RENDER_TIMEOUT_MS if use_javascript_render else self.DEFAULT_TIMEOUT_MS,
-            "extract": {
-                "schema": schema,
-                "prompt": " ".join(prompt_parts),
-            },
         }
 
         if use_javascript_render:
