@@ -162,7 +162,7 @@ class ClaudePriceSearchService:
         if not self.api_key:
             return PriceSearchResult(success=False, error="ANTHROPIC_API_KEY not configured")
 
-        limit = max(1, min(limit, 10))
+        limit = max(1, min(limit, 25))  # raised 10→25 to capture Google Shopping merchant listings
         prompt = self._build_prompt(product_name, dimensions, country_code, limit)
         tools = self._build_tools(limit)
 
@@ -281,39 +281,47 @@ class ClaudePriceSearchService:
 
         return (
             f"Find current retail prices for {product_spec} in {country}. "
-            f"Return exactly {limit} results.\n\n"
+            f"Return up to {limit} results — only retailers with a VISIBLE NUMERIC PRICE. "
+            "Do NOT return quote-only / 'price on request' / 'contact for quote' entries.\n\n"
+            "Search strategy — do ALL of these, not just one:\n"
+            f"- Google Shopping / Google Merchant listings for {product_spec} (the Shopping tab returns "
+            "  many merchant sellers for the same product — each is a separate retailer and price worth "
+            "  including)\n"
+            "- Bing Shopping results\n"
+            f"- Direct organic retailer results in {country}\n"
+            "- Marketplaces (Amazon, eBay) where the product has a visible price\n"
+            "- Tile-specialist retailer sites that list prices on product pages\n\n"
             "Requirements:\n"
-            "1. One row per unique retailer — never list the same website twice, even if they have "
-            "   multiple variants or promo prices. Pick the cheapest available variant per retailer.\n"
+            "1. One row per unique retailer domain — never list the same website twice. If Google Shopping "
+            "   returns 5 listings from the same retailer, pick the cheapest one.\n"
             f"2. Only retailers that ship to or operate in {country}. Prioritize local-language sites "
-            "   (.gr, .bg, .ro, .it, .es, .de, etc.) over international ones.\n"
-            f"3. Exactly {limit} entries. If you find fewer than {limit} with published prices, fill "
-            "   the remaining rows with retailers that carry the product but show 'Quote on request' — "
-            "   mark these with is_quote_only=true and leave price/currency null.\n\n"
+            "   (.gr, .bg, .ro, .it, .es, .de, etc.) over international. Include international retailers "
+            "   with ships_from_abroad=true if they have the product and will ship to the country.\n"
+            f"3. Aim for {limit} entries. OK to return fewer if there genuinely aren't that many "
+            "   retailers with published prices — never invent data to fill the count.\n"
+            "4. EXCLUDE: any row where price is unknown or shown as 'quote on request'. Skip retailers "
+            "   that carry the product but don't publish a price. The user does not want those rows.\n\n"
             "For each row include:\n"
             "- retailer_name\n"
             "- city (if known from the retailer page or address)\n"
-            "- price per m² in local currency (or leave null if is_quote_only)\n"
+            "- price per m² in local currency (REQUIRED — no null prices)\n"
             "- currency (ISO code)\n"
-            "- product_url (direct product page)\n"
+            "- product_url (direct product page, or the Google Shopping result URL if that's where the "
+            "  price was shown)\n"
             "- availability (in_stock | out_of_stock | limited | unknown)\n"
             f"- last_verified ({today} unless you have a more specific date)\n"
             "- ships_from_abroad=true if retailer is outside the requested country\n"
-            "- notes (promo valid dates, per-box vs per-m², shipping, etc.)\n\n"
-            "Sort order: published prices first (cheapest to most expensive), then quote-only retailers "
-            "at the bottom.\n\n"
+            "- notes (promo valid dates, per-box vs per-m², shipping, whether seen on Google Shopping, etc.)\n\n"
+            "Sort by: price ascending (cheapest first).\n\n"
             "Do not include:\n"
-            "- Aggregator marketplaces (Skroutz, BestPrice, Idealo, PriceRunner, Google Shopping) that just "
-            "  relist other retailers' products. DO include Amazon/eBay as separate retailers when they "
-            "  have the product themselves.\n"
+            "- Price-comparison aggregators that hide prices behind redirects (Skroutz, BestPrice, "
+            "  Idealo, PriceRunner). But DO include individual merchant results surfaced via Google "
+            "  Shopping — each merchant is its own retailer.\n"
             "- The manufacturer's own website unless they sell direct-to-consumer with published prices.\n"
-            f"- Retailers outside {country} unless fewer than {limit} local options exist — in that "
-            "  case, include them and set ships_from_abroad=true.\n\n"
-            "After compiling the list, write 2-3 sentences as a `summary` that notes:\n"
-            "- Which retailer is geographically closest to the user (if they're in a specific country)\n"
-            "- Whether the manufacturer has a direct showroom in-country\n"
-            "- Any pricing anomalies (unusually cheap/expensive outliers worth questioning)\n\n"
-            "Call the submit_price_results tool EXACTLY ONCE with {retailers: [...], summary: '...'}. "
+            "- Any row without a real visible price.\n\n"
+            "After compiling the list, write 2-3 sentences as a `summary`: closest retailer, "
+            "manufacturer showroom presence in-country, pricing anomalies worth questioning.\n\n"
+            "Call submit_price_results EXACTLY ONCE with {retailers: [...], summary: '...'}. "
             "Only submit prices you actually saw — do not fabricate."
         )
 
@@ -379,13 +387,16 @@ class ClaudePriceSearchService:
                     except Exception as e:
                         logger.debug(f"Skipped malformed retailer entry: {e}")
                         continue
+                    # Hard filter: no quote-only rows, no missing prices.
+                    if hit.is_quote_only or hit.price is None:
+                        continue
                     # Dedupe by retailer domain (per spec: "one row per unique retailer")
                     domain = self._domain_of(hit.product_url)
-                    if domain in seen_domains:
+                    if not domain or domain in seen_domains:
                         continue
                     seen_domains.add(domain)
                     hits.append(hit)
-                # Sort: published prices first (cheapest → most expensive), then quote-only.
+                # Sort: cheapest first.
                 hits = self._sort_hits(hits)
                 return hits, summary
         # Fallback: if the model forgot to call the tool but dumped JSON in text.
@@ -398,11 +409,8 @@ class ClaudePriceSearchService:
 
     @staticmethod
     def _sort_hits(hits: List[PriceHit]) -> List[PriceHit]:
-        """Published prices first (ascending), then quote-only rows."""
-        priced = [h for h in hits if not h.is_quote_only and h.price is not None]
-        quote = [h for h in hits if h.is_quote_only or h.price is None]
-        priced.sort(key=lambda h: (h.price or float("inf")))
-        return priced + quote
+        """Sort by price ascending. Quote-only rows are filtered upstream."""
+        return sorted(hits, key=lambda h: (h.price if h.price is not None else float("inf")))
 
     @staticmethod
     def _normalize_url(url: str) -> str:

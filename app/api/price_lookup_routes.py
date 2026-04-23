@@ -203,8 +203,8 @@ class PriceLookupRequest(BaseModel):
     limit: int = Field(
         default=10,
         ge=1,
-        le=10,
-        description="Claude mode only: max retailers to return (hard cap 10).",
+        le=25,
+        description="Claude mode only: max retailers to return (hard cap 25). Higher values capture Google Shopping merchant listings.",
     )
 
     # Shared
