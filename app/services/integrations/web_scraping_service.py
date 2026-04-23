@@ -1,18 +1,15 @@
 """
-Web Scraping Service - Process Firecrawl scraping sessions and convert to products.
+Web Scraping Service — turn Firecrawl scraping sessions into products.
 
-This service:
-1. Fetches scraping sessions from Supabase
-2. Retrieves scraped markdown content from scraping_pages
-3. Uses ProductDiscoveryService.discover_products_from_text() to find products
-4. Creates products in the database with chunks + text embeddings (inline, Voyage AI)
-5. Downloads, classifies, and generates 5 SLIG embeddings per image
-6. Queues Phase 2 understanding embeddings (Qwen3-VL → Voyage AI 1024D)
-7. Updates session status
-
-ARCHITECTURE:
-- Reuses existing product discovery pipeline (no changes to PDF/XML)
-- Uses same error handling patterns as PDF processing
+Flow:
+1. Fetch scraping session + scraping_pages.markdown_content
+2. Discover products via ProductDiscoveryService
+3. Create products with inline chunks + Voyage AI text embeddings
+4. Download, classify, and generate SLIG embeddings for product images
+   (understanding embeddings + specialized SLIG are produced inline by
+   image_processing_service.save_images_and_generate_clips when vision_analysis
+   is available; there is no separate queue/worker step)
+5. Update session status
 """
 
 import logging
@@ -27,7 +24,6 @@ from app.services.chunking.unified_chunking_service import UnifiedChunkingServic
 from app.services.images.image_download_service import ImageDownloadService
 from app.services.images.image_processing_service import ImageProcessingService
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
-from app.services.embeddings.clip_embedding_job_service import CLIPEmbeddingJobService
 from app.utils.retry_utils import retry_async
 from app.utils.circuit_breaker import claude_breaker, gpt_breaker, CircuitBreakerError
 from app.utils.timeout_guard import with_timeout, TimeoutError, TimeoutConstants
@@ -100,11 +96,8 @@ class WebScrapingService:
         self.image_downloader = ImageDownloadService()
         self.image_processor = None  # Lazy init with workspace_id
 
-        # ✅ Text embedding service (Voyage AI / OpenAI fallback) — used inline for chunks
+        # Text embedding service (Voyage AI with OpenAI fallback) — used inline for chunks
         self.embedding_service = RealEmbeddingsService()
-
-        # ✅ CLIP job service — queues Phase 2 (Qwen3-VL → understanding embeddings)
-        self.clip_job_service = CLIPEmbeddingJobService()
 
     def _get_image_processor(self, workspace_id: str) -> ImageProcessingService:
         """Get or create image processor for workspace."""
@@ -278,15 +271,30 @@ class WebScrapingService:
             markdown_content = await self._fetch_scraped_markdown(session_id)
 
             if not markdown_content:
-                self.logger.warning(f"⚠️ No markdown content found for session {session_id}")
+                self.logger.error(f"❌ No markdown content found for session {session_id}")
+                await self._update_session_status(
+                    session_id=session_id,
+                    status="failed",
+                    error_message="empty_content: no markdown in scraping_pages",
+                )
                 return {
-                    "success": True,
+                    "success": False,
                     "session_id": session_id,
                     "products_created": 0,
-                    "message": "No content to process"
+                    "error_code": "empty_content",
+                    "error": "No markdown content found in scraping_pages for this session",
                 }
 
             self.logger.info(f"   ✅ Retrieved {len(markdown_content):,} characters of markdown")
+
+            # Debit Firecrawl credits (1 credit per scraped page) — matches the
+            # inspiration-URL tool pattern. Non-blocking: a debit failure doesn't
+            # stop processing; it just means an unbilled run that we can reconcile.
+            await self._debit_firecrawl_credits(
+                session=session,
+                session_id=session_id,
+                workspace_id=workspace_id,
+            )
 
             # ✅ Stage: PAGES_SCRAPED
             if job_id:
@@ -362,12 +370,14 @@ class WebScrapingService:
                 materials_processed=len(created_products)
             )
 
-            # ── Factory propagation + enrichment trigger ─────────────────
+            # Factory propagation + enrichment trigger (non-blocking — products are
+            # already stored, so enrichment failure doesn't roll them back, but we
+            # log at error level and include response body so it's visible).
             if created_products:
                 try:
                     import os, httpx as _httpx
                     _supabase_url = os.getenv("SUPABASE_URL", "")
-                    _service_key  = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+                    _service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
                     if _supabase_url and _service_key:
                         _pids = [p['id'] for p in created_products]
                         async with _httpx.AsyncClient(timeout=15) as _hc:
@@ -381,13 +391,19 @@ class WebScrapingService:
                                 },
                                 headers={"Authorization": f"Bearer {_service_key}"},
                             )
-                            _d = _resp.json()
-                            self.logger.info(
-                                f"🏭 Factory enrichment: propagated={_d.get('propagated', 0)}, "
-                                f"queued_job={_d.get('queued_job_id') or 'none'}"
-                            )
+                            if _resp.status_code >= 400:
+                                self.logger.error(
+                                    f"❌ Factory enrichment HTTP {_resp.status_code}: "
+                                    f"{_resp.text[:500]}"
+                                )
+                            else:
+                                _d = _resp.json()
+                                self.logger.info(
+                                    f"🏭 Factory enrichment: propagated={_d.get('propagated', 0)}, "
+                                    f"queued_job={_d.get('queued_job_id') or 'none'}"
+                                )
                 except Exception as _fe:
-                    self.logger.warning(f"⚠️ Factory enrichment trigger (non-blocking): {_fe}")
+                    self.logger.error(f"❌ Factory enrichment trigger failed: {_fe}")
 
             processing_time = (datetime.now() - start_time).total_seconds() * 1000
 
@@ -516,7 +532,7 @@ class WebScrapingService:
         max_attempts=3,
         base_delay=2.0,
         max_delay=30.0,
-        exceptions=(TimeoutError, asyncio.TimeoutError, Exception)
+        exceptions=(TimeoutError, asyncio.TimeoutError, asyncio.CancelledError, ConnectionError),
     )
     async def _discover_products_with_timeout(
         self,
@@ -590,6 +606,46 @@ class WebScrapingService:
             self.logger.error(f"Failed to fetch scraping session: {e}")
             return None
 
+    async def _debit_firecrawl_credits(
+        self,
+        session: Dict[str, Any],
+        session_id: str,
+        workspace_id: str,
+    ) -> None:
+        """Debit Firecrawl credits (1 per scraped page) from the session owner.
+
+        Silent on missing user_id (legacy sessions) or credit-service failures —
+        we log at warning level so unbilled usage is at least visible.
+        """
+        user_id = session.get('user_id')
+        if not user_id:
+            self.logger.warning(f"   💳 No user_id on session {session_id} — skipping Firecrawl credit debit")
+            return
+
+        pages_scraped = int(session.get('completed_pages') or 0)
+        if pages_scraped <= 0:
+            return
+
+        try:
+            from app.services.integrations.credits_integration_service import CreditsIntegrationService
+            credits_svc = CreditsIntegrationService()
+            result = await credits_svc.debit_credits_for_firecrawl(
+                user_id=user_id,
+                workspace_id=workspace_id,
+                operation_type='scrape',
+                credits_used=pages_scraped,
+                url=session.get('source_url'),
+                pages_scraped=pages_scraped,
+                metadata={'session_id': session_id},
+            )
+            if not result.get('success'):
+                self.logger.warning(
+                    f"   💳 Firecrawl credit debit failed for session {session_id}: "
+                    f"{result.get('error')}"
+                )
+        except Exception as e:
+            self.logger.warning(f"   💳 Firecrawl credit debit errored for session {session_id}: {e}")
+
     async def _fetch_scraped_markdown(self, session_id: str) -> str:
         """
         Fetch and combine markdown content from all scraping_pages for a session.
@@ -607,14 +663,10 @@ class WebScrapingService:
             if not response.data:
                 return ""
 
-            # Combine markdown from all pages
-            # Note: Firecrawl stores markdown in the 'markdown' field or similar
-            # We need to check the actual field name in scraping_pages
             markdown_parts = []
 
             for page in response.data:
-                # Try different possible field names for markdown content
-                markdown = page.get("markdown") or page.get("content") or page.get("markdown_content") or ""
+                markdown = page.get("markdown_content") or ""
 
                 if markdown:
                     markdown_parts.append(markdown)
@@ -872,22 +924,23 @@ class WebScrapingService:
 
             if chunk_ids:
                 self.logger.info(f"   ✅ Created {len(chunk_ids)} chunks for product {product_name}")
-                # Generate text embeddings inline — the ai_analysis_queue has no active consumer
-                await self._generate_chunk_embeddings(chunk_ids)
+                embedded = await self._generate_chunk_embeddings(chunk_ids)
+                if embedded < len(chunk_ids):
+                    self.logger.error(
+                        f"   ❌ Partial chunk-embedding failure for {product_name}: "
+                        f"{embedded}/{len(chunk_ids)} embedded"
+                    )
 
         except Exception as e:
             self.logger.error(f"   ❌ Failed to create chunks for product {product_name}: {e}")
-            # Don't raise - product is already created
+            # Don't raise — product is already created; failure is surfaced via logs above
 
-    async def _generate_chunk_embeddings(self, chunk_ids: List[Dict[str, str]]) -> None:
+    async def _generate_chunk_embeddings(self, chunk_ids: List[Dict[str, str]]) -> int:
         """
         Generate Voyage AI text embeddings for chunks and save to document_chunks.text_embedding.
 
-        This runs inline because ai_analysis_queue has no active consumer. Matching the
-        same pattern as the PDF pipeline's /api/internal/create-chunks endpoint.
-
-        Args:
-            chunk_ids: List of dicts with 'id' key
+        Returns the number of chunks that were successfully embedded. Callers should
+        compare against len(chunk_ids) to detect partial failures.
         """
         embedded = 0
         for item in chunk_ids:
@@ -895,7 +948,6 @@ class WebScrapingService:
             if not chunk_id:
                 continue
             try:
-                # Fetch chunk content
                 result = await self.db.table('document_chunks').select('content').eq('id', chunk_id).single().execute()
                 if not result.data:
                     continue
@@ -903,17 +955,18 @@ class WebScrapingService:
                 if not content:
                     continue
 
-                # Generate embedding (Voyage AI voyage-4, fallback OpenAI)
                 embedding = await self.embedding_service.generate_text_embedding(content)
                 if embedding:
                     await self.db.table('document_chunks').update({
-                        'text_embedding': embedding
+                        'text_embedding': embedding,
+                        'has_text_embedding': True,
                     }).eq('id', chunk_id).execute()
                     embedded += 1
             except Exception as e:
                 self.logger.warning(f"   ⚠️ Failed to embed chunk {chunk_id}: {e}")
 
         self.logger.info(f"   ✅ Generated text embeddings for {embedded}/{len(chunk_ids)} chunks")
+        return embedded
 
     async def _fetch_firecrawl_images_for_session(self, session_id: str) -> List[str]:
         """
@@ -966,13 +1019,15 @@ class WebScrapingService:
         """
         Extract, download, classify, and generate embeddings for product images.
 
-        Full image processing pipeline for scraped products:
-        1. Merge URLs from markdown text + Firecrawl-extracted images (extra_image_urls)
+        Pipeline (all inline — no queue/worker step):
+        1. Merge URLs from markdown text + Firecrawl-extracted images
         2. Download images to Supabase Storage
-        3. Classify images (material vs non-material) using Qwen/Claude
-        4. Generate 5 SLIG embeddings per image (visual, color, texture, style, material — 768D)
-        5. Save to document_images with embeddings
-        6. Queue Phase 2: Qwen3-VL analysis → understanding embedding (1024D)
+        3. Classify material vs non-material via Qwen/Claude
+        4. Run SigLIP2 (SLIG 768D) for visual + color + texture + style + material
+        5. Run Qwen3-VL vision analysis → Voyage AI 1024D understanding embedding
+           when analysis is available; otherwise skipped per image
+        6. Save document_images rows and write diagnostic stats to
+           products.metadata.image_extraction
 
         Args:
             product_id: Product ID
@@ -982,12 +1037,23 @@ class WebScrapingService:
             job_id: Job ID for source tracking
             extra_image_urls: Additional URLs from Firecrawl's structured extraction
         """
+        # Per-product image-pipeline stats — written to products.metadata.image_extraction
+        # so downstream dashboards can tell "no images found" from "images failed to
+        # download / classify / embed" without grepping logs.
+        diag: Dict[str, Any] = {
+            'attempted': 0,
+            'downloaded': 0,
+            'classified_material': 0,
+            'classified_non_material': 0,
+            'saved': 0,
+            'clip_embeddings': 0,
+            'error': None,
+        }
         try:
-            # Step 1: Merge description-extracted URLs with Firecrawl-extracted URLs
             description_urls = self._extract_image_urls_from_markdown(content)
             firecrawl_urls = extra_image_urls or []
 
-            # Deduplicate while preserving order (Firecrawl images first — higher quality)
+            # Firecrawl URLs first (higher quality), dedupe preserving order
             seen = set()
             image_urls = []
             for url in firecrawl_urls + description_urls:
@@ -995,103 +1061,120 @@ class WebScrapingService:
                     seen.add(url)
                     image_urls.append(url)
 
+            diag['attempted'] = len(image_urls)
             if firecrawl_urls:
-                self.logger.info(f"   📷 Merged {len(firecrawl_urls)} Firecrawl + {len(description_urls)} description URLs → {len(image_urls)} unique")
+                self.logger.info(
+                    f"   📷 Merged {len(firecrawl_urls)} Firecrawl + "
+                    f"{len(description_urls)} description URLs → {len(image_urls)} unique"
+                )
 
             if not image_urls:
                 self.logger.info(f"   📷 No images found in content for {product_name}")
+                await self._record_image_diag(product_id, diag)
                 return
 
             self.logger.info(f"   📷 Found {len(image_urls)} images for {product_name}")
 
-            # Step 2: Download images to Supabase Storage
             downloaded_images = await self.image_downloader.download_images(
                 urls=image_urls,
                 job_id=job_id or product_id,
                 workspace_id=workspace_id,
-                max_concurrent=5
+                max_concurrent=5,
             )
+            diag['downloaded'] = sum(1 for d in (downloaded_images or []) if d.get('success'))
 
             if not downloaded_images:
+                diag['error'] = 'download_failed: download_images returned empty'
                 self.logger.warning(f"   ⚠️ No images downloaded for {product_name}")
+                await self._record_image_diag(product_id, diag)
                 return
 
-            self.logger.info(f"   ✅ Downloaded {len(downloaded_images)} images for {product_name}")
+            self.logger.info(f"   ✅ Downloaded {diag['downloaded']}/{len(downloaded_images)} images for {product_name}")
 
-            # Step 3: Get image processor and classify images
             image_processor = self._get_image_processor(workspace_id)
 
-            # Prepare images for classification (need 'path' key for ImageProcessingService)
-            # Since we downloaded to storage, we need to fetch them temporarily for classification
             images_for_classification = []
             for img in downloaded_images:
                 if img.get('success'):
                     images_for_classification.append({
                         'storage_url': img.get('storage_url'),
-                        'url': img.get('storage_url'),  # For fallback in classify_images
+                        'url': img.get('storage_url'),
                         'public_url': img.get('storage_url'),
                         'filename': img.get('filename'),
-                        'path': None,  # Will trigger download from storage in classify_images
+                        'path': None,
                         'content_type': img.get('content_type'),
                         'size_bytes': img.get('size_bytes'),
                         'original_url': img.get('original_url'),
                         'storage_path': img.get('storage_path'),
                         'product_id': product_id,
-                        'product_name': product_name
+                        'product_name': product_name,
                     })
 
             if not images_for_classification:
+                diag['error'] = 'no_successful_downloads'
+                await self._record_image_diag(product_id, diag)
                 return
 
-            # Step 4: Classify images (material vs non-material)
-            # Note: For web scraping, we process ALL images for CLIP embeddings
-            # but still run classification for metadata purposes
             self.logger.info(f"   🤖 Classifying {len(images_for_classification)} images for {product_name}")
 
             material_images, non_material_images = await image_processor.classify_images(
                 extracted_images=images_for_classification,
                 confidence_threshold=0.6,
-                job_id=job_id  # Track AI cost per job
+                job_id=job_id,
+            )
+            diag['classified_material'] = len(material_images)
+            diag['classified_non_material'] = len(non_material_images)
+
+            self.logger.info(
+                f"   ✅ Classification: {len(material_images)} material, "
+                f"{len(non_material_images)} non-material"
             )
 
-            self.logger.info(f"   ✅ Classification: {len(material_images)} material, {len(non_material_images)} non-material")
-
-            # Step 5: Generate CLIP embeddings for ALL images (as requested)
-            # Even non-material images get embeddings for search and agent responses
+            # Embed ALL images (material + non-material) — search needs both
             all_images = material_images + non_material_images
-
             if all_images:
-                self.logger.info(f"   🎨 Generating CLIP embeddings for ALL {len(all_images)} images")
-
+                self.logger.info(f"   🎨 Generating CLIP embeddings for {len(all_images)} images")
                 result = await image_processor.save_images_and_generate_clips(
-                    material_images=all_images,  # Process all images
+                    material_images=all_images,
                     document_id=product_id,
                     workspace_id=workspace_id,
                     batch_size=10,
                     max_retries=3,
-                    job_id=job_id  # Track AI cost per job
+                    job_id=job_id,
+                )
+                diag['saved'] = result.get('images_saved', 0)
+                diag['clip_embeddings'] = result.get('clip_embeddings_generated', 0)
+                self.logger.info(
+                    f"   ✅ Saved {diag['saved']} images with {diag['clip_embeddings']} SLIG embeddings"
                 )
 
-                images_saved = result.get('images_saved', 0)
-                self.logger.info(f"   ✅ Saved {images_saved} images with {result.get('clip_embeddings_generated', 0)} SLIG embeddings")
-
-                # NOTE: Phase 2 Qwen3-VL background processing was removed in 2026-04
-                # along with background_image_processor.py — that pipeline was calling
-                # a non-existent method (`generate_material_embeddings`) and silently
-                # failing for every image. If understanding embeddings are needed,
-                # they should be generated inline by image_processing_service.
-
-                # Create product-image relationships
                 await self._link_images_to_product(
                     product_id=product_id,
-                    image_count=result.get('images_saved', 0),
+                    image_count=diag['saved'],
                     workspace_id=workspace_id,
-                    job_id=job_id
+                    job_id=job_id,
                 )
 
+            await self._record_image_diag(product_id, diag)
+
         except Exception as e:
+            diag['error'] = f"{type(e).__name__}: {str(e)[:500]}"
             self.logger.error(f"   ❌ Failed to process images for {product_name}: {e}")
-            # Don't raise - product is already created
+            await self._record_image_diag(product_id, diag)
+            # Don't raise — product is already created
+
+    async def _record_image_diag(self, product_id: str, diag: Dict[str, Any]) -> None:
+        """Write the image-pipeline stats dict to products.metadata.image_extraction.
+
+        Read-merge-write so we don't clobber other metadata keys.
+        """
+        try:
+            existing = await self.db.table('products').select('metadata').eq('id', product_id).single().execute()
+            md = (existing.data or {}).get('metadata') or {}
+            md['image_extraction'] = diag
+            await self.db.table('products').update({'metadata': md}).eq('id', product_id).execute()
+        except Exception as diag_err:
+            self.logger.debug(f"   Could not persist image diag for {product_id}: {diag_err}")
 
     async def _link_images_to_product(
         self,

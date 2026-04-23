@@ -67,7 +67,7 @@ async def upload_document(
     # Discovery settings
     discovery_model: str = Form(
         "claude-vision",
-        description="AI model for discovery: 'claude-vision' (Claude Sonnet 4.5 Vision - RECOMMENDED, 10x faster), 'claude-haiku-vision' (faster/cheaper), 'gpt-vision' (GPT-4o Vision), 'claude' (text-only, legacy), 'gpt' (text-only, legacy), 'haiku' (text-only, legacy)"
+        description="AI model for discovery: 'claude-vision' (Claude Opus 4.7 Vision - RECOMMENDED, 10x faster), 'claude-haiku-vision' (faster/cheaper), 'gpt-vision' (GPT-4o Vision), 'claude' (text-only, legacy), 'gpt' (text-only, legacy), 'haiku' (text-only, legacy)"
     ),
 
     # Processing settings
@@ -128,7 +128,7 @@ async def upload_document(
     ## 🤖 AI Model Selection
 
     Choose discovery model:
-    - `discovery_model="claude-vision"` - Claude Sonnet 4.5 Vision (best quality, RECOMMENDED)
+    - `discovery_model="claude-vision"` - Claude Opus 4.7 Vision (best quality, RECOMMENDED)
     - `discovery_model="gpt-vision"` - GPT-4o Vision (fast, good quality)
     - `discovery_model="claude-haiku-vision"` - Claude Haiku Vision (fastest, lower cost)
 

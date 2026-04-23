@@ -44,7 +44,7 @@ def upload_pdf_test_mode(pdf_path: str):
             'workspace_id': WORKSPACE_ID,
             'processing_mode': 'standard',
             'categories': 'products',
-            'discovery_model': 'claude-sonnet-4-7',
+            'discovery_model': 'claude-opus-4-7',
             'test_single_product': 'true',  # 🧪 TEST MODE ENABLED
         }
         

@@ -169,7 +169,7 @@ class ProductCreationService:
         ✅ ENHANCED: Create products from document chunks with two-stage classification.
 
         Stage 1: Fast text-only classification using Claude Haiku for initial filtering
-        Stage 2: Deep enrichment using Claude Sonnet for confirmed products
+        Stage 2: Deep enrichment using Claude Opus for confirmed products
 
         Args:
             document_id: UUID of the processed document
@@ -220,8 +220,8 @@ class ProductCreationService:
                 product_candidates = self._deduplicate_product_chunks(product_candidates)
                 self.logger.info(f"🔄 After deduplication: {len(product_candidates)} unique products")
 
-            # ✅ NEW: Stage 2 - Deep Enrichment with Claude Sonnet
-            self.logger.info(f"🎯 Stage 2: Deep enrichment with Claude Sonnet...")
+            # ✅ NEW: Stage 2 - Deep Enrichment with Claude Opus
+            self.logger.info(f"🎯 Stage 2: Deep enrichment with Claude Opus...")
             stage2_start = time.time()
 
             products_created = 0
@@ -285,7 +285,7 @@ class ProductCreationService:
 
             self.logger.info(f"🎉 Two-stage creation completed in {total_time:.2f}s:")
             self.logger.info(f"   Stage 1 (Haiku): {stage1_time:.2f}s, {len(product_candidates)} candidates")
-            self.logger.info(f"   Stage 2 (Sonnet): {stage2_time:.2f}s, {products_created} products created")
+            self.logger.info(f"   Stage 2 (Opus): {stage2_time:.2f}s, {products_created} products created")
             self.logger.info(f"   Performance: {products_created} created, {products_failed} failed")
 
             return {
@@ -1193,10 +1193,10 @@ class ProductCreationService:
         index: int
     ) -> Optional[Dict[str, Any]]:
         """
-        ✅ NEW: Stage 2 - Deep enrichment using Claude Sonnet.
+        ✅ NEW: Stage 2 - Deep enrichment using Claude Opus.
 
         Performs detailed analysis and enrichment of confirmed product candidates.
-        Uses Claude 4.5 Sonnet for high-quality results.
+        Uses Claude Opus 4.7 for high-quality results.
 
         Args:
             candidate: Product candidate from Stage 1
@@ -1220,8 +1220,8 @@ class ProductCreationService:
             # Build enrichment prompt
             enrichment_prompt = self._build_stage2_enrichment_prompt(content, candidate)
 
-            # Call Claude Sonnet for deep analysis
-            response = await self._call_claude_sonnet(client, enrichment_prompt)
+            # Call Claude Opus for deep analysis
+            response = await self._call_claude_opus(client, enrichment_prompt)
 
             # Parse enrichment results
             enrichment_data = self._parse_stage2_results(response)
@@ -1308,7 +1308,7 @@ RESPOND WITH JSON ONLY:
 Focus on speed and accuracy. Be strict - when in doubt, mark as NOT a product."""
 
     def _build_stage2_enrichment_prompt(self, content: str, candidate: Dict[str, Any]) -> str:
-        """Build prompt for Stage 2 deep enrichment with Claude Sonnet."""
+        """Build prompt for Stage 2 deep enrichment with Claude Opus."""
         return f"""You are an expert product analyst. Perform deep analysis and enrichment of this product content.
 
 PRODUCT CONTENT:
@@ -1449,15 +1449,15 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
 
             return ""
 
-    async def _call_claude_sonnet(self, client, prompt: str, job_id: Optional[str] = None) -> str:
-        """Call Claude 4.5 Sonnet for deep enrichment."""
+    async def _call_claude_opus(self, client, prompt: str, job_id: Optional[str] = None) -> str:
+        """Call Claude Opus 4.7 for deep enrichment."""
         start_time = time.time()
         try:
             from app.config import get_settings
             settings = get_settings()
 
             response = client.messages.create(
-                model=settings.anthropic_model_enrichment,  # claude-sonnet-4-7
+                model=settings.anthropic_model_enrichment,  # claude-opus-4-7
                 max_tokens=4096,
                 temperature=0.1,
                 messages=[{"role": "user", "content": prompt}]
@@ -1468,9 +1468,9 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
 
             # Calculate confidence score (4-factor weighted)
             confidence_breakdown = {
-                "model_confidence": 0.95,  # Sonnet is highly accurate
+                "model_confidence": 0.95,  # Opus is highly accurate
                 "completeness": 0.90,  # Stage 2 is comprehensive
-                "consistency": 0.95,  # Sonnet is very consistent
+                "consistency": 0.95,  # Opus is very consistent
                 "validation": 0.85   # Stage 2 provides validation
             }
             confidence_score = (
@@ -1483,7 +1483,7 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
             # Log AI call
             await self.ai_logger.log_claude_call(
                 task="product_enrichment_stage2",
-                model="claude-sonnet-4-7",
+                model="claude-opus-4-7",
                 response=response,
                 latency_ms=latency_ms,
                 confidence_score=confidence_score,
@@ -1496,13 +1496,13 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
             return response.content[0].text if response.content else ""
 
         except Exception as e:
-            self.logger.error(f"Claude Sonnet call failed: {str(e)}")
+            self.logger.error(f"Claude Opus call failed: {str(e)}")
 
             # Log failed call
             latency_ms = int((time.time() - start_time) * 1000)
             await self.ai_logger.log_ai_call(
                 task="product_enrichment_stage2",
-                model="claude-sonnet-4-7",
+                model="claude-opus-4-7",
                 input_tokens=0,
                 output_tokens=0,
                 cost=0.0,
@@ -1611,7 +1611,7 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
             ]
 
     def _parse_stage2_results(self, response: str) -> Dict[str, Any]:
-        """Parse Stage 2 enrichment results from Claude Sonnet."""
+        """Parse Stage 2 enrichment results from Claude Opus."""
         try:
             data = self._extract_json_from_response(response)
 

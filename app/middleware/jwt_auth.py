@@ -113,6 +113,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             "/api/query/multimodal",
             "/api/interior",        # Interior design — called by edge function (no user JWT)
             "/api/rag",             # RAG search — called by edge function (no user JWT)
+            "/api/v1/prices/lookup",  # Public price lookup — route-level api_keys-table auth
             "/"
         ]
         

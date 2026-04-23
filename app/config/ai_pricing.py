@@ -40,14 +40,7 @@ class AIPricingConfig:
             "output": Decimal("75.00"),
             "last_verified": "2026-04-18",
             "source": "https://www.anthropic.com/pricing",
-            "note": "Highest-quality tier — used for consensus validation, critical extraction"
-        },
-        "claude-sonnet-4-7": {
-            "input": Decimal("3.00"),
-            "output": Decimal("15.00"),
-            "last_verified": "2026-04-18",
-            "source": "https://www.anthropic.com/pricing",
-            "note": "Default Sonnet — agent chat, discovery, metadata extraction"
+            "note": "Default primary model — agent chat, discovery, metadata extraction, consensus validation"
         },
         "claude-haiku-4-5": {
             "input": Decimal("1.00"),
@@ -96,7 +89,7 @@ class AIPricingConfig:
         }
     }
     
-    # Vision/Image Pricing — Claude Sonnet/Opus now handle vision; OpenAI vision removed.
+    # Vision/Image Pricing — Claude Opus/Haiku now handle vision; OpenAI vision removed.
     VISION_PRICING = {
         "clip-vit-large-patch14": {
             "per_image": Decimal("0.00"),  # Free via OpenAI CLIP

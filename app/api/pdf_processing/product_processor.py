@@ -33,7 +33,6 @@ async def process_single_product(
     workspace_id: str,
     job_id: str,
     catalog: Any,
-    pdf_result: Any,
     tracker: Any,  # Main job tracker
     product_tracker: ProductProgressTracker,
     checkpoint_recovery_service: Any,
@@ -41,7 +40,7 @@ async def process_single_product(
     config: Dict[str, Any],
     logger_instance: logging.Logger,
     total_pages: Optional[int] = None,
-    temp_pdf_path: Optional[str] = None  # ✅ NEW: Reuse existing temp path
+    temp_pdf_path: Optional[str] = None
 ) -> ProductProcessingResult:
     """
     Process a single product through all stages.
@@ -55,7 +54,6 @@ async def process_single_product(
         workspace_id: Workspace identifier
         job_id: Job identifier
         catalog: Full product catalog
-        pdf_result: PDF extraction result
         tracker: Main job progress tracker
         product_tracker: Product-specific progress tracker
         checkpoint_recovery_service: Checkpoint service
@@ -256,9 +254,8 @@ async def process_single_product(
             workspace_id=workspace_id,
             job_id=job_id,
             product=product,
-            physical_pages=physical_pages,  # ✅ FIXED: Now using physical pages (1-based)
+            physical_pages=physical_pages,
             catalog=catalog,
-            pdf_result=pdf_result,
             config=config,
             supabase=supabase,
             logger=logger_instance,
@@ -783,7 +780,6 @@ async def cleanup_product_memory(logger_instance: logging.Logger) -> None:
 
     CLEANS UP (product-specific data):
     - physical_pages (List[int]) - Physical page numbers (1-based) for this product
-    - pdf_result - Extracted text/images for this product
     - chunks - Text chunks for this product
     - images - Image data for this product
     - embedding vectors - Temporary embeddings

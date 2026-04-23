@@ -1,13 +1,14 @@
 """
-Unified Chunking Service - Step 6 Implementation
+Unified Chunking Service.
 
-Consolidates all chunking strategies into a single, unified service:
-1. Semantic chunking - Based on content meaning and boundaries
-2. Fixed-size chunking - Based on character/token count
-3. Hybrid chunking - Combines semantic and fixed-size
-4. Layout-aware chunking - Respects document structure
+Consolidates chunking strategies into a single service:
+1. Semantic - paragraph/sentence boundaries
+2. Fixed-size - character count with word-boundary fallback
+3. Hybrid - semantic first, fixed-size for oversized chunks
 
-Replaces multiple chunking implementations with a single unified approach.
+Layout-aware chunking is NOT a strategy; it's activated by passing
+`layout_regions_by_page` into `chunk_pages()`, which routes through
+`_chunk_with_layout_regions` to respect YOLO region boundaries.
 """
 
 import logging
@@ -24,11 +25,14 @@ logger = logging.getLogger(__name__)
 
 
 class ChunkingStrategy(str, Enum):
-    """Supported chunking strategies."""
+    """Supported chunking strategies.
+
+    Layout-aware chunking is activated not by picking a strategy, but by passing
+    `layout_regions_by_page` into `chunk_pages()`. See `_chunk_with_layout_regions`.
+    """
     SEMANTIC = "semantic"
     FIXED_SIZE = "fixed_size"
     HYBRID = "hybrid"
-    LAYOUT_AWARE = "layout_aware"
 
 
 @dataclass
@@ -62,32 +66,26 @@ class ChunkQualityMetrics:
     """Tracks chunk quality metrics during processing."""
     total_chunks_created: int = 0
     exact_duplicates_prevented: int = 0
-    semantic_duplicates_prevented: int = 0
     low_quality_rejected: int = 0
     final_chunks: int = 0
 
 
 class UnifiedChunkingService:
     """
-    Unified chunking service that consolidates all chunking strategies.
+    Unified chunking service.
 
-    This service provides:
-    - Semantic chunking based on content meaning
-    - Fixed-size chunking based on character count
-    - Hybrid chunking combining both approaches
-    - Layout-aware chunking respecting document structure
-    - Consistent chunk metadata and quality scoring
-    - Duplicate detection and quality filtering
+    Strategies:
+    - Semantic: content-meaning boundaries
+    - Fixed-size: character count with word-boundary fallback
+    - Hybrid: semantic + fixed-size for oversized segments
+
+    Layout-aware chunking is activated per-call by passing layout_regions_by_page
+    to chunk_pages(); it routes through `_chunk_with_layout_regions` and respects
+    YOLO region boundaries, keeps TABLE regions atomic, and combines TITLE+TEXT.
     """
 
-    # Sentence endings pattern
     SENTENCE_ENDINGS = r'[.!?]+\s+'
-
-    # Paragraph breaks pattern
     PARAGRAPH_BREAKS = r'\n\s*\n'
-
-    # Similarity threshold for semantic duplicates (cosine similarity)
-    SEMANTIC_DUPLICATE_THRESHOLD = 0.95
 
     def __init__(self, config: Optional[ChunkingConfig] = None):
         """Initialize unified chunking service."""
@@ -95,10 +93,6 @@ class UnifiedChunkingService:
         self.logger = logger
         self.quality_metrics = ChunkQualityMetrics()
         self._content_hashes: set = set()  # Track exact duplicates
-
-        # ⚡ OPTIMIZATION: Cache layout regions per product to avoid repeated DB queries
-        # Key: product_id, Value: Dict[page_number, List[regions]] or List[regions] for all pages
-        self._layout_regions_cache: Dict[str, Dict[Optional[int], List[Dict[str, Any]]]] = {}
 
         # Get quality threshold from centralized configuration
         self.min_quality_threshold = ConfidenceThresholds.get_threshold(
@@ -278,8 +272,6 @@ class UnifiedChunkingService:
             return self._chunk_fixed_size(text, document_id, metadata, page_number)
         elif self.config.strategy == ChunkingStrategy.HYBRID:
             return self._chunk_hybrid(text, document_id, metadata, page_number)
-        elif self.config.strategy == ChunkingStrategy.LAYOUT_AWARE:
-            return self._chunk_layout_aware(text, document_id, metadata, page_number)
         else:
             raise ValueError(f"Unknown chunking strategy: {self.config.strategy}")
 
@@ -536,252 +528,7 @@ class UnifiedChunkingService:
 
         self.logger.info(f"      HYBRID: Complete - {len(refined_chunks)} refined chunks")
         return refined_chunks
-    
-    def _chunk_layout_aware(
-        self,
-        text: str,
-        document_id: str,
-        metadata: Optional[Dict[str, Any]] = None,
-        page_number: Optional[int] = None
-    ) -> List[Chunk]:
-        """
-        Layout-aware chunking that respects document structure using YOLO layout regions.
 
-        This method:
-        1. Reads layout regions from database (if product_id in metadata)
-        2. Respects region boundaries (no mid-sentence splits)
-        3. Keeps tables together as single chunks
-        4. Preserves title-content relationships
-        5. Uses reading order for chunk sequence
-
-        Args:
-            text: Text to chunk
-            document_id: Document ID
-            metadata: Additional metadata (should contain product_id for layout-aware chunking)
-            page_number: Optional page number (1-based) to store in chunk metadata
-
-        Returns:
-            List of layout-aware chunks
-        """
-        # Check if we have product_id for layout-aware chunking
-        product_id = metadata.get('product_id') if metadata else None
-
-        if not product_id:
-            # Fallback to semantic chunking if no product_id
-            self.logger.info("      LAYOUT-AWARE: No product_id found, falling back to semantic chunking")
-            return self._chunk_semantic(text, document_id, metadata, page_number)
-
-        try:
-            # Fetch layout regions from database
-            layout_regions = self._fetch_layout_regions(product_id, page_number)
-
-            if not layout_regions:
-                # Fallback to semantic chunking if no layout regions
-                self.logger.info(f"      LAYOUT-AWARE: No layout regions found for product {product_id}, falling back to semantic chunking")
-                return self._chunk_semantic(text, document_id, metadata, page_number)
-
-            self.logger.info(f"      LAYOUT-AWARE: Found {len(layout_regions)} layout regions for product {product_id}")
-
-            # Create chunks based on layout regions
-            chunks = []
-            chunk_index = 0
-
-            # Sort regions by reading order
-            sorted_regions = sorted(layout_regions, key=lambda r: r.get('reading_order', 999))
-
-            for region in sorted_regions:
-                region_type = region.get('region_type')
-                text_content = region.get('text_content')
-
-                # Skip regions without text content
-                if not text_content or not text_content.strip():
-                    continue
-
-                # Create chunk based on region type
-                chunk_metadata = {
-                    **(metadata or {}),
-                    'region_type': region_type,
-                    'reading_order': region.get('reading_order'),
-                    'bbox': {
-                        'x': region.get('bbox_x'),
-                        'y': region.get('bbox_y'),
-                        'width': region.get('bbox_width'),
-                        'height': region.get('bbox_height')
-                    },
-                    'confidence': region.get('confidence')
-                }
-
-                # For TABLE regions, keep entire table together
-                if region_type == 'TABLE':
-                    chunk = self._create_chunk(
-                        content=text_content,
-                        document_id=document_id,
-                        chunk_index=chunk_index,
-                        start_position=0,
-                        metadata=chunk_metadata,
-                        page_number=page_number
-                    )
-                    chunks.append(chunk)
-                    chunk_index += 1
-
-                # For TITLE regions, combine with next TEXT region if possible
-                elif region_type == 'TITLE':
-                    # Look for next TEXT region
-                    next_region_idx = sorted_regions.index(region) + 1
-                    if next_region_idx < len(sorted_regions):
-                        next_region = sorted_regions[next_region_idx]
-                        if next_region.get('region_type') == 'TEXT' and next_region.get('text_content'):
-                            # Combine title with text
-                            combined_content = f"{text_content}\n\n{next_region.get('text_content')}"
-                            chunk = self._create_chunk(
-                                content=combined_content,
-                                document_id=document_id,
-                                chunk_index=chunk_index,
-                                start_position=0,
-                                metadata=chunk_metadata,
-                                page_number=page_number
-                            )
-                            chunks.append(chunk)
-                            chunk_index += 1
-                            # Skip next region since we combined it
-                            sorted_regions[next_region_idx]['_skip'] = True
-                        else:
-                            # Just create chunk for title
-                            chunk = self._create_chunk(
-                                content=text_content,
-                                document_id=document_id,
-                                chunk_index=chunk_index,
-                                start_position=0,
-                                metadata=chunk_metadata,
-                                page_number=page_number
-                            )
-                            chunks.append(chunk)
-                            chunk_index += 1
-                    else:
-                        # Last region, just create chunk
-                        chunk = self._create_chunk(
-                            content=text_content,
-                            document_id=document_id,
-                            chunk_index=chunk_index,
-                            start_position=0,
-                            metadata=chunk_metadata,
-                            page_number=page_number
-                        )
-                        chunks.append(chunk)
-                        chunk_index += 1
-
-                # For TEXT regions, check if we should skip (combined with title)
-                elif region_type == 'TEXT':
-                    if region.get('_skip'):
-                        continue
-
-                    # Split large TEXT regions using semantic chunking
-                    if len(text_content) > self.config.max_chunk_size:
-                        sub_chunks = self._chunk_semantic(text_content, document_id, chunk_metadata, page_number)
-                        for sub_chunk in sub_chunks:
-                            sub_chunk.chunk_index = chunk_index
-                            chunks.append(sub_chunk)
-                            chunk_index += 1
-                    else:
-                        chunk = self._create_chunk(
-                            content=text_content,
-                            document_id=document_id,
-                            chunk_index=chunk_index,
-                            start_position=0,
-                            metadata=chunk_metadata,
-                            page_number=page_number
-                        )
-                        chunks.append(chunk)
-                        chunk_index += 1
-
-                # For other region types (IMAGE, CAPTION), create simple chunks
-                else:
-                    chunk = self._create_chunk(
-                        content=text_content,
-                        document_id=document_id,
-                        chunk_index=chunk_index,
-                        start_position=0,
-                        metadata=chunk_metadata,
-                        page_number=page_number
-                    )
-                    chunks.append(chunk)
-                    chunk_index += 1
-
-            # Update total chunks count
-            for chunk in chunks:
-                chunk.total_chunks = len(chunks)
-
-            self.logger.info(f"      LAYOUT-AWARE: Created {len(chunks)} layout-aware chunks")
-            return chunks
-
-        except Exception as e:
-            self.logger.error(f"      LAYOUT-AWARE: Error during layout-aware chunking: {e}")
-            self.logger.info("      LAYOUT-AWARE: Falling back to semantic chunking")
-            return self._chunk_semantic(text, document_id, metadata, page_number)
-
-    def _fetch_layout_regions(self, product_id: str, page_number: Optional[int] = None) -> List[Dict[str, Any]]:
-        """
-        ⚡ OPTIMIZED: Fetch layout regions with caching.
-
-        Fetches all regions for a product ONCE, then filters by page from cache.
-        This avoids N database queries for N pages.
-
-        Args:
-            product_id: Product UUID
-            page_number: Optional page number to filter by
-
-        Returns:
-            List of layout region dictionaries
-        """
-        try:
-            # 🔥 FIX: Check if product_id is a valid UUID before querying
-            import uuid
-            try:
-                uuid.UUID(product_id)
-            except (ValueError, AttributeError):
-                self.logger.debug(f"      LAYOUT-AWARE: product_id '{product_id}' is not a UUID, skipping layout regions fetch")
-                return []
-
-            # ⚡ OPTIMIZATION: Check cache first
-            if product_id in self._layout_regions_cache:
-                all_regions = self._layout_regions_cache[product_id].get(None, [])
-                if page_number is not None:
-                    # Filter from cached data
-                    return [r for r in all_regions if r.get('page_number') == page_number]
-                return all_regions
-
-            # Fetch ALL regions for this product ONCE (not per-page)
-            from app.services.core.supabase_client import get_supabase_client
-            supabase = get_supabase_client()
-
-            # Fetch all regions for product (no page filter) and order by reading_order
-            query = supabase.client.table('product_layout_regions').select('*').eq('product_id', product_id)
-            query = query.order('reading_order')
-            result = query.execute()
-
-            all_regions = result.data if result.data else []
-
-            # Store in cache
-            self._layout_regions_cache[product_id] = {None: all_regions}
-            self.logger.debug(f"      LAYOUT-AWARE: Cached {len(all_regions)} regions for product {product_id}")
-
-            # Filter by page if requested
-            if page_number is not None:
-                return [r for r in all_regions if r.get('page_number') == page_number]
-
-            return all_regions
-
-        except Exception as e:
-            self.logger.error(f"      LAYOUT-AWARE: Failed to fetch layout regions: {e}")
-            return []
-
-    def clear_layout_cache(self, product_id: Optional[str] = None):
-        """Clear layout regions cache for a product or all products."""
-        if product_id:
-            self._layout_regions_cache.pop(product_id, None)
-        else:
-            self._layout_regions_cache.clear()
-    
     def _create_chunk(
         self,
         content: str,
@@ -826,11 +573,21 @@ class UnifiedChunkingService:
         )
     
     def _find_sentence_boundary(self, text: str) -> int:
-        """Find the nearest sentence boundary in text."""
-        import re
+        """Find the nearest sentence boundary in text.
+
+        Priority:
+          1. Last sentence-ending punctuation (.!?) followed by whitespace.
+          2. Last whitespace character — avoids mid-word splits when no
+             sentence ending exists in the window.
+          3. Full length — only as a last resort for text with no whitespace.
+        """
         matches = list(re.finditer(self.SENTENCE_ENDINGS, text))
         if matches:
             return matches[-1].end()
+        # Fall back to the last whitespace so we at least split on a word boundary.
+        last_ws = max(text.rfind(' '), text.rfind('\n'), text.rfind('\t'))
+        if last_ws > 0:
+            return last_ws + 1
         return len(text)
     
     def _get_overlap_content(self, text: str, overlap_size: int) -> str:
@@ -840,24 +597,44 @@ class UnifiedChunkingService:
         return text[-overlap_size:]
     
     def _calculate_chunk_quality(self, chunk: Chunk) -> float:
-        """Calculate quality score for a chunk."""
+        """Calculate quality score for a chunk.
+
+        Scores four signals:
+          - length: fraction of max_chunk_size used (20%)
+          - end boundary: ends with sentence punctuation (30%)
+          - start boundary: starts cleanly (capital / digit / bullet), not
+            mid-word lowercase (20%) — catches splits like "acy Garcia..."
+          - semantic completeness: sentence count proxy (30%)
+        """
         try:
-            # Check content length
-            length_score = min(1.0, len(chunk.content) / self.config.max_chunk_size)
+            content = chunk.content.strip()
+            if not content:
+                return 0.0
 
-            # Check for proper boundaries
-            ends_with_punctuation = chunk.content.strip().endswith(('.', '!', '?'))
-            boundary_score = 1.0 if ends_with_punctuation else 0.7
+            length_score = min(1.0, len(content) / self.config.max_chunk_size)
 
-            # Check for semantic completeness
-            sentences = chunk.content.count('.')
-            semantic_score = min(1.0, sentences / 3)  # 3+ sentences = 1.0
+            ends_with_punctuation = content.endswith(('.', '!', '?', ':', '"', ')', ']'))
+            end_score = 1.0 if ends_with_punctuation else 0.7
 
-            # Weighted average
+            # Start boundary: good if first char is uppercase, digit, or a
+            # list/heading marker. Bad if it's a lowercase letter — a strong
+            # signal of a mid-word or mid-sentence split.
+            first_char = content[0]
+            if first_char.isupper() or first_char.isdigit() or first_char in '#•-*"([{':
+                start_score = 1.0
+            elif first_char.islower():
+                start_score = 0.4
+            else:
+                start_score = 0.8
+
+            sentences = content.count('.') + content.count('!') + content.count('?')
+            semantic_score = min(1.0, sentences / 3)
+
             quality_score = (
-                length_score * 0.3 +
-                boundary_score * 0.4 +
-                semantic_score * 0.3
+                length_score * 0.20 +
+                end_score * 0.30 +
+                start_score * 0.20 +
+                semantic_score * 0.30
             )
 
             return round(quality_score, 3)
@@ -1062,24 +839,24 @@ class UnifiedChunkingService:
 
             # Save current chunk if needed
             if should_start_new_chunk and current_chunk_text:
+                chunk_len = len(current_chunk_text)
                 chunk = self._create_chunk(
                     content=current_chunk_text.strip(),
                     chunk_index=chunk_index,
                     document_id=document_id,
                     start_position=current_position,
-                    end_position=current_position + len(current_chunk_text),
+                    page_number=page_number,
                     metadata={
                         **(metadata or {}),
-                        'page_number': page_number,
                         'layout_aware': True,
-                        'region_types': list(set(r.get('region_type') for r in current_chunk_regions))
-                    }
+                        'region_types': list({r.get('region_type') for r in current_chunk_regions}),
+                    },
                 )
                 chunks.append(chunk)
                 chunk_index += 1
+                current_position += chunk_len
                 current_chunk_text = ""
                 current_chunk_regions = []
-                current_position += len(current_chunk_text)
 
             # Add region to current chunk
             if current_chunk_text:
@@ -1089,25 +866,25 @@ class UnifiedChunkingService:
 
             # For TABLE regions, immediately save as complete chunk
             if region_type == 'TABLE':
+                chunk_len = len(current_chunk_text)
                 chunk = self._create_chunk(
                     content=current_chunk_text.strip(),
                     chunk_index=chunk_index,
                     document_id=document_id,
                     start_position=current_position,
-                    end_position=current_position + len(current_chunk_text),
+                    page_number=page_number,
                     metadata={
                         **(metadata or {}),
-                        'page_number': page_number,
                         'layout_aware': True,
                         'region_types': ['TABLE'],
-                        'is_table': True
-                    }
+                        'is_table': True,
+                    },
                 )
                 chunks.append(chunk)
                 chunk_index += 1
+                current_position += chunk_len
                 current_chunk_text = ""
                 current_chunk_regions = []
-                current_position += len(current_chunk_text)
 
         # Save final chunk if any text remains
         if current_chunk_text:
@@ -1116,13 +893,12 @@ class UnifiedChunkingService:
                 chunk_index=chunk_index,
                 document_id=document_id,
                 start_position=current_position,
-                end_position=current_position + len(current_chunk_text),
+                page_number=page_number,
                 metadata={
                     **(metadata or {}),
-                    'page_number': page_number,
                     'layout_aware': True,
-                    'region_types': list(set(r.get('region_type') for r in current_chunk_regions))
-                }
+                    'region_types': list({r.get('region_type') for r in current_chunk_regions}),
+                },
             )
             chunks.append(chunk)
 

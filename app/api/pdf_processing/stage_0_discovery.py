@@ -66,7 +66,7 @@ async def process_stage_0_discovery(
     Returns:
         Dictionary containing:
         - catalog: Discovered catalog with products and entities
-        - pdf_result: PDF extraction result with page count and content
+        - page_count: Total number of PDF pages
         - all_physical_pages: Set of physical page numbers (1-based) containing products
         - temp_pdf_path: Path to temporary PDF file (returned existing or new)
     """
@@ -166,73 +166,52 @@ async def process_stage_0_discovery(
             )
             logger.info(f"✅ Memory pressure resolved")
 
-        # SKIP FULL PDF EXTRACTION - Let product_discovery_service handle it
-        # The service will extract text on-demand in batches (100K chars at a time)
-        # This is MUCH faster than extracting all 71 pages upfront
-        logger.info(f"📄 SKIPPING full PDF extraction - using on-demand extraction in discovery service")
-        logger.info(f"⏱️  This will be 10x faster than extracting all {page_count} pages upfront")
+        # Full PDF text extraction is skipped. product_discovery_service extracts
+        # text on-demand in batches (100K chars at a time), which is ~10× faster
+        # than reading every page up front.
+        logger.info(f"📄 Skipping full PDF extraction ({page_count} pages) — discovery service will extract on-demand")
 
-        # Create a minimal pdf_result with just page count
-        logger.info(f"🔧 Creating minimal PDF result object...")
-        from dataclasses import dataclass
-        @dataclass
-        class MinimalPDFResult:
-            page_count: int
-            markdown_content: str = None
-
-        pdf_result = MinimalPDFResult(page_count=page_count, markdown_content=None)
-        logger.info(f"✅ [STAGE 0] PDF result created")
-
-        logger.info(f"✅ PDF ready for on-demand extraction: {pdf_result.page_count} pages")
-
-        # Log memory (no extraction happened, so no memory used)
         mem_after_extraction = memory_monitor.get_memory_stats()
         logger.info(f"💾 Memory after setup: {mem_after_extraction.used_mb:.1f} MB (no extraction yet)")
 
-        logger.info(f"🔧 [STAGE 0] Creating processed_documents record in database...")
-        # Create processed_documents record IMMEDIATELY (required for job_progress foreign key)
         supabase = get_supabase_client()
         try:
             supabase.client.table('processed_documents').upsert({
                 "id": document_id,
                 "workspace_id": workspace_id,
                 "pdf_document_id": document_id,
-                "content": pdf_result.markdown_content or "",
+                "content": "",
                 "processing_status": "processing",
                 "metadata": {
                     "filename": filename,
                     "file_size": len(file_content),
-                    "page_count": pdf_result.page_count
-                }
+                    "page_count": page_count,
+                },
             }).execute()
             logger.info(f"✅ Created processed_documents record for {document_id}")
         except Exception as e:
             logger.error(f"❌ CRITICAL: Failed to create processed_documents record: {e}")
-            raise  # Don't continue if this fails
+            raise
 
-        logger.info(f"🔧 [STAGE 0] Updating tracker with {pdf_result.page_count} pages...")
-        # Update tracker with total pages
-        tracker.total_pages = pdf_result.page_count
-        for page_num in range(1, pdf_result.page_count + 1):
+        tracker.total_pages = page_count
+        for page_num in range(1, page_count + 1):
             tracker.page_statuses[page_num] = PageProcessingStatus(
                 page_number=page_num,
                 stage=ProcessingStage.INITIALIZING,
-                status="pending"
+                status="pending",
             )
-        logger.info(f"✅ Tracker updated with {pdf_result.page_count} pages")
+        logger.info(f"✅ Tracker updated with {page_count} pages")
 
         logger.info(f"🔧 [STAGE 0] Step 7/7: Preparing product discovery...")
         # Run TWO-STAGE category-based discovery with prompt enhancement
         # Stage 0A: Index scan (first 50-100 pages)
         # Stage 0B: Focused extraction (specific pages per product)
 
-        # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on pages and categories
-        logger.info(f"🔧 Calculating discovery timeout...")
         discovery_timeout = ProgressiveTimeoutStrategy.calculate_product_discovery_timeout(
-            page_count=pdf_result.page_count,
-            categories=extract_categories
+            page_count=page_count,
+            categories=extract_categories,
         )
-        logger.info(f"📊 Product discovery: {pdf_result.page_count} pages, {len(extract_categories)} categories → timeout: {discovery_timeout:.0f}s")
+        logger.info(f"📊 Product discovery: {page_count} pages, {len(extract_categories)} categories → timeout: {discovery_timeout:.0f}s")
 
         logger.info(f"🔧 Normalizing discovery model '{discovery_model}'...")
         #NORMALIZE: Map discovery_model to expected values
@@ -244,13 +223,13 @@ async def process_stage_0_discovery(
             # Vision models: claude-vision, claude-haiku-vision, gpt-vision
             if "haiku" in normalized_model:
                 normalized_model = "claude-haiku-vision"
-            elif "claude" in normalized_model or "sonnet" in normalized_model:
+            elif "claude" in normalized_model:
                 normalized_model = "claude-vision"
             elif "gpt" in normalized_model:
                 normalized_model = "gpt-vision"
         else:
             # Text-only models (legacy)
-            if "claude" in normalized_model or "sonnet" in normalized_model:
+            if "claude" in normalized_model:
                 normalized_model = "claude"
             elif "gpt" in normalized_model:
                 normalized_model = "gpt"
@@ -271,30 +250,28 @@ async def process_stage_0_discovery(
         logger.info(f"✅ ProductDiscoveryService initialized")
 
         logger.info(f"🚀 [STAGE 0] STARTING PRODUCT DISCOVERY (this may take several minutes)...")
-        logger.info(f"   📄 Pages: {pdf_result.page_count}")
+        logger.info(f"   📄 Pages: {page_count}")
         logger.info(f"   📦 Categories: {', '.join(extract_categories)}")
         logger.info(f"   🤖 Model: {normalized_model}")
         logger.info(f"   ⏱️  Timeout: {discovery_timeout:.0f}s")
 
-        # Wrap discovery in circuit breaker for fail-fast protection
         try:
-            logger.info(f"🔧 Calling discovery service through circuit breaker...")
             catalog = await discovery_breaker.call(
                 lambda: with_timeout(
                     discovery_service.discover_products(
                         pdf_content=file_content,
-                        pdf_text=pdf_result.markdown_content,  # ✅ PASS FULL PDF TEXT
-                        total_pages=pdf_result.page_count,
+                        pdf_text=None,
+                        total_pages=page_count,
                         categories=extract_categories,
                         agent_prompt=agent_prompt,
                         workspace_id=workspace_id,
                         enable_prompt_enhancement=enable_prompt_enhancement,
                         job_id=job_id,
                         pdf_path=temp_pdf_path,
-                        tracker=tracker
+                        tracker=tracker,
                     ),
                     timeout_seconds=discovery_timeout,
-                    operation_name="Product discovery (Stage 0A + 0B)"
+                    operation_name="Product discovery (Stage 0A + 0B)",
                 )
             )
             logger.info(f"✅ [STAGE 0] DISCOVERY COMPLETED SUCCESSFULLY")
@@ -435,7 +412,7 @@ async def process_stage_0_discovery(
         "categories": extract_categories,
         "products_detected": len(catalog.products),
         "product_names": [p.name for p in catalog.products],
-        "total_pages": pdf_result.page_count,
+        "total_pages": page_count,
         "entity_ids": entity_ids  # Store entity IDs for later stages
     }
 
@@ -547,8 +524,7 @@ async def process_stage_0_discovery(
     # ============================================================
     return {
         "catalog": catalog,
-        "pdf_result": pdf_result,
-        "page_count": pdf_result.page_count,
+        "page_count": page_count,
         "file_size_mb": file_size_mb,
         "temp_pdf_path": temp_pdf_path,
         # NEW: Return Stage 0 metrics

@@ -375,7 +375,7 @@ async def process_product_images(
             extracted_images=extracted_images_list,
             confidence_threshold=0.6,
             primary_model="Qwen/Qwen3-VL-32B-Instruct",
-            validation_model="claude-sonnet-4-7",
+            validation_model="claude-opus-4-7",
             batch_size=15
         )
     except Exception as e:
@@ -485,11 +485,20 @@ async def process_product_images(
             f"material={vector_stats.get('material_slig', 0)}, "
             f"understanding={vector_stats.get('understanding', 0)}"
         )
+        qwen_count = vector_stats.get('vision_analysis_qwen', 0)
+        fallback_count = vector_stats.get('vision_analysis_claude_fallback', 0)
+        failed_count = vector_stats.get('vision_analysis_failed', 0)
         logger.info(
-            f"      Vision analysis: qwen={vector_stats.get('vision_analysis_qwen', 0)}, "
-            f"claude_fallback={vector_stats.get('vision_analysis_claude_fallback', 0)}, "
-            f"failed={vector_stats.get('vision_analysis_failed', 0)}"
+            f"      Vision analysis: qwen={qwen_count}, "
+            f"claude_fallback={fallback_count}, failed={failed_count}"
         )
+        total_analyzed = qwen_count + fallback_count
+        if total_analyzed > 0 and fallback_count / total_analyzed > 0.5:
+            logger.warning(
+                f"      ⚠️ Qwen fallback rate high: {fallback_count}/{total_analyzed} "
+                f"({100 * fallback_count / total_analyzed:.0f}%) images routed to Claude. "
+                f"Check Qwen endpoint health."
+            )
         if vector_stats.get('icon_candidates_processed', 0) > 0:
             logger.info(
                 f"      Icons: extracted={vector_stats.get('icon_metadata_extracted', 0)}/"

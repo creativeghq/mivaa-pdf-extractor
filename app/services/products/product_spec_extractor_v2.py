@@ -5,7 +5,7 @@ Runs per product. For each product, extracts technical-characteristics and
 packing specifications from the PDF using a 3-tier hybrid strategy:
 
   Tier A  PyMuPDF text-dict parser  (free, deterministic, exact values)
-  Tier B  Claude Sonnet Vision      (fallback when Tier A is below threshold)
+  Tier B  Claude Opus Vision        (fallback when Tier A is below threshold)
   Tier C  Catalog legend inheritance (fields still null after A+B inherit
           from documents.metadata.catalog_legends values that applied
           globally to the catalog)
@@ -38,13 +38,13 @@ import sentry_sdk
 
 logger = logging.getLogger(__name__)
 
-SONNET_FALLBACK_MODEL = os.getenv(
+OPUS_FALLBACK_MODEL = os.getenv(
     "PRODUCT_SPEC_SONNET_MODEL",
-    "claude-sonnet-4-7",
+    "claude-opus-4-7",
 )
 
 # Tier A coverage threshold — if PyMuPDF parser fills at least this many
-# of the core packing fields, we skip the Sonnet fallback for cost savings.
+# of the core packing fields, we skip the Claude Vision fallback for cost savings.
 TIER_A_SUFFICIENT_FIELDS = 6
 
 CORE_PACKING_FIELDS = (
@@ -513,24 +513,24 @@ def _flat_to_nested(flat: Dict[str, Any], product_name: str) -> Dict[str, Any]:
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Tier B — Claude Sonnet Vision fallback (reuses existing extractor)
+# Tier B — Claude Opus Vision fallback (reuses existing extractor)
 # ──────────────────────────────────────────────────────────────────────────
 
-def _tier_b_sonnet(
+def _tier_b_opus(
     pdf_path: str,
     page_indices: List[int],
     product_name: str,
 ) -> Dict[str, Any]:
     """Fallback: delegate to the existing product_spec_vision_extractor
-    but with the Sonnet model override. Returns the same nested-metadata
+    but with the Claude Opus model override. Returns the same nested-metadata
     shape. Only runs when Tier A coverage is below threshold."""
     # Import locally to avoid a cyclic/test-time dependency
     from app.services.products import product_spec_vision_extractor as psve
 
-    # Temporarily swap the model to Sonnet — thread-local is overkill here
+    # Temporarily swap the model to Claude Opus — thread-local is overkill here
     # since we call the function in-process and restore afterwards.
     original_model = psve.CLAUDE_VISION_MODEL
-    psve.CLAUDE_VISION_MODEL = SONNET_FALLBACK_MODEL
+    psve.CLAUDE_VISION_MODEL = OPUS_FALLBACK_MODEL
     try:
         raw = psve.extract_specs_from_pdf_pages(
             pdf_path=pdf_path,
@@ -539,7 +539,7 @@ def _tier_b_sonnet(
         )
     except Exception as e:
         logger.warning(
-            f"product_spec_extractor_v2: tier_b sonnet fallback failed: {e}"
+            f"product_spec_extractor_v2: tier_b opus fallback failed: {e}"
         )
         return {}
     finally:
@@ -636,7 +636,7 @@ async def extract_product_spec(
         catalog_legends: `documents.metadata.catalog_legends` dict from
                          Layer 2, used for Tier C inheritance.
         job_id: Optional — enables progress updates.
-        enable_tier_b: Skip Sonnet Vision fallback when False (useful for
+        enable_tier_b: Skip Claude Opus Vision fallback when False (useful for
                        unit tests or cost-sensitive runs).
 
     Returns:
@@ -658,7 +658,7 @@ async def extract_product_spec(
 
         merged = tier_a_result
 
-        # ── Tier B — Sonnet Vision (complementary, not fallback) ────────
+        # ── Tier B — Claude Opus Vision (complementary, not fallback) ────────
         # We ALWAYS run Tier B when enabled, because:
         #   - Tier A only extracts the packing row + thickness + bullet flags
         #   - Tier B uniquely provides: commercial.vision_variants (SKU
@@ -667,12 +667,12 @@ async def extract_product_spec(
         #     icons that happen to be text-labeled (R10, PEI III, etc.)
         # Tier A fields take priority — _merge_specs never overwrites
         # existing values — so there's no risk of regressing accurate
-        # Tier A numbers with Sonnet approximations.
+        # Tier A numbers with Claude Opus approximations.
         #
         # The one cost optimization: when Tier A already hit the core
         # packing threshold, we skip Tier B pages that Tier A found and
-        # only send the product's intro/photo pages to Sonnet. This is
-        # handled inside _tier_b_sonnet_complementary below.
+        # only send the product's intro/photo pages to Claude Opus. This is
+        # handled inside _tier_b_opus_complementary below.
         if enable_tier_b:
             if tier_a_count >= TIER_A_SUFFICIENT_FIELDS:
                 logger.info(
@@ -684,7 +684,7 @@ async def extract_product_spec(
                     f"{log_prefix}: tier_a partial ({tier_a_count} fields), "
                     f"running tier_b for missing packing + variants/grout"
                 )
-            tier_b_result = _tier_b_sonnet(pdf_path, page_indices, product_name)
+            tier_b_result = _tier_b_opus(pdf_path, page_indices, product_name)
             if tier_b_result:
                 source_tiers.append("claude_sonnet_vision")
                 merged = _merge_specs(merged, tier_b_result)

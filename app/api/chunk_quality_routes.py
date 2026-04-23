@@ -131,7 +131,6 @@ class ChunkQualityMetrics(BaseModel):
     total_chunks: int
     total_documents: int
     exact_duplicates_prevented: int
-    semantic_duplicates_prevented: int
     low_quality_rejected: int
     borderline_quality_flagged: int
     average_quality_score: float
@@ -225,14 +224,12 @@ async def get_chunk_quality_metrics(
 
         # Aggregate quality metrics from job metadata
         exact_duplicates_prevented = 0
-        semantic_duplicates_prevented = 0
         low_quality_rejected = 0
 
         for job in (jobs_response.data or []):
             metadata = job.get("metadata", {})
             quality_metrics = metadata.get("quality_metrics", {})
             exact_duplicates_prevented += quality_metrics.get("exact_duplicates_prevented", 0)
-            semantic_duplicates_prevented += quality_metrics.get("semantic_duplicates_prevented", 0)
             low_quality_rejected += quality_metrics.get("low_quality_rejected", 0)
         
         # Calculate quality distribution
@@ -298,7 +295,6 @@ async def get_chunk_quality_metrics(
             total_chunks=total_chunks,
             total_documents=total_documents,
             exact_duplicates_prevented=exact_duplicates_prevented,
-            semantic_duplicates_prevented=semantic_duplicates_prevented,
             low_quality_rejected=low_quality_rejected,
             borderline_quality_flagged=borderline_quality_flagged,
             average_quality_score=round(average_quality_score, 3),

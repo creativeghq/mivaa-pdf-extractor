@@ -44,7 +44,6 @@ class ConsensusValidator:
     MODEL_WEIGHTS = {
         "qwen3-vl-8b": 0.7,
         "claude-haiku-4-5": 0.85,
-        "claude-sonnet-4-7": 0.95,
         "claude-opus-4-7": 1.0,
     }
     

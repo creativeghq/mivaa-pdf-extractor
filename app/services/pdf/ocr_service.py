@@ -670,7 +670,7 @@ class OCRService:
                 from app.services.core.claude_helper import tracked_claude_call
                 response = tracked_claude_call(
                     task="ocr_icon_metadata_extraction",
-                    model="claude-sonnet-4-7",
+                    model="claude-opus-4-7",
                     max_tokens=2048,
                     messages=[{
                         "role": "user",

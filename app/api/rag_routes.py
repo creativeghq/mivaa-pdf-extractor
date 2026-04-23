@@ -179,7 +179,7 @@ class DocumentUploadRequest(BaseModel):
     )
     discovery_model: Optional[str] = Field(
         "claude-vision",
-        description="AI model for discovery: 'claude-vision' (Claude Sonnet 4.5 Vision - RECOMMENDED, 10x faster), 'claude-haiku-vision' (faster/cheaper), 'gpt-vision' (GPT-4o Vision), 'claude' (text-only, legacy), 'gpt' (text-only, legacy), 'haiku' (text-only, legacy)"
+        description="AI model for discovery: 'claude-vision' (Claude Opus 4.7 Vision - RECOMMENDED, 10x faster), 'claude-haiku-vision' (faster/cheaper), 'gpt-vision' (GPT-4o Vision), 'claude' (text-only, legacy), 'gpt' (text-only, legacy), 'haiku' (text-only, legacy)"
     )
     enable_prompt_enhancement: bool = Field(
         True,
@@ -392,7 +392,7 @@ async def upload_document(
     # Discovery settings
     discovery_model: str = Form(
         "claude-vision",
-        description="AI model for discovery: 'claude-vision' (Claude Sonnet 4.5 Vision - RECOMMENDED, 10x faster), 'claude-haiku-vision' (faster/cheaper), 'gpt-vision' (GPT-4o Vision), 'claude' (text-only, legacy), 'gpt' (text-only, legacy), 'haiku' (text-only, legacy)"
+        description="AI model for discovery: 'claude-vision' (Claude Opus 4.7 Vision - RECOMMENDED, 10x faster), 'claude-haiku-vision' (faster/cheaper), 'gpt-vision' (GPT-4o Vision), 'claude' (text-only, legacy), 'gpt' (text-only, legacy), 'haiku' (text-only, legacy)"
     ),
 
     # Processing settings
@@ -453,7 +453,7 @@ async def upload_document(
     ## 🤖 AI Model Selection
 
     Choose discovery model:
-    - `discovery_model="claude"` - Claude Sonnet 4.5 (best quality, default)
+    - `discovery_model="claude"` - Claude Opus 4.7 (best quality, default)
     - `discovery_model="gpt"` - GPT-5 (fast, good quality)
     - `discovery_model="haiku"` - Claude Haiku 4.5 (fastest, lower cost)
 
@@ -1209,7 +1209,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
 
             # Extract parameters from job metadata (works for both legacy and discovery jobs)
             job_metadata = job_data.get('metadata', {})
-            discovery_model = job_metadata.get('discovery_model', 'claude-sonnet-4-7')
+            discovery_model = job_metadata.get('discovery_model', 'claude-opus-4-7')
             categories = job_metadata.get('categories', ['products'])
             enable_prompt_enhancement = job_metadata.get('prompt_enhancement_enabled', False)
             agent_prompt = job_metadata.get('agent_prompt')
@@ -1332,7 +1332,7 @@ async def reprocess_document(
             .execute()
         prev_job = (jobs_resp.data or [{}])[0] if jobs_resp.data else {}
 
-        discovery_model = prev_job.get("discovery_model") or "claude-sonnet-4-7"
+        discovery_model = prev_job.get("discovery_model") or "claude-opus-4-7"
         focused_extraction = prev_job.get("focused_extraction", True)
         extract_categories = prev_job.get("extract_categories") or []
 
@@ -3259,6 +3259,16 @@ async def process_document_with_discovery(
         # Stage 5 handles all SUCCESS cleanup (component unloading, resource cleanup, job completion)
         logger.info("✅ [MODULAR PIPELINE] All stages completed successfully")
 
+        # Flip the document record so it's no longer stuck in 'processing'.
+        try:
+            _supabase = get_supabase_client()
+            _supabase.client.table('documents').update({
+                'processing_status': 'completed',
+            }).eq('id', document_id).execute()
+            logger.info(f"   ✅ Marked document {document_id} as completed")
+        except Exception as status_error:
+            logger.warning(f"   ⚠️ Failed to mark document completed: {status_error}")
+
         # Calculate total processing time
         end_time = datetime.utcnow()
         total_duration = (end_time - start_time).total_seconds()
@@ -3358,6 +3368,23 @@ async def process_document_with_discovery(
         # Mark job as failed using tracker
         if 'tracker' in locals():
             await tracker.fail_job(error=e)
+
+        # Flip the document record so it stops showing as 'processing' forever.
+        try:
+            _supabase = get_supabase_client()
+            existing = _supabase.client.table('documents').select('metadata').eq('id', document_id).single().execute()
+            merged_metadata = (existing.data or {}).get('metadata') or {}
+            merged_metadata['error'] = str(e)[:2000]
+            merged_metadata['error_type'] = type(e).__name__
+            merged_metadata['failed_at'] = datetime.utcnow().isoformat()
+            merged_metadata['failed_stage'] = current_stage if 'current_stage' in locals() else 'unknown'
+            _supabase.client.table('documents').update({
+                'processing_status': 'failed',
+                'metadata': merged_metadata,
+            }).eq('id', document_id).execute()
+            logger.info(f"   ✅ Marked document {document_id} as failed")
+        except Exception as status_error:
+            logger.warning(f"   ⚠️ Failed to update document status to failed: {status_error}")
 
         # Rollback products created during discovery if processing failed
         # This prevents orphan products in the database
@@ -4261,7 +4288,7 @@ async def get_rag_statistics(
             ],
             "ai_models": {
                 "embeddings": "SLIG SigLIP2 768D / Voyage AI 1024D",
-                "rag_synthesis": "Claude 4.5 Sonnet",
+                "rag_synthesis": "Claude Opus 4.7",
                 "vision": "Qwen3-VL-32B-Instruct"
             }
         }

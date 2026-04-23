@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 # Haiku 4.5 is plenty capable for ceramic tile spec extraction and 10x cheaper
-# than Sonnet. If results are weak on a specific catalog, we can override via
+# than Opus. If results are weak on a specific catalog, we can override via
 # env var without changing code.
 CLAUDE_VISION_MODEL = os.getenv("PRODUCT_SPEC_VISION_MODEL", "claude-haiku-4-5")
 

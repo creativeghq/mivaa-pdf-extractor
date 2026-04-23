@@ -16,6 +16,7 @@ Search Strategy:
 """
 
 import logging
+import os
 from typing import Dict, List, Optional, Any
 import asyncio
 import time
@@ -142,7 +143,6 @@ class RAGService:
         document_id: str = None,
         metadata: Optional[Dict[str, Any]] = None,
         catalog: Optional[Any] = None,
-        pre_extracted_text: Optional[str] = None,
         page_chunks: Optional[List[Dict[str, Any]]] = None,
         progress_callback: Optional[callable] = None,
         layout_regions_by_page: Optional[Dict[int, List[Dict[str, Any]]]] = None
@@ -150,19 +150,15 @@ class RAGService:
         """
         Index PDF content by extracting text, chunking, and generating embeddings.
 
-        This method replaces the old LlamaIndex-based indexing with direct chunking
-        and embedding generation using our current services.
-
         Args:
-            pdf_content: PDF file content as bytes (optional if pre_extracted_text or page_chunks is provided)
+            pdf_content: PDF file content as bytes. Only used if page_chunks is None.
             document_id: Unique document identifier
             metadata: Document metadata including workspace_id, filename, etc.
             catalog: Optional product catalog for category tagging
-            pre_extracted_text: Optional pre-extracted text (skips PDF extraction if provided)
-            page_chunks: Optional page-aware text data from PyMuPDF4LLM (preserves page numbers)
+            page_chunks: Optional page-aware text data (preserves page numbers).
+                         When provided, PDF extraction is skipped.
             progress_callback: Optional async callback for progress updates (current, total, step_name)
-            layout_regions_by_page: Optional dict mapping page_number -> list of YOLO layout regions
-                                   for layout-aware chunking
+            layout_regions_by_page: Optional dict mapping 1-based page_number to YOLO layout regions
 
         Returns:
             Dict containing:
@@ -178,18 +174,11 @@ class RAGService:
 
             self.logger.info(f"📝 Indexing PDF content for document {document_id}")
 
-            # Step 1: Extract text from PDF with page information
+            # Step 1: Get text with page information
             pages = None
             if page_chunks:
-                # ✅ NEW: Use page-aware data from Stage 1 (preserves page numbers)
                 self.logger.info(f"   ✅ Using page-aware data ({len(page_chunks)} pages)")
                 pages = page_chunks
-            elif pre_extracted_text:
-                # Use pre-extracted text (from Stage 1 focused extraction)
-                # Convert to page format for consistency
-                self.logger.info(f"   ✅ Using pre-extracted text ({len(pre_extracted_text)} characters)")
-                # Wrap in single page dict (no page info available from pre-extracted text)
-                pages = [{"metadata": {"page": 0}, "text": pre_extracted_text}]
             else:
                 # Extract text from PDF using PyMuPDF4LLM with page_chunks=True
                 try:
@@ -259,8 +248,10 @@ class RAGService:
             from app.utils.memory_monitor import MemoryPressureMonitor
 
             memory_monitor = MemoryPressureMonitor()
-            CHUNK_BATCH_SIZE = 15  # Process 15 chunks at a time (proven optimal from commit 74e7a73)
-            MEMORY_THRESHOLD_PERCENT = 85.0  # Pause if memory usage exceeds 85%
+            # Batch size for chunk embedding — 15 is the proven-optimal default
+            # (commit 74e7a73) but can be tuned via env var without redeploy.
+            CHUNK_BATCH_SIZE = int(os.getenv('RAG_CHUNK_BATCH_SIZE', '15') or '15')
+            MEMORY_THRESHOLD_PERCENT = float(os.getenv('RAG_MEMORY_THRESHOLD_PERCENT', '85.0') or '85.0')
             total_chunks = len(chunks)
 
             chunk_ids = []
@@ -419,14 +410,14 @@ class RAGService:
                                 for update in updates:
                                     try:
                                         self.supabase_client.client.table('document_chunks')\
-                                            .update({'text_embedding': update['text_embedding']})\
+                                            .update({'text_embedding': update['text_embedding'], 'has_text_embedding': True})\
                                             .eq('id', update['id'])\
                                             .execute()
                                         embeddings_stored += 1
                                     except Exception as individual_update_error:
                                         self.logger.warning(f"   ⚠️ Failed to update chunk {update['id']}: {individual_update_error}")
 
-                                total_embeddings_stored += embeddings_stored  # Accumulate total
+                                total_embeddings_stored += embeddings_stored
                                 self.logger.info(f"   ✅ Stored {embeddings_stored}/{len(updates)} embeddings")
 
                     except Exception as batch_embedding_error:
@@ -437,10 +428,10 @@ class RAGService:
                         embeddings_stored = 0
                         for chunk_id, text in zip(batch_chunk_ids, batch_texts):
                             try:
-                                embedding = await self.embeddings_service.generate_embedding(text, dimensions=1024)  # ✅ FIXED: Use 1024D (matches DB schema)
+                                embedding = await self.embeddings_service.generate_embedding(text, dimensions=1024)
                                 if embedding:
                                     self.supabase_client.client.table('document_chunks')\
-                                        .update({'text_embedding': embedding})\
+                                        .update({'text_embedding': embedding, 'has_text_embedding': True})\
                                         .eq('id', chunk_id)\
                                         .execute()
                                     embeddings_stored += 1
@@ -448,7 +439,7 @@ class RAGService:
                                 self.logger.warning(f"   ⚠️ Failed to generate individual embedding for chunk {chunk_id}: {individual_error}")
 
                         if embeddings_stored > 0:
-                            total_embeddings_stored += embeddings_stored  # Accumulate total
+                            total_embeddings_stored += embeddings_stored
                             self.logger.info(f"   ✅ Stored {embeddings_stored} embeddings via individual fallback")
 
                 # Step 3c: Cleanup after batch (FIX #1: embedding_vectors now always defined)
@@ -488,9 +479,8 @@ class RAGService:
                 "quality_metrics": {
                     "total_chunks_created": quality_metrics.total_chunks_created,
                     "exact_duplicates_prevented": quality_metrics.exact_duplicates_prevented,
-                    "semantic_duplicates_prevented": quality_metrics.semantic_duplicates_prevented,
                     "low_quality_rejected": quality_metrics.low_quality_rejected,
-                    "final_chunks": quality_metrics.final_chunks
+                    "final_chunks": quality_metrics.final_chunks,
                 }
             }
 
@@ -1682,10 +1672,10 @@ class RAGService:
 
 **Answer:**"""
 
-            # Step 4: Call Claude 4.5 Sonnet
+            # Step 4: Call Claude Opus 4.7
             client = self.ai_client_service.anthropic
             response = client.messages.create(
-                model="claude-sonnet-4-7",
+                model="claude-opus-4-7",
                 max_tokens=2048,
                 temperature=0.1,
                 messages=[{"role": "user", "content": prompt}]
@@ -1697,7 +1687,7 @@ class RAGService:
             latency_ms = int((time.time() - start_time) * 1000)
             await self.ai_logger.log_claude_call(
                 task="rag_query_document",
-                model="claude-sonnet-4-7",
+                model="claude-opus-4-7",
                 response=response,
                 latency_ms=latency_ms,
                 confidence_score=0.85,
@@ -1724,7 +1714,7 @@ class RAGService:
                 "metadata": {
                     "chunks_retrieved": len(chunks),
                     "processing_time_ms": latency_ms,
-                    "model": "claude-sonnet-4-7"
+                    "model": "claude-opus-4-7"
                 }
             }
 
@@ -1852,10 +1842,10 @@ class RAGService:
 
 **Response:**"""
 
-            # Step 6: Call Claude 4.5 Sonnet
+            # Step 6: Call Claude Opus 4.7
             client = self.ai_client_service.anthropic
             response = client.messages.create(
-                model="claude-sonnet-4-7",
+                model="claude-opus-4-7",
                 max_tokens=4096,
                 temperature=0.1 if query_type == "factual" else 0.3,
                 messages=[{"role": "user", "content": prompt}]
@@ -1871,7 +1861,7 @@ class RAGService:
             latency_ms = int((time.time() - start_time) * 1000)
             await self.ai_logger.log_claude_call(
                 task=f"rag_advanced_query_{query_type}",
-                model="claude-sonnet-4-7",
+                model="claude-opus-4-7",
                 response=response,
                 latency_ms=latency_ms,
                 confidence_score=confidence,
@@ -1914,7 +1904,7 @@ class RAGService:
                     "query_type": query_type,
                     "has_conversation_context": conversation_context is not None,
                     "processing_time_ms": latency_ms,
-                    "model": "claude-sonnet-4-7"
+                    "model": "claude-opus-4-7"
                 }
             }
 

@@ -80,7 +80,7 @@ Return ONLY the JSON array. Example:
 
 
 class SegmentationService:
-    """Detects material zones in 3D renders via Qwen3-VL (primary) or Claude Sonnet (fallback)."""
+    """Detects material zones in 3D renders via Qwen3-VL (primary) or Claude Opus (fallback)."""
 
     def __init__(self):
         import os
@@ -124,7 +124,7 @@ class SegmentationService:
         Detect material zones in a 3D render.
 
         Primary:  HF Qwen3-VL — resume_if_needed handles cold start (~60-90s first call).
-        Fallback: Anthropic claude-sonnet-4-7 — always available, no warmup.
+        Fallback: Anthropic claude-opus-4-7 — always available, no warmup.
 
         Prompt is loaded dynamically from the `prompts` table (category='segmentation').
         Falls back to DEFAULT_SEGMENT_PROMPT if no DB record exists.
@@ -166,7 +166,7 @@ class SegmentationService:
             except Exception as e:
                 logger.warning(f"Qwen segmentation failed, falling back to Anthropic: {e}")
 
-        # Fallback: Anthropic claude-sonnet-4-7
+        # Fallback: Anthropic claude-opus-4-7
         if self.anthropic_api_key:
             try:
                 zones = await self._segment_with_anthropic(image_base64, prompt)
@@ -198,7 +198,7 @@ class SegmentationService:
         return "image/jpeg"  # safe fallback
 
     async def _segment_with_anthropic(self, image_base64: str, prompt: str) -> List[Dict[str, Any]]:
-        """Call Anthropic claude-sonnet-4-7 for segmentation."""
+        """Call Anthropic claude-opus-4-7 for segmentation."""
         import httpx
         media_type = self._detect_media_type(image_base64)
         async with httpx.AsyncClient(timeout=60) as client:
@@ -210,7 +210,7 @@ class SegmentationService:
                     "content-type": "application/json",
                 },
                 json={
-                    "model": "claude-sonnet-4-7",
+                    "model": "claude-opus-4-7",
                     "max_tokens": 4096,
                     "messages": [
                         {

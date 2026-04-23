@@ -212,20 +212,6 @@ class RealEmbeddingsService:
                     embeddings["metadata"]["confidence_scores"]["understanding"] = 0.93
                     self.logger.info("✅ Understanding embedding generated (1024D)")
 
-            # 4. Multimodal Fusion Embedding (1792D) - REAL (1024D text + 768D visual)
-            if embeddings["embeddings"].get("text_1024") and embeddings["embeddings"].get("visual_768"):
-                multimodal_embedding = self._generate_multimodal_fusion(
-                    embeddings["embeddings"]["text_1024"],
-                    embeddings["embeddings"]["visual_768"]
-                )
-                embeddings["embeddings"]["multimodal_1792"] = multimodal_embedding
-                embeddings["metadata"]["model_versions"]["multimodal"] = "fusion-v1"
-                embeddings["metadata"]["confidence_scores"]["multimodal"] = 0.92
-                self.logger.info("✅ Multimodal fusion embedding generated (1792D)")
-            
-            # Removed fake embeddings (color, texture, application)
-            # They were just downsampled text embeddings - redundant!
-
             self.logger.info(f"✅ All embeddings generated: {len(embeddings['embeddings'])} types")
 
             # Add success flag
@@ -1066,36 +1052,39 @@ class RealEmbeddingsService:
                     image_bytes = base64.b64decode(image_data)
                     pil_image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
 
-                # Get embedding from SLIG endpoint
                 try:
                     embedding = await self._slig_client.get_image_embedding(pil_image)
 
                     latency_ms = int((time.time() - start_time) * 1000)
-                    self.logger.info(f"✅ SLIG cloud embedding generated: {len(embedding)}D (latency={latency_ms}ms)")
 
-                    # Log AI call
+                    if len(embedding) != self.slig_embedding_dimension:
+                        self.logger.error(
+                            f"❌ SLIG endpoint returned {len(embedding)}D, expected "
+                            f"{self.slig_embedding_dimension}D — refusing to store. "
+                            f"The endpoint is likely serving the wrong model."
+                        )
+                        return None, None
+
+                    self.logger.info(f"✅ SLIG embedding generated: {len(embedding)}D (latency={latency_ms}ms)")
+
                     await self.ai_logger.log_ai_call(
                         task="visual_embedding_generation",
                         model=self.slig_model_name,
                         input_tokens=0,
                         output_tokens=0,
-                        cost=0.0,  # Endpoint cost tracked separately
+                        cost=0.0,
                         latency_ms=latency_ms,
                         confidence_score=0.95,
                         confidence_breakdown={
                             "model_confidence": 0.98,
                             "completeness": 1.0,
                             "consistency": 0.95,
-                            "validation": 0.90
+                            "validation": 0.90,
                         },
                         action="use_ai_result",
-                        job_id=job_id
+                        job_id=job_id,
                     )
 
-                    # Slice to 768D if endpoint returns concatenated embeddings (768+384=1152)
-                    if len(embedding) > self.slig_embedding_dimension:
-                        self.logger.info(f"   Slicing embedding from {len(embedding)}D to {self.slig_embedding_dimension}D")
-                        embedding = embedding[:self.slig_embedding_dimension]
                     return embedding, pil_image
 
                 except Exception as e:
@@ -1124,181 +1113,81 @@ class RealEmbeddingsService:
         self,
         image_url: Optional[str],
         image_data: Optional[str],
-        pil_image = None  # Accept pre-decoded PIL image
+        pil_image=None,
     ) -> tuple[Optional[Dict[str, List[float]]], Optional[any]]:
         """
-        Generate specialized text-guided embeddings using SLIG's similarity mode.
+        Generate 4 text-guided SLIG embeddings (color / texture / style / material).
 
-        Uses SLIG cloud endpoint to create text-guided visual embeddings by:
-        1. Getting base image embedding (768D)
-        2. Calculating similarity scores with specialized text prompts
-        3. Weighting image embeddings by similarity to create specialized embeddings
-
-        This approach leverages SLIG's native similarity scoring to create
-        embeddings that are guided by specific visual aspects (color, texture, etc.)
-
-        Args:
-            image_url: URL of image
-            image_data: Base64 encoded image data
-            pil_image: Optional pre-decoded PIL image (for reuse)
-
-        Returns:
-            Tuple of (Dict with color/texture/style/material embeddings (768D each), PIL image for reuse)
+        All-or-nothing: if any of the 4 fail, this returns None for the whole set
+        so the image doesn't end up with partial specialized coverage.
         """
         try:
-            import asyncio
+            import numpy as np
 
-            # Define text prompts for each specialized embedding type
             text_prompts = {
                 "color": "focus on color palette and color relationships",
                 "texture": "focus on surface patterns and texture details",
                 "material": "focus on material type and physical properties",
-                "style": "focus on design style and aesthetic elements"
+                "style": "focus on design style and aesthetic elements",
             }
 
-            # First, get the base image embedding (768D).
-            # ⚠️ 2026-04 bug fix (regression of the fix at lines 1173-1187 below):
-            # `SligClient.get_image_embedding()` returns a bare `List[float]`
-            # for a single image (see slig_client.py:240-242), NOT a dict with
-            # an "embedding" key. The previous `"embedding" not in result`
-            # check was always True against a list of floats, so the bail-out
-            # branch fired on every call and ALL 4 specialized embeddings
-            # were silently skipped — same class of shape-mismatch bug as
-            # the original 2026-04 fix to the inner loop helpers, just on
-            # the outer call.
             base_image_embedding = await self._slig_client.get_image_embedding(
                 image=image_data if image_data else image_url
             )
-
-            if not base_image_embedding or len(base_image_embedding) != 768:
+            if not base_image_embedding or len(base_image_embedding) != self.slig_embedding_dimension:
                 self.logger.warning(
-                    "⚠️ Failed to get base image embedding for specialized embeddings "
-                    f"(got {type(base_image_embedding).__name__}, "
-                    f"len={len(base_image_embedding) if base_image_embedding else 0}) "
-                    "— skipping specialized embeddings"
+                    f"⚠️ Specialized embeddings: base image embedding invalid "
+                    f"(len={len(base_image_embedding) if base_image_embedding else 0}, "
+                    f"expected={self.slig_embedding_dimension}) — skipping all 4"
                 )
                 return None, pil_image
 
-            # Generate specialized embeddings using text-guided blending.
-            #
-            # ⚠️ 2026-04 bug fix: the prior implementation called
-            # `self._slig_client.get_similarity(image_url=, image_data=, text=)`
-            # and `get_text_embedding(...)` with the wrong response-shape
-            # assumption (expected a dict with an "embedding" key, but the
-            # client returns a bare List[float]). Both calls silently raised,
-            # the per-type `except` fell back to using the base image embedding
-            # for all 4 types, and the 4 specialized VECS collections
-            # (image_color_embeddings / image_texture_embeddings /
-            # image_style_embeddings / image_material_embeddings) ended up
-            # empty in production. Fixed by (a) calling `calculate_similarity`
-            # with the documented signature, (b) unpacking the real
-            # `similarity_scores` matrix shape, (c) using `get_text_embedding`
-            # as a direct list, and (d) failing LOUD on any error (skip the
-            # type, do not fall back to the base embedding — that silent
-            # fallback is how this bug hid for months).
-            import numpy as np
-
-            specialized = {}
+            specialized: Dict[str, List[float]] = {}
             image_input = image_data if image_data else image_url
 
             for embedding_type, text_prompt in text_prompts.items():
                 try:
-                    # Cosine similarity between the image and the aspect prompt
-                    # via SLIG's similarity mode. Response shape:
-                    # { "similarity_scores": [[float]], "image_count": 1, "text_count": 1 }
                     similarity_result = await self._slig_client.calculate_similarity(
                         images=image_input,
                         texts=text_prompt,
                     )
                     sim_matrix = similarity_result.get("similarity_scores") if similarity_result else None
                     if not sim_matrix or not sim_matrix[0]:
-                        raise ValueError(
-                            f"SLIG calculate_similarity returned empty similarity_scores for "
-                            f"{embedding_type} (prompt={text_prompt!r})"
-                        )
+                        raise ValueError(f"empty similarity_scores for {embedding_type}")
                     similarity_score = float(sim_matrix[0][0])
 
-                    # Text embedding for the prompt (SLIG text branch returns
-                    # a List[float] directly — NOT a dict).
                     text_embedding = await self._slig_client.get_text_embedding(text_prompt)
-                    if not text_embedding or len(text_embedding) == 0:
+                    if not text_embedding or len(text_embedding) != self.slig_embedding_dimension:
                         raise ValueError(
-                            f"SLIG get_text_embedding returned empty result for "
-                            f"{embedding_type} (prompt={text_prompt!r})"
+                            f"text embedding wrong size for {embedding_type}: "
+                            f"len={len(text_embedding) if text_embedding else 0}"
                         )
 
-                    # Blend: higher similarity = more image-weighted
-                    # (0.7–0.9 range). The result is a text-guided vector
-                    # that points toward the aspect's subspace.
                     img_emb = np.array(base_image_embedding, dtype=np.float32)
                     txt_emb = np.array(text_embedding, dtype=np.float32)
-                    if img_emb.shape != txt_emb.shape:
-                        raise ValueError(
-                            f"Dimension mismatch for {embedding_type}: "
-                            f"image {img_emb.shape} vs text {txt_emb.shape}"
-                        )
-
                     blend_weight = 0.7 + (0.2 * similarity_score)
-                    guided_embedding = blend_weight * img_emb + (1 - blend_weight) * txt_emb
-                    norm = np.linalg.norm(guided_embedding)
+                    guided = blend_weight * img_emb + (1 - blend_weight) * txt_emb
+                    norm = np.linalg.norm(guided)
                     if norm > 0:
-                        guided_embedding = guided_embedding / norm
+                        guided = guided / norm
 
-                    specialized[embedding_type] = guided_embedding.tolist()
-                    self.logger.debug(
-                        f"✅ Generated {embedding_type} specialized embedding "
-                        f"(768D, similarity={similarity_score:.3f}, blend_weight={blend_weight:.3f})"
-                    )
+                    specialized[embedding_type] = guided.tolist()
 
                 except Exception as e:
-                    # Loud failure — do NOT fall back to the base image
-                    # embedding. Silent fallback is what hid this bug for
-                    # months. Skip the type; the caller already handles
-                    # partial results and will simply omit the missing
-                    # specialized VECS collection for this image.
                     self.logger.error(
-                        f"❌ Failed to generate {embedding_type} specialized embedding "
-                        f"(skipping, not falling back to base): {e}",
+                        f"❌ Specialized {embedding_type} embedding failed — aborting all 4: {e}",
                         exc_info=True,
                     )
-                    continue
+                    return None, pil_image
 
-            if len(specialized) == 4:
-                self.logger.info("✅ Generated 4 text-guided specialized SLIG embeddings (768D each)")
-                return specialized, pil_image
-            elif specialized:
-                self.logger.warning(
-                    f"⚠️ Only generated {len(specialized)}/4 specialized embeddings "
-                    f"(missing: {sorted(set(text_prompts) - set(specialized))})"
-                )
-                return specialized, pil_image
-            else:
-                self.logger.error("❌ All 4 specialized SLIG embeddings failed — none generated")
-                return None, pil_image
+            self.logger.info("✅ Generated 4 text-guided specialized SLIG embeddings (768D each)")
+            return specialized, pil_image
 
         except Exception as e:
-            self.logger.error(f"❌ Specialized SLIG embedding generation failed: {e}")
-            import traceback
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            self.logger.error(f"❌ Specialized SLIG embedding generation failed: {e}", exc_info=True)
             return None, pil_image
 
-    def _generate_multimodal_fusion(
-        self,
-        text_embedding: List[float],
-        visual_embedding: List[float]
-    ) -> List[float]:
-        """Generate multimodal fusion embedding by concatenating text and visual.
 
-        Returns:
-            Combined embedding: text (1024D) + visual (768D) = 1792D
-        """
-        return text_embedding + visual_embedding
-    
-    # Removed fake embedding methods:
-    # - _generate_color_embedding (was just downsampled text embedding)
-    # - _generate_texture_embedding (was just downsampled text embedding)
-    # - _generate_application_embedding (was just downsampled text embedding)
-    #
     # Replaced by SLIG text-guided specialized embeddings (color, texture, style, material)
     # stored in VECS collections at 768D each.
 

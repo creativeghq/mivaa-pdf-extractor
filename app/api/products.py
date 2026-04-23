@@ -86,7 +86,7 @@ class ProductCreationResponse(BaseModel):
     - Low-cost, high-speed filtering
     - Identifies potential product chunks
 
-    **Stage 2: Deep Enrichment (Claude 4.5 Sonnet)**
+    **Stage 2: Deep Enrichment (Claude Opus 4.7)**
     - Detailed product metadata extraction
     - Image analysis and validation
     - Comprehensive feature extraction
@@ -102,7 +102,7 @@ class ProductCreationResponse(BaseModel):
     1. Fetch all chunks for document
     2. Filter by minimum length criteria
     3. Stage 1: Haiku classifies chunks (batch)
-    4. Stage 2: Sonnet enriches confirmed products
+    4. Stage 2: Opus enriches confirmed products
     5. Create products in database
     6. Return detailed metrics
 
@@ -175,12 +175,12 @@ async def create_products_from_chunks(
 
     This endpoint uses an advanced two-stage classification system:
     - Stage 1: Fast text-only classification using Claude 4.5 Haiku for initial filtering
-    - Stage 2: Deep enrichment using Claude 4.5 Sonnet for confirmed products
+    - Stage 2: Deep enrichment using Claude Opus 4.7 for confirmed products
 
     The system provides significant performance improvements:
     - 60% faster processing through intelligent model selection
     - Reduced API costs by using Haiku for initial filtering
-    - Higher accuracy through Sonnet enrichment of confirmed candidates
+    - Higher accuracy through Opus enrichment of confirmed candidates
     - Batch processing reduces API call overhead
 
     Args:

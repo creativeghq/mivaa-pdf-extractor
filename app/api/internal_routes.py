@@ -18,7 +18,6 @@ Endpoints:
 - POST /api/internal/reset-job/{job_id} - Reset a stuck/failed job back to initialized state
 - POST /api/internal/extract-entities - Match document entities to products
 - POST /api/internal/generate-entity-embeddings - Generate text embeddings for document entities
-- POST /api/internal/queue-understanding-embeddings - Queue Phase 2 understanding embeddings (Qwen→Voyage)
 - POST /api/internal/regenerate-text-embeddings - Generate text embeddings for chunks missing them
 - POST /api/internal/validate-pipeline/{job_id} - Audit pipeline completion status across all stages
 """
@@ -193,12 +192,12 @@ async def classify_images(
 
     This endpoint:
     1. Uses vision model for fast initial classification
-    2. Validates uncertain cases (confidence < threshold) with Claude Sonnet
+    2. Validates uncertain cases (confidence < threshold) with Claude Opus
     3. Returns separated lists of material and non-material images
 
     AI Configuration (Optional):
     - classification_primary_model: Primary classification model (default: Qwen3-VL-8B)
-    - classification_validation_model: Validation model (default: Claude Sonnet 4.5)
+    - classification_validation_model: Validation model (default: Claude Opus 4.7)
     - classification_confidence_threshold: Threshold for validation (default: 0.7)
     - classification_temperature: Temperature setting (default: 0.1)
     - classification_max_tokens: Max tokens for responses (default: 512)
@@ -210,7 +209,7 @@ async def classify_images(
       "extracted_images": [...],
       "ai_config": {
         "classification_primary_model": "Qwen/Qwen3-VL-8B-Instruct",
-        "classification_validation_model": "claude-sonnet-4-7",
+        "classification_validation_model": "claude-opus-4-7",
         "classification_confidence_threshold": 0.8
       }
     }
@@ -565,9 +564,8 @@ async def create_chunks(
                 'quality_metrics': {
                     'total_chunks_created': quality_metrics.total_chunks_created,
                     'exact_duplicates_prevented': quality_metrics.exact_duplicates_prevented,
-                    'semantic_duplicates_prevented': quality_metrics.semantic_duplicates_prevented,
                     'low_quality_rejected': quality_metrics.low_quality_rejected,
-                    'final_chunks': quality_metrics.final_chunks
+                    'final_chunks': quality_metrics.final_chunks,
                 }
             },
             sync_to_db=True
@@ -1448,65 +1446,6 @@ async def generate_entity_embeddings(request: GenerateEntityEmbeddingsRequest):
 
 
 # ============================================================================
-# PHASE 2 UNDERSTANDING EMBEDDING QUEUE
-# ============================================================================
-
-class QueueUnderstandingEmbeddingsRequest(BaseModel):
-    """Request model for queuing Phase 2 understanding embeddings."""
-    document_id: str
-    workspace_id: str
-    priority: str = "normal"  # low, normal, high
-
-
-class QueueUnderstandingEmbeddingsResponse(BaseModel):
-    """Response model for queuing understanding embeddings."""
-    success: bool
-    job_id: str
-    message: str
-
-
-@router.post("/queue-understanding-embeddings", response_model=QueueUnderstandingEmbeddingsResponse)
-async def queue_understanding_embeddings(request: QueueUnderstandingEmbeddingsRequest):
-    """
-    Queue Phase 2 understanding embedding generation for a document.
-
-    Phase 2 runs Qwen3-VL vision analysis on document images, converts the
-    vision_analysis JSON to text, then generates 1024D Voyage AI embeddings
-    (understanding embeddings) for semantic spec-based search.
-
-    This is safe to re-run — it skips images that already have understanding embeddings.
-
-    Args:
-        request: document_id + workspace_id + priority
-
-    Returns:
-        QueueUnderstandingEmbeddingsResponse with queued job_id
-    """
-    try:
-        from app.services.embeddings.clip_embedding_job_service import CLIPEmbeddingJobService
-
-        logger.info(f"⚡ Queuing Phase 2 understanding embeddings for document {request.document_id}")
-        clip_service = CLIPEmbeddingJobService()
-        job_id = await clip_service.queue_clip_generation_job(
-            document_id=request.document_id,
-            workspace_id=request.workspace_id,
-            priority=request.priority
-        )
-
-        logger.info(f"✅ Queued Phase 2 job: {job_id}")
-
-        return QueueUnderstandingEmbeddingsResponse(
-            success=True,
-            job_id=job_id,
-            message=f"Queued Phase 2 understanding embedding job: {job_id}"
-        )
-
-    except Exception as e:
-        logger.error(f"❌ Failed to queue understanding embeddings: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to queue understanding embeddings: {str(e)}")
-
-
-# ============================================================================
 # TEXT EMBEDDING REGENERATION
 # ============================================================================
 
@@ -1693,8 +1632,7 @@ async def validate_pipeline(
                 stages['images_with_vision_analysis'] = with_vision
                 if with_vision < image_count:
                     missing = image_count - with_vision
-                    issues.append(f"{missing} images missing vision_analysis (Phase 2 not complete)")
-                    recommendations.append("Run POST /api/internal/queue-understanding-embeddings")
+                    issues.append(f"{missing} images missing vision_analysis")
 
             # Check products
             products_resp = supabase.client.table('products').select('id').eq(

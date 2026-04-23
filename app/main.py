@@ -297,7 +297,7 @@ async def lifespan(app: FastAPI):
                 logger.warning(f"⚠️ Error cleaning up RAG service: {e}")
 
         component_manager.register("rag_service", load_rag_service, cleanup_rag_service)
-        logger.info("✅ RAG service registered for lazy loading (Qwen3-VL-32B primary, Claude Sonnet 4.5 fallback)")
+        logger.info("✅ RAG service registered for lazy loading (Qwen3-VL-32B primary, Claude Opus 4.7 fallback)")
 
         # Set placeholder
         app.state.rag_service = None
@@ -770,7 +770,7 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 
 ### AI Models
 1. **Voyage AI**: voyage-4 (1024D text embeddings), GPT-4o-mini (query understanding)
-2. **Anthropic**: Claude Haiku 4.5 (fast classification), Claude Sonnet 4.5 (deep enrichment)
+2. **Anthropic**: Claude Haiku 4.5 (fast classification), Claude Opus 4.7 (deep enrichment)
 3. **HuggingFace Endpoint**: Qwen3-VL-32B-Instruct (vision analysis)
 4. **SigLIP2**: 5 specialized visual embeddings (visual, color, texture, style, material) - 768D each
 5. **Voyage AI**: voyage-4 (text + understanding embeddings, 1024D)
@@ -929,12 +929,12 @@ Get your token from the frontend application or Supabase authentication.
             {"name": "Search Suggestions", "description": "Search UX helpers - Auto-complete, trending searches, typo correction, query expansion, popular searches, and personalized suggestions."},
             {"name": "Embeddings", "description": "Multi-vector embedding generation - 7 types: text (1024D Voyage AI), visual (768D SLIG), understanding (1024D), color/texture/style/material (768D each)."},
             {"name": "Chat", "description": "AI chat interface - Contextual completions, conversation history, and intelligent material assistance."},
-            {"name": "Products", "description": "Product management - Two-stage AI classification (Claude Haiku 4.5 + Sonnet 4.5), enrichment, metadata extraction, and product creation from chunks."},
+            {"name": "Products", "description": "Product management - Two-stage AI classification (Claude Haiku 4.5 + Opus 4.7), enrichment, metadata extraction, and product creation from chunks."},
             {"name": "Image Analysis", "description": "Image processing - Extraction, analysis, embedding generation, OCR, reclassification, and segmentation for material images."},
             {"name": "Knowledge Base", "description": "Documentation system - CRUD documents with AI embeddings (1024D Voyage AI), semantic search, category hierarchy, product attachments, version history, and comments."},
             {"name": "Saved Searches", "description": "Saved search management - Create, list, execute, and delete saved searches with AI-powered deduplication."},
             {"name": "Duplicate Detection", "description": "Product duplicate detection - Single and batch detection, merge/undo operations, status tracking, and merge history (same-factory scope)."},
-            {"name": "Anthropic Claude", "description": "Claude integration - Image validation and product enrichment using Claude Haiku 4.5 (fast) and Sonnet 4.5 (deep)."},
+            {"name": "Anthropic Claude", "description": "Claude integration - Image validation and product enrichment using Claude Haiku 4.5 (fast) and Opus 4.7 (deep)."},
             {"name": "Interior Design", "description": "Interior design generation - AI-powered room renders with streaming progress feedback."},
             {"name": "Price Monitoring", "description": "Competitor price tracking - On-demand and scheduled monitoring via Firecrawl. Price history, alerts (drop/increase/change), statistics, source management. 1 credit/scrape."},
             {"name": "Data Import", "description": "Batch data import - XML and web-scraping sources with job tracking, processing history, and health checks."},
@@ -1188,7 +1188,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
         },
         "anthropic": {
           "status": "healthy",
-          "message": "Claude Sonnet 4.5 available"
+          "message": "Claude Opus 4.7 available"
         },
         "openai": {
           "status": "healthy",
@@ -2065,6 +2065,7 @@ from app.api.interior_design_routes import router as interior_design_router
 from app.api.health import router as health_router
 from app.api.chunk_quality_routes import router as chunk_quality_router
 from app.api.price_monitoring_routes import router as price_monitoring_router
+from app.api.price_lookup_routes import router as price_lookup_router
 from app.api.websocket_routes import router as websocket_router
 from app.api.logs_routes import router as logs_router
 from app.api.admin_linking import router as admin_linking_router
@@ -2103,6 +2104,7 @@ app.include_router(user_feedback_router)  # NEW: User feedback with AI sentiment
 app.include_router(interior_design_router)  # NEW: Interior design generation with streaming progress
 app.include_router(chunk_quality_router)  # NEW: Chunk quality metrics and flagged content management
 app.include_router(price_monitoring_router)  # NEW: Price monitoring with Firecrawl (competitor scraping, alerts, history)
+app.include_router(price_lookup_router)  # NEW: Public POST /api/v1/prices/lookup — one-shot price lookup for external API callers
 app.include_router(websocket_router)  # NEW: WebSocket endpoint for real-time updates (job progress, system health)
 app.include_router(logs_router)  # NEW: System logs API (fetch, filter, clear logs from database)
 app.include_router(admin_linking_router)  # NEW: Admin entity linking (manual chunk-product linking for debugging)
@@ -2216,7 +2218,7 @@ def custom_openapi():
         "rag_system": "Retrieval-Augmented Generation with enhanced multi-vector search",
         "vector_search": "7 specialized embedding types (text, visual, understanding, color, texture, style, material)",
         "search_strategies": "10 strategies: multi_vector (⭐ default), semantic, vector, hybrid, material, keyword, color, texture, style, material_type",
-        "ai_models": "13 models: Claude Sonnet 4.5, Haiku 4.5, GPT-4o-mini, Qwen3-VL-32B, SLIG, Voyage AI",
+        "ai_models": "13 models: Claude Opus 4.7, Haiku 4.5, GPT-4o-mini, Qwen3-VL-32B, SLIG, Voyage AI",
         "material_recognition": "Qwen3-VL-8B-Instruct (configurable vision model)",
         "embedding_models": "Voyage AI voyage-4 (1024D text + understanding), SLIG SigLIP2 (768D) for 5 visual embeddings",
         "performance": "95%+ product detection, 85%+ search accuracy, 250-350ms response time (with query understanding)",

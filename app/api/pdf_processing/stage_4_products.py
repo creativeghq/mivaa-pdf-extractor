@@ -5,6 +5,7 @@ This module handles product creation in the database for the product-centric pip
 Includes metadata consolidation from AI text extraction, visual analysis, and factory defaults.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -508,21 +509,34 @@ async def create_single_product(
 
             from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
             embeddings_svc = RealEmbeddingsService()
-            emb_result = await embeddings_svc.generate_text_embedding(embedding_text)
-            text_emb = emb_result.get('embedding') if emb_result.get('success') else None
+
+            text_emb = None
+            last_err: Optional[Exception] = None
+            for attempt in range(3):
+                try:
+                    emb_result = await embeddings_svc.generate_text_embedding(embedding_text)
+                    if emb_result.get('success') and emb_result.get('embedding'):
+                        text_emb = emb_result['embedding']
+                        break
+                    last_err = Exception(emb_result.get('error') or 'no embedding returned')
+                except Exception as e:
+                    last_err = e
+                if attempt < 2:
+                    await asyncio.sleep(0.5 * (2 ** attempt))
 
             if text_emb:
-                # Store as vector string for pgvector
                 embedding_str = '[' + ','.join(str(x) for x in text_emb) + ']'
                 supabase.client.table('products').update(
                     {'text_embedding_1024': embedding_str}
                 ).eq('id', product_id).execute()
                 logger.info(f"   🧠 Generated text_embedding_1024 for {product.name}")
             else:
-                logger.warning(f"   ⚠️ Embedding generation returned no text_1024 for {product.name}")
+                logger.error(
+                    f"   ❌ Product embedding failed after 3 attempts for {product.name}: {last_err}"
+                )
 
         except Exception as emb_err:
-            logger.warning(f"   ⚠️ Product embedding generation failed (non-blocking): {emb_err}")
+            logger.error(f"   ❌ Product embedding generation crashed for {product.name}: {emb_err}")
 
         return {'product_id': product_id}
     else:
@@ -1970,7 +1984,7 @@ async def enrich_products_from_chunks_and_vision(
 
             # ── Stage 4.7.c: Product Spec Extractor v2 (3-tier hybrid) ─────
             # Tier A: PyMuPDF text-dict parser (free, deterministic)
-            # Tier B: Claude Sonnet Vision (fallback when Tier A insufficient)
+            # Tier B: Claude Opus Vision (fallback when Tier A insufficient)
             # Tier C: Catalog legend inheritance (fills fields from Layer 2
             #         global legends, e.g. certifications, PEI defaults)
             #

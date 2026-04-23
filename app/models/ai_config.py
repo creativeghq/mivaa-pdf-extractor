@@ -54,8 +54,8 @@ class AIModelConfig(BaseModel):
     )
 
     # Product Discovery Model
-    discovery_model: Literal["claude-opus-4-7", "claude-sonnet-4-7", "claude-haiku-4-5"] = Field(
-        default="claude-sonnet-4-7",
+    discovery_model: Literal["claude-opus-4-7", "claude-haiku-4-5"] = Field(
+        default="claude-opus-4-7",
         description="Model for product discovery"
     )
 
@@ -120,9 +120,9 @@ class AIModelConfig(BaseModel):
                 "text_embedding_dimensions": 1024,
                 "text_embedding_input_type": "document",
                 "classification_primary_model": "Qwen/Qwen3-VL-8B-Instruct",
-                "classification_validation_model": "claude-sonnet-4-7",
+                "classification_validation_model": "claude-opus-4-7",
                 "classification_confidence_threshold": 0.7,
-                "discovery_model": "claude-sonnet-4-7",
+                "discovery_model": "claude-opus-4-7",
                 "metadata_extraction_model": "claude",
                 "chunking_model": "claude-haiku-4-5",
                 "discovery_temperature": 0.1,
@@ -150,7 +150,7 @@ FAST_CONFIG = AIModelConfig(
 
 HIGH_ACCURACY_CONFIG = AIModelConfig(
     discovery_model="claude-opus-4-7",  # Most accurate
-    classification_validation_model="claude-sonnet-4-7",  # Best validation
+    classification_validation_model="claude-opus-4-7",  # Best validation
     metadata_extraction_model="claude",
     classification_confidence_threshold=0.8,  # Higher threshold
     discovery_max_tokens=8192,  # More context

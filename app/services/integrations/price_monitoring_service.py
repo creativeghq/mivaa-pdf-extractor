@@ -18,6 +18,7 @@ from uuid import UUID, uuid4
 
 from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations.competitor_scraper_service import get_competitor_scraper_service
+from app.services.utilities.notification_service import NotificationService
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ class PriceMonitoringService:
         """Initialize the price monitoring service."""
         self.supabase = get_supabase_client()
         self.scraper = get_competitor_scraper_service()
+        self.notifier = NotificationService()
         self.settings = get_settings()
         self.logger = logger
     
@@ -211,64 +213,38 @@ class PriceMonitoringService:
                     "message": "No competitor sources configured"
                 }
 
-            # Scrape prices from all sources
+            # Scrape prices from all sources in parallel (capped at 5 concurrent
+            # to stay well under Firecrawl's default rate limit and avoid
+            # hammering the Supabase client).
             sources_checked = 0
             prices_found = 0
             total_credits = 0
 
-            for source in sources:
-                try:
-                    # Scrape competitor price
-                    result = await self.scraper.scrape_competitor_price(
-                        url=source["source_url"],
+            semaphore = asyncio.Semaphore(5)
+
+            async def _scrape_with_cap(src: Dict[str, Any]) -> Dict[str, Any]:
+                async with semaphore:
+                    return await self._scrape_one_source(
+                        source=src,
+                        product_id=product_id,
                         product_name=product_name,
                         user_id=user_id,
                         workspace_id=workspace_id,
-                        scraping_config=source.get("scraping_config", {})
                     )
 
-                    sources_checked += 1
-                    total_credits += result.get("credits_used", 0)
+            outcomes = await asyncio.gather(
+                *[_scrape_with_cap(s) for s in sources],
+                return_exceptions=True,
+            )
 
-                    if result.get("success") and result.get("price"):
-                        # Save to price_history
-                        self.supabase.client.table("price_history").insert({
-                            "product_id": product_id,
-                            "source_name": source["source_name"],
-                            "source_url": source["source_url"],
-                            "price": float(result["price"]),
-                            "currency": result.get("currency", "USD"),
-                            "availability": result.get("availability", "unknown"),
-                            "scraped_at": result.get("scraped_at"),
-                            "metadata": result.get("raw_data", {})
-                        }).execute()
-
-                        prices_found += 1
-
-                        # Update source success
-                        self.supabase.client.table("competitor_sources").update({
-                            "last_successful_scrape": datetime.utcnow().isoformat(),
-                            "error_count": 0,
-                            "last_error": None
-                        }).eq("id", source["id"]).execute()
-
-                        self.logger.info(
-                            f"✅ Found price {result['price']} {result.get('currency')} "
-                            f"from {source['source_name']}"
-                        )
-                    else:
-                        # Update source error
-                        error_count = source.get("error_count", 0) + 1
-                        self.supabase.client.table("competitor_sources").update({
-                            "error_count": error_count,
-                            "last_error": result.get("error", "Unknown error")
-                        }).eq("id", source["id"]).execute()
-
-                except Exception as e:
-                    self.logger.error(
-                        f"❌ Failed to scrape {source['source_name']}: {e}"
-                    )
-                    sources_checked += 1
+            for outcome in outcomes:
+                sources_checked += 1
+                if isinstance(outcome, BaseException):
+                    self.logger.error(f"❌ Source scrape raised: {outcome}")
+                    continue
+                total_credits += int(outcome.get("credits_used", 0) or 0)
+                if outcome.get("price_found"):
+                    prices_found += 1
 
             # Update job completion
             self.supabase.client.table("price_monitoring_jobs").update({
@@ -311,6 +287,77 @@ class PriceMonitoringService:
                 "job_id": job_id,
                 "error": str(e)
             }
+
+    async def _scrape_one_source(
+        self,
+        source: Dict[str, Any],
+        product_id: str,
+        product_name: str,
+        user_id: str,
+        workspace_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Scrape a single competitor source and persist the result.
+
+        Returns {"credits_used": int, "price_found": bool}. Exceptions are
+        caught and logged — the caller treats them as credits_used=0 via
+        asyncio.gather(return_exceptions=True).
+        """
+        try:
+            result = await self.scraper.scrape_competitor_price(
+                url=source["source_url"],
+                product_name=product_name,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                scraping_config=source.get("scraping_config", {}),
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Scrape crashed for {source.get('source_name')}: {e}")
+            return {"credits_used": 0, "price_found": False}
+
+        credits_used = int(result.get("credits_used", 0) or 0)
+
+        if result.get("success") and result.get("price"):
+            price_value = float(result["price"])
+            currency = result.get("currency") or "USD"
+            availability = result.get("availability") or "unknown"
+            scraped_at = result.get("scraped_at") or datetime.utcnow().isoformat()
+
+            # History (authoritative)
+            self.supabase.client.table("price_history").insert({
+                "product_id": product_id,
+                "source_name": source["source_name"],
+                "source_url": source["source_url"],
+                "price": price_value,
+                "currency": currency,
+                "availability": availability,
+                "scraped_at": scraped_at,
+                "metadata": result.get("raw_data", {}),
+            }).execute()
+
+            # Denormalized cache on the source row
+            self.supabase.client.table("competitor_sources").update({
+                "last_successful_scrape": datetime.utcnow().isoformat(),
+                "error_count": 0,
+                "last_error": None,
+                "current_price": price_value,
+                "current_currency": currency,
+                "current_availability": availability,
+                "current_price_updated_at": datetime.utcnow().isoformat(),
+            }).eq("id", source["id"]).execute()
+
+            self.logger.info(
+                f"✅ Found price {price_value} {currency} from {source['source_name']}"
+            )
+            return {"credits_used": credits_used, "price_found": True}
+
+        # Failure path — bump error counter
+        error_count = int(source.get("error_count") or 0) + 1
+        self.supabase.client.table("competitor_sources").update({
+            "error_count": error_count,
+            "last_error": result.get("error", "Unknown error"),
+        }).eq("id", source["id"]).execute()
+        return {"credits_used": credits_used, "price_found": False}
 
     async def _check_price_alerts(
         self,
@@ -371,7 +418,7 @@ class PriceMonitoringService:
                     price_change_pct = (price_change / previous_price["price"]) * 100
 
                     # Create alert history record
-                    self.supabase.client.table("price_alert_history").insert({
+                    history_insert = self.supabase.client.table("price_alert_history").insert({
                         "alert_id": alert["id"],
                         "user_id": user_id,
                         "product_id": product_id,
@@ -385,6 +432,8 @@ class PriceMonitoringService:
                         "notification_sent": False
                     }).execute()
 
+                    history_id = (history_insert.data or [{}])[0].get("id")
+
                     # Update alert trigger count
                     self.supabase.client.table("price_alerts").update({
                         "last_triggered_at": datetime.utcnow().isoformat(),
@@ -394,6 +443,20 @@ class PriceMonitoringService:
                     self.logger.info(
                         f"🔔 Alert triggered for product {product_id}: "
                         f"{alert['alert_type']} - {price_change_pct:.2f}% change"
+                    )
+
+                    # Dispatch notification (email / in_app per alert config)
+                    await self._dispatch_alert_notification(
+                        alert=alert,
+                        history_id=history_id,
+                        product_id=product_id,
+                        user_id=user_id,
+                        old_price=float(previous_price["price"]),
+                        new_price=float(latest_price["price"]),
+                        price_change_pct=float(price_change_pct),
+                        source_name=latest_price.get("source_name"),
+                        source_url=latest_price.get("source_url"),
+                        currency=latest_price.get("currency") or "USD",
                     )
 
         except Exception as e:
@@ -442,6 +505,83 @@ class PriceMonitoringService:
                 return True
 
         return False
+
+    async def _dispatch_alert_notification(
+        self,
+        alert: Dict[str, Any],
+        history_id: Optional[str],
+        product_id: str,
+        user_id: str,
+        old_price: float,
+        new_price: float,
+        price_change_pct: float,
+        source_name: Optional[str],
+        source_url: Optional[str],
+        currency: str,
+    ) -> None:
+        """
+        Deliver a triggered alert via the user's configured channels (email,
+        in_app) and flip price_alert_history.notification_sent when any
+        channel succeeds.
+
+        Failure here must NOT roll back the history row — the trigger is
+        real; we just log it as an undelivered notification so an ops retry
+        can pick it up later.
+        """
+        channels = alert.get("notification_channels") or ["email", "in_app"]
+
+        # Best-effort product name for human-readable title
+        product_name = None
+        try:
+            prod = self.supabase.client.table("products").select("name").eq(
+                "id", product_id
+            ).maybe_single().execute()
+            product_name = (prod.data or {}).get("name") if prod else None
+        except Exception as e:
+            self.logger.debug(f"Could not fetch product name for alert: {e}")
+        product_name = product_name or "your product"
+
+        direction = "dropped" if new_price < old_price else "increased"
+        title = f"Price alert: {product_name} {direction} {abs(price_change_pct):.1f}%"
+        message = (
+            f"{product_name} on {source_name or 'a tracked source'} changed from "
+            f"{currency} {old_price:.2f} to {currency} {new_price:.2f} "
+            f"({price_change_pct:+.2f}%)."
+        )
+
+        any_success = False
+        try:
+            result = await self.notifier.send_notification(
+                user_id=user_id,
+                notification_type=f"price_alert_{alert.get('alert_type', 'change')}",
+                title=title,
+                message=message,
+                data={
+                    "product_id": product_id,
+                    "alert_id": alert["id"],
+                    "history_id": history_id,
+                    "old_price": old_price,
+                    "new_price": new_price,
+                    "price_change_percentage": price_change_pct,
+                    "currency": currency,
+                    "source_name": source_name,
+                    "source_url": source_url,
+                },
+                channels=channels,
+            )
+            any_success = bool(result.get("success"))
+        except Exception as e:
+            self.logger.error(f"❌ Failed to dispatch price alert notification: {e}")
+
+        if any_success and history_id:
+            try:
+                self.supabase.client.table("price_alert_history").update({
+                    "notification_sent": True,
+                    "notification_sent_at": datetime.utcnow().isoformat(),
+                    "notification_channels": channels,
+                }).eq("id", history_id).execute()
+            except Exception as e:
+                self.logger.warning(f"Could not mark alert {history_id} as sent: {e}")
 
     async def get_price_statistics(
         self,

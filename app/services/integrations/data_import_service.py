@@ -1,29 +1,38 @@
 """
-Data Import Service
+Data Import Service — process XML import jobs into products.
 
-Orchestrates the processing of XML import jobs:
 - Batch processing (10 products at a time)
 - Image downloads (5 concurrent)
-- Metadata extraction
-- Product normalization
+- Metadata extraction + product normalization
 - Chunking + inline text embeddings (Voyage AI)
-- Image classification + SLIG embeddings (Phase 1)
-- Understanding embeddings via Qwen3-VL (Phase 2, queued)
-- Checkpoint recovery
-- Real-time progress updates
+- Image classification + SLIG embeddings (understanding embeddings generated
+  inline when vision_analysis is available — no queue/worker step)
+- Checkpoint recovery + real-time progress
 """
 
 import logging
+import os
 import asyncio
 from typing import Dict, List, Any, Optional
 from datetime import datetime
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    """Read a positive integer from the environment with a fallback default."""
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value >= minimum else default
 from app.services.core.supabase_client import get_supabase_client
 from app.services.tracking.checkpoint_recovery_service import checkpoint_recovery_service, ProcessingStage
 from app.services.tracking.xml_import_stages import XmlImportStage, get_xml_import_progress
 from app.services.images.image_download_service import ImageDownloadService
 from app.services.images.image_processing_service import ImageProcessingService
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
-from app.services.embeddings.clip_embedding_job_service import CLIPEmbeddingJobService
 from app.services.chunking.unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
 from app.services.metadata.metadata_normalizer import normalize_factory_keys
 import sentry_sdk  # ✅ NEW: Sentry integration
@@ -46,8 +55,11 @@ class DataImportService:
         self.supabase = supabase_wrapper.client   # sync client (legacy, kept for compatibility)
         self.db = supabase_wrapper.async_client   # async façade — use in all async methods
         self.image_downloader = ImageDownloadService()
-        self.batch_size = 10  # Process 10 products at a time
-        self.max_concurrent_images = 5  # Download 5 images concurrently
+        # 5-product batches keep peak memory low (≤25 images in flight per batch)
+        # and avoid piling requests against cold HuggingFace endpoints. Tunable
+        # via env vars for ops flexibility without redeploy.
+        self.batch_size = _env_int('XML_IMPORT_BATCH_SIZE', 5)
+        self.max_concurrent_images = _env_int('XML_IMPORT_MAX_CONCURRENT_IMAGES', 5)
         self.workspace_id = workspace_id
 
         # ✅ Initialize chunking service for quality scoring and smart chunking
@@ -61,9 +73,8 @@ class DataImportService:
         # ✅ NEW: Image processor for classification and CLIP embeddings (lazy init)
         self.image_processor = None
 
-        # Embedding services for inline generation
+        # Embedding service for inline text-embedding generation
         self.embedding_service = RealEmbeddingsService()
-        self.clip_job_service = CLIPEmbeddingJobService()
 
     def _get_image_processor(self, workspace_id: str) -> ImageProcessingService:
         """Get or create image processor for workspace."""
@@ -154,15 +165,17 @@ class DataImportService:
                 # 🆕 Update background_jobs to 'processing'
                 await self._update_background_job_status(job_id, 'processing', started_at=datetime.utcnow())
 
-                # Get products from job metadata
-                products = job.get('metadata', {}).get('products', [])
-                if not products:
-                    raise ValueError(f"No products found in job {job_id}")
+                # Products are stored in data_import_job_products (child table)
+                # and page-read per batch so we never hold more than `batch_size`
+                # products in memory at once. total_products is authoritative
+                # from the job row (set at import time by the edge function).
+                total_products = int(job.get('total_products') or 0)
+                if total_products <= 0:
+                    raise ValueError(f"No products found for job {job_id}")
 
                 # ✅ Stage: PRODUCTS_PARSED
-                await self._log_stage(job_id, XmlImportStage.PRODUCTS_PARSED, "completed", items=len(products))
+                await self._log_stage(job_id, XmlImportStage.PRODUCTS_PARSED, "completed", items=total_products)
 
-                total_products = len(products)
                 logger.info(f"📦 Processing {total_products} products in batches of {self.batch_size}")
 
                 # ✅ NEW: Set transaction data
@@ -183,7 +196,12 @@ class DataImportService:
                 for batch_index in range(start_batch, (total_products + self.batch_size - 1) // self.batch_size):
                     batch_start = batch_index * self.batch_size
                     batch_end = min(batch_start + self.batch_size, total_products)
-                    batch = products[batch_start:batch_end]
+                    batch = await self._fetch_products_batch(job_id, batch_start, batch_end - batch_start)
+                    if not batch:
+                        logger.warning(
+                            f"   ⚠️ Empty batch at {batch_start}-{batch_end} for job {job_id} — skipping"
+                        )
+                        continue
 
                     logger.info(f"🔄 Processing batch {batch_index + 1}: products {batch_start + 1}-{batch_end}")
 
@@ -721,12 +739,6 @@ class DataImportService:
 
                 logger.info(f"   ✅ Saved {result.get('images_saved', 0)} images with {result.get('clip_embeddings_generated', 0)} embeddings")
 
-                # NOTE: Phase 2 Qwen3-VL background processing was removed in 2026-04
-                # along with background_image_processor.py — that pipeline was calling
-                # a non-existent method (`generate_material_embeddings`) and silently
-                # failing for every image. If understanding embeddings are needed,
-                # they should be generated inline by image_processing_service.
-
                 # Get saved image IDs for associations
                 saved_response = self.supabase.table('document_images')\
                     .select('id')\
@@ -915,6 +927,35 @@ class DataImportService:
         except Exception as e:
             logger.error(f"Failed to get job {job_id}: {e}")
             return None
+
+    async def _fetch_products_batch(
+        self,
+        job_id: str,
+        offset: int,
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch a single batch of products for this job, ordered by product_index.
+
+        Products are stored in data_import_job_products (one row per product).
+        Range is inclusive on both ends per PostgREST `.range(start, end)`.
+        """
+        try:
+            end_inclusive = offset + limit - 1
+            response = await self.db.table('data_import_job_products') \
+                .select('product_data, product_index') \
+                .eq('job_id', job_id) \
+                .order('product_index') \
+                .range(offset, end_inclusive) \
+                .execute()
+            rows = response.data or []
+            return [row.get('product_data') for row in rows if row.get('product_data') is not None]
+        except Exception as e:
+            logger.error(
+                f"Failed to fetch products batch for job {job_id} "
+                f"(offset={offset}, limit={limit}): {e}"
+            )
+            return []
 
     async def _update_job_status(self, job_id: str, status: str, **kwargs) -> None:
         """Update job status in database."""

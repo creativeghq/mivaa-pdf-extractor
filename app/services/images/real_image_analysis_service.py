@@ -1,14 +1,11 @@
 """
 Real Image Analysis Service - Stage 4 Implementation
 
-This service provides real image analysis using:
-1. Configurable vision model (default: Qwen3-VL-8B) for detailed image analysis (superior OCR, table/diagram understanding)
-2. Claude 4.5 Sonnet Vision for validation
-3. CLIP embeddings for visual similarity (512D)
+1. Vision model (default Qwen3-VL-8B) for detailed image analysis
+2. Claude Opus 4.7 Vision for validation
+3. SigLIP2 (SLIG 768D) embeddings for visual similarity
 4. Material property extraction
-5. Real quality scoring
-
-Replaces mock data with actual AI model calls.
+5. Quality scoring
 """
 
 import logging
@@ -41,8 +38,8 @@ class ImageAnalysisResult:
     """Result of real image analysis"""
     image_id: str
     vision_analysis: Dict[str, Any]  # Vision model analysis (configurable)
-    claude_validation: Optional[Dict[str, Any]]  # Claude 4.5 Sonnet validation (optional, async)
-    clip_embedding: List[float]  # 512D CLIP embedding
+    claude_validation: Optional[Dict[str, Any]]  # Claude Opus 4.7 validation (optional, async)
+    clip_embedding: List[float]  # 768D SigLIP2 (SLIG) embedding — legacy field name
     material_properties: Dict[str, Any]  # Extracted properties
     quality_score: float  # Real quality score (0.0-1.0)
     confidence_score: float  # Confidence in analysis (0.0-1.0)
@@ -57,7 +54,7 @@ class RealImageAnalysisService:
 
     This service replaces mock data with actual AI model calls:
     - Configurable vision model (default: Qwen3-VL-8B): Detailed image analysis
-    - Claude 4.5 Sonnet Vision: Validation and enrichment
+    - Claude Opus 4.7 Vision: Validation and enrichment
     - CLIP: Visual embeddings for similarity search
     """
     
@@ -733,7 +730,7 @@ class RealImageAnalysisService:
         context: Optional[Dict[str, Any]] = None,
         job_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Analyze image with Claude 4.5 Sonnet Vision"""
+        """Analyze image with Claude Opus 4.7 Vision"""
         start_time = time.time()
         try:
             # Use centralized AI client service
@@ -751,7 +748,7 @@ class RealImageAnalysisService:
 
             # Call Claude Vision API
             response = client.messages.create(
-                model="claude-sonnet-4-7",
+                model="claude-opus-4-7",
                 max_tokens=1024,
                 messages=[
                     {
@@ -832,7 +829,7 @@ class RealImageAnalysisService:
 
                 await self.ai_logger.log_claude_call(
                     task="image_vision_validation",
-                    model="claude-sonnet-4-7",
+                    model="claude-opus-4-7",
                     response=response,
                     latency_ms=latency_ms,
                     confidence_score=confidence_score,
@@ -842,7 +839,7 @@ class RealImageAnalysisService:
                 )
 
                 return {
-                    "model": "claude-sonnet-4-7",
+                    "model": "claude-opus-4-7",
                     "validation": validation,
                     "success": True
                 }
@@ -872,7 +869,7 @@ class RealImageAnalysisService:
             latency_ms = int((time.time() - start_time) * 1000)
             await self.ai_logger.log_ai_call(
                 task="image_vision_validation",
-                model="claude-sonnet-4-7",
+                model="claude-opus-4-7",
                 input_tokens=0,
                 output_tokens=0,
                 cost=0.0,
@@ -890,14 +887,14 @@ class RealImageAnalysisService:
                 error_message=str(e)
             )
 
-            raise RuntimeError(f"Claude 4.5 Sonnet Vision analysis failed: {str(e)}") from e
+            raise RuntimeError(f"Claude Opus 4.7 Vision analysis failed: {str(e)}") from e
 
     async def _analyze_with_claude_base64(
         self,
         image_base64: str,
         context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Analyze image with Claude 4.5 Sonnet Vision from base64 data"""
+        """Analyze image with Claude Opus 4.7 Vision from base64 data"""
         try:
             # Use centralized AI client service
             ai_service = get_ai_client_service()
@@ -916,7 +913,7 @@ class RealImageAnalysisService:
             from app.services.core.claude_helper import tracked_claude_call
             response = tracked_claude_call(
                 task="real_image_vision_validation",
-                model="claude-sonnet-4-7",
+                model="claude-opus-4-7",
                 max_tokens=1024,
                 messages=[
                     {
@@ -953,7 +950,7 @@ class RealImageAnalysisService:
                     raise json.JSONDecodeError("No JSON object found", content, 0)
 
                 return {
-                    "model": "claude-sonnet-4-7",
+                    "model": "claude-opus-4-7",
                     "validation": validation,
                     "success": True
                 }
@@ -964,7 +961,7 @@ class RealImageAnalysisService:
 
         except Exception as e:
             self.logger.error(f"Claude analysis failed: {e}")
-            raise RuntimeError(f"Claude 4.5 Sonnet Vision analysis failed: {str(e)}") from e
+            raise RuntimeError(f"Claude Opus 4.7 Vision analysis failed: {str(e)}") from e
 
     async def _generate_clip_embedding(self, image_base64: str) -> List[float]:
         """Generate SigLIP embedding for image using RealEmbeddingsService"""

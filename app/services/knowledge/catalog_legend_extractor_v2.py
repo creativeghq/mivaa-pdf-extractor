@@ -32,7 +32,7 @@ Design notes
   (degraded but still correct).
 - Model: Claude Haiku 4.5 by default (good enough for legends which
   are mostly text/logos). Override via env var
-  `CATALOG_LEGEND_VISION_MODEL=claude-sonnet-4-7` for tough catalogs.
+  `CATALOG_LEGEND_VISION_MODEL=claude-opus-4-7` for tough catalogs.
 - Per-page cost: ~$0.002-0.005 Haiku. A typical catalog has 4-8 legend
   pages → ~$0.02-0.04 total.
 - Idempotent: checks `documents.metadata.catalog_legends.extracted_at`

@@ -12,6 +12,7 @@ This service encapsulates all image-related operations in the PDF processing pip
 import os
 import base64
 import asyncio
+from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 from asyncio import Semaphore
 import logging
@@ -159,7 +160,7 @@ class ImageProcessingService:
         extracted_images: List[Dict[str, Any]],
         confidence_threshold: float = 0.6,  # OPTIMIZED: Lowered from 0.7 to reduce validation calls
         primary_model: str = "Qwen/Qwen3-VL-32B-Instruct",  # PRIMARY: Qwen3-VL-32B (reliable, high accuracy)
-        validation_model: str = "claude-sonnet-4-7",  # FALLBACK: Claude Sonnet 4.5 (highest quality)
+        validation_model: str = "claude-opus-4-7",  # FALLBACK: Claude Opus 4.7 (highest quality)
         batch_size: int = 15,  # NEW: Process images in batches to prevent OOM
         job_id: Optional[str] = None  # NEW: Job ID for AI cost tracking
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -168,7 +169,7 @@ class ImageProcessingService:
 
         SUPPORTED MODELS:
         - Qwen/Qwen3-VL-32B-Instruct: PRIMARY - High accuracy, reliable ($0.50/1M input, $1.50/1M output)
-        - claude-sonnet-4-7: FALLBACK - Highest quality vision model (for failures/low confidence)
+        - claude-opus-4-7: FALLBACK - Highest quality vision model (for failures/low confidence)
 
         MEMORY OPTIMIZATIONS:
         - Processes images in batches (default: 15) to prevent OOM crashes
@@ -180,7 +181,7 @@ class ImageProcessingService:
             extracted_images: List of extracted image data
             confidence_threshold: Threshold for validation (default: 0.6)
             primary_model: Primary classification model (default: Qwen3-VL-32B)
-            validation_model: Fallback model for failures/low confidence (default: Claude Sonnet 4.5)
+            validation_model: Fallback model for failures/low confidence (default: Claude Opus 4.7)
             batch_size: Number of images to process per batch (default: 15)
             job_id: Optional job ID for AI cost tracking/aggregation
 
@@ -538,7 +539,7 @@ class ImageProcessingService:
                     del image_base64
 
         async def validate_with_claude(image_path: str, base64_data: str = None) -> Dict[str, Any]:
-            """Validate uncertain cases with Claude Sonnet."""
+            """Validate uncertain cases with Claude Opus."""
             image_base64 = base64_data
             detected_media_type = "image/jpeg"
             try:
@@ -567,7 +568,7 @@ class ImageProcessingService:
                 from app.services.core.claude_helper import tracked_claude_call_async
                 response = await tracked_claude_call_async(
                     task="image_classification_vision",
-                    model="claude-sonnet-4-7",
+                    model="claude-opus-4-7",
                     max_tokens=1024,
                     messages=[{
                         "role": "user",
@@ -1181,7 +1182,7 @@ class ImageProcessingService:
     #   1. Try Qwen3-VL via the warmed-up endpoint, with N retries on
     #      transient (5xx / connection) failures.
     #   2. If Qwen returns nothing parseable after retries, fall back to
-    #      Claude Sonnet 4.7 which is highly reliable for strict JSON.
+    #      Claude Opus 4.7 which is highly reliable for strict JSON.
     #   3. Parse the response into a dict, validate against the expected
     #      schema, and return None if both providers failed.
     #
@@ -1342,7 +1343,7 @@ class ImageProcessingService:
             # The classification path already handles this correctly (line ~263).
             # Settings["endpoint_url"] is typically unset in prod and was causing
             # APIConnectionError ("Connection error.") on every material analysis
-            # call, which fell through to the Claude Sonnet fallback for EVERY
+            # call, which fell through to the Claude Opus fallback for EVERY
             # image — defeating the whole purpose of having Qwen. Root cause of
             # the "vision_provider = claude_fallback for every image" regression.
             qwen_endpoint_url = qwen_manager.endpoint_url
@@ -1474,7 +1475,7 @@ class ImageProcessingService:
         image_id: str,
     ) -> Optional[Dict[str, Any]]:
         """
-        Fallback path: call Claude Sonnet 4.7 with the same prompt when
+        Fallback path: call Claude Opus 4.7 with the same prompt when
         Qwen has failed. Claude is more reliable for strict JSON output
         and acts as a safety net so we don't lose the understanding
         embedding for an image just because Qwen had a bad day.
@@ -1521,7 +1522,7 @@ class ImageProcessingService:
             ]
 
             kwargs = {
-                "model": "claude-sonnet-4-7",
+                "model": "claude-opus-4-7",
                 "max_tokens": 1024,
                 "messages": [{"role": "user", "content": content}],
             }
@@ -1578,7 +1579,7 @@ class ImageProcessingService:
 
         Strategy:
           1. Try Qwen3-VL (warm endpoint, with retries) — primary path.
-          2. On failure, fall back to Claude Sonnet 4.7 — secondary path.
+          2. On failure, fall back to Claude Opus 4.7 — secondary path.
           3. If both fail, return (None, FAILED) so the caller can record
              the failure in job-level stats and the image gets all other
              vectors except `understanding_1024`.
@@ -1722,7 +1723,7 @@ class ImageProcessingService:
                     image_base64_raw = base64.b64encode(image_bytes).decode('utf-8')
                     image_base64_data = f"data:image/jpeg;base64,{image_base64_raw}"
 
-                # Run rich material analysis (Qwen3-VL primary, Claude Sonnet 4.7
+                # Run rich material analysis (Qwen3-VL primary, Claude Opus 4.7
                 # fallback) to produce the structured `vision_analysis` JSON. This
                 # is the input the Voyage understanding embedding consumes — without
                 # it, the 1024D understanding branch is skipped and we lose the 7th
@@ -1931,8 +1932,24 @@ class ImageProcessingService:
                 else:
                     logger.error(f"   ❌ Failed after {max_retries} retries for image {idx + 1}: {e}")
 
+        # Record the terminal failure on the image row so it's visible in the DB,
+        # not only in logs. embedding_metadata is a JSONB column.
+        failed_image_id = img_data.get('id')
+        if failed_image_id:
+            try:
+                self.supabase.client.table('document_images').update({
+                    'embedding_metadata': {
+                        'status': 'failed',
+                        'error': (last_error or 'unknown')[:1000],
+                        'retries': max_retries,
+                        'failed_at': datetime.utcnow().isoformat(),
+                    }
+                }).eq('id', failed_image_id).execute()
+            except Exception as diag_err:
+                logger.debug(f"   Could not persist embedding_metadata for {failed_image_id}: {diag_err}")
+
         return (False, False, last_error, {
-            'image_id': img_data.get('id'),
+            'image_id': failed_image_id,
             'visual_slig': False,
             'color_slig': False,
             'texture_slig': False,

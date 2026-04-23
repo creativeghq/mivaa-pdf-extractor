@@ -193,7 +193,6 @@ class EscalationRules:
     MODEL_CHAIN = [
         "qwen3-vl-32b",                # Primary vision model (HF Endpoint)
         "claude-haiku-4-5",   # Balanced
-        "claude-sonnet-4-7",           # Powerful
         "claude-opus-4-7",             # Most powerful (for critical tasks)
     ]
 
@@ -201,8 +200,7 @@ class EscalationRules:
     COST_MULTIPLIERS = {
         "qwen3-vl-32b": 1.0,           # Baseline (32B only, 8B removed)
         "claude-haiku-4-5": 2.0,
-        "claude-sonnet-4-7": 7.5,
-        "claude-opus-4-7": 25.0,       # Opus is ~5x Sonnet pricing
+        "claude-opus-4-7": 25.0,       # Opus is the top-tier model
     }
     
     # Maximum escalation attempts before giving up
@@ -264,7 +262,7 @@ class EscalationRules:
     @classmethod
     def can_use_expensive_model(cls, task_type: str) -> bool:
         """
-        Check if a task can use expensive models (GPT-5, Sonnet).
+        Check if a task can use expensive models (Opus).
         
         Args:
             task_type: Type of task

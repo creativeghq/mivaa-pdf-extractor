@@ -646,7 +646,7 @@ class DynamicMetadataExtractor:
             return self._get_empty_result(error=str(e))
     
     async def _call_claude(self, prompt: str) -> str:
-        """Call Claude Sonnet 4.7 for metadata extraction."""
+        """Call Claude Opus 4.7 for metadata extraction."""
         start_time = datetime.now()
 
         try:
@@ -655,7 +655,7 @@ class DynamicMetadataExtractor:
             client = ai_service.anthropic
 
             response = client.messages.create(
-                model="claude-sonnet-4-7",
+                model="claude-opus-4-7",
                 max_tokens=16000,
                 temperature=0.1,  # Low temperature for consistent extraction
                 messages=[
@@ -672,7 +672,7 @@ class DynamicMetadataExtractor:
             latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
             await self.ai_logger.log_claude_call(
                 task="dynamic_metadata_extraction",
-                model="claude-sonnet-4-7",
+                model="claude-opus-4-7",
                 response=response,
                 latency_ms=latency_ms,
                 confidence_score=0.9,

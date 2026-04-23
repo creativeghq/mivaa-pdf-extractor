@@ -22,7 +22,7 @@ class VisionProvider(str, Enum):
     """Qwen3-VL primary path produced a valid vision_analysis JSON."""
 
     CLAUDE_FALLBACK = "claude_fallback"
-    """Qwen failed (or returned unparseable JSON); Claude Sonnet 4.7 produced it."""
+    """Qwen failed (or returned unparseable JSON); Claude Opus 4.7 produced it."""
 
     SKIPPED = "skipped"
     """In-memory only — analysis was deliberately skipped (prompt not loaded)."""

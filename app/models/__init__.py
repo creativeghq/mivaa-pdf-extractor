@@ -12,12 +12,14 @@ from .processing import (
     PDFProcessingResponse,
     ProcessingStatus
 )
+from .extraction import PriceExtraction
 
 __all__ = [
     "ImageFormat",
     "ProcessingOptions",
     "PDFProcessingRequest",
     "PDFProcessingResponse",
-    "ProcessingStatus"
+    "ProcessingStatus",
+    "PriceExtraction",
 ]
 

@@ -276,7 +276,7 @@ class ProductCatalog:
 class ProductDiscoveryService:
     """
     Analyzes PDF to discover products BEFORE processing.
-    Uses Claude Sonnet 4.5 or GPT-5 for intelligent product identification.
+    Uses Claude Opus 4.7 or GPT-5 for intelligent product identification.
 
     NEW: Supports vision-guided extraction for precise image cropping.
     """
@@ -776,7 +776,7 @@ class ProductDiscoveryService:
         prompt: str,
         job_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Use Claude Sonnet 4.7 for product discovery"""
+        """Use Claude Opus 4.7 for product discovery"""
         start_time = datetime.now()
 
         try:
@@ -785,7 +785,7 @@ class ProductDiscoveryService:
             client = ai_service.anthropic
 
             response = client.messages.create(
-                model="claude-sonnet-4-7",
+                model="claude-opus-4-7",
                 max_tokens=16000,  # Large response for comprehensive catalog
                 temperature=0,  # Zero temperature for maximum consistency
                 messages=[
@@ -825,7 +825,7 @@ class ProductDiscoveryService:
 
                 # DEBUG: Log how many products Claude found
                 products_found = len(result.get("products", []))
-                self.logger.info(f"🔍 Claude Sonnet 4.7 discovered {products_found} products")
+                self.logger.info(f"🔍 Claude Opus 4.7 discovered {products_found} products")
                 if products_found > 0:
                     product_names = [p.get("name", "Unknown") for p in result.get("products", [])]
                     self.logger.info(f"   Product names: {product_names}")
@@ -834,7 +834,7 @@ class ProductDiscoveryService:
                 latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
                 await self.ai_logger.log_claude_call(
                     task="product_discovery",
-                    model="claude-sonnet-4-7",
+                    model="claude-opus-4-7",
                     response=response,
                     latency_ms=latency_ms,
                     confidence_score=result.get("confidence_score", 0.9),
