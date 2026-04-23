@@ -238,6 +238,7 @@ class PriceLookupResponse(BaseModel):
     # Claude-mode fields
     results: Optional[List[PriceHit]] = None
     query: Optional[str] = None
+    debug_reasoning: Optional[str] = None  # populated when results is empty
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -391,6 +392,7 @@ async def _claude_mode(
         credits_used=result.credits_used,
         latency_ms=result.latency_ms,
         scraped_at=datetime.now(timezone.utc).isoformat(),
+        debug_reasoning=result.debug_reasoning,
     )
     return response, {
         "raw_extract": {

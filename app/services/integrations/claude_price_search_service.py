@@ -82,6 +82,11 @@ class PriceSearchResult(BaseModel):
     throttled: bool = False
     throttle_until: Optional[datetime] = None
     error: Optional[str] = None
+    debug_reasoning: Optional[str] = Field(
+        default=None,
+        description="When hits is empty, Claude's text reasoning — useful to tell "
+                    "'Claude searched but found nothing' from 'Claude never tried'.",
+    )
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -167,6 +172,15 @@ class ClaudePriceSearchService:
 
         data = resp.json()
         hits = self._extract_structured_hits(data)
+        debug_reasoning: Optional[str] = None
+        if not hits:
+            # Collect any text content blocks so callers can see Claude's reasoning.
+            texts = [
+                b.get("text", "")
+                for b in (data.get("content") or [])
+                if b.get("type") == "text" and b.get("text")
+            ]
+            debug_reasoning = "\n\n".join(texts).strip() or None
 
         usage = data.get("usage", {}) or {}
         input_tokens = int(usage.get("input_tokens", 0) or 0)
@@ -207,6 +221,7 @@ class ClaudePriceSearchService:
             output_tokens=output_tokens,
             web_searches=web_searches,
             cost_usd=cost_usd,
+            debug_reasoning=debug_reasoning,
         )
 
     def check_throttle(
