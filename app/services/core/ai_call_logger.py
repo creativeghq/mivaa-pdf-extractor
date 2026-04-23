@@ -600,25 +600,26 @@ class AICallLogger:
                     }
                 )
 
-            # Log to ai_usage_logs using the database function
+            # Log to ai_usage_logs. Schema has no api_provider / operation_details /
+            # credits_used columns — those go into the jsonb `metadata` field.
             log_data = {
                 'user_id': user_id,
                 'workspace_id': workspace_id,
                 'operation_type': operation_type,
                 'model_name': 'firecrawl-scrape',
-                'api_provider': 'firecrawl',
                 'input_tokens': 0,
                 'output_tokens': 0,
-                'credits_used': credits_used,
                 'input_cost_usd': 0,
                 'output_cost_usd': 0,
                 'total_cost_usd': float(cost_usd),
                 'credits_debited': platform_credits,
-                'operation_details': operation_details,
                 'metadata': {
+                    'api_provider': 'firecrawl',
+                    'credits_used': credits_used,
+                    'operation_details': operation_details,
                     'request': request_data,
                     'response': response_data,
-                    'error': error_message
+                    'error': error_message,
                 },
                 'created_at': datetime.utcnow().isoformat()
             }
