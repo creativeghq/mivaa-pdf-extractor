@@ -16,6 +16,10 @@ from fastapi import APIRouter, HTTPException, Depends, status, Query
 from pydantic import BaseModel, Field
 
 from app.services.integrations.price_monitoring_service import get_price_monitoring_service
+from app.services.integrations.claude_price_search_service import (
+    get_claude_price_search_service,
+    PriceHit,
+)
 from app.services.core.supabase_client import get_supabase_client
 from app.dependencies import get_current_user, get_workspace_context
 from app.middleware.jwt_auth import User, WorkspaceContext
@@ -67,6 +71,37 @@ class AddCompetitorSourceRequest(BaseModel):
         default=None,
         description="Optional Firecrawl configuration"
     )
+
+
+class DiscoverSourcesRequest(BaseModel):
+    """Request to run Claude web_search discovery for a monitored product."""
+    product_id: str = Field(..., description="Product UUID to discover retailers for.")
+    force_refresh: bool = Field(
+        default=False,
+        description="Bypass the 6h throttle. Admin/super_admin role required.",
+    )
+
+
+class DiscoverSourcesResponse(BaseModel):
+    """Response from /discover. Returns the retailer list + throttle state."""
+    success: bool
+    source: str = "claude_web_search"
+    product_id: str
+    results: List[PriceHit] = []
+    total_results: int = 0
+    credits_used: int = 0
+    latency_ms: int = 0
+    throttled: bool = False
+    throttle_until: Optional[str] = Field(
+        default=None,
+        description="ISO timestamp: if throttled, next allowed refresh time (unless admin force-refreshes).",
+    )
+    last_search_at: Optional[str] = None
+    cached: bool = Field(
+        default=False,
+        description="True if the throttle prevented a new search and we returned existing sources.",
+    )
+    error: Optional[str] = None
 
 
 class CreatePriceAlertRequest(BaseModel):
@@ -529,6 +564,224 @@ async def delete_price_alert(
 # ============================================================================
 # JOB MONITORING ENDPOINTS
 # ============================================================================
+
+@router.post(
+    "/discover",
+    response_model=DiscoverSourcesResponse,
+    summary="Discover retailers via Claude web_search for a monitored product",
+    description=(
+        "Runs Claude's web_search tool to find up to 10 retailers selling the "
+        "specified product. Biases results toward the user's country (from profile) "
+        "but does not restrict. Throttled to once per 6h per product; set "
+        "`force_refresh=true` (admin/super_admin only) to bypass. Inserts discovered "
+        "retailers into `competitor_sources` with `source_type='claude_web_search'` "
+        "and writes price snapshots to `price_history`."
+    ),
+)
+async def discover_sources(
+    request: DiscoverSourcesRequest,
+    user: User = Depends(get_current_user),
+    workspace: WorkspaceContext = Depends(get_workspace_context),
+) -> DiscoverSourcesResponse:
+    sb = get_supabase_client().client
+    service = get_claude_price_search_service()
+    product_id = request.product_id
+
+    # ── Admin check for force_refresh ──
+    if request.force_refresh and not _is_admin(sb, user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="force_refresh requires admin or super_admin role.",
+        )
+
+    # ── Confirm the product belongs to a monitoring subscription owned by this user ──
+    monitoring = (
+        sb.table("price_monitoring_products")
+        .select("id, product_id, user_id, workspace_id, last_claude_search_at")
+        .eq("product_id", product_id)
+        .eq("user_id", user.id)
+        .maybe_single()
+        .execute()
+    )
+    mon_row = (monitoring.data if monitoring else None) or None
+    if not mon_row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No monitoring subscription found for this product. Call /start first.",
+        )
+
+    last_at_raw = mon_row.get("last_claude_search_at")
+    last_at = datetime.fromisoformat(last_at_raw.replace("Z", "+00:00")) if last_at_raw else None
+    throttled, throttle_until = service.check_throttle(last_at, force_refresh=request.force_refresh)
+
+    if throttled:
+        # Return existing sources instead of making a fresh call.
+        existing = (
+            sb.table("competitor_sources")
+            .select("source_name, source_url, current_price, current_currency, current_availability, last_seen_at")
+            .eq("product_id", product_id)
+            .eq("source_type", "claude_web_search")
+            .eq("is_active", True)
+            .order("last_seen_at", desc=True)
+            .limit(10)
+            .execute()
+        )
+        rows = existing.data or []
+        cached_hits = [
+            PriceHit(
+                retailer_name=r.get("source_name") or "Unknown",
+                product_url=r.get("source_url") or "",
+                price=float(r.get("current_price") or 0),
+                currency=r.get("current_currency") or "USD",
+                availability=r.get("current_availability") or "unknown",
+            )
+            for r in rows
+            if r.get("current_price") is not None
+        ]
+        return DiscoverSourcesResponse(
+            success=True,
+            product_id=product_id,
+            results=cached_hits,
+            total_results=len(cached_hits),
+            throttled=True,
+            throttle_until=throttle_until.isoformat() if throttle_until else None,
+            last_search_at=last_at_raw,
+            cached=True,
+        )
+
+    # ── Fetch product details for the prompt ──
+    prod = (
+        sb.table("products")
+        .select("id, name, metadata")
+        .eq("id", product_id)
+        .maybe_single()
+        .execute()
+    )
+    prod_row = (prod.data if prod else None) or {}
+    product_name = prod_row.get("name") or "unknown product"
+    metadata = prod_row.get("metadata") or {}
+    dimensions = (
+        metadata.get("dimensions")
+        or metadata.get("size")
+        or metadata.get("product_size")
+    )
+
+    # ── User's country for regional preference ──
+    profile = (
+        sb.table("user_profiles")
+        .select("location_country_code, location")
+        .eq("user_id", user.id)
+        .maybe_single()
+        .execute()
+    )
+    prof_row = (profile.data if profile else None) or {}
+    country_code = prof_row.get("location_country_code")
+
+    # ── Run Claude web search ──
+    result = await service.search_prices(
+        product_name=product_name,
+        dimensions=dimensions,
+        country_code=country_code,
+        limit=10,
+        user_id=user.id,
+        workspace_id=mon_row.get("workspace_id") or (workspace.workspace_id if workspace else None),
+    )
+
+    if not result.success:
+        return DiscoverSourcesResponse(
+            success=False,
+            product_id=product_id,
+            error=result.error or "Claude search failed",
+            credits_used=result.credits_used,
+            latency_ms=result.latency_ms,
+        )
+
+    # ── Persist: upsert competitor_sources by (product_id, source_url),
+    #    then insert price_history rows, then stamp last_claude_search_at ──
+    now_iso = datetime.utcnow().isoformat()
+    for hit in result.hits:
+        upsert_row = {
+            "product_id": product_id,
+            "source_name": hit.retailer_name,
+            "source_url": hit.product_url,
+            "source_type": "claude_web_search",
+            "discovered_via": "claude_web_search",
+            "auto_discovered": True,
+            "is_active": True,
+            "current_price": float(hit.price),
+            "current_currency": hit.currency,
+            "current_availability": hit.availability or "unknown",
+            "current_price_updated_at": now_iso,
+            "last_seen_at": now_iso,
+            "last_successful_scrape": now_iso,
+            "error_count": 0,
+            "last_error": None,
+            "created_by": user.id,
+        }
+        try:
+            sb.table("competitor_sources").upsert(upsert_row, on_conflict="product_id,source_url").execute()
+        except Exception as e:
+            logger.warning(f"Upsert competitor_source failed for {hit.product_url}: {e}")
+            continue
+
+        try:
+            sb.table("price_history").insert({
+                "product_id": product_id,
+                "source_name": hit.retailer_name,
+                "source_url": hit.product_url,
+                "price": float(hit.price),
+                "currency": hit.currency,
+                "availability": hit.availability or "unknown",
+                "scraped_at": now_iso,
+                "metadata": {"via": "claude_web_search", "notes": hit.notes},
+            }).execute()
+        except Exception as e:
+            logger.warning(f"price_history insert failed for {hit.product_url}: {e}")
+
+    # Stamp throttle timestamp + running credit counter
+    try:
+        sb.table("price_monitoring_products").update({
+            "last_claude_search_at": now_iso,
+            "last_claude_credits_used": result.credits_used,
+            "total_claude_credits_used": (
+                (mon_row.get("total_claude_credits_used") or 0) + result.credits_used
+            ),
+            "updated_at": now_iso,
+        }).eq("id", mon_row["id"]).execute()
+    except Exception as e:
+        logger.warning(f"Failed to stamp last_claude_search_at on monitoring row: {e}")
+
+    return DiscoverSourcesResponse(
+        success=True,
+        product_id=product_id,
+        results=result.hits,
+        total_results=len(result.hits),
+        credits_used=result.credits_used,
+        latency_ms=result.latency_ms,
+        last_search_at=now_iso,
+        cached=False,
+    )
+
+
+def _is_admin(sb, user_id: str) -> bool:
+    try:
+        res = (
+            sb.table("user_profiles")
+            .select("role_id")
+            .eq("user_id", user_id)
+            .maybe_single()
+            .execute()
+        )
+        row = (res.data if res else None) or {}
+        role_id = row.get("role_id")
+        if not role_id:
+            return False
+        role = sb.table("roles").select("name").eq("id", role_id).maybe_single().execute()
+        rn = ((role.data if role else None) or {}).get("name")
+        return rn in ("admin", "super_admin")
+    except Exception:
+        return False
+
 
 @router.get("/jobs/{product_id}", response_model=PriceJobsResponse)
 async def get_monitoring_jobs(
