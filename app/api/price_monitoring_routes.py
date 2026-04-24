@@ -699,18 +699,22 @@ async def discover_sources(
         )
 
     # ── Persist: upsert competitor_sources by (product_id, source_url),
-    #    then insert price_history rows, then stamp last_claude_search_at ──
+    #    then insert price_history rows, then stamp last_claude_search_at.
+    #    Hit source maps to competitor_source_type: perplexity → perplexity_web_search,
+    #    dataforseo → dataforseo_shopping. So the UI can split them into
+    #    "Discovered retailers" vs "Merchants" sections by source_type.
     now_iso = datetime.utcnow().isoformat()
     for hit in result.hits:
+        source_type = "dataforseo_shopping" if hit.source == "dataforseo" else "perplexity_web_search"
         upsert_row = {
             "product_id": product_id,
             "source_name": hit.retailer_name,
             "source_url": hit.product_url,
-            "source_type": "perplexity_web_search",
-            "discovered_via": "perplexity_web_search",
+            "source_type": source_type,
+            "discovered_via": source_type,
             "auto_discovered": True,
             "is_active": True,
-            "current_price": float(hit.price),
+            "current_price": float(hit.price) if hit.price is not None else None,
             "current_currency": hit.currency,
             "current_availability": hit.availability or "unknown",
             "current_price_updated_at": now_iso,
@@ -731,11 +735,17 @@ async def discover_sources(
                 "product_id": product_id,
                 "source_name": hit.retailer_name,
                 "source_url": hit.product_url,
-                "price": float(hit.price),
+                "price": float(hit.price) if hit.price is not None else None,
                 "currency": hit.currency,
                 "availability": hit.availability or "unknown",
                 "scraped_at": now_iso,
-                "metadata": {"via": "perplexity_web_search", "notes": hit.notes},
+                "metadata": {
+                    "via": source_type,
+                    "notes": hit.notes,
+                    "image_url": hit.image_url,
+                    "rating_value": hit.rating_value,
+                    "rating_votes": hit.rating_votes,
+                },
             }).execute()
         except Exception as e:
             logger.warning(f"price_history insert failed for {hit.product_url}: {e}")

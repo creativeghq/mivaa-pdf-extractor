@@ -196,7 +196,11 @@ class TrackedQueriesService:
                 {
                     "tracked_query_id": tracking_id,
                     "refresh_run_id": refresh_run_id,
-                    "source": "perplexity_web_search",
+                    # Map engine source (perplexity|dataforseo) to DB enum
+                    "source": (
+                        "dataforseo_shopping" if getattr(h, "source", "perplexity") == "dataforseo"
+                        else "perplexity_web_search"
+                    ),
                     "retailer_name": h.retailer_name,
                     "product_url": h.product_url,
                     "price": float(h.price) if h.price is not None else None,

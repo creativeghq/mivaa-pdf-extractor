@@ -26,6 +26,7 @@ PriceSearchResult types and `search_prices()` method signature so the
 route code can swap one import without touching anything else.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -37,6 +38,10 @@ import httpx
 from pydantic import BaseModel, Field
 
 from app.services.core.supabase_client import get_supabase_client
+from app.services.integrations.dataforseo_merchant_service import (
+    get_dataforseo_merchant_service,
+    MerchantHit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +84,7 @@ _LOCAL_TLD: Dict[str, str] = {
 
 
 class PriceHit(BaseModel):
-    """Single retailer result returned by the search engine."""
+    """Single retailer result — may come from Perplexity web search or DataForSEO Shopping feed."""
     retailer_name: str = Field(..., description="Retailer display name.")
     product_url: str = Field(..., description="Direct product page URL.")
     price: Optional[float] = Field(
@@ -97,6 +102,13 @@ class PriceHit(BaseModel):
     is_quote_only: bool = Field(default=False, description="Retailer carries product but shows 'quote on request'.")
     last_verified: Optional[str] = Field(default=None, description="ISO date verified.")
     notes: Optional[str] = Field(default=None)
+    source: str = Field(
+        default="perplexity",
+        description="'perplexity' = web search (organic retailers), 'dataforseo' = Google Shopping merchants.",
+    )
+    image_url: Optional[str] = Field(default=None, description="DataForSEO only: product thumbnail URL from the Shopping feed.")
+    rating_value: Optional[float] = Field(default=None, description="DataForSEO only: merchant star rating.")
+    rating_votes: Optional[int] = Field(default=None, description="DataForSEO only: number of rating votes.")
 
 
 class PriceSearchResult(BaseModel):
@@ -149,6 +161,56 @@ class PerplexityPriceSearchService:
             return PriceSearchResult(success=False, error="PERPLEXITY_API_KEY not configured")
 
         limit = max(1, min(limit, 25))
+
+        # Run Perplexity + DataForSEO Merchant in parallel. Each returns up
+        # to `limit` hits; we merge + dedupe by domain, keeping the cheapest
+        # per domain regardless of source. Source field on each hit lets
+        # the UI split them into "Discovered retailers" (perplexity) and
+        # "Merchants" (dataforseo) sections.
+        perplexity_task = asyncio.create_task(
+            self._perplexity_call(product_name, dimensions, country_code, limit, preferred_retailer_domains)
+        )
+        dataforseo_task = asyncio.create_task(
+            get_dataforseo_merchant_service().search_shopping(
+                product_name=product_name,
+                dimensions=dimensions,
+                country_code=country_code,
+                limit=limit,
+            )
+        )
+        perplexity_result, dataforseo_result = await asyncio.gather(
+            perplexity_task, dataforseo_task, return_exceptions=True
+        )
+
+        # Unpack Perplexity result (may have raised)
+        if isinstance(perplexity_result, BaseException):
+            logger.warning(f"Perplexity call raised: {perplexity_result}")
+            return PriceSearchResult(success=False, error=f"perplexity: {perplexity_result}")
+
+        # Merge DataForSEO hits into the result (if it succeeded)
+        if not isinstance(dataforseo_result, BaseException) and dataforseo_result.success:
+            perplexity_result.hits = self._merge_with_dataforseo(
+                perplexity_hits=perplexity_result.hits,
+                dataforseo_hits=dataforseo_result.hits,
+                country_code=country_code,
+            )
+            perplexity_result.credits_used += dataforseo_result.credits_used
+            perplexity_result.cost_usd = (perplexity_result.cost_usd or 0.0) + dataforseo_result.cost_usd
+        elif isinstance(dataforseo_result, BaseException):
+            logger.warning(f"DataForSEO call raised (non-fatal): {dataforseo_result}")
+
+        return perplexity_result
+
+    # The original Perplexity-only flow, extracted so we can run it alongside
+    # DataForSEO in parallel without tangling the orchestration logic.
+    async def _perplexity_call(
+        self,
+        product_name: str,
+        dimensions: Optional[str],
+        country_code: Optional[str],
+        limit: int,
+        preferred_retailer_domains: Optional[List[str]],
+    ) -> "PriceSearchResult":
         system_prompt, user_prompt = self._build_messages(product_name, dimensions, country_code, limit)
         schema = self._response_schema(limit)
 
@@ -392,6 +454,52 @@ class PerplexityPriceSearchService:
     def _domain_of(url: str) -> str:
         m = re.match(r"^https?://([^/]+)", (url or "").strip(), flags=re.IGNORECASE)
         return (m.group(1) if m else url or "").lower().removeprefix("www.")
+
+    @classmethod
+    def _merge_with_dataforseo(
+        cls,
+        perplexity_hits: List[PriceHit],
+        dataforseo_hits: List[MerchantHit],
+        country_code: Optional[str],
+    ) -> List[PriceHit]:
+        """
+        Merge Perplexity + DataForSEO hits, deduped by retailer domain. When
+        both sources return the same retailer, keep Perplexity's version
+        (richer fields: availability, city, notes). DataForSEO-only retailers
+        get added with source='dataforseo' and their Shopping-feed metadata
+        (image_url, rating). Sort by price ascending.
+        """
+        by_domain: Dict[str, PriceHit] = {}
+        for h in perplexity_hits:
+            d = cls._domain_of(h.product_url)
+            if d:
+                h.source = h.source or "perplexity"
+                by_domain[d] = h
+
+        for m in dataforseo_hits:
+            d = cls._domain_of(m.product_url)
+            if not d or d in by_domain:
+                continue
+            by_domain[d] = PriceHit(
+                retailer_name=m.retailer_name,
+                product_url=m.product_url,
+                price=m.price,
+                currency=m.currency,
+                price_unit="piece",  # Shopping feed is per-unit, not per-m²
+                availability="in_stock",  # DataForSEO only surfaces buyable items
+                city=None,
+                ships_from_abroad=False,
+                is_quote_only=False,
+                last_verified=datetime.now(timezone.utc).date().isoformat(),
+                notes="via Google Shopping (DataForSEO)",
+                source="dataforseo",
+                image_url=m.image_url,
+                rating_value=m.rating_value,
+                rating_votes=m.rating_votes,
+            )
+
+        merged = sorted(by_domain.values(), key=lambda h: (h.price if h.price is not None else float("inf")))
+        return merged
 
     async def _log_usage(
         self,
