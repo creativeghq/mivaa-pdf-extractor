@@ -758,12 +758,23 @@ jobs:
           Environment=HUGGINGFACE_BATCH_SIZE=${{ secrets.HUGGINGFACE_BATCH_SIZE }}
           Environment=HUGGINGFACE_TIMEOUT=${{ secrets.HUGGINGFACE_TIMEOUT }}
           Environment=HUGGINGFACE_MAX_RETRIES=${{ secrets.HUGGINGFACE_MAX_RETRIES }}
+          Environment=SLIG_ENDPOINT_URL=${{ secrets.SLIG_ENDPOINT_URL }}
+          Environment=SLIG_ENDPOINT_TOKEN=${{ secrets.SLIG_ENDPOINT_TOKEN }}
+          Environment=SLIG_ENDPOINT_NAME=${{ secrets.SLIG_ENDPOINT_NAME }}
+          Environment=SLIG_NAMESPACE=${{ secrets.SLIG_NAMESPACE }}
+          Environment=SLIG_MODEL_NAME=${{ secrets.SLIG_MODEL_NAME }}
+          Environment=SLIG_EMBEDDING_DIMENSION=${{ secrets.SLIG_EMBEDDING_DIMENSION }}
+          Environment=SLIG_ENABLED=${{ secrets.SLIG_ENABLED }}
+          Environment=SLIG_TIMEOUT=${{ secrets.SLIG_TIMEOUT }}
+          Environment=SLIG_MAX_RETRIES=${{ secrets.SLIG_MAX_RETRIES }}
+          Environment=SLIG_RETRY_DELAY=${{ secrets.SLIG_RETRY_DELAY }}
           Environment=REPLICATE_API_TOKEN=${{ secrets.REPLICATE_API_TOKEN }}
           Environment=JINA_API_KEY=${{ secrets.JINA_API_KEY }}
           Environment=FIRECRAWL_API_KEY=${{ secrets.FIRECRAWL_API_KEY }}
           Environment=PERPLEXITY_API_KEY=${{ secrets.PERPLEXITY_API_KEY }}
           Environment=DATAFORSEO_LOGIN=${{ secrets.DATAFORSEO_LOGIN }}
           Environment=DATAFORSEO_PASSWORD=${{ secrets.DATAFORSEO_PASSWORD }}
+          Environment=DATAFORSEO_BASE64=${{ secrets.DATAFORSEO_BASE64 }}
           Environment=GOOGLE_SHOPPING_API_KEY=${{ secrets.GOOGLE_SHOPPING_API_KEY }}
           Environment=GOOGLE_SHOPPING_CX=${{ secrets.GOOGLE_SHOPPING_CX }}
           Environment=ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}

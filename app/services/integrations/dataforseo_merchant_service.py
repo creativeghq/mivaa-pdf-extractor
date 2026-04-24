@@ -96,16 +96,31 @@ class DataForSeoMerchantService:
     """Google Shopping via DataForSEO Merchant API."""
 
     def __init__(self) -> None:
+        # Two accepted auth modes (DataForSEO docs support both):
+        #   1. DATAFORSEO_BASE64 — pre-encoded "login:password" as base64. Preferred
+        #      when the secret is already encoded in a vault; no extra encoding step.
+        #   2. DATAFORSEO_LOGIN + DATAFORSEO_PASSWORD — plaintext, we base64 it.
+        # The base64 form wins if both are set.
+        pre_encoded = os.getenv("DATAFORSEO_BASE64") or ""
         login = os.getenv("DATAFORSEO_LOGIN") or ""
         password = os.getenv("DATAFORSEO_PASSWORD") or ""
-        self.auth_header = (
-            "Basic " + base64.b64encode(f"{login}:{password}".encode()).decode()
-            if login and password
-            else ""
-        )
-        self.configured = bool(login and password)
-        if not self.configured:
-            logger.warning("⚠️ DATAFORSEO_LOGIN / DATAFORSEO_PASSWORD not configured — Merchant search disabled")
+
+        if pre_encoded:
+            self.auth_header = f"Basic {pre_encoded}"
+            self.configured = True
+            self._auth_mode = "base64"
+        elif login and password:
+            self.auth_header = "Basic " + base64.b64encode(f"{login}:{password}".encode()).decode()
+            self.configured = True
+            self._auth_mode = "login+password"
+        else:
+            self.auth_header = ""
+            self.configured = False
+            self._auth_mode = "none"
+            logger.warning(
+                "⚠️ DataForSEO credentials not configured — set DATAFORSEO_BASE64 "
+                "(preferred) or DATAFORSEO_LOGIN + DATAFORSEO_PASSWORD"
+            )
 
     # ────────── Public API ──────────
 
