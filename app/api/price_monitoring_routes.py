@@ -101,6 +101,10 @@ class DiscoverSourcesResponse(BaseModel):
     total_results: int = 0
     credits_used: int = 0
     latency_ms: int = 0
+    summary: Optional[str] = Field(
+        default=None,
+        description="2-3 sentence Perplexity summary: closest retailer, manufacturer showroom presence, pricing outliers to question.",
+    )
     throttled: bool = False
     throttle_until: Optional[str] = Field(
         default=None,
@@ -720,6 +724,16 @@ async def discover_sources(
     now_iso = datetime.utcnow().isoformat()
     for hit in result.hits:
         source_type = "dataforseo_shopping" if hit.source == "dataforseo" else "perplexity_web_search"
+        # Build current_metadata — only non-null fields, so the JSON stays tidy.
+        meta: Dict[str, Any] = {}
+        if hit.image_url:
+            meta["image_url"] = hit.image_url
+        if hit.rating_value is not None:
+            meta["rating_value"] = float(hit.rating_value)
+        if hit.rating_votes is not None:
+            meta["rating_votes"] = int(hit.rating_votes)
+        if hit.notes:
+            meta["notes"] = hit.notes
         upsert_row = {
             "product_id": product_id,
             "source_name": hit.retailer_name,
@@ -733,6 +747,7 @@ async def discover_sources(
             "current_price_verified": bool(getattr(hit, "verified", False)),
             "current_currency": hit.currency,
             "current_availability": hit.availability or "unknown",
+            "current_metadata": meta or None,
             "current_price_updated_at": now_iso,
             "last_seen_at": now_iso,
             "last_successful_scrape": now_iso,
@@ -788,6 +803,7 @@ async def discover_sources(
         total_results=len(result.hits),
         credits_used=result.credits_used,
         latency_ms=result.latency_ms,
+        summary=result.summary,
         last_search_at=now_iso,
         cached=False,
     )
