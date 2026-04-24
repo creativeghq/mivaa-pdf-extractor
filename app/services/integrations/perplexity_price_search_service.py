@@ -236,23 +236,38 @@ class PerplexityPriceSearchService:
                 facet_query, manufacturer_hint=manufacturer_hint
             )
 
-        # Step 2: Perplexity + DataForSEO in parallel.
+        # Step 2: Perplexity + DataForSEO + Greek Marketplaces in parallel.
+        # Greek Marketplaces is gated on country_code=GR AND the `greek-marketplaces`
+        # module being enabled in the modules DB table. Lazy import avoids the
+        # circular dependency (greek_marketplaces.service imports PriceHit from here).
         perplexity_task = asyncio.create_task(
             self._perplexity_call(
                 product_name, dimensions, country_code, limit,
                 preferred_retailer_domains, user_id, workspace_id,
             )
         )
+        # Over-fetch DataForSEO (up to 30 merchants) — the Shopping feed
+        # routinely has 20-30 retailers per product and the classifier +
+        # dedupe trim them down later. Cheap: ~$0.002 flat per task.
         dataforseo_task = asyncio.create_task(
             get_dataforseo_merchant_service().search_shopping(
                 product_name=product_name,
                 dimensions=dimensions,
                 country_code=country_code,
+                limit=max(limit, 30),
+            )
+        )
+        greek_task = asyncio.create_task(
+            self._greek_marketplaces_call(
+                query=f"{product_name} {dimensions}".strip() if dimensions else product_name,
+                country_code=country_code,
+                user_id=user_id,
+                workspace_id=workspace_id,
                 limit=limit,
             )
         )
-        perplexity_result, dataforseo_result = await asyncio.gather(
-            perplexity_task, dataforseo_task, return_exceptions=True
+        perplexity_result, dataforseo_result, greek_hits = await asyncio.gather(
+            perplexity_task, dataforseo_task, greek_task, return_exceptions=True
         )
 
         if isinstance(perplexity_result, BaseException):
@@ -269,6 +284,17 @@ class PerplexityPriceSearchService:
             perplexity_result.cost_usd = (perplexity_result.cost_usd or 0.0) + dataforseo_result.cost_usd
         elif isinstance(dataforseo_result, BaseException):
             logger.warning(f"DataForSEO call raised (non-fatal): {dataforseo_result}")
+
+        # Merge Greek Marketplaces hits last — they're first-party retailer
+        # data and override both Perplexity snippets and DataForSEO feed rows
+        # for the same domain.
+        if isinstance(greek_hits, BaseException):
+            logger.warning(f"Greek marketplaces call raised (non-fatal): {greek_hits}")
+        elif greek_hits:
+            perplexity_result.hits = self._merge_with_greek_marketplaces(
+                existing=perplexity_result.hits,
+                greek_hits=greek_hits,
+            )
 
         # Step 3: URL pre-filter. Pure rules, no network. Drops obvious
         # non-product URLs (homepages, SERPs, aggregator masquerades) so
@@ -793,24 +819,53 @@ class PerplexityPriceSearchService:
         country_code: Optional[str],
     ) -> List[PriceHit]:
         """
-        Merge Perplexity + DataForSEO hits, deduped by retailer domain. When
-        both sources return the same retailer, keep Perplexity's version
-        (richer fields: availability, city, notes). DataForSEO-only retailers
-        get added with source='dataforseo' and their Shopping-feed metadata
-        (image_url, rating). Sort by price ascending.
+        Merge Perplexity + DataForSEO hits.
+
+        Dedupe policy:
+          - Perplexity hits keyed by retailer DOMAIN (their URL is a real
+            product page — host is unique per retailer).
+          - DataForSEO hits keyed by (retailer_name, product_title). Their
+            URL is a google.gr/search Shopping redirect, so domain-dedup
+            would collapse all 20 merchants into 1. The Shopping feed
+            already gives us a distinct product_title per listing, so use
+            that as the primary discriminator.
+          - When a retailer appears in BOTH sources (Perplexity found the
+            direct product page + DataForSEO has it in the feed), keep the
+            Perplexity row — it has richer fields (availability, city,
+            notes) and a directly-scrapable URL.
+          - DataForSEO-only retailers come through with source='dataforseo'
+            and their Shopping-feed metadata (image, rating).
         """
-        by_domain: Dict[str, PriceHit] = {}
+        merged: List[PriceHit] = []
+        perplexity_domains: set[str] = set()
+
         for h in perplexity_hits:
             d = cls._domain_of(h.product_url)
             if d:
-                h.source = h.source or "perplexity"
-                by_domain[d] = h
+                perplexity_domains.add(d)
+            h.source = h.source or "perplexity"
+            merged.append(h)
 
+        # DataForSEO dedup: if we can normalize a retailer domain out of the
+        # merchant name it's enough of a signal to dedup against Perplexity.
+        # Otherwise, each distinct (merchant, product_title) survives.
+        seen_dataforseo: set[Tuple[str, str]] = set()
         for m in dataforseo_hits:
-            d = cls._domain_of(m.product_url)
-            if not d or d in by_domain:
+            retailer_key = (m.retailer_name or "").strip().lower()
+            title_key = (m.product_title or "")[:80].strip().lower()
+            dedup_key = (retailer_key, title_key)
+            if dedup_key in seen_dataforseo:
                 continue
-            by_domain[d] = PriceHit(
+            seen_dataforseo.add(dedup_key)
+
+            # Skip when the retailer has already been covered by Perplexity.
+            # Match either by exact domain (e.g. "youbath" ↔ "youbath.gr") or
+            # by retailer name-as-slug (handles "Casa Solutions" → casasolutions).
+            retailer_slug = retailer_key.replace(" ", "").replace(".", "")
+            if any(retailer_slug and retailer_slug in d.replace(".", "") for d in perplexity_domains):
+                continue
+
+            merged.append(PriceHit(
                 retailer_name=m.retailer_name,
                 product_url=m.product_url,
                 price=m.price,
@@ -822,15 +877,73 @@ class PerplexityPriceSearchService:
                 ships_from_abroad=False,
                 is_quote_only=False,
                 last_verified=datetime.now(timezone.utc).date().isoformat(),
-                notes="via Google Shopping (DataForSEO)",
+                notes=(f"via Google Shopping · {m.product_title}" if m.product_title else "via Google Shopping (DataForSEO)"),
                 source="dataforseo",
                 image_url=m.image_url,
                 rating_value=m.rating_value,
                 rating_votes=m.rating_votes,
-            )
+            ))
 
-        merged = sorted(by_domain.values(), key=lambda h: (h.price if h.price is not None else float("inf")))
+        merged.sort(key=lambda h: (h.price if h.price is not None else float("inf")))
         return merged
+
+    @classmethod
+    def _merge_with_greek_marketplaces(
+        cls,
+        existing: List[PriceHit],
+        greek_hits: List[PriceHit],
+    ) -> List[PriceHit]:
+        """
+        Merge Greek Marketplaces hits over the existing (Perplexity+DataForSEO)
+        set. Greek sources are first-party retailer data, so they OVERRIDE any
+        earlier entry for the same retailer domain. New domains are appended.
+        """
+        by_domain: Dict[str, PriceHit] = {}
+        for h in existing:
+            d = cls._domain_of(h.product_url)
+            if d:
+                by_domain[d] = h
+
+        for g in greek_hits:
+            d = cls._domain_of(g.product_url)
+            if d:
+                by_domain[d] = g
+
+        return sorted(
+            by_domain.values(),
+            key=lambda h: (h.price if h.price is not None else float("inf")),
+        )
+
+    async def _greek_marketplaces_call(
+        self,
+        *,
+        query: str,
+        country_code: Optional[str],
+        user_id: Optional[str],
+        workspace_id: Optional[str],
+        limit: int,
+    ) -> List[PriceHit]:
+        """
+        Call the Greek Marketplaces module (Skroutz + Bestdeals + Shopflix).
+        Gated on country=GR and the DB module toggle. Returns [] when either
+        guard fails so the parallel gather doesn't need special handling.
+        """
+        if (country_code or "").upper() != "GR":
+            return []
+
+        from app.modules import is_module_enabled  # lazy: avoid startup circular import
+        if not is_module_enabled("greek-marketplaces"):
+            return []
+
+        from app.modules.greek_marketplaces.service import get_greek_marketplaces_service
+        service = get_greek_marketplaces_service()
+        return await service.search(
+            query=query,
+            country_code=country_code,
+            user_id=user_id or "",
+            workspace_id=workspace_id,
+            limit=limit,
+        )
 
     async def _log_usage(
         self,
