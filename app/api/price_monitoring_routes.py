@@ -12,7 +12,7 @@ FastAPI endpoints for price monitoring functionality:
 import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Depends, status, Query
+from fastapi import APIRouter, HTTPException, Depends, status, Query, Request
 from pydantic import BaseModel, Field
 
 from app.services.integrations.price_monitoring_service import get_price_monitoring_service
@@ -20,6 +20,8 @@ from app.services.integrations.perplexity_price_search_service import (
     get_perplexity_price_search_service,
     PriceHit,
 )
+from app.services.integrations.tracked_queries_service import get_tracked_queries_service
+import os
 from app.services.core.supabase_client import get_supabase_client
 from app.dependencies import get_current_user, get_workspace_context
 from app.middleware.jwt_auth import User, WorkspaceContext
@@ -781,6 +783,67 @@ def _is_admin(sb, user_id: str) -> bool:
         return rn in ("admin", "super_admin")
     except Exception:
         return False
+
+
+@router.post(
+    "/tracked-queries/cron-refresh",
+    summary="Refresh all due tracked_queries (called by Supabase cron)",
+    description=(
+        "Iterates tracked_queries where last_refreshed_at + refresh_interval_hours < now(), "
+        "runs Perplexity for each, writes to tracked_query_price_history. "
+        "Auth: `x-cron-secret` header must match server-side CRON_SECRET. "
+        "Not for end-user callers — use POST /api/v1/prices/track/{id}/refresh for that."
+    ),
+)
+async def cron_refresh_tracked_queries(request: Request, limit: int = Query(default=50, ge=1, le=500)) -> Dict[str, Any]:
+    expected = os.getenv("CRON_SECRET") or ""
+    provided = request.headers.get("x-cron-secret") or ""
+    if not expected or provided != expected:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing x-cron-secret")
+
+    service = get_tracked_queries_service()
+    due = await service.due_for_refresh(limit=limit)
+    processed = 0
+    succeeded = 0
+    failed = 0
+    total_credits = 0
+    results: List[Dict[str, Any]] = []
+
+    for row in due:
+        tracking_id = row.get("id")
+        if not tracking_id:
+            continue
+        try:
+            outcome = await service.refresh(tracking_id, force=False)
+            processed += 1
+            total_credits += int(outcome.get("credits_used", 0) or 0)
+            if outcome.get("status") == "refreshed":
+                succeeded += 1
+            else:
+                failed += 1
+            results.append({
+                "tracking_id": tracking_id,
+                "status": outcome.get("status"),
+                "credits_used": outcome.get("credits_used", 0),
+                "results_count": len(outcome.get("results") or []),
+                "error": outcome.get("error"),
+            })
+        except Exception as e:
+            logger.error(f"cron refresh crashed for {tracking_id}: {e}")
+            failed += 1
+            processed += 1
+            results.append({"tracking_id": tracking_id, "status": "crashed", "error": str(e)})
+
+    return {
+        "success": True,
+        "due_count": len(due),
+        "processed": processed,
+        "succeeded": succeeded,
+        "failed": failed,
+        "total_credits_used": total_credits,
+        "results": results,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+    }
 
 
 @router.get("/jobs/{product_id}", response_model=PriceJobsResponse)
