@@ -6,7 +6,7 @@ engine via `model_json_schema()` and guide the LLM that fills in each field.
 Keep descriptions concrete and short.
 """
 
-from typing import Optional
+from typing import Dict, Optional
 from pydantic import BaseModel, Field
 
 
@@ -17,6 +17,11 @@ class PriceExtraction(BaseModel):
     Stored raw (strings) because sites return prices with locale-specific
     formatting and currency symbols. Numeric parsing happens downstream via
     `price_parser`.
+
+    product_name + product_breadcrumb + visible_attributes are the trio the
+    identity classifier uses to decide whether the page actually matches the
+    query. Without them a page showing any price on the same domain would
+    silently slip in as a "verified" hit for the wrong SKU.
     """
 
     price: Optional[str] = Field(
@@ -41,5 +46,13 @@ class PriceExtraction(BaseModel):
     )
     product_name: Optional[str] = Field(
         default=None,
-        description="Canonical product name or title as displayed on the page.",
+        description="Canonical product name or title as displayed on the page — pull from the H1 / og:title / primary product heading, NOT the browser tab title.",
+    )
+    product_breadcrumb: Optional[str] = Field(
+        default=None,
+        description="Site breadcrumb trail leading to this product, e.g. 'Home > Bath > Faucets > Basin Faucets'. Useful to disambiguate product type when the product name is terse.",
+    )
+    visible_attributes: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="Small dict of visible product attributes: color, finish, size, material, etc. — any attribute explicitly shown on the page. Example: {'color':'black','finish':'matt','size':'60cm'}. Keep keys lowercase and concise.",
     )

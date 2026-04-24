@@ -21,6 +21,7 @@ from app.services.integrations.perplexity_price_search_service import (
     PriceHit,
 )
 from app.services.integrations.tracked_queries_service import get_tracked_queries_service
+from app.services.integrations.product_identity_service import facets_from_catalog
 import os
 from app.services.core.supabase_client import get_supabase_client
 from app.dependencies import get_current_user, get_workspace_context
@@ -632,7 +633,7 @@ async def discover_sources(
         # Return existing sources instead of making a fresh call.
         existing = (
             sb.table("competitor_sources")
-            .select("source_name, source_url, source_type, current_price, current_original_price, current_price_verified, current_currency, current_availability, last_seen_at")
+            .select("source_name, source_url, source_type, current_price, current_original_price, current_price_verified, current_currency, current_availability, match_kind, match_score, match_note, last_seen_at")
             .eq("product_id", product_id)
             .in_("source_type", ["perplexity_web_search", "dataforseo_shopping"])
             .eq("is_active", True)
@@ -651,6 +652,9 @@ async def discover_sources(
                 source="dataforseo" if r.get("source_type") == "dataforseo_shopping" else "perplexity",
                 currency=r.get("current_currency") or "USD",
                 availability=r.get("current_availability") or "unknown",
+                match_kind=r.get("match_kind"),
+                match_score=r.get("match_score"),
+                match_note=r.get("match_note"),
             )
             for r in rows
             if r.get("current_price") is not None
@@ -696,6 +700,10 @@ async def discover_sources(
     prof_row = (profile.data if profile else None) or {}
     country_code = _resolve_user_country_code(prof_row)
 
+    # Build reference facets from catalog metadata — structured signal beats
+    # re-parsing the free-text name with Haiku when we already have the data.
+    catalog_facets = facets_from_catalog(prod_row)
+
     # ── Run Claude web search ──
     result = await service.search_prices(
         product_name=product_name,
@@ -705,6 +713,8 @@ async def discover_sources(
         user_id=user.id,
         workspace_id=mon_row.get("workspace_id") or (workspace.workspace_id if workspace else None),
         verify_prices=request.verify_prices,
+        query_facets=catalog_facets,
+        manufacturer_hint=(metadata.get("manufacturer") or metadata.get("brand")) if metadata else None,
     )
 
     if not result.success:
@@ -748,6 +758,9 @@ async def discover_sources(
             "current_currency": hit.currency,
             "current_availability": hit.availability or "unknown",
             "current_metadata": meta or None,
+            "match_kind": hit.match_kind,
+            "match_score": hit.match_score,
+            "match_note": hit.match_note,
             "current_price_updated_at": now_iso,
             "last_seen_at": now_iso,
             "last_successful_scrape": now_iso,
@@ -771,6 +784,9 @@ async def discover_sources(
                 "verified": bool(getattr(hit, "verified", False)),
                 "currency": hit.currency,
                 "availability": hit.availability or "unknown",
+                "match_kind": hit.match_kind,
+                "match_score": hit.match_score,
+                "match_note": hit.match_note,
                 "scraped_at": now_iso,
                 "metadata": {
                     "via": source_type,
@@ -852,15 +868,33 @@ class MarketCheckResponse(BaseModel):
 
 
 def _compute_market_stats(hits: List[PriceHit]) -> MarketStats:
-    """Build min/max/median + verified count from a list of PriceHit."""
+    """
+    Build min/max/median + verified count. Per 2026-04-25 product decision,
+    ONLY `exact` identity matches count toward statistics — variants are a
+    different SKU (different color/finish) and would inflate the range;
+    unverifiable rows lack identity confirmation so we can't trust them
+    either. `count` still returns the total number of priced rows because
+    the UI shows "3 of 8 priced and matched" style breakdowns.
+    """
     priced = [h for h in hits if h.price is not None]
     if not priced:
         return MarketStats(count=len(hits), verified_count=0)
-    values = sorted(float(h.price) for h in priced)
+
+    # Stats are computed only from exact matches (or legacy rows where
+    # identity wasn't evaluated — match_kind is None).
+    stat_hits = [h for h in priced if (h.match_kind is None or h.match_kind == "exact")]
+    if not stat_hits:
+        # Everything's a variant/unverifiable. Report a count but no range —
+        # caller can decide to warn the user.
+        return MarketStats(
+            count=len(priced),
+            verified_count=sum(1 for h in priced if h.verified),
+        )
+
+    values = sorted(float(h.price) for h in stat_hits)
     n = len(values)
     median = values[n // 2] if n % 2 else (values[n // 2 - 1] + values[n // 2]) / 2
-    # Pick the dominant currency so callers don't mix EUR+GBP in a single label.
-    currencies = [h.currency for h in priced if h.currency]
+    currencies = [h.currency for h in stat_hits if h.currency]
     currency = max(set(currencies), key=currencies.count) if currencies else None
     verified = sum(1 for h in priced if h.verified)
     return MarketStats(
@@ -966,7 +1000,7 @@ async def market_check(
             if age_s <= 6 * 3600:
                 existing = (
                     sb.table("competitor_sources")
-                    .select("source_name, source_url, source_type, current_price, current_original_price, current_price_verified, current_currency, current_availability, current_metadata")
+                    .select("source_name, source_url, source_type, current_price, current_original_price, current_price_verified, current_currency, current_availability, current_metadata, match_kind, match_score, match_note")
                     .eq("product_id", product_id)
                     .in_("source_type", ["perplexity_web_search", "dataforseo_shopping"])
                     .eq("is_active", True)
@@ -993,6 +1027,9 @@ async def market_check(
                         rating_value=meta.get("rating_value"),
                         rating_votes=meta.get("rating_votes"),
                         notes=meta.get("notes"),
+                        match_kind=r.get("match_kind"),
+                        match_score=r.get("match_score"),
+                        match_note=r.get("match_note"),
                     ))
                 if cached_hits:
                     return MarketCheckResponse(
@@ -1011,6 +1048,19 @@ async def market_check(
                     )
 
     # ── Fresh scan ──
+    # When called with a product_id we have structured metadata — use it as
+    # the reference facets, no need to pay Haiku to re-decompose.
+    catalog_facets = None
+    if product_id:
+        prod_row_for_facets = (
+            sb.table("products")
+            .select("id, name, metadata")
+            .eq("id", product_id)
+            .maybe_single()
+            .execute()
+        )
+        catalog_facets = facets_from_catalog((prod_row_for_facets.data if prod_row_for_facets else None) or {})
+
     service = get_perplexity_price_search_service()
     result = await service.search_prices(
         product_name=query_text,
@@ -1020,6 +1070,8 @@ async def market_check(
         user_id=user.id,
         workspace_id=workspace.workspace_id if workspace else None,
         verify_prices=body.verify_prices,
+        query_facets=catalog_facets,
+        manufacturer_hint=manufacturer,
     )
 
     if not result.success:

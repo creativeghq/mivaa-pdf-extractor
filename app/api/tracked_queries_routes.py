@@ -95,6 +95,11 @@ class TrackedQueryResultRow(BaseModel):
     verified: bool = False  # True when Firecrawl confirmed the price from the live page
     notes: Optional[str] = None
     scraped_at: Optional[str] = None
+    # Product-identity verification (2026-04-25). null on rows created before
+    # identity classification shipped.
+    match_kind: Optional[str] = None       # 'exact' | 'variant' | 'unverifiable'
+    match_score: Optional[int] = None      # 0-100
+    match_note: Optional[str] = None       # e.g. 'Color differs: asked BLACK MATT, page shows WHITE'
 
 
 class TrackedQueryResponse(BaseModel):

@@ -45,6 +45,12 @@ from app.services.integrations.dataforseo_merchant_service import (
 from app.services.integrations.firecrawl_client import get_firecrawl_client
 from app.models.extraction import PriceExtraction
 from app.utils.price_parsing import parse_price
+from app.services.integrations.product_identity_service import (
+    get_product_identity_service,
+    QueryFacets,
+    url_prefilter,
+    url_slug_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +135,23 @@ class PriceHit(BaseModel):
     image_url: Optional[str] = Field(default=None, description="DataForSEO only: product thumbnail URL from the Shopping feed.")
     rating_value: Optional[float] = Field(default=None, description="DataForSEO only: merchant star rating.")
     rating_votes: Optional[int] = Field(default=None, description="DataForSEO only: number of rating votes.")
+    # ── Product-identity verification (2026-04-25) ──
+    # Populated by product_identity_service after Firecrawl runs. Tells the
+    # caller whether the page we scraped is the asked product, a variant
+    # (different color/finish but same model), a family sibling (same brand,
+    # different model — dropped before reaching here), or couldn't be judged.
+    match_kind: Optional[str] = Field(
+        default=None,
+        description="'exact' | 'variant' | 'family' | 'mismatch' | 'unverifiable'. None means identity wasn't checked (pre-2026-04-25 row or identity service disabled).",
+    )
+    match_score: Optional[int] = Field(
+        default=None,
+        description="0-100 identity-match confidence. 90+ exact, 70-89 variant, 50-69 family, <50 mismatch.",
+    )
+    match_note: Optional[str] = Field(
+        default=None,
+        description="Human-readable note surfacing the facet diff (e.g. 'Color differs: asked BLACK MATT, page shows WHITE MATT'). Null on exact matches.",
+    )
 
 
 class PriceSearchResult(BaseModel):
@@ -173,21 +196,47 @@ class PerplexityPriceSearchService:
         workspace_id: Optional[str] = None,
         preferred_retailer_domains: Optional[List[str]] = None,
         verify_prices: bool = True,
+        query_facets: Optional[QueryFacets] = None,
+        manufacturer_hint: Optional[str] = None,
     ) -> PriceSearchResult:
         """
         Run one Sonar search for the given product. Returns PriceSearchResult
         with hits + usage metadata. Stateless — caller handles DB persistence.
+
+        Pipeline:
+          1. Facet extraction (Haiku) — decompose the query into brand/model/
+             type/variants. Skipped when caller passes pre-cached facets.
+          2. Perplexity + DataForSEO in parallel, merged + deduped.
+          3. URL pre-filter — drop homepage/SERP/aggregator URLs before
+             spending Firecrawl credits on them.
+          4. Firecrawl verification — fetch each remaining product page
+             and extract price + product_name + breadcrumb + attributes.
+          5. Identity classification (batched Haiku) — decide per hit whether
+             the page is an exact/variant/family/mismatch/unverifiable
+             match for the query. Mismatches are dropped. Variants are kept
+             with a human-readable match_note.
+
+        Pass `query_facets` to skip step 1 (caller cached them on the tracked
+        query). Pass `manufacturer_hint` to override Haiku's brand guess.
         """
         if not self.api_key:
             return PriceSearchResult(success=False, error="PERPLEXITY_API_KEY not configured")
 
         limit = max(1, min(limit, 25))
 
-        # Run Perplexity + DataForSEO Merchant in parallel. Each returns up
-        # to `limit` hits; we merge + dedupe by domain, keeping the cheapest
-        # per domain regardless of source. Source field on each hit lets
-        # the UI split them into "Discovered retailers" (perplexity) and
-        # "Merchants" (dataforseo) sections.
+        # Step 1: facets. Prefer caller-supplied cache (tracked_queries or
+        # catalog metadata) — only call Haiku when we have nothing.
+        identity_svc = get_product_identity_service()
+        facets = query_facets
+        if facets is None:
+            facet_query = product_name
+            if dimensions:
+                facet_query = f"{product_name} {dimensions}"
+            facets = await identity_svc.extract_query_facets(
+                facet_query, manufacturer_hint=manufacturer_hint
+            )
+
+        # Step 2: Perplexity + DataForSEO in parallel.
         perplexity_task = asyncio.create_task(
             self._perplexity_call(
                 product_name, dimensions, country_code, limit,
@@ -206,12 +255,10 @@ class PerplexityPriceSearchService:
             perplexity_task, dataforseo_task, return_exceptions=True
         )
 
-        # Unpack Perplexity result (may have raised)
         if isinstance(perplexity_result, BaseException):
             logger.warning(f"Perplexity call raised: {perplexity_result}")
             return PriceSearchResult(success=False, error=f"perplexity: {perplexity_result}")
 
-        # Merge DataForSEO hits into the result (if it succeeded)
         if not isinstance(dataforseo_result, BaseException) and dataforseo_result.success:
             perplexity_result.hits = self._merge_with_dataforseo(
                 perplexity_hits=perplexity_result.hits,
@@ -223,17 +270,97 @@ class PerplexityPriceSearchService:
         elif isinstance(dataforseo_result, BaseException):
             logger.warning(f"DataForSEO call raised (non-fatal): {dataforseo_result}")
 
-        # Stage B: verify prices via Firecrawl per URL (parallel asyncio.gather).
-        # Fetches each retailer's actual product page and extracts the real price
-        # from the rendered HTML. Fixes Perplexity hallucinations + stale snippets.
-        # Opt-out via verify_prices=False for callers who value latency over accuracy.
+        # Step 3: URL pre-filter. Pure rules, no network. Drops obvious
+        # non-product URLs (homepages, SERPs, aggregator masquerades) so
+        # Firecrawl budget is spent only on URLs that could actually match.
+        if perplexity_result.hits:
+            kept: List[PriceHit] = []
+            for h in perplexity_result.hits:
+                verdict = url_prefilter(h.product_url, retailer_name=h.retailer_name)
+                if verdict.keep:
+                    kept.append(h)
+                else:
+                    logger.debug(f"URL prefilter dropped {h.retailer_name} ({verdict.reason})")
+            perplexity_result.hits = kept
+
+        # Extraction details from Firecrawl — keyed by product_url so we can
+        # feed them to the classifier after verification.
+        extractions: Dict[str, Dict[str, Any]] = {}
+
+        # Step 4: Firecrawl verification.
         if verify_prices and perplexity_result.hits:
             verify_credits = await self._verify_hits_with_firecrawl(
-                perplexity_result.hits, user_id=user_id, workspace_id=workspace_id,
+                perplexity_result.hits,
+                extractions_out=extractions,
+                user_id=user_id,
+                workspace_id=workspace_id,
             )
             perplexity_result.credits_used += verify_credits
 
+        # Step 5: identity classification. Runs whether or not verification
+        # ran — if Firecrawl was skipped, we still classify using URL slug
+        # tokens + retailer name as weak signals, and the classifier will
+        # mostly return 'unverifiable' verdicts which we keep.
+        if perplexity_result.hits and facets:
+            perplexity_result.hits = await self._classify_and_filter(
+                hits=perplexity_result.hits,
+                facets=facets,
+                extractions=extractions,
+                user_id=user_id,
+                workspace_id=workspace_id,
+            )
+
         return perplexity_result
+
+    async def _classify_and_filter(
+        self,
+        *,
+        hits: List[PriceHit],
+        facets: QueryFacets,
+        extractions: Dict[str, Dict[str, Any]],
+        user_id: Optional[str],
+        workspace_id: Optional[str],
+    ) -> List[PriceHit]:
+        """
+        Ask the identity classifier which hits are exact/variant/family/
+        mismatch/unverifiable, stamp match_kind/score/note onto each hit,
+        and drop mismatches. Family matches are dropped per the 2026-04-25
+        product decision (same brand ≠ useful pricing data).
+        """
+        identity_svc = get_product_identity_service()
+
+        candidates: List[Dict[str, Any]] = []
+        for h in hits:
+            ext = extractions.get(h.product_url) or {}
+            candidates.append({
+                "retailer": h.retailer_name,
+                "url": h.product_url,
+                "product_name": ext.get("product_name"),
+                "breadcrumb": ext.get("product_breadcrumb"),
+                "visible_attributes": ext.get("visible_attributes") or {},
+                "url_slug_tokens": url_slug_tokens(h.product_url),
+            })
+
+        verdicts = await identity_svc.classify_hits(
+            facets, candidates, user_id=user_id, workspace_id=workspace_id,
+        )
+
+        kept: List[PriceHit] = []
+        for hit, verdict in zip(hits, verdicts):
+            kind = verdict.get("match_kind") or "unverifiable"
+            hit.match_kind = kind
+            hit.match_score = int(verdict.get("match_score") or 0)
+            hit.match_note = verdict.get("match_note")
+            # Drop mismatches + family per the 2026-04-25 product policy:
+            # only exact / variant / unverifiable rows survive.
+            if kind in ("mismatch", "family"):
+                logger.debug(
+                    f"Identity classifier dropped {hit.retailer_name}: {kind} "
+                    f"(score={hit.match_score}, note={hit.match_note})"
+                )
+                continue
+            kept.append(hit)
+        return kept
 
     # The original Perplexity-only flow, extracted so we can run it alongside
     # DataForSEO in parallel without tangling the orchestration logic.
@@ -502,24 +629,28 @@ class PerplexityPriceSearchService:
         self,
         hits: List[PriceHit],
         *,
+        extractions_out: Optional[Dict[str, Dict[str, Any]]] = None,
         user_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
     ) -> int:
         """
         Second-stage verification: fetch each retailer's actual product page via
-        Firecrawl, extract price + original_price via PriceExtraction schema,
+        Firecrawl, extract price + product_name + breadcrumb + visible_attributes,
         and rewrite the hit in place. Runs all URLs in parallel via asyncio.gather.
 
-        Mutates `hits` list in place. Returns total Firecrawl credits consumed.
+        Mutates `hits` list in place. Also writes extraction details keyed by
+        `product_url` into `extractions_out` (when provided) so the identity
+        classifier can use them without re-scraping.
 
         Semantics per row:
           - Firecrawl finds a price on the page → replace `price`, fill
-            `original_price` if was/now visible, set `verified=True`.
+            `original_price` if was/now visible and sane (discarded if
+            original < price, or original/price > 5 — that's a SKU/ID, not
+            a promo). Set `verified=True`.
           - Firecrawl returns no price (404, blocked, truly missing) → leave
             the row as-is with `verified=False`.
           - Firecrawl price differs by >20% from the Perplexity/DataForSEO
-            price → trust Firecrawl (it actually read the page) + append a
-            note flagging the discrepancy so downstream consumers can see it.
+            price → trust Firecrawl + append a discrepancy note.
         """
         firecrawl = get_firecrawl_client()
 
@@ -532,9 +663,13 @@ class PerplexityPriceSearchService:
                     user_id=user_id or "system",
                     workspace_id=workspace_id,
                     extraction_prompt=(
-                        f"Extract the current price and on-page 'was' price (if any) for "
-                        f"{hit.retailer_name}'s product page. Prefer the main product price, "
-                        "not related / bundle / strike-through prices."
+                        f"Extract the following from this {hit.retailer_name} product page:\n"
+                        "1. The current main product price (the NOW price if there's a promo, "
+                        "   not the related/bundle/strike-through).\n"
+                        "2. The on-page 'was' price if a promo is displayed.\n"
+                        "3. The product name exactly as shown in the main H1 or og:title.\n"
+                        "4. The breadcrumb trail (e.g. 'Home > Bath > Faucets > Basin Faucets').\n"
+                        "5. Any visible color/finish/size/material attributes — small dict, lowercase values."
                     ),
                     use_javascript_render=False,
                 )
@@ -546,16 +681,40 @@ class PerplexityPriceSearchService:
                 return result.credits_used or 1
 
             extracted = result.data
+
+            # Save extraction details for the downstream identity classifier
+            # even when we can't verify the price (page loaded but no price
+            # visible). The classifier still wants product_name to judge
+            # identity.
+            if extractions_out is not None:
+                extractions_out[hit.product_url] = {
+                    "product_name": extracted.product_name,
+                    "product_breadcrumb": extracted.product_breadcrumb,
+                    "visible_attributes": extracted.visible_attributes,
+                }
+
             hint_currency = extracted.currency or hit.currency
             amount, currency = parse_price(extracted.price, hint_currency=hint_currency)
             if amount is None:
                 # Page loaded but no extractable price — keep the original data,
-                # don't mark as verified.
+                # don't mark as verified. Classifier still gets the extraction.
                 return result.credits_used or 1
 
             verified_price = float(amount)
             original_amount, _ = parse_price(extracted.original_price, hint_currency=hint_currency)
             verified_original = float(original_amount) if original_amount is not None else None
+
+            # original_price sanity bounds:
+            #   - must be > current price (otherwise not a promo)
+            #   - must not be more than 5× current price (that's a SKU or catalog
+            #     number the extractor mistook for a price — Flobali €11,900 case)
+            if verified_original is not None:
+                if (
+                    verified_price <= 0
+                    or verified_original <= verified_price
+                    or verified_original / verified_price > 5
+                ):
+                    verified_original = None
 
             # Discrepancy check: if Firecrawl's price is materially different from
             # Perplexity/DataForSEO's, flag it. Trust Firecrawl (read the page).
@@ -570,7 +729,7 @@ class PerplexityPriceSearchService:
                     )
 
             hit.price = verified_price
-            if verified_original is not None and verified_original > verified_price:
+            if verified_original is not None:
                 hit.original_price = verified_original
             if currency and not hit.currency:
                 hit.currency = currency

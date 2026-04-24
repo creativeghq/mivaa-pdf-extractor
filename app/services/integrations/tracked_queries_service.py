@@ -23,6 +23,10 @@ from app.services.integrations.perplexity_price_search_service import (
     PriceHit,
     PriceSearchResult,
 )
+from app.services.integrations.product_identity_service import (
+    get_product_identity_service,
+    QueryFacets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +55,28 @@ class TrackedQueriesService:
         verify_prices: bool = True,
     ) -> Dict[str, Any]:
         """Insert a new tracked query + run the first refresh synchronously so
-        the caller gets initial results in the same POST response."""
+        the caller gets initial results in the same POST response.
+
+        Extracts query facets (Haiku) once at create time and caches them on
+        the tracked_queries.query_facets column. Every subsequent refresh
+        reuses the cached facets — we don't re-pay for decomposition on a
+        query that already has a frozen facet signature.
+        """
+        # Facet extraction runs before the insert so the row stores them from
+        # day one. Facet failures are non-fatal — the row is still created
+        # and refresh() falls back to extracting on-demand.
+        facet_query = search_query
+        if dimensions:
+            facet_query = f"{search_query} {dimensions}"
+        facets: Optional[QueryFacets] = None
+        try:
+            identity_svc = get_product_identity_service()
+            facets = await identity_svc.extract_query_facets(
+                facet_query, manufacturer_hint=manufacturer
+            )
+        except Exception as e:
+            logger.warning(f"Facet extraction failed on create (non-fatal): {e}")
+
         row = {
             "api_key_id": api_key_id,
             "user_id": user_id,
@@ -63,6 +88,7 @@ class TrackedQueriesService:
             "preferred_retailer_domains": preferred_retailer_domains,
             "refresh_interval_hours": max(1, min(refresh_interval_hours, 720)),
             "verify_prices": bool(verify_prices),
+            "query_facets": facets.to_dict() if facets else None,
         }
         res = self.supabase.client.table("tracked_queries").insert(row).execute()
         created = (res.data or [{}])[0]
@@ -174,6 +200,11 @@ class TrackedQueriesService:
                         "results": await self.latest_results(tracking_id),
                     }
 
+        # Use the cached query_facets if we have them (created on first insert).
+        # Refreshes that predate 2026-04-25 won't have them; fall back to
+        # on-demand extraction inside search_prices().
+        cached_facets = QueryFacets.from_dict(tq.get("query_facets"))
+
         # Option 2: domain pinning. If the caller has saved preferred retailer
         # domains, Perplexity's search_domain_filter forces those to be probed.
         # verify_prices controls the Firecrawl verification pass (default True).
@@ -186,6 +217,8 @@ class TrackedQueriesService:
             workspace_id=tq.get("workspace_id"),
             preferred_retailer_domains=tq.get("preferred_retailer_domains") or None,
             verify_prices=bool(tq.get("verify_prices", True)),
+            query_facets=cached_facets,
+            manufacturer_hint=tq.get("manufacturer"),
         )
 
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -219,6 +252,9 @@ class TrackedQueriesService:
                     "ships_from_abroad": bool(h.ships_from_abroad),
                     "verified": bool(h.verified),
                     "notes": h.notes,
+                    "match_kind": h.match_kind,
+                    "match_score": h.match_score,
+                    "match_note": h.match_note,
                     "scraped_at": now_iso,
                 }
                 for h in result.hits
