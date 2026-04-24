@@ -669,6 +669,8 @@ async def discover_sources(
     )
 
     # ── User's country for regional preference ──
+    # Priority: location_country_code (ISO) → derived from free-text `location`
+    # (e.g. "Greece" → "GR") → DEFAULT_COUNTRY_CODE (GR).
     profile = (
         sb.table("user_profiles")
         .select("location_country_code, location")
@@ -677,7 +679,7 @@ async def discover_sources(
         .execute()
     )
     prof_row = (profile.data if profile else None) or {}
-    country_code = prof_row.get("location_country_code")
+    country_code = _resolve_user_country_code(prof_row)
 
     # ── Run Claude web search ──
     result = await service.search_prices(
@@ -773,6 +775,67 @@ async def discover_sources(
         last_search_at=now_iso,
         cached=False,
     )
+
+
+# Country-name → ISO-3166-1 alpha-2 fallback table for when the user has typed
+# "Greece" / "Germany" / etc. into their profile's free-text location field but
+# the dedicated location_country_code column was never populated. Narrow on
+# purpose — primary markets for the platform. Extend as needed.
+_COUNTRY_NAME_TO_CODE = {
+    "greece": "GR", "ελλάδα": "GR", "ellada": "GR",
+    "germany": "DE", "deutschland": "DE",
+    "united kingdom": "GB", "great britain": "GB", "uk": "GB", "england": "GB",
+    "united states": "US", "usa": "US", "us": "US", "america": "US",
+    "italy": "IT", "italia": "IT",
+    "spain": "ES", "españa": "ES", "espana": "ES",
+    "france": "FR",
+    "netherlands": "NL", "holland": "NL",
+    "belgium": "BE",
+    "austria": "AT", "switzerland": "CH",
+    "portugal": "PT",
+    "ireland": "IE",
+    "bulgaria": "BG", "romania": "RO", "cyprus": "CY",
+    "poland": "PL", "czechia": "CZ", "czech republic": "CZ",
+    "slovakia": "SK", "hungary": "HU",
+    "lithuania": "LT", "latvia": "LV", "estonia": "EE",
+    "sweden": "SE", "denmark": "DK", "norway": "NO", "finland": "FI",
+    "turkey": "TR", "türkiye": "TR",
+    "canada": "CA", "australia": "AU",
+}
+
+DEFAULT_COUNTRY_CODE = "GR"  # platform's primary market — Greece
+
+
+def _resolve_user_country_code(profile: Optional[Dict[str, Any]]) -> str:
+    """
+    Pick ISO-3166-1 alpha-2 from the user profile, in priority order:
+      1. location_country_code if already populated (from earlier normalize pass)
+      2. Match the trailing ", XX" pattern in free-text `location` (e.g. "Athens, GR")
+      3. Match the free-text against the country-name fallback table
+      4. Default GR
+    """
+    prof = profile or {}
+    code = (prof.get("location_country_code") or "").strip().upper()
+    if len(code) == 2 and code.isalpha():
+        return code
+
+    location_text = (prof.get("location") or "").strip()
+    if location_text:
+        # Trailing ", GR" / " GR" / ", United Kingdom" patterns
+        import re as _re
+        trailing_iso = _re.search(r',\s*([A-Za-z]{2})\s*$', location_text)
+        if trailing_iso:
+            guess = trailing_iso.group(1).upper()
+            if guess.isalpha():
+                return guess
+
+        # Country name match (whole string or part)
+        lower = location_text.lower()
+        for name, iso in _COUNTRY_NAME_TO_CODE.items():
+            if name in lower:
+                return iso
+
+    return DEFAULT_COUNTRY_CODE
 
 
 def _is_admin(sb, user_id: str) -> bool:

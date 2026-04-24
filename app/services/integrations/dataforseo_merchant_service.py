@@ -149,7 +149,11 @@ class DataForSeoMerchantService:
             return MerchantSearchResult(success=False, error="DATAFORSEO credentials not configured")
 
         query = f"{product_name} {dimensions}".strip() if dimensions else product_name
-        location_code = _LOCATION_CODES.get((country_code or "").upper(), 2840)  # default US
+        # Default country is GR (platform's primary market). The /discover route
+        # resolves this from user_profiles.location_country_code first, then from
+        # the free-text location field (e.g. "Greece" → "GR"), so by the time the
+        # code reaches here the country_code is almost always set.
+        location_code = _LOCATION_CODES.get((country_code or "").upper(), _LOCATION_CODES["GR"])
         language_code = "en"  # DataForSEO handles multilingual results internally
 
         start = datetime.now(timezone.utc)
