@@ -2066,6 +2066,7 @@ from app.api.health import router as health_router
 from app.api.chunk_quality_routes import router as chunk_quality_router
 from app.api.price_monitoring_routes import router as price_monitoring_router
 from app.api.price_lookup_routes import router as price_lookup_router
+from app.api.tracked_queries_routes import router as tracked_queries_router
 from app.api.websocket_routes import router as websocket_router
 from app.api.logs_routes import router as logs_router
 from app.api.admin_linking import router as admin_linking_router
@@ -2105,6 +2106,7 @@ app.include_router(interior_design_router)  # NEW: Interior design generation wi
 app.include_router(chunk_quality_router)  # NEW: Chunk quality metrics and flagged content management
 app.include_router(price_monitoring_router)  # NEW: Price monitoring with Firecrawl (competitor scraping, alerts, history)
 app.include_router(price_lookup_router)  # NEW: Public POST /api/v1/prices/lookup — one-shot price lookup for external API callers
+app.include_router(tracked_queries_router)  # NEW: Public /api/v1/prices/track/* — external price tracking (CRUD + refresh)
 app.include_router(websocket_router)  # NEW: WebSocket endpoint for real-time updates (job progress, system health)
 app.include_router(logs_router)  # NEW: System logs API (fetch, filter, clear logs from database)
 app.include_router(admin_linking_router)  # NEW: Admin entity linking (manual chunk-product linking for debugging)

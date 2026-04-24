@@ -139,6 +139,7 @@ class PerplexityPriceSearchService:
         limit: int = 10,
         user_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
+        preferred_retailer_domains: Optional[List[str]] = None,
     ) -> PriceSearchResult:
         """
         Run one Sonar search for the given product. Returns PriceSearchResult
@@ -168,6 +169,13 @@ class PerplexityPriceSearchService:
         }
         if country_code:
             body["web_search_options"]["user_location"] = {"country": country_code.upper()}
+        # Option 2: domain pinning — force Perplexity to ALSO probe these known retailers.
+        # Perplexity allows up to 10 domains in search_domain_filter. We cap at 10.
+        if preferred_retailer_domains:
+            cleaned = [d.strip().lower().removeprefix("www.") for d in preferred_retailer_domains if d and isinstance(d, str)]
+            cleaned = [d for d in cleaned if d][:10]
+            if cleaned:
+                body["web_search_options"]["search_domain_filter"] = cleaned
 
         start = datetime.now(timezone.utc)
         try:
