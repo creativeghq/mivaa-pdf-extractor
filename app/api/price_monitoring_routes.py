@@ -16,8 +16,8 @@ from fastapi import APIRouter, HTTPException, Depends, status, Query
 from pydantic import BaseModel, Field
 
 from app.services.integrations.price_monitoring_service import get_price_monitoring_service
-from app.services.integrations.claude_price_search_service import (
-    get_claude_price_search_service,
+from app.services.integrations.perplexity_price_search_service import (
+    get_perplexity_price_search_service,
     PriceHit,
 )
 from app.services.core.supabase_client import get_supabase_client
@@ -85,7 +85,7 @@ class DiscoverSourcesRequest(BaseModel):
 class DiscoverSourcesResponse(BaseModel):
     """Response from /discover. Returns the retailer list + throttle state."""
     success: bool
-    source: str = "claude_web_search"
+    source: str = "perplexity_web_search"
     product_id: str
     results: List[PriceHit] = []
     total_results: int = 0
@@ -574,7 +574,7 @@ async def delete_price_alert(
         "specified product. Biases results toward the user's country (from profile) "
         "but does not restrict. Throttled to once per 6h per product; set "
         "`force_refresh=true` (admin/super_admin only) to bypass. Inserts discovered "
-        "retailers into `competitor_sources` with `source_type='claude_web_search'` "
+        "retailers into `competitor_sources` with `source_type='perplexity_web_search'` "
         "and writes price snapshots to `price_history`."
     ),
 )
@@ -584,7 +584,7 @@ async def discover_sources(
     workspace: WorkspaceContext = Depends(get_workspace_context),
 ) -> DiscoverSourcesResponse:
     sb = get_supabase_client().client
-    service = get_claude_price_search_service()
+    service = get_perplexity_price_search_service()
     product_id = request.product_id
 
     # ── Admin check for force_refresh ──
@@ -620,7 +620,7 @@ async def discover_sources(
             sb.table("competitor_sources")
             .select("source_name, source_url, current_price, current_currency, current_availability, last_seen_at")
             .eq("product_id", product_id)
-            .eq("source_type", "claude_web_search")
+            .eq("source_type", "perplexity_web_search")
             .eq("is_active", True)
             .order("last_seen_at", desc=True)
             .limit(10)
@@ -704,8 +704,8 @@ async def discover_sources(
             "product_id": product_id,
             "source_name": hit.retailer_name,
             "source_url": hit.product_url,
-            "source_type": "claude_web_search",
-            "discovered_via": "claude_web_search",
+            "source_type": "perplexity_web_search",
+            "discovered_via": "perplexity_web_search",
             "auto_discovered": True,
             "is_active": True,
             "current_price": float(hit.price),
@@ -733,7 +733,7 @@ async def discover_sources(
                 "currency": hit.currency,
                 "availability": hit.availability or "unknown",
                 "scraped_at": now_iso,
-                "metadata": {"via": "claude_web_search", "notes": hit.notes},
+                "metadata": {"via": "perplexity_web_search", "notes": hit.notes},
             }).execute()
         except Exception as e:
             logger.warning(f"price_history insert failed for {hit.product_url}: {e}")

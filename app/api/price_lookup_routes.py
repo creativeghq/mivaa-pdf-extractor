@@ -24,8 +24,8 @@ from pydantic import BaseModel, Field, HttpUrl
 from app.models.extraction import PriceExtraction
 from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations.firecrawl_client import get_firecrawl_client
-from app.services.integrations.claude_price_search_service import (
-    get_claude_price_search_service,
+from app.services.integrations.perplexity_price_search_service import (
+    get_perplexity_price_search_service,
     PriceHit,
 )
 from app.utils.price_parsing import parse_price
@@ -361,8 +361,12 @@ async def _firecrawl_mode(
 async def _claude_mode(
     body: PriceLookupRequest, ctx: ApiKeyContext
 ) -> tuple[PriceLookupResponse, Dict[str, Any]]:
-    """Run the search-query Claude web_search path."""
-    service = get_claude_price_search_service()
+    """
+    Runs the search-query path. Named `_claude_mode` for historical reasons
+    — engine under the hood is now Perplexity Sonar (claude web_search was
+    replaced 2026-04-24 because its snippets missed prices the page showed).
+    """
+    service = get_perplexity_price_search_service()
     result = await service.search_prices(
         product_name=body.search_query or "",
         dimensions=body.dimensions,
