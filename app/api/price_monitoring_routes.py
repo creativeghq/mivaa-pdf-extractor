@@ -633,7 +633,7 @@ async def discover_sources(
         # Return existing sources instead of making a fresh call.
         existing = (
             sb.table("competitor_sources")
-            .select("source_name, source_url, source_type, current_price, current_original_price, current_price_verified, current_currency, current_availability, match_kind, match_score, match_note, last_seen_at")
+            .select("source_name, source_url, source_type, current_price, current_original_price, current_price_verified, current_currency, current_availability, current_metadata, match_kind, match_score, match_note, last_seen_at")
             .eq("product_id", product_id)
             .in_("source_type", ["perplexity_web_search", "dataforseo_shopping"])
             .eq("is_active", True)
@@ -642,8 +642,12 @@ async def discover_sources(
             .execute()
         )
         rows = existing.data or []
-        cached_hits = [
-            PriceHit(
+        cached_hits = []
+        for r in rows:
+            if r.get("current_price") is None:
+                continue
+            meta = r.get("current_metadata") or {}
+            cached_hits.append(PriceHit(
                 retailer_name=r.get("source_name") or "Unknown",
                 product_url=r.get("source_url") or "",
                 price=float(r.get("current_price") or 0),
@@ -655,10 +659,8 @@ async def discover_sources(
                 match_kind=r.get("match_kind"),
                 match_score=r.get("match_score"),
                 match_note=r.get("match_note"),
-            )
-            for r in rows
-            if r.get("current_price") is not None
-        ]
+                product_title=meta.get("product_title"),
+            ))
         return DiscoverSourcesResponse(
             success=True,
             product_id=product_id,
@@ -744,6 +746,8 @@ async def discover_sources(
             meta["rating_votes"] = int(hit.rating_votes)
         if hit.notes:
             meta["notes"] = hit.notes
+        if hit.product_title:
+            meta["product_title"] = hit.product_title
         upsert_row = {
             "product_id": product_id,
             "source_name": hit.retailer_name,
@@ -787,6 +791,7 @@ async def discover_sources(
                 "match_kind": hit.match_kind,
                 "match_score": hit.match_score,
                 "match_note": hit.match_note,
+                "product_title": hit.product_title,
                 "scraped_at": now_iso,
                 "metadata": {
                     "via": source_type,
@@ -1030,6 +1035,7 @@ async def market_check(
                         match_kind=r.get("match_kind"),
                         match_score=r.get("match_score"),
                         match_note=r.get("match_note"),
+                        product_title=meta.get("product_title"),
                     ))
                 if cached_hits:
                     return MarketCheckResponse(

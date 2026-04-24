@@ -100,6 +100,7 @@ class TrackedQueryResultRow(BaseModel):
     match_kind: Optional[str] = None       # 'exact' | 'variant' | 'unverifiable'
     match_score: Optional[int] = None      # 0-100
     match_note: Optional[str] = None       # e.g. 'Color differs: asked BLACK MATT, page shows WHITE'
+    product_title: Optional[str] = None    # Exact name shown on retailer page. Disambiguates multiple rows from the same retailer (different variants).
 
 
 class TrackedQueryResponse(BaseModel):

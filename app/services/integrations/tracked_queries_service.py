@@ -255,6 +255,7 @@ class TrackedQueriesService:
                     "match_kind": h.match_kind,
                     "match_score": h.match_score,
                     "match_note": h.match_note,
+                    "product_title": h.product_title,
                     "scraped_at": now_iso,
                 }
                 for h in result.hits
@@ -313,7 +314,11 @@ class TrackedQueriesService:
         """All historical price points, newest first."""
         res = (
             self.supabase.client.table("tracked_query_price_history")
-            .select("scraped_at, refresh_run_id, retailer_name, product_url, price, currency, price_unit, availability, city")
+            .select(
+                "scraped_at, refresh_run_id, retailer_name, product_url, price, "
+                "original_price, currency, price_unit, availability, city, verified, "
+                "match_kind, match_score, match_note, product_title, notes"
+            )
             .eq("tracked_query_id", tracking_id)
             .order("scraped_at", desc=True)
             .limit(max(1, min(limit, 2000)))

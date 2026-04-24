@@ -135,6 +135,14 @@ class PriceHit(BaseModel):
     image_url: Optional[str] = Field(default=None, description="DataForSEO only: product thumbnail URL from the Shopping feed.")
     rating_value: Optional[float] = Field(default=None, description="DataForSEO only: merchant star rating.")
     rating_votes: Optional[int] = Field(default=None, description="DataForSEO only: number of rating votes.")
+    product_title: Optional[str] = Field(
+        default=None,
+        description=(
+            "Exact product name as shown on the retailer's page. Populated from the DataForSEO "
+            "Shopping feed title or Firecrawl product_name extraction. Use this to disambiguate "
+            "multiple rows from the same retailer (different variants)."
+        ),
+    )
     # ── Product-identity verification (2026-04-25) ──
     # Populated by product_identity_service after Firecrawl runs. Tells the
     # caller whether the page we scraped is the asked product, a variant
@@ -789,6 +797,11 @@ class PerplexityPriceSearchService:
                 "in_stock", "out_of_stock", "limited", "unknown"
             ):
                 hit.availability = extracted.availability
+            # Seed product_title from Firecrawl if not already set (DataForSEO
+            # rows get theirs directly from the Shopping feed). Enables the UI
+            # to disambiguate variants per retailer.
+            if extracted.product_name and not hit.product_title:
+                hit.product_title = extracted.product_name.strip() or None
             hit.verified = True
             hit.last_verified = datetime.now(timezone.utc).date().isoformat()
             if diff_note:
@@ -877,11 +890,12 @@ class PerplexityPriceSearchService:
                 ships_from_abroad=False,
                 is_quote_only=False,
                 last_verified=datetime.now(timezone.utc).date().isoformat(),
-                notes=(f"via Google Shopping · {m.product_title}" if m.product_title else "via Google Shopping (DataForSEO)"),
+                notes="via Google Shopping (DataForSEO)",
                 source="dataforseo",
                 image_url=m.image_url,
                 rating_value=m.rating_value,
                 rating_votes=m.rating_votes,
+                product_title=m.product_title,
             ))
 
         merged.sort(key=lambda h: (h.price if h.price is not None else float("inf")))
