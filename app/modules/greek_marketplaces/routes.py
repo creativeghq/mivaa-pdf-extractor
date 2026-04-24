@@ -159,9 +159,9 @@ async def module_status(request: Request) -> ModuleStatus:
             name="Skroutz",
             configured=skroutz.is_configured,
             details=(
-                "OAuth2 client credentials configured."
+                "Firecrawl scrape of skroutz.gr/search — aggregator URL (merchants one click away)."
                 if skroutz.is_configured
-                else "SKROUTZ_CLIENT_ID / SKROUTZ_CLIENT_SECRET not set — adapter skips."
+                else "FIRECRAWL_API_KEY not set — adapter skips."
             ),
         ),
         SourceStatus(

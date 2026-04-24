@@ -1,219 +1,155 @@
 """
-Skroutz API adapter.
+Skroutz.gr adapter — Firecrawl scrape of the public search page.
 
-Skroutz is the first-party merchant index for the Greek market. One query
-yields N rows — one per retailer selling the best-matching SKU, with
-direct product URLs, live prices, availability, and shipping details.
+Why not the official API: Skroutz's developer Products API is merchant-only
+(requires a Skroutz merchant account to obtain an API token). Since this
+platform isn't a Skroutz-registered shop, the API path isn't available —
+we read the public website the same way a browser would.
 
-Auth: OAuth2 client-credentials flow. Register the app at
-https://developer.skroutz.gr/oauth/applications and set:
+ToS caveat: Skroutz's Terms of Service prohibit automated scraping. Low-volume
+admin-triggered or per-product-refresh queries are usually tolerated;
+high-volume automated scraping can lead to rate limiting or IP blocking.
+Before scaling this adapter up, either (a) contract with Skroutz for
+commercial data access or (b) confirm legal clearance.
 
-  SKROUTZ_CLIENT_ID
-  SKROUTZ_CLIENT_SECRET
-  SKROUTZ_BASE_URL        (optional, defaults to https://api.skroutz.gr)
-
-Rate limit: 100 req/min per app. The service caller is expected to cap
-concurrency; this adapter does not queue internally.
+Flow: one scrape of `skroutz.gr/search?keyphrase=<query>` → extract the
+top matching product row → return a PriceHit pointing at that product's
+Skroutz page (which aggregates every merchant). Same credit cost as the
+other two Greek adapters (1 Firecrawl credit per call).
 """
 
 from __future__ import annotations
 
 import logging
-import os
-import time
-from decimal import Decimal
-from typing import Any, Dict, List, Optional
+import urllib.parse
+from typing import List, Optional
 
-import httpx
+from pydantic import BaseModel, Field
 
+from app.services.integrations.firecrawl_client import FirecrawlClient
 from app.services.integrations.perplexity_price_search_service import PriceHit
+from app.utils.price_parsing import parse_price
 
 logger = logging.getLogger(__name__)
 
+SEARCH_URL_TEMPLATE = "https://www.skroutz.gr/search?keyphrase={query}"
+MODULE_SLUG = "greek-marketplaces"
+
+EXTRACTION_PROMPT = (
+    "You are reading a Skroutz.gr search results page. Extract the FIRST "
+    "matching product listing. Return `found`=false if no products are shown. "
+    "For `product_url`, return the ABSOLUTE URL of the product detail page "
+    "on skroutz.gr (e.g. https://www.skroutz.gr/s/123/some-product.html). "
+    "If the page shows a direct merchant link on the first row (some product "
+    "cards expose the cheapest merchant inline), use it for "
+    "`cheapest_merchant_name` and `cheapest_merchant_url`; otherwise leave "
+    "those null. Keep prices as strings with currency symbols intact."
+)
+
+
+class SkroutzSearchResult(BaseModel):
+    """Fields Firecrawl extracts from skroutz.gr/search."""
+
+    found: bool = Field(default=False, description="True if at least one product row is shown.")
+    product_name: Optional[str] = Field(default=None, description="Top matching product display name.")
+    product_url: Optional[str] = Field(
+        default=None,
+        description="Absolute URL of the top product's Skroutz detail page.",
+    )
+    best_price: Optional[str] = Field(
+        default=None,
+        description="Lowest price shown on the row, e.g. '79,90 €' or 'από €79,90'.",
+    )
+    merchant_count: Optional[int] = Field(
+        default=None,
+        description="Number of shops selling it (Skroutz displays 'από N καταστήματα' or similar).",
+    )
+    cheapest_merchant_name: Optional[str] = Field(
+        default=None,
+        description="Direct merchant name if the search row exposes one inline.",
+    )
+    cheapest_merchant_url: Optional[str] = Field(
+        default=None,
+        description="Direct merchant URL if the search row exposes one inline.",
+    )
+    currency: Optional[str] = Field(default="EUR")
+
 
 class SkroutzAdapter:
-    """OAuth2 client-credentials adapter for api.skroutz.gr."""
+    """Firecrawl-backed adapter for skroutz.gr."""
 
-    DEFAULT_BASE_URL = "https://api.skroutz.gr"
-    TOKEN_PATH = "/oauth2/token"
-    ACCEPT_HEADER = "application/vnd.skroutz+json; version=3.1"
-    HTTP_TIMEOUT_S = 15.0
-
-    def __init__(self) -> None:
-        self.client_id = os.getenv("SKROUTZ_CLIENT_ID") or ""
-        self.client_secret = os.getenv("SKROUTZ_CLIENT_SECRET") or ""
-        self.base_url = os.getenv("SKROUTZ_BASE_URL", self.DEFAULT_BASE_URL).rstrip("/")
-        self._token: Optional[str] = None
-        self._token_expires_at: float = 0.0
+    def __init__(self, firecrawl_client: Optional[FirecrawlClient] = None) -> None:
+        self.firecrawl = firecrawl_client or FirecrawlClient()
 
     @property
     def is_configured(self) -> bool:
-        return bool(self.client_id and self.client_secret)
+        """Only Firecrawl is required — no separate Skroutz credentials."""
+        return bool(self.firecrawl.api_key)
 
-    async def search(self, query: str, limit: int = 15) -> List[PriceHit]:
-        """Return up to `limit` Skroutz merchant hits for the query."""
-        if not self.is_configured:
-            logger.debug("Skroutz: credentials missing, skipping.")
-            return []
-
-        token = await self._ensure_token()
-        if not token:
-            return []
-
-        async with httpx.AsyncClient(timeout=self.HTTP_TIMEOUT_S) as client:
-            sku = await self._pick_best_sku(client, token, query)
-            if not sku:
-                return []
-            shops = await self._fetch_shops(client, token, sku["id"])
-            if not shops:
-                return []
-
-        product_name = sku.get("display_name") or sku.get("name") or query
-        return self._build_hits(shops, product_name)[:limit]
-
-    # ── internals ──────────────────────────────────────────────────────────
-
-    async def _ensure_token(self) -> Optional[str]:
-        """OAuth2 client-credentials flow. Cache token in memory until expiry."""
-        now = time.monotonic()
-        if self._token and now < self._token_expires_at - 30:
-            return self._token
-
-        try:
-            async with httpx.AsyncClient(timeout=self.HTTP_TIMEOUT_S) as client:
-                response = await client.post(
-                    f"{self.base_url}{self.TOKEN_PATH}",
-                    data={
-                        "grant_type": "client_credentials",
-                        "client_id": self.client_id,
-                        "client_secret": self.client_secret,
-                        "scope": "public",
-                    },
-                )
-                response.raise_for_status()
-                payload = response.json()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Skroutz: token fetch failed (%s)", exc)
-            return None
-
-        token = payload.get("access_token")
-        ttl = float(payload.get("expires_in") or 3600)
-        if not token:
-            logger.warning("Skroutz: token response missing access_token")
-            return None
-
-        self._token = token
-        self._token_expires_at = now + ttl
-        return token
-
-    async def _pick_best_sku(
+    async def search(
         self,
-        client: httpx.AsyncClient,
-        token: str,
         query: str,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Try /skus.json directly (works for SKU-name queries) and fall back to
-        /search.json → /products/:id/skus.json for broader text queries.
-        """
-        headers = {"Authorization": f"Bearer {token}", "Accept": self.ACCEPT_HEADER}
+        *,
+        user_id: str,
+        workspace_id: Optional[str] = None,
+        limit: int = 15,
+    ) -> List[PriceHit]:
+        # `limit` currently unused — the public search page returns its own
+        # ranking and we only keep the top match. Kept in signature for
+        # parity with the other adapters.
+        del limit
 
-        try:
-            response = await client.get(
-                f"{self.base_url}/skus/search",
-                headers=headers,
-                params={"q": query, "per": 5},
-            )
-            if response.status_code == 200:
-                data = response.json().get("skus") or []
-                if data:
-                    return data[0]
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("Skroutz: direct SKU search failed (%s), falling back to /search", exc)
-
-        try:
-            search_response = await client.get(
-                f"{self.base_url}/search",
-                headers=headers,
-                params={"q": query, "per": 1},
-            )
-            search_response.raise_for_status()
-            products = search_response.json().get("products") or []
-            if not products:
-                return None
-            product_id = products[0]["id"]
-
-            skus_response = await client.get(
-                f"{self.base_url}/products/{product_id}/skus",
-                headers=headers,
-                params={"per": 1},
-            )
-            skus_response.raise_for_status()
-            skus = skus_response.json().get("skus") or []
-            return skus[0] if skus else None
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Skroutz: SKU lookup failed (%s)", exc)
-            return None
-
-    async def _fetch_shops(
-        self,
-        client: httpx.AsyncClient,
-        token: str,
-        sku_id: int,
-    ) -> List[Dict[str, Any]]:
-        headers = {"Authorization": f"Bearer {token}", "Accept": self.ACCEPT_HEADER}
-        try:
-            response = await client.get(
-                f"{self.base_url}/skus/{sku_id}/shops",
-                headers=headers,
-                params={"per": 25, "include_meta": "sku_reviews,sku_rating_breakdown"},
-            )
-            response.raise_for_status()
-            return response.json().get("shops") or []
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Skroutz: shops fetch failed for sku %s (%s)", sku_id, exc)
+        if not self.firecrawl.api_key:
+            logger.debug("Skroutz: Firecrawl not configured, skipping.")
             return []
 
-    def _build_hits(self, shops: List[Dict[str, Any]], product_name: str) -> List[PriceHit]:
-        hits: List[PriceHit] = []
-        for shop in shops:
-            link = shop.get("link") or shop.get("url")
-            name = shop.get("name") or shop.get("display_name")
-            if not link or not name:
-                continue
+        url = SEARCH_URL_TEMPLATE.format(query=urllib.parse.quote_plus(query))
+        result = await self.firecrawl.scrape(
+            url=url,
+            extraction_model=SkroutzSearchResult,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            extraction_prompt=EXTRACTION_PROMPT,
+            use_javascript_render=True,  # skroutz.gr is JS-heavy
+            only_main_content=True,
+            module_slug=MODULE_SLUG,
+        )
 
-            price = self._decimal_to_float(shop.get("final_price") or shop.get("price"))
-            original = self._decimal_to_float(shop.get("price_before_discount"))
+        if not result.success or not result.data or not result.data.found:
+            return []
 
-            availability_raw = (shop.get("availability") or "").lower()
-            availability: Optional[str] = None
-            if "out of stock" in availability_raw or "sold out" in availability_raw:
-                availability = "out_of_stock"
-            elif availability_raw:
-                availability = "in_stock"
+        data = result.data
+        # Prefer a direct merchant URL when Skroutz exposes one on the search
+        # row; fall back to the Skroutz product page (which itself lists every
+        # merchant — the user is one click from a direct merchant URL).
+        retailer_name = data.cheapest_merchant_name or "Skroutz"
+        product_url = data.cheapest_merchant_url or data.product_url
+        if not product_url:
+            return []
 
-            hits.append(
-                PriceHit(
-                    retailer_name=name,
-                    product_url=link,
-                    price=price,
-                    original_price=original,
-                    currency="EUR",
-                    availability=availability,
-                    source="skroutz",
-                    verified=True,  # first-party feed, not a snippet guess
-                )
+        price, currency = parse_price(data.best_price, hint_currency=data.currency or "EUR")
+
+        notes_parts = ["via Skroutz"]
+        if data.merchant_count:
+            notes_parts.append(
+                f"{data.merchant_count} shop{'s' if data.merchant_count != 1 else ''}"
             )
-        return hits
+        if not data.cheapest_merchant_url:
+            notes_parts.append("aggregator URL (click through for merchants)")
+        notes = " · ".join(notes_parts)
 
-    @staticmethod
-    def _decimal_to_float(value: Any) -> Optional[float]:
-        if value is None:
-            return None
-        try:
-            return float(Decimal(str(value)))
-        except (ValueError, ArithmeticError):
-            return None
+        return [
+            PriceHit(
+                retailer_name=retailer_name,
+                product_url=product_url,
+                price=float(price) if price is not None else None,
+                currency=currency or "EUR",
+                availability="in_stock",
+                source="skroutz",
+                verified=False,  # scrape, not first-party feed
+                notes=notes,
+            )
+        ]
 
 
 _singleton: Optional[SkroutzAdapter] = None
