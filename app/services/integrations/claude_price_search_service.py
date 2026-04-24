@@ -74,58 +74,22 @@ _LOCAL_TLD: Dict[str, str] = {
     "TR": ".com.tr",
 }
 
-_LOCAL_MARKET_HINTS: Dict[str, str] = {
-    "GR": (
-        "For Greece: check Skroutz.gr and BestPrice.gr (they show retailer rows with prices "
-        "on the same page — each retailer is its own result). Also probe tile-specialist sites: "
-        "Youbath.gr, FSHome.gr, Siarampis.gr (plakakia-siarampis.gr), DirectMarket.gr, "
-        "e-koutras.gr, Artiles.gr, IlBagno.gr, BathAndSpa.gr, Alexopoulos Home, Dakalatzis.gr."
-    ),
-    "BG": (
-        "For Bulgaria: check pazaruvaj.com and sravni.bg comparison portals. Retailer sites: "
-        "Bauhaus.bg, Siko.bg, Praktiker.bg, Hornbach.bg, emag.bg."
-    ),
-    "RO": (
-        "For Romania: check Compari.ro and Price.ro. Retailer sites: Dedeman.ro, Leroy Merlin.ro, "
-        "Hornbach.ro, Bricodepot.ro, emag.ro, Romstal.ro."
-    ),
-    "IT": (
-        "For Italy: check Trovaprezzi.it and Kelkoo.it. Retailer sites: Leroy Merlin.it, "
-        "OBI.it, Bricoman.it, Mondotiles.com, Edilportale sellers."
-    ),
-    "ES": (
-        "For Spain: check Idealo.es. Retailer sites: Leroy Merlin.es, Bauhaus.es, Bricodepot.es, "
-        "Tuco.es, Azulev.com, Cevisama sellers."
-    ),
-    "DE": (
-        "For Germany: check Idealo.de, Geizhals.de, Kelkoo.de. Retailer sites: Hornbach.de, "
-        "Bauhaus.de, OBI.de, Toom.de, Fliesen24.com, Fliesenmax.de."
-    ),
-    "FR": (
-        "For France: check Kelkoo.fr, LeGuide.com. Retailer sites: Leroy Merlin.fr, "
-        "Castorama.fr, Bricomarché.com, Bricorama.fr, Carrelage-chic.com."
-    ),
-    "GB": (
-        "For the UK: retailer sites: ToppsTiles.co.uk, TileGiant.co.uk, TileMountain.co.uk, "
-        "PorcelainSuperstore.co.uk, WallsAndFloors.co.uk, MandarinStone.com, tile.co.uk."
-    ),
-    "PL": (
-        "For Poland: check Ceneo.pl, Allegro.pl. Retailer sites: Leroy Merlin.pl, Castorama.pl, "
-        "OBI.pl, Bauhaus.pl, Łazienka-Plus.pl, apelazienki.pl."
-    ),
-    "CZ": (
-        "For Czech Republic: check Heureka.cz, Zbozi.cz. Retailer sites: Hornbach.cz, Bauhaus.cz, "
-        "OBI.cz, Keramika-Soukup.cz."
-    ),
-    "CY": (
-        "For Cyprus: retailer sites: CyprusTiles.com, Tiles.com.cy. Many Cypriot tile shops also "
-        "use Greek-language pages — try Greek hints too."
-    ),
-    "TR": (
-        "For Turkey: check Akakce.com, Cimri.com. Retailer sites: Koctas.com.tr, Bauhaus.com.tr, "
-        "Hepsiburada.com, Trendyol.com."
-    ),
-}
+# Generic source-type hints — same guidance for every country, no retailer names.
+# Claude picks the actual retailers by itself from the local TLD + the category
+# noun. This works across any material (tiles, fabric, paint, wood, stone, …)
+# because the source types are universal, not product-specific.
+_GENERIC_SOURCE_TYPES = (
+    "Source types to probe (in priority order — stop once you have enough results):\n"
+    "  a) Local price-comparison portals that list 'Retailer X: €N' directly on-page "
+    "     (the major one per country, e.g. the Greek/Bulgarian/Romanian/German equivalent "
+    "     of Google Shopping). Treat each retailer row as a separate result, not the portal.\n"
+    "  b) Local-TLD organic retailer results for the product + 'price' in local language.\n"
+    "  c) Local home-improvement / builders-merchant chains in that country.\n"
+    "  d) Local category-specialist retailers (e.g. a tile-specialist shop for tiles, a "
+    "     fabric house for textiles, a flooring specialist for wood — let the material "
+    "     type in the query guide you).\n"
+    "  e) Local marketplace listings (country-specific Amazon / eBay / equivalent).\n"
+)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -355,22 +319,29 @@ class ClaudePriceSearchService:
 
         country_hint = ""
         if country_code:
-            hint_lines = [_LOCAL_MARKET_HINTS.get(country_code.upper(), "")]
-            local_hint_text = "\n".join([l for l in hint_lines if l])
+            local_tld = _LOCAL_TLD.get(country_code.upper(), "." + country_code.lower())
             country_hint = (
-                f"LOCATION MATTERS — for building materials, sales happen locally. "
-                f"Your primary target is retailers in {country_code}.\n\n"
+                f"LOCATION MATTERS — for the materials this platform deals with (tiles, stone, "
+                f"wood, fabric, paint, flooring, hardware, etc.), sales happen locally. Your "
+                f"primary target is retailers in {country_code}.\n\n"
                 "CRITICAL SEARCH TACTICS for local coverage:\n"
                 f"- Run at least ONE search in the LOCAL LANGUAGE of {country_code}. "
-                "  Translate the product category noun (e.g. 'tile' → 'πλακάκι' in GR, 'Fliese' in DE, "
-                "  'azulejo' in ES, 'plytelės' in LT) and add the local word for 'price' "
-                "  (τιμή / Preis / precio / cena). Keep the brand + SKU in the original spelling. "
+                "  Translate the product category noun into the local language "
+                "  (e.g. 'tile' → 'πλακάκι' in GR, 'Fliese' in DE, 'azulejo' in ES, "
+                "  'plytelės' in LT; 'fabric' → 'τσόχα' / 'Stoff' / 'tela' / etc.). "
+                "  Add the local word for 'price' (τιμή / Preis / precio / cena). "
+                "  Keep the brand + SKU in the original spelling. "
                 "  This surfaces native-language retailer pages that English-only queries miss.\n"
-                f"- Use the site: operator for the local TLD at least once, e.g. "
-                f"  `{product_spec} site:{_LOCAL_TLD.get(country_code.upper(), '.' + country_code.lower())}`.\n"
-                f"- {local_hint_text}\n"
-                f"Only fall back to international (ships_from_abroad=true) after you have exhausted "
-                f"local options — and prefer neighboring / same-language-region countries first.\n\n"
+                f"- Use the `site:` operator for the local TLD at least once, "
+                f"  e.g. `{product_spec} site:{local_tld}`.\n"
+                f"- Identify the dominant local price-comparison portal for {country_code} "
+                "  yourself (it's usually the biggest one returned by the first organic search). "
+                "  Its pages often list 'Retailer X: €N' inline — each retailer row is its own "
+                "  result.\n\n"
+                f"{_GENERIC_SOURCE_TYPES}\n"
+                f"Only fall back to international (ships_from_abroad=true) after you have "
+                f"exhausted local options — and prefer neighboring / same-language-region "
+                "countries first.\n\n"
             )
 
         return (
