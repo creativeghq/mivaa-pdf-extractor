@@ -58,6 +58,76 @@ OPUS_OUTPUT_PER_1K = 0.075
 WEB_SEARCH_PER_CALL = 0.010  # $10 / 1000 web searches
 
 
+# ── Country-specific hints for Claude's web_search ──
+# Anthropic's web_search runs from US infra and doesn't auto-localize, so we
+# hand-feed Claude the local retailers and price-comparison portals per country.
+# Keep this narrow: just enough to get Claude started. Claude will find more on
+# its own once it's on the right TLD.
+_LOCAL_TLD: Dict[str, str] = {
+    "GR": ".gr", "BG": ".bg", "RO": ".ro", "CY": ".cy",
+    "IT": ".it", "ES": ".es", "PT": ".pt", "FR": ".fr",
+    "DE": ".de", "AT": ".at", "CH": ".ch", "NL": ".nl", "BE": ".be",
+    "GB": ".co.uk", "IE": ".ie",
+    "PL": ".pl", "CZ": ".cz", "SK": ".sk", "HU": ".hu",
+    "LT": ".lt", "LV": ".lv", "EE": ".ee",
+    "SE": ".se", "DK": ".dk", "NO": ".no", "FI": ".fi",
+    "TR": ".com.tr",
+}
+
+_LOCAL_MARKET_HINTS: Dict[str, str] = {
+    "GR": (
+        "For Greece: check Skroutz.gr and BestPrice.gr (they show retailer rows with prices "
+        "on the same page — each retailer is its own result). Also probe tile-specialist sites: "
+        "Youbath.gr, FSHome.gr, Siarampis.gr (plakakia-siarampis.gr), DirectMarket.gr, "
+        "e-koutras.gr, Artiles.gr, IlBagno.gr, BathAndSpa.gr, Alexopoulos Home, Dakalatzis.gr."
+    ),
+    "BG": (
+        "For Bulgaria: check pazaruvaj.com and sravni.bg comparison portals. Retailer sites: "
+        "Bauhaus.bg, Siko.bg, Praktiker.bg, Hornbach.bg, emag.bg."
+    ),
+    "RO": (
+        "For Romania: check Compari.ro and Price.ro. Retailer sites: Dedeman.ro, Leroy Merlin.ro, "
+        "Hornbach.ro, Bricodepot.ro, emag.ro, Romstal.ro."
+    ),
+    "IT": (
+        "For Italy: check Trovaprezzi.it and Kelkoo.it. Retailer sites: Leroy Merlin.it, "
+        "OBI.it, Bricoman.it, Mondotiles.com, Edilportale sellers."
+    ),
+    "ES": (
+        "For Spain: check Idealo.es. Retailer sites: Leroy Merlin.es, Bauhaus.es, Bricodepot.es, "
+        "Tuco.es, Azulev.com, Cevisama sellers."
+    ),
+    "DE": (
+        "For Germany: check Idealo.de, Geizhals.de, Kelkoo.de. Retailer sites: Hornbach.de, "
+        "Bauhaus.de, OBI.de, Toom.de, Fliesen24.com, Fliesenmax.de."
+    ),
+    "FR": (
+        "For France: check Kelkoo.fr, LeGuide.com. Retailer sites: Leroy Merlin.fr, "
+        "Castorama.fr, Bricomarché.com, Bricorama.fr, Carrelage-chic.com."
+    ),
+    "GB": (
+        "For the UK: retailer sites: ToppsTiles.co.uk, TileGiant.co.uk, TileMountain.co.uk, "
+        "PorcelainSuperstore.co.uk, WallsAndFloors.co.uk, MandarinStone.com, tile.co.uk."
+    ),
+    "PL": (
+        "For Poland: check Ceneo.pl, Allegro.pl. Retailer sites: Leroy Merlin.pl, Castorama.pl, "
+        "OBI.pl, Bauhaus.pl, Łazienka-Plus.pl, apelazienki.pl."
+    ),
+    "CZ": (
+        "For Czech Republic: check Heureka.cz, Zbozi.cz. Retailer sites: Hornbach.cz, Bauhaus.cz, "
+        "OBI.cz, Keramika-Soukup.cz."
+    ),
+    "CY": (
+        "For Cyprus: retailer sites: CyprusTiles.com, Tiles.com.cy. Many Cypriot tile shops also "
+        "use Greek-language pages — try Greek hints too."
+    ),
+    "TR": (
+        "For Turkey: check Akakce.com, Cimri.com. Retailer sites: Koctas.com.tr, Bauhaus.com.tr, "
+        "Hepsiburada.com, Trendyol.com."
+    ),
+}
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Models
 # ────────────────────────────────────────────────────────────────────────────
@@ -285,11 +355,20 @@ class ClaudePriceSearchService:
 
         country_hint = ""
         if country_code:
+            hint_lines = [_LOCAL_MARKET_HINTS.get(country_code.upper(), "")]
+            local_hint_text = "\n".join([l for l in hint_lines if l])
             country_hint = (
                 f"LOCATION MATTERS — for building materials, sales happen locally. "
-                f"Your primary target is retailers in {country_code}. "
-                f"Search the local web in {country_code}'s language, check {country_code}-specific "
-                f"retailer sites and price-comparison tools, read local Google Shopping results. "
+                f"Your primary target is retailers in {country_code}.\n\n"
+                "CRITICAL SEARCH TACTICS for local coverage:\n"
+                f"- Run at least ONE search in the LOCAL LANGUAGE of {country_code}. "
+                "  Translate the product category noun (e.g. 'tile' → 'πλακάκι' in GR, 'Fliese' in DE, "
+                "  'azulejo' in ES, 'plytelės' in LT) and add the local word for 'price' "
+                "  (τιμή / Preis / precio / cena). Keep the brand + SKU in the original spelling. "
+                "  This surfaces native-language retailer pages that English-only queries miss.\n"
+                f"- Use the site: operator for the local TLD at least once, e.g. "
+                f"  `{product_spec} site:{_LOCAL_TLD.get(country_code.upper(), '.' + country_code.lower())}`.\n"
+                f"- {local_hint_text}\n"
                 f"Only fall back to international (ships_from_abroad=true) after you have exhausted "
                 f"local options — and prefer neighboring / same-language-region countries first.\n\n"
             )
