@@ -809,6 +809,246 @@ async def discover_sources(
     )
 
 
+class MarketCheckRequest(BaseModel):
+    """
+    Stateless one-shot market scan for pricing decisions.
+
+    Either pass `product_id` (we'll read name + dimensions from the catalog)
+    or pass free-text `product_name` + optional `dimensions` directly.
+    """
+    product_id: Optional[str] = Field(default=None, description="Catalog product UUID (preferred — gives the richest context).")
+    product_name: Optional[str] = Field(default=None, description="Free-text product name — used when no catalog product_id is available.")
+    dimensions: Optional[str] = Field(default=None, description="Optional size spec (e.g. '60x60 cm'), appended to the query.")
+    manufacturer: Optional[str] = Field(default=None, description="Optional manufacturer to disambiguate generic names.")
+    verify_prices: bool = Field(default=True, description="Run the Firecrawl verification pass. Defaults to true for pricing accuracy.")
+
+
+class MarketStats(BaseModel):
+    count: int
+    verified_count: int
+    min: Optional[float] = None
+    max: Optional[float] = None
+    median: Optional[float] = None
+    currency: Optional[str] = None
+
+
+class MarketCheckResponse(BaseModel):
+    success: bool
+    product_id: Optional[str] = None
+    query: str
+    country_code: str
+    results: List[PriceHit] = []
+    total_results: int = 0
+    stats: MarketStats
+    summary: Optional[str] = None
+    credits_used: int = 0
+    latency_ms: int = 0
+    from_monitoring_cache: bool = Field(
+        default=False,
+        description="True when this product already has active monitoring and we returned the cached competitor_sources rows instead of spending credits.",
+    )
+    cache_age_seconds: Optional[int] = None
+    error: Optional[str] = None
+
+
+def _compute_market_stats(hits: List[PriceHit]) -> MarketStats:
+    """Build min/max/median + verified count from a list of PriceHit."""
+    priced = [h for h in hits if h.price is not None]
+    if not priced:
+        return MarketStats(count=len(hits), verified_count=0)
+    values = sorted(float(h.price) for h in priced)
+    n = len(values)
+    median = values[n // 2] if n % 2 else (values[n // 2 - 1] + values[n // 2]) / 2
+    # Pick the dominant currency so callers don't mix EUR+GBP in a single label.
+    currencies = [h.currency for h in priced if h.currency]
+    currency = max(set(currencies), key=currencies.count) if currencies else None
+    verified = sum(1 for h in priced if h.verified)
+    return MarketStats(
+        count=len(priced),
+        verified_count=verified,
+        min=values[0],
+        max=values[-1],
+        median=median,
+        currency=currency,
+    )
+
+
+@router.post(
+    "/market-check",
+    response_model=MarketCheckResponse,
+    summary="One-shot market scan for pricing decisions (stateless)",
+    description=(
+        "Admin-only. Runs Perplexity + DataForSEO + Firecrawl verification against "
+        "the retailer market and returns min/max/median so the admin can compare "
+        "against a KB-based AI price proposal. **Stateless** — does NOT enroll the "
+        "product into continuous monitoring, does NOT write to competitor_sources "
+        "or price_history. "
+        "However: if the product is already enrolled in monitoring AND its last "
+        "refresh is ≤6h old, we return the cached competitor_sources snapshot "
+        "(marked `from_monitoring_cache: true`) to save credits. "
+        "Refreshing monitoring for continuous tracking is a separate action — see "
+        "`POST /start` and `POST /discover`."
+    ),
+)
+async def market_check(
+    body: MarketCheckRequest,
+    user: User = Depends(get_current_user),
+    workspace: WorkspaceContext = Depends(get_workspace_context),
+) -> MarketCheckResponse:
+    sb = get_supabase_client().client
+
+    if not _is_admin(sb, user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="market-check requires admin or super_admin role.",
+        )
+
+    # ── Resolve query + product context ──
+    product_id = body.product_id
+    product_name: Optional[str] = body.product_name
+    dimensions: Optional[str] = body.dimensions
+    manufacturer: Optional[str] = body.manufacturer
+
+    if product_id and not product_name:
+        prod = (
+            sb.table("products")
+            .select("id, name, metadata")
+            .eq("id", product_id)
+            .maybe_single()
+            .execute()
+        )
+        prod_row = (prod.data if prod else None) or {}
+        product_name = prod_row.get("name") or product_name
+        metadata = prod_row.get("metadata") or {}
+        dimensions = dimensions or metadata.get("dimensions") or metadata.get("size") or metadata.get("product_size")
+        manufacturer = manufacturer or metadata.get("manufacturer") or metadata.get("brand")
+
+    if not product_name or not product_name.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either product_id (with a row that has a name) or product_name is required.",
+        )
+
+    # ── Country from user profile ──
+    profile = (
+        sb.table("user_profiles")
+        .select("location_country_code, location")
+        .eq("user_id", user.id)
+        .maybe_single()
+        .execute()
+    )
+    prof_row = (profile.data if profile else None) or {}
+    country_code = _resolve_user_country_code(prof_row)
+
+    query_text = product_name.strip()
+    if manufacturer and manufacturer.lower() not in query_text.lower():
+        query_text = f"{manufacturer} {query_text}".strip()
+    if dimensions:
+        query_text = f"{query_text} {dimensions}".strip()
+
+    # ── Monitoring cache shortcut ──
+    # If this product is already enrolled in monitoring AND the last refresh is
+    # fresh (≤6h), return the cached competitor_sources rows rather than
+    # spending credits again. Respects the same 6h throttle as /discover.
+    if product_id:
+        mon = (
+            sb.table("price_monitoring_products")
+            .select("id, last_claude_search_at")
+            .eq("product_id", product_id)
+            .eq("user_id", user.id)
+            .maybe_single()
+            .execute()
+        )
+        mon_row = (mon.data if mon else None) or None
+        if mon_row and mon_row.get("last_claude_search_at"):
+            last_at = datetime.fromisoformat(mon_row["last_claude_search_at"].replace("Z", "+00:00"))
+            age_s = int((datetime.now(last_at.tzinfo) - last_at).total_seconds())
+            if age_s <= 6 * 3600:
+                existing = (
+                    sb.table("competitor_sources")
+                    .select("source_name, source_url, source_type, current_price, current_original_price, current_price_verified, current_currency, current_availability, current_metadata")
+                    .eq("product_id", product_id)
+                    .in_("source_type", ["perplexity_web_search", "dataforseo_shopping"])
+                    .eq("is_active", True)
+                    .order("current_price", desc=False)
+                    .limit(20)
+                    .execute()
+                )
+                rows = existing.data or []
+                cached_hits: List[PriceHit] = []
+                for r in rows:
+                    if r.get("current_price") is None:
+                        continue
+                    meta = r.get("current_metadata") or {}
+                    cached_hits.append(PriceHit(
+                        retailer_name=r.get("source_name") or "Unknown",
+                        product_url=r.get("source_url") or "",
+                        price=float(r["current_price"]),
+                        original_price=float(r["current_original_price"]) if r.get("current_original_price") is not None else None,
+                        verified=bool(r.get("current_price_verified") or False),
+                        source="dataforseo" if r.get("source_type") == "dataforseo_shopping" else "perplexity",
+                        currency=r.get("current_currency") or "EUR",
+                        availability=r.get("current_availability") or "unknown",
+                        image_url=meta.get("image_url"),
+                        rating_value=meta.get("rating_value"),
+                        rating_votes=meta.get("rating_votes"),
+                        notes=meta.get("notes"),
+                    ))
+                if cached_hits:
+                    return MarketCheckResponse(
+                        success=True,
+                        product_id=product_id,
+                        query=query_text,
+                        country_code=country_code,
+                        results=cached_hits,
+                        total_results=len(cached_hits),
+                        stats=_compute_market_stats(cached_hits),
+                        summary=None,
+                        credits_used=0,
+                        latency_ms=0,
+                        from_monitoring_cache=True,
+                        cache_age_seconds=age_s,
+                    )
+
+    # ── Fresh scan ──
+    service = get_perplexity_price_search_service()
+    result = await service.search_prices(
+        product_name=query_text,
+        dimensions=None,  # already folded into query_text
+        country_code=country_code,
+        limit=10,
+        user_id=user.id,
+        workspace_id=workspace.workspace_id if workspace else None,
+        verify_prices=body.verify_prices,
+    )
+
+    if not result.success:
+        return MarketCheckResponse(
+            success=False,
+            product_id=product_id,
+            query=query_text,
+            country_code=country_code,
+            stats=MarketStats(count=0, verified_count=0),
+            credits_used=result.credits_used,
+            latency_ms=result.latency_ms,
+            error=result.error or "market scan failed",
+        )
+
+    return MarketCheckResponse(
+        success=True,
+        product_id=product_id,
+        query=query_text,
+        country_code=country_code,
+        results=result.hits,
+        total_results=len(result.hits),
+        stats=_compute_market_stats(result.hits),
+        summary=result.summary,
+        credits_used=result.credits_used,
+        latency_ms=result.latency_ms,
+        from_monitoring_cache=False,
+    )
+
+
 # Country-name → ISO-3166-1 alpha-2 fallback table for when the user has typed
 # "Greece" / "Germany" / etc. into their profile's free-text location field but
 # the dedicated location_country_code column was never populated. Narrow on
