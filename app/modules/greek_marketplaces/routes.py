@@ -1,0 +1,207 @@
+"""
+Greek Marketplaces module — admin-only HTTP routes.
+
+Mounted at `/api/v1/modules/greek-marketplaces/*` by the module registry
+(see `app/modules/__init__.py::mount_module_routers`).
+
+Endpoints:
+  GET  /status   — source credentials + 7-day usage stats
+  POST /search   — admin test query against all three adapters
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
+
+from app.dependencies import require_admin
+from app.modules import is_module_enabled
+from app.modules.greek_marketplaces.adapters.skroutz import get_skroutz_adapter
+from app.modules.greek_marketplaces.service import (
+    MODULE_SLUG,
+    get_greek_marketplaces_service,
+)
+from app.schemas.auth import WorkspaceContext
+from app.services.core.supabase_client import get_supabase_client
+from app.services.integrations.firecrawl_client import get_firecrawl_client
+from app.services.integrations.perplexity_price_search_service import PriceHit
+
+logger = logging.getLogger(__name__)
+
+
+# ── Models ─────────────────────────────────────────────────────────────────────
+
+
+class SourceStatus(BaseModel):
+    key: str
+    name: str
+    configured: bool
+    details: str
+
+
+class ModuleStats(BaseModel):
+    queries_7d: int = 0
+    credits_7d: float = 0.0
+    per_source_7d: Dict[str, int] = Field(default_factory=dict)
+
+
+class ModuleStatus(BaseModel):
+    slug: str = MODULE_SLUG
+    enabled: bool
+    sources: List[SourceStatus]
+    stats: ModuleStats
+
+
+class SearchRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    country_code: str = Field("GR", min_length=2, max_length=2)
+    limit: int = Field(15, ge=1, le=25)
+
+
+class SearchResponse(BaseModel):
+    hits: List[PriceHit]
+    counts: Dict[str, int]
+    elapsed_ms: int
+
+
+# ── Router ─────────────────────────────────────────────────────────────────────
+
+
+router = APIRouter(
+    prefix="/api/v1/modules/greek-marketplaces",
+    tags=["modules:greek-marketplaces"],
+)
+
+
+@router.get("/status", response_model=ModuleStatus)
+async def module_status(
+    _workspace: WorkspaceContext = Depends(require_admin),
+) -> ModuleStatus:
+    """Return source-credential state + 7-day usage stats for this module."""
+    skroutz = get_skroutz_adapter()
+    firecrawl = get_firecrawl_client()
+
+    sources = [
+        SourceStatus(
+            key="skroutz",
+            name="Skroutz",
+            configured=skroutz.is_configured,
+            details=(
+                "OAuth2 client credentials configured."
+                if skroutz.is_configured
+                else "SKROUTZ_CLIENT_ID / SKROUTZ_CLIENT_SECRET not set — adapter skips."
+            ),
+        ),
+        SourceStatus(
+            key="bestdeals",
+            name="Bestdeals.gr",
+            configured=bool(firecrawl.api_key),
+            details=(
+                "Reuses shared FIRECRAWL_API_KEY."
+                if firecrawl.api_key
+                else "FIRECRAWL_API_KEY not set — adapter skips."
+            ),
+        ),
+        SourceStatus(
+            key="shopflix",
+            name="Shopflix.gr",
+            configured=bool(firecrawl.api_key),
+            details=(
+                "Reuses shared FIRECRAWL_API_KEY."
+                if firecrawl.api_key
+                else "FIRECRAWL_API_KEY not set — adapter skips."
+            ),
+        ),
+    ]
+
+    stats = await _fetch_module_stats(MODULE_SLUG)
+
+    return ModuleStatus(
+        enabled=is_module_enabled(MODULE_SLUG),
+        sources=sources,
+        stats=stats,
+    )
+
+
+@router.post("/search", response_model=SearchResponse)
+async def test_search(
+    request: SearchRequest,
+    workspace: WorkspaceContext = Depends(require_admin),
+) -> SearchResponse:
+    """
+    Run the Greek Marketplaces service directly against all three adapters.
+    Intended as an admin diagnostic tool — does not write to competitor_sources
+    or price_history. Credit debits still fire (Skroutz is free; Firecrawl calls
+    consume credits per the normal pricing).
+    """
+    if not is_module_enabled(MODULE_SLUG):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Module '{MODULE_SLUG}' is disabled. Enable it at /admin/modules first.",
+        )
+
+    if request.country_code.upper() != "GR":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Greek Marketplaces only supports country_code='GR'.",
+        )
+
+    start = time.monotonic()
+    service = get_greek_marketplaces_service()
+    hits = await service.search(
+        query=request.query,
+        country_code=request.country_code,
+        user_id=workspace.user_id,
+        workspace_id=workspace.workspace_id,
+        limit=request.limit,
+    )
+
+    counts: Dict[str, int] = {}
+    for hit in hits:
+        counts[hit.source] = counts.get(hit.source, 0) + 1
+
+    return SearchResponse(
+        hits=hits,
+        counts=counts,
+        elapsed_ms=int((time.monotonic() - start) * 1000),
+    )
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+
+async def _fetch_module_stats(slug: str) -> ModuleStats:
+    """Read ai_usage_logs to build 7-day usage stats for this module."""
+    try:
+        supabase = get_supabase_client().client
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        response = (
+            supabase.table("ai_usage_logs")
+            .select("credits_debited, metadata", count="exact")
+            .eq("module_slug", slug)
+            .gte("created_at", cutoff)
+            .execute()
+        )
+        rows = response.data or []
+        total_credits = 0.0
+        per_source: Dict[str, int] = {}
+        for row in rows:
+            total_credits += float(row.get("credits_debited") or 0)
+            metadata = row.get("metadata") or {}
+            source = metadata.get("source") if isinstance(metadata, dict) else None
+            if source:
+                per_source[source] = per_source.get(source, 0) + 1
+
+        return ModuleStats(
+            queries_7d=response.count or 0,
+            credits_7d=round(total_credits, 2),
+            per_source_7d=per_source,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("greek-marketplaces stats fetch failed: %s", exc)
+        return ModuleStats()

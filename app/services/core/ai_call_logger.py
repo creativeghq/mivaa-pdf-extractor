@@ -550,7 +550,8 @@ class AICallLogger:
         success: bool = True,
         request_data: Optional[Dict[str, Any]] = None,
         response_data: Optional[Dict[str, Any]] = None,
-        error_message: Optional[str] = None
+        error_message: Optional[str] = None,
+        module_slug: Optional[str] = None
     ) -> bool:
         """
         Log a Firecrawl API call and debit credits.
@@ -597,7 +598,8 @@ class AICallLogger:
                         'credits_used': credits_used,
                         'operation_details': operation_details,
                         'api_provider': 'firecrawl'
-                    }
+                    },
+                    module_slug=module_slug
                 )
 
             # Log to ai_usage_logs. Schema has no api_provider / operation_details /
@@ -613,6 +615,7 @@ class AICallLogger:
                 'output_cost_usd': 0,
                 'total_cost_usd': float(cost_usd),
                 'credits_debited': platform_credits,
+                'module_slug': module_slug,
                 'metadata': {
                     'api_provider': 'firecrawl',
                     'credits_used': credits_used,

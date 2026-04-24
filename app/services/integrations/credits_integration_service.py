@@ -69,7 +69,8 @@ class CreditsIntegrationService:
         input_tokens: int,
         output_tokens: int,
         job_id: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        module_slug: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Debit credits for an AI operation and log usage with 50% markup.
@@ -83,6 +84,8 @@ class CreditsIntegrationService:
             output_tokens: Number of output tokens
             job_id: Background job ID for cost aggregation (optional)
             metadata: Additional metadata to store
+            module_slug: Registry slug of the module that produced this event (optional).
+                         Tags the usage log so we can aggregate cost per module.
 
         Returns:
             Dict with success status, new balance, and transaction details
@@ -130,6 +133,7 @@ class CreditsIntegrationService:
                 'total_cost_usd': costs['total_cost_usd'],
                 'credits_debited': costs['credits_debited'],
                 'job_id': job_id,
+                'module_slug': module_slug,
                 'metadata': metadata or {},
                 'created_at': datetime.utcnow().isoformat()
             }
@@ -182,7 +186,8 @@ class CreditsIntegrationService:
         credits_used: int,
         url: Optional[str] = None,
         pages_scraped: int = 1,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        module_slug: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Debit credits for a Firecrawl operation and log usage.
@@ -250,6 +255,7 @@ class CreditsIntegrationService:
                     'url': url,
                     'pages_scraped': pages_scraped
                 },
+                'module_slug': module_slug,
                 'metadata': metadata or {},
                 'created_at': datetime.utcnow().isoformat()
             }
@@ -285,7 +291,8 @@ class CreditsIntegrationService:
         model_name: str,
         inference_seconds: float,
         job_id: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        module_slug: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Debit credits for time-based AI operations (HuggingFace Inference Endpoints).
@@ -317,7 +324,8 @@ class CreditsIntegrationService:
                     input_tokens=0,
                     output_tokens=0,
                     job_id=job_id,
-                    metadata=metadata
+                    metadata=metadata,
+                    module_slug=module_slug
                 )
 
             # Calculate time-based costs with markup
@@ -368,6 +376,7 @@ class CreditsIntegrationService:
                 'total_cost_usd': round(float(costs['billed_cost_usd']), 6),
                 'credits_debited': credits_to_debit,
                 'job_id': job_id,
+                'module_slug': module_slug,
                 'metadata': {
                     **(metadata or {}),
                     'billing_type': 'time_based',
@@ -425,7 +434,8 @@ class CreditsIntegrationService:
         operation_type: str,
         service_name: str,
         units: int = 1,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        module_slug: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Debit credits for external (non-AI) service operations.
@@ -500,6 +510,7 @@ class CreditsIntegrationService:
                 'billed_cost_usd': round(float(costs['billed_cost_usd']), 8),
                 'total_cost_usd': round(float(costs['billed_cost_usd']), 6),
                 'credits_debited': credits_to_debit,
+                'module_slug': module_slug,
                 'metadata': {
                     **(metadata or {}),
                     'billing_type': 'per_unit',
@@ -544,7 +555,8 @@ class CreditsIntegrationService:
         model_name: str,
         num_generations: int = 1,
         job_id: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        module_slug: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Debit credits for Replicate image generation operations.
@@ -621,6 +633,7 @@ class CreditsIntegrationService:
                 'total_cost_usd': round(float(billed_cost), 6),
                 'credits_debited': credits_to_debit,
                 'job_id': job_id,
+                'module_slug': module_slug,
                 'metadata': {
                     **(metadata or {}),
                     'billing_type': 'per_generation',

@@ -88,6 +88,7 @@ class FirecrawlClient:
         extraction_prompt: Optional[str] = None,
         use_javascript_render: bool = False,
         only_main_content: bool = True,
+        module_slug: Optional[str] = None,
     ) -> FirecrawlResult[T]:
         """
         Scrape a URL and extract fields defined by `extraction_model`.
@@ -134,6 +135,7 @@ class FirecrawlClient:
                 latency_ms=latency_ms,
                 success=False,
                 error=str(e),
+                module_slug=module_slug,
             )
             return FirecrawlResult(success=False, error=str(e), latency_ms=latency_ms)
 
@@ -159,6 +161,7 @@ class FirecrawlClient:
             success=True,
             request_preview={"model": extraction_model.__name__, "js_render": use_javascript_render},
             response_preview=raw_extract,
+            module_slug=module_slug,
         )
 
         return FirecrawlResult(
@@ -266,6 +269,7 @@ class FirecrawlClient:
         error: Optional[str] = None,
         request_preview: Optional[Dict[str, Any]] = None,
         response_preview: Optional[Dict[str, Any]] = None,
+        module_slug: Optional[str] = None,
     ) -> None:
         try:
             await self.ai_logger.log_firecrawl_call(
@@ -280,6 +284,7 @@ class FirecrawlClient:
                 request_data=request_preview,
                 response_data=response_preview,
                 error_message=error,
+                module_slug=module_slug,
             )
         except Exception as e:
             logger.warning(f"Failed to log Firecrawl call: {e}")
