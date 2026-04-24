@@ -974,7 +974,7 @@ Get your token from the frontend application or Supabase authentication.
                 "description": "Development server"
             },
             {
-                "url": "https://mivaa.materialshub.gr",
+                "url": "https://v1api.materialshub.gr",
                 "description": "Production server"
             }
         ],
