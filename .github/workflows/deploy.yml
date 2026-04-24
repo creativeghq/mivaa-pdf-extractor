@@ -29,6 +29,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
           FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
           HUGGING_FACE_ACCESS_TOKEN: ${{ secrets.HUGGING_FACE_ACCESS_TOKEN }}
           JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
@@ -758,6 +759,7 @@ jobs:
           Environment=REPLICATE_API_TOKEN=${{ secrets.REPLICATE_API_TOKEN }}
           Environment=JINA_API_KEY=${{ secrets.JINA_API_KEY }}
           Environment=FIRECRAWL_API_KEY=${{ secrets.FIRECRAWL_API_KEY }}
+          Environment=PERPLEXITY_API_KEY=${{ secrets.PERPLEXITY_API_KEY }}
           Environment=GOOGLE_SHOPPING_API_KEY=${{ secrets.GOOGLE_SHOPPING_API_KEY }}
           Environment=GOOGLE_SHOPPING_CX=${{ secrets.GOOGLE_SHOPPING_CX }}
           Environment=ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}
