@@ -781,6 +781,45 @@ class Settings(BaseSettings):
         env="SENTRY_SERVER_NAME"
     )
     
+    @field_validator("*", mode="before")
+    @classmethod
+    def _coerce_empty_string_to_default(cls, v, info):
+        """
+        Fall back to each field's declared default when the env provides ''
+        for a non-string field. Protects against empty GitHub Secrets
+        crashing pydantic int/bool/float parsing at startup.
+
+        Background: GitHub Actions expands ${{ secrets.FOO }} to '' when the
+        secret is unset. With `Environment=SLIG_RETRY_DELAY=` written to the
+        systemd unit, pydantic-settings tried to coerce '' to int and raised
+        ValidationError → crashloop (2026-04-24 incident). We substitute the
+        field's own declared default in that case, which is the behavior we
+        want whenever a secret just isn't set.
+
+        Returning None would not work here: pydantic treats an explicitly
+        supplied None as a *value*, not "use default," so None → int fails
+        the same way '' → int did.
+
+        Kept narrow: str / Optional[str] fields are preserved as '' because
+        an empty string may be semantically valid for them.
+        """
+        if v != "":
+            return v
+        field = cls.model_fields.get(info.field_name) if info.field_name else None
+        if field is None:
+            return v
+        raw = str(field.annotation)
+        if "str" in raw:
+            return v
+        # PydanticUndefined means no default was declared — leave '' alone
+        # and let pydantic raise its normal validation error. The caller has
+        # a structural problem (required field not provided) that a silent
+        # fallback would hide.
+        from pydantic_core import PydanticUndefined
+        if field.default is PydanticUndefined:
+            return v
+        return field.default
+
     @field_validator("cors_origins", "cors_methods", "cors_headers", "allowed_extensions", mode='before')
     @classmethod
     def parse_list_from_string(cls, v):

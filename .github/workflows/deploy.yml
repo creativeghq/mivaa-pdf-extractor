@@ -758,16 +758,21 @@ jobs:
           Environment=HUGGINGFACE_BATCH_SIZE=${{ secrets.HUGGINGFACE_BATCH_SIZE }}
           Environment=HUGGINGFACE_TIMEOUT=${{ secrets.HUGGINGFACE_TIMEOUT }}
           Environment=HUGGINGFACE_MAX_RETRIES=${{ secrets.HUGGINGFACE_MAX_RETRIES }}
-          # SLIG_* env vars are currently provided by the legacy drop-in at
-          # /etc/systemd/system/mivaa-pdf-extractor.service.d/slig-env.conf
-          # (created manually 2026-04-13). They CAN be migrated to GitHub
-          # Secrets, but the migration needs one of:
-          #   (a) All 10 SLIG_* secrets set simultaneously (empty-string
-          #       secrets like `SLIG_RETRY_DELAY=` break pydantic int parsing
-          #       at startup — caused a crashloop on 2026-04-24).
-          #   (b) A pydantic validator in app/config.py that coerces empty
-          #       strings to the field default (structural fix; TODO).
-          # Until either (a) or (b) lands, we keep the drop-in in place.
+          # SLIG (SigLIP2) cloud endpoint. Empty GitHub Secrets are safe here
+          # thanks to _coerce_empty_string_to_default in app/config.py — any
+          # secret left unset falls back to the field's declared default.
+          # Once all SLIG_* secrets are populated you can delete the legacy
+          # drop-in at /etc/systemd/system/mivaa-pdf-extractor.service.d/slig-env.conf.
+          Environment=SLIG_ENDPOINT_URL=${{ secrets.SLIG_ENDPOINT_URL }}
+          Environment=SLIG_ENDPOINT_TOKEN=${{ secrets.SLIG_ENDPOINT_TOKEN }}
+          Environment=SLIG_ENDPOINT_NAME=${{ secrets.SLIG_ENDPOINT_NAME }}
+          Environment=SLIG_NAMESPACE=${{ secrets.SLIG_NAMESPACE }}
+          Environment=SLIG_MODEL_NAME=${{ secrets.SLIG_MODEL_NAME }}
+          Environment=SLIG_EMBEDDING_DIMENSION=${{ secrets.SLIG_EMBEDDING_DIMENSION }}
+          Environment=SLIG_ENABLED=${{ secrets.SLIG_ENABLED }}
+          Environment=SLIG_TIMEOUT=${{ secrets.SLIG_TIMEOUT }}
+          Environment=SLIG_MAX_RETRIES=${{ secrets.SLIG_MAX_RETRIES }}
+          Environment=SLIG_RETRY_DELAY=${{ secrets.SLIG_RETRY_DELAY }}
           Environment=REPLICATE_API_TOKEN=${{ secrets.REPLICATE_API_TOKEN }}
           Environment=JINA_API_KEY=${{ secrets.JINA_API_KEY }}
           Environment=FIRECRAWL_API_KEY=${{ secrets.FIRECRAWL_API_KEY }}
