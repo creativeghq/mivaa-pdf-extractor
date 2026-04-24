@@ -136,15 +136,29 @@ class UrlVerdict:
     reason: Optional[str] = None
 
 
-def url_prefilter(url: str, retailer_name: Optional[str] = None) -> UrlVerdict:
+def url_prefilter(
+    url: str,
+    retailer_name: Optional[str] = None,
+    *,
+    source: Optional[str] = None,
+) -> UrlVerdict:
     """
     Decide whether a URL is worth Firecrawl-scraping.
+
+    `source` changes what counts as "bad" — DataForSEO hits come with a
+    Google Shopping SERP-style URL by design, and their price/title/image/
+    rating data is authoritative from the feed. Filtering them would strip
+    every DataForSEO merchant from the list, which is the opposite of what
+    we want.
 
     Drops (returns keep=False):
       - Empty / malformed URLs
       - Paths of "/" (bare homepage)
       - SERP / search / catalog / brand index pages
+        (skipped when source == 'dataforseo' — those URLs ARE SERP-shaped
+        but carry trusted Shopping-feed data)
       - Aggregator-hosted URLs when the row claims to be a different retailer
+        (also skipped when source == 'dataforseo')
       - Very short slugs (<8 chars after the last "/") — homepages in disguise
     """
     if not url or not url.strip():
@@ -164,32 +178,34 @@ def url_prefilter(url: str, retailer_name: Optional[str] = None) -> UrlVerdict:
     if not host:
         return UrlVerdict(False, "no host")
 
-    if path in ("", "/"):
-        return UrlVerdict(False, "homepage URL")
+    # DataForSEO Shopping-feed hits come with their own trustworthy payload
+    # (title, price, image, rating from the feed). Let them through without
+    # any path/SERP checks — the classifier + UI will handle them differently
+    # from free-web Perplexity hits.
+    is_dataforseo = source == "dataforseo"
 
-    # SERP / search / listing pages
-    path_lower = path.lower()
-    for marker in _NON_PRODUCT_PATH_MARKERS:
-        if marker in path_lower:
-            return UrlVerdict(False, f"listing/search path ({marker})")
+    if not is_dataforseo:
+        if path in ("", "/"):
+            return UrlVerdict(False, "homepage URL")
 
-    # Google Shopping SERP (DataForSEO sometimes hands these back as retailer URLs)
-    if "ibp=oshop" in query or "tbm=shop" in query:
-        return UrlVerdict(False, "Google Shopping SERP URL")
+        path_lower = path.lower()
+        for marker in _NON_PRODUCT_PATH_MARKERS:
+            if marker in path_lower:
+                return UrlVerdict(False, f"listing/search path ({marker})")
 
-    # Aggregator host masquerading as a retailer. Skroutz/Bestdeals/Shopflix
-    # will have their own adapters (see greek-marketplaces plan).
-    if retailer_name:
-        retailer_host_guess = normalize_text(retailer_name).replace(" ", "").replace(".", "")
-        for agg_host in _AGGREGATOR_HOSTS:
-            agg_key = agg_host.split(".")[0]
-            if agg_key in host and agg_key not in retailer_host_guess:
-                return UrlVerdict(False, f"aggregator host {agg_host} claimed as {retailer_name}")
+        if "ibp=oshop" in query or "tbm=shop" in query:
+            return UrlVerdict(False, "Google Shopping SERP URL")
 
-    # Very short slugs — "example.com/s" / "example.com/p" patterns
-    last_segment = [p for p in path.split("/") if p]
-    if last_segment and len(last_segment[-1]) < 4:
-        return UrlVerdict(False, "URL slug too short")
+        if retailer_name:
+            retailer_host_guess = normalize_text(retailer_name).replace(" ", "").replace(".", "")
+            for agg_host in _AGGREGATOR_HOSTS:
+                agg_key = agg_host.split(".")[0]
+                if agg_key in host and agg_key not in retailer_host_guess:
+                    return UrlVerdict(False, f"aggregator host {agg_host} claimed as {retailer_name}")
+
+        last_segment = [p for p in path.split("/") if p]
+        if last_segment and len(last_segment[-1]) < 4:
+            return UrlVerdict(False, "URL slug too short")
 
     return UrlVerdict(True)
 

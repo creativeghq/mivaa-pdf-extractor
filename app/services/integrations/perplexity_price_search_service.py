@@ -273,29 +273,55 @@ class PerplexityPriceSearchService:
         # Step 3: URL pre-filter. Pure rules, no network. Drops obvious
         # non-product URLs (homepages, SERPs, aggregator masquerades) so
         # Firecrawl budget is spent only on URLs that could actually match.
+        # DataForSEO hits are waved through — their URL is SERP-shaped by
+        # design, but the Shopping-feed payload is authoritative.
         if perplexity_result.hits:
             kept: List[PriceHit] = []
             for h in perplexity_result.hits:
-                verdict = url_prefilter(h.product_url, retailer_name=h.retailer_name)
+                verdict = url_prefilter(
+                    h.product_url, retailer_name=h.retailer_name, source=h.source
+                )
                 if verdict.keep:
                     kept.append(h)
                 else:
                     logger.debug(f"URL prefilter dropped {h.retailer_name} ({verdict.reason})")
             perplexity_result.hits = kept
 
-        # Extraction details from Firecrawl — keyed by product_url so we can
-        # feed them to the classifier after verification.
+        # Extraction details keyed by product_url. Feeds the identity
+        # classifier in step 5. Pre-populate with DataForSEO titles so the
+        # classifier has product-name signal for merchants that we'll skip
+        # Firecrawl-verifying (the Shopping-feed URL isn't scrapable).
         extractions: Dict[str, Dict[str, Any]] = {}
+        if not isinstance(dataforseo_result, BaseException) and dataforseo_result.success:
+            for m in dataforseo_result.hits:
+                if m.product_title:
+                    extractions[m.product_url] = {
+                        "product_name": m.product_title,
+                        "product_breadcrumb": None,
+                        "visible_attributes": None,
+                    }
 
-        # Step 4: Firecrawl verification.
+        # Step 4: Firecrawl verification. DataForSEO hits skip this — we
+        # already have trustworthy price/title/image/rating from the feed,
+        # and their URL is typically a Google Shopping redirect that
+        # Firecrawl can't scrape meaningfully.
         if verify_prices and perplexity_result.hits:
-            verify_credits = await self._verify_hits_with_firecrawl(
-                perplexity_result.hits,
-                extractions_out=extractions,
-                user_id=user_id,
-                workspace_id=workspace_id,
-            )
-            perplexity_result.credits_used += verify_credits
+            perplexity_only = [h for h in perplexity_result.hits if h.source != "dataforseo"]
+            if perplexity_only:
+                verify_credits = await self._verify_hits_with_firecrawl(
+                    perplexity_only,
+                    extractions_out=extractions,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                )
+                perplexity_result.credits_used += verify_credits
+            # Mark DataForSEO hits as verified via feed — not Firecrawl, but
+            # trusted for price purposes. Keeps the green "Verified" badge
+            # honest: the price genuinely came from an authoritative source.
+            for h in perplexity_result.hits:
+                if h.source == "dataforseo" and not h.verified:
+                    h.verified = True
+                    h.last_verified = datetime.now(timezone.utc).date().isoformat()
 
         # Step 5: identity classification. Runs whether or not verification
         # ran — if Firecrawl was skipped, we still classify using URL slug
