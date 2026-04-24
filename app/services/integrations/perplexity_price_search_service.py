@@ -42,6 +42,9 @@ from app.services.integrations.dataforseo_merchant_service import (
     get_dataforseo_merchant_service,
     MerchantHit,
 )
+from app.services.integrations.firecrawl_client import get_firecrawl_client
+from app.models.extraction import PriceExtraction
+from app.utils.price_parsing import parse_price
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +92,16 @@ class PriceHit(BaseModel):
     product_url: str = Field(..., description="Direct product page URL.")
     price: Optional[float] = Field(
         default=None,
-        description="Numeric price. None ONLY when is_quote_only=true.",
+        description="Current numeric price. None ONLY when is_quote_only=true.",
+    )
+    original_price: Optional[float] = Field(
+        default=None,
+        description=(
+            "On-page 'was' price when the retailer displays a promo (was €89, now €79). "
+            "Distinct from observed historical price changes stored in price_history / "
+            "tracked_query_price_history — this field reflects what the retailer advertises "
+            "right now on the page."
+        ),
     )
     currency: Optional[str] = Field(default=None, description="ISO 4217 currency code.")
     price_unit: Optional[str] = Field(
@@ -105,6 +117,14 @@ class PriceHit(BaseModel):
     source: str = Field(
         default="perplexity",
         description="'perplexity' = web search (organic retailers), 'dataforseo' = Google Shopping merchants.",
+    )
+    verified: bool = Field(
+        default=False,
+        description=(
+            "True when Firecrawl actually fetched the product page and confirmed the price. "
+            "False means the price came only from Perplexity/DataForSEO snippet data and may "
+            "be stale / hallucinated — callers should treat as indicative, not authoritative."
+        ),
     )
     image_url: Optional[str] = Field(default=None, description="DataForSEO only: product thumbnail URL from the Shopping feed.")
     rating_value: Optional[float] = Field(default=None, description="DataForSEO only: merchant star rating.")
@@ -152,6 +172,7 @@ class PerplexityPriceSearchService:
         user_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
         preferred_retailer_domains: Optional[List[str]] = None,
+        verify_prices: bool = True,
     ) -> PriceSearchResult:
         """
         Run one Sonar search for the given product. Returns PriceSearchResult
@@ -201,6 +222,16 @@ class PerplexityPriceSearchService:
             perplexity_result.cost_usd = (perplexity_result.cost_usd or 0.0) + dataforseo_result.cost_usd
         elif isinstance(dataforseo_result, BaseException):
             logger.warning(f"DataForSEO call raised (non-fatal): {dataforseo_result}")
+
+        # Stage B: verify prices via Firecrawl per URL (parallel asyncio.gather).
+        # Fetches each retailer's actual product page and extracts the real price
+        # from the rendered HTML. Fixes Perplexity hallucinations + stale snippets.
+        # Opt-out via verify_prices=False for callers who value latency over accuracy.
+        if verify_prices and perplexity_result.hits:
+            verify_credits = await self._verify_hits_with_firecrawl(
+                perplexity_result.hits, user_id=user_id, workspace_id=workspace_id,
+            )
+            perplexity_result.credits_used += verify_credits
 
         return perplexity_result
 
@@ -360,6 +391,9 @@ class PerplexityPriceSearchService:
             "isn't currently buyable — the price tells the user what the market reference is.\n\n"
             "Other rules:\n"
             "- One row per unique retailer domain. Pick the cheapest variant if a retailer lists multiple.\n"
+            "- When the page displays a was/now promo (e.g. 'Was €89, Now €79', '€89 €79', "
+            "  strikethrough on the old price), populate BOTH: `price` = current, `original_price` = was. "
+            "  Only set `original_price` when the previous price is actually visible on the page — never invent it.\n"
             "- EXCLUDE only when the retailer truly has NO price on the page: 'quote only', 'contact for "
             "  price', 'price on request', 'login for pricing', or a price that's completely missing. "
             "  Do NOT fabricate prices to fill the list.\n"
@@ -398,6 +432,10 @@ class PerplexityPriceSearchService:
                             "retailer_name": {"type": "string"},
                             "product_url": {"type": "string"},
                             "price": {"type": "number"},
+                            "original_price": {
+                                "type": ["number", "null"],
+                                "description": "On-page 'was' / 'original' price if the retailer displays a promo (was €89, now €79). Null if no markdown is shown. Do NOT invent — only populate when the was-price is clearly visible on the page.",
+                            },
                             "currency": {"type": "string"},
                             "price_unit": {"type": "string", "enum": ["m2", "box", "piece", "linear_meter"]},
                             "availability": {"type": "string", "enum": ["in_stock", "out_of_stock", "limited", "unknown"]},
@@ -460,6 +498,108 @@ class PerplexityPriceSearchService:
         m = re.match(r"^https?://([^/]+)", (url or "").strip(), flags=re.IGNORECASE)
         return (m.group(1) if m else url or "").lower().removeprefix("www.")
 
+    async def _verify_hits_with_firecrawl(
+        self,
+        hits: List[PriceHit],
+        *,
+        user_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+    ) -> int:
+        """
+        Second-stage verification: fetch each retailer's actual product page via
+        Firecrawl, extract price + original_price via PriceExtraction schema,
+        and rewrite the hit in place. Runs all URLs in parallel via asyncio.gather.
+
+        Mutates `hits` list in place. Returns total Firecrawl credits consumed.
+
+        Semantics per row:
+          - Firecrawl finds a price on the page → replace `price`, fill
+            `original_price` if was/now visible, set `verified=True`.
+          - Firecrawl returns no price (404, blocked, truly missing) → leave
+            the row as-is with `verified=False`.
+          - Firecrawl price differs by >20% from the Perplexity/DataForSEO
+            price → trust Firecrawl (it actually read the page) + append a
+            note flagging the discrepancy so downstream consumers can see it.
+        """
+        firecrawl = get_firecrawl_client()
+
+        async def verify_one(hit: PriceHit) -> int:
+            """Returns credits consumed for this one verification (0 on failure)."""
+            try:
+                result = await firecrawl.scrape(
+                    url=hit.product_url,
+                    extraction_model=PriceExtraction,
+                    user_id=user_id or "system",
+                    workspace_id=workspace_id,
+                    extraction_prompt=(
+                        f"Extract the current price and on-page 'was' price (if any) for "
+                        f"{hit.retailer_name}'s product page. Prefer the main product price, "
+                        "not related / bundle / strike-through prices."
+                    ),
+                    use_javascript_render=False,
+                )
+            except Exception as e:
+                logger.debug(f"Firecrawl verify crashed for {hit.product_url}: {e}")
+                return 0
+
+            if not result.success or not result.data:
+                return result.credits_used or 1
+
+            extracted = result.data
+            hint_currency = extracted.currency or hit.currency
+            amount, currency = parse_price(extracted.price, hint_currency=hint_currency)
+            if amount is None:
+                # Page loaded but no extractable price — keep the original data,
+                # don't mark as verified.
+                return result.credits_used or 1
+
+            verified_price = float(amount)
+            original_amount, _ = parse_price(extracted.original_price, hint_currency=hint_currency)
+            verified_original = float(original_amount) if original_amount is not None else None
+
+            # Discrepancy check: if Firecrawl's price is materially different from
+            # Perplexity/DataForSEO's, flag it. Trust Firecrawl (read the page).
+            prior_price = hit.price
+            diff_note = None
+            if prior_price is not None and prior_price > 0:
+                diff_ratio = abs(verified_price - prior_price) / prior_price
+                if diff_ratio > 0.20:
+                    diff_note = (
+                        f"verify: was {hit.source}=€{prior_price:.2f}, "
+                        f"actual on page=€{verified_price:.2f}"
+                    )
+
+            hit.price = verified_price
+            if verified_original is not None and verified_original > verified_price:
+                hit.original_price = verified_original
+            if currency and not hit.currency:
+                hit.currency = currency
+            if extracted.availability and extracted.availability in (
+                "in_stock", "out_of_stock", "limited", "unknown"
+            ):
+                hit.availability = extracted.availability
+            hit.verified = True
+            hit.last_verified = datetime.now(timezone.utc).date().isoformat()
+            if diff_note:
+                hit.notes = f"{hit.notes} | {diff_note}" if hit.notes else diff_note
+
+            return result.credits_used or 1
+
+        # Parallel verify. Firecrawl's client already has its own retry/backoff
+        # + per-call credit logging; gather-return-exceptions keeps one bad URL
+        # from killing the whole batch.
+        credit_results = await asyncio.gather(
+            *(verify_one(h) for h in hits),
+            return_exceptions=True,
+        )
+        total_credits = 0
+        for c in credit_results:
+            if isinstance(c, int):
+                total_credits += c
+        # Re-sort after verification — prices may have shifted.
+        hits.sort(key=lambda h: (h.price if h.price is not None else float("inf")))
+        return total_credits
+
     @classmethod
     def _merge_with_dataforseo(
         cls,
@@ -489,6 +629,7 @@ class PerplexityPriceSearchService:
                 retailer_name=m.retailer_name,
                 product_url=m.product_url,
                 price=m.price,
+                original_price=m.original_price,
                 currency=m.currency,
                 price_unit="piece",  # Shopping feed is per-unit, not per-m²
                 availability="in_stock",  # DataForSEO only surfaces buyable items

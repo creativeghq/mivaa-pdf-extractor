@@ -48,6 +48,7 @@ class TrackedQueriesService:
         manufacturer: Optional[str] = None,
         preferred_retailer_domains: Optional[List[str]] = None,
         refresh_interval_hours: int = 24,
+        verify_prices: bool = True,
     ) -> Dict[str, Any]:
         """Insert a new tracked query + run the first refresh synchronously so
         the caller gets initial results in the same POST response."""
@@ -61,6 +62,7 @@ class TrackedQueriesService:
             "manufacturer": manufacturer,
             "preferred_retailer_domains": preferred_retailer_domains,
             "refresh_interval_hours": max(1, min(refresh_interval_hours, 720)),
+            "verify_prices": bool(verify_prices),
         }
         res = self.supabase.client.table("tracked_queries").insert(row).execute()
         created = (res.data or [{}])[0]
@@ -107,6 +109,7 @@ class TrackedQueriesService:
         preferred_retailer_domains: Optional[List[str]] = None,
         dimensions: Optional[str] = None,
         manufacturer: Optional[str] = None,
+        verify_prices: Optional[bool] = None,
     ) -> Optional[Dict[str, Any]]:
         updates: Dict[str, Any] = {"updated_at": datetime.now(timezone.utc).isoformat()}
         if refresh_interval_hours is not None:
@@ -119,6 +122,8 @@ class TrackedQueriesService:
             updates["dimensions"] = dimensions
         if manufacturer is not None:
             updates["manufacturer"] = manufacturer
+        if verify_prices is not None:
+            updates["verify_prices"] = bool(verify_prices)
 
         if len(updates) == 1:  # only updated_at
             return await self.get(tracking_id)
@@ -171,6 +176,7 @@ class TrackedQueriesService:
 
         # Option 2: domain pinning. If the caller has saved preferred retailer
         # domains, Perplexity's search_domain_filter forces those to be probed.
+        # verify_prices controls the Firecrawl verification pass (default True).
         result: PriceSearchResult = await self.search.search_prices(
             product_name=tq.get("search_query") or "",
             dimensions=tq.get("dimensions"),
@@ -179,6 +185,7 @@ class TrackedQueriesService:
             user_id=tq.get("user_id"),
             workspace_id=tq.get("workspace_id"),
             preferred_retailer_domains=tq.get("preferred_retailer_domains") or None,
+            verify_prices=bool(tq.get("verify_prices", True)),
         )
 
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -204,11 +211,13 @@ class TrackedQueriesService:
                     "retailer_name": h.retailer_name,
                     "product_url": h.product_url,
                     "price": float(h.price) if h.price is not None else None,
+                    "original_price": float(h.original_price) if h.original_price is not None else None,
                     "currency": h.currency,
                     "price_unit": h.price_unit or "m2",
                     "availability": h.availability,
                     "city": h.city,
                     "ships_from_abroad": bool(h.ships_from_abroad),
+                    "verified": bool(h.verified),
                     "notes": h.notes,
                     "scraped_at": now_iso,
                 }

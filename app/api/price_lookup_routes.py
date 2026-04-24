@@ -204,7 +204,17 @@ class PriceLookupRequest(BaseModel):
         default=10,
         ge=1,
         le=25,
-        description="Claude mode only: max retailers to return (hard cap 25). Higher values capture Google Shopping merchant listings.",
+        description="Search mode only: max retailers to return (hard cap 25). Higher values capture Google Shopping merchant listings.",
+    )
+    verify_prices: bool = Field(
+        default=True,
+        description=(
+            "Search mode only. When true (default), every returned URL is re-fetched via "
+            "Firecrawl and the price is extracted from the live page HTML. Fixes "
+            "Perplexity/DataForSEO snippet hallucinations. ~3× cost, ~2× latency. "
+            "Set false to skip verification and return raw discovery results "
+            "(faster but treat prices as indicative, not authoritative)."
+        ),
     )
 
     # Shared
@@ -374,6 +384,7 @@ async def _claude_mode(
         limit=body.limit,
         user_id=ctx.user_id,
         workspace_id=ctx.workspace_id,
+        verify_prices=body.verify_prices,
     )
 
     if not result.success:

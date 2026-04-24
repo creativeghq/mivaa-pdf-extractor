@@ -83,6 +83,7 @@ class MerchantHit(BaseModel):
     retailer_name: str
     product_url: str
     price: float
+    original_price: Optional[float] = None  # "was" / strikethrough price on the Shopping card
     currency: str
     product_title: Optional[str] = None
     image_url: Optional[str] = None
@@ -318,6 +319,16 @@ class DataForSeoMerchantService:
             except (TypeError, ValueError):
                 continue
 
+            # old_price: strikethrough "was" price on the Shopping card. Nullable.
+            old_price_raw = item.get("old_price")
+            try:
+                original_price_f = float(old_price_raw) if old_price_raw is not None else None
+            except (TypeError, ValueError):
+                original_price_f = None
+            # Sanity: only keep if it's actually higher than current
+            if original_price_f is not None and original_price_f <= price_f:
+                original_price_f = None
+
             # product_rating is a dict with value + votes_count
             rating = item.get("product_rating") or {}
             rating_val = rating.get("value") if isinstance(rating, dict) else None
@@ -331,6 +342,7 @@ class DataForSeoMerchantService:
                 retailer_name=str(seller),
                 product_url=self._clean_url(str(url)),
                 price=price_f,
+                original_price=original_price_f,
                 currency=str(currency),
                 product_title=str(title) if title else None,
                 image_url=str(image_url) if image_url else None,

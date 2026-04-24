@@ -21,7 +21,11 @@ class PriceExtraction(BaseModel):
 
     price: Optional[str] = Field(
         default=None,
-        description="Current product price with currency symbol or code as shown on the page, e.g. '$49.99', '€1.299,00', 'From £29'. Use the main product price, not related or strike-through prices.",
+        description="Current product price with currency symbol or code as shown on the page, e.g. '$49.99', '€1.299,00', 'From £29'. Use the main product price — if the page shows a was/now promo, this is the NOW price.",
+    )
+    original_price: Optional[str] = Field(
+        default=None,
+        description="On-page 'was' / 'original' / 'list' price when the retailer displays a promo or markdown, e.g. '€89.00' when the page shows 'Was €89, Now €79'. Only set if clearly visible on the page; null otherwise.",
     )
     currency: Optional[str] = Field(
         default=None,

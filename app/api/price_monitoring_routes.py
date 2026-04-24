@@ -82,6 +82,14 @@ class DiscoverSourcesRequest(BaseModel):
         default=False,
         description="Bypass the 6h throttle. Admin/super_admin role required.",
     )
+    verify_prices: bool = Field(
+        default=True,
+        description=(
+            "When true (default), every discovered hit is re-fetched via Firecrawl to "
+            "confirm the price on the live page. Set false for faster/cheaper discovery "
+            "at the cost of accuracy (prices may be stale / LLM-hallucinated)."
+        ),
+    )
 
 
 class DiscoverSourcesResponse(BaseModel):
@@ -620,12 +628,12 @@ async def discover_sources(
         # Return existing sources instead of making a fresh call.
         existing = (
             sb.table("competitor_sources")
-            .select("source_name, source_url, current_price, current_currency, current_availability, last_seen_at")
+            .select("source_name, source_url, source_type, current_price, current_original_price, current_price_verified, current_currency, current_availability, last_seen_at")
             .eq("product_id", product_id)
-            .eq("source_type", "perplexity_web_search")
+            .in_("source_type", ["perplexity_web_search", "dataforseo_shopping"])
             .eq("is_active", True)
             .order("last_seen_at", desc=True)
-            .limit(10)
+            .limit(20)
             .execute()
         )
         rows = existing.data or []
@@ -634,6 +642,9 @@ async def discover_sources(
                 retailer_name=r.get("source_name") or "Unknown",
                 product_url=r.get("source_url") or "",
                 price=float(r.get("current_price") or 0),
+                original_price=float(r["current_original_price"]) if r.get("current_original_price") is not None else None,
+                verified=bool(r.get("current_price_verified") or False),
+                source="dataforseo" if r.get("source_type") == "dataforseo_shopping" else "perplexity",
                 currency=r.get("current_currency") or "USD",
                 availability=r.get("current_availability") or "unknown",
             )
@@ -689,6 +700,7 @@ async def discover_sources(
         limit=10,
         user_id=user.id,
         workspace_id=mon_row.get("workspace_id") or (workspace.workspace_id if workspace else None),
+        verify_prices=request.verify_prices,
     )
 
     if not result.success:
@@ -717,6 +729,8 @@ async def discover_sources(
             "auto_discovered": True,
             "is_active": True,
             "current_price": float(hit.price) if hit.price is not None else None,
+            "current_original_price": float(hit.original_price) if hit.original_price is not None else None,
+            "current_price_verified": bool(getattr(hit, "verified", False)),
             "current_currency": hit.currency,
             "current_availability": hit.availability or "unknown",
             "current_price_updated_at": now_iso,
@@ -738,6 +752,8 @@ async def discover_sources(
                 "source_name": hit.retailer_name,
                 "source_url": hit.product_url,
                 "price": float(hit.price) if hit.price is not None else None,
+                "original_price": float(hit.original_price) if hit.original_price is not None else None,
+                "verified": bool(getattr(hit, "verified", False)),
                 "currency": hit.currency,
                 "availability": hit.availability or "unknown",
                 "scraped_at": now_iso,

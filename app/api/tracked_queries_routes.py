@@ -63,6 +63,14 @@ class CreateTrackRequest(BaseModel):
         le=720,
         description="How often our cron will refresh this query. Min 1h, max 720h (30 days). Default 24h.",
     )
+    verify_prices: bool = Field(
+        default=True,
+        description=(
+            "When true (default), every refresh re-fetches each retailer URL via Firecrawl to "
+            "confirm the price on the live page. Set false to skip verification (faster, cheaper, "
+            "but prices may be stale / hallucinated)."
+        ),
+    )
 
 
 class UpdateTrackRequest(BaseModel):
@@ -71,17 +79,20 @@ class UpdateTrackRequest(BaseModel):
     preferred_retailer_domains: Optional[List[str]] = None
     dimensions: Optional[str] = None
     manufacturer: Optional[str] = None
+    verify_prices: Optional[bool] = None
 
 
 class TrackedQueryResultRow(BaseModel):
     retailer_name: str
     product_url: str
     price: Optional[float] = None
+    original_price: Optional[float] = None  # on-page "was" price (promo)
     currency: Optional[str] = None
     price_unit: Optional[str] = None
     availability: Optional[str] = None
     city: Optional[str] = None
     ships_from_abroad: bool = False
+    verified: bool = False  # True when Firecrawl confirmed the price from the live page
     notes: Optional[str] = None
     scraped_at: Optional[str] = None
 
@@ -94,6 +105,7 @@ class TrackedQueryResponse(BaseModel):
     manufacturer: Optional[str] = None
     preferred_retailer_domains: Optional[List[str]] = None
     refresh_interval_hours: int
+    verify_prices: bool = True
     last_refreshed_at: Optional[str] = None
     last_error: Optional[str] = None
     is_active: bool = True
@@ -143,6 +155,7 @@ def _to_response(
         manufacturer=tq.get("manufacturer"),
         preferred_retailer_domains=tq.get("preferred_retailer_domains"),
         refresh_interval_hours=int(tq.get("refresh_interval_hours") or 24),
+        verify_prices=bool(tq.get("verify_prices", True)),
         last_refreshed_at=tq.get("last_refreshed_at"),
         last_error=tq.get("last_error"),
         is_active=bool(tq.get("is_active", True)),
@@ -185,6 +198,7 @@ async def create_tracked_query(
         manufacturer=body.manufacturer,
         preferred_retailer_domains=body.preferred_retailer_domains,
         refresh_interval_hours=body.refresh_interval_hours,
+        verify_prices=body.verify_prices,
     )
     results = await service.latest_results(created["id"])
     return _to_response(created, results)
@@ -255,6 +269,7 @@ async def update_tracked_query(
         preferred_retailer_domains=body.preferred_retailer_domains,
         dimensions=body.dimensions,
         manufacturer=body.manufacturer,
+        verify_prices=body.verify_prices,
     )
     if not updated:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="update failed")
