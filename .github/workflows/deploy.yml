@@ -834,27 +834,53 @@ jobs:
         run: |
           echo "🔄 Reloading systemd and restarting service..."
           ssh -o StrictHostKeyChecking=no root@157.245.166.19 "
-          # Reload systemd and enable service
           sudo systemctl daemon-reload
           sudo systemctl enable mivaa-pdf-extractor
 
-          # Use safe restart script with force flag (since we already checked for jobs)
           cd /var/www/mivaa-pdf-extractor
 
-          # Restart the FastAPI service
           echo 'Restarting service...'
           sudo systemctl restart mivaa-pdf-extractor
 
-          # Wait for service to fully initialize (app loads ML models, circuit breakers, etc.)
-          echo 'Waiting for service to initialize...'
-          sleep 10
+          # Poll for 'active' (app can take up to ~60s to load ML models).
+          # A blind 'sleep N; systemctl status' can sample the service mid
+          # crash-restart cycle and mistake a crashing service for a slow one,
+          # and 'systemctl status' returns non-zero in that state — failing the step.
+          echo 'Waiting for service to become active...'
+          ACTIVE=''
+          for i in \$(seq 1 60); do
+            STATE=\$(sudo systemctl is-active mivaa-pdf-extractor || true)
+            if [ \"\$STATE\" = 'active' ]; then
+              ACTIVE=yes
+              echo \"Service reported active after \${i}s\"
+              break
+            fi
+            sleep 1
+          done
 
-          # Check service status
-          sudo systemctl status mivaa-pdf-extractor --no-pager
+          # Re-check after a settling window — a service in a Restart=always
+          # crash loop can transiently show 'active' between crashes.
+          if [ -n \"\$ACTIVE\" ]; then
+            sleep 5
+            STATE=\$(sudo systemctl is-active mivaa-pdf-extractor || true)
+            if [ \"\$STATE\" != 'active' ]; then
+              ACTIVE=''
+              echo 'Service went non-active after initial start — likely crash-restarting'
+            fi
+          fi
+
+          # Human-readable status for the log (don't let its exit code fail the step)
+          sudo systemctl status mivaa-pdf-extractor --no-pager || true
+
+          if [ -z \"\$ACTIVE\" ]; then
+            echo '❌ Service did not reach or hold active state'
+            sudo journalctl -u mivaa-pdf-extractor --no-pager -n 80
+            exit 1
+          fi
           "
 
           echo ""
-          echo "✅ Service restarted with clean state - all old jobs cleared"
+          echo "✅ Service restarted and confirmed active"
 
       # 6. Health Check & Diagnostics
       - name: 🏥 Health Check & Diagnostics
