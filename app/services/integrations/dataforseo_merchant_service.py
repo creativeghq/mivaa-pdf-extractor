@@ -17,6 +17,7 @@ added to MIVAA's systemd env via deploy.yml.
 Pricing: ~$0.001 per 40 results (live mode). Negligible vs Perplexity.
 """
 
+import asyncio
 import base64
 import logging
 import os
@@ -31,9 +32,17 @@ logger = logging.getLogger(__name__)
 
 
 DATAFORSEO_BASE_URL = "https://api.dataforseo.com/v3"
-PRODUCTS_ENDPOINT = "/merchant/google/products/live/advanced"
-HTTP_TIMEOUT_S = 45.0
-DATAFORSEO_COST_PER_40_RESULTS = 0.001  # $1 per 1M results, billed per 40
+# DataForSEO Merchant products is async-only: task_post → poll task_get.
+# No /live/advanced endpoint for this data set (verified 2026-04-24: /live/advanced
+# under /merchant/ returns HTTP 404 from their API).
+TASK_POST_ENDPOINT = "/merchant/google/products/task_post"
+TASK_GET_ENDPOINT = "/merchant/google/products/task_get/advanced/{task_id}"
+# Priority 2 = "up to 60s turnaround", $0.002 per request. Priority 1 is cheaper
+# ($0.001) but can take up to 45min — unusable for a live API call.
+TASK_PRIORITY = 2
+HTTP_TIMEOUT_S = 15.0      # per HTTP call; polling loop has its own budget
+MAX_POLL_SECONDS = 45.0    # overall budget — if task not ready by then, we bail with empty
+POLL_INTERVAL_S = 3.0      # gap between task_get polls
 
 
 # ISO country → DataForSEO location_code. Covers the common markets.
@@ -143,48 +152,89 @@ class DataForSeoMerchantService:
         location_code = _LOCATION_CODES.get((country_code or "").upper(), 2840)  # default US
         language_code = "en"  # DataForSEO handles multilingual results internally
 
-        body = [{
+        start = datetime.now(timezone.utc)
+
+        # Step 1: post task
+        headers = {"Authorization": self.auth_header, "Content-Type": "application/json"}
+        task_body = [{
             "keyword": query,
             "location_code": location_code,
             "language_code": language_code,
-            "depth": min(max(limit, 10), 40),  # DataForSEO returns up to 100; we cap at 40 for cost
+            "depth": min(max(limit, 10), 40),
+            "priority": TASK_PRIORITY,
         }]
 
-        start = datetime.now(timezone.utc)
+        task_id: Optional[str] = None
         try:
             async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_S) as client:
-                resp = await client.post(
-                    f"{DATAFORSEO_BASE_URL}{PRODUCTS_ENDPOINT}",
-                    headers={"Authorization": self.auth_header, "Content-Type": "application/json"},
-                    json=body,
+                post_resp = await client.post(
+                    f"{DATAFORSEO_BASE_URL}{TASK_POST_ENDPOINT}",
+                    headers=headers,
+                    json=task_body,
+                )
+                if post_resp.status_code != 200:
+                    return MerchantSearchResult(
+                        success=False,
+                        latency_ms=int((datetime.now(timezone.utc) - start).total_seconds() * 1000),
+                        error=f"dataforseo task_post HTTP {post_resp.status_code}: {post_resp.text[:300]}",
+                    )
+                post_json = post_resp.json()
+                task = (post_json.get("tasks") or [{}])[0]
+                if task.get("status_code") and int(task["status_code"]) >= 40000:
+                    return MerchantSearchResult(
+                        success=False,
+                        latency_ms=int((datetime.now(timezone.utc) - start).total_seconds() * 1000),
+                        error=f"dataforseo task rejected: {task.get('status_message')}",
+                    )
+                task_id = task.get("id")
+                if not task_id:
+                    return MerchantSearchResult(
+                        success=False,
+                        error="dataforseo task_post returned no task id",
+                    )
+
+                # Step 2: poll task_get until ready or MAX_POLL_SECONDS budget exhausted
+                deadline = datetime.now(timezone.utc).timestamp() + MAX_POLL_SECONDS
+                get_url = f"{DATAFORSEO_BASE_URL}{TASK_GET_ENDPOINT.format(task_id=task_id)}"
+                while datetime.now(timezone.utc).timestamp() < deadline:
+                    await asyncio.sleep(POLL_INTERVAL_S)
+                    get_resp = await client.get(get_url, headers=headers)
+                    if get_resp.status_code != 200:
+                        continue
+                    get_json = get_resp.json()
+                    got_task = (get_json.get("tasks") or [{}])[0]
+                    status_code = int(got_task.get("status_code") or 0)
+                    # 20000 = OK, completed. 40602 = not ready yet.
+                    if status_code == 20000:
+                        latency_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
+                        hits, raw_count = self._parse_response(get_json, limit=limit)
+                        cost_usd = float(get_json.get("cost") or post_json.get("cost") or 0.002)
+                        platform_credits = max(1, int(round(cost_usd * 100)))
+                        return MerchantSearchResult(
+                            success=True,
+                            hits=hits,
+                            raw_results_count=raw_count,
+                            credits_used=platform_credits,
+                            latency_ms=latency_ms,
+                            cost_usd=cost_usd,
+                        )
+                    if status_code >= 40000 and status_code != 40602:
+                        return MerchantSearchResult(
+                            success=False,
+                            error=f"dataforseo task failed: {got_task.get('status_message')} (status {status_code})",
+                        )
+                    # else 40602 "Task In Queue" — keep polling
+
+                # Polling budget exhausted
+                return MerchantSearchResult(
+                    success=False,
+                    latency_ms=int((datetime.now(timezone.utc) - start).total_seconds() * 1000),
+                    error=f"dataforseo task not ready within {MAX_POLL_SECONDS}s (task_id={task_id})",
                 )
         except httpx.TimeoutException as e:
             return MerchantSearchResult(success=False, error=f"timeout: {e}")
         except Exception as e:
             return MerchantSearchResult(success=False, error=str(e))
-
-        latency_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
-        if resp.status_code != 200:
-            return MerchantSearchResult(
-                success=False,
-                latency_ms=latency_ms,
-                error=f"dataforseo HTTP {resp.status_code}: {resp.text[:300]}",
-            )
-
-        data = resp.json()
-        hits, raw_count = self._parse_response(data, limit=limit)
-        # Billed per 40 results returned (see DataForSEO pricing)
-        cost_usd = (max(raw_count, 1) / 40) * DATAFORSEO_COST_PER_40_RESULTS
-        platform_credits = max(1, int(round(cost_usd * 100)))
-
-        return MerchantSearchResult(
-            success=True,
-            hits=hits,
-            raw_results_count=raw_count,
-            credits_used=platform_credits,
-            latency_ms=latency_ms,
-            cost_usd=cost_usd,
-        )
 
     # ────────── Internals ──────────
 
