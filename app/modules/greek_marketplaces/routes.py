@@ -16,22 +16,90 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from app.dependencies import require_admin
 from app.modules import is_module_enabled
 from app.modules.greek_marketplaces.adapters.skroutz import get_skroutz_adapter
 from app.modules.greek_marketplaces.service import (
     MODULE_SLUG,
     get_greek_marketplaces_service,
 )
-from app.schemas.auth import WorkspaceContext
 from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations.firecrawl_client import get_firecrawl_client
 from app.services.integrations.perplexity_price_search_service import PriceHit
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_bearer(request: Request) -> str:
+    header = request.headers.get("authorization") or request.headers.get("Authorization") or ""
+    if not header.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing bearer token.",
+        )
+    return header.split(" ", 1)[1].strip()
+
+
+def _admin_user_id_from_request(request: Request) -> str:
+    """
+    Self-contained auth for module routes:
+      * Pull the Supabase JWT off the Authorization header.
+      * Ask Supabase (not our own middleware) to validate it — this works even
+        when SUPABASE_JWT_SECRET isn't configured locally.
+      * Verify the user has an admin / super_admin role in `user_profiles`.
+
+    Returns the authenticated user's id. Raises 401 on invalid token,
+    403 on non-admin users.
+    """
+    token = _extract_bearer(request)
+    supabase = get_supabase_client().client
+    try:
+        response = supabase.auth.get_user(token)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid authentication token: {exc}",
+        )
+
+    user = getattr(response, "user", None)
+    if user is None or not getattr(user, "id", None):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not resolve authenticated user.",
+        )
+    user_id = str(user.id)
+
+    if not _is_admin(supabase, user_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin role required.",
+        )
+    return user_id
+
+
+def _is_admin(sb, user_id: str) -> bool:
+    """Same role check used by price_monitoring_routes — reads
+    user_profiles.role_id → roles.name IN ('admin', 'super_admin').
+    """
+    try:
+        res = (
+            sb.table("user_profiles")
+            .select("role_id")
+            .eq("user_id", user_id)
+            .maybe_single()
+            .execute()
+        )
+        row = (res.data if res else None) or {}
+        role_id = row.get("role_id")
+        if not role_id:
+            return False
+        role = sb.table("roles").select("name").eq("id", role_id).maybe_single().execute()
+        name = ((role.data if role else None) or {}).get("name")
+        return name in ("admin", "super_admin")
+    except Exception:  # noqa: BLE001
+        return False
 
 
 # ── Models ─────────────────────────────────────────────────────────────────────
@@ -79,10 +147,9 @@ router = APIRouter(
 
 
 @router.get("/status", response_model=ModuleStatus)
-async def module_status(
-    _workspace: WorkspaceContext = Depends(require_admin),
-) -> ModuleStatus:
+async def module_status(request: Request) -> ModuleStatus:
     """Return source-credential state + 7-day usage stats for this module."""
+    _admin_user_id_from_request(request)
     skroutz = get_skroutz_adapter()
     firecrawl = get_firecrawl_client()
 
@@ -130,8 +197,8 @@ async def module_status(
 
 @router.post("/search", response_model=SearchResponse)
 async def test_search(
-    request: SearchRequest,
-    workspace: WorkspaceContext = Depends(require_admin),
+    payload: SearchRequest,
+    request: Request,
 ) -> SearchResponse:
     """
     Run the Greek Marketplaces service directly against all three adapters.
@@ -139,13 +206,15 @@ async def test_search(
     or price_history. Credit debits still fire (Skroutz is free; Firecrawl calls
     consume credits per the normal pricing).
     """
+    user_id = _admin_user_id_from_request(request)
+
     if not is_module_enabled(MODULE_SLUG):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Module '{MODULE_SLUG}' is disabled. Enable it at /admin/modules first.",
         )
 
-    if request.country_code.upper() != "GR":
+    if payload.country_code.upper() != "GR":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Greek Marketplaces only supports country_code='GR'.",
@@ -154,11 +223,11 @@ async def test_search(
     start = time.monotonic()
     service = get_greek_marketplaces_service()
     hits = await service.search(
-        query=request.query,
-        country_code=request.country_code,
-        user_id=workspace.user_id,
-        workspace_id=workspace.workspace_id,
-        limit=request.limit,
+        query=payload.query,
+        country_code=payload.country_code,
+        user_id=user_id,
+        workspace_id=None,
+        limit=payload.limit,
     )
 
     counts: Dict[str, int] = {}
