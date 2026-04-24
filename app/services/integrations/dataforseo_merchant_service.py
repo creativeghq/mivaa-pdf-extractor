@@ -240,16 +240,34 @@ class DataForSeoMerchantService:
 
     def _parse_response(self, data: Dict[str, Any], limit: int) -> tuple[List[MerchantHit], int]:
         """
-        DataForSEO response shape:
+        DataForSEO Merchant /products/task_get/advanced response shape (verified 2026-04-24):
         {
           tasks: [{
             result: [{
-              items: [{
-                type, title, url, seller, price: {current, currency}, product_image_url, ...
-              }]
+              items: [
+                {
+                  "type": "google_shopping_serp",
+                  "title": "IKEA Billy Bookcase",
+                  "price": 79,                              # flat number, NOT nested
+                  "currency": "USD",                        # flat, NOT under price.
+                  "seller": null | "<merchant name>",       # often null on SERP items
+                  "domain": null | "<domain>",              # often null on SERP items
+                  "shopping_url": "https://google.com/search?ibp=oshop&...",  # Google redirect
+                  "product_images": [{"image_url":"..."}, ...],
+                  "product_rating": {"value": 4.5, "votes_count": 1000},
+                  "shop_rating": {...},
+                  ...
+                },
+                ...
+              ]
             }]
           }]
         }
+
+        The SERP is PRODUCT-centric — each item is a product variant with its best
+        price surfaced. To get per-merchant prices we'd need a second call to
+        /merchant/google/sellers with each product_id. For now we expose what SERP
+        gives: the product itself, price, and link to Google's Shopping detail page.
         """
         tasks = data.get("tasks") or []
         if not tasks:
@@ -258,34 +276,52 @@ class DataForSeoMerchantService:
         items = result_container.get("items") or []
 
         hits: List[MerchantHit] = []
-        seen_sellers = set()
+        seen_keys = set()
         raw_count = len(items)
         for item in items:
-            # Only organic / paid product items have seller + price
-            if item.get("type") not in ("shopping_serp", "shopping_paid", "shopping_organic"):
+            if item.get("type") != "google_shopping_serp":
                 continue
 
-            seller = item.get("seller") or item.get("source") or item.get("domain")
-            price_info = item.get("price") or {}
-            price_value = price_info.get("current") or price_info.get("regular") or price_info.get("price")
-            currency = price_info.get("currency") or "USD"
-            url = item.get("url") or item.get("seller_url")
-            title = item.get("title") or item.get("description")
-            image_url = item.get("product_image_url") or item.get("image_url")
-
-            if not seller or price_value is None or not url:
+            price_value = item.get("price")
+            currency = item.get("currency") or "USD"
+            if price_value is None:
                 continue
 
-            # Dedupe by seller — one row per merchant, cheapest wins
-            seller_key = str(seller).strip().lower()
-            if seller_key in seen_sellers:
+            # Retailer name preference: seller > domain > derived from URL > fallback
+            seller = item.get("seller") or item.get("domain")
+            shopping_url = item.get("shopping_url") or ""
+            if not seller and shopping_url:
+                # Fall back to "Google Shopping" — the shopping_url is a google.com
+                # redirect anyway; the UI can label it as an aggregator entry.
+                seller = "Google Shopping"
+            if not seller:
                 continue
-            seen_sellers.add(seller_key)
+
+            url = shopping_url or item.get("url") or ""
+            if not url:
+                continue
+
+            # Dedupe by (seller, product title) so we don't collapse distinct products
+            # from the same merchant when they legitimately have different prices.
+            title = item.get("title") or ""
+            key = f"{str(seller).strip().lower()}::{title[:80].lower()}"
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
 
             try:
                 price_f = float(price_value)
             except (TypeError, ValueError):
                 continue
+
+            # product_rating is a dict with value + votes_count
+            rating = item.get("product_rating") or {}
+            rating_val = rating.get("value") if isinstance(rating, dict) else None
+            rating_votes = rating.get("votes_count") if isinstance(rating, dict) else None
+
+            # product_images is a list of dicts; grab the first image_url
+            imgs = item.get("product_images") or []
+            image_url = imgs[0].get("image_url") if isinstance(imgs, list) and imgs and isinstance(imgs[0], dict) else None
 
             hits.append(MerchantHit(
                 retailer_name=str(seller),
@@ -294,19 +330,9 @@ class DataForSeoMerchantService:
                 currency=str(currency),
                 product_title=str(title) if title else None,
                 image_url=str(image_url) if image_url else None,
-                rating_value=(
-                    float(item.get("rating", {}).get("value"))
-                    if isinstance(item.get("rating"), dict) and item["rating"].get("value") is not None
-                    else None
-                ),
-                rating_votes=(
-                    int(item.get("rating", {}).get("votes_count"))
-                    if isinstance(item.get("rating"), dict) and item["rating"].get("votes_count") is not None
-                    else None
-                ),
-                shipping=(
-                    item.get("shipping", {}).get("shipping_price", {}).get("current") if isinstance(item.get("shipping"), dict) else None
-                ),
+                rating_value=float(rating_val) if rating_val is not None else None,
+                rating_votes=int(rating_votes) if rating_votes is not None else None,
+                shipping=None,
             ))
             if len(hits) >= limit:
                 break
