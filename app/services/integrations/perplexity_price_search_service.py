@@ -168,7 +168,10 @@ class PerplexityPriceSearchService:
         # the UI split them into "Discovered retailers" (perplexity) and
         # "Merchants" (dataforseo) sections.
         perplexity_task = asyncio.create_task(
-            self._perplexity_call(product_name, dimensions, country_code, limit, preferred_retailer_domains)
+            self._perplexity_call(
+                product_name, dimensions, country_code, limit,
+                preferred_retailer_domains, user_id, workspace_id,
+            )
         )
         dataforseo_task = asyncio.create_task(
             get_dataforseo_merchant_service().search_shopping(
@@ -210,6 +213,8 @@ class PerplexityPriceSearchService:
         country_code: Optional[str],
         limit: int,
         preferred_retailer_domains: Optional[List[str]],
+        user_id: Optional[str],
+        workspace_id: Optional[str],
     ) -> "PriceSearchResult":
         system_prompt, user_prompt = self._build_messages(product_name, dimensions, country_code, limit)
         schema = self._response_schema(limit)
