@@ -2113,7 +2113,9 @@ app.include_router(admin_linking_router)  # NEW: Admin entity linking (manual ch
 app.include_router(sam_router)   # SAM mask generation for material inpainting
 app.include_router(agent_router)  # Background agents — long-running task delegation
 
-# Module system: auto-discover and mount routers from app/modules/<slug>/
+# Module system: control endpoint (cache invalidation) + auto-discovered per-module routers
+from app.api.modules_control import router as modules_control_router  # noqa: E402
+app.include_router(modules_control_router)
 from app.modules import mount_module_routers  # noqa: E402
 mount_module_routers(app)
 

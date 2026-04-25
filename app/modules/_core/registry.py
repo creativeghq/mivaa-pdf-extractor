@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 _registry: Dict[str, ModuleDefinition] = {}
 _discovered: bool = False
 
-_CACHE_TTL_SECONDS = 30.0
+_CACHE_TTL_SECONDS = 300.0
 _enabled_cache: Dict[str, bool] = {}
 _enabled_cache_expires_at: float = 0.0
 
