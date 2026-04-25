@@ -81,9 +81,10 @@ def _build_generation_prompt(
         ]
     return " ".join(parts)
 
-# Model configurations - All Replicate models
+# Model configurations
 # Text-to-Image Models (for prompts without reference images)
 TEXT_TO_IMAGE_MODELS = [
+    {"id": "gemini-interior", "name": "Gemini 3 Flash Image", "provider": "gemini", "capability": "text-to-image", "cost_per_generation": 0.0, "model_tier": "fast"},
     {"id": "flux-2-pro", "name": "FLUX.2 Pro", "provider": "replicate", "model": "black-forest-labs/flux-2-pro", "capability": "text-to-image", "cost_per_generation": 0.05},
     {"id": "playground-v2.5", "name": "Playground v2.5", "provider": "replicate", "model": "playgroundai/playground-v2.5-1024px-aesthetic", "version": "a45f82a1382bed5c7aeb861dac7c7d191b0fdf74d8d57c4a0e6ed7d4d0bf7d24", "capability": "text-to-image", "cost_per_generation": 0.01, "input_schema": "playground_v25"},
     {"id": "sd3", "name": "Stable Diffusion 3", "provider": "replicate", "model": "stability-ai/stable-diffusion-3", "capability": "text-to-image", "cost_per_generation": 0.055},
@@ -91,6 +92,7 @@ TEXT_TO_IMAGE_MODELS = [
 
 # Image-to-Image Models (for interior design transformation with reference images)
 IMAGE_TO_IMAGE_MODELS = [
+    {"id": "gemini-interior", "name": "Gemini 3 Flash Image", "provider": "gemini", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.0, "model_tier": "fast"},
     {"id": "comfyui-interior-remodel", "name": "ComfyUI Interior Remodel", "provider": "replicate", "model": "jschoormans/comfyui-interior-remodel", "version": "2a360362540e1f6cfe59c9db4aa8aa9059233d40e638aae0cdeb6b41f3d0dcce", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.02, "input_schema": "comfyui_interior"},
     {"id": "interiorly-gen1-dev", "name": "Interiorly Gen1 Dev", "provider": "replicate", "model": "julian-at/interiorly-gen1-dev", "version": "5e3080d1b308e80197b32f0ce638daa8a329d0cf42068739723d8259e44b445e", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.015,
      "input_schema": "flux_lora_interior"},
@@ -356,7 +358,9 @@ async def generate_with_replicate(model: dict, prompt: str, width: int, height: 
                             try:
                                 from app.services.core.ai_call_logger import AICallLogger
                                 _replicate_latency_ms = int((asyncio.get_event_loop().time() - _replicate_start) * 1000)
-                                _model_key = (model_name.split("/")[-1] if model_name else model.get("name", "replicate-unknown"))
+                                # Use the registry id (which matches REPLICATE_PRICING keys), not the
+                                # trailing path segment of the Replicate model slug.
+                                _model_key = model.get("id") or model.get("name", "replicate-unknown")
                                 await AICallLogger().log_replicate_call(
                                     task="interior_design_generation",
                                     model=_model_key,
@@ -527,9 +531,12 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
     try:
         replicate_token = os.getenv("REPLICATE_API_TOKEN")
         if not replicate_token:
-            for m in models_to_use:
+            replicate_models = [m for m in models_to_use if m.get("provider") == "replicate"]
+            for m in replicate_models:
                 await atomic_update_model_result(job_id, m['id'], False, None, 0.0, "REPLICATE_API_TOKEN not configured")
-            return
+            if not any(m.get("provider") == "gemini" for m in models_to_use):
+                return
+            replicate_token = ""  # allow gemini-only runs to proceed
 
         # Semaphore to limit concurrent requests (3 at a time)
         semaphore = asyncio.Semaphore(3)
@@ -539,7 +546,22 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
                 try:
                     print(f"🎨 Starting generation for {model['name']}")
 
-                    # All models in the grid are Replicate
+                    if model.get("provider") == "gemini":
+                        # Gemini path — edge function handles its own credit debit + returns permanent URL
+                        permanent_url = await generate_with_gemini_edge(
+                            prompt=enhanced_prompt,
+                            room_type=request.room_type,
+                            style=request.style,
+                            image_url=request.image,
+                            user_id=request.user_id,
+                            workspace_id=request.workspace_id,
+                            model_tier=model.get("model_tier", "fast"),
+                        )
+                        print(f"✅ {model['name']} completed (credits billed by edge function)")
+                        await atomic_update_model_result(job_id, model['id'], True, permanent_url, 0.0, None)
+                        return
+
+                    # Replicate path
                     temp_image_url = await generate_with_replicate(
                         model, enhanced_prompt, request.width, request.height,
                         request.image, replicate_token, max_retries=3,
@@ -556,11 +578,14 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
                         operation_type="interior_design",
                         model_name=model['id'],
                         num_generations=1,
-                        job_id=job_id,
+                        # job_id intentionally omitted: ai_usage_logs.job_id FKs to background_jobs,
+                        # but interior jobs live in generation_3d. Track the id in metadata instead.
+                        job_id=None,
                         metadata={
                             'room_type': request.room_type,
                             'style': request.style,
                             'model_display_name': model['name'],
+                            'generation_3d_job_id': job_id,
                         }
                     )
                     cost = debit_result.get('billed_cost_usd', model.get('cost_per_generation', 0.0))

@@ -1046,10 +1046,14 @@ except ImportError:
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc: HTTPException):
     """Handle HTTP exceptions with structured error responses."""
-    # Capture HTTP exceptions in Sentry for 4xx and 5xx errors
+    # Capture HTTP exceptions in Sentry — but skip the noisy client-error codes
+    # (401/403/404). Those mean "bad token", "no permission", "doesn't exist" —
+    # they aren't server bugs and they swamp the dashboard. Server errors (5xx)
+    # and unexpected client errors (4xx other than the three above) still go
+    # through.
     try:
         import sentry_sdk
-        if exc.status_code >= 400:
+        if exc.status_code >= 500:
             with sentry_sdk.configure_scope() as scope:
                 scope.set_tag("error_type", "http_exception")
                 scope.set_tag("status_code", exc.status_code)
@@ -1058,12 +1062,17 @@ async def http_exception_handler(request, exc: HTTPException):
                     "method": request.method,
                     "headers": dict(request.headers)
                 })
-            
-            # Only capture 5xx errors as exceptions, 4xx as messages
-            if exc.status_code >= 500:
-                sentry_sdk.capture_exception(exc)
-            elif exc.status_code >= 400:
-                sentry_sdk.capture_message(f"HTTP {exc.status_code}: {exc.detail}", level="warning")
+            sentry_sdk.capture_exception(exc)
+        elif exc.status_code >= 400 and exc.status_code not in (401, 403, 404):
+            with sentry_sdk.configure_scope() as scope:
+                scope.set_tag("error_type", "http_exception")
+                scope.set_tag("status_code", exc.status_code)
+                scope.set_context("request", {
+                    "url": str(request.url),
+                    "method": request.method,
+                    "headers": dict(request.headers)
+                })
+            sentry_sdk.capture_message(f"HTTP {exc.status_code}: {exc.detail}", level="warning")
     except ImportError:
         pass  # Sentry not available
     except Exception:
