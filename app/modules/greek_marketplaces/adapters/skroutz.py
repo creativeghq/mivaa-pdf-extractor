@@ -12,10 +12,22 @@ high-volume automated scraping can lead to rate limiting or IP blocking.
 Before scaling this adapter up, either (a) contract with Skroutz for
 commercial data access or (b) confirm legal clearance.
 
-Flow: one scrape of `skroutz.gr/search?keyphrase=<query>` → extract the
-top matching product row → return a PriceHit pointing at that product's
-Skroutz page (which aggregates every merchant). Same credit cost as the
-other two Greek adapters (1 Firecrawl credit per call).
+Flow: one scrape of
+`skroutz.gr/search?keyphrase=<query>&order_by=pricevat&order_dir=asc`
+→ Skroutz returns the cheapest offer first, so the top row IS the
+lowest price for the query. We extract that single row and return a
+PriceHit pointing at the product's Skroutz page (which aggregates every
+merchant). Same credit cost as the other two Greek adapters (1
+Firecrawl credit per call).
+
+Why sort by price asc:
+* Lowest price is what price-monitoring is trying to track.
+* Skroutz's "find the right product" step often returns multiple
+  variants; sorting by price puts the same-product cheapest offer at
+  the top, which is the canonical row we want to extract.
+* Firecrawl only sees the first viewport in many JS-rendered pages —
+  sorting ensures the cheapest offer is always in the first viewport,
+  reducing the chance Skroutz's lazy-load defeats us.
 """
 
 from __future__ import annotations
@@ -32,14 +44,19 @@ from app.utils.price_parsing import parse_price
 
 logger = logging.getLogger(__name__)
 
-SEARCH_URL_TEMPLATE = "https://www.skroutz.gr/search?keyphrase={query}"
+SEARCH_URL_TEMPLATE = (
+    "https://www.skroutz.gr/search?keyphrase={query}"
+    "&order_by=pricevat&order_dir=asc"
+)
 MODULE_SLUG = "greek-marketplaces"
 
 EXTRACTION_PROMPT = (
-    "You are reading a Skroutz.gr search results page. Extract the FIRST "
-    "matching product listing. Return `found`=false if no products are shown. "
-    "For `product_url`, return the ABSOLUTE URL of the product detail page "
-    "on skroutz.gr (e.g. https://www.skroutz.gr/s/123/some-product.html). "
+    "You are reading a Skroutz.gr search results page sorted by lowest "
+    "price (order_by=pricevat). Extract the FIRST matching product listing "
+    "— since results are sorted asc by price-with-VAT, this is the cheapest "
+    "available offer for the query. Return `found`=false if no products are "
+    "shown. For `product_url`, return the ABSOLUTE URL of the product detail "
+    "page on skroutz.gr (e.g. https://www.skroutz.gr/s/123/some-product.html). "
     "If the page shows a direct merchant link on the first row (some product "
     "cards expose the cheapest merchant inline), use it for "
     "`cheapest_merchant_name` and `cheapest_merchant_url`; otherwise leave "
