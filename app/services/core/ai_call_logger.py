@@ -61,6 +61,7 @@ class AICallLogger:
         error_message: Optional[str] = None,
         user_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
+        module_slug: Optional[str] = None,
     ) -> bool:
         """
         Log an AI call to the database.
@@ -130,6 +131,7 @@ class AICallLogger:
                         "markup_multiplier": float(cost_data.get("markup_multiplier", 1.5)),
                         "billed_cost_usd": float(cost_data.get("billed_cost_usd", cost)),
                         "job_id": job_id,
+                        "module_slug": module_slug,
                         "metadata": {
                             "action": action,
                             "confidence_score": round(confidence_score, 2),
@@ -164,7 +166,8 @@ class AICallLogger:
         fallback_reason: Optional[str] = None,
         request_data: Optional[Dict[str, Any]] = None,
         user_id: Optional[str] = None,
-        workspace_id: Optional[str] = None
+        workspace_id: Optional[str] = None,
+        module_slug: Optional[str] = None
     ) -> bool:
         """
         Log a Claude API call and debit credits from user account.
@@ -204,7 +207,8 @@ class AICallLogger:
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     job_id=job_id,
-                    metadata={'source': 'claude_api'}
+                    metadata={'source': 'claude_api'},
+                    module_slug=module_slug
                 )
 
             # Extract response text
@@ -226,6 +230,7 @@ class AICallLogger:
                 response_data={"text": response_text[:500]},
                 user_id=user_id,
                 workspace_id=workspace_id,
+                module_slug=module_slug,
             )
 
         except Exception as e:
@@ -245,7 +250,8 @@ class AICallLogger:
         fallback_reason: Optional[str] = None,
         request_data: Optional[Dict[str, Any]] = None,
         user_id: Optional[str] = None,
-        workspace_id: Optional[str] = None
+        workspace_id: Optional[str] = None,
+        module_slug: Optional[str] = None
     ) -> bool:
         """
         Log a GPT API call and debit credits from user account.
@@ -285,12 +291,13 @@ class AICallLogger:
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     job_id=job_id,
-                    metadata={'source': 'gpt_api'}
+                    metadata={'source': 'gpt_api'},
+                    module_slug=module_slug
                 )
 
             # Extract response text
             response_text = response.choices[0].message.content if hasattr(response, 'choices') else str(response)
-            
+
             return await self.log_ai_call(
                 task=task,
                 model=model,
@@ -307,6 +314,7 @@ class AICallLogger:
                 response_data={"text": response_text[:500]},
                 user_id=user_id,
                 workspace_id=workspace_id,
+                module_slug=module_slug,
             )
 
         except Exception as e:
@@ -326,7 +334,8 @@ class AICallLogger:
         fallback_reason: Optional[str] = None,
         request_data: Optional[Dict[str, Any]] = None,
         user_id: Optional[str] = None,
-        workspace_id: Optional[str] = None
+        workspace_id: Optional[str] = None,
+        module_slug: Optional[str] = None
     ) -> bool:
         """
         Log a Qwen (HuggingFace) API call and debit credits.
@@ -367,7 +376,8 @@ class AICallLogger:
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     job_id=job_id,
-                    metadata={'source': 'qwen_api'}
+                    metadata={'source': 'qwen_api'},
+                    module_slug=module_slug
                 )
 
             # Extract response text
@@ -390,6 +400,7 @@ class AICallLogger:
                 response_data={"text": response_text[:500]},
                 user_id=user_id,
                 workspace_id=workspace_id,
+                module_slug=module_slug,
             )
 
         except Exception as e:
@@ -410,6 +421,7 @@ class AICallLogger:
         workspace_id: Optional[str] = None,
         request_data: Optional[Dict[str, Any]] = None,
         response_data: Optional[Dict[str, Any]] = None,
+        module_slug: Optional[str] = None,
     ) -> bool:
         """
         Log a Replicate per-generation API call.
@@ -435,6 +447,7 @@ class AICallLogger:
                     output_tokens=0,
                     job_id=job_id,
                     metadata={'source': 'replicate', 'billing': 'per_generation'},
+                    module_slug=module_slug,
                 )
 
             return await self.log_ai_call(
@@ -452,6 +465,7 @@ class AICallLogger:
                 response_data=response_data,
                 user_id=user_id,
                 workspace_id=workspace_id,
+                module_slug=module_slug,
             )
         except Exception as e:
             self.logger.error(f"❌ Failed to log Replicate call: {e}")
@@ -470,6 +484,7 @@ class AICallLogger:
         workspace_id: Optional[str] = None,
         request_data: Optional[Dict[str, Any]] = None,
         response_data: Optional[Dict[str, Any]] = None,
+        module_slug: Optional[str] = None,
     ) -> bool:
         """
         Log a time-based (HuggingFace GPU endpoint) call: Qwen, SLIG, OCR, YOLO.
@@ -501,6 +516,7 @@ class AICallLogger:
                     output_tokens=0,
                     job_id=job_id,
                     metadata={'source': 'huggingface_endpoint', 'duration_s': duration_seconds, 'billing': 'time_based'},
+                    module_slug=module_slug,
                 )
 
             return await self.log_ai_call(
@@ -518,6 +534,7 @@ class AICallLogger:
                 response_data=response_data,
                 user_id=user_id,
                 workspace_id=workspace_id,
+                module_slug=module_slug,
             )
         except Exception as e:
             self.logger.error(f"❌ Failed to log time-based call: {e}")
@@ -656,7 +673,8 @@ class AICallLogger:
         user_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
         request_data: Optional[Dict[str, Any]] = None,
-        response_data: Optional[Dict[str, Any]] = None
+        response_data: Optional[Dict[str, Any]] = None,
+        module_slug: Optional[str] = None
     ) -> bool:
         """
         Log a vision-guided extraction call.
@@ -704,7 +722,8 @@ class AICallLogger:
                         'detections': detections,
                         'confidence': confidence,
                         'extraction_method': extraction_method
-                    }
+                    },
+                    module_slug=module_slug
                 )
 
             # Log to ai_call_logs
