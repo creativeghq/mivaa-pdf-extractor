@@ -80,19 +80,36 @@ class ShopflixAdapter:
             return []
 
         url = _build_search_url(query)
+
+        # Shopflix's results are rendered client-side (Algolia/Spryker SPA),
+        # so a static HTML scrape returns nothing. JS render is required.
+        # Spryker hydration is slow + occasionally finishes after Firecrawl
+        # snapshots — retry once on empty extraction (one extra credit when
+        # we miss, no extra cost on the happy path).
         result = await self.firecrawl.scrape(
             url=url,
             extraction_model=MarketplaceProduct,
             user_id=user_id,
             workspace_id=workspace_id,
             extraction_prompt=EXTRACTION_PROMPT,
-            # Shopflix's results are rendered client-side (Algolia/Spryker SPA),
-            # so a static HTML scrape returns nothing. JS render is required.
             use_javascript_render=True,
             only_main_content=True,
             module_slug=MODULE_SLUG,
             source_tag="shopflix",
         )
+        if result.success and (not result.data or not result.data.found):
+            logger.info("Shopflix: empty hydration, retrying once.")
+            result = await self.firecrawl.scrape(
+                url=url,
+                extraction_model=MarketplaceProduct,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                extraction_prompt=EXTRACTION_PROMPT,
+                use_javascript_render=True,
+                only_main_content=True,
+                module_slug=MODULE_SLUG,
+                source_tag="shopflix",
+            )
 
         if not result.success or not result.data or not result.data.found:
             return []

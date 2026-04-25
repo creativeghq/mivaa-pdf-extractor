@@ -122,17 +122,34 @@ class SkroutzAdapter:
             return []
 
         url = SEARCH_URL_TEMPLATE.format(query=urllib.parse.quote_plus(query))
+
+        # skroutz.gr is JS-heavy. Hydration occasionally finishes after the
+        # Firecrawl render snapshot — retry once on success-but-empty so a
+        # transient miss doesn't cost us a real result.
         result = await self.firecrawl.scrape(
             url=url,
             extraction_model=SkroutzSearchResult,
             user_id=user_id,
             workspace_id=workspace_id,
             extraction_prompt=EXTRACTION_PROMPT,
-            use_javascript_render=True,  # skroutz.gr is JS-heavy
+            use_javascript_render=True,
             only_main_content=True,
             module_slug=MODULE_SLUG,
             source_tag="skroutz",
         )
+        if result.success and (not result.data or not result.data.found):
+            logger.info("Skroutz: empty hydration, retrying once.")
+            result = await self.firecrawl.scrape(
+                url=url,
+                extraction_model=SkroutzSearchResult,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                extraction_prompt=EXTRACTION_PROMPT,
+                use_javascript_render=True,
+                only_main_content=True,
+                module_slug=MODULE_SLUG,
+                source_tag="skroutz",
+            )
 
         if not result.success or not result.data or not result.data.found:
             return []
