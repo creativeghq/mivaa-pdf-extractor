@@ -89,6 +89,7 @@ class FirecrawlClient:
         use_javascript_render: bool = False,
         only_main_content: bool = True,
         module_slug: Optional[str] = None,
+        source_tag: Optional[str] = None,
     ) -> FirecrawlResult[T]:
         """
         Scrape a URL and extract fields defined by `extraction_model`.
@@ -136,6 +137,7 @@ class FirecrawlClient:
                 success=False,
                 error=str(e),
                 module_slug=module_slug,
+                source_tag=source_tag,
             )
             return FirecrawlResult(success=False, error=str(e), latency_ms=latency_ms)
 
@@ -152,6 +154,13 @@ class FirecrawlClient:
             except ValidationError as ve:
                 logger.warning(f"Firecrawl extract failed model validation for {url}: {ve}")
 
+        request_preview: Dict[str, Any] = {
+            "model": extraction_model.__name__,
+            "js_render": use_javascript_render,
+        }
+        if source_tag:
+            request_preview["source"] = source_tag
+
         await self._log_call(
             user_id=user_id,
             workspace_id=workspace_id,
@@ -159,9 +168,10 @@ class FirecrawlClient:
             credits_used=credits_used,
             latency_ms=latency_ms,
             success=True,
-            request_preview={"model": extraction_model.__name__, "js_render": use_javascript_render},
+            request_preview=request_preview,
             response_preview=raw_extract,
             module_slug=module_slug,
+            source_tag=source_tag,
         )
 
         return FirecrawlResult(
@@ -270,8 +280,13 @@ class FirecrawlClient:
         request_preview: Optional[Dict[str, Any]] = None,
         response_preview: Optional[Dict[str, Any]] = None,
         module_slug: Optional[str] = None,
+        source_tag: Optional[str] = None,
     ) -> None:
         try:
+            # Ensure source_tag is visible in request_data even if caller didn't
+            # supply a request_preview dict.
+            if source_tag:
+                request_preview = {**(request_preview or {}), "source": source_tag}
             await self.ai_logger.log_firecrawl_call(
                 user_id=user_id,
                 workspace_id=workspace_id,

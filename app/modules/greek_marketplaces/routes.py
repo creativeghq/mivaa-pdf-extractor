@@ -262,7 +262,18 @@ async def _fetch_module_stats(slug: str) -> ModuleStats:
         for row in rows:
             total_credits += float(row.get("credits_debited") or 0)
             metadata = row.get("metadata") or {}
-            source = metadata.get("source") if isinstance(metadata, dict) else None
+            if not isinstance(metadata, dict):
+                continue
+            # Adapter identity is pushed into the Firecrawl `request_data` at
+            # scrape time, then mirrored into `metadata.request.source` by
+            # AICallLogger.log_firecrawl_call. Fall back to api_provider so
+            # legacy rows still aggregate as "firecrawl".
+            source = None
+            req = metadata.get("request")
+            if isinstance(req, dict):
+                source = req.get("source")
+            if not source:
+                source = metadata.get("source") or metadata.get("api_provider")
             if source:
                 per_source[source] = per_source.get(source, 0) + 1
 

@@ -59,6 +59,7 @@ class ShopflixAdapter:
             use_javascript_render=False,
             only_main_content=True,
             module_slug=MODULE_SLUG,
+            source_tag="shopflix",
         )
 
         if not result.success or not result.data or not result.data.found:

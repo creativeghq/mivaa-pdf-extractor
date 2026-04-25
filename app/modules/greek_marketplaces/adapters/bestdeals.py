@@ -58,6 +58,7 @@ class BestdealsAdapter:
             use_javascript_render=False,
             only_main_content=True,
             module_slug=MODULE_SLUG,
+            source_tag="bestdeals",
         )
 
         if not result.success or not result.data or not result.data.found:

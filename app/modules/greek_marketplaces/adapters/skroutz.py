@@ -113,6 +113,7 @@ class SkroutzAdapter:
             use_javascript_render=True,  # skroutz.gr is JS-heavy
             only_main_content=True,
             module_slug=MODULE_SLUG,
+            source_tag="skroutz",
         )
 
         if not result.success or not result.data or not result.data.found:
