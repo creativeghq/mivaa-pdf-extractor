@@ -21,11 +21,11 @@ from typing import List, Optional
 from urllib.parse import urlparse
 
 from app.modules.greek_marketplaces.adapters import (
-    BestdealsAdapter,
+    BestpriceAdapter,
     ShopflixAdapter,
     SkroutzAdapter,
 )
-from app.modules.greek_marketplaces.adapters.bestdeals import get_bestdeals_adapter
+from app.modules.greek_marketplaces.adapters.bestprice import get_bestprice_adapter
 from app.modules.greek_marketplaces.adapters.shopflix import get_shopflix_adapter
 from app.modules.greek_marketplaces.adapters.skroutz import get_skroutz_adapter
 from app.services.integrations.perplexity_price_search_service import PriceHit
@@ -33,20 +33,21 @@ from app.services.integrations.perplexity_price_search_service import PriceHit
 logger = logging.getLogger(__name__)
 
 MODULE_SLUG = "greek-marketplaces"
+ADAPTER_NAMES = ("skroutz", "bestprice", "shopflix")
 
 
 class GreekMarketplacesService:
-    """Thin orchestrator that fans out across Skroutz + Bestdeals + Shopflix."""
+    """Thin orchestrator that fans out across Skroutz + Bestprice + Shopflix."""
 
     def __init__(
         self,
         *,
         skroutz: Optional[SkroutzAdapter] = None,
-        bestdeals: Optional[BestdealsAdapter] = None,
+        bestprice: Optional[BestpriceAdapter] = None,
         shopflix: Optional[ShopflixAdapter] = None,
     ) -> None:
         self.skroutz = skroutz or get_skroutz_adapter()
-        self.bestdeals = bestdeals or get_bestdeals_adapter()
+        self.bestprice = bestprice or get_bestprice_adapter()
         self.shopflix = shopflix or get_shopflix_adapter()
 
     async def search(
@@ -63,7 +64,7 @@ class GreekMarketplacesService:
 
         tasks = [
             self.skroutz.search(query, user_id=user_id, workspace_id=workspace_id, limit=limit),
-            self.bestdeals.search(query, user_id=user_id, workspace_id=workspace_id),
+            self.bestprice.search(query, user_id=user_id, workspace_id=workspace_id),
             self.shopflix.search(query, user_id=user_id, workspace_id=workspace_id),
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -71,8 +72,11 @@ class GreekMarketplacesService:
         hits: List[PriceHit] = []
         for idx, result in enumerate(results):
             if isinstance(result, BaseException):
-                source = ["skroutz", "bestdeals", "shopflix"][idx]
-                logger.warning("greek-marketplaces: %s adapter failed (%s)", source, result)
+                logger.warning(
+                    "greek-marketplaces: %s adapter failed (%s)",
+                    ADAPTER_NAMES[idx],
+                    result,
+                )
                 continue
             hits.extend(result or [])
 

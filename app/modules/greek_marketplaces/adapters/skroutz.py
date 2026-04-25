@@ -38,6 +38,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
+from app.modules.greek_marketplaces.match_filter import is_plausible_match
 from app.services.integrations.firecrawl_client import FirecrawlClient
 from app.services.integrations.perplexity_price_search_service import PriceHit
 from app.utils.price_parsing import parse_price
@@ -143,6 +144,17 @@ class SkroutzAdapter:
         retailer_name = data.cheapest_merchant_name or "Skroutz"
         product_url = data.cheapest_merchant_url or data.product_url
         if not product_url:
+            return []
+
+        # Match-quality safeguard — drop "no results, here's a featured
+        # product" scenarios. Skroutz's URL slug carries the product name,
+        # so this is a reliable check.
+        if not is_plausible_match(query, product_url, data.product_name):
+            logger.info(
+                "Skroutz: dropped likely false positive — query=%r, url=%s",
+                query,
+                product_url,
+            )
             return []
 
         price, currency = parse_price(data.best_price, hint_currency=data.currency or "EUR")

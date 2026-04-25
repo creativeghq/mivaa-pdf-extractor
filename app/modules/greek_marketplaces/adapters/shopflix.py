@@ -1,9 +1,16 @@
 """
 Shopflix.gr adapter — Firecrawl scrape of the site search page.
 
-Shopflix is a marketplace of third-party Greek sellers. Like Bestdeals,
-no public API is available. We fetch the search page via Firecrawl and
-extract the top matching listing as a single PriceHit.
+Shopflix is a marketplace of third-party Greek sellers. No public API
+is available. We fetch the search page via Firecrawl and extract the
+top matching listing as a single PriceHit.
+
+ADAPTER CURRENTLY DISABLED: the search URL pattern shopflix.gr uses is
+not yet confirmed. Earlier guesses (`/search?q=`, `/search?search=`,
+`/search?keyword=`, `/?s=...`) all redirect to the homepage. Until the
+correct pattern is known, this adapter no-ops by returning [] without
+spending a Firecrawl credit. Set `ENABLED = True` and update
+`SEARCH_URL_TEMPLATE` once the correct URL is verified.
 """
 
 from __future__ import annotations
@@ -12,6 +19,7 @@ import logging
 import urllib.parse
 from typing import List, Optional
 
+from app.modules.greek_marketplaces.match_filter import is_plausible_match
 from app.modules.greek_marketplaces.models import MarketplaceProduct
 from app.services.integrations.firecrawl_client import FirecrawlClient
 from app.services.integrations.perplexity_price_search_service import PriceHit
@@ -19,6 +27,9 @@ from app.utils.price_parsing import parse_price
 
 logger = logging.getLogger(__name__)
 
+# Flip to True once SEARCH_URL_TEMPLATE is verified to actually return
+# search results on shopflix.gr.
+ENABLED = False
 SEARCH_URL_TEMPLATE = "https://www.shopflix.gr/search?search={query}"
 MODULE_SLUG = "greek-marketplaces"
 
@@ -45,6 +56,10 @@ class ShopflixAdapter:
         user_id: str,
         workspace_id: Optional[str] = None,
     ) -> List[PriceHit]:
+        if not ENABLED:
+            logger.debug("Shopflix: adapter disabled (URL pattern unconfirmed), skipping.")
+            return []
+
         if not self.firecrawl.api_key:
             logger.debug("Shopflix: Firecrawl not configured, skipping.")
             return []
@@ -67,6 +82,14 @@ class ShopflixAdapter:
 
         product = result.data
         if not product.product_url:
+            return []
+
+        if not is_plausible_match(query, product.product_url, product.retailer_name):
+            logger.info(
+                "Shopflix: dropped likely false positive — query=%r, url=%s",
+                query,
+                product.product_url,
+            )
             return []
 
         price, currency = parse_price(product.price, hint_currency=product.currency or "EUR")

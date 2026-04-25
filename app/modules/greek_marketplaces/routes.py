@@ -153,23 +153,28 @@ async def module_status(request: Request) -> ModuleStatus:
     skroutz = get_skroutz_adapter()
     firecrawl = get_firecrawl_client()
 
+    # Lazy import keeps the routes module light and avoids surprising
+    # the module loader on first import.
+    from app.modules.greek_marketplaces.adapters.shopflix import ENABLED as shopflix_enabled
+
     sources = [
         SourceStatus(
             key="skroutz",
             name="Skroutz",
             configured=skroutz.is_configured,
             details=(
-                "Firecrawl scrape of skroutz.gr/search — aggregator URL (merchants one click away)."
+                "Firecrawl scrape of skroutz.gr/search?keyphrase=… (price-asc sort) — "
+                "aggregator URL (merchants one click away)."
                 if skroutz.is_configured
                 else "FIRECRAWL_API_KEY not set — adapter skips."
             ),
         ),
         SourceStatus(
-            key="bestdeals",
-            name="Bestdeals.gr",
+            key="bestprice",
+            name="Bestprice.gr",
             configured=bool(firecrawl.api_key),
             details=(
-                "Reuses shared FIRECRAWL_API_KEY."
+                "Firecrawl scrape of bestprice.gr/search?q=…&o=2 (price-asc sort)."
                 if firecrawl.api_key
                 else "FIRECRAWL_API_KEY not set — adapter skips."
             ),
@@ -177,11 +182,11 @@ async def module_status(request: Request) -> ModuleStatus:
         SourceStatus(
             key="shopflix",
             name="Shopflix.gr",
-            configured=bool(firecrawl.api_key),
+            configured=shopflix_enabled and bool(firecrawl.api_key),
             details=(
-                "Reuses shared FIRECRAWL_API_KEY."
-                if firecrawl.api_key
-                else "FIRECRAWL_API_KEY not set — adapter skips."
+                "Firecrawl scrape of shopflix.gr search."
+                if (shopflix_enabled and firecrawl.api_key)
+                else "Disabled — search URL pattern unconfirmed. Set ENABLED=True in shopflix.py once the URL is verified."
             ),
         ),
     ]
