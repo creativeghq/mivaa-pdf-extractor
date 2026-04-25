@@ -958,6 +958,8 @@ Get your token from the frontend application or Supabase authentication.
             {"name": "Logs", "description": "System logs - Fetch, filter, clear application logs. Frontend error reporting endpoint."},
             {"name": "WebSocket", "description": "Real-time updates - WebSocket endpoint for job progress streaming and system health notifications."},
             {"name": "Internal Pipeline", "description": "Internal modular endpoints for the 14-stage PDF processing pipeline. Not for external consumption."},
+            {"name": "modules:control", "description": "Module-system control endpoints. Currently: cache invalidation hook called by `/admin/modules` toggle UI to drop the in-process enabled-flag cache without waiting for the 5-min TTL."},
+            {"name": "modules:greek-marketplaces", "description": "Greek Marketplaces module — Skroutz/Bestprice/Shopflix discovery + admin status/test endpoints. Mounted at `/api/v1/modules/greek-marketplaces/*` only when the `greek-marketplaces` row in `public.modules` is enabled."},
         ],
         contact={
             "name": "MIVAA Team",
@@ -2262,7 +2264,8 @@ def custom_openapi():
         "monitoring_routes": "/, /metrics, /performance/summary (3 endpoints)",
         "ai_metrics_routes": "/api/v1/ai-metrics/* (2 endpoints) - Job metrics, summary",
         "web_scraping_routes": "/api/scraping/* (2 endpoints) - Firecrawl integration, web content to products",
-        "relationship_routes": "/api/rag/product-image-relationships, /api/rag/chunk-product-relationships (2 endpoints) - Relationship queries"
+        "relationship_routes": "/api/rag/product-image-relationships, /api/rag/chunk-product-relationships (2 endpoints) - Relationship queries",
+        "module_routes": "/api/v1/modules/* (3 endpoints) - Module-system control (POST /_invalidate) + greek-marketplaces module (GET /status, POST /search) — gated by public.modules row"
     }
 
     # Add platform statistics (UPDATED - Corrected counts after audit)
