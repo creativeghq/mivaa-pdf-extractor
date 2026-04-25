@@ -184,9 +184,10 @@ async def module_status(request: Request) -> ModuleStatus:
             name="Shopflix.gr",
             configured=shopflix_enabled and bool(firecrawl.api_key),
             details=(
-                "Firecrawl scrape of shopflix.gr search."
+                "Firecrawl scrape (JS-rendered) of shopflix.gr/search "
+                "with Spryker price-asc sort."
                 if (shopflix_enabled and firecrawl.api_key)
-                else "Disabled — search URL pattern unconfirmed. Set ENABLED=True in shopflix.py once the URL is verified."
+                else "FIRECRAWL_API_KEY not set — adapter skips."
             ),
         ),
     ]

@@ -4,7 +4,7 @@ manifest = ModuleManifest(
     slug="greek-marketplaces",
     name="Greek Marketplaces",
     description=(
-        "Skroutz, Bestdeals, and Shopflix as always-on discovery sources "
+        "Skroutz, Bestprice, and Shopflix as always-on discovery sources "
         "for price monitoring. Returns first-party retailer URLs with "
         "verified prices for Greek-market products."
     ),

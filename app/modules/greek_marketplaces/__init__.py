@@ -1,4 +1,4 @@
-"""Greek Marketplaces module — Skroutz + Bestdeals + Shopflix discovery."""
+"""Greek Marketplaces module — Skroutz + Bestprice + Shopflix discovery."""
 
 from app.modules._core.types import ModuleDefinition
 from app.modules.greek_marketplaces.manifest import manifest

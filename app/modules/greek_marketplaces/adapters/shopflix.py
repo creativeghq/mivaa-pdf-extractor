@@ -5,12 +5,22 @@ Shopflix is a marketplace of third-party Greek sellers. No public API
 is available. We fetch the search page via Firecrawl and extract the
 top matching listing as a single PriceHit.
 
-ADAPTER CURRENTLY DISABLED: the search URL pattern shopflix.gr uses is
-not yet confirmed. Earlier guesses (`/search?q=`, `/search?search=`,
-`/search?keyword=`, `/?s=...`) all redirect to the homepage. Until the
-correct pattern is known, this adapter no-ops by returning [] without
-spending a Firecrawl credit. Set `ENABLED = True` and update
-`SEARCH_URL_TEMPLATE` once the correct URL is verified.
+URL pattern verified by user: shopflix.gr uses Spryker / Algolia-style
+query parameters. The full canonical search URL is:
+
+  https://shopflix.gr/search
+    ?prod_GR_spryker[query]=<query>
+    &prod_GR_spryker[sortBy]=prod_GR_spryker_search-result-data.price_asc
+    &k=<query>
+
+`prod_GR_spryker[query]` and `k` are both required (the latter is the
+URL-bar fallback the JS framework reads). `sortBy=...price_asc`
+sorts by price ascending so the top row is the cheapest match.
+
+Note the bracketed query-string parameter names: `prod_GR_spryker[query]`
+must NOT be URL-encoded for Spryker to recognize it (curly-bracket
+encoding `%5B%5D` is fine in browsers but we keep it raw here for
+compatibility).
 """
 
 from __future__ import annotations
@@ -27,19 +37,37 @@ from app.utils.price_parsing import parse_price
 
 logger = logging.getLogger(__name__)
 
-# Flip to True once SEARCH_URL_TEMPLATE is verified to actually return
-# search results on shopflix.gr.
-ENABLED = False
-SEARCH_URL_TEMPLATE = "https://www.shopflix.gr/search?search={query}"
+ENABLED = True
+SHOPFLIX_BASE_URL = "https://shopflix.gr/search"
+SHOPFLIX_SORT_PRICE_ASC = "prod_GR_spryker_search-result-data.price_asc"
 MODULE_SLUG = "greek-marketplaces"
 
+
+def _build_search_url(query: str) -> str:
+    """Compose the Spryker-style search URL with price-asc sort.
+
+    Spryker reads both `prod_GR_spryker[query]` (the search input) and
+    `k` (the URL-bar canonical) — we pass the same value to both.
+    """
+    encoded = urllib.parse.quote(query, safe="")
+    params = (
+        f"prod_GR_spryker%5Bquery%5D={encoded}"
+        f"&prod_GR_spryker%5BsortBy%5D={SHOPFLIX_SORT_PRICE_ASC}"
+        f"&k={encoded}"
+    )
+    return f"{SHOPFLIX_BASE_URL}?{params}"
+
 EXTRACTION_PROMPT = (
-    "You are reading a Shopflix.gr search results page. Extract the FIRST "
-    "matching product listing. Return `found`=false if none. Prefer "
-    "organic (non-sponsored) results. Return the product detail page URL. "
-    "Use `retailer_name` for the marketplace seller label when shown; fall "
-    "back to 'Shopflix.gr' otherwise. Keep prices as strings with currency "
-    "symbols intact."
+    "You are reading a Shopflix.gr search results page sorted by price "
+    "ascending (sortBy=price_asc). Extract the FIRST organic product "
+    "listing — since results are sorted by price asc, this is the "
+    "cheapest matching offer. Return `found`=false unless the visible "
+    "product name plausibly matches the query (same brand/model). If "
+    "the page shows 'no results' or only suggested/promotional products, "
+    "return `found`=false. Return the absolute product detail URL on "
+    "shopflix.gr. Use `retailer_name` for the marketplace seller label "
+    "when shown; fall back to 'Shopflix.gr' otherwise. Keep prices as "
+    "strings with currency symbols intact."
 )
 
 
@@ -64,14 +92,16 @@ class ShopflixAdapter:
             logger.debug("Shopflix: Firecrawl not configured, skipping.")
             return []
 
-        url = SEARCH_URL_TEMPLATE.format(query=urllib.parse.quote_plus(query))
+        url = _build_search_url(query)
         result = await self.firecrawl.scrape(
             url=url,
             extraction_model=MarketplaceProduct,
             user_id=user_id,
             workspace_id=workspace_id,
             extraction_prompt=EXTRACTION_PROMPT,
-            use_javascript_render=False,
+            # Shopflix's results are rendered client-side (Algolia/Spryker SPA),
+            # so a static HTML scrape returns nothing. JS render is required.
+            use_javascript_render=True,
             only_main_content=True,
             module_slug=MODULE_SLUG,
             source_tag="shopflix",

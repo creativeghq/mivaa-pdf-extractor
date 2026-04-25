@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 
 class MarketplaceProduct(BaseModel):
-    """Shape Firecrawl extracts from a Bestdeals / Shopflix search result page."""
+    """Shape Firecrawl extracts from a Bestprice / Shopflix search result page."""
 
     found: bool = Field(default=False, description="True if a product match was found on the page.")
     product_url: Optional[str] = Field(default=None, description="Direct URL of the first matching product.")

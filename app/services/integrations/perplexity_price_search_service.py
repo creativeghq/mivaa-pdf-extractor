@@ -938,7 +938,7 @@ class PerplexityPriceSearchService:
         limit: int,
     ) -> List[PriceHit]:
         """
-        Call the Greek Marketplaces module (Skroutz + Bestdeals + Shopflix).
+        Call the Greek Marketplaces module (Skroutz + Bestprice + Shopflix).
         Gated on country=GR and the DB module toggle. Returns [] when either
         guard fails so the parallel gather doesn't need special handling.
         """

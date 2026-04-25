@@ -111,7 +111,7 @@ def normalize_model_token(token: Optional[str]) -> str:
 # ────────────────────────────────────────────────────────────────────────────
 
 # Hosts we know are aggregators. If Perplexity names a retailer but hands us
-# an aggregator URL, the hit is worthless — Skroutz/Bestdeals/Shopflix get
+# an aggregator URL, the hit is worthless — Skroutz/Bestprice/Shopflix get
 # their own first-class adapters.
 _AGGREGATOR_HOSTS = {
     "bestprice.gr", "skroutz.gr", "prekmobile.gr",
