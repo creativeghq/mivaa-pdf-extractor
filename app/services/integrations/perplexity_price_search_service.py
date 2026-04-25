@@ -265,9 +265,14 @@ class PerplexityPriceSearchService:
                 limit=max(limit, 30),
             )
         )
+        # Greek marketplace search engines (Skroutz/Bestprice/Shopflix) are
+        # literal text-search — adding dimensions to the query string usually
+        # causes zero-match misses (sites print "60x120" but query says "60x120 cm",
+        # for example). We send brand+model only and let the per-page identity
+        # safeguard handle variant filtering after the fact.
         greek_task = asyncio.create_task(
             self._greek_marketplaces_call(
-                query=f"{product_name} {dimensions}".strip() if dimensions else product_name,
+                query=product_name,
                 country_code=country_code,
                 user_id=user_id,
                 workspace_id=workspace_id,
@@ -550,9 +555,17 @@ class PerplexityPriceSearchService:
         country_code: Optional[str],
         limit: int,
     ) -> Tuple[str, str]:
-        """Returns (system_prompt, user_prompt)."""
-        size_part = f" {dimensions}" if dimensions else ""
-        product_spec = f"{product_name}{size_part}".strip()
+        """Returns (system_prompt, user_prompt).
+
+        Dimensions are passed as a SOFT hint, not a hard filter — retailers
+        often print sizes in different notations than the catalog (60×60 cm
+        vs 600×600 mm vs 60x60 vs 60/60). Forcing the dimension string into
+        the literal query loses 30-50% of valid hits when the notation
+        diverges. Instead, we list the brand+model in the primary query and
+        flag dimensions in a separate "additional context" line so the
+        model can use it as a tie-breaker among multi-size SKUs.
+        """
+        product_spec = product_name.strip()
         today = datetime.now(timezone.utc).date().isoformat()
 
         local_directive = ""
@@ -593,8 +606,17 @@ class PerplexityPriceSearchService:
             f"{local_directive}"
         )
 
+        dim_directive = ""
+        if dimensions:
+            dim_directive = (
+                f"\n\nSize hint (soft — use as tie-breaker, not a hard filter): {dimensions}. "
+                "Page may print this in different notation (cm/mm/×/x/slash). "
+                "Prefer the matching size when a retailer lists multiple — but include the "
+                "retailer even if you can only find a different size of the same brand/model."
+            )
+
         user_prompt = (
-            f"Find current published retail prices for: {product_spec}. "
+            f"Find current published retail prices for: {product_spec}.{dim_directive} "
             f"Return up to {limit} retailers. After the list, write a 2-3 sentence `summary` noting: "
             "the closest retailer to the user (if country is known), any manufacturer showroom "
             "presence in-country, and any pricing outliers worth questioning."

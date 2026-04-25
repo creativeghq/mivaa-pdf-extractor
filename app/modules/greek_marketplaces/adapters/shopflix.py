@@ -139,6 +139,7 @@ class ShopflixAdapter:
                 availability=product.availability,
                 source="shopflix",
                 verified=False,
+                notes="via Shopflix",
             )
         ]
 

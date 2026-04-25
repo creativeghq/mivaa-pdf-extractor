@@ -32,6 +32,8 @@ import logging
 import urllib.parse
 from typing import List, Optional
 
+from pydantic import BaseModel, Field
+
 from app.modules.greek_marketplaces.match_filter import is_plausible_match
 from app.modules.greek_marketplaces.models import MarketplaceProduct
 from app.services.integrations.firecrawl_client import FirecrawlClient
@@ -58,6 +60,39 @@ EXTRACTION_PROMPT = (
     "as strings — do not parse numerics."
 )
 
+PRODUCT_PAGE_PROMPT = (
+    "You are reading a Bestprice.gr product detail page (URL like "
+    "/to/<id>/<slug>.html or /item/<id>/<slug>.html). Bestprice lists every "
+    "shop selling this exact SKU in a 'Καταστήματα' / 'Shops' section. "
+    "Extract EVERY visible shop row. For each row return: shop name, the "
+    "shop's product URL on its OWN domain (Bestprice's 'Επίσκεψη "
+    "καταστήματος' / 'Visit' button — that target URL, NOT a bestprice.gr "
+    "URL), the visible price including VAT and currency symbol, and the "
+    "availability label as shown. Return found=true and the shops list in "
+    "the page's natural order (Bestprice sorts by price ascending). If no "
+    "shop rows are visible, return found=false."
+)
+
+
+class BestpriceShopOffer(BaseModel):
+    """One shop row inside a Bestprice product detail page."""
+
+    merchant_name: Optional[str] = Field(default=None, description="Shop name as shown.")
+    merchant_url: Optional[str] = Field(
+        default=None,
+        description="Direct URL on the shop's own domain (NOT bestprice.gr).",
+    )
+    price: Optional[str] = Field(default=None, description="Visible price string with currency.")
+    availability: Optional[str] = Field(default=None, description="Availability label as shown.")
+
+
+class BestpriceProductPageResult(BaseModel):
+    """All visible shop offers on a Bestprice product detail page."""
+
+    found: bool = Field(default=False)
+    product_name: Optional[str] = Field(default=None)
+    shops: List[BestpriceShopOffer] = Field(default_factory=list)
+
 
 class BestpriceAdapter:
     """One-call-one-hit adapter for bestprice.gr."""
@@ -78,15 +113,11 @@ class BestpriceAdapter:
 
         url = SEARCH_URL_TEMPLATE.format(query=urllib.parse.quote_plus(query))
         result = await self.firecrawl.scrape(
-            url=url,
-            extraction_model=MarketplaceProduct,
-            user_id=user_id,
-            workspace_id=workspace_id,
+            url=url, extraction_model=MarketplaceProduct,
+            user_id=user_id, workspace_id=workspace_id,
             extraction_prompt=EXTRACTION_PROMPT,
-            use_javascript_render=False,
-            only_main_content=True,
-            module_slug=MODULE_SLUG,
-            source_tag=SOURCE_TAG,
+            use_javascript_render=False, only_main_content=True,
+            module_slug=MODULE_SLUG, source_tag=SOURCE_TAG,
         )
 
         if not result.success or not result.data or not result.data.found:
@@ -101,14 +132,25 @@ class BestpriceAdapter:
         if not is_plausible_match(query, product.product_url, product.retailer_name):
             logger.info(
                 "Bestprice: dropped likely false positive — query=%r, url=%s",
-                query,
-                product.product_url,
+                query, product.product_url,
             )
             return []
 
+        # Bestprice product pages aggregate every shop selling that SKU.
+        # Fan out into per-shop hits when the URL is a /to/ or /item/ page.
+        if "bestprice.gr/to/" in product.product_url or "bestprice.gr/item/" in product.product_url:
+            shop_hits = await self._fanout_product_page(
+                product.product_url, query=query,
+                fallback_currency=product.currency or "EUR",
+                user_id=user_id, workspace_id=workspace_id,
+            )
+            if shop_hits:
+                return shop_hits
+
+        # Fallback: single-row legacy emit when fanout isn't possible (search
+        # returned a category URL, or product page extraction failed).
         price, currency = parse_price(product.price, hint_currency=product.currency or "EUR")
         original, _ = parse_price(product.original_price, hint_currency=product.currency or "EUR")
-
         return [
             PriceHit(
                 retailer_name=product.retailer_name or "Bestprice.gr",
@@ -119,8 +161,65 @@ class BestpriceAdapter:
                 availability=product.availability,
                 source=SOURCE_TAG,
                 verified=False,
+                notes="via Bestprice",
             )
         ]
+
+    async def _fanout_product_page(
+        self,
+        product_url: str,
+        *,
+        query: str,
+        fallback_currency: str,
+        user_id: str,
+        workspace_id: Optional[str],
+    ) -> List[PriceHit]:
+        """Scrape the Bestprice product detail page and emit a hit per shop."""
+        try:
+            result = await self.firecrawl.scrape(
+                url=product_url,
+                extraction_model=BestpriceProductPageResult,
+                user_id=user_id, workspace_id=workspace_id,
+                extraction_prompt=PRODUCT_PAGE_PROMPT,
+                use_javascript_render=False, only_main_content=True,
+                module_slug=MODULE_SLUG, source_tag="bestprice_product_page",
+            )
+        except Exception as e:
+            logger.warning("Bestprice product-page scrape failed (%s): %s", product_url, e)
+            return []
+        if not result.success or not result.data or not result.data.found:
+            return []
+        # Page-level identity safeguard.
+        if not is_plausible_match(query, product_url, result.data.product_name):
+            logger.info(
+                "Bestprice: product page failed plausibility check — query=%r, url=%s",
+                query, product_url,
+            )
+            return []
+
+        hits: List[PriceHit] = []
+        for shop in result.data.shops:
+            if not shop.merchant_url or not shop.merchant_name:
+                continue
+            price, currency = parse_price(shop.price, hint_currency=fallback_currency)
+            avail = (shop.availability or "").lower()
+            if any(tok in avail for tok in ("εκτός", "out", "unavail")):
+                availability = "out_of_stock"
+            else:
+                availability = "in_stock"
+            hits.append(
+                PriceHit(
+                    retailer_name=shop.merchant_name,
+                    product_url=shop.merchant_url,
+                    price=float(price) if price is not None else None,
+                    currency=currency or fallback_currency,
+                    availability=availability,
+                    source=SOURCE_TAG,
+                    verified=False,
+                    notes="via Bestprice",
+                )
+            )
+        return hits
 
 
 _singleton: Optional[BestpriceAdapter] = None

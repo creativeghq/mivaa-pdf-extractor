@@ -158,39 +158,37 @@ class ImageProcessingService:
     async def classify_images(
         self,
         extracted_images: List[Dict[str, Any]],
-        confidence_threshold: float = 0.6,  # OPTIMIZED: Lowered from 0.7 to reduce validation calls
-        primary_model: str = "Qwen/Qwen3-VL-32B-Instruct",  # PRIMARY: Qwen3-VL-32B (reliable, high accuracy)
-        validation_model: str = "claude-opus-4-7",  # FALLBACK: Claude Opus 4.7 (highest quality)
-        batch_size: int = 15,  # NEW: Process images in batches to prevent OOM
-        job_id: Optional[str] = None  # NEW: Job ID for AI cost tracking
+        confidence_threshold: float = 0.6,
+        primary_model: Optional[str] = None,
+        validation_model: Optional[str] = None,
+        batch_size: int = 15,
+        job_id: Optional[str] = None,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """
-        Classify images as material or non-material using Qwen Vision models.
+        """Classify images as material or non-material.
 
-        SUPPORTED MODELS:
-        - Qwen/Qwen3-VL-32B-Instruct: PRIMARY - High accuracy, reliable ($0.50/1M input, $1.50/1M output)
-        - claude-opus-4-7: FALLBACK - Highest quality vision model (for failures/low confidence)
-
-        MEMORY OPTIMIZATIONS:
-        - Processes images in batches (default: 15) to prevent OOM crashes
-        - Explicit garbage collection after each batch
-        - Cleanup of base64 strings after API calls
-        - Lower confidence threshold (0.6) to reduce expensive validation calls
+        Models default to settings (`qwen_model` primary, `anthropic_model_validation`
+        fallback). Pass overrides only for one-off experiments — do not hard-code
+        in callers.
 
         Args:
             extracted_images: List of extracted image data
-            confidence_threshold: Threshold for validation (default: 0.6)
-            primary_model: Primary classification model (default: Qwen3-VL-32B)
-            validation_model: Fallback model for failures/low confidence (default: Claude Opus 4.7)
-            batch_size: Number of images to process per batch (default: 15)
-            job_id: Optional job ID for AI cost tracking/aggregation
+            confidence_threshold: Threshold for falling back to validation_model
+            primary_model: Override primary classification model
+            validation_model: Override fallback model
+            batch_size: Number of images per batch
+            job_id: Optional job ID for AI cost tracking
 
         Returns:
             Tuple of (material_images, non_material_images)
         """
-        import gc  # ✅ NEW: For explicit garbage collection
+        import gc
         import time
         import traceback
+        from app.config import get_settings as _get_settings
+
+        _cfg = _get_settings()
+        primary_model = primary_model or _cfg.qwen_model
+        validation_model = validation_model or _cfg.anthropic_model_validation
 
         classification_start_time = time.time()
 
@@ -566,9 +564,10 @@ class ImageProcessingService:
                     raise ValueError(error_msg)
 
                 from app.services.core.claude_helper import tracked_claude_call_async
+                from app.config import get_settings as _get_settings_cls
                 response = await tracked_claude_call_async(
                     task="image_classification_vision",
-                    model="claude-opus-4-7",
+                    model=_get_settings_cls().anthropic_model_validation,
                     max_tokens=1024,
                     messages=[{
                         "role": "user",
@@ -1398,10 +1397,12 @@ class ImageProcessingService:
                 ],
             })
 
+            from app.config import get_settings as _get_settings_qwen
+            qwen_model_name = _get_settings_qwen().qwen_model
             for attempt in range(max_retries + 1):
                 try:
                     response = await client.chat.completions.create(
-                        model="Qwen/Qwen3-VL-32B-Instruct",
+                        model=qwen_model_name,
                         messages=messages,
                         max_tokens=1024,
                         temperature=0.1,
@@ -1521,8 +1522,9 @@ class ImageProcessingService:
                 {"type": "text", "text": self.material_analyzer_prompt},
             ]
 
+            from app.config import get_settings as _get_settings_validation
             kwargs = {
-                "model": "claude-opus-4-7",
+                "model": _get_settings_validation().anthropic_model_validation,
                 "max_tokens": 1024,
                 "messages": [{"role": "user", "content": content}],
             }

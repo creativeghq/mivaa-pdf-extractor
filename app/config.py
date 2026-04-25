@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     # Logging Settings
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
     log_format: str = Field(
-        default="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        default="%(asctime)s - %(name)s - %(levelname)s - [job=%(job_id)s doc=%(document_id)s prod=%(product_id)s stage=%(pdf_stage)s] - %(message)s",
         env="LOG_FORMAT"
     )
     log_file: Optional[str] = Field(default=None, env="LOG_FILE")
@@ -66,6 +66,49 @@ class Settings(BaseSettings):
     # Performance Settings
     max_workers: int = Field(default=4, env="MAX_WORKERS")
     request_timeout: int = Field(default=300, env="REQUEST_TIMEOUT")  # 5 minutes
+
+    # PDF Pipeline Concurrency Settings
+    # max_concurrent_products = simultaneous products processed inside one PDF job.
+    # Each product holds a reference to the shared file_content bytes plus its own
+    # buffers (chunks, image PIL objects, vision_analysis JSON). 100MB PDF + 3
+    # concurrent products ≈ 1.2-1.5GB RAM peak; tune per server.
+    max_concurrent_products: int = Field(
+        default=2, env="MAX_CONCURRENT_PRODUCTS",
+        description="Simultaneous products processed within one PDF job"
+    )
+    product_batch_size: int = Field(
+        default=5, env="PRODUCT_BATCH_SIZE",
+        description="Products to batch before forced GC sweep"
+    )
+    product_memory_threshold_mb: int = Field(
+        default=4000, env="PRODUCT_MEMORY_THRESHOLD_MB",
+        description="Pause adding new products if process RSS exceeds this"
+    )
+    # Per-call concurrency caps for outbound embedding HTTP calls. Without these,
+    # a 1000-image catalog fires 1000 simultaneous SLIG/Voyage requests and
+    # trips upstream rate limits.
+    slig_concurrency: int = Field(
+        default=8, env="SLIG_CONCURRENCY",
+        description="Max concurrent SLIG visual-embedding requests"
+    )
+    voyage_concurrency: int = Field(
+        default=16, env="VOYAGE_CONCURRENCY",
+        description="Max concurrent Voyage AI text-embedding requests"
+    )
+    # Heartbeat for stuck-job detection. Auto-recovery cron uses last_heartbeat
+    # to detect jobs that died silently (process crash, OOM kill, network loss).
+    job_heartbeat_interval_seconds: int = Field(
+        default=60, env="JOB_HEARTBEAT_INTERVAL_SECONDS",
+        description="How often the in-flight job background task writes last_heartbeat"
+    )
+    job_stuck_threshold_seconds: int = Field(
+        default=480, env="JOB_STUCK_THRESHOLD_SECONDS",
+        description="A job whose heartbeat is older than this is considered stuck (8 min default)"
+    )
+    job_max_recovery_attempts: int = Field(
+        default=3, env="JOB_MAX_RECOVERY_ATTEMPTS",
+        description="Maximum auto-restart attempts before a stuck job is hard-failed"
+    )
 
     # ✅ NEW: Chunking Enhancement Feature Flags (NOW ENABLED BY DEFAULT)
     enable_boundary_detection: bool = Field(default=True, env="ENABLE_BOUNDARY_DETECTION")
@@ -89,7 +132,6 @@ class Settings(BaseSettings):
 
     # Phase 3: Advanced Features
     enable_semantic_embedding_chunking: bool = Field(default=False, env="ENABLE_SEMANTIC_EMBEDDING_CHUNKING")
-    enable_llm_reranking: bool = Field(default=False, env="ENABLE_LLM_RERANKING")
     enable_sliding_window_retrieval: bool = Field(default=False, env="ENABLE_SLIDING_WINDOW_RETRIEVAL")
 
     # Phase 4: Research (Future)
@@ -137,10 +179,6 @@ class Settings(BaseSettings):
 
     # Semantic Embedding Chunking
     semantic_similarity_threshold: float = Field(default=0.8, env="SEMANTIC_SIMILARITY_THRESHOLD")
-
-    # LLM Reranking
-    llm_reranking_top_k: int = Field(default=5, env="LLM_RERANKING_TOP_K")
-    llm_reranking_model: str = Field(default="claude-haiku-4-5", env="LLM_RERANKING_MODEL")
 
     # Sliding Window Retrieval
     sliding_window_max_tokens: int = Field(default=4000, env="SLIDING_WINDOW_MAX_TOKENS")
@@ -728,14 +766,6 @@ class Settings(BaseSettings):
         default="",
         env="FIRECRAWL_API_KEY"
     )
-    google_shopping_api_key: str = Field(
-        default="",
-        env="GOOGLE_SHOPPING_API_KEY"
-    )
-    google_shopping_cx: str = Field(
-        default="",
-        env="GOOGLE_SHOPPING_CX"
-    )
 
     # Development and Testing Settings
     environment: str = Field(
@@ -1261,6 +1291,17 @@ def configure_logging():
 
     logging_config = settings.get_logging_config()
     logging.config.dictConfig(logging_config)
+
+    # Inject job_id / document_id / product_id / pdf_stage into every log
+    # record so PDF pipeline messages are greppable end-to-end. Filter is
+    # idempotent — calling install_job_context_filter() twice is a no-op.
+    try:
+        from app.utils.pipeline_observability import install_job_context_filter
+        install_job_context_filter()
+    except Exception as filter_err:
+        logging.getLogger(__name__).warning(
+            f"Failed to install job context log filter: {filter_err}"
+        )
 
     # Add Supabase logging handler to root logger
     try:

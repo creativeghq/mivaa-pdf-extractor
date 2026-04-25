@@ -137,21 +137,41 @@ class ResourceManager:
         Returns number of resources cleaned up.
         """
         cleaned_count = 0
-        
+
         async with self._lock:
             resources_to_cleanup = [
                 r for r in self.resources.values()
                 if r.state == ResourceState.READY_FOR_CLEANUP
             ]
-        
+
         for resource in resources_to_cleanup:
             try:
                 await self._cleanup_resource(resource)
                 cleaned_count += 1
             except Exception as e:
                 logger.error(f"❌ Failed to cleanup resource {resource.id}: {e}")
-        
+
         return cleaned_count
+
+    async def shutdown_cleanup_all(self) -> int:
+        """Force-cleanup every tracked resource on graceful shutdown.
+
+        Used by the FastAPI shutdown hook so a process restart mid-job does not
+        leave temp PDFs in /tmp. Unlike cleanup_ready_resources, this does not
+        check in_use_by — at shutdown there is no future job that will release
+        the handle.
+        """
+        async with self._lock:
+            resources = list(self.resources.values())
+        cleaned = 0
+        for resource in resources:
+            try:
+                await self._cleanup_resource(resource)
+                cleaned += 1
+            except Exception as e:
+                logger.error(f"❌ Shutdown cleanup failed for {resource.id}: {e}")
+        logger.info(f"🛑 Shutdown cleanup complete: {cleaned} resource(s) released")
+        return cleaned
     
     async def _cleanup_resource(self, resource: Resource):
         """Actually perform the cleanup of a resource"""

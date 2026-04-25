@@ -737,62 +737,39 @@ class UnifiedSearchService:
             if not self.supabase:
                 return []
 
-            # ✅ OPTIMIZED: Use PostgreSQL full-text search with tsvector + GIN index
-            # Try using the search_document_chunks_fts function first (fastest)
-            try:
-                response = self.supabase.client.rpc(
-                    'search_document_chunks_fts',
-                    {
-                        'search_query': query,
-                        'workspace_filter': workspace_id,
-                        'result_limit': self.config.max_results * 2
-                    }
-                ).execute()
+            # PostgreSQL full-text search via the canonical RPC. The RPC is
+            # the contract — if it errors we surface that, instead of falling
+            # back to a slow ILIKE-style query that returns inconsistent
+            # ranking on large catalogs. Sentry sees the failure so the
+            # missing function or broken index gets fixed at the root.
+            response = self.supabase.client.rpc(
+                'search_document_chunks_fts',
+                {
+                    'search_query': query,
+                    'workspace_filter': workspace_id,
+                    'result_limit': self.config.max_results * 2
+                }
+            ).execute()
 
-                results = []
-                if response.data:
-                    for item in response.data:
-                        results.append(SearchResult(
-                            id=item.get('id'),
-                            content=item.get('content', ''),
-                            score=float(item.get('rank', 0.5)),  # ts_rank score
-                            metadata=item.get('metadata', {}),
-                            source='keyword_fts'
-                        ))
-                return results
-
-            except Exception as fts_error:
-                # Fallback to direct tsvector query if RPC function doesn't exist
-                logger.debug(f"FTS function not available, using direct query: {fts_error}")
-
-                # Direct tsvector query with websearch_to_tsquery
-                response = self.supabase.client.from_('document_chunks')\
-                    .select('id, content, metadata')\
-                    .eq('workspace_id', workspace_id)\
-                    .filter('content_tsv', 'fts', f"'{query}'")\
-                    .limit(self.config.max_results * 2)\
-                    .execute()
-
-                results = []
-                if response.data:
-                    for item in response.data:
-                        # Simple scoring based on query term frequency
-                        content = item.get('content', '').lower()
-                        query_lower = query.lower()
-                        occurrences = content.count(query_lower)
-                        score = min(1.0, occurrences * 0.2)
-
-                        results.append(SearchResult(
-                            id=item.get('id'),
-                            content=item.get('content', ''),
-                            score=score,
-                            metadata=item.get('metadata', {}),
-                            source='keyword_fallback'
-                        ))
-                return results
+            results = []
+            if response.data:
+                for item in response.data:
+                    results.append(SearchResult(
+                        id=item.get('id'),
+                        content=item.get('content', ''),
+                        score=float(item.get('rank', 0.5)),
+                        metadata=item.get('metadata', {}),
+                        source='keyword_fts',
+                    ))
+            return results
 
         except Exception as e:
-            logger.error(f"Keyword search failed: {e}")
+            logger.error(f"Keyword search via search_document_chunks_fts failed: {e}", exc_info=True)
+            try:
+                import sentry_sdk
+                sentry_sdk.capture_exception(e)
+            except Exception:
+                pass
             return []
 
     # ✅ NEW: Specialized CLIP embedding search methods

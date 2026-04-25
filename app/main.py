@@ -470,6 +470,14 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down PDF2Markdown Microservice...")
     await cleanup_resources(app, logger)
 
+    # Force-cleanup every tracked filesystem resource (temp PDFs, dirs).
+    # Without this, temp files leaked into /tmp on every process restart.
+    try:
+        from app.utils.resource_manager import get_resource_manager
+        await get_resource_manager().shutdown_cleanup_all()
+    except Exception as e:
+        logger.error(f"❌ ResourceManager shutdown cleanup failed: {e}", exc_info=True)
+
     logger.warning("=" * 80)
     logger.warning("🛑 SHUTDOWN COMPLETE")
     logger.warning("=" * 80)

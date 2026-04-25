@@ -64,6 +64,19 @@ EXTRACTION_PROMPT = (
     "those null. Keep prices as strings with currency symbols intact."
 )
 
+PRODUCT_PAGE_PROMPT = (
+    "You are reading a Skroutz.gr product detail page. Extract EVERY visible "
+    "merchant offer (the 'Καταστήματα' / shop list section). For each row "
+    "return: shop name, the DIRECT merchant URL on the shop's own domain "
+    "(NOT a skroutz.gr URL — Skroutz shows a 'Επίσκεψη καταστήματος' / "
+    "'Visit shop' button that links externally; that is the URL we want), "
+    "the visible price including VAT and currency symbol, and the "
+    "availability label as shown. Return found=true and the merchants list "
+    "in their natural order (Skroutz sorts by price asc by default). If no "
+    "merchant rows are visible (rare — happens on out-of-stock products), "
+    "return found=false with an empty merchants array."
+)
+
 
 class SkroutzSearchResult(BaseModel):
     """Fields Firecrawl extracts from skroutz.gr/search."""
@@ -93,6 +106,32 @@ class SkroutzSearchResult(BaseModel):
     currency: Optional[str] = Field(default="EUR")
 
 
+class SkroutzMerchantOffer(BaseModel):
+    """A single merchant row inside a Skroutz product detail page."""
+
+    merchant_name: Optional[str] = Field(default=None, description="Shop name.")
+    merchant_url: Optional[str] = Field(
+        default=None,
+        description="Absolute URL pointing to the shop's product page (NOT skroutz.gr).",
+    )
+    price: Optional[str] = Field(default=None, description="Shown price string with currency, e.g. '50,00 €'.")
+    availability: Optional[str] = Field(
+        default=None,
+        description="Availability label as shown ('Διαθέσιμο', 'Άμεση παράδοση', 'Σε αναμονή', etc.).",
+    )
+
+
+class SkroutzProductPageResult(BaseModel):
+    """All visible merchant rows on a Skroutz product detail page."""
+
+    found: bool = Field(default=False, description="True if at least one merchant row is rendered.")
+    product_name: Optional[str] = Field(default=None, description="Canonical product title.")
+    merchants: List[SkroutzMerchantOffer] = Field(
+        default_factory=list,
+        description="One entry per visible merchant offer, in the page's natural order (price asc).",
+    )
+
+
 class SkroutzAdapter:
     """Firecrawl-backed adapter for skroutz.gr."""
 
@@ -112,70 +151,56 @@ class SkroutzAdapter:
         workspace_id: Optional[str] = None,
         limit: int = 15,
     ) -> List[PriceHit]:
-        # `limit` currently unused — the public search page returns its own
-        # ranking and we only keep the top match. Kept in signature for
-        # parity with the other adapters.
-        del limit
-
         if not self.firecrawl.api_key:
             logger.debug("Skroutz: Firecrawl not configured, skipping.")
             return []
 
-        url = SEARCH_URL_TEMPLATE.format(query=urllib.parse.quote_plus(query))
+        # Step 1 — find the matching product on the search results page.
+        search_result = await self._scrape_search(query, user_id=user_id, workspace_id=workspace_id)
+        if not search_result:
+            return []
 
-        # skroutz.gr is JS-heavy. Hydration occasionally finishes after the
-        # Firecrawl render snapshot — retry once on success-but-empty so a
-        # transient miss doesn't cost us a real result.
-        result = await self.firecrawl.scrape(
-            url=url,
-            extraction_model=SkroutzSearchResult,
-            user_id=user_id,
-            workspace_id=workspace_id,
-            extraction_prompt=EXTRACTION_PROMPT,
-            use_javascript_render=True,
-            only_main_content=True,
-            module_slug=MODULE_SLUG,
-            source_tag="skroutz",
+        data, product_url = search_result
+
+        # Step 2 — when Skroutz reports more than 1 shop, fan out: scrape the
+        # product page itself and emit one PriceHit per visible merchant. This
+        # is the difference between "Skroutz says 50€" and "5 actual retailers
+        # showing 50/55/60/65/70€ each with a direct URL". The extra Firecrawl
+        # credit is well spent — it turns one row into N.
+        product_page_url = data.product_url or product_url
+        wants_fanout = (
+            (data.merchant_count or 0) > 1
+            and product_page_url
+            and "skroutz.gr" in (product_page_url or "")
         )
-        if result.success and (not result.data or not result.data.found):
-            logger.info("Skroutz: empty hydration, retrying once.")
-            result = await self.firecrawl.scrape(
-                url=url,
-                extraction_model=SkroutzSearchResult,
-                user_id=user_id,
-                workspace_id=workspace_id,
-                extraction_prompt=EXTRACTION_PROMPT,
-                use_javascript_render=True,
-                only_main_content=True,
-                module_slug=MODULE_SLUG,
-                source_tag="skroutz",
+        if wants_fanout:
+            merchants = await self._scrape_product_page(
+                product_page_url, query=query,
+                user_id=user_id, workspace_id=workspace_id,
             )
+            if merchants:
+                return self._fanout_hits(
+                    merchants=merchants,
+                    fallback_currency=data.currency or "EUR",
+                    merchant_count=data.merchant_count,
+                    product_name=data.product_name,
+                    query=query,
+                    limit=limit,
+                )
 
-        if not result.success or not result.data or not result.data.found:
-            return []
-
-        data = result.data
-        # Prefer a direct merchant URL when Skroutz exposes one on the search
-        # row; fall back to the Skroutz product page (which itself lists every
-        # merchant — the user is one click from a direct merchant URL).
+        # Fallback: emit a single hit (legacy behaviour). This is what runs
+        # when merchant_count <= 1, when product_url isn't on skroutz.gr,
+        # or when product-page extraction returned nothing usable.
         retailer_name = data.cheapest_merchant_name or "Skroutz"
-        product_url = data.cheapest_merchant_url or data.product_url
-        if not product_url:
-            return []
-
-        # Match-quality safeguard — drop "no results, here's a featured
-        # product" scenarios. Skroutz's URL slug carries the product name,
-        # so this is a reliable check.
-        if not is_plausible_match(query, product_url, data.product_name):
+        single_url = data.cheapest_merchant_url or product_url
+        if not is_plausible_match(query, single_url, data.product_name):
             logger.info(
                 "Skroutz: dropped likely false positive — query=%r, url=%s",
-                query,
-                product_url,
+                query, single_url,
             )
             return []
 
         price, currency = parse_price(data.best_price, hint_currency=data.currency or "EUR")
-
         notes_parts = ["via Skroutz"]
         if data.merchant_count:
             notes_parts.append(
@@ -183,20 +208,128 @@ class SkroutzAdapter:
             )
         if not data.cheapest_merchant_url:
             notes_parts.append("aggregator URL (click through for merchants)")
-        notes = " · ".join(notes_parts)
-
         return [
             PriceHit(
                 retailer_name=retailer_name,
-                product_url=product_url,
+                product_url=single_url,
                 price=float(price) if price is not None else None,
                 currency=currency or "EUR",
                 availability="in_stock",
                 source="skroutz",
-                verified=False,  # scrape, not first-party feed
-                notes=notes,
+                verified=False,
+                notes=" · ".join(notes_parts),
             )
         ]
+
+    async def _scrape_search(
+        self,
+        query: str,
+        *,
+        user_id: str,
+        workspace_id: Optional[str],
+    ) -> Optional[tuple[SkroutzSearchResult, str]]:
+        """Scrape skroutz.gr/search and return (data, product_url) or None."""
+        url = SEARCH_URL_TEMPLATE.format(query=urllib.parse.quote_plus(query))
+        # skroutz.gr is JS-heavy. Hydration occasionally finishes after the
+        # Firecrawl render snapshot — retry once on success-but-empty so a
+        # transient miss doesn't cost us a real result.
+        result = await self.firecrawl.scrape(
+            url=url, extraction_model=SkroutzSearchResult,
+            user_id=user_id, workspace_id=workspace_id,
+            extraction_prompt=EXTRACTION_PROMPT,
+            use_javascript_render=True, only_main_content=True,
+            module_slug=MODULE_SLUG, source_tag="skroutz",
+        )
+        if result.success and (not result.data or not result.data.found):
+            logger.info("Skroutz: empty hydration, retrying once.")
+            result = await self.firecrawl.scrape(
+                url=url, extraction_model=SkroutzSearchResult,
+                user_id=user_id, workspace_id=workspace_id,
+                extraction_prompt=EXTRACTION_PROMPT,
+                use_javascript_render=True, only_main_content=True,
+                module_slug=MODULE_SLUG, source_tag="skroutz",
+            )
+        if not result.success or not result.data or not result.data.found:
+            return None
+        product_url = result.data.cheapest_merchant_url or result.data.product_url
+        if not product_url:
+            return None
+        return result.data, product_url
+
+    async def _scrape_product_page(
+        self,
+        product_page_url: str,
+        *,
+        query: str,
+        user_id: str,
+        workspace_id: Optional[str],
+    ) -> List[SkroutzMerchantOffer]:
+        """Scrape the Skroutz product page to extract every merchant offer."""
+        try:
+            result = await self.firecrawl.scrape(
+                url=product_page_url,
+                extraction_model=SkroutzProductPageResult,
+                user_id=user_id, workspace_id=workspace_id,
+                extraction_prompt=PRODUCT_PAGE_PROMPT,
+                use_javascript_render=True, only_main_content=True,
+                module_slug=MODULE_SLUG, source_tag="skroutz_product_page",
+            )
+        except Exception as e:
+            logger.warning("Skroutz product-page scrape failed (%s): %s", product_page_url, e)
+            return []
+        if not result.success or not result.data or not result.data.found:
+            return []
+        # Page-level identity safeguard — if Skroutz served us a featured
+        # product instead of the queried one, the page title won't carry the
+        # query tokens. Drops the whole fanout in that case.
+        if not is_plausible_match(query, product_page_url, result.data.product_name):
+            logger.info(
+                "Skroutz: product page failed plausibility check — query=%r, url=%s",
+                query, product_page_url,
+            )
+            return []
+        return [m for m in result.data.merchants if m.merchant_url and m.merchant_name]
+
+    @staticmethod
+    def _fanout_hits(
+        *,
+        merchants: List[SkroutzMerchantOffer],
+        fallback_currency: str,
+        merchant_count: Optional[int],
+        product_name: Optional[str],
+        query: str,
+        limit: int,
+    ) -> List[PriceHit]:
+        """Convert per-merchant offers into a list of PriceHit rows."""
+        del product_name  # reserved for future use (e.g. attaching to notes)
+        hits: List[PriceHit] = []
+        for offer in merchants[: max(limit, 1)]:
+            price, currency = parse_price(offer.price, hint_currency=fallback_currency)
+            avail = (offer.availability or "").lower()
+            if any(tok in avail for tok in ("εκτός", "out", "unavail", "not available")):
+                availability = "out_of_stock"
+            elif any(tok in avail for tok in ("διαθέσιμ", "available", "in stock", "άμεσ")):
+                availability = "in_stock"
+            else:
+                availability = "in_stock"
+            hits.append(
+                PriceHit(
+                    retailer_name=offer.merchant_name or "Skroutz merchant",
+                    product_url=offer.merchant_url,
+                    price=float(price) if price is not None else None,
+                    currency=currency or fallback_currency,
+                    availability=availability,
+                    source="skroutz",
+                    verified=False,
+                    notes="via Skroutz",
+                )
+            )
+        if merchant_count and merchant_count > len(hits):
+            logger.info(
+                "Skroutz fanout: extracted %d/%d merchants for %r — older Firecrawl snapshot may be missing late-hydrated rows.",
+                len(hits), merchant_count, query,
+            )
+        return hits
 
 
 _singleton: Optional[SkroutzAdapter] = None

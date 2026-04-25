@@ -85,16 +85,26 @@ class GreekMarketplacesService:
     @staticmethod
     def _dedupe_by_domain(hits: List[PriceHit]) -> List[PriceHit]:
         """
-        Keep the first hit per retailer domain. Skroutz runs first so its
-        first-party rows win over scraper fallbacks for the same retailer.
+        Keep the first hit per (retailer domain, source) pair. Skroutz runs
+        first so its rows win over scraper fallbacks for the same retailer
+        on the SAME source. But a merchant that appears on both Skroutz and
+        Bestprice fanouts is kept twice with distinct source tags — the
+        outer pipeline handles cross-source dedup with its own merge logic
+        (greek-marketplaces > dataforseo > perplexity for the same domain).
+
+        Without the source tie-breaker, a 30-merchant Skroutz fanout
+        collapses to 1 row when Bestprice also surfaces the same merchant.
         """
-        seen: set[str] = set()
+        seen: set[tuple[str, str]] = set()
         deduped: List[PriceHit] = []
         for hit in hits:
             domain = urlparse(hit.product_url).netloc.lower().removeprefix("www.")
-            if not domain or domain in seen:
+            if not domain:
                 continue
-            seen.add(domain)
+            key = (domain, hit.source or "")
+            if key in seen:
+                continue
+            seen.add(key)
             deduped.append(hit)
         return deduped
 

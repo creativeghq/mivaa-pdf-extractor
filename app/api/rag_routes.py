@@ -1020,6 +1020,66 @@ async def get_job_status(job_id: str):
     )
 
 
+@router.get("/documents/job/{job_id}/full-status")
+async def get_job_full_status(job_id: str):
+    """Single round-trip endpoint that joins every job-status surface.
+
+    Replaces the prior pattern of querying background_jobs +
+    job_progress + product_processing_status + job_checkpoints
+    separately from the frontend.
+
+    Returns:
+        - core: row from background_jobs (source of truth)
+        - stages: rows from job_progress (per-stage progress + ETAs)
+        - products: rows from product_processing_status (per-product state)
+        - checkpoints: ordered list from job_checkpoints
+        - memory: in-process job_storage entry if still cached
+    """
+    supabase_client = get_supabase_client()
+
+    core_resp = supabase_client.client.table('background_jobs') \
+        .select('*').eq('id', job_id).execute()
+    if not core_resp.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found",
+        )
+    core = core_resp.data[0]
+
+    try:
+        stages_resp = supabase_client.client.table('job_progress') \
+            .select('*').eq('document_id', core.get('document_id')) \
+            .order('updated_at', desc=False).execute()
+        stages = stages_resp.data or []
+    except Exception as stages_err:
+        logger.warning(f"Failed to load job_progress for {job_id}: {stages_err}")
+        stages = []
+
+    try:
+        products_resp = supabase_client.client.table('product_processing_status') \
+            .select('*').eq('job_id', job_id) \
+            .order('product_index', desc=False).execute()
+        products = products_resp.data or []
+    except Exception as products_err:
+        logger.warning(f"Failed to load product_processing_status for {job_id}: {products_err}")
+        products = []
+
+    try:
+        checkpoints = await checkpoint_recovery_service.get_all_checkpoints(job_id)
+    except Exception as cp_err:
+        logger.warning(f"Failed to load checkpoints for {job_id}: {cp_err}")
+        checkpoints = []
+
+    return JSONResponse(content={
+        "job_id": job_id,
+        "core": core,
+        "stages": stages,
+        "products": products,
+        "checkpoints": checkpoints,
+        "memory": job_storage.get(job_id),
+    })
+
+
 @router.get("/jobs/{job_id}/checkpoints", responses={200: {"model": CheckpointListResponse}})
 async def get_job_checkpoints(job_id: str):
     """
@@ -2142,8 +2202,14 @@ async def create_products_background(
                     "timestamp": datetime.utcnow().isoformat()
                 }
             )
-        except Exception:
-            pass  # Don't fail if checkpoint creation fails
+        except Exception as checkpoint_error:
+            # Resumability is lost when this fails — surface it loudly so ops
+            # know the failed-job state was not persisted.
+            logger.error(
+                f"⚠️ Failed to write failure checkpoint for job {job_id}: {checkpoint_error}",
+                exc_info=True,
+            )
+            sentry_sdk.capture_exception(checkpoint_error)
 
 
 async def process_document_with_discovery(
@@ -2202,6 +2268,16 @@ async def process_document_with_discovery(
     # Track which components are loaded for cleanup
     loaded_components = []
 
+    # Bind correlation IDs to ContextVars so every log record from this
+    # background task is stamped with job_id / document_id (see
+    # pipeline_observability.JobContextLogFilter).
+    from app.utils.pipeline_observability import (
+        _current_job_id,
+        _current_document_id,
+    )
+    _current_job_id.set(job_id)
+    _current_document_id.set(document_id)
+
     logger.info("=" * 80)
     logger.info(f"🔍 [PRODUCT DISCOVERY] STARTING")
     logger.info("=" * 80)
@@ -2211,7 +2287,9 @@ async def process_document_with_discovery(
     logger.info(f"🎯 Focused Extraction: {'ENABLED' if focused_extraction else 'DISABLED (Full PDF)'}")
     logger.info(f"📦 Extract Categories: {', '.join(extract_categories).upper()}")
 
-        # Send job start event to Sentry
+    # Open a Sentry transaction for the whole job; per-stage spans nest
+    # under it. push_scope tags remain so existing breadcrumbs continue
+    # to carry job_id even outside spans.
     with sentry_sdk.push_scope() as scope:
         scope.set_tag("job_id", job_id)
         scope.set_tag("document_id", document_id)
@@ -2294,26 +2372,43 @@ async def process_document_with_discovery(
         if current % 50 == 0 or current == total:
             logger.info(f"   📝 {message}")
 
+    from app.utils.pipeline_observability import pipeline_stage_span
     try:
-        numbered_pdf_path, numbering_stats = await preprocess_pdf_with_page_numbers(
-            pdf_path=file_path,
-            job_id=job_id,
-            progress_callback=page_numbering_progress
-        )
-        logger.info(f"✅ Page numbering complete: {numbering_stats['pages_numbered']} pages")
-        logger.info(f"   📄 Numbered PDF: {numbered_pdf_path}")
+        with pipeline_stage_span("preprocess.page_numbering"):
+            numbered_pdf_path, numbering_stats = await preprocess_pdf_with_page_numbers(
+                pdf_path=file_path,
+                job_id=job_id,
+                progress_callback=page_numbering_progress
+            )
+            logger.info(f"✅ Page numbering complete: {numbering_stats['pages_numbered']} pages")
+            logger.info(f"   📄 Numbered PDF: {numbered_pdf_path}")
 
-        # Use the numbered PDF for all subsequent processing
-        file_path = numbered_pdf_path
+            # Use the numbered PDF for all subsequent processing
+            file_path = numbered_pdf_path
 
-        # Re-read file content from numbered PDF
-        with open(file_path, 'rb') as f:
-            file_content = f.read()
-        logger.info(f"   📖 Re-read numbered PDF: {len(file_content)} bytes")
+            # Re-read file content from numbered PDF
+            with open(file_path, 'rb') as f:
+                file_content = f.read()
+            logger.info(f"   📖 Re-read numbered PDF: {len(file_content)} bytes")
 
     except Exception as e:
-        logger.warning(f"⚠️ Page numbering failed, continuing with original PDF: {e}")
-        # Continue with original file_path and file_content
+        # Hard-fail: every downstream stage (discovery, image extraction, vision
+        # analysis, entity linking) assumes pages have visible numbers. Continuing
+        # with the un-numbered PDF silently produces wrong page references.
+        logger.error(f"❌ Page numbering failed — aborting job: {e}", exc_info=True)
+        sentry_sdk.capture_exception(e)
+        job_storage[job_id]["status"] = "failed"
+        job_storage[job_id]["error"] = f"Page numbering failure: {e}"
+        if job_recovery_service:
+            await job_recovery_service.persist_job(
+                job_id=job_id,
+                document_id=document_id,
+                filename=filename,
+                status="failed",
+                progress=job_storage[job_id].get("progress", 5),
+                metadata={**job_storage[job_id].get("metadata", {}), "error": str(e)},
+            )
+        raise
 
     # Update progress to 10% (page numbering complete)
     job_storage[job_id]["progress"] = 10
@@ -2326,10 +2421,15 @@ async def process_document_with_discovery(
 
     # ✅ FIX: Define missing model variables from AI config
     from app.models.ai_config import DEFAULT_AI_CONFIG
-    product_creation_model = DEFAULT_AI_CONFIG.discovery_model  # Use discovery model for product creation
-    quality_validation_model = DEFAULT_AI_CONFIG.classification_validation_model  # Claude for quality validation
+    product_creation_model = DEFAULT_AI_CONFIG.discovery_model
+    quality_validation_model = DEFAULT_AI_CONFIG.classification_validation_model
 
-
+    # Background heartbeat (every JOB_HEARTBEAT_INTERVAL_SECONDS) so the
+    # auto-recovery cron can detect a dead orchestrator even when a single
+    # stage stalls for many minutes.
+    from app.services.tracking.job_heartbeat import JobHeartbeat
+    heartbeat = JobHeartbeat(job_id=job_id, supabase_client=supabase)
+    await heartbeat.__aenter__()
     try:
         # ============================================================================
         # WARMUP ALL HUGGINGFACE ENDPOINTS IN PARALLEL
@@ -2857,24 +2957,25 @@ async def process_document_with_discovery(
         from app.api.pdf_processing.stage_0_discovery import process_stage_0_discovery
 
         logger.info(f"🔧 [BACKGROUND TASK] Calling process_stage_0_discovery...")
-        stage_0_result = await process_stage_0_discovery(
-            file_content=file_content,
-            document_id=document_id,
-            workspace_id=workspace_id,
-            job_id=job_id,
-            filename=filename,
-            title=title,
-            description=description,
-            extract_categories=extract_categories,
-            discovery_model=discovery_model,
-            agent_prompt=agent_prompt,
-            enable_prompt_enhancement=enable_prompt_enhancement,
-            tracker=tracker,
-            checkpoint_recovery_service=checkpoint_recovery_service,
-            logger=logger,
-            temp_pdf_path=file_path,  # Use existing temp path
-            test_single_product=test_single_product  # 🧪 TEST MODE flag
-        )
+        with pipeline_stage_span("stage_0.product_discovery", extra_data={"discovery_model": discovery_model}):
+            stage_0_result = await process_stage_0_discovery(
+                file_content=file_content,
+                document_id=document_id,
+                workspace_id=workspace_id,
+                job_id=job_id,
+                filename=filename,
+                title=title,
+                description=description,
+                extract_categories=extract_categories,
+                discovery_model=discovery_model,
+                agent_prompt=agent_prompt,
+                enable_prompt_enhancement=enable_prompt_enhancement,
+                tracker=tracker,
+                checkpoint_recovery_service=checkpoint_recovery_service,
+                logger=logger,
+                temp_pdf_path=file_path,
+                test_single_product=test_single_product,
+            )
 
         catalog = stage_0_result["catalog"]
         page_count = stage_0_result["page_count"]
@@ -3014,17 +3115,12 @@ async def process_document_with_discovery(
         # ========================================================================
         # PARALLEL PRODUCT PROCESSING
         # ========================================================================
-        # Uses controlled concurrency to process 2-3 products simultaneously:
-        # - Semaphore limits concurrent processing to prevent resource exhaustion
-        # - Each product still goes through all stages (extraction, chunking, images, etc.)
-        # - Shared resources (file_content, catalog, tracker) are safely accessed
-        # - Falls back to sequential processing for small catalogs (<=2 products)
-        # ========================================================================
-
-        # Configure parallel processing (can be adjusted based on server resources)
+        # Concurrency cap, batch size and memory threshold come from settings
+        # (env: MAX_CONCURRENT_PRODUCTS / PRODUCT_BATCH_SIZE / PRODUCT_MEMORY_THRESHOLD_MB)
+        # so capacity is tunable per server. file_content is passed by reference
+        # to all product workers — never copied per-product.
         parallel_config = ParallelProcessingConfig(
-            max_concurrent=2,  # Process 2 products concurrently
-            enable_parallel=len(products_to_process) > 2  # Only parallelize if >2 products
+            enable_parallel=len(products_to_process) > 2,
         )
 
         logger.info(f"🚀 Processing mode: {'PARALLEL' if parallel_config.enable_parallel else 'SEQUENTIAL'}")
@@ -3032,23 +3128,31 @@ async def process_document_with_discovery(
             logger.info(f"   Max concurrent products: {parallel_config.max_concurrent}")
 
         # Process all products (parallel or sequential based on config)
-        parallel_result = await process_products_parallel(
-            products=products_to_process,
-            file_content=file_content,  # SHARED: Reused for all products
-            document_id=document_id,
-            workspace_id=workspace_id,
-            job_id=job_id,
-            catalog=catalog,  # SHARED: Contains all products
-            tracker=tracker,  # SHARED: Main job tracker
-            product_tracker=product_tracker,  # SHARED: Product progress tracker
-            checkpoint_recovery_service=checkpoint_recovery_service,
-            supabase=supabase,  # SHARED: Database client
-            config=processing_config,  # SHARED: Configuration
-            logger_instance=logger,
-            total_pages=page_count,
-            temp_pdf_path=file_path,
-            parallel_config=parallel_config
-        )
+        with pipeline_stage_span(
+            "products.parallel_processing",
+            extra_data={
+                "products": len(products_to_process),
+                "max_concurrent": parallel_config.max_concurrent,
+                "parallel": parallel_config.enable_parallel,
+            },
+        ):
+            parallel_result = await process_products_parallel(
+                products=products_to_process,
+                file_content=file_content,
+                document_id=document_id,
+                workspace_id=workspace_id,
+                job_id=job_id,
+                catalog=catalog,
+                tracker=tracker,
+                product_tracker=product_tracker,
+                checkpoint_recovery_service=checkpoint_recovery_service,
+                supabase=supabase,
+                config=processing_config,
+                logger_instance=logger,
+                total_pages=page_count,
+                temp_pdf_path=file_path,
+                parallel_config=parallel_config,
+            )
 
         # Extract metrics from parallel result
         products_completed = parallel_result.products_completed
@@ -3070,6 +3174,20 @@ async def process_document_with_discovery(
         logger.info(f"🔗 Total relationships created: {total_relationships_created}")
         logger.info(f"⏱️  Processing time: {parallel_result.processing_time_seconds:.1f}s")
         logger.info(f"{'='*80}\n")
+
+        # Anomaly check — a job that produced products but zero chunks is
+        # technically "completed" yet returns nothing on chunk-level RAG
+        # search. Surface as a Sentry warning so ops sees it before users do.
+        if products_completed > 0 and total_chunks_created == 0:
+            warn_msg = (
+                f"⚠️ Job {job_id} completed with {products_completed} product(s) "
+                f"but ZERO chunks. Document will not be findable via chunk search."
+            )
+            logger.warning(warn_msg)
+            try:
+                sentry_sdk.capture_message(warn_msg, level="warning")
+            except Exception:
+                pass
 
         # Update tracker with final counts
         tracker.chunks_created = total_chunks_created
@@ -3237,24 +3355,25 @@ async def process_document_with_discovery(
         from app.api.pdf_processing.stage_5_quality import process_stage_5_quality
         from app.utils.circuit_breaker import claude_breaker
 
-        stage_5_result = await process_stage_5_quality(
-            document_id=document_id,
-            job_id=job_id,
-            workspace_id=workspace_id,
-            catalog=catalog,
-            physical_pages=list(all_physical_pages),  # ✅ FIXED: Now using physical pages
-            products_created=products_created,
-            images_processed=images_saved_count,
-            focused_extraction=focused_extraction,
-            quality_validation_model=quality_validation_model,
-            start_time=start_time,
-            tracker=tracker,
-            checkpoint_recovery_service=checkpoint_recovery_service,
-            component_manager=component_manager,
-            loaded_components=loaded_components,
-            claude_breaker=claude_breaker,
-            logger=logger
-        )
+        with pipeline_stage_span("stage_5.quality_enhancement"):
+            stage_5_result = await process_stage_5_quality(
+                document_id=document_id,
+                job_id=job_id,
+                workspace_id=workspace_id,
+                catalog=catalog,
+                physical_pages=list(all_physical_pages),
+                products_created=products_created,
+                images_processed=images_saved_count,
+                focused_extraction=focused_extraction,
+                quality_validation_model=quality_validation_model,
+                start_time=start_time,
+                tracker=tracker,
+                checkpoint_recovery_service=checkpoint_recovery_service,
+                component_manager=component_manager,
+                loaded_components=loaded_components,
+                claude_breaker=claude_breaker,
+                logger=logger,
+            )
 
         # Stage 5 handles all SUCCESS cleanup (component unloading, resource cleanup, job completion)
         logger.info("✅ [MODULAR PIPELINE] All stages completed successfully")
@@ -3475,6 +3594,13 @@ async def process_document_with_discovery(
         # 6. Final Garbage Collection
         gc.collect()
         logger.info(f"✨ [CLEANUP] Finished. Endpoints scaled to zero: {scaled_count}")
+
+        # Stop heartbeat — final write inside __aexit__ updates last_heartbeat
+        # so the recovery cron sees a fresh timestamp on natural completion.
+        try:
+            await heartbeat.__aexit__(None, None, None)
+        except Exception as hb_err:
+            logger.warning(f"Heartbeat shutdown raised: {hb_err}")
 
 
 @router.post("/query", response_model=QueryResponse)

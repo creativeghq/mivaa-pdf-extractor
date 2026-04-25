@@ -53,11 +53,31 @@ class RealEmbeddingsService:
     - Understanding embeddings (1024D) - Qwen vision_analysis → Voyage AI text embedding
     - Multimodal fusion (1792D) - combined text+visual (1024D + 768D = 1792D)
 
-    Understanding Embedding Strategy:
-    - Converts Qwen3-VL vision_analysis JSON into descriptive text
-    - Embeds via Voyage AI (1024D) with input_type="document"
-    - Enables spec-based search (dimensions, slip ratings, material properties)
+    Concurrency:
+    - All outbound embedding calls go through process-wide asyncio semaphores
+      (`_slig_semaphore`, `_voyage_semaphore`). 1000-image catalogs no longer
+      open 1000 simultaneous HTTP connections to HF / Voyage. Caps come from
+      settings.slig_concurrency / settings.voyage_concurrency.
     """
+
+    # Process-wide semaphores; created lazily on first use so the event loop
+    # is bound to the running loop, not module import time.
+    _slig_semaphore: Optional[asyncio.Semaphore] = None
+    _voyage_semaphore: Optional[asyncio.Semaphore] = None
+
+    @classmethod
+    def _get_slig_semaphore(cls) -> asyncio.Semaphore:
+        if cls._slig_semaphore is None:
+            from app.config import get_settings as _gs
+            cls._slig_semaphore = asyncio.Semaphore(_gs().slig_concurrency)
+        return cls._slig_semaphore
+
+    @classmethod
+    def _get_voyage_semaphore(cls) -> asyncio.Semaphore:
+        if cls._voyage_semaphore is None:
+            from app.config import get_settings as _gs
+            cls._voyage_semaphore = asyncio.Semaphore(_gs().voyage_concurrency)
+        return cls._voyage_semaphore
 
     def __init__(self, supabase_client=None, config=None):
         """Initialize embeddings service."""
@@ -776,10 +796,12 @@ class RealEmbeddingsService:
                 # ✅ CRITICAL FIX: Map 1536D (OpenAI default) to 1024D (Voyage AI max)
                 voyage_dimensions = 1024 if dimensions == 1536 else dimensions
 
-                # Call Voyage AI API
-                async with httpx.AsyncClient() as client:
+                # Throttle outbound Voyage calls — without the semaphore, gather()
+                # over 1000 chunks fires 1000 simultaneous HTTPS requests and the
+                # API rate-limits us. settings.voyage_concurrency caps it.
+                async with self._get_voyage_semaphore(), httpx.AsyncClient() as client:
                     request_data = {
-                        "model": "voyage-4",
+                        "model": self.voyage_model,
                         "input": [text],  # Voyage AI handles truncation
                         "truncation": truncation
                     }
@@ -819,7 +841,7 @@ class RealEmbeddingsService:
 
                         await self.ai_logger.log_ai_call(
                             task="text_embedding_generation",
-                            model=f"voyage-4-{voyage_dimensions}d",
+                            model=f"{self.voyage_model}-{voyage_dimensions}d",
                             input_tokens=input_tokens,
                             output_tokens=0,
                             cost=cost,
@@ -1053,7 +1075,10 @@ class RealEmbeddingsService:
                     pil_image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
 
                 try:
-                    embedding = await self._slig_client.get_image_embedding(pil_image)
+                    # Throttle SLIG calls — settings.slig_concurrency caps simultaneous
+                    # requests so 1000-image catalogs don't hammer the HF endpoint.
+                    async with self._get_slig_semaphore():
+                        embedding = await self._slig_client.get_image_embedding(pil_image)
 
                     latency_ms = int((time.time() - start_time) * 1000)
 
@@ -1080,6 +1105,15 @@ class RealEmbeddingsService:
                             "completeness": 1.0,
                             "consistency": 0.95,
                             "validation": 0.90,
+                            # Each visual call yields ONE 768D vector. The
+                            # specialized (color/texture/style/material) calls
+                            # log themselves separately — see
+                            # _generate_specialized_siglip_embeddings — so the
+                            # `vectors_generated` field tells analytics how
+                            # many vectors a single document run produced.
+                            "vectors_generated": 1,
+                            "vector_dimension": self.slig_embedding_dimension,
+                            "vector_kind": "visual",
                         },
                         action="use_ai_result",
                         job_id=job_id,
@@ -1131,9 +1165,10 @@ class RealEmbeddingsService:
                 "style": "focus on design style and aesthetic elements",
             }
 
-            base_image_embedding = await self._slig_client.get_image_embedding(
-                image=image_data if image_data else image_url
-            )
+            async with self._get_slig_semaphore():
+                base_image_embedding = await self._slig_client.get_image_embedding(
+                    image=image_data if image_data else image_url
+                )
             if not base_image_embedding or len(base_image_embedding) != self.slig_embedding_dimension:
                 self.logger.warning(
                     f"⚠️ Specialized embeddings: base image embedding invalid "
@@ -1147,16 +1182,18 @@ class RealEmbeddingsService:
 
             for embedding_type, text_prompt in text_prompts.items():
                 try:
-                    similarity_result = await self._slig_client.calculate_similarity(
-                        images=image_input,
-                        texts=text_prompt,
-                    )
+                    async with self._get_slig_semaphore():
+                        similarity_result = await self._slig_client.calculate_similarity(
+                            images=image_input,
+                            texts=text_prompt,
+                        )
                     sim_matrix = similarity_result.get("similarity_scores") if similarity_result else None
                     if not sim_matrix or not sim_matrix[0]:
                         raise ValueError(f"empty similarity_scores for {embedding_type}")
                     similarity_score = float(sim_matrix[0][0])
 
-                    text_embedding = await self._slig_client.get_text_embedding(text_prompt)
+                    async with self._get_slig_semaphore():
+                        text_embedding = await self._slig_client.get_text_embedding(text_prompt)
                     if not text_embedding or len(text_embedding) != self.slig_embedding_dimension:
                         raise ValueError(
                             f"text embedding wrong size for {embedding_type}: "
@@ -1181,6 +1218,32 @@ class RealEmbeddingsService:
                     return None, pil_image
 
             self.logger.info("✅ Generated 4 text-guided specialized SLIG embeddings (768D each)")
+            try:
+                await self.ai_logger.log_ai_call(
+                    task="visual_specialized_embeddings_batch",
+                    model=self.slig_model_name,
+                    input_tokens=0,
+                    output_tokens=0,
+                    cost=0.0,
+                    latency_ms=0,
+                    confidence_score=0.95,
+                    confidence_breakdown={
+                        "model_confidence": 0.98,
+                        "completeness": 1.0,
+                        "consistency": 0.95,
+                        "validation": 0.90,
+                        # 4 vectors × (1 image_embedding + 1 text_embedding +
+                        # 1 calculate_similarity) = up to 12 SLIG calls per
+                        # image; we log the count so analytics knows the
+                        # actual fan-out behind the single "specialized" log.
+                        "vectors_generated": len(specialized),
+                        "vector_dimension": self.slig_embedding_dimension,
+                        "vector_kinds": list(specialized.keys()),
+                    },
+                    action="use_ai_result",
+                )
+            except Exception as log_err:
+                self.logger.debug(f"Specialized SLIG aggregate log skipped: {log_err}")
             return specialized, pil_image
 
         except Exception as e:

@@ -21,7 +21,10 @@ from app.services.integrations.perplexity_price_search_service import (
     PriceHit,
 )
 from app.services.integrations.tracked_queries_service import get_tracked_queries_service
-from app.services.integrations.product_identity_service import facets_from_catalog
+from app.services.integrations.product_identity_service import (
+    facets_from_catalog,
+    normalize_model_token,
+)
 import os
 from app.services.core.supabase_client import get_supabase_client
 from app.dependencies import get_current_user, get_workspace_context
@@ -683,11 +686,25 @@ async def discover_sources(
     prod_row = (prod.data if prod else None) or {}
     product_name = prod_row.get("name") or "unknown product"
     metadata = prod_row.get("metadata") or {}
-    dimensions = (
+    # `metadata.dimensions` from the PDF ingestion pipeline is a list[dict]
+    # (e.g. [{"metric_cm":"11.8x11.8","imperial_in":"4.65x4.65"}]). Flatten to
+    # a freeform string so it can be appended to the Perplexity/DataForSEO
+    # query without dragging dict repr into the prompt.
+    raw_dims = (
         metadata.get("dimensions")
         or metadata.get("size")
         or metadata.get("product_size")
     )
+    if isinstance(raw_dims, list) and raw_dims:
+        first = raw_dims[0]
+        if isinstance(first, dict):
+            dimensions = first.get("metric_cm") or first.get("imperial_in") or None
+        else:
+            dimensions = str(first)
+    elif isinstance(raw_dims, dict):
+        dimensions = raw_dims.get("metric_cm") or raw_dims.get("imperial_in") or None
+    else:
+        dimensions = raw_dims
 
     # ── User's country for regional preference ──
     # Priority: location_country_code (ISO) → derived from free-text `location`
@@ -706,9 +723,23 @@ async def discover_sources(
     # re-parsing the free-text name with Haiku when we already have the data.
     catalog_facets = facets_from_catalog(prod_row)
 
-    # ── Run Claude web search ──
+    # Build the Stage A query string with the strongest identity tokens up
+    # front: brand + collection + (one strong SKU when known). Retailer search
+    # ranking on Perplexity/DataForSEO is keyword-driven, so seeding the query
+    # with the SKU pulls the right merchants to the top of the results.
+    enriched_name = product_name
+    if catalog_facets:
+        prefix_parts: List[str] = []
+        if catalog_facets.brand and normalize_model_token(catalog_facets.brand) not in normalize_model_token(product_name):
+            prefix_parts.append(catalog_facets.brand)
+        if catalog_facets.sku_tokens:
+            prefix_parts.append(catalog_facets.sku_tokens[0])
+        if prefix_parts:
+            enriched_name = " ".join([*prefix_parts, product_name])
+
+    # ── Run Stage A discovery ──
     result = await service.search_prices(
-        product_name=product_name,
+        product_name=enriched_name,
         dimensions=dimensions,
         country_code=country_code,
         limit=10,
@@ -716,7 +747,11 @@ async def discover_sources(
         workspace_id=mon_row.get("workspace_id") or (workspace.workspace_id if workspace else None),
         verify_prices=request.verify_prices,
         query_facets=catalog_facets,
-        manufacturer_hint=(metadata.get("manufacturer") or metadata.get("brand")) if metadata else None,
+        manufacturer_hint=(
+            metadata.get("factory_name")
+            or metadata.get("manufacturer")
+            or metadata.get("brand")
+        ) if metadata else None,
     )
 
     if not result.success:
@@ -880,23 +915,47 @@ def _compute_market_stats(hits: List[PriceHit]) -> MarketStats:
     unverifiable rows lack identity confirmation so we can't trust them
     either. `count` still returns the total number of priced rows because
     the UI shows "3 of 8 priced and matched" style breakdowns.
+
+    Additional exclusions (2026-04-25 round 2):
+      * out_of_stock rows — stale prices, not actionable as competitor data
+      * extreme outliers (>3× or <1/3 of the median) — almost certainly a
+        different product (shower-system vs spout, set vs single piece).
+        Only applied when n >= 4 — too few hits and one valid premium
+        retailer would skew the median.
     """
     priced = [h for h in hits if h.price is not None]
     if not priced:
         return MarketStats(count=len(hits), verified_count=0)
 
     # Stats are computed only from exact matches (or legacy rows where
-    # identity wasn't evaluated — match_kind is None).
-    stat_hits = [h for h in priced if (h.match_kind is None or h.match_kind == "exact")]
+    # identity wasn't evaluated — match_kind is None) AND in-stock rows.
+    stat_hits = [
+        h for h in priced
+        if (h.match_kind is None or h.match_kind == "exact")
+        and (h.availability != "out_of_stock")
+    ]
     if not stat_hits:
-        # Everything's a variant/unverifiable. Report a count but no range —
-        # caller can decide to warn the user.
         return MarketStats(
             count=len(priced),
             verified_count=sum(1 for h in priced if h.verified),
         )
 
     values = sorted(float(h.price) for h in stat_hits)
+
+    # Outlier trim — only meaningful when we have enough data points to know
+    # what "typical" is. Below 4 hits, every row is signal.
+    if len(values) >= 4:
+        provisional_median = (
+            values[len(values) // 2]
+            if len(values) % 2
+            else (values[len(values) // 2 - 1] + values[len(values) // 2]) / 2
+        )
+        lo_bound = provisional_median / 3.0
+        hi_bound = provisional_median * 3.0
+        trimmed = [v for v in values if lo_bound <= v <= hi_bound]
+        if trimmed:
+            values = trimmed
+
     n = len(values)
     median = values[n // 2] if n % 2 else (values[n // 2 - 1] + values[n // 2]) / 2
     currencies = [h.currency for h in stat_hits if h.currency]
@@ -959,8 +1018,30 @@ async def market_check(
         prod_row = (prod.data if prod else None) or {}
         product_name = prod_row.get("name") or product_name
         metadata = prod_row.get("metadata") or {}
-        dimensions = dimensions or metadata.get("dimensions") or metadata.get("size") or metadata.get("product_size")
-        manufacturer = manufacturer or metadata.get("manufacturer") or metadata.get("brand")
+        # `metadata.dimensions` is a list[dict] from the PDF ingestion pipeline;
+        # flatten to a freeform string so it can be appended to the query.
+        raw_dims = (
+            dimensions
+            or metadata.get("dimensions")
+            or metadata.get("size")
+            or metadata.get("product_size")
+        )
+        if isinstance(raw_dims, list) and raw_dims:
+            first = raw_dims[0]
+            if isinstance(first, dict):
+                dimensions = first.get("metric_cm") or first.get("imperial_in") or None
+            else:
+                dimensions = str(first)
+        elif isinstance(raw_dims, dict):
+            dimensions = raw_dims.get("metric_cm") or raw_dims.get("imperial_in") or None
+        else:
+            dimensions = raw_dims
+        manufacturer = (
+            manufacturer
+            or metadata.get("factory_name")
+            or metadata.get("manufacturer")
+            or metadata.get("brand")
+        )
 
     if not product_name or not product_name.strip():
         raise HTTPException(
@@ -1067,9 +1148,21 @@ async def market_check(
         )
         catalog_facets = facets_from_catalog((prod_row_for_facets.data if prod_row_for_facets else None) or {})
 
+    # Stage A query enrichment: prepend brand + strongest SKU when we have
+    # them from catalog facets, so retailer ranking gets the SKU anchor.
+    enriched_query = query_text
+    if catalog_facets:
+        prefix_parts: List[str] = []
+        if catalog_facets.brand and normalize_model_token(catalog_facets.brand) not in normalize_model_token(query_text):
+            prefix_parts.append(catalog_facets.brand)
+        if catalog_facets.sku_tokens:
+            prefix_parts.append(catalog_facets.sku_tokens[0])
+        if prefix_parts:
+            enriched_query = " ".join([*prefix_parts, query_text])
+
     service = get_perplexity_price_search_service()
     result = await service.search_prices(
-        product_name=query_text,
+        product_name=enriched_query,
         dimensions=None,  # already folded into query_text
         country_code=country_code,
         limit=10,

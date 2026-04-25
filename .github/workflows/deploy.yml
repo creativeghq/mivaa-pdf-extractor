@@ -780,8 +780,6 @@ jobs:
           Environment=DATAFORSEO_LOGIN=${{ secrets.DATAFORSEO_LOGIN }}
           Environment=DATAFORSEO_PASSWORD=${{ secrets.DATAFORSEO_PASSWORD }}
           Environment=DATAFORSEO_BASE64=${{ secrets.DATAFORSEO_BASE64 }}
-          Environment=GOOGLE_SHOPPING_API_KEY=${{ secrets.GOOGLE_SHOPPING_API_KEY }}
-          Environment=GOOGLE_SHOPPING_CX=${{ secrets.GOOGLE_SHOPPING_CX }}
           Environment=ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}
           Environment=MATERIAL_KAI_API_KEY=${{ secrets.MATERIAL_KAI_API_KEY }}
           Environment=MATERIAL_KAI_API_URL=${{ secrets.MATERIAL_KAI_API_URL }}

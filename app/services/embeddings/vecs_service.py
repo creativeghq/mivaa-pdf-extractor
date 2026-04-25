@@ -40,14 +40,52 @@ class VecsService:
         return self._supabase_rest
 
     def _set_image_flag(self, image_id: str, flag_column: str) -> None:
-        """Set a boolean flag on document_images. Best-effort — silently ignores
-        failures so a flag-update issue never breaks the embedding upsert path."""
+        """Set a presence flag (e.g. has_slig_embedding=true) on document_images.
+
+        Failures are logged at WARNING because the flag is the canonical
+        O(1) lookup retrievers use — silent drift here means a row is in
+        VECS but the flag is false, so the retriever skips it and the
+        whole specialized embedding stops contributing to search.
+        """
         try:
             self._get_supabase_rest().client.table('document_images').update(
                 {flag_column: True}
             ).eq('id', image_id).execute()
         except Exception as flag_err:
-            logger.debug(f"⚠️ Failed to set {flag_column} for image {image_id}: {flag_err}")
+            logger.warning(
+                f"⚠️ Failed to set {flag_column} for image {image_id} — "
+                f"VECS↔flag drift; row will be skipped by retrievers using flag pre-filter: {flag_err}"
+            )
+
+    def image_has_embedding(self, image_id: str, flag_column: str) -> bool:
+        """O(1) presence check on document_images.
+
+        Retrievers should call this before issuing a VECS query when the
+        cost of a missing row is high (e.g. specialized-only searches),
+        instead of round-tripping to the vector collection.
+        """
+        try:
+            row = self._get_supabase_rest().client.table('document_images').select(
+                flag_column
+            ).eq('id', image_id).single().execute()
+            return bool(row.data and row.data.get(flag_column))
+        except Exception:
+            return False
+
+    def _clear_image_flags(self, image_id: str, flag_columns: List[str]) -> None:
+        """Clear has_*_slig flags after a delete from VECS so the row is no
+        longer surfaced by retrievers that pre-filter on the flags.
+        """
+        if not flag_columns:
+            return
+        try:
+            self._get_supabase_rest().client.table('document_images').update(
+                {col: False for col in flag_columns}
+            ).eq('id', image_id).execute()
+        except Exception as flag_err:
+            logger.warning(
+                f"⚠️ Failed to clear flags {flag_columns} for image {image_id}: {flag_err}"
+            )
 
 
     def _get_connection_string(self) -> str:
@@ -544,22 +582,28 @@ class VecsService:
             elif document_id:
                 filters = {"document_id": {"$eq": document_id}}
 
-            # Search - Run in thread pool for true async parallelism
-            # VECS collection.query() is synchronous, so we need to run it in a thread
+            # Search - Run in thread pool for true async parallelism.
+            # include_value=True is required to get the distance back; without
+            # it the unpack below would ValueError because vecs returns a
+            # 2-tuple instead of a 3-tuple.
             import asyncio
             results = await asyncio.to_thread(
                 collection.query,
                 data=query_embedding,
                 limit=limit,
                 filters=filters,
-                include_value=False,
+                include_value=True,
                 include_metadata=include_metadata
             )
 
-            # Format results
+            # Format results — handle (id, distance, metadata?) variants.
             formatted_results = []
-            for image_id, distance, metadata in results:
-                # Convert distance to similarity score (0-1)
+            for result_tuple in results:
+                if include_metadata:
+                    image_id, distance, metadata = result_tuple
+                else:
+                    image_id, distance = result_tuple
+                    metadata = None
                 similarity_score = 1.0 / (1.0 + distance)
 
                 result = {
@@ -655,82 +699,95 @@ class VecsService:
             )
 
         try:
-            # Run all searches in parallel
+            # Run all searches in parallel.
             tasks = [search_visual(), search_understanding()]
 
-            # Add specialized searches if embeddings provided
+            # Specialized searches only run when a real specialized query
+            # embedding is provided. Falling back to the visual embedding
+            # silently degrades precision (the color collection is then
+            # queried with a generic visual vector) — the caller should
+            # explicitly opt out by omitting the type instead.
+            specialized_types_to_run: List[str] = []
             for emb_type in ['color', 'texture', 'style', 'material']:
-                query_emb = specialized_query_embeddings.get(emb_type, visual_query_embedding)
+                query_emb = specialized_query_embeddings.get(emb_type)
+                if query_emb is None:
+                    continue
+                specialized_types_to_run.append(emb_type)
                 tasks.append(search_specialized(emb_type, query_emb))
 
             # Execute all searches in parallel
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Parse results
-            visual_results = results[0] if not isinstance(results[0], Exception) else []
-            understanding_results = results[1] if not isinstance(results[1], Exception) else []
-            color_results = results[2] if len(results) > 2 and not isinstance(results[2], Exception) else []
-            texture_results = results[3] if len(results) > 3 and not isinstance(results[3], Exception) else []
-            style_results = results[4] if len(results) > 4 and not isinstance(results[4], Exception) else []
-            material_results = results[5] if len(results) > 5 and not isinstance(results[5], Exception) else []
+            def _ok(idx: int) -> List[Dict[str, Any]]:
+                if idx >= len(results) or isinstance(results[idx], Exception):
+                    return []
+                return results[idx]
+
+            visual_results = _ok(0)
+            understanding_results = _ok(1)
+
+            # Specialized results indexed by their position in tasks list.
+            specialized_results: Dict[str, List[Dict[str, Any]]] = {}
+            for offset, emb_type in enumerate(specialized_types_to_run):
+                specialized_results[emb_type] = _ok(2 + offset)
+
+            color_results = specialized_results.get('color', [])
+            texture_results = specialized_results.get('texture', [])
+            style_results = specialized_results.get('style', [])
+            material_results = specialized_results.get('material', [])
 
             # Build lookup maps for all scores
             understanding_scores = {r['image_id']: r['similarity_score'] for r in understanding_results}
-            color_scores = {r['image_id']: r['similarity_score'] for r in color_results}
-            texture_scores = {r['image_id']: r['similarity_score'] for r in texture_results}
-            style_scores = {r['image_id']: r['similarity_score'] for r in style_results}
-            material_scores = {r['image_id']: r['similarity_score'] for r in material_results}
+            specialized_scores: Dict[str, Dict[str, float]] = {
+                emb_type: {r['image_id']: r['similarity_score'] for r in rows}
+                for emb_type, rows in specialized_results.items()
+            }
 
-            # Collect all unique image IDs from all collections
             all_image_ids = set()
             for result in visual_results:
                 all_image_ids.add(result['image_id'])
-            for score_map in [understanding_scores, color_scores, texture_scores, style_scores, material_scores]:
+            all_image_ids.update(understanding_scores.keys())
+            for score_map in specialized_scores.values():
                 all_image_ids.update(score_map.keys())
 
-            # Build visual score lookup
             visual_scores_map = {r['image_id']: r for r in visual_results}
 
-            # Determine weights based on whether understanding embeddings are available
             has_understanding = bool(understanding_query_embedding and understanding_results)
+            specialized_count = len(specialized_types_to_run)
 
+            # Weights are normalized over the dimensions actually queried,
+            # so omitting (say) color doesn't dilute the remaining vectors.
+            base_weights: Dict[str, float] = {'visual': 0.25}
             if has_understanding:
-                # 6-vector weights: visual=25%, understanding=20%, color=14%, texture=14%, style=14%, material=13%
-                w_visual = 0.25
-                w_understanding = 0.20
-                w_color = 0.14
-                w_texture = 0.14
-                w_style = 0.14
-                w_material = 0.13
+                base_weights['understanding'] = 0.20
+            if specialized_count > 0:
+                # Distribute remaining mass across present specialized types.
+                remaining = 1.0 - sum(base_weights.values())
+                per_specialized = remaining / specialized_count
+                for emb_type in specialized_types_to_run:
+                    base_weights[emb_type] = per_specialized
             else:
-                # Fallback to 5-vector weights when no understanding embedding
-                w_visual = 0.35
-                w_understanding = 0.0
-                w_color = 0.1625
-                w_texture = 0.1625
-                w_style = 0.1625
-                w_material = 0.1625
+                # Re-normalize so visual + understanding sum to 1.0.
+                total = sum(base_weights.values()) or 1.0
+                base_weights = {k: v / total for k, v in base_weights.items()}
 
-            # Combine results from all collections
             combined_results = []
             for image_id in all_image_ids:
                 visual_data = visual_scores_map.get(image_id)
                 visual_score = visual_data.get('similarity_score', 0.0) if visual_data else 0.0
-                fallback = visual_score * 0.8
-
                 understanding_score = understanding_scores.get(image_id, 0.0)
-                color_score = color_scores.get(image_id, fallback)
-                texture_score = texture_scores.get(image_id, fallback)
-                style_score = style_scores.get(image_id, fallback)
-                material_score = material_scores.get(image_id, fallback)
+
+                # Per-vector scores: 0.0 when this image was not in that collection.
+                # No silent fallback to visual_score.
+                per_type_scores = {
+                    emb_type: specialized_scores[emb_type].get(image_id, 0.0)
+                    for emb_type in specialized_types_to_run
+                }
 
                 combined_score = (
-                    w_visual * visual_score +
-                    w_understanding * understanding_score +
-                    w_color * color_score +
-                    w_texture * texture_score +
-                    w_style * style_score +
-                    w_material * material_score
+                    base_weights.get('visual', 0.0) * visual_score
+                    + base_weights.get('understanding', 0.0) * understanding_score
+                    + sum(base_weights.get(t, 0.0) * s for t, s in per_type_scores.items())
                 )
 
                 combined_result = {
@@ -740,10 +797,10 @@ class VecsService:
                     'scores': {
                         'visual': visual_score,
                         'understanding': understanding_score,
-                        'color': color_score,
-                        'texture': texture_score,
-                        'style': style_score,
-                        'material': material_score
+                        'color': per_type_scores.get('color', 0.0),
+                        'texture': per_type_scores.get('texture', 0.0),
+                        'style': per_type_scores.get('style', 0.0),
+                        'material': per_type_scores.get('material', 0.0),
                     },
                     'metadata': visual_data.get('metadata', {}) if visual_data else {}
                 }
@@ -786,35 +843,21 @@ class VecsService:
             }
 
     async def delete_image_embedding(self, image_id: str) -> bool:
-        """
-        Delete an image embedding from all collections (visual, understanding, specialized).
+        """Delete an image's vectors from every collection and clear its flags.
 
-        Args:
-            image_id: Image UUID to delete
-
-        Returns:
-            True if successful, False otherwise
+        Returns True only if the primary delete succeeds. Specialized collection
+        deletes are wrapped because not every image has every embedding type,
+        but failures are logged so we can spot real problems.
         """
         try:
-            # Delete from primary visual collection
             collection = self.get_or_create_collection(
                 name="image_slig_embeddings",
                 dimension=768
             )
             collection.delete(ids=[image_id])
 
-            # Delete from understanding collection
-            try:
-                understanding_col = self.get_or_create_collection(
-                    name="image_understanding_embeddings",
-                    dimension=1024
-                )
-                understanding_col.delete(ids=[image_id])
-            except Exception:
-                pass  # Collection may not exist yet
-
-            # Delete from specialized collections
             for col_name, dim in [
+                ("image_understanding_embeddings", 1024),
                 ("image_color_embeddings", 768),
                 ("image_texture_embeddings", 768),
                 ("image_style_embeddings", 768),
@@ -823,10 +866,19 @@ class VecsService:
                 try:
                     col = self.get_or_create_collection(name=col_name, dimension=dim)
                     col.delete(ids=[image_id])
-                except Exception:
-                    pass
+                except Exception as col_err:
+                    logger.warning(f"Specialized delete from {col_name} for {image_id} failed: {col_err}")
 
-            logger.debug(f"✅ Deleted embeddings for image {image_id} from all collections")
+            self._clear_image_flags(image_id, [
+                'has_slig_embedding',
+                'has_understanding_embedding',
+                'has_color_slig',
+                'has_texture_slig',
+                'has_style_slig',
+                'has_material_slig',
+            ])
+
+            logger.debug(f"✅ Deleted embeddings + cleared flags for image {image_id}")
             return True
 
         except Exception as e:
@@ -864,18 +916,8 @@ class VecsService:
             if image_ids:
                 collection.delete(ids=image_ids)
 
-                # Also delete from understanding collection
-                try:
-                    understanding_col = self.get_or_create_collection(
-                        name="image_understanding_embeddings",
-                        dimension=1024
-                    )
-                    understanding_col.delete(ids=image_ids)
-                except Exception:
-                    pass
-
-                # Delete from specialized collections
                 for col_name, dim in [
+                    ("image_understanding_embeddings", 1024),
                     ("image_color_embeddings", 768),
                     ("image_texture_embeddings", 768),
                     ("image_style_embeddings", 768),
@@ -884,10 +926,23 @@ class VecsService:
                     try:
                         col = self.get_or_create_collection(name=col_name, dimension=dim)
                         col.delete(ids=image_ids)
-                    except Exception:
-                        pass
+                    except Exception as col_err:
+                        logger.warning(f"Specialized delete from {col_name} for document {document_id} failed: {col_err}")
 
-                logger.info(f"✅ Deleted {len(image_ids)} embeddings for document {document_id} from all collections")
+                # Clear all flags in one batch update per document
+                try:
+                    self._get_supabase_rest().client.table('document_images').update({
+                        'has_slig_embedding': False,
+                        'has_understanding_embedding': False,
+                        'has_color_slig': False,
+                        'has_texture_slig': False,
+                        'has_style_slig': False,
+                        'has_material_slig': False,
+                    }).eq('document_id', document_id).execute()
+                except Exception as flag_err:
+                    logger.warning(f"Failed to clear flags for document {document_id}: {flag_err}")
+
+                logger.info(f"✅ Deleted {len(image_ids)} embeddings + cleared flags for document {document_id}")
                 return len(image_ids)
             else:
                 logger.info(f"No embeddings found for document {document_id}")

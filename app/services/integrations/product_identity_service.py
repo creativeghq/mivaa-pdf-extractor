@@ -178,13 +178,15 @@ def url_prefilter(
     if not host:
         return UrlVerdict(False, "no host")
 
-    # DataForSEO Shopping-feed hits come with their own trustworthy payload
-    # (title, price, image, rating from the feed). Let them through without
-    # any path/SERP checks — the classifier + UI will handle them differently
-    # from free-web Perplexity hits.
-    is_dataforseo = source == "dataforseo"
+    # Trusted sources bypass path/SERP/aggregator checks:
+    #   - "dataforseo": Shopping-feed payload is authoritative; URL is SERP-shaped by design.
+    #   - "skroutz" / "bestprice" / "shopflix": Greek marketplace adapters legitimately
+    #     return deep-link URLs on the marketplace host (e.g. bestprice.gr/to/<id>) with
+    #     the underlying merchant in retailer_name. Blocking these as "aggregator
+    #     masquerading as merchant" loses every marketplace hit.
+    is_trusted_source = source in {"dataforseo", "skroutz", "bestprice", "shopflix"}
 
-    if not is_dataforseo:
+    if not is_trusted_source:
         if path in ("", "/"):
             return UrlVerdict(False, "homepage URL")
 
@@ -249,6 +251,7 @@ class QueryFacets:
     variants: Dict[str, str] = field(default_factory=dict)  # {"color":"BLACK","finish":"MATT"}
     required_tokens: List[str] = field(default_factory=list)   # must appear in page (brand + model)
     variant_tokens: List[str] = field(default_factory=list)    # matching boosts, mismatch → note
+    sku_tokens: List[str] = field(default_factory=list)        # digit-anchor SKU codes (catalog or query)
     raw_query: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -259,6 +262,7 @@ class QueryFacets:
             "variants": self.variants,
             "required_tokens": self.required_tokens,
             "variant_tokens": self.variant_tokens,
+            "sku_tokens": self.sku_tokens,
             "raw_query": self.raw_query,
         }
 
@@ -273,6 +277,7 @@ class QueryFacets:
             variants=d.get("variants") or {},
             required_tokens=d.get("required_tokens") or [],
             variant_tokens=d.get("variant_tokens") or [],
+            sku_tokens=d.get("sku_tokens") or [],
             raw_query=d.get("raw_query") or "",
         )
 
@@ -282,18 +287,79 @@ def facets_from_catalog(product_row: Optional[Dict[str, Any]]) -> Optional[Query
     When /discover runs for a catalog product we already have structured
     metadata — use it as the reference facets rather than re-parsing the
     free-text name. Much cleaner signal than Haiku guessing from a name.
+
+    Reads the real metadata layout produced by the PDF ingestion pipeline:
+      - metadata.factory_name      → brand
+      - metadata.collection         → model/series name
+      - metadata.commercial.sku_codes (dict of variant_name → sku)
+        + metadata.commercial.vision_variants[].sku → digit-anchor SKU tokens
+      - metadata.material_category  → product_type
+      - metadata.material_properties.{finish}, available_colors, dimensions → variants
+
+    Forward-compatible: still honors flat metadata.manufacturer/brand/model/sku
+    keys if a future ingestion path writes them at the top level.
     """
     if not product_row:
         return None
     meta = product_row.get("metadata") or {}
     name = product_row.get("name") or ""
-    brand = meta.get("manufacturer") or meta.get("brand")
-    model = meta.get("model") or meta.get("model_name") or meta.get("sku")
+
+    brand = (
+        meta.get("factory_name")
+        or meta.get("manufacturer")
+        or meta.get("brand")
+    )
+    model = (
+        meta.get("collection")
+        or meta.get("model")
+        or meta.get("model_name")
+    )
+
+    # Pull every catalog SKU we know about. These are the strongest identity
+    # anchors — when a retailer page carries a SKU code that's NOT in this
+    # set, the page is a different SKU within the same collection.
+    sku_tokens: List[str] = []
+    commercial = meta.get("commercial") or {}
+    sku_codes = commercial.get("sku_codes") or {}
+    if isinstance(sku_codes, dict):
+        for v in sku_codes.values():
+            if v:
+                sku_tokens.append(normalize_model_token(str(v)))
+    vision_variants = commercial.get("vision_variants") or []
+    if isinstance(vision_variants, list):
+        for vv in vision_variants:
+            if isinstance(vv, dict) and vv.get("sku"):
+                sku_tokens.append(normalize_model_token(str(vv["sku"])))
+    # Top-level sku field (forward-compat for non-PDF ingestion paths)
+    if meta.get("sku"):
+        sku_tokens.append(normalize_model_token(str(meta["sku"])))
+    # Dedup, preserve order, drop empties / pure-name tokens (require ≥1 digit)
+    seen: set = set()
+    deduped: List[str] = []
+    for t in sku_tokens:
+        if t and any(c.isdigit() for c in t) and t not in seen:
+            seen.add(t)
+            deduped.append(t)
+    sku_tokens = deduped
 
     variants: Dict[str, str] = {}
-    for k in ("color", "finish", "size", "dimensions"):
+    mp = meta.get("material_properties") or {}
+    if mp.get("finish"):
+        variants["finish"] = str(mp["finish"])
+    # Single-value color/size only when unambiguous — multi-color products
+    # leave variants empty so the classifier doesn't false-mismatch.
+    available_colors = meta.get("available_colors") or []
+    if isinstance(available_colors, list) and len(available_colors) == 1:
+        variants["color"] = str(available_colors[0])
+    dims = meta.get("dimensions") or []
+    if isinstance(dims, list) and dims:
+        first = dims[0] if isinstance(dims[0], dict) else None
+        if first and first.get("metric_cm"):
+            variants["size"] = str(first["metric_cm"])
+    # Forward-compat flat keys
+    for k in ("color", "size"):
         v = meta.get(k)
-        if v:
+        if v and k not in variants:
             variants[k] = str(v)
 
     required_tokens: List[str] = []
@@ -304,16 +370,21 @@ def facets_from_catalog(product_row: Optional[Dict[str, Any]]) -> Optional[Query
 
     variant_tokens = [normalize_text(v) for v in variants.values() if v]
 
-    if not required_tokens and not name:
+    if not required_tokens and not name and not sku_tokens:
         return None
 
     return QueryFacets(
         brand=brand,
         model=model,
-        product_type=meta.get("product_type") or meta.get("category"),
+        product_type=(
+            meta.get("product_type")
+            or meta.get("material_category")
+            or meta.get("category")
+        ),
         variants=variants,
         required_tokens=required_tokens,
         variant_tokens=variant_tokens,
+        sku_tokens=sku_tokens,
         raw_query=name,
     )
 
@@ -341,7 +412,7 @@ _FACET_EXTRACTION_SYSTEM = (
     "Return ONLY a JSON object matching this schema exactly:\n"
     "{\n"
     "  \"brand\": string | null,            // manufacturer brand, e.g. 'ORABELLA', 'MAIDTEC'\n"
-    "  \"model\": string | null,            // model name/code/series, e.g. 'PRECIOSA', '7012MT'\n"
+    "  \"model\": string | null,            // model name/series, e.g. 'PRECIOSA', 'VALENOVA'\n"
     "  \"product_type\": string | null,     // normalized category, e.g. 'basin_faucet', 'tile', 'range_hood'\n"
     "  \"variants\": {                      // visible product variant attributes\n"
     "    \"color\": string | null,\n"
@@ -349,10 +420,15 @@ _FACET_EXTRACTION_SYSTEM = (
     "    \"size\": string | null\n"
     "  },\n"
     "  \"required_tokens\": [string],       // brand + model, MUST be on the page\n"
-    "  \"variant_tokens\": [string]         // color/finish/size, soft match\n"
+    "  \"variant_tokens\": [string],        // color/finish/size, soft match\n"
+    "  \"sku_tokens\": [string]             // exact SKU/article codes — digit-bearing identity anchors\n"
     "}\n\n"
     "Rules:\n"
-    "- brand and model are the identity-bearing tokens. If the query only has a brand, model is null.\n"
+    "- brand and model are identity-bearing. If the query only has a brand, model is null.\n"
+    "- sku_tokens contains every distinct SKU/model/article code (alphanumeric, USUALLY contains digits)\n"
+    "  visible in the query, e.g. '10202', '7012MT', '39659', 'PRECIOSA-10259'. Strip separators on output\n"
+    "  ('7012-MT' → '7012MT'). When the query carries a SKU, it is THE identity anchor; brand+model alone\n"
+    "  are not enough. If no SKU is visible, return [].\n"
     "- variants are SOFT descriptors. A product with different finish is a VARIANT, not a different product.\n"
     "- MATT and MATTE are the same. MATT BLACK = BLACK MATT = MATTE BLACK (same color+finish). Keep them unified.\n"
     "- product_type uses snake_case with common English category names, even if the query is in Greek.\n"
@@ -372,13 +448,33 @@ _CLASSIFIER_SYSTEM = (
     "\"match_note\": string|null } ] }\n\n"
     "Classification rules (strict order):\n"
     "- unverifiable: page_name is empty AND url_slug_tokens is empty. Can't judge.\n"
-    "- mismatch (<50): brand differs, OR model differs (even if brand matches — that's a different SKU), "
-    "  OR product_type differs (a shower column is NOT a basin faucet even with same brand).\n"
-    "- family (50-69): brand matches, model differs but is in the same product family. RARELY used — "
-    "  when in doubt between family and mismatch, prefer mismatch.\n"
-    "- variant (70-89): brand + model + product_type all match, but color/finish/size differs.\n"
+    "- mismatch (<50): brand differs, OR product_type differs from the query's primary product_type "
+    "  (a shower outlet/column is NOT a basin faucet even with same brand+series; an εκροή/spout is "
+    "  NOT a μπαταρία/mixer faucet — those are different SKUs sold separately).\n"
+    "- family (50-69): brand+series match but the page is a DIFFERENT SKU within that series. Use this "
+    "  WHENEVER the page name carries an explicit numeric SKU code (e.g. 'PRECIOSA 10259', '10159') and "
+    "  either (a) the query has no SKU, or (b) the page SKU differs from the query SKU. Same series ≠ same product.\n"
+    "  Also use when product_type words differ (Νιπτήρα/basin vs Ντουζιέρα/shower vs Λουτρού/bath, "
+    "  Μπαταρία/mixer vs Εκροή/spout-outlet vs Στήλη/column).\n"
+    "- variant (70-89): brand + model + product_type all match, only color/finish/size differs.\n"
+    "  Reserved for genuine same-SKU variants (chrome vs black-matt of the SAME mixer).\n"
     "  Also use for bundles/sets that CONTAIN the asked product but include other items.\n"
     "- exact (90+): brand + model + product_type match, and any visible variants are consistent.\n\n"
+    "Tie-breakers (apply BEFORE picking variant):\n"
+    "- query_facets.sku_tokens is the strongest identity anchor. When non-empty, the page MUST contain at "
+    "  least one of those SKU tokens (in product_name, breadcrumb, visible_attributes, or url_slug_tokens, "
+    "  ignoring case and Greek/Latin lookalikes and separators) — otherwise the verdict is `family` if the "
+    "  brand+series still match, else `mismatch`. Page SKUs that look like sku_tokens but aren't equal "
+    "  (e.g. asked '10202', page shows '10259') always force `family` (or `mismatch` if product_type also "
+    "  differs).\n"
+    "- If sku_tokens is EMPTY but the page name contains a SKU/model code (any digit-bearing alphanumeric "
+    "  near the brand/series, e.g. 'PRECIOSA 10259', '#39661'), treat the page as a different SKU. Default "
+    "  to `family` unless product_type also differs (then `mismatch`).\n"
+    "- 'Same product type' means the same Greek/English noun for the device on the page: "
+    "  Μπαταρία≈Faucet/Mixer/Tap; Εκροή≈Spout/Outlet (a separate SKU, NOT a faucet); "
+    "  Στήλη≈Column; Σύστημα Ντους≈Shower System. Different noun → different product_type.\n"
+    "- Never label `variant` purely on brand+series match. The match_note must not contradict the verdict — "
+    "  if the note says 'different product type' or 'different SKU', the verdict MUST be family or mismatch.\n\n"
     "Soft matching rules (be generous here):\n"
     "- MATT / MATTE / MAT are the same finish. BLACK MATT ≡ MATT BLACK ≡ MATTE BLACK.\n"
     "- GLOSS / GLOSSY / SHINY are the same finish. Missing finish in page name is OK if the asked finish "
@@ -392,7 +488,7 @@ _CLASSIFIER_SYSTEM = (
     "- NULL for exact matches.\n"
     "- For variant: one-line English describing the facet diff, e.g. 'Color differs: asked BLACK MATT, page shows WHITE MATT'.\n"
     "- For bundle/set: 'Bundled with X' (where X is the other product visible on the page).\n"
-    "- For family: 'Same brand, different model — asked PRECIOSA, page shows BELLA'.\n"
+    "- For family: 'Same series, different SKU — asked PRECIOSA (no SKU), page shows PRECIOSA 10259 shower outlet'.\n"
     "- For mismatch: short explanation — 'Different product type: shower column, not basin faucet'.\n"
     "- For unverifiable: 'Could not extract product identity from page'."
 )
@@ -481,6 +577,17 @@ class ProductIdentityService:
         for v in variants.values():
             variant_tokens.append(normalize_text(v))
 
+        # SKU tokens — keep only digit-bearing codes (model names like 'PRECIOSA'
+        # already live in required_tokens; we don't want them double-counted as
+        # SKU anchors). Dedup, preserve order.
+        sku_tokens: List[str] = []
+        seen: set = set()
+        for raw in (parsed.get("sku_tokens") or []):
+            t = normalize_model_token(str(raw))
+            if t and any(c.isdigit() for c in t) and t not in seen:
+                seen.add(t)
+                sku_tokens.append(t)
+
         return QueryFacets(
             brand=brand,
             model=model,
@@ -488,6 +595,7 @@ class ProductIdentityService:
             variants=variants,
             required_tokens=[t for t in required_tokens if t],
             variant_tokens=[t for t in variant_tokens if t],
+            sku_tokens=sku_tokens,
             raw_query=query,
         )
 
@@ -606,10 +714,13 @@ class ProductIdentityService:
         """
         Minimal fallback when Haiku is unavailable. Uses required_tokens ∩
         (product_name ∪ url_slug_tokens). Conservative: biases toward
-        'unverifiable' rather than false-exact.
+        'unverifiable' rather than false-exact. When facets.sku_tokens is
+        non-empty, SKU equality is the deciding signal.
         """
         required = {normalize_model_token(t) for t in (facets.required_tokens or []) if t}
-        if not required:
+        sku_anchors = {normalize_model_token(t) for t in (facets.sku_tokens or []) if t}
+
+        if not required and not sku_anchors:
             # No required tokens → can't classify. Mark unverifiable and keep.
             return {
                 "match_kind": "unverifiable",
@@ -622,6 +733,45 @@ class ProductIdentityService:
         slug = " ".join(candidate.get("url_slug_tokens") or [])
         haystack = normalize_model_token(f"{name} {slug}")
 
+        if not name and not candidate.get("url_slug_tokens"):
+            return {
+                "match_kind": "unverifiable",
+                "match_score": 40,
+                "variant_diffs": [],
+                "match_note": "Could not extract product identity from page",
+            }
+
+        # SKU-anchor path: when the query carries a SKU, it dominates.
+        if sku_anchors:
+            sku_hits = [t for t in sku_anchors if t in haystack]
+            required_hits = [t for t in required if t in haystack]
+            if sku_hits:
+                # Page carries a known SKU from the catalog → exact.
+                return {
+                    "match_kind": "exact",
+                    "match_score": 95,
+                    "variant_diffs": [],
+                    "match_note": None,
+                }
+            # No SKU match. If brand+series still match, it's a sibling SKU
+            # in the same series → family. Otherwise mismatch.
+            if required and len(required_hits) == len(required):
+                return {
+                    "match_kind": "family",
+                    "match_score": 55,
+                    "variant_diffs": [],
+                    "match_note": (
+                        f"Same series, different SKU — query SKUs {sorted(sku_anchors)} not found on page"
+                    ),
+                }
+            return {
+                "match_kind": "mismatch",
+                "match_score": 20,
+                "variant_diffs": [],
+                "match_note": f"Query SKUs {sorted(sku_anchors)} not found on page",
+            }
+
+        # Brand/series-only path (no SKU anchor).
         matches = [t for t in required if t in haystack]
         if len(matches) == len(required):
             return {
@@ -636,13 +786,6 @@ class ProductIdentityService:
                 "match_score": 55,
                 "variant_diffs": [],
                 "match_note": f"Partial token match ({len(matches)}/{len(required)})",
-            }
-        if not name and not candidate.get("url_slug_tokens"):
-            return {
-                "match_kind": "unverifiable",
-                "match_score": 40,
-                "variant_diffs": [],
-                "match_note": "Could not extract product identity from page",
             }
         return {
             "match_kind": "mismatch",

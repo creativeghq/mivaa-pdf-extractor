@@ -371,11 +371,10 @@ async def process_product_images(
     logger.info(f"   🤖 Starting AI classification of {total_images} images...")
 
     try:
+        # primary_model + validation_model resolved from settings inside classify_images.
         material_images, non_material_images = await image_service.classify_images(
             extracted_images=extracted_images_list,
             confidence_threshold=0.6,
-            primary_model="Qwen/Qwen3-VL-32B-Instruct",
-            validation_model="claude-opus-4-7",
             batch_size=15
         )
     except Exception as e:

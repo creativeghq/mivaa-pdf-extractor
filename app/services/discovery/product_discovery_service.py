@@ -776,18 +776,19 @@ class ProductDiscoveryService:
         prompt: str,
         job_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Use Claude Opus 4.7 for product discovery"""
+        """Use the configured Claude model for product discovery."""
         start_time = datetime.now()
 
         try:
-            # Use centralized AI client service
+            from app.config import get_settings as _get_settings_disc
+            claude_model = _get_settings_disc().anthropic_model_validation
             ai_service = get_ai_client_service()
             client = ai_service.anthropic
 
             response = client.messages.create(
-                model="claude-opus-4-7",
-                max_tokens=16000,  # Large response for comprehensive catalog
-                temperature=0,  # Zero temperature for maximum consistency
+                model=claude_model,
+                max_tokens=16000,
+                temperature=0,
                 messages=[
                     {
                         "role": "user",
@@ -825,7 +826,7 @@ class ProductDiscoveryService:
 
                 # DEBUG: Log how many products Claude found
                 products_found = len(result.get("products", []))
-                self.logger.info(f"🔍 Claude Opus 4.7 discovered {products_found} products")
+                self.logger.info(f"🔍 {claude_model} discovered {products_found} products")
                 if products_found > 0:
                     product_names = [p.get("name", "Unknown") for p in result.get("products", [])]
                     self.logger.info(f"   Product names: {product_names}")
@@ -834,12 +835,12 @@ class ProductDiscoveryService:
                 latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
                 await self.ai_logger.log_claude_call(
                     task="product_discovery",
-                    model="claude-opus-4-7",
+                    model=claude_model,
                     response=response,
                     latency_ms=latency_ms,
                     confidence_score=result.get("confidence_score", 0.9),
                     confidence_breakdown={},
-                    action="use_ai_result",  # Fixed: must be 'use_ai_result' or 'fallback_to_rules'
+                    action="use_ai_result",
                     job_id=job_id
                 )
                 

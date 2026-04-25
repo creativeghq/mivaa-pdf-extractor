@@ -353,6 +353,13 @@ async def process_single_product(
         images_processed = image_result.get('images_processed', 0)
         clip_embeddings = image_result.get('clip_embeddings_generated', 0)
         vector_stats = image_result.get('vector_stats', {}) or {}
+        failed_images_list = image_result.get('failed_images', []) or []
+        images_failed_count = len(failed_images_list)
+        if images_failed_count:
+            logger_instance.warning(
+                f"   ⚠️ {images_failed_count} image(s) failed to save for {product.name} — "
+                f"surfaced to job status under image_save_failed"
+            )
         await product_tracker.mark_stage_complete(
             product_id,
             ProductStage.IMAGES,
@@ -362,6 +369,8 @@ async def process_single_product(
                 "images_icon_candidates": image_result.get('images_icon_candidates', 0),
                 "images_non_material": image_result.get('images_non_material', 0),
                 "clip_embeddings_generated": clip_embeddings,
+                # Failure surface — was previously only logged, not tracked.
+                "image_save_failed": images_failed_count,
                 # Per-vector breakdown — visible in admin UI
                 "visual_slig_count": vector_stats.get('visual_slig', 0),
                 "color_slig_count": vector_stats.get('color_slig', 0),

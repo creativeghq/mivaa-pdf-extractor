@@ -40,7 +40,17 @@ router = APIRouter(
 
 
 class CreateTrackRequest(BaseModel):
-    search_query: str = Field(..., description="Product name, e.g. 'Ferrara Beige Keros'.")
+    search_query: str = Field(
+        ...,
+        description=(
+            "Product identity string. RECOMMENDED format: '{ProductName} {Model/Series} {SKU}' "
+            "concatenated together — e.g. 'ORABELLA PRECIOSA 10202 Modern Chrome Single Lever Basin "
+            "Mixer'. The SKU is the strongest disambiguator: when present, our identity classifier "
+            "drops sibling SKUs in the same series (e.g. shower outlets when you asked for the basin "
+            "mixer). Brand-only or series-only queries (no SKU) work too but return a wider set of "
+            "retailers and may include sibling SKUs flagged as 'family'."
+        ),
+    )
     dimensions: Optional[str] = Field(
         default=None,
         description="Optional size spec appended to the query (e.g. '60x120').",

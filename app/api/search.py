@@ -66,10 +66,6 @@ logger = logging.getLogger(__name__)
 # Create router
 router = APIRouter(prefix="/api", tags=["Search", "Embeddings", "Chat"])
 
-# REMOVED: Module-level service initialization - now using centralized dependencies
-# REMOVED: /documents/{document_id}/query - Use /api/rag/query instead
-
-
 @router.post(
     "/search/semantic",
     response_model=SemanticSearchResponse,
@@ -81,25 +77,39 @@ async def semantic_search(
     rag: RAGService = Depends(get_rag_service),
     supabase: SupabaseClient = Depends(get_supabase_client)
 ) -> SemanticSearchResponse:
+    """Semantic search across `document_chunks` (1024D Voyage halfvec).
+
+    Distance is computed in Postgres via the `match_document_chunks_semantic`
+    RPC — the previous implementation pulled every embedding into Python and
+    computed cosine in numpy with a hardcoded 1536D check, which silently
+    returned zero results for our 1024D vectors.
     """
-    Perform semantic search across multiple documents.
-    
-    This endpoint searches across all indexed documents to find the most
-    semantically relevant content based on the query.
-    """
+    import asyncio
+
     try:
-        # Get list of available documents
+        # Generate query embedding (Voyage 1024D, query input_type)
+        try:
+            embedding_result = await rag.embedding_service.generate_embedding(request.query)
+            if not embedding_result or not embedding_result.embedding:
+                raise Exception("Failed to generate query embedding")
+            query_embedding = embedding_result.embedding
+        except Exception as e:
+            logger.error(f"Failed to generate query embedding: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to generate query embedding: {e}"
+            )
+
+        # Resolve document filter
         if request.document_ids:
-            # Search only in specified documents
             document_ids = request.document_ids
         else:
-            # Search across all documents
             documents = await supabase.list_documents(
-                limit=1000,  # Reasonable limit for search
+                limit=1000,
                 status_filter="completed"
             )
             document_ids = [doc["id"] for doc in documents.get("documents", [])]
-        
+
         if not document_ids:
             return SemanticSearchResponse(
                 success=True,
@@ -108,124 +118,36 @@ async def semantic_search(
                 total_results=0,
                 metadata={
                     "searched_documents": 0,
-                    "similarity_threshold": request.similarity_threshold
-                }
-            )
-        
-        # Generate embedding for the query
-        try:
-            embedding_result = await rag.embedding_service.generate_embedding(request.query)
-            if not embedding_result or not embedding_result.embedding:
-                raise Exception("Failed to generate query embedding")
-            query_embedding = embedding_result.embedding  # Extract the actual embedding list
-        except Exception as e:
-            logger.error(f"Failed to generate query embedding: {e}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to generate query embedding: {str(e)}"
+                    "similarity_threshold": request.similarity_threshold,
+                },
             )
 
-        # Perform direct vector search using database embeddings
-        search_results = []
-        try:
-            # Execute the query using Supabase client's parameterized methods (safe from SQL injection)
-            import asyncio
-            table_result = await asyncio.to_thread(
-                lambda: supabase.client.table('document_vectors')
-                .select('document_id, chunk_id, content, metadata, embedding')
-                .not_.is_('embedding', 'null')
-                .execute()
-            )
+        # Postgres-side cosine search — single round trip, halfvec_cosine_ops
+        # index handles ordering. NULL embeddings filtered inside the RPC.
+        rpc_result = await asyncio.to_thread(
+            lambda: supabase.client.rpc(
+                "match_document_chunks_semantic",
+                {
+                    "query_embedding": query_embedding,
+                    "similarity_threshold": float(request.similarity_threshold),
+                    "match_count": int(request.max_results),
+                    "filter_document_ids": document_ids,
+                    "filter_workspace_id": None,
+                },
+            ).execute()
+        )
 
-            if table_result.data:
-                # Calculate similarity in Python (less efficient but works)
-                try:
-                    import numpy as np
-
-                    logger.info(f"Found {len(table_result.data)} rows in document_vectors table")
-
-                    for row in table_result.data:
-                        if request.document_ids and row['document_id'] not in request.document_ids:
-                            continue
-
-                        # Parse embedding
-                        embedding = row.get('embedding')
-
-                        # Handle different embedding formats
-                        if embedding:
-                            # Convert vector string to list if needed
-                            if isinstance(embedding, str):
-                                # Parse vector string format like "[1.0, 2.0, 3.0]"
-                                try:
-                                    if embedding.startswith('[') and embedding.endswith(']'):
-                                        # Remove brackets and split by comma
-                                        embedding_str = embedding[1:-1]
-                                        embedding = [float(x.strip()) for x in embedding_str.split(',')]
-                                    else:
-                                        continue
-                                except Exception:
-                                    continue
-
-                            if isinstance(embedding, list) and len(embedding) == 1536:
-                                # Calculate cosine similarity
-                                embedding_array = np.array(embedding, dtype=np.float32)
-                                query_array = np.array(query_embedding, dtype=np.float32)
-
-                                # Normalize vectors
-                                embedding_norm = embedding_array / np.linalg.norm(embedding_array)
-                                query_norm = query_array / np.linalg.norm(query_array)
-
-                                # Calculate cosine similarity
-                                similarity = float(np.dot(embedding_norm, query_norm))
-
-                                logger.info(f"Similarity: {similarity:.4f} for doc {row.get('document_id')}")
-
-                                if similarity >= request.similarity_threshold:
-                                    search_results.append({
-                                        "document_id": row.get("document_id", ""),
-                                        "score": similarity,
-                                        "content": row.get("content", ""),
-                                        "metadata": row.get("metadata", {})
-                                    })
-
-
-                    logger.info(f"Final search results: {len(search_results)} matches found")
-
-                except ImportError:
-                    logger.error("NumPy not available for similarity calculation")
-                except Exception as e:
-                    logger.error(f"Error in similarity calculation: {e}")
-
-        except Exception as e:
-            logger.error(f"Vector search error: {e}")
-            # Fallback to RAG query if vector search fails
-            for doc_id in document_ids:
-                try:
-                    result = await rag.query_document(
-                        document_id=doc_id,
-                        query=request.query,
-                        response_mode="compact"
-                    )
-
-                    if result["success"] and result.get("sources"):
-                        # Process sources and filter by similarity threshold
-                        for source in result["sources"]:
-                            score = source.get("score", 0.0)
-                            if score >= request.similarity_threshold:
-                                search_results.append({
-                                    "document_id": doc_id,
-                                    "score": score,
-                                    "content": source.get("text_snippet", ""),
-                                    "metadata": source.get("metadata", {})
-                                })
-
-                except Exception as e:
-                    logger.warning(f"Error searching document {doc_id}: {e}")
-                    continue
-        
-        # Sort by score and apply limit
-        search_results.sort(key=lambda x: x["score"], reverse=True)
-        limited_results = search_results[:request.max_results]
+        rows = rpc_result.data or []
+        search_results = [
+            {
+                "document_id": row.get("document_id", ""),
+                "score": float(row.get("similarity") or 0.0),
+                "content": row.get("content", ""),
+                "metadata": row.get("metadata") or {},
+            }
+            for row in rows
+        ]
+        limited_results = search_results  # RPC already applies LIMIT
 
         # Enrich results with document metadata
         enriched_results = []
@@ -376,18 +298,6 @@ async def similarity_search(
             status_code=500,
             detail=f"Internal server error: {str(e)}"
         )
-
-
-# REMOVED: /documents/{document_id}/related - Use /api/rag/search instead
-
-
-# REMOVED: /documents/{document_id}/summarize - Not implemented
-
-
-# REMOVED: /documents/{document_id}/extract-entities - Not implemented
-
-
-# REMOVED: /documents/compare - Not implemented
 
 
 @router.get(
@@ -1518,10 +1428,3 @@ async def search_by_material(
         raise HTTPException(status_code=500, detail=f"Material search failed: {str(e)}")
 
 
-# ============================================================================
-# ============================================================================
-
-# ============================================================================
-# The following endpoint has been removed and consolidated into /api/rag/search:
-# - POST /unified-search - Use /api/rag/search with strategy parameter
-# ============================================================================

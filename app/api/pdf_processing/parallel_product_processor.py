@@ -16,6 +16,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 from dataclasses import dataclass, field
 
+from app.config import get_settings
 from app.schemas.product_progress import ProductProcessingResult
 from app.services.tracking.product_progress_tracker import ProductProgressTracker
 from app.api.pdf_processing.product_processor import process_single_product
@@ -25,13 +26,30 @@ from app.services.discovery.entity_linking_service import EntityLinkingService
 logger = logging.getLogger(__name__)
 
 
+def _default_max_concurrent() -> int:
+    return get_settings().max_concurrent_products
+
+
+def _default_batch_size() -> int:
+    return get_settings().product_batch_size
+
+
+def _default_memory_threshold() -> float:
+    return float(get_settings().product_memory_threshold_mb)
+
+
 @dataclass
 class ParallelProcessingConfig:
-    """Configuration for parallel product processing."""
-    max_concurrent: int = 3  # Max products to process concurrently (increased from 2)
-    batch_size: int = 5  # Products to batch before memory cleanup
-    enable_parallel: bool = True  # Enable/disable parallel processing
-    memory_threshold_mb: float = 4000  # Pause if memory exceeds this
+    """Configuration for parallel product processing.
+
+    All defaults read from `Settings` (env vars), so capacity can be tuned
+    per-deployment without a code change. See `MAX_CONCURRENT_PRODUCTS`,
+    `PRODUCT_BATCH_SIZE`, `PRODUCT_MEMORY_THRESHOLD_MB`.
+    """
+    max_concurrent: int = field(default_factory=_default_max_concurrent)
+    batch_size: int = field(default_factory=_default_batch_size)
+    enable_parallel: bool = True
+    memory_threshold_mb: float = field(default_factory=_default_memory_threshold)
 
 
 @dataclass

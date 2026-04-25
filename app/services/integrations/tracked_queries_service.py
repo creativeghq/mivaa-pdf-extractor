@@ -151,6 +151,12 @@ class TrackedQueriesService:
         if verify_prices is not None:
             updates["verify_prices"] = bool(verify_prices)
 
+        # Cached query_facets are derived from search_query + dimensions +
+        # manufacturer. Invalidate when any of those change so the next
+        # refresh rebuilds them from the new inputs.
+        if dimensions is not None or manufacturer is not None:
+            updates["query_facets"] = None
+
         if len(updates) == 1:  # only updated_at
             return await self.get(tracking_id)
 
@@ -201,9 +207,26 @@ class TrackedQueriesService:
                     }
 
         # Use the cached query_facets if we have them (created on first insert).
-        # Refreshes that predate 2026-04-25 won't have them; fall back to
-        # on-demand extraction inside search_prices().
+        # Rows that predate facet caching (or whose create-time extraction
+        # failed) get a one-shot extraction here and the result is persisted
+        # so subsequent refreshes don't re-pay for the Haiku call.
         cached_facets = QueryFacets.from_dict(tq.get("query_facets"))
+        if cached_facets is None:
+            facet_query = tq.get("search_query") or ""
+            if tq.get("dimensions"):
+                facet_query = f"{facet_query} {tq['dimensions']}"
+            try:
+                identity_svc = get_product_identity_service()
+                cached_facets = await identity_svc.extract_query_facets(
+                    facet_query, manufacturer_hint=tq.get("manufacturer"),
+                )
+                if cached_facets is not None:
+                    self.supabase.client.table("tracked_queries").update({
+                        "query_facets": cached_facets.to_dict(),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }).eq("id", tracking_id).execute()
+            except Exception as e:
+                logger.warning(f"Backfill facet extraction failed (non-fatal): {e}")
 
         # Option 2: domain pinning. If the caller has saved preferred retailer
         # domains, Perplexity's search_domain_filter forces those to be probed.
