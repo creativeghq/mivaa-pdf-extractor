@@ -103,6 +103,19 @@ async def extract_product_pages(
     if enable_layout_detection and physical_pages:
         logger.info(f"   🎯 Running YOLO layout detection on {len(physical_pages)} physical pages...")
 
+        # Cache lookup: pdf_worker.execute_pdf_extraction_job persists merged
+        # YOLO+text regions to `document_layout_analysis` per page during
+        # markdown extraction. Reuse those rather than re-running YOLO when
+        # they exist - saves an HF call per product page and guarantees the
+        # same regions feed both stage_1 and the layout-aware chunker.
+        cached_regions = await _load_cached_layout_regions(
+            document_id=document_id,
+            physical_pages=physical_pages,
+            has_spread_layout=has_spread_layout,
+            physical_to_pdf_map=physical_to_pdf_map,
+            logger=logger,
+        )
+
         try:
             from app.services.pdf.yolo_layout_detector import YoloLayoutDetector
             from app.config import get_settings
@@ -133,10 +146,28 @@ async def extract_product_pages(
                             pdf_page_idx = physical_page - 1
                             position = 'single'
 
-                        logger.info(f"      Detecting regions on physical page {physical_page} (PDF sheet {pdf_page_idx}, position {position})...")
-                        
-                        # YOLO always detects on the full sheet
-                        result = await detector.detect_layout_regions(tmp_pdf_path, pdf_page_idx)
+                        # Check cache before invoking YOLO - if pdf_worker
+                        # already persisted regions for this page, reuse them
+                        # so we get identical regions to what the chunker has
+                        # already seen and we save an HF call per page.
+                        cached_for_page = cached_regions.get(physical_page) if cached_regions else None
+                        if cached_for_page:
+                            logger.info(
+                                f"      ♻️ Using {len(cached_for_page)} cached regions for "
+                                f"physical page {physical_page} (no YOLO re-run)"
+                            )
+
+                            class _CachedResult:
+                                regions = cached_for_page
+                                detection_time_ms = 0
+                            result = _CachedResult()
+                        else:
+                            logger.info(
+                                f"      Detecting regions on physical page {physical_page} "
+                                f"(PDF sheet {pdf_page_idx}, position {position})..."
+                            )
+                            # YOLO always detects on the full sheet
+                            result = await detector.detect_layout_regions(tmp_pdf_path, pdf_page_idx)
 
                         if result and result.regions:
                             # Filter and clip regions if it's a spread
@@ -411,3 +442,104 @@ async def _extract_and_store_tables(
     except Exception as e:
         logger.error(f"   ❌ Table extraction failed: {e}")
         return 0
+
+
+async def _load_cached_layout_regions(
+    document_id: str,
+    physical_pages: List[int],
+    has_spread_layout: bool,
+    physical_to_pdf_map: Dict[int, Any],
+    logger: logging.Logger,
+) -> Dict[int, List[Any]]:
+    """Load YOLO+text merged regions from `document_layout_analysis` cache.
+
+    Returns a dict keyed by physical page number (1-based). Each value is
+    a list of `LayoutRegion` objects rebuilt from the cached jsonb so the
+    rest of stage_1 can treat them identically to fresh YOLO output.
+
+    The cache is written by `pdf_processor._persist_document_layout`
+    during PDF markdown extraction. We look it up here to avoid running
+    YOLO twice for the same page.
+    """
+    from app.models.layout_models import BoundingBox, LayoutRegion
+
+    if not document_id or not physical_pages:
+        return {}
+
+    # Cache stores PDF sheet page numbers, not physical pages, so we need
+    # to translate. For non-spread documents, physical == pdf_idx + 1.
+    page_lookup_map: Dict[int, int] = {}
+    for pp in physical_pages:
+        if has_spread_layout and pp in physical_to_pdf_map:
+            pdf_idx, _position = physical_to_pdf_map[pp]
+            page_lookup_map[pdf_idx] = pp
+        else:
+            page_lookup_map[pp - 1] = pp
+
+    try:
+        from app.services.core.supabase_client import get_supabase_client
+        supabase = get_supabase_client()
+        # `pdf_worker` writes 1-based page_number; layout regions use the
+        # same 1-based scheme. Look up by PDF-sheet-1-based.
+        response = supabase.client.table('document_layout_analysis').select(
+            'page_number, layout_elements, processing_version'
+        ).eq('document_id', document_id).execute()
+    except Exception as exc:
+        logger.debug(f"   ↺ Layout cache lookup skipped: {exc}")
+        return {}
+
+    rows = response.data or []
+    cached: Dict[int, List[Any]] = {}
+    for row in rows:
+        if row.get('processing_version') != 'yolo+chandra-v2':
+            # Only honour cache rows produced by the new pipeline; older
+            # rows are markdown-analysis stubs from product_creation_service.
+            continue
+        page_1_based_in_cache = int(row['page_number'])
+        # Cache uses 1-based sheet numbering - translate to physical page.
+        pdf_idx = page_1_based_in_cache - 1
+        physical_page = page_lookup_map.get(pdf_idx)
+        if physical_page is None:
+            continue
+        elements = row.get('layout_elements') or []
+        if not isinstance(elements, list):
+            continue
+
+        regions: List[LayoutRegion] = []
+        for elem in elements:
+            try:
+                region_type = elem.get('region_type', 'TEXT')
+                # UNCLASSIFIED is an internal merge-service marker for
+                # orphan text fragments; downstream YOLO consumers only
+                # know the canonical 5 types. Skip orphans here.
+                if region_type not in ("TEXT", "IMAGE", "TABLE", "TITLE", "CAPTION"):
+                    continue
+                bbox_dict = elem.get('bbox') or {}
+                width = float(bbox_dict.get('width', 1)) or 1.0
+                height = float(bbox_dict.get('height', 1)) or 1.0
+                regions.append(LayoutRegion(
+                    type=region_type,
+                    bbox=BoundingBox(
+                        x=float(bbox_dict.get('x', 0)),
+                        y=float(bbox_dict.get('y', 0)),
+                        width=width,
+                        height=height,
+                        page=int(bbox_dict.get('page', physical_page)),
+                    ),
+                    confidence=float(elem.get('confidence') or 0.85),
+                    text_content=elem.get('text_content'),
+                    reading_order=elem.get('reading_order'),
+                    metadata=elem.get('metadata') or {},
+                ))
+            except Exception as build_err:
+                logger.debug(f"   ↺ Skipped malformed cached region: {build_err}")
+
+        if regions:
+            cached[physical_page] = regions
+
+    if cached:
+        logger.info(
+            f"   ♻️ Loaded cached layout for {len(cached)} pages from "
+            f"document_layout_analysis (skipping YOLO re-run)"
+        )
+    return cached

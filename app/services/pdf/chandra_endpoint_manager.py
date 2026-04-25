@@ -1,26 +1,29 @@
 """
-Chandra OCR Inference Endpoint Manager
+Chandra OCR v2 Inference Endpoint Manager
 
-Manages HuggingFace Inference Endpoint lifecycle for Chandra OCR model.
+Manages HuggingFace Inference Endpoint lifecycle for Chandra OCR v2
+(model `chandra-ocr-2.Q8_0.gguf`). State-of-the-art OCR that returns
+structured bbox-JSON: each output entry is {"text", "x", "y", "w", "h"}
+with pixel coordinates on the source image.
+
 Provides automatic pause/resume functionality to control billing costs.
-
-CRITICAL: Endpoint is paused by default (no billing). Only resumes when OCR is needed,
-then auto-pauses after idle timeout to prevent unnecessary billing.
 
 Cost Control Strategy:
 - Endpoint paused: $0/hour
-- Endpoint running: ~$0.60/hour (GPU)
+- Endpoint running: ~$0.50/hour (T4 GPU)
 - Auto-pause after 60s idle (configurable)
 - Force-pause after batch processing
 - Typical cost: ~$0.02 per 30-page document
 """
 
-import os
-import time
+import json
 import logging
-import requests
-from typing import Optional, Dict, Any
+import re
+import time
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+import requests
 
 try:
     from huggingface_hub import get_inference_endpoint
@@ -32,15 +35,33 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+CHANDRA_V2_MODEL_ID = "chandra-ocr-2.Q8_0.gguf"
+
+DEFAULT_OCR_PROMPT = (
+    "Extract all text from this image. Return a JSON array where each entry is "
+    '{"text": <fragment>, "x": <int>, "y": <int>, "w": <int>, "h": <int>}. '
+    "Output JSON only - no commentary, no markdown."
+)
+
+
+class ChandraResponseError(RuntimeError):
+    """Raised when Chandra v2 returns output that cannot be parsed as bbox-JSON.
+
+    The strict parser refuses to silently fall back to plain text or empty
+    strings - both would silently corrupt downstream OCR text fields. Callers
+    catch this and log the page as an OCR failure instead of writing garbage.
+    """
+
+
 class ChandraEndpointManager:
     """
-    Manages HuggingFace Inference Endpoint lifecycle for Chandra OCR.
-    
+    Manages HuggingFace Inference Endpoint lifecycle for Chandra OCR v2.
+
     Features:
     - Automatic resume before inference (start billing)
     - Automatic pause after idle timeout (stop billing)
     - Force pause after batch processing
-    - Error handling and retry logic
+    - Strict bbox-JSON response parsing (raises on garbage, never returns trash)
     - Cost tracking and monitoring
     """
     
@@ -354,46 +375,6 @@ class ChandraEndpointManager:
             logger.debug(f"   Chandra /health probe exception: {e}")
             return False
 
-    def _test_inference_OLD_chat_completions_unused(self, _unused=None) -> bool:
-        """Kept for reference: the old POST /v1/chat/completions path."""
-        try:
-            # Use correct OpenAI-compatible chat completions endpoint
-            api_url = self.endpoint_url.rstrip('/') + '/v1/chat/completions'
-
-            response = requests.post(
-                api_url,
-                headers={
-                    "Authorization": f"Bearer {self.hf_token}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": "prithivMLmods/chandra-OCR-GGUF",
-                    "messages": [{"role": "user", "content": "test"}],
-                    "max_tokens": 1
-                },
-                timeout=15
-            )
-
-            # 200 = success, 503 = still loading
-            if response.status_code == 200:
-                return True
-            elif response.status_code == 503:
-                return False
-            elif response.status_code == 500:
-                # Internal error - might still be loading model
-                return False
-            else:
-                logger.debug(f"   Warmup test returned status {response.status_code}")
-                return False
-
-        except requests.exceptions.Timeout:
-            return False
-        except requests.exceptions.ConnectionError:
-            return False
-        except Exception as e:
-            logger.debug(f"   Warmup test error: {e}")
-            return False
-
     def pause_if_idle(self) -> bool:
         """
         DISABLED: Let HuggingFace handle scale-to-zero automatically.
@@ -515,102 +496,221 @@ class ChandraEndpointManager:
             "enabled": self.enabled
         }
 
-    def run_inference(self, image_input: Any, parameters: Optional[Dict] = None, prompt: str = "Extract all text from this image. Return only the extracted text.") -> Dict[str, Any]:
-        """
-        Run OCR inference on image using Chandra endpoint (OpenAI-compatible format).
+    def run_inference(
+        self,
+        image_input: Any,
+        parameters: Optional[Dict] = None,
+        prompt: str = DEFAULT_OCR_PROMPT,
+    ) -> Dict[str, Any]:
+        """Run OCR inference on an image using Chandra v2.
 
-        Args:
-            image_input: Image data (bytes, PIL Image, or file path)
-            parameters: Optional inference parameters
-            prompt: OCR prompt (default: extract text)
+        Always returns structured output. The model emits a JSON array of
+        {"text", "x", "y", "w", "h"} entries describing every text fragment
+        on the page; the parser preserves that list as `blocks` and also
+        produces a reading-order joined string in `generated_text` so legacy
+        callers that expect a string keep working.
 
         Returns:
-            Dict with OCR result: {'generated_text': str, 'confidence': float}
+            Dict with keys:
+              - generated_text: str (joined fragments, newline-separated)
+              - blocks: list[dict] (bbox-aligned text fragments)
+              - extraction_path: 'content_bbox_json' | 'reasoning_bbox_json'
+              - confidence: float (default 0.85)
+              - raw_response: dict (the raw HTTP JSON body)
+
+        Raises:
+            ChandraResponseError: when the model returns no parseable
+                bbox-JSON. Callers should treat the page as an OCR failure
+                rather than writing empty text to the database.
         """
         import base64
-        
+
         if not self.enabled:
             raise Exception("Chandra endpoint is disabled")
 
         if self._can_pause_resume:
             if not self.resume_if_needed():
                 raise Exception("Failed to resume Chandra endpoint")
-        
+
         start_time = time.time()
-        
+
+        # Convert image to base64
+        if isinstance(image_input, str):
+            with open(image_input, 'rb') as f:
+                image_bytes = f.read()
+        elif isinstance(image_input, bytes):
+            image_bytes = image_input
+        else:
+            from io import BytesIO
+            buffer = BytesIO()
+            image_input.save(buffer, format='PNG')
+            image_bytes = buffer.getvalue()
+
+        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+
+        headers = {
+            "Authorization": f"Bearer {self.hf_token}",
+            "Content-Type": "application/json",
+        }
+        api_url = self.endpoint_url.rstrip('/') + '/v1/chat/completions'
+        payload = {
+            "model": CHANDRA_V2_MODEL_ID,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_base64}"}},
+                    {"type": "text", "text": prompt},
+                ],
+            }],
+            "stream": False,
+            "max_tokens": parameters.get('max_tokens', 4000) if parameters else 4000,
+        }
+
+        logger.info(f"Calling Chandra v2 endpoint: {api_url}")
+        response = requests.post(api_url, headers=headers, json=payload, timeout=self.inference_timeout)
+        response.raise_for_status()
+        result = response.json()
+
+        parsed = _extract_bbox_json_from_response(result)
+        blocks = parsed["blocks"]
+        generated_text = parsed["generated_text"]
+        extraction_path = parsed["extraction_path"]
+
+        inference_time = time.time() - start_time
+        self.last_used = time.time()
+        self.inference_count += 1
+        self.total_uptime += inference_time
+
+        logger.info(
+            f"✅ Chandra v2 OCR ok: {len(blocks)} fragments / {len(generated_text)} chars in "
+            f"{inference_time:.2f}s (path={extraction_path})"
+        )
+
+        return {
+            "generated_text": generated_text,
+            "blocks": blocks,
+            "extraction_path": extraction_path,
+            "confidence": 0.85,
+            "raw_response": result,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Strict bbox-JSON response parser
+# ---------------------------------------------------------------------------
+
+_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*", re.IGNORECASE)
+_FENCE_END_RE = re.compile(r"\s*```\s*$")
+
+
+def _strip_fences_and_junk(raw: str) -> str:
+    """Strip markdown fences and trailing garbage (e.g. truncated `']`).
+
+    v2 occasionally wraps output in ```json ... ``` fences and very rarely
+    emits a stray closing-quote/bracket pair when the response was cut off.
+    Both cases are recoverable by trimming to the outermost JSON brackets.
+    """
+    s = raw.strip()
+    s = _FENCE_RE.sub("", s)
+    s = _FENCE_END_RE.sub("", s)
+    s = s.strip()
+    # Trim to outermost JSON array/object brackets if junk surrounds them.
+    first_open = min(
+        (i for i in (s.find("["), s.find("{")) if i >= 0),
+        default=-1,
+    )
+    if first_open > 0:
+        s = s[first_open:]
+    last_close = max(s.rfind("]"), s.rfind("}"))
+    if last_close >= 0 and last_close < len(s) - 1:
+        s = s[: last_close + 1]
+    return s
+
+
+def _join_blocks_in_reading_order(blocks: List[Dict[str, Any]]) -> str:
+    """Join fragment .text fields top-to-bottom, left-to-right.
+
+    Sorting on (y, x) preserves natural reading order for single-column
+    layouts. For multi-column layouts the layout_merge_service provides
+    proper column-aware ordering by post-classifying fragments against
+    YOLO regions; this function is only the legacy-string fallback.
+    """
+    def _key(b: Dict[str, Any]) -> tuple:
         try:
-            # Convert image to base64
-            if isinstance(image_input, str):
-                with open(image_input, 'rb') as f:
-                    image_bytes = f.read()
-            elif isinstance(image_input, bytes):
-                image_bytes = image_input
-            else:
-                from io import BytesIO
-                buffer = BytesIO()
-                image_input.save(buffer, format='PNG')
-                image_bytes = buffer.getvalue()
-            
-            image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-            
-            # OpenAI-compatible chat completions format
-            headers = {
-                "Authorization": f"Bearer {self.hf_token}",
-                "Content-Type": "application/json"
-            }
-            
-            # Use /v1/chat/completions endpoint
-            api_url = self.endpoint_url.rstrip('/') + '/v1/chat/completions'
-            
-            payload = {
-                "model": "prithivMLmods/chandra-OCR-GGUF",
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/png;base64,{image_base64}"}
-                        },
-                        {
-                            "type": "text",
-                            "text": prompt
-                        }
-                    ]
-                }],
-                "stream": False,
-                "max_tokens": parameters.get('max_tokens', 2000) if parameters else 2000
-            }
-            
-            logger.info(f"Calling Chandra endpoint: {api_url}")
-            response = requests.post(
-                api_url,
-                headers=headers,
-                json=payload,
-                timeout=self.inference_timeout
-            )
-            
-            response.raise_for_status()
-            result = response.json()
-            
-            # Extract text from OpenAI format response
-            generated_text = ""
-            if "choices" in result and len(result["choices"]) > 0:
-                generated_text = result["choices"][0].get("message", {}).get("content", "")
-            
-            inference_time = time.time() - start_time
-            self.last_used = time.time()
-            self.inference_count += 1
-            self.total_uptime += inference_time
-            
-            logger.info(f"✅ Chandra OCR successful: {len(generated_text)} chars in {inference_time:.2f}s")
-            
-            return {
-                "generated_text": generated_text,
-                "confidence": 0.85,
-                "raw_response": result
-            }
-            
-        except Exception as e:
-            logger.error(f"❌ Chandra inference failed: {e}")
-            raise
+            return (float(b.get("y", 0)), float(b.get("x", 0)))
+        except (TypeError, ValueError):
+            return (0.0, 0.0)
+    sorted_blocks = sorted(blocks, key=_key)
+    return "\n".join(b["text"].strip() for b in sorted_blocks if isinstance(b.get("text"), str) and b["text"].strip())
+
+
+def _extract_bbox_json_from_response(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Parse a Chandra v2 OpenAI-compatible response into bbox blocks.
+
+    v2 puts the JSON answer in `choices[0].message.content`. When the
+    prompt accidentally suppresses content, the model falls back to
+    `reasoning_content` - we honour both. Anything else is a hard error;
+    we never return empty/garbage text silently.
+    """
+    choices = result.get("choices") or []
+    if not choices:
+        raise ChandraResponseError(f"Chandra response has no choices: {str(result)[:500]}")
+
+    message = choices[0].get("message") or {}
+    content = (message.get("content") or "").strip()
+    extraction_path = "content_bbox_json"
+
+    if not content:
+        content = (message.get("reasoning_content") or "").strip()
+        extraction_path = "reasoning_bbox_json"
+
+    if not content:
+        raise ChandraResponseError(
+            "Chandra response has no content or reasoning_content. "
+            f"finish_reason={choices[0].get('finish_reason')!r} usage={result.get('usage')!r}"
+        )
+
+    cleaned = _strip_fences_and_junk(content)
+
+    # Use raw_decode() so trailing junk after a complete JSON value (e.g.
+    # the `]]` and `']` truncation quirks v2 sometimes emits when the
+    # response was cut off near max_tokens) doesn't reject the parse.
+    decoder = json.JSONDecoder()
+    try:
+        parsed, _end_idx = decoder.raw_decode(cleaned.lstrip())
+    except json.JSONDecodeError as exc:
+        raise ChandraResponseError(
+            f"Chandra response is not valid JSON: {exc}. cleaned_head={cleaned[:300]!r}"
+        ) from exc
+
+    if not isinstance(parsed, list):
+        raise ChandraResponseError(
+            f"Chandra response is not a JSON array (got {type(parsed).__name__}): {cleaned[:300]!r}"
+        )
+
+    blocks: List[Dict[str, Any]] = []
+    for entry in parsed:
+        if not isinstance(entry, dict):
+            continue
+        text_val = entry.get("text")
+        if not isinstance(text_val, str) or not text_val.strip():
+            continue
+        blocks.append({
+            "text": text_val,
+            "x": entry.get("x"),
+            "y": entry.get("y"),
+            "w": entry.get("w") if entry.get("w") is not None else entry.get("width"),
+            "h": entry.get("h") if entry.get("h") is not None else entry.get("height"),
+        })
+
+    if not blocks:
+        raise ChandraResponseError(
+            f"Chandra response parsed but contained no usable bbox text: {cleaned[:300]!r}"
+        )
+
+    return {
+        "blocks": blocks,
+        "generated_text": _join_blocks_in_reading_order(blocks),
+        "extraction_path": extraction_path,
+    }
 

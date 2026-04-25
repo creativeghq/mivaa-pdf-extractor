@@ -317,7 +317,7 @@ class OCRService:
                 _chandra_latency_ms = int((_time.time() - _chandra_start) * 1000)
                 _log_coro = AICallLogger().log_time_based_call(
                     task="pdf_ocr_chandra",
-                    model="chandra-ocr",
+                    model="chandra-ocr-2",
                     latency_ms=_chandra_latency_ms,
                     confidence_score=0.85,
                     confidence_breakdown={},

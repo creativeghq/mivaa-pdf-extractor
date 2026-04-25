@@ -450,6 +450,7 @@ class PDFProcessor:
             markdown_content = ""
             metadata = {}
             page_chunks = None
+            layout_regions_by_page: Dict[int, List[Any]] = {}
 
             if extract_text:
                 # Extract markdown content using existing function with timeout
@@ -466,14 +467,14 @@ class PDFProcessor:
                         pass
 
                 try:
-                    # Execute in thread pool
-                    # ✅ NEW: Worker now returns (markdown_content, metadata, page_chunks)
-                    # Filter out non-serializable objects (services, trackers) before passing to worker
+                    # Execute in thread pool. Worker returns
+                    # (markdown_content, metadata, page_chunks, layout_regions_by_page).
+                    # Filter out non-serializable objects (services, trackers) before passing to worker.
                     filtered_options = {
                         k: v for k, v in processing_options.items()
                         if k not in ('checkpoint_recovery_service', 'progress_tracker', 'job_id')
                     }
-                    markdown_content, metadata, page_chunks = await asyncio.wait_for(
+                    markdown_content, metadata, page_chunks, layout_regions_by_page = await asyncio.wait_for(
                         loop.run_in_executor(
                             self.executor,
                             execute_pdf_extraction_job,
@@ -496,6 +497,32 @@ class PDFProcessor:
                 }
                 doc.close()
             
+            # ============================================================
+            # Persist YOLO+Chandra merged layout regions per page BEFORE
+            # image extraction starts. Image-extraction layer 2 reads the
+            # cache to skip redundant YOLO calls; the cache must be populated
+            # first or it'll always fall through to a re-run. Same data also
+            # passed in-memory to image extraction below, eliminating the
+            # DB round-trip in the same processor invocation.
+            # Per-product stage_1 still reads the DB cache later (different
+            # invocation, in-memory data is gone by then).
+            # ============================================================
+            try:
+                if layout_regions_by_page:
+                    persisted = await self._persist_document_layout(
+                        document_id=document_id,
+                        layout_regions_by_page=layout_regions_by_page,
+                    )
+                    self.logger.info(
+                        f"💾 Persisted layout for {persisted}/{len(layout_regions_by_page)} "
+                        f"pages to document_layout_analysis"
+                    )
+                    metadata['layout_pages_persisted'] = persisted
+            except Exception as exc:
+                self.logger.warning(
+                    f"Layout persistence failed (non-fatal, downstream will re-run YOLO): {exc}"
+                )
+
             # Extract images if requested
             extracted_images = []
             extraction_stats = {'pymupdf_count': 0, 'failed_count': 0, 'total_pages': 0}
@@ -513,7 +540,7 @@ class PDFProcessor:
                     progress_callback,
                     job_id=job_id,
                     checkpoint_recovery_service=checkpoint_recovery_service,
-                    progress_tracker=progress_tracker
+                    progress_tracker=progress_tracker,
                 )
             
             # Calculate content metrics
@@ -651,6 +678,165 @@ class PDFProcessor:
             self.logger.warning(f"Multimodal detection failed: {e}, defaulting to False")
             return False
 
+    async def _persist_document_layout(
+        self,
+        document_id: str,
+        layout_regions_by_page: Dict[int, List[Any]],
+    ) -> int:
+        """Persist YOLO+text merged regions to `document_layout_analysis`.
+
+        One row per (document_id, page_number). `layout_elements` is the
+        full list of merged regions as JSON dicts; `reading_order` is a
+        thin index of region ids in reading order; `processing_version`
+        tags the YOLO+Chandra v2 pipeline so future migrations can
+        invalidate the cache by version.
+
+        Downstream stages (`stage_1_focused_extraction`,
+        `stage_2_chunking`, image extraction layer 2) read this table
+        before invoking YOLO again, eliminating redundant per-product
+        YOLO calls.
+
+        Returns the number of pages persisted.
+        """
+        if not layout_regions_by_page:
+            return 0
+        try:
+            from app.services.core.supabase_client import get_supabase_client
+        except Exception as exc:
+            self.logger.debug(f"Supabase client unavailable, skipping layout persist: {exc}")
+            return 0
+
+        supabase = get_supabase_client()
+        persisted = 0
+
+        for page_number, merged_regions in layout_regions_by_page.items():
+            try:
+                layout_elements = []
+                reading_order: List[Dict[str, Any]] = []
+                for idx, region in enumerate(merged_regions):
+                    region_dict = region.to_dict() if hasattr(region, "to_dict") else dict(region)
+                    layout_elements.append(region_dict)
+                    reading_order.append({
+                        "index": idx,
+                        "region_type": region_dict.get("region_type"),
+                        "reading_order": region_dict.get("reading_order"),
+                    })
+
+                # Upsert by (document_id, page_number) so re-runs replace
+                # previous layout cache for the same document.
+                supabase.client.table('document_layout_analysis').upsert(
+                    {
+                        'document_id': document_id,
+                        'page_number': int(page_number),
+                        'layout_elements': layout_elements,
+                        'reading_order': reading_order,
+                        'structure_confidence': 0.85,
+                        'processing_version': 'yolo+chandra-v2',
+                        'analysis_metadata': {
+                            'pipeline': 'pdf_worker.execute_pdf_extraction_job',
+                            'region_count': len(layout_elements),
+                            'has_text': any(
+                                bool((r.get('text_content') or '').strip())
+                                for r in layout_elements
+                            ),
+                        },
+                    },
+                    on_conflict='document_id,page_number',
+                ).execute()
+                persisted += 1
+            except Exception as exc:
+                self.logger.debug(
+                    f"   Layout persist failed for page {page_number}: {exc}"
+                )
+
+        return persisted
+
+    async def _load_cached_layout_for_pages(
+        self,
+        document_id: Optional[str],
+        pdf_pages: List[int],
+    ) -> Dict[int, Any]:
+        """Load cached LayoutDetectionResult-shaped objects for image extraction.
+
+        Returns dict[pdf_page_1_based] -> LayoutDetectionResult-like
+        object (must expose `.regions` and `.get_regions_by_type(...)`).
+        Used by `_extract_batch_images_with_yolo` to skip YOLO when
+        regions are already cached by the markdown-extraction phase.
+
+        On any error or missing rows, returns empty dict so the caller
+        falls back to running YOLO normally.
+        """
+        if not document_id or not pdf_pages:
+            return {}
+
+        try:
+            from app.services.core.supabase_client import get_supabase_client
+            from app.models.layout_models import (
+                BoundingBox,
+                LayoutDetectionResult,
+                LayoutRegion,
+            )
+        except Exception:
+            return {}
+
+        try:
+            supabase = get_supabase_client()
+            wanted_pages_1_based = sorted({p + 1 for p in pdf_pages})
+            response = supabase.client.table('document_layout_analysis').select(
+                'page_number, layout_elements, processing_version'
+            ).eq('document_id', document_id).in_(
+                'page_number', wanted_pages_1_based
+            ).execute()
+        except Exception as exc:
+            self.logger.debug(f"Layout cache lookup failed: {exc}")
+            return {}
+
+        rows = response.data or []
+        cached: Dict[int, Any] = {}
+        for row in rows:
+            if row.get('processing_version') != 'yolo+chandra-v2':
+                continue
+            page_num = int(row['page_number'])
+            elements = row.get('layout_elements') or []
+            if not isinstance(elements, list):
+                continue
+
+            regions: List[LayoutRegion] = []
+            for elem in elements:
+                try:
+                    region_type = elem.get('region_type', 'TEXT')
+                    if region_type not in ("TEXT", "IMAGE", "TABLE", "TITLE", "CAPTION"):
+                        continue
+                    bbox_dict = elem.get('bbox') or {}
+                    width = float(bbox_dict.get('width', 1)) or 1.0
+                    height = float(bbox_dict.get('height', 1)) or 1.0
+                    regions.append(LayoutRegion(
+                        type=region_type,
+                        bbox=BoundingBox(
+                            x=float(bbox_dict.get('x', 0)),
+                            y=float(bbox_dict.get('y', 0)),
+                            width=width,
+                            height=height,
+                            page=int(bbox_dict.get('page', page_num - 1)),
+                        ),
+                        confidence=float(elem.get('confidence') or 0.85),
+                        text_content=elem.get('text_content'),
+                        reading_order=elem.get('reading_order'),
+                        metadata=elem.get('metadata') or {},
+                    ))
+                except Exception:
+                    continue
+
+            if regions:
+                cached[page_num] = LayoutDetectionResult(
+                    page_number=page_num - 1,
+                    regions=regions,
+                    detection_time_ms=0,
+                    model_version='yolo-docparser-cache',
+                )
+
+        return cached
+
     async def _extract_images_async(
         self,
         pdf_path: str,
@@ -659,7 +845,7 @@ class PDFProcessor:
         progress_callback: Optional[callable] = None,
         job_id: Optional[str] = None,
         checkpoint_recovery_service: Optional[Any] = None,
-        progress_tracker: Optional[Any] = None
+        progress_tracker: Optional[Any] = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
         """
         Enhanced async image extraction with Supabase Storage upload.
@@ -933,22 +1119,38 @@ class PDFProcessor:
             # Initialize YOLO detector
             yolo_detector = YoloLayoutDetector()
 
+            # Cache lookup: pdf_worker.execute_pdf_extraction_job already
+            # ran YOLO and persisted regions to `document_layout_analysis`
+            # during markdown extraction. Reuse those rows here so we don't
+            # invoke YOLO twice for the same page in the same processing run.
+            cached_layout = await self._load_cached_layout_for_pages(
+                document_id=document_id,
+                pdf_pages=batch_pages,
+            )
+
             # Process each page
             for page_idx in batch_pages:
                 try:
                     # PDF page number (1-based)
                     pdf_page = page_idx + 1
 
-                    self.logger.info(
-                        f"   🎯 [Job: {job_id}] YOLO detecting layout on PDF page {pdf_page}..."
-                    )
-
-                    # Detect layout regions
-                    layout_result = await yolo_detector.detect_layout_regions(
-                        pdf_path=pdf_path,
-                        page_num=page_idx,
-                        dpi=PDF_CONSTANTS.YOLO_RENDER_DPI
-                    )
+                    cached_for_page = cached_layout.get(pdf_page)
+                    if cached_for_page is not None:
+                        self.logger.info(
+                            f"   ♻️ [Job: {job_id}] Using cached layout for PDF page "
+                            f"{pdf_page} ({len(cached_for_page.regions)} regions, no YOLO re-run)"
+                        )
+                        layout_result = cached_for_page
+                    else:
+                        self.logger.info(
+                            f"   🎯 [Job: {job_id}] YOLO detecting layout on PDF page {pdf_page}..."
+                        )
+                        # Detect layout regions
+                        layout_result = await yolo_detector.detect_layout_regions(
+                            pdf_path=pdf_path,
+                            page_num=page_idx,
+                            dpi=PDF_CONSTANTS.YOLO_RENDER_DPI
+                        )
 
                     # Get IMAGE and CAPTION regions
                     image_regions = layout_result.get_regions_by_type("IMAGE")

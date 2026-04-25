@@ -4,7 +4,7 @@ AI Model Pricing Configuration
 Centralized pricing for all AI models used in the platform.
 Prices are per million tokens (input/output) unless otherwise specified.
 
-Last Updated: 2026-01-24
+Last Updated: 2026-04-24
 Sources:
 - Anthropic: https://www.anthropic.com/pricing
 - OpenAI: https://openai.com/api/pricing/
@@ -27,7 +27,7 @@ class AIPricingConfig:
     """
 
     # Last price verification date
-    LAST_UPDATED = "2026-03-30"
+    LAST_UPDATED = "2026-04-24"
 
     # Platform markup multiplier (50% markup = 1.50)
     # Users are billed at raw_cost * MARKUP_MULTIPLIER
@@ -177,18 +177,18 @@ class AIPricingConfig:
         }
     }
 
-    # Chandra OCR Model (L4 GPU)
+    # Chandra OCR v2 Model (T4 GPU)
     OCR_PRICING = {
-        "chandra-ocr": {
+        "chandra-ocr-2": {
             "input": Decimal("0.00"),
             "output": Decimal("0.00"),
             "billing_type": "time_based",
-            "hourly_rate_usd": Decimal("0.80"),  # L4 GPU
-            "gpu_type": "nvidia-l4",
-            "last_verified": "2026-01-23",
+            "hourly_rate_usd": Decimal("0.50"),  # T4 GPU
+            "gpu_type": "nvidia-t4",
+            "last_verified": "2026-04-25",
             "source": "HuggingFace Inference Endpoint",
-            "full_name": "Chandra OCR Model",
-            "note": "Optical character recognition for documents"
+            "full_name": "Chandra OCR v2 (chandra-ocr-2.Q8_0.gguf)",
+            "note": "State-of-the-art OCR with structured bbox-JSON output"
         }
     }
 
@@ -288,18 +288,27 @@ class AIPricingConfig:
     # Pricing is credit-based, exact USD cost depends on plan
     FIRECRAWL_PRICING = {
         "firecrawl-scrape": {
-            "cost_per_credit": Decimal("0.001"),  # Estimated $0.001 per credit
+            "cost_per_credit": Decimal("0.001"),  # Estimate — actual cost depends on plan
             "tokens_per_credit": 15,  # 1 Firecrawl credit = 15 tokens
-            "last_verified": "2025-12-25",
+            "last_verified": "2026-04-24",
             "source": "https://firecrawl.dev/pricing",
-            "note": "Firecrawl API - pricing varies by plan. This is an estimate for tracking."
+            "note": "ESTIMATE — Firecrawl plan-dependent. Re-verify against active plan when usage grows."
         }
     }
 
     # ==========================================================================
     # EXTERNAL SERVICE PRICING - PER-UNIT (non-AI third-party APIs)
     # Cost per single operation (message, query, enrichment, etc.)
-    # Kept in sync with supabase/functions/_shared/credit-utils.ts
+    #
+    # CANONICAL SOURCE: ai_model_pricing table
+    #   (billing_type='per_unit' AND category='external_service')
+    # Editable from the admin UI at /admin/agent-configs → AI Model Pricing.
+    # The TypeScript edge-function billing path (credit-utils.ts) reads from
+    # the DB at runtime with a 5-minute cache.
+    #
+    # The dict below is a FALLBACK for offline / standalone Python use only.
+    # If you need to bill from Python, query the DB instead — these values
+    # may drift from the live table if admins edit prices via the UI.
     # ==========================================================================
 
     EXTERNAL_SERVICE_PRICING = {

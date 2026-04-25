@@ -114,7 +114,6 @@ class Settings(BaseSettings):
     enable_boundary_detection: bool = Field(default=True, env="ENABLE_BOUNDARY_DETECTION")
     enable_semantic_chunking: bool = Field(default=True, env="ENABLE_SEMANTIC_CHUNKING")
     enable_context_enrichment: bool = Field(default=True, env="ENABLE_CONTEXT_ENRICHMENT")
-    enable_metadata_first: bool = Field(default=True, env="ENABLE_METADATA_FIRST")
     enable_chunk_relationships: bool = Field(default=True, env="ENABLE_CHUNK_RELATIONSHIPS")
     fallback_on_error: bool = Field(default=True, env="FALLBACK_ON_ERROR")  # Always fallback to existing pipeline on error
 
@@ -557,18 +556,19 @@ class Settings(BaseSettings):
     )
 
     # ============================================================================
-    # Chandra OCR - HuggingFace Inference Endpoint
+    # Chandra OCR v2 (chandra-ocr-2) - HuggingFace Inference Endpoint
     # ============================================================================
-    # Advanced OCR fallback for low-confidence EasyOCR results
+    # State-of-the-art OCR with structured bbox-JSON output. Used as primary OCR
+    # for scanned PDFs and per-image text extraction.
     chandra_endpoint_url: str = Field(
-        default="https://vxbychbp9yeoegtc.us-east-1.aws.endpoints.huggingface.cloud",
+        default="https://v75ni2jqufw1mtad.us-east-1.aws.endpoints.huggingface.cloud",
         env="CHANDRA_ENDPOINT_URL",
-        description="Chandra OCR Inference Endpoint URL"
+        description="Chandra OCR v2 Inference Endpoint URL"
     )
     chandra_endpoint_name: str = Field(
-        default="mh-chandra",
+        default="chandra-ocr-2",
         env="CHANDRA_ENDPOINT_NAME",
-        description="Chandra OCR Inference Endpoint name (for pause/resume operations)"
+        description="Chandra OCR v2 Inference Endpoint name (for pause/resume operations)"
     )
     chandra_namespace: str = Field(
         default="basiliskan",

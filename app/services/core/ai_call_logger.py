@@ -500,9 +500,9 @@ class AICallLogger:
         try:
             # ai_pricing handles time_based billing internally — pass duration as
             # input_tokens placeholder isn't right; use the dedicated path.
-            duration_seconds = max(latency_ms / 1000.0, 0.001)
+            inference_seconds = max(latency_ms / 1000.0, 0.001)
             cost_data = ai_pricing.calculate_time_based_cost(
-                model=model, duration_seconds=duration_seconds
+                model=model, inference_seconds=inference_seconds
             )
             cost = float(cost_data.get("billed_cost_usd", 0.0))
 
