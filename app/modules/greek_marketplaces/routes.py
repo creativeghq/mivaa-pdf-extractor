@@ -153,10 +153,6 @@ async def module_status(request: Request) -> ModuleStatus:
     skroutz = get_skroutz_adapter()
     firecrawl = get_firecrawl_client()
 
-    # Lazy import keeps the routes module light and avoids surprising
-    # the module loader on first import.
-    from app.modules.greek_marketplaces.adapters.shopflix import ENABLED as shopflix_enabled
-
     sources = [
         SourceStatus(
             key="skroutz",
@@ -182,11 +178,11 @@ async def module_status(request: Request) -> ModuleStatus:
         SourceStatus(
             key="shopflix",
             name="Shopflix.gr",
-            configured=shopflix_enabled and bool(firecrawl.api_key),
+            configured=bool(firecrawl.api_key),
             details=(
                 "Firecrawl scrape (JS-rendered) of shopflix.gr/search "
                 "with Spryker price-asc sort."
-                if (shopflix_enabled and firecrawl.api_key)
+                if firecrawl.api_key
                 else "FIRECRAWL_API_KEY not set — adapter skips."
             ),
         ),

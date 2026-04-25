@@ -1,26 +1,18 @@
 """
-Shopflix.gr adapter — Firecrawl scrape of the site search page.
+Shopflix.gr adapter — Firecrawl scrape of the Spryker-powered search page.
 
-Shopflix is a marketplace of third-party Greek sellers. No public API
-is available. We fetch the search page via Firecrawl and extract the
-top matching listing as a single PriceHit.
-
-URL pattern verified by user: shopflix.gr uses Spryker / Algolia-style
-query parameters. The full canonical search URL is:
+Shopflix is a marketplace of third-party Greek sellers, built on
+Spryker / Algolia. The canonical search URL with price-asc sort:
 
   https://shopflix.gr/search
     ?prod_GR_spryker[query]=<query>
     &prod_GR_spryker[sortBy]=prod_GR_spryker_search-result-data.price_asc
     &k=<query>
 
-`prod_GR_spryker[query]` and `k` are both required (the latter is the
-URL-bar fallback the JS framework reads). `sortBy=...price_asc`
-sorts by price ascending so the top row is the cheapest match.
-
-Note the bracketed query-string parameter names: `prod_GR_spryker[query]`
-must NOT be URL-encoded for Spryker to recognize it (curly-bracket
-encoding `%5B%5D` is fine in browsers but we keep it raw here for
-compatibility).
+`prod_GR_spryker[query]` and `k` are both required — the second is
+the URL-bar canonical that the JS framework reads on hard reload.
+`sortBy=...price_asc` puts the cheapest match at the top, matching
+the price-asc convention used by the Skroutz and Bestprice adapters.
 """
 
 from __future__ import annotations
@@ -37,7 +29,6 @@ from app.utils.price_parsing import parse_price
 
 logger = logging.getLogger(__name__)
 
-ENABLED = True
 SHOPFLIX_BASE_URL = "https://shopflix.gr/search"
 SHOPFLIX_SORT_PRICE_ASC = "prod_GR_spryker_search-result-data.price_asc"
 MODULE_SLUG = "greek-marketplaces"
@@ -84,10 +75,6 @@ class ShopflixAdapter:
         user_id: str,
         workspace_id: Optional[str] = None,
     ) -> List[PriceHit]:
-        if not ENABLED:
-            logger.debug("Shopflix: adapter disabled (URL pattern unconfirmed), skipping.")
-            return []
-
         if not self.firecrawl.api_key:
             logger.debug("Shopflix: Firecrawl not configured, skipping.")
             return []
