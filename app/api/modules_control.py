@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 
 from app.modules._core.registry import invalidate_cache
 from app.services.core.supabase_client import get_supabase_client
@@ -55,9 +55,15 @@ def _is_admin(sb, user_id: str) -> bool:
         return False
 
 
-@router.post("/_invalidate", status_code=status.HTTP_204_NO_CONTENT)
-async def invalidate_module_cache(request: Request) -> None:
-    """Drop the in-process enabled-flag cache. Admin only."""
+@router.post("/_invalidate")
+async def invalidate_module_cache(request: Request) -> Response:
+    """Drop the in-process enabled-flag cache. Admin only.
+
+    Returns a bare 204 No Content. Built with `Response` directly
+    (rather than `status_code=204` on the decorator) because FastAPI
+    otherwise refuses any return-type annotation that could imply a
+    body — and a `-> None` return signature still trips that check.
+    """
     token = _extract_bearer(request)
     supabase = get_supabase_client().client
     try:
@@ -84,3 +90,4 @@ async def invalidate_module_cache(request: Request) -> None:
 
     invalidate_cache()
     logger.info("modules: cache invalidated by user %s", user_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
