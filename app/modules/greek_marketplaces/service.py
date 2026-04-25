@@ -62,7 +62,7 @@ class GreekMarketplacesService:
             return []
 
         tasks = [
-            self.skroutz.search(query, limit=limit),
+            self.skroutz.search(query, user_id=user_id, workspace_id=workspace_id, limit=limit),
             self.bestdeals.search(query, user_id=user_id, workspace_id=workspace_id),
             self.shopflix.search(query, user_id=user_id, workspace_id=workspace_id),
         ]
