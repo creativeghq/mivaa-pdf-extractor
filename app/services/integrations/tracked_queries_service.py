@@ -13,11 +13,25 @@ model can evolve independently without touching catalog products.
 """
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+
+def _domain_of(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return None
+    m = re.match(r"^https?://([^/]+)", url.strip(), flags=re.IGNORECASE)
+    if not m:
+        return None
+    host = m.group(1).lower()
+    return host[4:] if host.startswith("www.") else host
+
 from app.services.core.supabase_client import get_supabase_client
+from app.modules.price_monitoring_notifications.service import (
+    get_price_alert_dispatcher,
+)
 from app.services.integrations.perplexity_price_search_service import (
     get_perplexity_price_search_service,
     PriceHit,
@@ -53,6 +67,11 @@ class TrackedQueriesService:
         preferred_retailer_domains: Optional[List[str]] = None,
         refresh_interval_hours: int = 24,
         verify_prices: bool = True,
+        alert_channels: Optional[List[str]] = None,
+        alert_on_price_drop: Optional[bool] = None,
+        alert_on_new_retailer: Optional[bool] = None,
+        alert_on_promo: Optional[bool] = None,
+        alert_webhook_url: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Insert a new tracked query + run the first refresh synchronously so
         the caller gets initial results in the same POST response.
@@ -77,7 +96,7 @@ class TrackedQueriesService:
         except Exception as e:
             logger.warning(f"Facet extraction failed on create (non-fatal): {e}")
 
-        row = {
+        row: Dict[str, Any] = {
             "api_key_id": api_key_id,
             "user_id": user_id,
             "workspace_id": workspace_id,
@@ -90,6 +109,19 @@ class TrackedQueriesService:
             "verify_prices": bool(verify_prices),
             "query_facets": facets.to_dict() if facets else None,
         }
+        # Alert opt-ins are passed through only when the caller specified them
+        # — None means "let the column default decide" so we don't accidentally
+        # disable alerts for callers who didn't know they existed.
+        if alert_channels is not None:
+            row["alert_channels"] = alert_channels
+        if alert_on_price_drop is not None:
+            row["alert_on_price_drop"] = bool(alert_on_price_drop)
+        if alert_on_new_retailer is not None:
+            row["alert_on_new_retailer"] = bool(alert_on_new_retailer)
+        if alert_on_promo is not None:
+            row["alert_on_promo"] = bool(alert_on_promo)
+        if alert_webhook_url is not None:
+            row["alert_webhook_url"] = alert_webhook_url
         res = self.supabase.client.table("tracked_queries").insert(row).execute()
         created = (res.data or [{}])[0]
         tracking_id = created.get("id")
@@ -136,6 +168,11 @@ class TrackedQueriesService:
         dimensions: Optional[str] = None,
         manufacturer: Optional[str] = None,
         verify_prices: Optional[bool] = None,
+        alert_channels: Optional[List[str]] = None,
+        alert_on_price_drop: Optional[bool] = None,
+        alert_on_new_retailer: Optional[bool] = None,
+        alert_on_promo: Optional[bool] = None,
+        alert_webhook_url: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         updates: Dict[str, Any] = {"updated_at": datetime.now(timezone.utc).isoformat()}
         if refresh_interval_hours is not None:
@@ -150,6 +187,16 @@ class TrackedQueriesService:
             updates["manufacturer"] = manufacturer
         if verify_prices is not None:
             updates["verify_prices"] = bool(verify_prices)
+        if alert_channels is not None:
+            updates["alert_channels"] = alert_channels
+        if alert_on_price_drop is not None:
+            updates["alert_on_price_drop"] = bool(alert_on_price_drop)
+        if alert_on_new_retailer is not None:
+            updates["alert_on_new_retailer"] = bool(alert_on_new_retailer)
+        if alert_on_promo is not None:
+            updates["alert_on_promo"] = bool(alert_on_promo)
+        if alert_webhook_url is not None:
+            updates["alert_webhook_url"] = alert_webhook_url
 
         # Cached query_facets are derived from search_query + dimensions +
         # manufacturer. Invalidate when any of those change so the next
@@ -231,6 +278,32 @@ class TrackedQueriesService:
         # Option 2: domain pinning. If the caller has saved preferred retailer
         # domains, Perplexity's search_domain_filter forces those to be probed.
         # verify_prices controls the Firecrawl verification pass (default True).
+        # First refresh = double-read verification pass to catch transient /
+        # A/B-tested prices. Subsequent refreshes single-read. We flip the
+        # marker AFTER a successful refresh so a crash mid-run doesn't lose
+        # the chance to double-read.
+        is_first_refresh = not bool(tq.get("first_refresh_verified"))
+
+        # Pull known retailer domains from history so Perplexity can prioritize
+        # finding NEW retailers instead of cycling through the same set.
+        known_domains: List[str] = []
+        try:
+            hist = (
+                self.supabase.client.table("tracked_query_price_history")
+                .select("product_url")
+                .eq("tracked_query_id", tracking_id)
+                .order("scraped_at", desc=True)
+                .limit(200)
+                .execute()
+            )
+            seen: set = set()
+            for r in hist.data or []:
+                d = _domain_of(r.get("product_url"))
+                if d and d not in seen:
+                    seen.add(d)
+                    known_domains.append(d)
+        except Exception as e:
+            logger.debug(f"known retailer fetch failed: {e}")
         result: PriceSearchResult = await self.search.search_prices(
             product_name=tq.get("search_query") or "",
             dimensions=tq.get("dimensions"),
@@ -242,6 +315,8 @@ class TrackedQueriesService:
             verify_prices=bool(tq.get("verify_prices", True)),
             query_facets=cached_facets,
             manufacturer_hint=tq.get("manufacturer"),
+            double_read=is_first_refresh and bool(tq.get("verify_prices", True)),
+            known_retailer_domains=known_domains,
         )
 
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -252,21 +327,39 @@ class TrackedQueriesService:
             }).eq("id", tracking_id).execute()
             return {"status": "error", "error": result.error, "credits_used": result.credits_used}
 
-        # Persist result rows — one per retailer, grouped by refresh_run_id
+        # Persist result rows — one per retailer, grouped by refresh_run_id.
+        # Each row passes through the sanity band before insert: an outlier
+        # reading is still persisted but stamped is_anomaly=true so the UI
+        # can show it under a yellow banner without it polluting medians.
         refresh_run_id = str(uuid4())
+        rows: List[Dict[str, Any]] = []
         if result.hits:
-            rows = [
-                {
+            dispatcher = get_price_alert_dispatcher()
+            for h in result.hits:
+                price_val = float(h.price) if h.price is not None else None
+                is_anomaly = False
+                anomaly_reason: Optional[str] = None
+                rolling_med: Optional[float] = None
+                if price_val is not None:
+                    domain = _domain_of(h.product_url)
+                    verdict = dispatcher.check_sanity(
+                        tracked_query_id=tracking_id,
+                        retailer_domain=domain or "",
+                        new_price=price_val,
+                    )
+                    is_anomaly = verdict.is_anomaly
+                    anomaly_reason = verdict.reason if is_anomaly else None
+                    rolling_med = verdict.rolling_median
+                rows.append({
                     "tracked_query_id": tracking_id,
                     "refresh_run_id": refresh_run_id,
-                    # Map engine source (perplexity|dataforseo) to DB enum
                     "source": (
                         "dataforseo_shopping" if getattr(h, "source", "perplexity") == "dataforseo"
                         else "perplexity_web_search"
                     ),
                     "retailer_name": h.retailer_name,
                     "product_url": h.product_url,
-                    "price": float(h.price) if h.price is not None else None,
+                    "price": price_val,
                     "original_price": float(h.original_price) if h.original_price is not None else None,
                     "currency": h.currency,
                     "price_unit": h.price_unit or "m2",
@@ -280,15 +373,34 @@ class TrackedQueriesService:
                     "match_note": h.match_note,
                     "product_title": h.product_title,
                     "scraped_at": now_iso,
-                }
-                for h in result.hits
-            ]
+                    "is_anomaly": is_anomaly,
+                    "anomaly_reason": anomaly_reason,
+                    "rolling_median_at_check": rolling_med,
+                })
             try:
                 self.supabase.client.table("tracked_query_price_history").insert(rows).execute()
             except Exception as e:
                 logger.warning(f"Failed to insert tracked_query_price_history rows: {e}")
+                rows = []  # don't run alert detection on failed insert
 
-        # Update counters on the tracked_query row
+        # Alert detection runs against the just-persisted rows. Module-gated +
+        # credit-metered + dedupe-protected inside the dispatcher.
+        if rows:
+            try:
+                dispatcher = get_price_alert_dispatcher()
+                candidates = dispatcher.detect_after_refresh(
+                    tracked_query_id=tracking_id,
+                    new_rows=rows,
+                )
+                if candidates:
+                    fired = dispatcher.dispatch(candidates)
+                    logger.info(
+                        f"price-alerts: tracked_query={tracking_id} fired {fired}/{len(candidates)} alerts"
+                    )
+            except Exception as e:
+                logger.warning(f"price-alerts: dispatch failed (non-fatal): {e}")
+
+        # Update counters on the tracked_query row + mark first-refresh done.
         prev_total = int(tq.get("total_credits_used") or 0)
         self.supabase.client.table("tracked_queries").update({
             "last_refreshed_at": now_iso,
@@ -296,6 +408,7 @@ class TrackedQueriesService:
             "total_credits_used": prev_total + result.credits_used,
             "last_error": None,
             "updated_at": now_iso,
+            "first_refresh_verified": True,
         }).eq("id", tracking_id).execute()
 
         return {
@@ -340,7 +453,8 @@ class TrackedQueriesService:
             .select(
                 "scraped_at, refresh_run_id, retailer_name, product_url, price, "
                 "original_price, currency, price_unit, availability, city, verified, "
-                "match_kind, match_score, match_note, product_title, notes"
+                "match_kind, match_score, match_note, product_title, notes, "
+                "is_anomaly, anomaly_reason, rolling_median_at_check"
             )
             .eq("tracked_query_id", tracking_id)
             .order("scraped_at", desc=True)

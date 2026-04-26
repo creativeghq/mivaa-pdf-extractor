@@ -196,32 +196,36 @@ class ProgressTracker:
                 .eq('id', self.job_id)\
                 .execute()
 
-            # 2. Update job_progress table (if stage provided)
+            # 2. Append stage event to background_jobs.stage_history
+            #    (single source of truth for the audit log).
             if stage:
-                progress_data = {
-                    'document_id': self.document_id,
-                    'stage': stage,
-                    'progress': int(progress_pct),
-                    'total_items': self.total_pages,
-                    'completed_items': self.pages_completed,
-                    'metadata': {
-                        'current_page': self.current_page,
-                        'total_pages': self.total_pages,
-                        'images_extracted': self.images_extracted,  # Material images saved to DB
-                        'total_images_extracted': self.total_images_extracted,  # All images found
-                        'chunks_created': self.chunks_created,
-                        'products_created': self.products_created,
-                        'embeddings_generated': self.text_embeddings_generated + self.image_embeddings_generated,
-                        'text_embeddings_generated': self.text_embeddings_generated,
-                        'image_embeddings_generated': self.image_embeddings_generated,
-                        'ocr_pages_processed': self.ocr_pages_processed
-                    },
-                    'updated_at': datetime.utcnow().isoformat()
-                }
-
-                self._supabase.client.table('job_progress')\
-                    .upsert(progress_data, on_conflict='document_id,stage')\
-                    .execute()
+                try:
+                    self._supabase.client.rpc(
+                        'append_stage_history',
+                        {
+                            'p_job_id': self.job_id,
+                            'p_event': {
+                                'stage': stage,
+                                'status': 'in_progress',
+                                'progress': int(progress_pct),
+                                'completed_at': datetime.utcnow().isoformat(),
+                                'data': {
+                                    'total_items': self.total_pages,
+                                    'completed_items': self.pages_completed,
+                                    'images_extracted': self.images_extracted,
+                                    'total_images_extracted': self.total_images_extracted,
+                                    'chunks_created': self.chunks_created,
+                                    'products_created': self.products_created,
+                                    'text_embeddings_generated': self.text_embeddings_generated,
+                                    'image_embeddings_generated': self.image_embeddings_generated,
+                                    'ocr_pages_processed': self.ocr_pages_processed,
+                                },
+                                'source': 'progress_tracker',
+                            },
+                        },
+                    ).execute()
+                except Exception as hist_err:
+                    logger.warning(f"stage_history append failed: {hist_err}")
 
             # 3. Update job_storage (in-memory)
             if self.job_storage and self.job_id in self.job_storage:

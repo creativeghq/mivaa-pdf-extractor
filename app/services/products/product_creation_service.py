@@ -1859,7 +1859,7 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
             metadata = {
                 'extracted_from': 'two_stage_classification',
                 'stage1_method': 'claude_haiku',
-                'stage2_method': 'claude_sonnet',
+                'stage2_method': 'claude_opus',
                 'chunk_metadata': chunk.get('metadata', {}),
                 'extraction_date': datetime.utcnow().isoformat(),
                 'auto_created': True,

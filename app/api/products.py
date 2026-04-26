@@ -462,7 +462,7 @@ async def products_health_check() -> Dict[str, Any]:
             "two_stage_classification": True,
             "layout_based_creation": True,
             "claude_haiku_integration": True,
-            "claude_sonnet_integration": True,
+            "claude_opus_integration": True,
             "batch_processing": True,
             "performance_metrics": True
         },

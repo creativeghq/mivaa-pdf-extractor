@@ -616,14 +616,54 @@ class DataImportService:
             product_record['source_job_id'] = job_id
             product_record['import_batch_id'] = f"xml_{job_id}"
 
-            # Insert product into database
-            insert_response = await self.db.table('products').insert(product_record).execute()
+            # SKU-based dedup: if the XML provides a product_id/sku, treat
+            # (workspace_id, external_sku) as the unique key. Re-imports of the
+            # same SKU update the existing row in place; downstream chunks +
+            # image associations for that product are wiped so the regenerate
+            # path produces fresh artifacts instead of duplicating them.
+            sku_raw = (product_data.get('product_id')
+                       or product_data.get('sku')
+                       or (inner_meta.get('product_id') if isinstance(inner_meta, dict) else None))
+            external_sku = str(sku_raw).strip() if sku_raw else None
+            if external_sku:
+                product_record['external_sku'] = external_sku
 
-            if not insert_response.data:
-                raise ValueError("Failed to insert product - no data returned")
+            existing_id: Optional[str] = None
+            if external_sku:
+                try:
+                    existing = await self.db.table('products') \
+                        .select('id') \
+                        .eq('workspace_id', workspace_id) \
+                        .eq('external_sku', external_sku) \
+                        .limit(1) \
+                        .execute()
+                    if existing.data:
+                        existing_id = existing.data[0]['id']
+                except Exception as lookup_err:
+                    logger.warning(f"   ⚠️ SKU lookup failed for {external_sku}: {lookup_err}")
 
-            product_id = insert_response.data[0]['id']
-            logger.info(f"✅ Created product {product_id}: {product_name}")
+            if existing_id:
+                # Update in place; refresh updated_at, preserve created_at
+                update_payload = {k: v for k, v in product_record.items() if k != 'created_at'}
+                await self.db.table('products').update(update_payload).eq('id', existing_id).execute()
+                product_id = existing_id
+                logger.info(f"♻️ Updated existing product {product_id} via SKU={external_sku}: {product_name}")
+
+                # Wipe stale chunks + image associations so the rest of the
+                # batch regenerates them cleanly. Images themselves stay in
+                # document_images (other products may reference them); only
+                # the product↔image join is cleared.
+                try:
+                    await self.db.table('document_chunks').delete().eq('product_id', product_id).execute()
+                    await self.db.table('image_product_associations').delete().eq('product_id', product_id).execute()
+                except Exception as wipe_err:
+                    logger.warning(f"   ⚠️ Failed to clear stale artifacts for {product_id}: {wipe_err}")
+            else:
+                insert_response = await self.db.table('products').insert(product_record).execute()
+                if not insert_response.data:
+                    raise ValueError("Failed to insert product - no data returned")
+                product_id = insert_response.data[0]['id']
+                logger.info(f"✅ Created product {product_id}: {product_name}")
 
             # Generate text_embedding_1024 for product-level vector search
             try:
@@ -1005,19 +1045,26 @@ class DataImportService:
             background_job_id = job_response.data.get('background_job_id') if job_response.data else None
 
             if background_job_id:
-                # Update job_progress table (upsert)
-                await self.db.table('job_progress').upsert({
-                    'job_id': background_job_id,
-                    'stage': f'xml_import_{stage}',
-                    'progress_percent': progress_percent,
-                    'current_step': f'Processing: {processed}/{total} products',
-                    'details': {
-                        'processed': processed,
-                        'failed': failed,
-                        'total': total,
-                        'current_stage': stage
-                    }
-                }, on_conflict='job_id,stage').execute()
+                # Stage event → background_jobs.stage_history (canonical).
+                try:
+                    await self.db.rpc('append_stage_history', {
+                        'p_job_id': background_job_id,
+                        'p_event': {
+                            'stage': f'xml_import_{stage}',
+                            'status': 'in_progress',
+                            'progress': progress_percent,
+                            'completed_at': now,
+                            'data': {
+                                'processed': processed,
+                                'failed': failed,
+                                'total': total,
+                                'current_stage': stage,
+                            },
+                            'source': 'xml_import',
+                        },
+                    }).execute()
+                except Exception as hist_err:
+                    logger.warning(f"XML stage_history append failed: {hist_err}")
 
                 # Update background_jobs scalar fields
                 await self.db.table('background_jobs').update({

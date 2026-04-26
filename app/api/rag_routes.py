@@ -1022,18 +1022,12 @@ async def get_job_status(job_id: str):
 
 @router.get("/documents/job/{job_id}/full-status")
 async def get_job_full_status(job_id: str):
-    """Single round-trip endpoint that joins every job-status surface.
+    """Single round-trip endpoint for the full state of a job.
 
-    Replaces the prior pattern of querying background_jobs +
-    job_progress + product_processing_status + job_checkpoints
-    separately from the frontend.
-
-    Returns:
-        - core: row from background_jobs (source of truth)
-        - stages: rows from job_progress (per-stage progress + ETAs)
-        - products: rows from product_processing_status (per-product state)
-        - checkpoints: ordered list from job_checkpoints
-        - memory: in-process job_storage entry if still cached
+    `background_jobs` is the source of truth: stage_history (audit log) and
+    recovery_history (auto-recovery attempts) live on the row itself.
+    `product_processing_status` stays as a child table because cardinality
+    differs (1 job → N products).
     """
     supabase_client = get_supabase_client()
 
@@ -1047,15 +1041,6 @@ async def get_job_full_status(job_id: str):
     core = core_resp.data[0]
 
     try:
-        stages_resp = supabase_client.client.table('job_progress') \
-            .select('*').eq('document_id', core.get('document_id')) \
-            .order('updated_at', desc=False).execute()
-        stages = stages_resp.data or []
-    except Exception as stages_err:
-        logger.warning(f"Failed to load job_progress for {job_id}: {stages_err}")
-        stages = []
-
-    try:
         products_resp = supabase_client.client.table('product_processing_status') \
             .select('*').eq('job_id', job_id) \
             .order('product_index', desc=False).execute()
@@ -1064,31 +1049,20 @@ async def get_job_full_status(job_id: str):
         logger.warning(f"Failed to load product_processing_status for {job_id}: {products_err}")
         products = []
 
-    try:
-        checkpoints = await checkpoint_recovery_service.get_all_checkpoints(job_id)
-    except Exception as cp_err:
-        logger.warning(f"Failed to load checkpoints for {job_id}: {cp_err}")
-        checkpoints = []
-
     return JSONResponse(content={
         "job_id": job_id,
         "core": core,
-        "stages": stages,
+        "stage_history": core.get('stage_history') or [],
+        "recovery_history": core.get('recovery_history') or [],
         "products": products,
-        "checkpoints": checkpoints,
         "memory": job_storage.get(job_id),
     })
 
 
 @router.get("/jobs/{job_id}/checkpoints", responses={200: {"model": CheckpointListResponse}})
 async def get_job_checkpoints(job_id: str):
-    """
-    Get all checkpoints for a job.
-
-    Returns:
-        - List of all checkpoints with stage, data, and metadata
-        - Checkpoint count
-        - Processing timeline
+    """Returns the stage history for a job (alias maintained for older
+    clients — `/documents/job/{id}/full-status` is the consolidated read).
     """
     try:
         checkpoints = await checkpoint_recovery_service.get_all_checkpoints(job_id)
@@ -1435,13 +1409,10 @@ async def reprocess_document(
             supabase.client.table("document_images") \
                 .delete().eq("document_id", document_id).execute()
 
-            # Checkpoints on previous jobs
-            if prev_job.get("id"):
-                try:
-                    supabase.client.table("job_checkpoints") \
-                        .delete().eq("job_id", prev_job["id"]).execute()
-                except Exception as _cp_err:
-                    logger.warning(f"reprocess: checkpoint clear failed: {_cp_err}")
+            # stage_history lives on background_jobs.stage_history.
+            # We're spawning a brand-new job row below; the old row's
+            # history stays as audit data and naturally drops out of any
+            # job-id-scoped queries. Nothing to clear here.
 
             # Wipe the Layer 1/2 cached output on the document so they re-run
             doc_metadata.pop("catalog_layout", None)
@@ -2428,6 +2399,7 @@ async def process_document_with_discovery(
     # auto-recovery cron can detect a dead orchestrator even when a single
     # stage stalls for many minutes.
     from app.services.tracking.job_heartbeat import JobHeartbeat
+    supabase = get_supabase_client()
     heartbeat = JobHeartbeat(job_id=job_id, supabase_client=supabase)
     await heartbeat.__aenter__()
     try:

@@ -1381,6 +1381,24 @@ class WebScrapingService:
                     {'p_job_id': job_id, 'p_metadata': metadata}
                 ).execute()
 
+            # Phase 1 shadow-write — append to stage_history so Phase 2
+            # can read scraping progress from background_jobs alone.
+            try:
+                stage_label = (metadata or {}).get('current_stage') or (metadata or {}).get('stage') or 'scraping'
+                await self.db.rpc('append_stage_history', {
+                    'p_job_id': job_id,
+                    'p_event': {
+                        'stage': str(stage_label),
+                        'status': status or 'in_progress',
+                        'progress': min(100, max(0, progress)),
+                        'completed_at': datetime.utcnow().isoformat(),
+                        'data': metadata or {},
+                        'source': 'web_scraping',
+                    },
+                }).execute()
+            except Exception as shadow_err:
+                self.logger.debug(f"scraping stage_history shadow-write skipped: {shadow_err}")
+
         except Exception as e:
             self.logger.error(f"Failed to update job progress: {e}")
             # Don't raise - progress updates are non-critical

@@ -44,48 +44,19 @@ async def process_product_chunking(
         Dictionary with chunks_created count and processing stats.
     """
     from app.services.search.rag_service import RAGService
-    from app.services.chunking.metadata_first_chunking_service import MetadataFirstChunkingService
     from app.services.chunking.chunk_type_classification_service import ChunkTypeClassificationService
 
     logger.info(f"📝 Creating chunks for product: {product.name}")
     logger.info(f"   Physical pages (1-based): {sorted(physical_pages)}")
 
-    # Convert list to set for set operations (these are physical pages, 1-based)
-    physical_pages_set = set(physical_pages)
+    # We're already scoped to one product here, so every page passed in IS
+    # this product's content. The legacy "metadata-first" filter was designed
+    # for document-wide chunking and would silently exclude the product's own
+    # pages when invoked per-product.
+    chunkable_pages = set(physical_pages)
 
     # ========================================================================
-    # STEP 1: Metadata-First - Exclude product metadata pages
-    # ========================================================================
-    metadata_first_service = MetadataFirstChunkingService(
-        enabled=config.get('enable_metadata_first', True)
-    )
-
-    excluded_pages = await metadata_first_service.get_pages_to_exclude(
-        products=[product],
-        document_id=document_id
-    )
-
-    # Filter pages to chunk (exclude metadata pages to prevent duplication)
-    chunkable_pages = physical_pages_set - excluded_pages
-    logger.info(f"   Chunkable pages: {sorted(chunkable_pages)} ({len(chunkable_pages)} pages)")
-    if excluded_pages:
-        logger.info(f"   Excluded pages: {sorted(excluded_pages)} ({len(excluded_pages)} metadata pages)")
-
-    # ========================================================================
-    # EARLY EXIT: Skip chunking if no chunkable pages
-    # ========================================================================
-    if not chunkable_pages:
-        logger.info(f"   ⏭️ Skipping chunking - all pages are metadata pages")
-        return {
-            'chunks_created': 0,
-            'chunk_ids': [],
-            'pages_chunked': 0,
-            'pages_excluded': len(excluded_pages),
-            'chunks': []
-        }
-
-    # ========================================================================
-    # STEP 1.5: Load Layout Regions (for layout-aware chunking)
+    # STEP 1: Load Layout Regions (for layout-aware chunking)
     # ========================================================================
     layout_regions_by_page = {}
     
@@ -178,7 +149,7 @@ async def process_product_chunking(
             'chunk_ids': [],
             'embeddings_generated': 0,
             'pages_chunked': 0,
-            'pages_excluded': len(excluded_pages),
+            'pages_excluded': 0,
         }
 
     # Create chunks with product-specific metadata
@@ -227,7 +198,7 @@ async def process_product_chunking(
         'chunk_ids': chunk_ids,
         'embeddings_generated': chunk_result.get('embeddings_generated', 0),
         'pages_chunked': len(chunkable_pages),
-        'pages_excluded': len(excluded_pages)
+        'pages_excluded': 0,
     }
 
 

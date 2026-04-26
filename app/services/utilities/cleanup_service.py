@@ -520,19 +520,9 @@ class CleanupService:
             elif document_id and not delete_storage_files:
                 self.logger.info(f"⏭️ Skipping storage file deletion (automatic cleanup mode)")
 
-            # 7. Delete checkpoints
-            try:
-                checkpoints_response = supabase_client.client.table('job_checkpoints')\
-                    .delete()\
-                    .eq('job_id', job_id)\
-                    .execute()
-
-                stats['checkpoints_deleted'] = len(checkpoints_response.data) if checkpoints_response.data else 0
-                self.logger.info(f"✅ Deleted {stats['checkpoints_deleted']} checkpoints")
-
-            except Exception as e:
-                self.logger.error(f"Failed to delete checkpoints: {e}")
-                stats['errors'].append(f"Checkpoints deletion failed: {str(e)}")
+            # Checkpoints now live on background_jobs.stage_history; deleted
+            # automatically when the job row is removed in step 9.
+            stats['checkpoints_deleted'] = 0
 
             # 8. Delete document record
             if document_id:

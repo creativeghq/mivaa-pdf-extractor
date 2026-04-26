@@ -53,14 +53,20 @@ class StuckJobAnalyzer:
             
             job = job_result.data
             
-            # Get checkpoint history
-            checkpoints_result = self.supabase_client.client.table('job_checkpoints')\
-                .select('*')\
-                .eq('job_id', job_id)\
-                .order('created_at', desc=False)\
-                .execute()
-            
-            checkpoints = checkpoints_result.data or []
+            # Stage history lives on background_jobs.stage_history. Normalize
+            # to the legacy `{stage, created_at, ...}` shape so the analyzer
+            # internals don't change.
+            history = job.get('stage_history') or []
+            checkpoints = [
+                {
+                    'job_id': job_id,
+                    'stage': entry.get('stage'),
+                    'checkpoint_data': entry.get('data') or {},
+                    'metadata': entry.get('metadata') or {},
+                    'created_at': entry.get('completed_at') or entry.get('started_at'),
+                }
+                for entry in history
+            ]
             
             # Analyze
             analysis = {

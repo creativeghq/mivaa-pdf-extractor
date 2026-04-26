@@ -723,6 +723,14 @@ async def discover_sources(
     # re-parsing the free-text name with Haiku when we already have the data.
     catalog_facets = facets_from_catalog(prod_row)
 
+    # Imports for the price-monitoring-notifications module — sanity band +
+    # alert detection. Local import avoids a hard dependency from this route
+    # file when the module is disabled.
+    from app.modules.price_monitoring_notifications.service import (
+        get_price_alert_dispatcher,
+        _domain_of as _alert_domain_of,
+    )
+
     # Build the Stage A query string with the strongest identity tokens up
     # front: brand + collection + (one strong SKU when known). Retailer search
     # ranking on Perplexity/DataForSEO is keyword-driven, so seeding the query
@@ -736,6 +744,26 @@ async def discover_sources(
             prefix_parts.append(catalog_facets.sku_tokens[0])
         if prefix_parts:
             enriched_name = " ".join([*prefix_parts, product_name])
+
+    # Pull known retailer domains so the prompt can ask for ADDITIONAL retailers.
+    known_domains: List[str] = []
+    try:
+        known = (
+            sb.table("competitor_sources")
+            .select("source_domain, source_url")
+            .eq("product_id", product_id)
+            .eq("is_active", True)
+            .limit(50)
+            .execute()
+        )
+        seen: set = set()
+        for r in known.data or []:
+            d = r.get("source_domain") or _alert_domain_of(r.get("source_url"))
+            if d and d not in seen:
+                seen.add(d)
+                known_domains.append(d)
+    except Exception as e:
+        logger.debug(f"known-retailer pull failed: {e}")
 
     # ── Run Stage A discovery ──
     result = await service.search_prices(
@@ -752,6 +780,7 @@ async def discover_sources(
             or metadata.get("manufacturer")
             or metadata.get("brand")
         ) if metadata else None,
+        known_retailer_domains=known_domains,
     )
 
     if not result.success:
@@ -768,6 +797,10 @@ async def discover_sources(
     #    Hit source maps to competitor_source_type: perplexity → perplexity_web_search,
     #    dataforseo → dataforseo_shopping. So the UI can split them into
     #    "Discovered retailers" vs "Merchants" sections by source_type.
+    #    Each price reading also passes through the sanity band before insert
+    #    so outliers get flagged (is_anomaly=true) without polluting medians.
+    alert_dispatcher = get_price_alert_dispatcher()
+    persisted_history_rows: List[Dict[str, Any]] = []
     now_iso = datetime.utcnow().isoformat()
     for hit in result.hits:
         source_type = "dataforseo_shopping" if hit.source == "dataforseo" else "perplexity_web_search"
@@ -783,59 +816,86 @@ async def discover_sources(
             meta["notes"] = hit.notes
         if hit.product_title:
             meta["product_title"] = hit.product_title
+        # Sanity band check on the new reading.
+        price_val = float(hit.price) if hit.price is not None else None
+        domain = _alert_domain_of(hit.product_url)
+        is_anomaly = False
+        anomaly_reason: Optional[str] = None
+        rolling_med: Optional[float] = None
+        if price_val is not None:
+            verdict = alert_dispatcher.check_sanity(
+                product_id=product_id,
+                retailer_domain=domain or "",
+                new_price=price_val,
+            )
+            is_anomaly = verdict.is_anomaly
+            anomaly_reason = verdict.reason if is_anomaly else None
+            rolling_med = verdict.rolling_median
+
+        # Anomaly readings DO NOT overwrite the cached current_price on
+        # competitor_sources — admin must accept via manual_override first.
         upsert_row = {
             "product_id": product_id,
             "source_name": hit.retailer_name,
             "source_url": hit.product_url,
+            "source_domain": domain,
             "source_type": source_type,
             "discovered_via": source_type,
             "auto_discovered": True,
             "is_active": True,
-            "current_price": float(hit.price) if hit.price is not None else None,
-            "current_original_price": float(hit.original_price) if hit.original_price is not None else None,
-            "current_price_verified": bool(getattr(hit, "verified", False)),
-            "current_currency": hit.currency,
-            "current_availability": hit.availability or "unknown",
             "current_metadata": meta or None,
             "match_kind": hit.match_kind,
             "match_score": hit.match_score,
             "match_note": hit.match_note,
-            "current_price_updated_at": now_iso,
             "last_seen_at": now_iso,
             "last_successful_scrape": now_iso,
             "error_count": 0,
             "last_error": None,
             "created_by": user.id,
         }
+        if not is_anomaly:
+            upsert_row.update({
+                "current_price": price_val,
+                "current_original_price": float(hit.original_price) if hit.original_price is not None else None,
+                "current_price_verified": bool(getattr(hit, "verified", False)),
+                "current_currency": hit.currency,
+                "current_availability": hit.availability or "unknown",
+                "current_price_updated_at": now_iso,
+            })
         try:
             sb.table("competitor_sources").upsert(upsert_row, on_conflict="product_id,source_url").execute()
         except Exception as e:
             logger.warning(f"Upsert competitor_source failed for {hit.product_url}: {e}")
             continue
 
+        history_row = {
+            "product_id": product_id,
+            "source_name": hit.retailer_name,
+            "source_url": hit.product_url,
+            "price": price_val,
+            "original_price": float(hit.original_price) if hit.original_price is not None else None,
+            "verified": bool(getattr(hit, "verified", False)),
+            "currency": hit.currency,
+            "availability": hit.availability or "unknown",
+            "match_kind": hit.match_kind,
+            "match_score": hit.match_score,
+            "match_note": hit.match_note,
+            "product_title": hit.product_title,
+            "scraped_at": now_iso,
+            "is_anomaly": is_anomaly,
+            "anomaly_reason": anomaly_reason,
+            "rolling_median_at_check": rolling_med,
+            "metadata": {
+                "via": source_type,
+                "notes": hit.notes,
+                "image_url": hit.image_url,
+                "rating_value": hit.rating_value,
+                "rating_votes": hit.rating_votes,
+            },
+        }
         try:
-            sb.table("price_history").insert({
-                "product_id": product_id,
-                "source_name": hit.retailer_name,
-                "source_url": hit.product_url,
-                "price": float(hit.price) if hit.price is not None else None,
-                "original_price": float(hit.original_price) if hit.original_price is not None else None,
-                "verified": bool(getattr(hit, "verified", False)),
-                "currency": hit.currency,
-                "availability": hit.availability or "unknown",
-                "match_kind": hit.match_kind,
-                "match_score": hit.match_score,
-                "match_note": hit.match_note,
-                "product_title": hit.product_title,
-                "scraped_at": now_iso,
-                "metadata": {
-                    "via": source_type,
-                    "notes": hit.notes,
-                    "image_url": hit.image_url,
-                    "rating_value": hit.rating_value,
-                    "rating_votes": hit.rating_votes,
-                },
-            }).execute()
+            sb.table("price_history").insert(history_row).execute()
+            persisted_history_rows.append(history_row)
         except Exception as e:
             logger.warning(f"price_history insert failed for {hit.product_url}: {e}")
 
@@ -851,6 +911,22 @@ async def discover_sources(
         }).eq("id", mon_row["id"]).execute()
     except Exception as e:
         logger.warning(f"Failed to stamp last_claude_search_at on monitoring row: {e}")
+
+    # Alert detection — module-gated + credit-metered + dedupe inside the
+    # dispatcher. Runs after persistence so detection sees committed state.
+    if persisted_history_rows:
+        try:
+            candidates = alert_dispatcher.detect_after_refresh(
+                product_id=product_id,
+                new_rows=persisted_history_rows,
+            )
+            if candidates:
+                fired = alert_dispatcher.dispatch(candidates)
+                logger.info(
+                    f"price-alerts: product={product_id} fired {fired}/{len(candidates)} alerts"
+                )
+        except Exception as e:
+            logger.warning(f"price-alerts: dispatch failed (non-fatal): {e}")
 
     return DiscoverSourcesResponse(
         success=True,
@@ -1340,6 +1416,201 @@ async def cron_refresh_tracked_queries(request: Request, limit: int = Query(defa
         "results": results,
         "timestamp": datetime.utcnow().isoformat() + "Z",
     }
+
+
+class BroadcastApiAnnouncementRequest(BaseModel):
+    """Body for POST /broadcast-api-announcement — admin one-shot send."""
+    template_slug: str = Field(default="api_broadcast.price_tracking_v2",
+        description="Slug of the email template in `email_templates` to use.")
+    docs_url: str = Field(default="https://github.com/creativeghq/material-kai-vision-platform/blob/main/docs/api/price-monitoring-api.md")
+    support_email: str = Field(default="support@materialshub.gr")
+    dry_run: bool = Field(default=True,
+        description="When true (default), returns the recipient list without sending.")
+
+
+@router.post("/broadcast-api-announcement", response_model=DataResponse)
+async def broadcast_api_announcement(
+    body: BroadcastApiAnnouncementRequest,
+    user: User = Depends(get_current_user),
+):
+    """
+    Admin-only one-shot broadcast to every distinct user_id that owns at
+    least one active api_key. Renders the chosen email template against
+    each recipient's name + the supplied URLs and dispatches via the
+    `email-api` edge function (Resend-backed). Recipients who already got
+    this slug are skipped (idempotent within the same template version).
+    """
+    sb = get_supabase_client().client
+
+    # Recipient list — distinct user_ids that own an active api_key.
+    keys = (
+        sb.table("api_keys")
+        .select("user_id")
+        .eq("is_active", True)
+        .execute()
+    )
+    user_ids = sorted({r["user_id"] for r in (keys.data or []) if r.get("user_id")})
+    if not user_ids:
+        return {"success": True, "data": {"recipients": 0, "message": "no api_key owners found"}}
+
+    profiles = (
+        sb.table("user_profiles")
+        .select("user_id, email, full_name")
+        .in_("user_id", user_ids)
+        .execute()
+    )
+    by_uid = {p["user_id"]: p for p in (profiles.data or []) if p.get("email")}
+
+    # Skip recipients we've already sent this template to. The check uses
+    # `email_logs` (the platform's existing email send log). If the table is
+    # absent we just allow re-send.
+    already: set = set()
+    try:
+        prior = (
+            sb.table("email_logs")
+            .select("user_id")
+            .eq("template_slug", body.template_slug)
+            .eq("status", "sent")
+            .execute()
+        )
+        already = {r.get("user_id") for r in (prior.data or []) if r.get("user_id")}
+    except Exception:
+        pass
+
+    targets = [
+        {"user_id": uid, "email": p["email"], "full_name": p.get("full_name") or "there"}
+        for uid, p in by_uid.items()
+        if uid not in already
+    ]
+
+    if body.dry_run:
+        return {"success": True, "data": {
+            "recipients": len(targets),
+            "skipped_already_sent": len(already),
+            "missing_email": len(user_ids) - len(by_uid),
+            "preview": targets[:5],
+        }}
+
+    sent = 0
+    failed = 0
+    supabase_url = os.getenv("SUPABASE_URL") or ""
+    service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or ""
+    if not supabase_url or not service_key:
+        raise HTTPException(status_code=500, detail="SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY missing")
+
+    import httpx as _httpx
+    with _httpx.Client(timeout=15.0) as client:
+        for t in targets:
+            try:
+                resp = client.post(
+                    f"{supabase_url}/functions/v1/email-api",
+                    headers={
+                        # Both headers required — email-api accepts service-role
+                        # via `apikey` (level='secret'); Authorization alone fails.
+                        "Authorization": f"Bearer {service_key}",
+                        "apikey": service_key,
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "action": "send",
+                        "to": t["email"],
+                        "templateSlug": body.template_slug,
+                        "variables": {
+                            "name": t["full_name"],
+                            "docs_url": body.docs_url,
+                            "support_email": body.support_email,
+                        },
+                        "tags": [
+                            {"name": "category", "value": "api_broadcast"},
+                            {"name": "template", "value": body.template_slug},
+                        ],
+                    },
+                )
+                if resp.status_code < 400:
+                    sent += 1
+                else:
+                    failed += 1
+                    logger.warning(f"broadcast send failed for {t['email']}: {resp.status_code} {resp.text[:200]}")
+            except Exception as e:
+                failed += 1
+                logger.warning(f"broadcast send raised for {t['email']}: {e}")
+
+    return {"success": True, "data": {
+        "recipients": len(targets),
+        "sent": sent,
+        "failed": failed,
+        "skipped_already_sent": len(already),
+    }}
+
+
+class MatchCorrectionRequest(BaseModel):
+    """Body for POST /classifier-correction — admin marks a misclassified row."""
+    competitor_source_id: Optional[str] = None
+    tracked_query_history_id: Optional[str] = None
+    corrected_match_kind: str = Field(..., pattern="^(exact|variant|family|mismatch|unverifiable|should_drop)$")
+    correction_note: Optional[str] = None
+
+
+@router.post("/classifier-correction", response_model=StatusResponse)
+async def submit_classifier_correction(
+    body: MatchCorrectionRequest,
+    user: User = Depends(get_current_user),
+):
+    """
+    Admin feedback on the identity classifier. Writes to `match_corrections`.
+    Recent rows from this table are pulled into the classifier system prompt
+    on every classify call (cached 5 min) — closes the loop without retraining.
+    """
+    sb = get_supabase_client().client
+    snapshot: Dict[str, Any] = {}
+    try:
+        if body.competitor_source_id:
+            cs = sb.table("competitor_sources").select(
+                "product_id, source_name, source_url, match_kind, current_metadata"
+            ).eq("id", body.competitor_source_id).maybe_single().execute()
+            row = (cs.data if cs else None) or {}
+            meta = row.get("current_metadata") or {}
+            snapshot = {
+                "product_id": row.get("product_id"),
+                "competitor_source_id": body.competitor_source_id,
+                "retailer_name": row.get("source_name"),
+                "product_url": row.get("source_url"),
+                "product_title": meta.get("product_title"),
+                "original_match_kind": row.get("match_kind"),
+                "page_facets": {"product_name": meta.get("product_title")},
+            }
+        elif body.tracked_query_history_id:
+            ph = sb.table("tracked_query_price_history").select(
+                "tracked_query_id, retailer_name, product_url, product_title, match_kind"
+            ).eq("id", body.tracked_query_history_id).maybe_single().execute()
+            row = (ph.data if ph else None) or {}
+            tq = sb.table("tracked_queries").select("query_facets").eq(
+                "id", row.get("tracked_query_id") or ""
+            ).maybe_single().execute()
+            tq_row = (tq.data if tq else None) or {}
+            snapshot = {
+                "tracked_query_id": row.get("tracked_query_id"),
+                "tracked_query_history_id": body.tracked_query_history_id,
+                "retailer_name": row.get("retailer_name"),
+                "product_url": row.get("product_url"),
+                "product_title": row.get("product_title"),
+                "original_match_kind": row.get("match_kind"),
+                "query_facets": tq_row.get("query_facets"),
+                "page_facets": {"product_name": row.get("product_title")},
+            }
+    except Exception as e:
+        logger.warning(f"correction snapshot fetch failed: {e}")
+
+    try:
+        sb.table("match_corrections").insert({
+            **snapshot,
+            "corrected_match_kind": body.corrected_match_kind,
+            "correction_note": body.correction_note,
+            "created_by": str(user.id),
+        }).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"insert failed: {e}")
+    return {"success": True, "message": "correction recorded"}
 
 
 @router.get("/jobs/{product_id}", response_model=PriceJobsResponse)

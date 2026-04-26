@@ -109,54 +109,6 @@ class AsyncQueueService:
             logger.error(f"❌ Failed to queue AI analysis jobs: {e}")
             raise
 
-    async def update_progress(
-        self,
-        document_id: str,
-        stage: str,
-        progress: int,
-        total_items: Optional[int] = None,
-        completed_items: Optional[int] = None,
-        metadata: Optional[Dict[str, Any]] = None
-    ) -> None:
-        """
-        Update progress for a document processing stage.
-        
-        Args:
-            document_id: Document ID
-            stage: Processing stage (extraction, image_processing, chunking, ai_analysis, product_creation)
-            progress: Progress percentage (0-100)
-            total_items: Total items to process
-            completed_items: Items completed so far
-            metadata: Additional metadata
-        """
-        try:
-            data = {
-                'document_id': document_id,
-                'stage': stage,
-                'progress': min(100, max(0, progress)),
-                'updated_at': datetime.utcnow().isoformat()
-            }
-
-            if total_items is not None:
-                data['total_items'] = total_items
-
-            if completed_items is not None:
-                data['completed_items'] = completed_items
-
-            if metadata:
-                data['metadata'] = metadata
-
-            self.supabase.client.table('job_progress').upsert(
-                data,
-                on_conflict='document_id,stage'
-            ).execute()
-
-            logger.debug(f"📊 Updated progress for {document_id}/{stage}: {progress}%")
-
-        except Exception as e:
-            logger.error(f"❌ Failed to update progress: {e}")
-            # Don't raise - progress updates shouldn't block processing
-
     async def get_queue_metrics(self) -> Dict[str, Any]:
         """
         Get current queue metrics for monitoring dashboard.
@@ -175,15 +127,16 @@ class AsyncQueueService:
                 'status, count'
             ).execute()
 
-            # Get active documents
-            progress = self.supabase.client.table('job_progress').select(
+            # Active documents = jobs still in 'processing' status. Replaces
+            # the old job_progress lookup which is no longer maintained.
+            active = self.supabase.client.table('background_jobs').select(
                 'document_id'
-            ).eq('progress', '<', 100).execute()
+            ).eq('status', 'processing').execute()
 
             return {
                 'image_queue': image_queue.data if image_queue.data else [],
                 'ai_queue': ai_queue.data if ai_queue.data else [],
-                'active_documents': len(set(p['document_id'] for p in progress.data)) if progress.data else 0
+                'active_documents': len({p['document_id'] for p in (active.data or []) if p.get('document_id')}),
             }
 
         except Exception as e:

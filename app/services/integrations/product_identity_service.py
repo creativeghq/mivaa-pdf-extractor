@@ -43,6 +43,7 @@ import logging
 import os
 import re
 import unicodedata
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -635,6 +636,12 @@ class ProductIdentityService:
         if not self.api_key:
             return [self._rule_based_verdict(facets, c) for c in candidates]
 
+        # PR 4b: pull recent admin corrections as few-shot examples that get
+        # prepended to the system prompt. Closes the loop without retraining
+        # a model — admin clicks "this is wrong, should be `mismatch`" in the
+        # UI, the classifier sees that example on the next refresh.
+        few_shot_block = self._build_few_shot_block()
+
         user_payload = {
             "query_facets": facets.to_dict(),
             "pages": candidates,
@@ -651,7 +658,7 @@ class ProductIdentityService:
                         "system": [
                             {
                                 "type": "text",
-                                "text": _CLASSIFIER_SYSTEM,
+                                "text": _CLASSIFIER_SYSTEM + few_shot_block,
                                 "cache_control": {"type": "ephemeral"},
                             },
                         ],
@@ -707,6 +714,61 @@ class ProductIdentityService:
         return cleaned
 
     # ── Fallback rule-based classifier ──
+
+    def _build_few_shot_block(self) -> str:
+        """
+        PR 4b: pull the most recent admin corrections from `match_corrections`
+        and format them as a few-shot block to prepend to the classifier
+        system prompt. Capped at 5 examples to keep token cost bounded.
+
+        Cached in-process for 5 minutes so we don't query the DB on every
+        classify call.
+        """
+        cached = getattr(self, "_few_shot_cache", None)
+        if cached is not None:
+            ts, block = cached
+            if (datetime.now(timezone.utc) - ts).total_seconds() < 300:
+                return block
+
+        try:
+            resp = (
+                self.supabase.client.table("match_corrections")
+                .select("query_facets, page_facets, original_match_kind, corrected_match_kind, correction_note")
+                .order("created_at", desc=True)
+                .limit(5)
+                .execute()
+            )
+        except Exception as e:
+            logger.debug(f"few-shot fetch skipped: {e}")
+            block = ""
+            self._few_shot_cache = (datetime.now(timezone.utc), block)
+            return block
+
+        rows = resp.data or []
+        if not rows:
+            block = ""
+            self._few_shot_cache = (datetime.now(timezone.utc), block)
+            return block
+
+        examples: List[str] = []
+        for r in rows:
+            qf = r.get("query_facets") or {}
+            pf = r.get("page_facets") or {}
+            note = r.get("correction_note") or ""
+            examples.append(
+                f"- Query: {qf.get('brand') or ''} {qf.get('model') or ''} "
+                f"(SKUs: {qf.get('sku_tokens') or []}); "
+                f"Page: {pf.get('product_name') or ''} ({pf.get('breadcrumb') or ''}); "
+                f"Wrong verdict: {r.get('original_match_kind') or '?'}; "
+                f"Correct verdict: {r.get('corrected_match_kind')}"
+                + (f"; Reason: {note}" if note else "")
+            )
+        block = (
+            "\n\nLearning from prior admin corrections (apply the same reasoning):\n"
+            + "\n".join(examples)
+        )
+        self._few_shot_cache = (datetime.now(timezone.utc), block)
+        return block
 
     def _rule_based_verdict(
         self, facets: QueryFacets, candidate: Dict[str, Any]

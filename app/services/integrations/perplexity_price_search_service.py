@@ -92,6 +92,17 @@ _LOCAL_TLD: Dict[str, str] = {
 # ────────────────────────────────────────────────────────────────────────────
 
 
+def _extract_domain(url: Optional[str]) -> Optional[str]:
+    """Hostname without `www.`, lowercased. None on parse failure."""
+    if not url:
+        return None
+    m = re.match(r"^https?://([^/]+)", url.strip(), flags=re.IGNORECASE)
+    if not m:
+        return None
+    host = m.group(1).lower()
+    return host[4:] if host.startswith("www.") else host
+
+
 class PriceHit(BaseModel):
     """Single retailer result — may come from Perplexity web search or DataForSEO Shopping feed."""
     retailer_name: str = Field(..., description="Retailer display name.")
@@ -206,6 +217,8 @@ class PerplexityPriceSearchService:
         verify_prices: bool = True,
         query_facets: Optional[QueryFacets] = None,
         manufacturer_hint: Optional[str] = None,
+        double_read: bool = False,
+        known_retailer_domains: Optional[List[str]] = None,
     ) -> PriceSearchResult:
         """
         Run one Sonar search for the given product. Returns PriceSearchResult
@@ -252,6 +265,7 @@ class PerplexityPriceSearchService:
             self._perplexity_call(
                 product_name, dimensions, country_code, limit,
                 preferred_retailer_domains, user_id, workspace_id,
+                known_retailer_domains=known_retailer_domains,
             )
         )
         # Over-fetch DataForSEO (up to 30 merchants) — the Shopping feed
@@ -279,8 +293,17 @@ class PerplexityPriceSearchService:
                 limit=limit,
             )
         )
-        perplexity_result, dataforseo_result, greek_hits = await asyncio.gather(
-            perplexity_task, dataforseo_task, greek_task, return_exceptions=True
+        idealo_task = asyncio.create_task(
+            self._idealo_call(
+                query=product_name,
+                country_code=country_code,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                limit=limit,
+            )
+        )
+        perplexity_result, dataforseo_result, greek_hits, idealo_hits = await asyncio.gather(
+            perplexity_task, dataforseo_task, greek_task, idealo_task, return_exceptions=True
         )
 
         if isinstance(perplexity_result, BaseException):
@@ -307,6 +330,18 @@ class PerplexityPriceSearchService:
             perplexity_result.hits = self._merge_with_greek_marketplaces(
                 existing=perplexity_result.hits,
                 greek_hits=greek_hits,
+            )
+
+        # Idealo merges with the same policy as the Greek marketplaces:
+        # first-party retailer data overrides aggregator-discovered rows for
+        # the same retailer domain, but it doesn't add a fresh dedupe path
+        # since the merchant URLs come back as the actual retailer host.
+        if isinstance(idealo_hits, BaseException):
+            logger.warning(f"Idealo call raised (non-fatal): {idealo_hits}")
+        elif idealo_hits:
+            perplexity_result.hits = self._merge_with_greek_marketplaces(
+                existing=perplexity_result.hits,
+                greek_hits=idealo_hits,
             )
 
         # Step 3: URL pre-filter. Pure rules, no network. Drops obvious
@@ -352,6 +387,7 @@ class PerplexityPriceSearchService:
                     extractions_out=extractions,
                     user_id=user_id,
                     workspace_id=workspace_id,
+                    double_read=double_read,
                 )
                 perplexity_result.credits_used += verify_credits
             # Mark DataForSEO hits as verified via feed — not Firecrawl, but
@@ -374,6 +410,65 @@ class PerplexityPriceSearchService:
                 user_id=user_id,
                 workspace_id=workspace_id,
             )
+
+        # Step 6 (PR 3): adaptive Stage A re-issue. When >50% of candidates
+        # got dropped as family/mismatch (i.e. the original query was too
+        # generic), fire ONE extra Perplexity call seeded with SKU tokens
+        # extracted from the surviving exact matches. Capped at one extra
+        # call per refresh — costs ~$0.02 and typically doubles the keep
+        # rate. Only meaningful when we have ≥1 exact match to learn from.
+        try:
+            if facets and perplexity_result.hits and len(facets.required_tokens) > 0:
+                exact_count = sum(1 for h in perplexity_result.hits if h.match_kind == "exact")
+                kept_count = len(perplexity_result.hits)
+                # Estimate the original candidate count from Perplexity (pre-classify).
+                # We don't store it explicitly; reuse total Stage A return as a proxy.
+                # Threshold: <40% of candidates kept AND we have at least one anchor SKU
+                # we can learn from.
+                page_skus_seen = set()
+                for h in perplexity_result.hits:
+                    if h.match_kind == "exact" and h.product_title:
+                        for tok in re.findall(r"\b\d{4,8}\b", h.product_title):
+                            page_skus_seen.add(tok)
+                if exact_count >= 1 and kept_count >= 1 and page_skus_seen and not facets.sku_tokens:
+                    sku_anchor = sorted(page_skus_seen)[0]
+                    enriched_query = f"{product_name} {sku_anchor}"
+                    logger.info(
+                        f"price-monitoring: adaptive re-issue with SKU anchor {sku_anchor} "
+                        f"(initial kept={kept_count}, exact={exact_count})"
+                    )
+                    extra = await self._perplexity_call(
+                        enriched_query, dimensions, country_code, limit,
+                        preferred_retailer_domains, user_id, workspace_id,
+                    )
+                    if not isinstance(extra, BaseException) and extra.success and extra.hits:
+                        # Merge extras as Perplexity hits (re-classify against
+                        # the same facets + sku_anchor seeded into them).
+                        existing_urls = {h.product_url for h in perplexity_result.hits}
+                        new_hits = [h for h in extra.hits if h.product_url not in existing_urls]
+                        if new_hits:
+                            tightened_facets = QueryFacets(
+                                brand=facets.brand,
+                                model=facets.model,
+                                product_type=facets.product_type,
+                                variants=facets.variants,
+                                required_tokens=facets.required_tokens,
+                                variant_tokens=facets.variant_tokens,
+                                sku_tokens=[sku_anchor],
+                                raw_query=enriched_query,
+                            )
+                            classified_extras = await self._classify_and_filter(
+                                hits=new_hits,
+                                facets=tightened_facets,
+                                extractions={},
+                                user_id=user_id,
+                                workspace_id=workspace_id,
+                            )
+                            if classified_extras:
+                                perplexity_result.hits.extend(classified_extras)
+                                perplexity_result.credits_used += extra.credits_used
+        except Exception as e:
+            logger.debug(f"price-monitoring: adaptive re-issue skipped: {e}")
 
         return perplexity_result
 
@@ -438,8 +533,11 @@ class PerplexityPriceSearchService:
         preferred_retailer_domains: Optional[List[str]],
         user_id: Optional[str],
         workspace_id: Optional[str],
+        known_retailer_domains: Optional[List[str]] = None,
     ) -> "PriceSearchResult":
-        system_prompt, user_prompt = self._build_messages(product_name, dimensions, country_code, limit)
+        system_prompt, user_prompt = self._build_messages(
+            product_name, dimensions, country_code, limit, known_retailer_domains,
+        )
         schema = self._response_schema(limit)
 
         body: Dict[str, Any] = {
@@ -554,6 +652,7 @@ class PerplexityPriceSearchService:
         dimensions: Optional[str],
         country_code: Optional[str],
         limit: int,
+        known_retailer_domains: Optional[List[str]] = None,
     ) -> Tuple[str, str]:
         """Returns (system_prompt, user_prompt).
 
@@ -615,8 +714,24 @@ class PerplexityPriceSearchService:
                 "retailer even if you can only find a different size of the same brand/model."
             )
 
+        # PR 3b: retailer-list memory. When the caller passes a list of
+        # retailers we already know carry this product, ask Perplexity to
+        # find ADDITIONAL ones rather than re-finding the same set every
+        # refresh. Stabilizes the long tail.
+        memory_directive = ""
+        if known_retailer_domains:
+            cleaned = [d for d in (known_retailer_domains or []) if d][:25]
+            if cleaned:
+                memory_directive = (
+                    "\n\nWe already have these retailers covered for this product, so prioritize "
+                    "finding ADDITIONAL retailers beyond this list (still include any of them if "
+                    "their price has materially changed): "
+                    + ", ".join(cleaned)
+                    + "."
+                )
+
         user_prompt = (
-            f"Find current published retail prices for: {product_spec}.{dim_directive} "
+            f"Find current published retail prices for: {product_spec}.{dim_directive}{memory_directive} "
             f"Return up to {limit} retailers. After the list, write a 2-3 sentence `summary` noting: "
             "the closest retailer to the user (if country is known), any manufacturer showroom "
             "presence in-country, and any pricing outliers worth questioning."
@@ -714,6 +829,7 @@ class PerplexityPriceSearchService:
         extractions_out: Optional[Dict[str, Dict[str, Any]]] = None,
         user_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
+        double_read: bool = False,
     ) -> int:
         """
         Second-stage verification: fetch each retailer's actual product page via
@@ -800,6 +916,8 @@ class PerplexityPriceSearchService:
 
             # Discrepancy check: if Firecrawl's price is materially different from
             # Perplexity/DataForSEO's, flag it. Trust Firecrawl (read the page).
+            # Material gaps also get logged to price_discrepancies for admin
+            # review — beyond just appending to notes.
             prior_price = hit.price
             diff_note = None
             if prior_price is not None and prior_price > 0:
@@ -809,6 +927,24 @@ class PerplexityPriceSearchService:
                         f"verify: was {hit.source}=€{prior_price:.2f}, "
                         f"actual on page=€{verified_price:.2f}"
                     )
+                    # Persist a discrepancy row. Best-effort — log on failure
+                    # but never block verification.
+                    try:
+                        from app.services.core.supabase_client import get_supabase_client
+                        sb = get_supabase_client()
+                        sb.client.table("price_discrepancies").insert({
+                            "retailer_name": hit.retailer_name,
+                            "retailer_domain": _extract_domain(hit.product_url),
+                            "perplexity_price": prior_price if hit.source == "perplexity" else None,
+                            "dataforseo_price": prior_price if hit.source == "dataforseo" else None,
+                            "firecrawl_price": verified_price,
+                            "delta_pct": round(diff_ratio * 100.0, 2),
+                            "decided_price": verified_price,
+                            "decided_source": "firecrawl",
+                            "notes": diff_note,
+                        }).execute()
+                    except Exception as e:
+                        logger.debug(f"Failed to log price discrepancy: {e}")
 
             hit.price = verified_price
             if verified_original is not None:
@@ -842,6 +978,35 @@ class PerplexityPriceSearchService:
         for c in credit_results:
             if isinstance(c, int):
                 total_credits += c
+
+        # First-refresh double-read: 30s after the initial verification, scrape
+        # each successfully-priced URL again. If the readings disagree by >5%
+        # the first reading was an A/B-tested promo or a transient. We mark
+        # the row verified=False so the UI flags it as "initial reading
+        # inconsistent". Subsequent refreshes use single-read (cheaper).
+        if double_read:
+            verified_priced = [h for h in hits if h.verified and h.price is not None]
+            if verified_priced:
+                logger.info(f"price-monitoring: double-read pass on {len(verified_priced)} hits (30s gap)")
+                await asyncio.sleep(30)
+                first_prices = {h.product_url: h.price for h in verified_priced}
+                second_credits = await asyncio.gather(
+                    *(verify_one(h) for h in verified_priced),
+                    return_exceptions=True,
+                )
+                for c in second_credits:
+                    if isinstance(c, int):
+                        total_credits += c
+                for h in verified_priced:
+                    p1 = first_prices.get(h.product_url)
+                    p2 = h.price
+                    if p1 and p2 and p1 > 0:
+                        delta = abs(float(p1) - float(p2)) / float(p1)
+                        if delta > 0.05:
+                            h.verified = False
+                            note = f"double-read inconsistent: €{p1:.2f} vs €{p2:.2f}"
+                            h.notes = f"{h.notes} | {note}" if h.notes else note
+
         # Re-sort after verification — prices may have shifted.
         hits.sort(key=lambda h: (h.price if h.price is not None else float("inf")))
         return total_credits
@@ -896,8 +1061,37 @@ class PerplexityPriceSearchService:
             # Skip when the retailer has already been covered by Perplexity.
             # Match either by exact domain (e.g. "youbath" ↔ "youbath.gr") or
             # by retailer name-as-slug (handles "Casa Solutions" → casasolutions).
+            # When we DO find an overlap, sanity-check the prices: a >20% gap
+            # between Perplexity and DataForSEO on the same retailer is a real
+            # signal worth logging (one of them read a different SKU).
             retailer_slug = retailer_key.replace(" ", "").replace(".", "")
-            if any(retailer_slug and retailer_slug in d.replace(".", "") for d in perplexity_domains):
+            overlap_hit: Optional[PriceHit] = None
+            for d in perplexity_domains:
+                if retailer_slug and retailer_slug in d.replace(".", ""):
+                    for ph in perplexity_hits:
+                        if cls._domain_of(ph.product_url) == d:
+                            overlap_hit = ph
+                            break
+                    break
+            if overlap_hit is not None:
+                if overlap_hit.price and m.price:
+                    delta = abs(float(overlap_hit.price) - float(m.price)) / float(overlap_hit.price)
+                    if delta > 0.20:
+                        try:
+                            from app.services.core.supabase_client import get_supabase_client
+                            sb = get_supabase_client()
+                            sb.client.table("price_discrepancies").insert({
+                                "retailer_name": m.retailer_name,
+                                "retailer_domain": _extract_domain(overlap_hit.product_url),
+                                "perplexity_price": float(overlap_hit.price),
+                                "dataforseo_price": float(m.price),
+                                "delta_pct": round(delta * 100.0, 2),
+                                "decided_price": float(overlap_hit.price),
+                                "decided_source": "perplexity",
+                                "notes": "Cross-source disagreement; kept Perplexity (direct product page).",
+                            }).execute()
+                        except Exception as e:
+                            logger.debug(f"Cross-source discrepancy log failed: {e}")
                 continue
 
             merged.append(PriceHit(
@@ -977,6 +1171,33 @@ class PerplexityPriceSearchService:
             query=query,
             country_code=country_code,
             user_id=user_id or "",
+            workspace_id=workspace_id,
+            limit=limit,
+        )
+
+    async def _idealo_call(
+        self,
+        *,
+        query: str,
+        country_code: Optional[str],
+        user_id: Optional[str],
+        workspace_id: Optional[str],
+        limit: int,
+    ) -> List[PriceHit]:
+        """
+        Call the Idealo module for non-Greek European markets.
+        Gated on the country having an idealo locale + the module toggle.
+        """
+        if not country_code:
+            return []
+        from app.modules import is_module_enabled
+        if not is_module_enabled("idealo"):
+            return []
+        from app.modules.idealo.service import get_idealo_service
+        return await get_idealo_service().search(
+            query=query,
+            country_code=country_code,
+            user_id=user_id,
             workspace_id=workspace_id,
             limit=limit,
         )

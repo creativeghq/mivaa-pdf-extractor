@@ -54,7 +54,6 @@ class CheckpointRecoveryService:
     
     def __init__(self):
         self.supabase_client = get_supabase_client()
-        self.checkpoints_table = "job_checkpoints"
         self.jobs_table = "background_jobs"
         logger.info("CheckpointRecoveryService initialized")
     
@@ -166,32 +165,45 @@ class CheckpointRecoveryService:
             if should_warn:
                 logger.warning(f"⚠️ Checkpoint has empty results (valid for context): stage={stage.value}, data={data}, categories={requested_categories}")
 
-            checkpoint_data = {
-                "job_id": job_id,
-                "stage": stage.value,
-                "checkpoint_data": data,
-                "metadata": metadata or {},
-                "created_at": datetime.utcnow().isoformat()
-            }
+            now_iso = datetime.utcnow().isoformat()
 
-            # Upsert checkpoint (update if exists, insert if not)
-            self.supabase_client.client.table(self.checkpoints_table)\
-                .upsert(checkpoint_data, on_conflict="job_id,stage")\
-                .execute()
-
-            # ✅ CRITICAL FIX: Update background_jobs.last_checkpoint for frontend polling
-            # This allows the UI to track progress in real-time
+            # last_checkpoint stays — frontend polling reads it directly,
+            # and so does the auto-recovery cron when re-dispatching.
             self.supabase_client.client.table(self.jobs_table)\
                 .update({
                     "last_checkpoint": {
                         "stage": stage.value,
                         "metadata": metadata or {},
-                        "created_at": datetime.utcnow().isoformat()
+                        "created_at": now_iso,
                     },
-                    "updated_at": datetime.utcnow().isoformat()
+                    "updated_at": now_iso,
                 })\
                 .eq("id", job_id)\
                 .execute()
+
+            # Append the stage event to background_jobs.stage_history. This
+            # is the single source of truth for the audit log; the legacy
+            # job_checkpoints upsert was removed in Phase 3.
+            try:
+                self.supabase_client.client.rpc(
+                    'append_stage_history',
+                    {
+                        'p_job_id': job_id,
+                        'p_event': {
+                            'stage': stage.value,
+                            'status': 'completed',
+                            'completed_at': now_iso,
+                            'started_at': now_iso,
+                            'attempt': 1,
+                            'data': data,
+                            'metadata': metadata or {},
+                        },
+                    },
+                ).execute()
+            except Exception as shadow_err:
+                logger.error(
+                    f"Failed to write stage_history for {job_id} @ {stage.value}: {shadow_err}"
+                )
 
             logger.info(f"✅ Checkpoint created: {job_id} @ {stage.value}")
             return True
@@ -201,71 +213,74 @@ class CheckpointRecoveryService:
             return False
     
     async def get_last_checkpoint(self, job_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Get the last successful checkpoint for a job.
-        
-        Args:
-            job_id: Job identifier
-            
-        Returns:
-            Checkpoint data or None if no checkpoint exists
-        """
+        """Return the most recent stage_history entry, normalized to the
+        legacy checkpoint shape `{job_id, stage, checkpoint_data, metadata,
+        created_at}` so callers don't change."""
         try:
-            result = self.supabase_client.client.table(self.checkpoints_table)\
-                .select("*")\
-                .eq("job_id", job_id)\
-                .order("created_at", desc=True)\
-                .limit(1)\
-                .execute()
-            
-            if result.data and len(result.data) > 0:
-                checkpoint = result.data[0]
-                logger.info(f"📍 Last checkpoint for {job_id}: {checkpoint['stage']}")
-                return checkpoint
-            
-            logger.info(f"📍 No checkpoint found for {job_id}")
-            return None
-            
+            row = self.supabase_client.client.table(self.jobs_table) \
+                .select("stage_history") \
+                .eq("id", job_id).single().execute()
+            history = (row.data or {}).get("stage_history") or []
+            if not history:
+                logger.info(f"📍 No stage_history for {job_id}")
+                return None
+            last = history[-1]
+            checkpoint = {
+                "job_id": job_id,
+                "stage": last.get("stage"),
+                "checkpoint_data": last.get("data") or {},
+                "metadata": last.get("metadata") or {},
+                "created_at": last.get("completed_at") or last.get("started_at"),
+            }
+            logger.info(f"📍 Last checkpoint for {job_id}: {checkpoint['stage']}")
+            return checkpoint
         except Exception as e:
             logger.error(f"❌ Failed to get checkpoint for {job_id}: {e}")
             return None
-    
+
     async def get_all_checkpoints(self, job_id: str) -> List[Dict[str, Any]]:
-        """Get all checkpoints for a job (ordered by creation time)"""
+        """Return every stage_history entry, normalized to the legacy
+        checkpoint shape so existing callers (UI, monitoring) work
+        unchanged."""
         try:
-            result = self.supabase_client.client.table(self.checkpoints_table)\
-                .select("*")\
-                .eq("job_id", job_id)\
-                .order("created_at", desc=False)\
-                .execute()
-            
-            return result.data or []
-            
+            row = self.supabase_client.client.table(self.jobs_table) \
+                .select("stage_history") \
+                .eq("id", job_id).single().execute()
+            history = (row.data or {}).get("stage_history") or []
+            return [
+                {
+                    "job_id": job_id,
+                    "stage": entry.get("stage"),
+                    "checkpoint_data": entry.get("data") or {},
+                    "metadata": entry.get("metadata") or {},
+                    "created_at": entry.get("completed_at") or entry.get("started_at"),
+                }
+                for entry in history
+            ]
         except Exception as e:
             logger.error(f"❌ Failed to get checkpoints for {job_id}: {e}")
             return []
-    
+
     async def can_resume_from_checkpoint(self, job_id: str) -> tuple[bool, Optional[ProcessingStage]]:
-        """
-        Check if a job can be resumed from a checkpoint.
-        
-        Returns:
-            (can_resume, last_stage)
-        """
+        """Resume eligibility based on the latest stage_history entry."""
         checkpoint = await self.get_last_checkpoint(job_id)
-        
-        if not checkpoint:
+
+        if not checkpoint or not checkpoint.get("created_at"):
             return False, None
-        
-        # Check if checkpoint is recent (within 24 hours)
+
         checkpoint_time = datetime.fromisoformat(normalize_timestamp(checkpoint["created_at"]))
         age = datetime.utcnow() - checkpoint_time.replace(tzinfo=None)
-        
+
         if age > timedelta(hours=24):
             logger.warning(f"⚠️ Checkpoint for {job_id} is too old ({age.total_seconds() / 3600:.1f} hours)")
             return False, None
-        
-        stage = ProcessingStage(checkpoint["stage"])
+
+        try:
+            stage = ProcessingStage(checkpoint["stage"])
+        except ValueError:
+            logger.warning(f"⚠️ Stage {checkpoint['stage']} not in ProcessingStage enum — cannot resume")
+            return False, None
+
         logger.info(f"✅ Job {job_id} can resume from {stage.value}")
         return True, stage
     
@@ -507,34 +522,40 @@ class CheckpointRecoveryService:
             return False
     
     async def cleanup_invalid_checkpoints(self, job_id: str) -> int:
-        """
-        Remove checkpoints with invalid data.
-        
-        Returns:
-            Number of checkpoints removed
+        """Drop invalid stage_history entries from background_jobs.
+
+        Stage data is now stored as a JSONB array on background_jobs, so
+        cleanup is a single UPDATE that filters out invalid entries via
+        SQL. Returns the number of entries removed.
         """
         try:
-            checkpoints = await self.get_all_checkpoints(job_id)
-            removed = 0
-            
-            for checkpoint in checkpoints:
-                stage = ProcessingStage(checkpoint["stage"])
-                is_valid = await self.verify_checkpoint_data(job_id, stage)
-                
-                if not is_valid:
-                    self.supabase_client.client.table(self.checkpoints_table)\
-                        .delete()\
-                        .eq("job_id", job_id)\
-                        .eq("stage", stage.value)\
-                        .execute()
-                    
-                    logger.info(f"🗑️ Removed invalid checkpoint: {job_id} @ {stage.value}")
-                    removed += 1
-            
-            return removed
-            
+            history = await self.get_all_checkpoints(job_id)
+            invalid_stages: list[str] = []
+            for entry in history:
+                stage_value = entry.get("stage")
+                try:
+                    stage_enum = ProcessingStage(stage_value)
+                except ValueError:
+                    invalid_stages.append(stage_value)
+                    continue
+                if not await self.verify_checkpoint_data(job_id, stage_enum):
+                    invalid_stages.append(stage_value)
+
+            if not invalid_stages:
+                return 0
+
+            # SQL filter — atomic, no read-modify-write race.
+            self.supabase_client.client.rpc(
+                'cleanup_invalid_stage_history',
+                {
+                    'p_job_id': job_id,
+                    'p_invalid_stages': invalid_stages,
+                },
+            ).execute()
+            logger.info(f"🗑️ Removed {len(invalid_stages)} invalid stage_history entries for {job_id}")
+            return len(invalid_stages)
         except Exception as e:
-            logger.error(f"❌ Failed to cleanup checkpoints: {e}")
+            logger.error(f"❌ Failed to cleanup stage_history: {e}")
             return 0
     
     async def _mark_job_failed(self, job_id: str, reason: str):

@@ -81,6 +81,33 @@ class CreateTrackRequest(BaseModel):
             "but prices may be stale / hallucinated)."
         ),
     )
+    alert_channels: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Delivery channels for price alerts. Allowed values: 'bell', 'email', 'webhook'. "
+            "Bell + webhook are free; email costs 1 credit per send. Default ['bell']."
+        ),
+    )
+    alert_on_price_drop: Optional[bool] = Field(
+        default=None,
+        description="Fire an alert when the trailing 7-day median drops ≥10% W/W (per retailer).",
+    )
+    alert_on_new_retailer: Optional[bool] = Field(
+        default=None,
+        description="Fire an alert when discovery surfaces a retailer domain we have never tracked.",
+    )
+    alert_on_promo: Optional[bool] = Field(
+        default=None,
+        description="Fire an alert when original_price becomes non-null on a row that previously had it null.",
+    )
+    alert_webhook_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "Per-tracked-query webhook destination. Required when 'webhook' is in alert_channels. "
+            "Receives POST {alert_type, title, body, retailer_name, retailer_domain, payload, fired_at}. "
+            "24h dedupe per (alert_type, retailer_domain)."
+        ),
+    )
 
 
 class UpdateTrackRequest(BaseModel):
@@ -90,6 +117,11 @@ class UpdateTrackRequest(BaseModel):
     dimensions: Optional[str] = None
     manufacturer: Optional[str] = None
     verify_prices: Optional[bool] = None
+    alert_channels: Optional[List[str]] = None
+    alert_on_price_drop: Optional[bool] = None
+    alert_on_new_retailer: Optional[bool] = None
+    alert_on_promo: Optional[bool] = None
+    alert_webhook_url: Optional[str] = None
 
 
 class TrackedQueryResultRow(BaseModel):
@@ -111,6 +143,10 @@ class TrackedQueryResultRow(BaseModel):
     match_score: Optional[int] = None      # 0-100
     match_note: Optional[str] = None       # e.g. 'Color differs: asked BLACK MATT, page shows WHITE'
     product_title: Optional[str] = None    # Exact name shown on retailer page. Disambiguates multiple rows from the same retailer (different variants).
+    # Sanity-band fields (2026-04-26). null on rows created before sanity bands shipped.
+    is_anomaly: Optional[bool] = None
+    anomaly_reason: Optional[str] = None
+    rolling_median_at_check: Optional[float] = None
 
 
 class TrackedQueryResponse(BaseModel):
@@ -127,6 +163,12 @@ class TrackedQueryResponse(BaseModel):
     is_active: bool = True
     total_credits_used: int = 0
     created_at: str
+    # Alert opt-ins (2026-04-26)
+    alert_channels: Optional[List[str]] = None
+    alert_on_price_drop: bool = False
+    alert_on_new_retailer: bool = False
+    alert_on_promo: bool = False
+    alert_webhook_url: Optional[str] = None
     # Embedded for convenience on create/refresh responses
     results: Optional[List[TrackedQueryResultRow]] = None
     throttle_until: Optional[str] = None
@@ -177,6 +219,11 @@ def _to_response(
         is_active=bool(tq.get("is_active", True)),
         total_credits_used=int(tq.get("total_credits_used") or 0),
         created_at=tq.get("created_at") or datetime.now(timezone.utc).isoformat(),
+        alert_channels=tq.get("alert_channels"),
+        alert_on_price_drop=bool(tq.get("alert_on_price_drop") or False),
+        alert_on_new_retailer=bool(tq.get("alert_on_new_retailer") or False),
+        alert_on_promo=bool(tq.get("alert_on_promo") or False),
+        alert_webhook_url=tq.get("alert_webhook_url"),
         results=[TrackedQueryResultRow(**r) for r in (results or [])] if results else None,
     )
 
@@ -215,6 +262,11 @@ async def create_tracked_query(
         preferred_retailer_domains=body.preferred_retailer_domains,
         refresh_interval_hours=body.refresh_interval_hours,
         verify_prices=body.verify_prices,
+        alert_channels=body.alert_channels,
+        alert_on_price_drop=body.alert_on_price_drop,
+        alert_on_new_retailer=body.alert_on_new_retailer,
+        alert_on_promo=body.alert_on_promo,
+        alert_webhook_url=body.alert_webhook_url,
     )
     results = await service.latest_results(created["id"])
     return _to_response(created, results)
@@ -286,6 +338,11 @@ async def update_tracked_query(
         dimensions=body.dimensions,
         manufacturer=body.manufacturer,
         verify_prices=body.verify_prices,
+        alert_channels=body.alert_channels,
+        alert_on_price_drop=body.alert_on_price_drop,
+        alert_on_new_retailer=body.alert_on_new_retailer,
+        alert_on_promo=body.alert_on_promo,
+        alert_webhook_url=body.alert_webhook_url,
     )
     if not updated:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="update failed")

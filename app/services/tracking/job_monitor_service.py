@@ -206,14 +206,11 @@ class JobMonitorService:
                 if metadata.get("stage") or metadata.get("current_stage"):
                     continue
 
-                # Double-check: no checkpoints written
-                cp_result = self.supabase_client.client.table("job_checkpoints")\
-                    .select("id")\
-                    .eq("job_id", job_id)\
-                    .limit(1)\
-                    .execute()
-
-                cp_count = len(cp_result.data) if hasattr(cp_result, 'data') and cp_result.data else 0
+                # Double-check: no stage_history entries written.
+                # `progress=0 + no stage + empty stage_history` means the
+                # orchestrator never reached its first stage = crashed before
+                # work began.
+                cp_count = len(job.get("stage_history") or [])
                 if cp_count == 0:
                     age_seconds = (datetime.utcnow() - datetime.fromisoformat(job["created_at"].replace("+00:00", "").replace("Z", ""))).total_seconds()
                     logger.warning(
@@ -636,16 +633,12 @@ class JobMonitorService:
             logger.error(f"Failed to recover stuck import job: {e}")
 
     async def _cleanup_old_data(self):
-        """Cleanup old checkpoints and completed jobs"""
+        """Cleanup completed jobs older than 5 days. Stage history travels
+        with the job row (background_jobs.stage_history JSONB), so deleting
+        the row reclaims it automatically — no separate checkpoint sweep
+        is needed since job_checkpoints was dropped.
+        """
         try:
-            # Cleanup checkpoints older than 7 days
-            result = self.supabase_client.client.rpc("cleanup_old_checkpoints", {}).execute()
-            deleted = result.data if result.data else 0
-
-            if deleted > 0:
-                logger.info(f"🧹 Cleaned up {deleted} old checkpoints")
-
-            # Cleanup completed jobs older than 5 days (aligned with Edge Function)
             cutoff = (datetime.utcnow() - timedelta(days=5)).isoformat()
             result = self.supabase_client.client.table("background_jobs")\
                 .delete()\

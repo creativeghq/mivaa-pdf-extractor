@@ -686,7 +686,7 @@ async def extract_product_spec(
                 )
             tier_b_result = _tier_b_opus(pdf_path, page_indices, product_name)
             if tier_b_result:
-                source_tiers.append("claude_sonnet_vision")
+                source_tiers.append("claude_opus_vision")
                 merged = _merge_specs(merged, tier_b_result)
 
         # ── Tier C — Legend inheritance ─────────────────────────────────
