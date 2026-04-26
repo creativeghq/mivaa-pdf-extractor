@@ -290,7 +290,7 @@ class CleanupService:
                     # Delete all products for this document
                     products_response = supabase_client.client.table('products')\
                         .delete()\
-                        .eq('document_id', document_id)\
+                        .eq('source_document_id', document_id)\
                         .execute()
                     stats['products_rolled_back'] = len(products_response.data) if products_response.data else 0
 

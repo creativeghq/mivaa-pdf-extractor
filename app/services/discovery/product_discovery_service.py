@@ -788,7 +788,6 @@ class ProductDiscoveryService:
             response = client.messages.create(
                 model=claude_model,
                 max_tokens=16000,
-                temperature=0,
                 messages=[
                     {
                         "role": "user",
