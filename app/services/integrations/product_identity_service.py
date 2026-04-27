@@ -38,6 +38,7 @@ hard on brand and model identity.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -642,11 +643,86 @@ class ProductIdentityService:
         # UI, the classifier sees that example on the next refresh.
         few_shot_block = self._build_few_shot_block()
 
+        # 2026-04-27: chunk large batches to avoid Haiku JSON truncation. We
+        # observed misshapen responses for ≥25 candidates because the JSON
+        # output sometimes exceeded max_tokens or the model trailed a stray
+        # token past the closing brace. 12 per batch is a comfortable ceiling
+        # — produces ≤ ~1.2K output tokens per call, leaves headroom on
+        # max_tokens=3000, and runs the chunks in parallel so end-to-end
+        # latency is unchanged.
+        BATCH_SIZE = 12
+        if len(candidates) > BATCH_SIZE:
+            chunks = [candidates[i:i + BATCH_SIZE] for i in range(0, len(candidates), BATCH_SIZE)]
+            sub_results = await asyncio.gather(
+                *(self._classify_chunk(facets, chunk, few_shot_block) for chunk in chunks),
+                return_exceptions=True,
+            )
+            verdicts: List[Dict[str, Any]] = []
+            for i, sub in enumerate(sub_results):
+                if isinstance(sub, BaseException):
+                    logger.warning(f"Haiku chunk {i} crashed: {sub} — rule-based fallback for this chunk.")
+                    verdicts.extend(self._rule_based_verdict(facets, c) for c in chunks[i])
+                else:
+                    verdicts.extend(sub)
+            self._log_classifier_call(
+                facets=facets, candidates=candidates, verdicts=verdicts,
+                user_id=user_id, workspace_id=workspace_id,
+            )
+            return self._sanitize_verdicts(verdicts)
+
+        verdicts = await self._classify_chunk(facets, candidates, few_shot_block)
+
+        # Audit-log the classifier decision for traceability.
+        self._log_classifier_call(
+            facets=facets,
+            candidates=candidates,
+            verdicts=verdicts,
+            user_id=user_id,
+            workspace_id=workspace_id,
+        )
+
+        return self._sanitize_verdicts(verdicts)
+
+    @staticmethod
+    def _sanitize_verdicts(verdicts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Clamp score to 0-100, enforce valid match_kind."""
+        cleaned: List[Dict[str, Any]] = []
+        for v in verdicts:
+            if not isinstance(v, dict):
+                cleaned.append({"match_kind": "unverifiable", "match_score": 50, "variant_diffs": [], "match_note": None})
+                continue
+            kind = v.get("match_kind")
+            if kind not in ("exact", "variant", "family", "mismatch", "unverifiable"):
+                kind = "unverifiable"
+            try:
+                score = int(v.get("match_score", 0))
+            except Exception:
+                score = 0
+            score = max(0, min(100, score))
+            cleaned.append({
+                "match_kind": kind,
+                "match_score": score,
+                "variant_diffs": v.get("variant_diffs") or [],
+                "match_note": v.get("match_note"),
+            })
+        return cleaned
+
+    async def _classify_chunk(
+        self,
+        facets: QueryFacets,
+        candidates: List[Dict[str, Any]],
+        few_shot_block: str,
+    ) -> List[Dict[str, Any]]:
+        """
+        One Haiku call for a (small) batch. Returns sanitized verdicts aligned
+        with `candidates`. Falls back to rule-based when JSON parse / shape
+        fails. Output is NOT yet log-audited — caller logs once after merging
+        all chunks.
+        """
         user_payload = {
             "query_facets": facets.to_dict(),
             "pages": candidates,
         }
-
         try:
             async with httpx.AsyncClient(timeout=self._http_timeout) as client:
                 resp = await client.post(
@@ -654,7 +730,10 @@ class ProductIdentityService:
                     headers=_anthropic_headers(),
                     json={
                         "model": _MODEL,
-                        "max_tokens": 2000,
+                        # 3000 leaves comfortable headroom for ~12 verdicts of
+                        # ~80 tokens each. Even the chunked path keeps this
+                        # cap so a single chunk never truncates.
+                        "max_tokens": 3000,
                         "system": [
                             {
                                 "type": "text",
@@ -673,45 +752,20 @@ class ProductIdentityService:
                 resp.raise_for_status()
                 body = resp.json()
         except Exception as e:
-            logger.warning(f"Haiku identity classifier failed: {e}. Falling back to rule-based.")
+            logger.warning(f"Haiku classifier chunk failed: {e}. Falling back to rule-based.")
             return [self._rule_based_verdict(facets, c) for c in candidates]
 
         parsed = _extract_json_content(body)
         verdicts = (parsed or {}).get("verdicts") if isinstance(parsed, dict) else None
+        # Strict shape check: list of N verdicts.
         if not isinstance(verdicts, list) or len(verdicts) != len(candidates):
             logger.warning(
-                f"Haiku classifier returned misshapen response: expected {len(candidates)} verdicts, got "
-                f"{len(verdicts) if isinstance(verdicts, list) else 'non-list'}. Falling back to rule-based."
+                f"Haiku chunk returned misshapen response: expected {len(candidates)} verdicts, got "
+                f"{len(verdicts) if isinstance(verdicts, list) else 'non-list'}. Falling back to rule-based for chunk."
             )
             return [self._rule_based_verdict(facets, c) for c in candidates]
 
-        # Audit-log the classifier decision for traceability.
-        self._log_classifier_call(
-            facets=facets,
-            candidates=candidates,
-            verdicts=verdicts,
-            user_id=user_id,
-            workspace_id=workspace_id,
-        )
-
-        # Sanity: clamp score to 0-100, enforce valid match_kind.
-        cleaned: List[Dict[str, Any]] = []
-        for v in verdicts:
-            kind = v.get("match_kind") if isinstance(v, dict) else None
-            if kind not in ("exact", "variant", "family", "mismatch", "unverifiable"):
-                kind = "unverifiable"
-            try:
-                score = int(v.get("match_score", 0))
-            except Exception:
-                score = 0
-            score = max(0, min(100, score))
-            cleaned.append({
-                "match_kind": kind,
-                "match_score": score,
-                "variant_diffs": v.get("variant_diffs") or [],
-                "match_note": v.get("match_note"),
-            })
-        return cleaned
+        return self._sanitize_verdicts(verdicts)
 
     # ── Verdict cache (PR-C #4) ──
     # 7-day TTL per (URL, facets_hash). Skips Haiku when we've already
@@ -965,7 +1019,9 @@ class ProductIdentityService:
 def _extract_json_content(anthropic_body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Pull the JSON object out of an Anthropic messages API response.
-    Haiku usually returns clean JSON; tolerate the occasional code fence.
+    Haiku usually returns clean JSON; tolerate the occasional code fence
+    AND tolerate JSON that the model truncated mid-array by walking the
+    string left-to-right and parsing the largest valid prefix.
     """
     try:
         blocks = anthropic_body.get("content") or []
@@ -976,7 +1032,7 @@ def _extract_json_content(anthropic_body: Dict[str, Any]) -> Optional[Dict[str, 
         if not text:
             return None
         # Strip markdown fences if the model wrapped the JSON
-        fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+        fence = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
         if fence:
             text = fence.group(1)
         else:
@@ -985,7 +1041,45 @@ def _extract_json_content(anthropic_body: Dict[str, Any]) -> Optional[Dict[str, 
             end = text.rfind("}")
             if start >= 0 and end > start:
                 text = text[start : end + 1]
-        return json.loads(text)
+
+        # Fast path: clean JSON parses on the first try.
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # Salvage path: model truncated or trailed garbage. Walk back from
+        # the end character-by-character looking for a position where the
+        # accumulated brace/bracket depth drops to zero with a valid parse.
+        depth = 0
+        in_string = False
+        escape = False
+        last_balanced_idx = -1
+        for i, ch in enumerate(text):
+            if escape:
+                escape = False
+                continue
+            if ch == "\\" and in_string:
+                escape = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch in "{[":
+                depth += 1
+            elif ch in "}]":
+                depth -= 1
+                if depth == 0:
+                    last_balanced_idx = i
+        if last_balanced_idx > 0:
+            try:
+                return json.loads(text[: last_balanced_idx + 1])
+            except json.JSONDecodeError:
+                pass
+        logger.warning("Failed to parse Haiku JSON response: malformed even after salvage")
+        return None
     except Exception as e:
         logger.warning(f"Failed to parse Haiku JSON response: {e}")
         return None
