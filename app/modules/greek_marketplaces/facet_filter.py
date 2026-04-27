@@ -27,6 +27,43 @@ from app.services.integrations.product_identity_service import (
 )
 
 
+def adaptive_marketplace_query(*, query: str, facets: Optional[QueryFacets]) -> str:
+    """
+    Build the search-string we send to Skroutz/Bestprice/Shopflix.
+
+    The free-text user query (e.g. "ORABELLA PRECIOSA Brushed Nickel
+    Mpataria Niptiros 10356") often has too many tokens for these sites'
+    literal-match search engines — appending the SKU to the full string
+    can drop matches from "many results" to "zero" (Bestprice/Shopflix).
+
+    Strategy:
+      * If facets carry SKU + brand: send "{brand} {sku}". Tightest
+        possible identity anchor — every marketplace that lists the SKU
+        will index brand+SKU together.
+      * If SKU is present but brand isn't: send "{model} {sku}" or just
+        "{sku}".
+      * If only brand+model are known (no SKU): send "{brand} {model}".
+      * Otherwise: send the original free-text query unchanged.
+
+    Brand and model are normalized to UPPER for consistency.
+    """
+    if facets is None:
+        return query
+    sku = (facets.sku_tokens or [None])[0] if facets.sku_tokens else None
+    brand = (facets.brand or "").strip().upper() or None
+    model = (facets.model or "").strip().upper() or None
+
+    if sku and brand:
+        return f"{brand} {sku}"
+    if sku and model:
+        return f"{model} {sku}"
+    if sku:
+        return sku
+    if brand and model:
+        return f"{brand} {model}"
+    return query
+
+
 def matches_facets(
     *,
     facets: Optional[QueryFacets],

@@ -34,7 +34,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
-from app.modules.greek_marketplaces.facet_filter import matches_facets
+from app.modules.greek_marketplaces.facet_filter import adaptive_marketplace_query, matches_facets
 from app.modules.greek_marketplaces.match_filter import is_plausible_match
 from app.modules.greek_marketplaces.models import MarketplaceProduct
 from app.services.integrations.firecrawl_client import FirecrawlClient
@@ -114,14 +114,11 @@ class BestpriceAdapter:
             logger.debug("Bestprice: Firecrawl not configured, skipping.")
             return []
 
-        # Adaptive query: when facets carry SKU anchors, append them to the
-        # search query so Bestprice's own search engine finds the right SKU
-        # (otherwise its price-asc sort surfaces the cheapest accessory in
-        # the brand line, which the classifier then drops as `family`).
-        adaptive_query = query
-        if facets and facets.sku_tokens:
-            adaptive_query = f"{query} {facets.sku_tokens[0]}"
-
+        # Adaptive query: when facets carry SKU + brand/model, build a tight
+        # "{BRAND} {SKU}" search string. The free-text user query often has
+        # too many tokens for Bestprice's literal-match search; tightening
+        # the query is the difference between zero results and the right SKU.
+        adaptive_query = adaptive_marketplace_query(query=query, facets=facets)
         url = SEARCH_URL_TEMPLATE.format(query=urllib.parse.quote_plus(adaptive_query))
         result = await self.firecrawl.scrape(
             url=url, extraction_model=MarketplaceProduct,

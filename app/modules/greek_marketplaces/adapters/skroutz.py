@@ -38,7 +38,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
-from app.modules.greek_marketplaces.facet_filter import matches_facets
+from app.modules.greek_marketplaces.facet_filter import adaptive_marketplace_query, matches_facets
 from app.modules.greek_marketplaces.match_filter import is_plausible_match
 from app.services.integrations.firecrawl_client import FirecrawlClient
 from app.services.integrations.perplexity_price_search_service import PriceHit
@@ -158,10 +158,8 @@ class SkroutzAdapter:
             logger.debug("Skroutz: Firecrawl not configured, skipping.")
             return []
 
-        # Adaptive query: prepend SKU if known.
-        adaptive_query = query
-        if facets and facets.sku_tokens:
-            adaptive_query = f"{query} {facets.sku_tokens[0]}"
+        # Adaptive query: tight "{BRAND} {SKU}" when facets carry both.
+        adaptive_query = adaptive_marketplace_query(query=query, facets=facets)
 
         # Step 1 — find the matching product on the search results page.
         search_result = await self._scrape_search(adaptive_query, user_id=user_id, workspace_id=workspace_id)

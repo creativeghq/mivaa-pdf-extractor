@@ -21,7 +21,7 @@ import logging
 import urllib.parse
 from typing import List, Optional
 
-from app.modules.greek_marketplaces.facet_filter import matches_facets
+from app.modules.greek_marketplaces.facet_filter import adaptive_marketplace_query, matches_facets
 from app.modules.greek_marketplaces.match_filter import is_plausible_match
 from app.modules.greek_marketplaces.models import MarketplaceProduct
 from app.services.integrations.firecrawl_client import FirecrawlClient
@@ -82,9 +82,7 @@ class ShopflixAdapter:
             logger.debug("Shopflix: Firecrawl not configured, skipping.")
             return []
 
-        adaptive_query = query
-        if facets and facets.sku_tokens:
-            adaptive_query = f"{query} {facets.sku_tokens[0]}"
+        adaptive_query = adaptive_marketplace_query(query=query, facets=facets)
         url = _build_search_url(adaptive_query)
 
         # Shopflix's results are rendered client-side (Algolia/Spryker SPA),
