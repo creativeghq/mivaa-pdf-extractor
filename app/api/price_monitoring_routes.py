@@ -1613,6 +1613,205 @@ async def submit_classifier_correction(
     return {"success": True, "message": "correction recorded"}
 
 
+class PromoteFamilyRequest(BaseModel):
+    """Body for POST /promote-family-row — admin promotes a family/mismatch row to tracked.
+
+    The promoted URL becomes "sticky": the classifier override is honored on
+    every future refresh (until the admin demotes it back). The override is
+    also written to `match_corrections` so the few-shot classifier loop learns
+    from it globally.
+    """
+    competitor_source_id: Optional[str] = None
+    tracked_query_history_id: Optional[str] = None
+    override_kind: str = Field(..., pattern="^(exact|variant)$")
+    reason: Optional[str] = None
+
+
+class DemoteFamilyRequest(BaseModel):
+    """Body for POST /demote-to-family — undo a previously-applied promotion."""
+    competitor_source_id: Optional[str] = None
+    tracked_query_history_id: Optional[str] = None
+    reason: Optional[str] = None
+
+
+def _require_admin(user: User) -> None:
+    """Promotion endpoints are admin-only — they affect chart + median + alerts."""
+    role_resp = (
+        get_supabase_client().client.table("user_profiles")
+        .select("role_id, roles(name)")
+        .eq("id", str(user.id))
+        .maybe_single()
+        .execute()
+    )
+    profile = (role_resp.data if role_resp else None) or {}
+    role_name = (profile.get("roles") or {}).get("name")
+    if role_name not in ("admin", "super_admin"):
+        raise HTTPException(status_code=403, detail="admin role required")
+
+
+@router.post("/promote-family-row", response_model=StatusResponse)
+async def promote_family_row(
+    body: PromoteFamilyRequest,
+    user: User = Depends(get_current_user),
+):
+    """
+    Promote a family/mismatch row to tracked. The override flips the row's
+    `match_kind` immediately AND records a sticky promotion so future refreshes
+    of the same URL keep the override.
+
+    Pass either `competitor_source_id` (internal product flow) or
+    `tracked_query_history_id` (external API tracked-query flow).
+    """
+    _require_admin(user)
+    sb = get_supabase_client().client
+    now_iso = datetime.utcnow().isoformat()
+
+    if body.tracked_query_history_id:
+        ph = sb.table("tracked_query_price_history").select(
+            "tracked_query_id, product_url, retailer_name, match_kind"
+        ).eq("id", body.tracked_query_history_id).maybe_single().execute()
+        row = (ph.data if ph else None) or {}
+        if not row:
+            raise HTTPException(status_code=404, detail="history row not found")
+        tracked_query_id = row.get("tracked_query_id")
+        product_url = row.get("product_url")
+        original_kind = row.get("match_kind")
+        if not tracked_query_id or not product_url:
+            raise HTTPException(status_code=400, detail="row missing tracked_query_id or product_url")
+
+        # Sticky promotion (overrides every future refresh of this URL).
+        sb.table("tracked_query_promoted_urls").upsert({
+            "tracked_query_id": tracked_query_id,
+            "product_url": product_url,
+            "override_kind": body.override_kind,
+            "reason": body.reason,
+            "created_by": str(user.id),
+        }, on_conflict="tracked_query_id,product_url").execute()
+
+        # Update the current row + manual_override flag so the chart/UI
+        # reflect the change immediately.
+        sb.table("tracked_query_price_history").update({
+            "match_kind": body.override_kind,
+            "match_note": body.reason or "Manually promoted by admin",
+            "manual_override": True,
+        }).eq("tracked_query_id", tracked_query_id).eq("product_url", product_url).execute()
+
+        # Feed the few-shot classifier loop globally.
+        sb.table("match_corrections").insert({
+            "tracked_query_id": tracked_query_id,
+            "tracked_query_history_id": body.tracked_query_history_id,
+            "retailer_name": row.get("retailer_name"),
+            "product_url": product_url,
+            "original_match_kind": original_kind,
+            "corrected_match_kind": body.override_kind,
+            "correction_note": body.reason or "promoted via UI",
+            "created_by": str(user.id),
+        }).execute()
+
+    elif body.competitor_source_id:
+        cs = sb.table("competitor_sources").select(
+            "product_id, source_url, source_name, match_kind"
+        ).eq("id", body.competitor_source_id).maybe_single().execute()
+        row = (cs.data if cs else None) or {}
+        if not row:
+            raise HTTPException(status_code=404, detail="competitor source not found")
+        product_id = row.get("product_id")
+        source_url = row.get("source_url")
+        original_kind = row.get("match_kind")
+        if not product_id or not source_url:
+            raise HTTPException(status_code=400, detail="source missing product_id or source_url")
+
+        sb.table("competitor_source_promoted_urls").upsert({
+            "product_id": product_id,
+            "product_url": source_url,
+            "override_kind": body.override_kind,
+            "reason": body.reason,
+            "created_by": str(user.id),
+        }, on_conflict="product_id,product_url").execute()
+
+        sb.table("competitor_sources").update({
+            "match_kind": body.override_kind,
+            "match_note": body.reason or "Manually promoted by admin",
+        }).eq("id", body.competitor_source_id).execute()
+
+        sb.table("match_corrections").insert({
+            "product_id": product_id,
+            "competitor_source_id": body.competitor_source_id,
+            "retailer_name": row.get("source_name"),
+            "product_url": source_url,
+            "original_match_kind": original_kind,
+            "corrected_match_kind": body.override_kind,
+            "correction_note": body.reason or "promoted via UI",
+            "created_by": str(user.id),
+        }).execute()
+    else:
+        raise HTTPException(status_code=400, detail="competitor_source_id or tracked_query_history_id required")
+
+    return {"success": True, "message": "row promoted"}
+
+
+@router.post("/demote-to-family", response_model=StatusResponse)
+async def demote_to_family(
+    body: DemoteFamilyRequest,
+    user: User = Depends(get_current_user),
+):
+    """Undo a prior promotion. The URL goes back to whatever the classifier decides next refresh."""
+    _require_admin(user)
+    sb = get_supabase_client().client
+
+    if body.tracked_query_history_id:
+        ph = sb.table("tracked_query_price_history").select(
+            "tracked_query_id, product_url, retailer_name"
+        ).eq("id", body.tracked_query_history_id).maybe_single().execute()
+        row = (ph.data if ph else None) or {}
+        if not row:
+            raise HTTPException(status_code=404, detail="history row not found")
+        sb.table("tracked_query_promoted_urls").delete().eq(
+            "tracked_query_id", row.get("tracked_query_id")
+        ).eq("product_url", row.get("product_url")).execute()
+        sb.table("tracked_query_price_history").update({
+            "match_kind": "family",
+            "match_note": body.reason or "Demoted to family by admin",
+            "manual_override": False,
+        }).eq("tracked_query_id", row.get("tracked_query_id")).eq("product_url", row.get("product_url")).execute()
+        sb.table("match_corrections").insert({
+            "tracked_query_id": row.get("tracked_query_id"),
+            "tracked_query_history_id": body.tracked_query_history_id,
+            "retailer_name": row.get("retailer_name"),
+            "product_url": row.get("product_url"),
+            "corrected_match_kind": "should_drop",
+            "correction_note": body.reason or "demoted via UI",
+            "created_by": str(user.id),
+        }).execute()
+    elif body.competitor_source_id:
+        cs = sb.table("competitor_sources").select(
+            "product_id, source_url, source_name"
+        ).eq("id", body.competitor_source_id).maybe_single().execute()
+        row = (cs.data if cs else None) or {}
+        if not row:
+            raise HTTPException(status_code=404, detail="competitor source not found")
+        sb.table("competitor_source_promoted_urls").delete().eq(
+            "product_id", row.get("product_id")
+        ).eq("product_url", row.get("source_url")).execute()
+        sb.table("competitor_sources").update({
+            "match_kind": "family",
+            "match_note": body.reason or "Demoted to family by admin",
+        }).eq("id", body.competitor_source_id).execute()
+        sb.table("match_corrections").insert({
+            "product_id": row.get("product_id"),
+            "competitor_source_id": body.competitor_source_id,
+            "retailer_name": row.get("source_name"),
+            "product_url": row.get("source_url"),
+            "corrected_match_kind": "should_drop",
+            "correction_note": body.reason or "demoted via UI",
+            "created_by": str(user.id),
+        }).execute()
+    else:
+        raise HTTPException(status_code=400, detail="competitor_source_id or tracked_query_history_id required")
+
+    return {"success": True, "message": "row demoted"}
+
+
 @router.get("/jobs/{product_id}", response_model=PriceJobsResponse)
 async def get_monitoring_jobs(
     product_id: str,

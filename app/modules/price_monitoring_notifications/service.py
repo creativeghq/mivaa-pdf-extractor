@@ -166,10 +166,13 @@ class PriceAlertDispatcher:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=SANITY_WINDOW_DAYS)).isoformat()
 
         try:
+            # Exclude family + mismatch rows from the rolling median — they
+            # are different SKUs and would distort the band for the tracked
+            # product. neq() is used because the column is nullable.
             if product_id:
                 resp = (
                     self.supabase.client.table("price_history")
-                    .select("price, source_url")
+                    .select("price, source_url, match_kind")
                     .eq("product_id", product_id)
                     .gte("scraped_at", cutoff)
                     .eq("is_anomaly", False)
@@ -178,7 +181,7 @@ class PriceAlertDispatcher:
             elif tracked_query_id:
                 resp = (
                     self.supabase.client.table("tracked_query_price_history")
-                    .select("price, product_url")
+                    .select("price, product_url, match_kind")
                     .eq("tracked_query_id", tracked_query_id)
                     .gte("scraped_at", cutoff)
                     .eq("is_anomaly", False)
@@ -195,6 +198,8 @@ class PriceAlertDispatcher:
         retailer_prices: List[float] = []
         url_field = "source_url" if product_id else "product_url"
         for r in rows:
+            if (r.get("match_kind") or "").lower() == "family":
+                continue
             url = r.get(url_field) or ""
             if _domain_of(url) == retailer_domain and r.get("price") is not None:
                 try:
@@ -245,6 +250,10 @@ class PriceAlertDispatcher:
         prefs, user_id = self._load_subject_prefs(product_id=product_id, tracked_query_id=tracked_query_id)
         if user_id is None or not prefs:
             return []
+
+        # Family rows are inert — they never trigger ANY alert. The user
+        # explicitly told us they're not the tracked product.
+        new_rows = [r for r in new_rows if (r.get("match_kind") or "").lower() != "family"]
 
         # Anomaly alert (always opt-in by virtue of sanity band running).
         for r in new_rows:

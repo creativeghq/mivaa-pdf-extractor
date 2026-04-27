@@ -38,9 +38,11 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
+from app.modules.greek_marketplaces.facet_filter import matches_facets
 from app.modules.greek_marketplaces.match_filter import is_plausible_match
 from app.services.integrations.firecrawl_client import FirecrawlClient
 from app.services.integrations.perplexity_price_search_service import PriceHit
+from app.services.integrations.product_identity_service import QueryFacets
 from app.utils.price_parsing import parse_price
 
 logger = logging.getLogger(__name__)
@@ -150,17 +152,35 @@ class SkroutzAdapter:
         user_id: str,
         workspace_id: Optional[str] = None,
         limit: int = 15,
+        facets: Optional[QueryFacets] = None,
     ) -> List[PriceHit]:
         if not self.firecrawl.api_key:
             logger.debug("Skroutz: Firecrawl not configured, skipping.")
             return []
 
+        # Adaptive query: prepend SKU if known.
+        adaptive_query = query
+        if facets and facets.sku_tokens:
+            adaptive_query = f"{query} {facets.sku_tokens[0]}"
+
         # Step 1 — find the matching product on the search results page.
-        search_result = await self._scrape_search(query, user_id=user_id, workspace_id=workspace_id)
+        search_result = await self._scrape_search(adaptive_query, user_id=user_id, workspace_id=workspace_id)
         if not search_result:
             return []
 
         data, product_url = search_result
+
+        # Facet-aware filter on the cheapest-product candidate. If the SKU
+        # doesn't match what the user actually wants, skip the entire fanout
+        # — we'd just produce family rows that the classifier drops anyway.
+        if not matches_facets(facets=facets, candidate_url=product_url, candidate_name=data.product_name):
+            logger.info(
+                "Skroutz: facet mismatch (sku=%s, type=%s) — query=%r, url=%s",
+                facets.sku_tokens if facets else None,
+                facets.product_type if facets else None,
+                query, product_url,
+            )
+            return []
 
         # Step 2 — when Skroutz reports more than 1 shop, fan out: scrape the
         # product page itself and emit one PriceHit per visible merchant. This

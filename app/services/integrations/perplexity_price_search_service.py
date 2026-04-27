@@ -27,6 +27,7 @@ route code can swap one import without touching anything else.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -90,6 +91,67 @@ _LOCAL_TLD: Dict[str, str] = {
 # ────────────────────────────────────────────────────────────────────────────
 # Models (identical shape to the Claude service — callers depend on this)
 # ────────────────────────────────────────────────────────────────────────────
+
+
+def _facets_hash(facets: Optional[QueryFacets]) -> str:
+    """
+    Stable hash of the facet identity (brand, model, sku_tokens, product_type).
+    Variant tokens deliberately excluded — color/finish differ per page and we
+    want the cache to share verdicts across color variants of the same model.
+    """
+    if facets is None:
+        return "none"
+    payload = {
+        "brand": (facets.brand or "").upper(),
+        "model": (facets.model or "").upper(),
+        "sku_tokens": sorted([t.upper() for t in (facets.sku_tokens or [])]),
+        "product_type": (facets.product_type or "").lower(),
+    }
+    return hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _rule_shortcut(facets: Optional[QueryFacets], candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Cheap deterministic pre-classifier (PR-D #10). Returns a verdict dict when
+    the case is unambiguous, None when the LLM should make the call.
+
+    Confident cases:
+      * SKU anchor present in slug ∪ name → exact (no LLM needed)
+      * Required brand+model tokens missing entirely → mismatch
+      * Slug+name empty → unverifiable
+    Everything else falls through to Haiku.
+    """
+    if facets is None:
+        return None
+    name = (candidate.get("product_name") or "").upper()
+    slug = " ".join(candidate.get("url_slug_tokens") or []).upper()
+    haystack = f"{name} {slug}"
+    haystack = re.sub(r"[\s\-_./]+", "", haystack)
+
+    sku_tokens = [t.upper() for t in (facets.sku_tokens or [])]
+    required = [t.upper() for t in (facets.required_tokens or [])]
+
+    if not name and not (candidate.get("url_slug_tokens") or []):
+        return {"match_kind": "unverifiable", "match_score": 40, "match_note": None, "variant_diffs": []}
+
+    if sku_tokens:
+        for sku in sku_tokens:
+            if sku and sku in haystack:
+                return {"match_kind": "exact", "match_score": 95, "match_note": None, "variant_diffs": []}
+
+    # Brand/model strict missing → mismatch
+    if required:
+        normalized_required = [re.sub(r"[\s\-_./]+", "", t) for t in required if t]
+        missing = [t for t in normalized_required if t not in haystack]
+        if missing and len(missing) == len(normalized_required):
+            return {
+                "match_kind": "mismatch",
+                "match_score": 15,
+                "match_note": f"Brand/model tokens missing: {missing}",
+                "variant_diffs": [],
+            }
+
+    return None  # Defer to Haiku
 
 
 def _extract_domain(url: Optional[str]) -> Optional[str]:
@@ -219,6 +281,9 @@ class PerplexityPriceSearchService:
         manufacturer_hint: Optional[str] = None,
         double_read: bool = False,
         known_retailer_domains: Optional[List[str]] = None,
+        promoted_urls: Optional[Dict[str, str]] = None,
+        skip_verification_urls: Optional[List[str]] = None,
+        force_full_discovery: bool = False,
     ) -> PriceSearchResult:
         """
         Run one Sonar search for the given product. Returns PriceSearchResult
@@ -257,15 +322,30 @@ class PerplexityPriceSearchService:
                 facet_query, manufacturer_hint=manufacturer_hint
             )
 
-        # Step 2: Perplexity + DataForSEO + Greek Marketplaces in parallel.
-        # Greek Marketplaces is gated on country_code=GR AND the `greek-marketplaces`
-        # module being enabled in the modules DB table. Lazy import avoids the
-        # circular dependency (greek_marketplaces.service imports PriceHit from here).
+        # Step 2: Tiered discovery (PR-C #1).
+        # Tier 1 (Perplexity + DataForSEO): always runs — the cheap, primary path.
+        # Tier 2 (Greek Marketplaces + Idealo): runs in parallel ONLY when we
+        # don't already have a healthy known-retailer set. The threshold is 5
+        # known retailers; below that we cast the wider net. `force_full_discovery=True`
+        # bypasses the gate (used by /discover and the first refresh).
+        run_tier_2 = force_full_discovery or len(known_retailer_domains or []) < 5
+
+        # Sonar model selection (PR-C #8): use cheaper `sonar` when the tracked
+        # query is in a stable refresh window (signaled by the caller via
+        # `force_full_discovery=False` and a non-empty known_retailer_domains list).
+        # First-refresh + force_full_discovery stay on sonar-pro for accuracy.
+        use_cheap_sonar = (
+            not force_full_discovery
+            and len(known_retailer_domains or []) >= 3
+            and not double_read
+        )
+
         perplexity_task = asyncio.create_task(
             self._perplexity_call(
                 product_name, dimensions, country_code, limit,
                 preferred_retailer_domains, user_id, workspace_id,
                 known_retailer_domains=known_retailer_domains,
+                model_override="sonar" if use_cheap_sonar else None,
             )
         )
         # Over-fetch DataForSEO (up to 30 merchants) — the Shopping feed
@@ -279,29 +359,43 @@ class PerplexityPriceSearchService:
                 limit=max(limit, 30),
             )
         )
-        # Greek marketplace search engines (Skroutz/Bestprice/Shopflix) are
-        # literal text-search — adding dimensions to the query string usually
-        # causes zero-match misses (sites print "60x120" but query says "60x120 cm",
-        # for example). We send brand+model only and let the per-page identity
-        # safeguard handle variant filtering after the fact.
-        greek_task = asyncio.create_task(
-            self._greek_marketplaces_call(
-                query=product_name,
-                country_code=country_code,
-                user_id=user_id,
-                workspace_id=workspace_id,
-                limit=limit,
+
+        async def _empty_list() -> List[PriceHit]:
+            return []
+
+        if run_tier_2:
+            # Greek marketplace search engines (Skroutz/Bestprice/Shopflix) are
+            # literal text-search — adding dimensions to the query string usually
+            # causes zero-match misses (sites print "60x120" but query says "60x120 cm",
+            # for example). We send brand+model only and let the per-page identity
+            # safeguard handle variant filtering after the fact.
+            greek_task = asyncio.create_task(
+                self._greek_marketplaces_call(
+                    query=product_name,
+                    country_code=country_code,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    limit=limit,
+                    facets=facets,
+                )
             )
-        )
-        idealo_task = asyncio.create_task(
-            self._idealo_call(
-                query=product_name,
-                country_code=country_code,
-                user_id=user_id,
-                workspace_id=workspace_id,
-                limit=limit,
+            idealo_task = asyncio.create_task(
+                self._idealo_call(
+                    query=product_name,
+                    country_code=country_code,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    limit=limit,
+                )
             )
-        )
+        else:
+            logger.debug(
+                "tier-skip: %d known retailers — skipping Tier 2 (greek + idealo)",
+                len(known_retailer_domains or []),
+            )
+            greek_task = asyncio.create_task(_empty_list())
+            idealo_task = asyncio.create_task(_empty_list())
+
         perplexity_result, dataforseo_result, greek_hits, idealo_hits = await asyncio.gather(
             perplexity_task, dataforseo_task, greek_task, idealo_task, return_exceptions=True
         )
@@ -409,6 +503,7 @@ class PerplexityPriceSearchService:
                 extractions=extractions,
                 user_id=user_id,
                 workspace_id=workspace_id,
+                promoted_urls=promoted_urls,
             )
 
         # Step 6 (PR 3): adaptive Stage A re-issue. When >50% of candidates
@@ -480,42 +575,115 @@ class PerplexityPriceSearchService:
         extractions: Dict[str, Dict[str, Any]],
         user_id: Optional[str],
         workspace_id: Optional[str],
+        promoted_urls: Optional[Dict[str, str]] = None,
     ) -> List[PriceHit]:
         """
         Ask the identity classifier which hits are exact/variant/family/
         mismatch/unverifiable, stamp match_kind/score/note onto each hit,
-        and drop mismatches. Family matches are dropped per the 2026-04-25
-        product decision (same brand ≠ useful pricing data).
+        and drop only `mismatch` rows.
+
+        Policy update 2026-04-27: family rows are KEPT (with `match_kind='family'`)
+        so the UI can render them under a "Similar Products" section. Stats /
+        sanity / alerts / chart treat `family` as inert downstream.
+
+        `promoted_urls` is an optional dict of `{product_url: override_kind}` —
+        when an admin has manually promoted a family row to tracked via the
+        promote-family-row endpoint, we override the classifier's verdict
+        with the stored override on every future refresh of the same URL.
         """
         identity_svc = get_product_identity_service()
+        promoted_urls = promoted_urls or {}
 
+        # Pre-classifier rule shortcuts (#10): cheap deterministic verdicts
+        # for the obvious cases. Anything ambiguous still goes to Haiku.
+        rule_verdicts: List[Optional[Dict[str, Any]]] = []
+        ambiguous_indices: List[int] = []
         candidates: List[Dict[str, Any]] = []
-        for h in hits:
+        for i, h in enumerate(hits):
             ext = extractions.get(h.product_url) or {}
-            candidates.append({
+            candidate = {
                 "retailer": h.retailer_name,
                 "url": h.product_url,
                 "product_name": ext.get("product_name"),
                 "breadcrumb": ext.get("product_breadcrumb"),
                 "visible_attributes": ext.get("visible_attributes") or {},
                 "url_slug_tokens": url_slug_tokens(h.product_url),
-            })
+            }
+            candidates.append(candidate)
 
-        verdicts = await identity_svc.classify_hits(
-            facets, candidates, user_id=user_id, workspace_id=workspace_id,
-        )
+            shortcut = _rule_shortcut(facets, candidate)
+            rule_verdicts.append(shortcut)
+            if shortcut is None:
+                ambiguous_indices.append(i)
+
+        # Cached LLM verdicts (#4): skip Haiku entirely when we've classified
+        # the same (URL, facets_hash) within the last 7 days.
+        facets_hash = _facets_hash(facets)
+        cached_by_url: Dict[str, Dict[str, Any]] = {}
+        if ambiguous_indices:
+            urls_to_lookup = [hits[i].product_url for i in ambiguous_indices]
+            cached_by_url = identity_svc.classifier_cache_lookup(
+                product_urls=urls_to_lookup,
+                facets_hash=facets_hash,
+            )
+
+        # Anything still missing → batch to Haiku.
+        haiku_indices: List[int] = [
+            i for i in ambiguous_indices if hits[i].product_url not in cached_by_url
+        ]
+        haiku_verdicts: List[Dict[str, Any]] = []
+        if haiku_indices:
+            haiku_candidates = [candidates[i] for i in haiku_indices]
+            haiku_verdicts = await identity_svc.classify_hits(
+                facets, haiku_candidates, user_id=user_id, workspace_id=workspace_id,
+            )
+            # Persist the new verdicts for next time (7-day TTL).
+            identity_svc.classifier_cache_upsert(
+                product_urls=[hits[i].product_url for i in haiku_indices],
+                facets_hash=facets_hash,
+                verdicts=haiku_verdicts,
+            )
+
+        # Reassemble per-hit verdicts in original order.
+        haiku_iter = iter(zip(haiku_indices, haiku_verdicts))
+        verdicts: List[Dict[str, Any]] = []
+        for i, hit in enumerate(hits):
+            v = rule_verdicts[i]
+            if v is None:
+                cached = cached_by_url.get(hit.product_url)
+                if cached:
+                    v = cached
+                else:
+                    try:
+                        idx, llm_v = next(haiku_iter)
+                        v = llm_v
+                    except StopIteration:
+                        v = {"match_kind": "unverifiable", "match_score": 50, "match_note": None, "variant_diffs": []}
+            verdicts.append(v)
 
         kept: List[PriceHit] = []
         for hit, verdict in zip(hits, verdicts):
             kind = verdict.get("match_kind") or "unverifiable"
-            hit.match_kind = kind
             hit.match_score = int(verdict.get("match_score") or 0)
             hit.match_note = verdict.get("match_note")
-            # Drop mismatches + family per the 2026-04-25 product policy:
-            # only exact / variant / unverifiable rows survive.
-            if kind in ("mismatch", "family"):
+
+            # Manual promotion override — admin marked this URL as exact/variant
+            # via the promote-family-row endpoint. Honors it on every refresh.
+            override = promoted_urls.get(hit.product_url)
+            if override and kind in ("family", "mismatch", "unverifiable"):
+                hit.match_kind = override
+                if not hit.match_note:
+                    hit.match_note = "Manually promoted by admin"
+                kept.append(hit)
+                continue
+
+            hit.match_kind = kind
+            # Only mismatches are dropped. Family rows are kept so the UI
+            # can render them under "Similar Products"; the persistence layer
+            # marks them inert (no chart contribution, no median, no alerts).
+            if kind == "mismatch":
                 logger.debug(
-                    f"Identity classifier dropped {hit.retailer_name}: {kind} "
+                    f"Identity classifier dropped {hit.retailer_name}: mismatch "
                     f"(score={hit.match_score}, note={hit.match_note})"
                 )
                 continue
@@ -534,14 +702,16 @@ class PerplexityPriceSearchService:
         user_id: Optional[str],
         workspace_id: Optional[str],
         known_retailer_domains: Optional[List[str]] = None,
+        model_override: Optional[str] = None,
     ) -> "PriceSearchResult":
         system_prompt, user_prompt = self._build_messages(
             product_name, dimensions, country_code, limit, known_retailer_domains,
         )
         schema = self._response_schema(limit)
+        model_name = model_override or MODEL
 
         body: Dict[str, Any] = {
-            "model": MODEL,
+            "model": model_name,
             "max_tokens": MAX_TOKENS,
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -852,8 +1022,57 @@ class PerplexityPriceSearchService:
         """
         firecrawl = get_firecrawl_client()
 
+        from app.services.integrations.extraction_recipes import (
+            find_recipe,
+            fetch_via_recipe,
+            record_success,
+            record_failure,
+        )
+
         async def verify_one(hit: PriceHit) -> int:
-            """Returns credits consumed for this one verification (0 on failure)."""
+            """Returns credits consumed for this one verification (0 on failure).
+
+            PR-F: when a high-confidence recipe exists for the URL's domain
+            pattern, try the cheap httpx+selectolax path first. Fall back to
+            Firecrawl on any failure. The recipe success/failure counters
+            self-heal selector drift over time.
+            """
+            recipe = find_recipe(hit.product_url)
+            if recipe and (recipe.get("confidence") or 0) >= 0.8 and not recipe.get("disabled"):
+                try:
+                    cheap = await fetch_via_recipe(hit.product_url, recipe)
+                except Exception:
+                    cheap = None
+                if cheap and cheap.get("price_text"):
+                    amount, currency = parse_price(cheap["price_text"], hint_currency=cheap.get("currency_default") or "EUR")
+                    if amount is not None:
+                        original_amount, _ = parse_price(cheap.get("original_price_text"), hint_currency=cheap.get("currency_default") or "EUR")
+                        verified_price = float(amount)
+                        verified_original = float(original_amount) if original_amount is not None else None
+                        if verified_original is not None and (
+                            verified_original <= verified_price or verified_original / max(verified_price, 0.01) > 5
+                        ):
+                            verified_original = None
+                        hit.price = verified_price
+                        if verified_original is not None:
+                            hit.original_price = verified_original
+                        if currency and not hit.currency:
+                            hit.currency = currency
+                        if cheap.get("product_name") and not hit.product_title:
+                            hit.product_title = cheap["product_name"][:200]
+                        hit.verified = True
+                        hit.last_verified = datetime.now(timezone.utc).date().isoformat()
+                        if extractions_out is not None:
+                            extractions_out[hit.product_url] = {
+                                "product_name": cheap.get("product_name"),
+                                "product_breadcrumb": None,
+                                "visible_attributes": None,
+                            }
+                        record_success(recipe["id"])
+                        return 0  # Free path — no Firecrawl credit consumed
+                # Recipe miss — fall through to Firecrawl + record the failure.
+                record_failure(recipe["id"], "recipe_miss_or_no_price")
+
             try:
                 result = await firecrawl.scrape(
                     url=hit.product_url,
@@ -1126,21 +1345,38 @@ class PerplexityPriceSearchService:
         """
         Merge Greek Marketplaces hits over the existing (Perplexity+DataForSEO)
         set. Greek sources are first-party retailer data, so they OVERRIDE any
-        earlier entry for the same retailer domain. New domains are appended.
+        earlier entry for the SAME (domain, product_url) pair. Multiple greek
+        hits on the same retailer domain (e.g. fanout from a Bestprice product
+        page exposing 5 different shops) are all kept — dedup is per-URL, not
+        per-domain.
         """
-        by_domain: Dict[str, PriceHit] = {}
+        by_url: Dict[str, PriceHit] = {}
         for h in existing:
-            d = cls._domain_of(h.product_url)
-            if d:
-                by_domain[d] = h
+            key = (h.product_url or "").strip()
+            if key:
+                by_url[key] = h
+
+        # Track which existing-source domains the greek pass replaced — those
+        # rows are dropped to avoid the user seeing both perplexity_web_search
+        # and skroutz/bestprice/shopflix entries for the same domain.
+        greek_domains = {cls._domain_of(g.product_url) for g in greek_hits if g.product_url}
+        greek_domains.discard(None)
+
+        # Drop existing rows whose domain was covered by the greek pass — we
+        # trust the greek-marketplace fanout's per-shop data over Perplexity's
+        # snippet for that same retailer.
+        for url in list(by_url.keys()):
+            d = cls._domain_of(url)
+            if d in greek_domains:
+                del by_url[url]
 
         for g in greek_hits:
-            d = cls._domain_of(g.product_url)
-            if d:
-                by_domain[d] = g
+            key = (g.product_url or "").strip()
+            if key and key not in by_url:
+                by_url[key] = g
 
         return sorted(
-            by_domain.values(),
+            by_url.values(),
             key=lambda h: (h.price if h.price is not None else float("inf")),
         )
 
@@ -1152,11 +1388,15 @@ class PerplexityPriceSearchService:
         user_id: Optional[str],
         workspace_id: Optional[str],
         limit: int,
+        facets: Optional[QueryFacets] = None,
     ) -> List[PriceHit]:
         """
         Call the Greek Marketplaces module (Skroutz + Bestprice + Shopflix).
         Gated on country=GR and the DB module toggle. Returns [] when either
         guard fails so the parallel gather doesn't need special handling.
+
+        `facets` flows through to each adapter so SKU-aware queries can skip
+        wrong-SKU rows BEFORE they hit the LLM classifier.
         """
         if (country_code or "").upper() != "GR":
             return []
@@ -1173,6 +1413,7 @@ class PerplexityPriceSearchService:
             user_id=user_id or "",
             workspace_id=workspace_id,
             limit=limit,
+            facets=facets,
         )
 
     async def _idealo_call(

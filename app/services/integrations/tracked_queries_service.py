@@ -28,6 +28,102 @@ def _domain_of(url: Optional[str]) -> Optional[str]:
     host = m.group(1).lower()
     return host[4:] if host.startswith("www.") else host
 
+
+def _upsert_brand_retailer_index(supabase, *, brand: str, country_code: str, rows: List[Dict[str, Any]]) -> None:
+    """
+    Record (brand, retailer_domain, country_code) triples after a refresh.
+    Future SKUs in the same brand can read this index to skip Perplexity
+    Stage A and probe known retailers directly.
+    """
+    domains: Dict[str, int] = {}
+    for r in rows:
+        if (r.get("match_kind") or "").lower() in ("family", "mismatch"):
+            continue
+        d = _domain_of(r.get("product_url"))
+        if d:
+            domains[d] = domains.get(d, 0) + 1
+    if not domains:
+        return
+    payload = []
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for d, count in domains.items():
+        payload.append({
+            "brand": brand,
+            "retailer_domain": d,
+            "country_code": country_code,
+            "last_seen_at": now_iso,
+            "hit_count": count,
+        })
+    supabase.client.table("brand_retailer_index").upsert(
+        payload, on_conflict="brand,retailer_domain,country_code"
+    ).execute()
+
+
+def _max_pct_price_change(new_rows: List[Dict[str, Any]], supabase, tracking_id: str) -> float:
+    """
+    Returns the largest percentage price change across the tracked retailers
+    between this refresh and the most recent prior refresh. Used by the
+    volatility cadence updater. Family/anomaly rows are excluded so wildly
+    different SKUs don't blow up the volatility score.
+    """
+    if not new_rows:
+        return 0.0
+    new_by_url: Dict[str, float] = {}
+    for r in new_rows:
+        if r.get("is_anomaly") or r.get("match_kind") == "family":
+            continue
+        p = r.get("price")
+        u = r.get("product_url")
+        if u and isinstance(p, (int, float)) and p > 0:
+            new_by_url[u] = float(p)
+    if not new_by_url:
+        return 0.0
+    try:
+        prior = (
+            supabase.client.table("tracked_query_price_history")
+            .select("product_url, price, refresh_run_id, scraped_at")
+            .eq("tracked_query_id", tracking_id)
+            .neq("refresh_run_id", new_rows[0].get("refresh_run_id") or "")
+            .order("scraped_at", desc=True)
+            .limit(50)
+            .execute()
+        )
+    except Exception:
+        return 0.0
+    prior_by_url: Dict[str, float] = {}
+    for r in (prior.data or []):
+        u = r.get("product_url")
+        if u not in prior_by_url and isinstance(r.get("price"), (int, float)):
+            prior_by_url[u] = float(r["price"])
+    max_pct = 0.0
+    for url, new_price in new_by_url.items():
+        old_price = prior_by_url.get(url)
+        if old_price and old_price > 0:
+            pct = abs(new_price - old_price) / old_price * 100.0
+            if pct > max_pct:
+                max_pct = pct
+    return max_pct
+
+
+def _map_source_label(hit_source: str) -> str:
+    """
+    Translate a PriceHit.source value into the persisted competitor_source_type
+    enum on tracked_query_price_history.source. Falls back to perplexity_web_search
+    so unknown values still persist (better than the row failing the enum constraint).
+    """
+    s = (hit_source or "").lower()
+    if s == "dataforseo":
+        return "dataforseo_shopping"
+    if s == "skroutz":
+        return "marketplace_skroutz"
+    if s == "bestprice":
+        return "marketplace_bestprice"
+    if s == "shopflix":
+        return "marketplace_shopflix"
+    if s == "idealo":
+        return "idealo"
+    return "perplexity_web_search"
+
 from app.services.core.supabase_client import get_supabase_client
 from app.modules.price_monitoring_notifications.service import (
     get_price_alert_dispatcher,
@@ -286,7 +382,11 @@ class TrackedQueriesService:
 
         # Pull known retailer domains from history so Perplexity can prioritize
         # finding NEW retailers instead of cycling through the same set.
+        # PR-E #12: also seed from `brand_retailer_index` — when ANY tracked
+        # query for the same brand has discovered retailers, future SKUs in
+        # that brand inherit them and can skip a fresh Perplexity scan.
         known_domains: List[str] = []
+        seen: set = set()
         try:
             hist = (
                 self.supabase.client.table("tracked_query_price_history")
@@ -296,7 +396,6 @@ class TrackedQueriesService:
                 .limit(200)
                 .execute()
             )
-            seen: set = set()
             for r in hist.data or []:
                 d = _domain_of(r.get("product_url"))
                 if d and d not in seen:
@@ -304,6 +403,46 @@ class TrackedQueriesService:
                     known_domains.append(d)
         except Exception as e:
             logger.debug(f"known retailer fetch failed: {e}")
+
+        try:
+            brand = (cached_facets.brand if cached_facets else None) or tq.get("manufacturer")
+            country_code = (tq.get("country_code") or "XX").upper()
+            if brand:
+                idx = (
+                    self.supabase.client.table("brand_retailer_index")
+                    .select("retailer_domain")
+                    .eq("brand", brand.upper())
+                    .eq("country_code", country_code)
+                    .order("hit_count", desc=True)
+                    .limit(20)
+                    .execute()
+                )
+                for r in (idx.data or []):
+                    d = r.get("retailer_domain")
+                    if d and d not in seen:
+                        seen.add(d)
+                        known_domains.append(d)
+        except Exception as e:
+            logger.debug(f"brand_retailer_index seed failed (non-fatal): {e}")
+
+        # Pull promoted URLs (admin manually marked these family rows as
+        # tracked) so the classifier overrides its verdict on every refresh.
+        promoted_urls: Dict[str, str] = {}
+        try:
+            promoted = (
+                self.supabase.client.table("tracked_query_promoted_urls")
+                .select("product_url, override_kind")
+                .eq("tracked_query_id", tracking_id)
+                .execute()
+            )
+            for r in (promoted.data or []):
+                u = r.get("product_url")
+                k = r.get("override_kind")
+                if u and k in ("exact", "variant"):
+                    promoted_urls[u] = k
+        except Exception as e:
+            logger.debug(f"promoted_urls fetch failed (non-fatal): {e}")
+
         result: PriceSearchResult = await self.search.search_prices(
             product_name=tq.get("search_query") or "",
             dimensions=tq.get("dimensions"),
@@ -317,6 +456,7 @@ class TrackedQueriesService:
             manufacturer_hint=tq.get("manufacturer"),
             double_read=is_first_refresh and bool(tq.get("verify_prices", True)),
             known_retailer_domains=known_domains,
+            promoted_urls=promoted_urls,
         )
 
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -353,10 +493,7 @@ class TrackedQueriesService:
                 rows.append({
                     "tracked_query_id": tracking_id,
                     "refresh_run_id": refresh_run_id,
-                    "source": (
-                        "dataforseo_shopping" if getattr(h, "source", "perplexity") == "dataforseo"
-                        else "perplexity_web_search"
-                    ),
+                    "source": _map_source_label(getattr(h, "source", "perplexity")),
                     "retailer_name": h.retailer_name,
                     "product_url": h.product_url,
                     "price": price_val,
@@ -411,6 +548,35 @@ class TrackedQueriesService:
             "first_refresh_verified": True,
         }).eq("id", tracking_id).execute()
 
+        # Volatility-based cadence (PR-C #3). Compute the max % move across
+        # tracked retailers vs the prior refresh's median; pass to the SQL
+        # helper which adjusts next_check_at + consecutive_stable_refreshes.
+        try:
+            max_pct_change = _max_pct_price_change(rows, self.supabase, tracking_id)
+            self.supabase.client.rpc(
+                "update_tracked_query_cadence",
+                {"p_tracked_query_id": tracking_id, "p_max_pct_change": max_pct_change},
+            ).execute()
+        except Exception as e:
+            logger.debug(f"cadence update failed (non-fatal): {e}")
+
+        # Brand-level retailer cache (PR-E #12). After every refresh, upsert
+        # the {brand, retailer_domain, country_code} triples we saw so future
+        # SKUs in the same brand can seed their `known_retailer_domains` list
+        # from this index instead of running a fresh Perplexity discovery.
+        try:
+            brand = (cached_facets.brand if cached_facets else None) or tq.get("manufacturer")
+            country_code = (tq.get("country_code") or "XX").upper()
+            if brand and rows:
+                _upsert_brand_retailer_index(
+                    self.supabase,
+                    brand=brand.upper(),
+                    country_code=country_code,
+                    rows=rows,
+                )
+        except Exception as e:
+            logger.debug(f"brand_retailer_index upsert failed (non-fatal): {e}")
+
         return {
             "status": "refreshed",
             "refresh_run_id": refresh_run_id,
@@ -444,6 +610,26 @@ class TrackedQueriesService:
         )
         return res.data or []
 
+    async def latest_results_split(self, tracking_id: str) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Same as latest_results but returns two arrays:
+          {
+            "results":         exact + variant + unverifiable rows (the tracked product),
+            "family_results":  family rows (similar products in the same series — inert),
+          }
+        Family rows never feed the chart/median/alerts. The UI renders them
+        in a collapsed "Similar Products in this series" section.
+        """
+        rows = await self.latest_results(tracking_id)
+        primary: List[Dict[str, Any]] = []
+        family: List[Dict[str, Any]] = []
+        for r in rows:
+            if (r.get("match_kind") or "").lower() == "family":
+                family.append(r)
+            else:
+                primary.append(r)
+        return {"results": primary, "family_results": family}
+
     async def history(
         self, tracking_id: str, limit: int = 200
     ) -> List[Dict[str, Any]]:
@@ -464,34 +650,23 @@ class TrackedQueriesService:
         return res.data or []
 
     async def due_for_refresh(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """Used by the cron. Returns active queries whose last_refreshed_at is
-        older than their refresh_interval_hours."""
-        # Postgres-side filter: last_refreshed_at IS NULL OR now() - last_refreshed_at > interval
-        # Hardcoded max 30 days (720h) so worst-case we still re-probe even misconfigured rows.
-        cutoff = (datetime.now(timezone.utc) - timedelta(hours=720)).isoformat()
-        # We pull candidates and check interval in Python to keep the query simple.
-        # For scale, move this to a Postgres function later.
+        """Used by the cron. Returns active queries whose `next_check_at` is
+        in the past (volatility-based cadence — set by the SQL helper after
+        each refresh). Rows that predate the cadence column have
+        next_check_at backfilled by the migration; new rows get it set on
+        first refresh.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
         candidates = (
             self.supabase.client.table("tracked_queries")
-            .select("id, last_refreshed_at, refresh_interval_hours")
+            .select("id, last_refreshed_at, refresh_interval_hours, next_check_at")
             .eq("is_active", True)
-            .or_(f"last_refreshed_at.is.null,last_refreshed_at.lt.{cutoff}")
+            .or_(f"next_check_at.is.null,next_check_at.lt.{now_iso}")
+            .order("next_check_at", desc=False)
             .limit(max(1, min(limit, 500)))
             .execute()
         )
-        rows = candidates.data or []
-        due: List[Dict[str, Any]] = []
-        now = datetime.now(timezone.utc)
-        for r in rows:
-            last = r.get("last_refreshed_at")
-            if not last:
-                due.append(r)
-                continue
-            last_dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
-            interval = timedelta(hours=int(r.get("refresh_interval_hours") or 24))
-            if now - last_dt >= interval:
-                due.append(r)
-        return due
+        return candidates.data or []
 
 
 _service: Optional[TrackedQueriesService] = None

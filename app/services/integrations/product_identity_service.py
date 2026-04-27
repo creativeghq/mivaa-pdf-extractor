@@ -713,6 +713,80 @@ class ProductIdentityService:
             })
         return cleaned
 
+    # ── Verdict cache (PR-C #4) ──
+    # 7-day TTL per (URL, facets_hash). Skips Haiku when we've already
+    # classified the same URL against the same identity facets recently.
+
+    def classifier_cache_lookup(
+        self,
+        *,
+        product_urls: List[str],
+        facets_hash: str,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Batch lookup. Returns {url: verdict_dict} for unexpired entries."""
+        if not product_urls or not facets_hash:
+            return {}
+        try:
+            resp = (
+                self.supabase.client.table("classifier_verdict_cache")
+                .select("product_url, match_kind, match_score, match_note, variant_diffs, expires_at")
+                .in_("product_url", product_urls)
+                .eq("facets_hash", facets_hash)
+                .gt("expires_at", datetime.now(timezone.utc).isoformat())
+                .execute()
+            )
+        except Exception as e:
+            logger.debug(f"classifier_cache_lookup failed (non-fatal): {e}")
+            return {}
+        result: Dict[str, Dict[str, Any]] = {}
+        for r in (resp.data or []):
+            url = r.get("product_url")
+            if not url:
+                continue
+            result[url] = {
+                "match_kind": r.get("match_kind") or "unverifiable",
+                "match_score": int(r.get("match_score") or 0),
+                "match_note": r.get("match_note"),
+                "variant_diffs": r.get("variant_diffs") or [],
+            }
+        return result
+
+    def classifier_cache_upsert(
+        self,
+        *,
+        product_urls: List[str],
+        facets_hash: str,
+        verdicts: List[Dict[str, Any]],
+    ) -> None:
+        """Best-effort persistence of fresh verdicts for 7 days."""
+        if not product_urls or not facets_hash or not verdicts:
+            return
+        if len(product_urls) != len(verdicts):
+            logger.warning("classifier_cache_upsert length mismatch — skipping persist")
+            return
+        expires = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+        rows = []
+        for url, v in zip(product_urls, verdicts):
+            if not url:
+                continue
+            rows.append({
+                "product_url": url,
+                "facets_hash": facets_hash,
+                "match_kind": v.get("match_kind") or "unverifiable",
+                "match_score": int(v.get("match_score") or 0),
+                "match_note": v.get("match_note"),
+                "variant_diffs": v.get("variant_diffs") or [],
+                "expires_at": expires,
+            })
+        if not rows:
+            return
+        try:
+            self.supabase.client.table("classifier_verdict_cache").upsert(
+                rows, on_conflict="product_url,facets_hash"
+            ).execute()
+        except Exception as e:
+            logger.debug(f"classifier_cache_upsert failed (non-fatal): {e}")
+
     # ── Fallback rule-based classifier ──
 
     def _build_few_shot_block(self) -> str:

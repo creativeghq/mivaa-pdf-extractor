@@ -21,10 +21,12 @@ import logging
 import urllib.parse
 from typing import List, Optional
 
+from app.modules.greek_marketplaces.facet_filter import matches_facets
 from app.modules.greek_marketplaces.match_filter import is_plausible_match
 from app.modules.greek_marketplaces.models import MarketplaceProduct
 from app.services.integrations.firecrawl_client import FirecrawlClient
 from app.services.integrations.perplexity_price_search_service import PriceHit
+from app.services.integrations.product_identity_service import QueryFacets
 from app.utils.price_parsing import parse_price
 
 logger = logging.getLogger(__name__)
@@ -74,12 +76,16 @@ class ShopflixAdapter:
         *,
         user_id: str,
         workspace_id: Optional[str] = None,
+        facets: Optional[QueryFacets] = None,
     ) -> List[PriceHit]:
         if not self.firecrawl.api_key:
             logger.debug("Shopflix: Firecrawl not configured, skipping.")
             return []
 
-        url = _build_search_url(query)
+        adaptive_query = query
+        if facets and facets.sku_tokens:
+            adaptive_query = f"{query} {facets.sku_tokens[0]}"
+        url = _build_search_url(adaptive_query)
 
         # Shopflix's results are rendered client-side (Algolia/Spryker SPA),
         # so a static HTML scrape returns nothing. JS render is required.
@@ -123,6 +129,15 @@ class ShopflixAdapter:
                 "Shopflix: dropped likely false positive — query=%r, url=%s",
                 query,
                 product.product_url,
+            )
+            return []
+
+        if not matches_facets(facets=facets, candidate_url=product.product_url, candidate_name=product.retailer_name):
+            logger.info(
+                "Shopflix: facet mismatch (sku=%s, type=%s) — query=%r, url=%s",
+                facets.sku_tokens if facets else None,
+                facets.product_type if facets else None,
+                query, product.product_url,
             )
             return []
 

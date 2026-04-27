@@ -29,6 +29,7 @@ from app.modules.greek_marketplaces.adapters.bestprice import get_bestprice_adap
 from app.modules.greek_marketplaces.adapters.shopflix import get_shopflix_adapter
 from app.modules.greek_marketplaces.adapters.skroutz import get_skroutz_adapter
 from app.services.integrations.perplexity_price_search_service import PriceHit
+from app.services.integrations.product_identity_service import QueryFacets
 
 logger = logging.getLogger(__name__)
 
@@ -58,14 +59,15 @@ class GreekMarketplacesService:
         user_id: str,
         workspace_id: Optional[str] = None,
         limit: int = 15,
+        facets: Optional[QueryFacets] = None,
     ) -> List[PriceHit]:
         if (country_code or "").upper() != "GR":
             return []
 
         tasks = [
-            self.skroutz.search(query, user_id=user_id, workspace_id=workspace_id, limit=limit),
-            self.bestprice.search(query, user_id=user_id, workspace_id=workspace_id),
-            self.shopflix.search(query, user_id=user_id, workspace_id=workspace_id),
+            self.skroutz.search(query, user_id=user_id, workspace_id=workspace_id, limit=limit, facets=facets),
+            self.bestprice.search(query, user_id=user_id, workspace_id=workspace_id, facets=facets),
+            self.shopflix.search(query, user_id=user_id, workspace_id=workspace_id, facets=facets),
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 

@@ -34,10 +34,12 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
+from app.modules.greek_marketplaces.facet_filter import matches_facets
 from app.modules.greek_marketplaces.match_filter import is_plausible_match
 from app.modules.greek_marketplaces.models import MarketplaceProduct
 from app.services.integrations.firecrawl_client import FirecrawlClient
 from app.services.integrations.perplexity_price_search_service import PriceHit
+from app.services.integrations.product_identity_service import QueryFacets
 from app.utils.price_parsing import parse_price
 
 logger = logging.getLogger(__name__)
@@ -106,12 +108,21 @@ class BestpriceAdapter:
         *,
         user_id: str,
         workspace_id: Optional[str] = None,
+        facets: Optional[QueryFacets] = None,
     ) -> List[PriceHit]:
         if not self.firecrawl.api_key:
             logger.debug("Bestprice: Firecrawl not configured, skipping.")
             return []
 
-        url = SEARCH_URL_TEMPLATE.format(query=urllib.parse.quote_plus(query))
+        # Adaptive query: when facets carry SKU anchors, append them to the
+        # search query so Bestprice's own search engine finds the right SKU
+        # (otherwise its price-asc sort surfaces the cheapest accessory in
+        # the brand line, which the classifier then drops as `family`).
+        adaptive_query = query
+        if facets and facets.sku_tokens:
+            adaptive_query = f"{query} {facets.sku_tokens[0]}"
+
+        url = SEARCH_URL_TEMPLATE.format(query=urllib.parse.quote_plus(adaptive_query))
         result = await self.firecrawl.scrape(
             url=url, extraction_model=MarketplaceProduct,
             user_id=user_id, workspace_id=workspace_id,
@@ -136,6 +147,18 @@ class BestpriceAdapter:
             )
             return []
 
+        # Facet-aware filter: when the caller passed SKU anchors / product type,
+        # drop rows whose URL slug carries a different SKU before they reach
+        # the LLM classifier.
+        if not matches_facets(facets=facets, candidate_url=product.product_url, candidate_name=product.retailer_name):
+            logger.info(
+                "Bestprice: facet mismatch (sku=%s, type=%s) — query=%r, url=%s",
+                facets.sku_tokens if facets else None,
+                facets.product_type if facets else None,
+                query, product.product_url,
+            )
+            return []
+
         # Bestprice product pages aggregate every shop selling that SKU.
         # Fan out into per-shop hits when the URL is a /to/ or /item/ page.
         if "bestprice.gr/to/" in product.product_url or "bestprice.gr/item/" in product.product_url:
@@ -143,6 +166,7 @@ class BestpriceAdapter:
                 product.product_url, query=query,
                 fallback_currency=product.currency or "EUR",
                 user_id=user_id, workspace_id=workspace_id,
+                facets=facets,
             )
             if shop_hits:
                 return shop_hits
@@ -173,6 +197,7 @@ class BestpriceAdapter:
         fallback_currency: str,
         user_id: str,
         workspace_id: Optional[str],
+        facets: Optional[QueryFacets] = None,
     ) -> List[PriceHit]:
         """Scrape the Bestprice product detail page and emit a hit per shop."""
         try:
@@ -193,6 +218,15 @@ class BestpriceAdapter:
         if not is_plausible_match(query, product_url, result.data.product_name):
             logger.info(
                 "Bestprice: product page failed plausibility check — query=%r, url=%s",
+                query, product_url,
+            )
+            return []
+        # Facet-aware filter on the product page itself (catches the case
+        # where the search-page URL passed but the product detail page
+        # is actually a different SKU).
+        if not matches_facets(facets=facets, candidate_url=product_url, candidate_name=result.data.product_name):
+            logger.info(
+                "Bestprice: product page facet mismatch — query=%r, url=%s",
                 query, product_url,
             )
             return []
