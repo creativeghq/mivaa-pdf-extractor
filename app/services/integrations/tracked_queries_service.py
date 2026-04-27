@@ -457,6 +457,11 @@ class TrackedQueriesService:
             double_read=is_first_refresh and bool(tq.get("verify_prices", True)),
             known_retailer_domains=known_domains,
             promoted_urls=promoted_urls,
+            # Admin-triggered force refresh OR very first refresh = full
+            # discovery: run Tier 2 (Greek + Idealo) AND keep sonar-pro for
+            # accuracy. Otherwise tier-skip + cheap-sonar engage based on
+            # known retailer count.
+            force_full_discovery=bool(force) or is_first_refresh,
         )
 
         now_iso = datetime.now(timezone.utc).isoformat()
