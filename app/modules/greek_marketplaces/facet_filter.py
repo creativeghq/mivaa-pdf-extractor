@@ -53,6 +53,13 @@ def adaptive_marketplace_query(*, query: str, facets: Optional[QueryFacets]) -> 
     brand = (facets.brand or "").strip().upper() or None
     model = (facets.model or "").strip().upper() or None
 
+    # Brand + Model + SKU → tightest while still anchoring on the product
+    # line. Bestprice in particular returns zero for "BRAND SKU" but works
+    # for "BRAND MODEL SKU" (validated against ORABELLA PRECIOSA 10356).
+    # Shopflix's fuzzy match also benefits from the model token: without it
+    # we get adjacent SKUs like 10365 instead of 10356.
+    if sku and brand and model:
+        return f"{brand} {model} {sku}"
     if sku and brand:
         return f"{brand} {sku}"
     if sku and model:
