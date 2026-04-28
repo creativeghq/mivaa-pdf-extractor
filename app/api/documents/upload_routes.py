@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
 
-@router.post("/upload", response_model=DataResponse)
+@router.post("/upload")
 async def upload_document(
     background_tasks: BackgroundTasks,
     file: Optional[UploadFile] = File(None, description="PDF file to upload (required unless file_url is provided)"),

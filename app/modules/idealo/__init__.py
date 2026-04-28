@@ -6,7 +6,7 @@ from app.modules.idealo.service import IdealoService, get_idealo_service
 
 definition = ModuleDefinition(
     manifest=manifest,
-    router_path=None,
+    router_path="app.modules.idealo.routes.router",
     tags=["idealo"],
 )
 

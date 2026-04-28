@@ -1391,7 +1391,6 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
             response = client.messages.create(
                 model=settings.anthropic_model_classification,  # claude-4-5-haiku-20250514
                 max_tokens=2048,
-                temperature=0.1,
                 messages=[{"role": "user", "content": prompt}]
             )
 
@@ -1459,7 +1458,6 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
             response = client.messages.create(
                 model=settings.anthropic_model_enrichment,  # claude-opus-4-7
                 max_tokens=4096,
-                temperature=0.1,
                 messages=[{"role": "user", "content": prompt}]
             )
 

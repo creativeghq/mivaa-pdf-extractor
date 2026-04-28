@@ -355,7 +355,7 @@ async def get_embedding_service() -> RealEmbeddingsService:
 # CONSOLIDATED UPLOAD ENDPOINT - Replaces all upload endpoints
 # ============================================================================
 
-@router.post("/documents/upload", response_model=DataResponse)
+@router.post("/documents/upload")
 async def upload_document(
     background_tasks: BackgroundTasks,
     file: Optional[UploadFile] = File(None, description="PDF file to upload (required unless file_url is provided)"),
@@ -1313,7 +1313,7 @@ async def resume_job(job_id: str, background_tasks: BackgroundTasks):
     return await restart_job_from_checkpoint(job_id, background_tasks)
 
 
-@router.post("/documents/{document_id}/reprocess", response_model=DataResponse)
+@router.post("/documents/{document_id}/reprocess")
 async def reprocess_document(
     document_id: str,
     background_tasks: BackgroundTasks,

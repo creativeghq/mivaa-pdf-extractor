@@ -418,11 +418,14 @@ async def get_external_service_usage(
         else:
             start_time = datetime(2020, 1, 1)
 
-        # External service providers to filter on
-        ext_providers = ['twilio', 'apollo', 'hunter', 'zerobounce', 'firecrawl']
+        # External service providers to filter on. `api_provider` is not a
+        # column on ai_usage_logs — it lives inside `metadata` JSONB written
+        # by AICallLogger. Filter post-hoc in Python after pulling the
+        # metadata column.
+        ext_providers = {'twilio', 'apollo', 'hunter', 'zerobounce', 'firecrawl'}
 
         query = supabase.client.table("ai_usage_logs").select(
-            "id, user_id, operation_type, model_name, api_provider, "
+            "id, user_id, operation_type, model_name, "
             "total_cost_usd, billed_cost_usd, raw_cost_usd, credits_debited, "
             "metadata, created_at"
         )
@@ -430,12 +433,30 @@ async def get_external_service_usage(
         if time_period != "all":
             query = query.gte("created_at", start_time.isoformat())
 
-        # Filter to external services only (api_provider in ext_providers)
-        query = query.in_("api_provider", ext_providers)
         query = query.order("created_at", desc=True)
 
         response = query.execute()
-        logs = response.data if response.data else []
+        raw_logs = response.data if response.data else []
+
+        # Resolve api_provider from metadata (set by AICallLogger) and keep
+        # only rows that belong to one of the external providers we care about.
+        logs: List[Dict[str, Any]] = []
+        for log in raw_logs:
+            metadata = log.get("metadata") or {}
+            provider = None
+            if isinstance(metadata, dict):
+                provider = metadata.get("api_provider") or metadata.get("source")
+                if not provider:
+                    req = metadata.get("request")
+                    if isinstance(req, dict):
+                        provider = req.get("source") or req.get("api_provider")
+            if not provider:
+                continue
+            provider = str(provider).lower()
+            if provider not in ext_providers:
+                continue
+            log["api_provider"] = provider
+            logs.append(log)
 
         # Summary
         total_credits = sum(float(log.get("credits_debited", 0) or 0) for log in logs)
