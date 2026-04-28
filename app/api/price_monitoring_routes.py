@@ -792,6 +792,32 @@ async def discover_sources(
             latency_ms=result.latency_ms,
         )
 
+    # ── Per-product exclusions (2026-04-28): drop hits whose URL/domain has
+    #    been explicitly excluded by an admin. Filtering BEFORE persist means
+    #    excluded URLs never feed competitor_sources or price_history, so
+    #    they never appear in the chart/median/alerts.
+    try:
+        ex = (
+            sb.table("product_excluded_urls")
+            .select("url, domain")
+            .eq("product_id", product_id)
+            .execute()
+        )
+        excluded_urls = {e["url"] for e in (ex.data or []) if e.get("url")}
+        excluded_domains = {e["domain"] for e in (ex.data or []) if e.get("domain")}
+        if excluded_urls or excluded_domains:
+            before = len(result.hits)
+            result.hits = [
+                h for h in result.hits
+                if h.product_url not in excluded_urls
+                and (_alert_domain_of(h.product_url) or "") not in excluded_domains
+            ]
+            dropped = before - len(result.hits)
+            if dropped > 0:
+                logger.info(f"discover: product={product_id} dropped {dropped} hits via exclusions")
+    except Exception as e:
+        logger.warning(f"product exclusion filter failed (non-fatal): {e}")
+
     # ── Persist: upsert competitor_sources by (product_id, source_url),
     #    then insert price_history rows, then stamp last_claude_search_at.
     #    Hit source maps to competitor_source_type: perplexity → perplexity_web_search,
@@ -1420,9 +1446,11 @@ async def cron_refresh_tracked_queries(request: Request, limit: int = Query(defa
 
 class BroadcastApiAnnouncementRequest(BaseModel):
     """Body for POST /broadcast-api-announcement — admin one-shot send."""
-    template_slug: str = Field(default="api_broadcast.price_tracking_v2",
+    template_slug: str = Field(default="api_broadcast.price_tracking_v6",
         description="Slug of the email template in `email_templates` to use.")
     docs_url: str = Field(default="https://github.com/creativeghq/material-kai-vision-platform/blob/main/docs/api/price-monitoring-api.md")
+    api_base_url: str = Field(default="https://v1api.materialshub.gr",
+        description="Base URL of the price-tracking API — substituted into the template body.")
     support_email: str = Field(default="support@materialshub.gr")
     dry_run: bool = Field(default=True,
         description="When true (default), returns the recipient list without sending.")
@@ -1517,7 +1545,9 @@ async def broadcast_api_announcement(
                         "templateSlug": body.template_slug,
                         "variables": {
                             "name": t["full_name"],
+                            "user_name": t["full_name"],
                             "docs_url": body.docs_url,
+                            "api_base_url": body.api_base_url,
                             "support_email": body.support_email,
                         },
                         "tags": [
@@ -1842,5 +1872,313 @@ async def get_monitoring_jobs(
         )
 
 
+# ============================================================================
+# Per-product result exclusions (catalog flow, 2026-04-28)
+# ============================================================================
+# Mirrors the external /api/v1/prices/track/{id}/exclude endpoints. Admin-only
+# via RLS on `product_excluded_urls`. Excluded URLs/domains are filtered
+# before competitor_sources rows get persisted (in the discover flow) and
+# excluded from `GET /api/v1/price-monitoring/sources/{product_id}` reads.
 
+
+class ProductExcludeRequest(BaseModel):
+    """Body for POST /products/{product_id}/exclude / /include."""
+    url: Optional[str] = Field(
+        default=None,
+        description="Specific competitor URL to exclude. Either `url` or `domain` is required.",
+    )
+    domain: Optional[str] = Field(
+        default=None,
+        description="Whole retailer domain to exclude (wildcard).",
+    )
+    reason: Optional[str] = Field(default=None, description="Optional audit note.")
+
+
+class ProductExclusionRow(BaseModel):
+    id: str
+    url: Optional[str] = None
+    domain: Optional[str] = None
+    reason: Optional[str] = None
+    excluded_at: str
+
+
+def _normalize_domain(domain: Optional[str]) -> Optional[str]:
+    if not domain:
+        return None
+    d = domain.strip().lower()
+    d = d.removeprefix("http://").removeprefix("https://").removeprefix("www.")
+    return d.split("/")[0] or None
+
+
+@router.post(
+    "/products/{product_id}/exclude",
+    response_model=ProductExclusionRow,
+    summary="Exclude a retailer URL or domain from this product's monitoring",
+    description=(
+        "Marks a URL or whole retailer domain as excluded for THIS product. "
+        "The next discover/refresh will not persist hits matching the exclusion, "
+        "and `/sources/{product_id}` hides them. Admin-only — enforced by RLS "
+        "on `product_excluded_urls`. Idempotent."
+    ),
+    status_code=status.HTTP_201_CREATED,
+)
+async def exclude_product_result(
+    product_id: str,
+    body: ProductExcludeRequest,
+    user: User = Depends(get_current_user),
+):
+    if not body.url and not body.domain:
+        raise HTTPException(status_code=400, detail="Either `url` or `domain` is required.")
+    sb = get_supabase_client()
+    payload = {
+        "product_id": product_id,
+        "url": body.url.strip() if body.url else None,
+        "domain": _normalize_domain(body.domain),
+        "reason": body.reason,
+        "excluded_by": user.id,
+    }
+    try:
+        res = (
+            sb.client.table("product_excluded_urls")
+            .upsert(
+                payload,
+                on_conflict="product_id,url" if body.url else "product_id,domain",
+            )
+            .execute()
+        )
+    except Exception as e:
+        logger.error(f"product exclusion upsert failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # Also flip is_active=false on the matching competitor_sources rows so
+    # they disappear from the live retailer list immediately. Future refreshes
+    # would re-discover them; the exclusion filter prevents re-persistence.
+    try:
+        q = sb.client.table("competitor_sources").update({"is_active": False}).eq("product_id", product_id)
+        if body.url:
+            q = q.eq("source_url", body.url)
+        else:
+            # Match all rows whose source_url contains the domain. Supabase
+            # doesn't expose a regex op via the JS client API, so use ilike.
+            q = q.ilike("source_url", f"%{payload['domain']}%")
+        q.execute()
+    except Exception as e:
+        logger.warning(f"competitor_sources deactivate after exclusion failed (non-fatal): {e}")
+
+    row = (res.data or [payload])[0]
+    return ProductExclusionRow(
+        id=row.get("id", ""),
+        url=row.get("url"),
+        domain=row.get("domain"),
+        reason=row.get("reason"),
+        excluded_at=row.get("excluded_at") or datetime.utcnow().isoformat(),
+    )
+
+
+@router.post("/products/{product_id}/include", summary="Undo a previous exclusion")
+async def include_product_result(
+    product_id: str,
+    body: ProductExcludeRequest,
+    user: User = Depends(get_current_user),
+):
+    if not body.url and not body.domain:
+        raise HTTPException(status_code=400, detail="Either `url` or `domain` is required.")
+    sb = get_supabase_client()
+    q = sb.client.table("product_excluded_urls").delete().eq("product_id", product_id)
+    if body.url:
+        q = q.eq("url", body.url.strip())
+    else:
+        q = q.eq("domain", _normalize_domain(body.domain))
+    res = q.execute()
+
+    # Re-activate any matching competitor_sources row so it reappears.
+    try:
+        cs = sb.client.table("competitor_sources").update({"is_active": True}).eq("product_id", product_id)
+        if body.url:
+            cs = cs.eq("source_url", body.url)
+        else:
+            cs = cs.ilike("source_url", f"%{_normalize_domain(body.domain)}%")
+        cs.execute()
+    except Exception as e:
+        logger.warning(f"competitor_sources reactivate after include failed (non-fatal): {e}")
+
+    return {"success": True, "product_id": product_id, "removed_count": len(res.data or [])}
+
+
+@router.get(
+    "/products/{product_id}/exclusions",
+    response_model=List[ProductExclusionRow],
+    summary="List every exclusion attached to this product",
+)
+async def list_product_exclusions(
+    product_id: str,
+    user: User = Depends(get_current_user),
+):
+    sb = get_supabase_client()
+    res = (
+        sb.client.table("product_excluded_urls")
+        .select("id, url, domain, reason, excluded_at")
+        .eq("product_id", product_id)
+        .order("excluded_at", desc=True)
+        .execute()
+    )
+    return [
+        ProductExclusionRow(
+            id=r["id"],
+            url=r.get("url"),
+            domain=r.get("domain"),
+            reason=r.get("reason"),
+            excluded_at=r["excluded_at"],
+        )
+        for r in (res.data or [])
+    ]
+
+
+# ============================================================================
+# On-demand re-verification for catalog products (2026-04-28)
+# ============================================================================
+# Mirrors POST /api/v1/prices/track/{id}/verify on the external API. Re-runs
+# Firecrawl on selected (or all active) competitor_sources URLs and refreshes
+# current_price + current_price_verified + current_metadata in place. Does
+# NOT call Perplexity / DataForSEO / marketplace adapters — narrower scope
+# than /discover, cheaper, faster.
+
+
+class ProductVerifyRequest(BaseModel):
+    """Body for POST /products/{product_id}/verify."""
+    urls: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Optional whitelist of URLs to re-verify. Each must already exist "
+            "in this product's competitor_sources. When omitted, every active "
+            "row for this product is re-verified."
+        ),
+    )
+
+
+@router.post("/products/{product_id}/verify", summary="Re-verify retailer prices on demand (no new discovery)")
+async def verify_product_sources(
+    product_id: str,
+    body: ProductVerifyRequest,
+    user: User = Depends(get_current_user),
+):
+    """
+    Re-runs Firecrawl on every (or specified) competitor_sources row for this
+    product. Refreshes current_price, current_original_price,
+    current_price_verified, current_availability, and current_metadata.notes
+    in place — does NOT touch the discovery pipeline. Useful for clearing
+    stale 'unverified' flags or refreshing one specific retailer without
+    spending the full discovery cost.
+
+    Cost: 1 Firecrawl credit per URL. No LLM cost. ~1-3s per URL (parallel).
+    Returns the freshly-updated rows.
+    """
+    from app.services.integrations.perplexity_price_search_service import (
+        get_perplexity_price_search_service, PriceHit,
+    )
+
+    sb = get_supabase_client().client
+    started = datetime.utcnow()
+
+    # Pull active competitor_sources for the product, optionally narrowed.
+    q = (
+        sb.table("competitor_sources")
+        .select(
+            "id, source_name, source_url, source_type, current_price, current_original_price, "
+            "current_price_verified, current_currency, current_availability, current_metadata, "
+            "match_kind, match_score, match_note"
+        )
+        .eq("product_id", product_id)
+        .eq("is_active", True)
+    )
+    if body.urls:
+        urls = [u.strip() for u in body.urls if u and isinstance(u, str)]
+        q = q.in_("source_url", urls)
+    rows_resp = q.execute()
+    rows = rows_resp.data or []
+    if not rows:
+        return {
+            "success": True,
+            "status": "no_results",
+            "rows_processed": 0,
+            "credits_used": 0,
+            "results": [],
+            "message": "No active retailer rows to verify for this product."
+        }
+
+    # Build PriceHit objects, run Firecrawl verify in parallel, write back.
+    hits: List[PriceHit] = []
+    row_by_url: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        url = r.get("source_url")
+        if not url:
+            continue
+        row_by_url[url] = r
+        meta = r.get("current_metadata") or {}
+        hits.append(PriceHit(
+            retailer_name=r.get("source_name") or "",
+            product_url=url,
+            price=float(r["current_price"]) if r.get("current_price") is not None else None,
+            original_price=float(r["current_original_price"]) if r.get("current_original_price") is not None else None,
+            currency=r.get("current_currency"),
+            availability=r.get("current_availability"),
+            verified=False,
+            source=r.get("source_type") or "perplexity",
+            notes=(meta or {}).get("notes"),
+            match_kind=r.get("match_kind"),
+            match_score=r.get("match_score"),
+            match_note=r.get("match_note"),
+            product_title=(meta or {}).get("product_title"),
+        ))
+
+    svc = get_perplexity_price_search_service()
+    try:
+        credits_used = await svc._verify_hits_with_firecrawl(
+            hits, extractions_out=None,
+            user_id=user.id, workspace_id=None, double_read=False,
+        )
+    except Exception as e:
+        logger.exception(f"verify_product_sources failed for {product_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # Persist updates back to competitor_sources. Updates current_price,
+    # current_original_price, current_price_verified, current_availability,
+    # and merges notes into current_metadata.
+    now_iso = datetime.utcnow().isoformat()
+    updated_rows = []
+    for h in hits:
+        r = row_by_url.get(h.product_url)
+        if not r:
+            continue
+        meta = r.get("current_metadata") or {}
+        if h.notes:
+            meta = {**meta, "notes": h.notes}
+        update = {
+            "current_price": float(h.price) if h.price is not None else None,
+            "current_original_price": float(h.original_price) if h.original_price is not None else None,
+            "current_price_verified": bool(h.verified),
+            "current_availability": h.availability,
+            "current_currency": h.currency,
+            "current_metadata": meta or None,
+            "current_price_updated_at": now_iso,
+            "last_seen_at": now_iso,
+        }
+        try:
+            res = sb.table("competitor_sources").update(update).eq("id", r["id"]).execute()
+            if res.data:
+                updated_rows.append(res.data[0])
+        except Exception as e:
+            logger.warning(f"competitor_sources update after verify failed (id={r['id']}): {e}")
+
+    latency_ms = int((datetime.utcnow() - started).total_seconds() * 1000)
+    return {
+        "success": True,
+        "status": "verified",
+        "rows_processed": len(hits),
+        "verified_count": sum(1 for h in hits if h.verified),
+        "unverified_count": sum(1 for h in hits if not h.verified),
+        "credits_used": int(credits_used or 0),
+        "latency_ms": latency_ms,
+        "results": updated_rows,
+    }
 

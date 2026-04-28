@@ -396,3 +396,183 @@ async def delete_tracked_query(
     _ensure_owner(await service.get(tracking_id), ctx)
     ok = await service.deactivate(tracking_id)
     return {"success": bool(ok), "tracking_id": tracking_id, "is_active": False}
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Per-query result exclusions (2026-04-28)
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class ExcludeRequest(BaseModel):
+    url: Optional[str] = Field(
+        default=None,
+        description="Specific product URL to exclude. Either `url` or `domain` is required.",
+    )
+    domain: Optional[str] = Field(
+        default=None,
+        description="Whole retailer domain to exclude (wildcard). Either `url` or `domain` is required.",
+    )
+    reason: Optional[str] = Field(
+        default=None,
+        description="Optional free-text note (e.g. 'wrong SKU', 'aggregator noise'). Stored for audit.",
+    )
+
+
+class ExclusionRow(BaseModel):
+    id: str
+    url: Optional[str] = None
+    domain: Optional[str] = None
+    reason: Optional[str] = None
+    excluded_at: str
+
+
+@router.post(
+    "/{tracking_id}/exclude",
+    response_model=ExclusionRow,
+    summary="Exclude a result (URL or domain) from this tracked query",
+    description=(
+        "Mark a URL or whole retailer domain as excluded for THIS tracking_id. "
+        "The next refresh will not persist hits matching the exclusion, and "
+        "GET /track/{id} / /history will hide them by default. Other tracked "
+        "queries (yours or other consumers') are unaffected — exclusions are "
+        "scoped, never global. Idempotent: re-excluding the same URL updates "
+        "the reason but doesn't error."
+    ),
+    status_code=status.HTTP_201_CREATED,
+)
+async def exclude_result(
+    tracking_id: str,
+    body: ExcludeRequest,
+    ctx: ApiKeyContext = Depends(authenticate_api_key),
+) -> ExclusionRow:
+    if not body.url and not body.domain:
+        raise HTTPException(status_code=400, detail="Either `url` or `domain` is required.")
+    service = get_tracked_queries_service()
+    _ensure_owner(await service.get(tracking_id), ctx)
+    row = await service.add_exclusion(
+        tracking_id,
+        url=body.url,
+        domain=body.domain,
+        reason=body.reason,
+        api_key_id=ctx.api_key_id,
+    )
+    return ExclusionRow(
+        id=row["id"],
+        url=row.get("url"),
+        domain=row.get("domain"),
+        reason=row.get("reason"),
+        excluded_at=row.get("excluded_at") or datetime.now(timezone.utc).isoformat(),
+    )
+
+
+@router.post(
+    "/{tracking_id}/include",
+    summary="Undo a previous exclusion (re-include a URL or domain)",
+    description=(
+        "Removes an exclusion entry. Future refreshes will surface results matching "
+        "the URL/domain again. Returns `{success, removed_count}` — `removed_count=0` "
+        "means there was no matching exclusion to remove."
+    ),
+)
+async def include_result(
+    tracking_id: str,
+    body: ExcludeRequest,
+    ctx: ApiKeyContext = Depends(authenticate_api_key),
+) -> Dict[str, Any]:
+    if not body.url and not body.domain:
+        raise HTTPException(status_code=400, detail="Either `url` or `domain` is required.")
+    service = get_tracked_queries_service()
+    _ensure_owner(await service.get(tracking_id), ctx)
+    removed = await service.remove_exclusion(tracking_id, url=body.url, domain=body.domain)
+    return {"success": True, "tracking_id": tracking_id, "removed_count": removed}
+
+
+@router.get(
+    "/{tracking_id}/exclusions",
+    response_model=List[ExclusionRow],
+    summary="List every exclusion on this tracked query",
+)
+async def list_exclusions(
+    tracking_id: str,
+    ctx: ApiKeyContext = Depends(authenticate_api_key),
+) -> List[ExclusionRow]:
+    service = get_tracked_queries_service()
+    _ensure_owner(await service.get(tracking_id), ctx)
+    rows = await service.list_exclusions(tracking_id)
+    return [
+        ExclusionRow(
+            id=r["id"],
+            url=r.get("url"),
+            domain=r.get("domain"),
+            reason=r.get("reason"),
+            excluded_at=r["excluded_at"],
+        )
+        for r in rows
+    ]
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# On-demand re-verification (2026-04-28)
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class VerifyRequest(BaseModel):
+    urls: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Optional whitelist of URLs to re-verify. Each URL must already "
+            "exist in the latest refresh run for this tracking_id. When "
+            "omitted, every URL in the latest run is re-verified."
+        ),
+    )
+
+
+class VerifyResponse(BaseModel):
+    tracking_id: str
+    status: str  # 'verified' | 'no_results' | 'no_match' | 'inactive' | 'error'
+    rows_processed: int = 0
+    verified_count: int = 0
+    unverified_count: int = 0
+    credits_used: int = 0
+    latency_ms: int = 0
+    results: List[TrackedQueryResultRow] = []
+    error: Optional[str] = None
+
+
+@router.post(
+    "/{tracking_id}/verify",
+    response_model=VerifyResponse,
+    summary="Re-verify the latest results — refreshes verified flag + price by re-scraping each URL",
+    description=(
+        "Re-runs Firecrawl verification on every URL (or just the URLs you "
+        "specify) in the latest refresh run for this tracked query. **Does "
+        "not** re-run discovery — no new retailers will be added. Use this "
+        "to clear stale `verified=false` flags and refresh prices on rows "
+        "you suspect changed without doing a full new discovery.\n\n"
+        "Cost: 1 Firecrawl credit per URL re-verified. No LLM cost. Counts "
+        "toward your `total_credits_used` accumulator. ~1-3s per URL "
+        "(parallel). Returns the freshly-updated rows.\n\n"
+        "Differences vs `/refresh`:\n"
+        "- `/refresh` runs Perplexity + DataForSEO + marketplaces (full discovery + classifier + verify).\n"
+        "- `/verify` only re-runs Firecrawl on URLs you already track. Cheaper, faster, narrower scope."
+    ),
+)
+async def verify_tracked_query(
+    tracking_id: str,
+    body: VerifyRequest,
+    ctx: ApiKeyContext = Depends(authenticate_api_key),
+) -> VerifyResponse:
+    service = get_tracked_queries_service()
+    _ensure_owner(await service.get(tracking_id), ctx)
+    outcome = await service.reverify(tracking_id, urls=body.urls)
+    return VerifyResponse(
+        tracking_id=tracking_id,
+        status=outcome.get("status", "unknown"),
+        rows_processed=int(outcome.get("rows_processed", 0) or 0),
+        verified_count=int(outcome.get("verified_count", 0) or 0),
+        unverified_count=int(outcome.get("unverified_count", 0) or 0),
+        credits_used=int(outcome.get("credits_used", 0) or 0),
+        latency_ms=int(outcome.get("latency_ms", 0) or 0),
+        results=[TrackedQueryResultRow(**r) for r in (outcome.get("results") or [])],
+        error=outcome.get("error"),
+    )

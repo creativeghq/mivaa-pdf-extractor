@@ -472,6 +472,36 @@ class TrackedQueriesService:
             }).eq("id", tracking_id).execute()
             return {"status": "error", "error": result.error, "credits_used": result.credits_used}
 
+        # Apply per-tracked-query exclusions BEFORE persisting. Excluded URLs
+        # never reach the price_history table, so they never feed the chart,
+        # the rolling median, the alerts, or future refreshes' "known
+        # retailers" seed. Cheaper than persist-then-filter and keeps the
+        # tracked_query_price_history table clean.
+        if result.hits:
+            try:
+                ex = (
+                    self.supabase.client.table("tracked_query_excluded_urls")
+                    .select("url, domain")
+                    .eq("tracked_query_id", tracking_id)
+                    .execute()
+                )
+                excluded_urls = {e["url"] for e in (ex.data or []) if e.get("url")}
+                excluded_domains = {e["domain"] for e in (ex.data or []) if e.get("domain")}
+                if excluded_urls or excluded_domains:
+                    before = len(result.hits)
+                    result.hits = [
+                        h for h in result.hits
+                        if h.product_url not in excluded_urls
+                        and (_domain_of(h.product_url) or "") not in excluded_domains
+                    ]
+                    dropped = before - len(result.hits)
+                    if dropped > 0:
+                        logger.info(
+                            f"refresh: tracked_query={tracking_id} dropped {dropped} hits via exclusions"
+                        )
+            except Exception as e:
+                logger.warning(f"exclusion filter failed (non-fatal): {e}")
+
         # Persist result rows — one per retailer, grouped by refresh_run_id.
         # Each row passes through the sanity band before insert: an outlier
         # reading is still persisted but stamped is_anomaly=true so the UI
@@ -591,8 +621,14 @@ class TrackedQueriesService:
             "summary": result.summary,
         }
 
-    async def latest_results(self, tracking_id: str) -> List[Dict[str, Any]]:
-        """Return the most recent refresh_run's retailer rows, cheapest first."""
+    async def latest_results(
+        self, tracking_id: str, *, include_excluded: bool = False
+    ) -> List[Dict[str, Any]]:
+        """Return the most recent refresh_run's retailer rows, cheapest first.
+
+        Soft-hides rows excluded for this tracking_id by default. Pass
+        include_excluded=True to bypass (admin / debugging).
+        """
         latest = (
             self.supabase.client.table("tracked_query_price_history")
             .select("refresh_run_id")
@@ -613,7 +649,279 @@ class TrackedQueriesService:
             .order("price", desc=False)
             .execute()
         )
+        rows = res.data or []
+        if include_excluded:
+            return rows
+        return self._apply_exclusion_filter(tracking_id, rows)
+
+    # ──────────── Exclusions ────────────
+
+    async def list_exclusions(self, tracking_id: str) -> List[Dict[str, Any]]:
+        """Every exclusion attached to this tracking_id, newest first."""
+        res = (
+            self.supabase.client.table("tracked_query_excluded_urls")
+            .select("id, url, domain, reason, excluded_at, excluded_by_api_key_id")
+            .eq("tracked_query_id", tracking_id)
+            .order("excluded_at", desc=True)
+            .execute()
+        )
         return res.data or []
+
+    async def add_exclusion(
+        self,
+        tracking_id: str,
+        *,
+        url: Optional[str] = None,
+        domain: Optional[str] = None,
+        reason: Optional[str] = None,
+        api_key_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Insert one URL or domain exclusion. ON CONFLICT updates the reason
+        (treats re-exclusion as a no-op merge so callers don't need to check)."""
+        if not url and not domain:
+            raise ValueError("Either url or domain must be provided")
+        # Normalize domain (strip scheme + www)
+        if domain:
+            domain = domain.strip().lower().removeprefix("www.").removeprefix("http://").removeprefix("https://")
+            domain = domain.split("/")[0]
+        payload = {
+            "tracked_query_id": tracking_id,
+            "url": url.strip() if url else None,
+            "domain": domain,
+            "reason": reason,
+            "excluded_by_api_key_id": api_key_id,
+        }
+        res = (
+            self.supabase.client.table("tracked_query_excluded_urls")
+            .upsert(
+                payload,
+                on_conflict="tracked_query_id,url" if url else "tracked_query_id,domain",
+            )
+            .execute()
+        )
+        return (res.data or [payload])[0]
+
+    async def remove_exclusion(
+        self,
+        tracking_id: str,
+        *,
+        url: Optional[str] = None,
+        domain: Optional[str] = None,
+    ) -> int:
+        """Undo an exclusion. Returns the number of rows removed (0 or 1)."""
+        if not url and not domain:
+            raise ValueError("Either url or domain must be provided")
+        q = self.supabase.client.table("tracked_query_excluded_urls").delete().eq(
+            "tracked_query_id", tracking_id
+        )
+        if url:
+            q = q.eq("url", url.strip())
+        else:
+            normalized = domain.strip().lower().removeprefix("www.")
+            q = q.eq("domain", normalized)
+        res = q.execute()
+        return len(res.data or [])
+
+    async def reverify(
+        self,
+        tracking_id: str,
+        *,
+        urls: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Re-verify the latest results — re-fetch each URL via Firecrawl, refresh
+        the price + verified flag, and write the changes back to the same
+        refresh_run_id rows in `tracked_query_price_history`.
+
+        Different from /refresh — does NOT call Perplexity / DataForSEO /
+        marketplace adapters; only re-runs Firecrawl verification on URLs we
+        already have. Cheaper (1 Firecrawl credit per URL, no LLM cost) and
+        useful when a partner sees a stale 'verified=false' row and wants to
+        check if the page is back up.
+
+        Args:
+            tracking_id: target tracked query
+            urls: optional whitelist; when None, re-verifies every URL in the
+                latest refresh run. When given, only those URLs (must already
+                exist in the latest run for this tracked_query).
+
+        Returns:
+            {status, credits_used, results, latency_ms, error?}
+        """
+        from app.services.integrations.perplexity_price_search_service import (
+            get_perplexity_price_search_service, PriceHit,
+        )
+        start = datetime.now(timezone.utc)
+
+        tq = await self.get(tracking_id)
+        if not tq:
+            return {"status": "not_found", "error": "tracking_id not found"}
+        if not tq.get("is_active"):
+            return {"status": "inactive", "error": "tracking is deactivated"}
+
+        # Pull the most recent refresh run for this tracked query.
+        latest_meta = (
+            self.supabase.client.table("tracked_query_price_history")
+            .select("refresh_run_id")
+            .eq("tracked_query_id", tracking_id)
+            .order("scraped_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        meta_rows = latest_meta.data or []
+        if not meta_rows:
+            return {
+                "status": "no_results",
+                "error": "no prior refresh on this tracked_query — call /refresh first",
+                "credits_used": 0,
+            }
+        run_id = meta_rows[0]["refresh_run_id"]
+        run = (
+            self.supabase.client.table("tracked_query_price_history")
+            .select(
+                "id, retailer_name, product_url, price, original_price, currency, "
+                "price_unit, availability, city, ships_from_abroad, source, notes, "
+                "match_kind, match_score, match_note, product_title"
+            )
+            .eq("tracked_query_id", tracking_id)
+            .eq("refresh_run_id", run_id)
+            .execute()
+        )
+        run_rows = run.data or []
+        if not run_rows:
+            return {
+                "status": "no_results",
+                "error": "latest refresh run is empty",
+                "credits_used": 0,
+            }
+
+        # Optionally narrow to caller-supplied URLs. Filter at api layer
+        # already, but we double-check ownership here.
+        if urls:
+            allow = {u.strip() for u in urls if u and isinstance(u, str)}
+            run_rows = [r for r in run_rows if r.get("product_url") in allow]
+            if not run_rows:
+                return {
+                    "status": "no_match",
+                    "error": "none of the supplied URLs belong to the latest refresh run",
+                    "credits_used": 0,
+                }
+
+        # Build PriceHit objects from the stored rows so we can pass them
+        # through the existing _verify_hits_with_firecrawl pipeline.
+        hits: List[PriceHit] = []
+        row_by_url: Dict[str, Dict[str, Any]] = {}
+        for r in run_rows:
+            url = r.get("product_url")
+            if not url:
+                continue
+            row_by_url[url] = r
+            hits.append(PriceHit(
+                retailer_name=r.get("retailer_name") or "",
+                product_url=url,
+                price=float(r["price"]) if r.get("price") is not None else None,
+                original_price=float(r["original_price"]) if r.get("original_price") is not None else None,
+                currency=r.get("currency"),
+                price_unit=r.get("price_unit"),
+                availability=r.get("availability"),
+                city=r.get("city"),
+                ships_from_abroad=bool(r.get("ships_from_abroad")),
+                verified=False,  # force re-verify
+                source=r.get("source") or "perplexity",
+                notes=r.get("notes"),
+                match_kind=r.get("match_kind"),
+                match_score=r.get("match_score"),
+                match_note=r.get("match_note"),
+                product_title=r.get("product_title"),
+            ))
+
+        svc = get_perplexity_price_search_service()
+        try:
+            credits_used = await svc._verify_hits_with_firecrawl(
+                hits,
+                extractions_out=None,
+                user_id=tq.get("user_id"),
+                workspace_id=tq.get("workspace_id"),
+                double_read=False,  # never double-read on reverify; that's
+                                    # a first-refresh-only mechanic
+            )
+        except Exception as e:
+            logger.exception(f"reverify failed for tracked_query={tracking_id}: {e}")
+            return {"status": "error", "error": str(e), "credits_used": 0}
+
+        # Write the updated price/original_price/verified/availability/notes
+        # back to the same history rows. Targeting by id (PK) is faster +
+        # avoids any race with a concurrent /refresh insert.
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for h in hits:
+            r = row_by_url.get(h.product_url)
+            if not r:
+                continue
+            update = {
+                "price": float(h.price) if h.price is not None else None,
+                "original_price": float(h.original_price) if h.original_price is not None else None,
+                "currency": h.currency,
+                "availability": h.availability,
+                "verified": bool(h.verified),
+                "notes": h.notes,
+                "scraped_at": now_iso,
+            }
+            try:
+                self.supabase.client.table("tracked_query_price_history").update(update).eq("id", r["id"]).execute()
+            except Exception as e:
+                logger.warning(f"reverify: failed to update history id={r['id']}: {e}")
+
+        # Increment total_credits_used so partner dashboards reflect the spend.
+        prev_total = int(tq.get("total_credits_used") or 0)
+        try:
+            self.supabase.client.table("tracked_queries").update({
+                "total_credits_used": prev_total + int(credits_used or 0),
+                "updated_at": now_iso,
+            }).eq("id", tracking_id).execute()
+        except Exception as e:
+            logger.warning(f"reverify: failed to bump total_credits_used: {e}")
+
+        latency_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
+        # Return the freshly-updated rows (read-after-write so the caller sees
+        # exactly what's now in the DB, with exclusion filter applied).
+        results = await self.latest_results(tracking_id)
+        return {
+            "status": "verified",
+            "credits_used": int(credits_used or 0),
+            "latency_ms": latency_ms,
+            "results": results,
+            "verified_count": sum(1 for h in hits if h.verified),
+            "unverified_count": sum(1 for h in hits if not h.verified),
+            "rows_processed": len(hits),
+        }
+
+    def _apply_exclusion_filter(
+        self, tracking_id: str, rows: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Drop rows whose product_url matches an exclusion (URL or domain)."""
+        if not rows:
+            return rows
+        ex = (
+            self.supabase.client.table("tracked_query_excluded_urls")
+            .select("url, domain")
+            .eq("tracked_query_id", tracking_id)
+            .execute()
+        )
+        excluded = ex.data or []
+        if not excluded:
+            return rows
+        excluded_urls = {e["url"] for e in excluded if e.get("url")}
+        excluded_domains = {e["domain"] for e in excluded if e.get("domain")}
+        kept: List[Dict[str, Any]] = []
+        for r in rows:
+            url = r.get("product_url")
+            if url in excluded_urls:
+                continue
+            d = _domain_of(url)
+            if d and d in excluded_domains:
+                continue
+            kept.append(r)
+        return kept
 
     async def latest_results_split(self, tracking_id: str) -> Dict[str, List[Dict[str, Any]]]:
         """
@@ -636,9 +944,9 @@ class TrackedQueriesService:
         return {"results": primary, "family_results": family}
 
     async def history(
-        self, tracking_id: str, limit: int = 200
+        self, tracking_id: str, limit: int = 200, *, include_excluded: bool = False
     ) -> List[Dict[str, Any]]:
-        """All historical price points, newest first."""
+        """All historical price points, newest first. Excluded URLs hidden by default."""
         res = (
             self.supabase.client.table("tracked_query_price_history")
             .select(
@@ -652,7 +960,10 @@ class TrackedQueriesService:
             .limit(max(1, min(limit, 2000)))
             .execute()
         )
-        return res.data or []
+        rows = res.data or []
+        if include_excluded:
+            return rows
+        return self._apply_exclusion_filter(tracking_id, rows)
 
     async def due_for_refresh(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Used by the cron. Returns active queries whose `next_check_at` is
