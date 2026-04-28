@@ -657,7 +657,6 @@ class DynamicMetadataExtractor:
             response = client.messages.create(
                 model="claude-opus-4-7",
                 max_tokens=16000,
-                temperature=0.1,  # Low temperature for consistent extraction
                 messages=[
                     {
                         "role": "user",

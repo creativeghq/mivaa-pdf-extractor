@@ -38,6 +38,18 @@ _DEFAULT_CONFIDENCE_BREAKDOWN: Dict[str, float] = {
     "validation": 0.9,
 }
 
+# Models where the Anthropic API now rejects the `temperature` parameter
+# (status: deprecated → invalid_request_error 400). Callers can keep passing
+# temperature; we silently drop it for these models so the call still succeeds.
+_MODELS_WITHOUT_TEMPERATURE = (
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+)
+
+
+def _model_supports_temperature(model: str) -> bool:
+    return not any(model.startswith(m) for m in _MODELS_WITHOUT_TEMPERATURE)
+
 
 def _resolve_user_from_job(job_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
     """If we have a job_id but no user_id, look up the job owner.
@@ -72,9 +84,10 @@ def _build_messages_kwargs(
     kwargs: Dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
-        "temperature": temperature,
         "messages": messages,
     }
+    if _model_supports_temperature(model):
+        kwargs["temperature"] = temperature
     if system:
         kwargs["system"] = system
     if extra:

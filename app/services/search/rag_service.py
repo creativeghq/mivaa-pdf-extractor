@@ -1677,7 +1677,6 @@ class RAGService:
             response = client.messages.create(
                 model="claude-opus-4-7",
                 max_tokens=2048,
-                temperature=0.1,
                 messages=[{"role": "user", "content": prompt}]
             )
 
@@ -1847,7 +1846,6 @@ class RAGService:
             response = client.messages.create(
                 model="claude-opus-4-7",
                 max_tokens=4096,
-                temperature=0.1 if query_type == "factual" else 0.3,
                 messages=[{"role": "user", "content": prompt}]
             )
 

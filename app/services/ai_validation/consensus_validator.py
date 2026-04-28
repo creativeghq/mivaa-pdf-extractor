@@ -311,7 +311,6 @@ class ConsensusValidator:
                     task=f"consensus_{extraction_type}_extraction",
                     model="claude-opus-4-7",
                     max_tokens=200,
-                    temperature=0,
                     messages=[{
                         "role": "user",
                         "content": f"Extract {extraction_type} from: {data['content'][:1000]}",
