@@ -187,6 +187,7 @@ class RealEmbeddingsService:
             
             # 2. Visual Embedding (768D) - REAL (SLIG cloud endpoint)
             pil_image_for_reuse = None  # Track PIL image for reuse
+            visual_embedding = None
             if image_url or image_data:
                 visual_embedding, model_used, pil_image_for_reuse = await self._generate_visual_embedding(
                     image_url, image_data
@@ -197,10 +198,16 @@ class RealEmbeddingsService:
                     embeddings["metadata"]["confidence_scores"]["visual"] = 0.95
                     self.logger.info(f"✅ Visual embedding generated (768D) using {model_used}")
 
-                # 2a. Generate text-guided specialized visual embeddings using SLIG similarity mode
-                # Uses SLIG's similarity scoring to create embeddings focused on specific aspects
+                # 2a. Generate text-guided specialized visual embeddings using SLIG similarity mode.
+                # Pass the visual_embedding we just computed so the specialized
+                # path doesn't re-fetch the same image embedding from SLIG.
+                # Saves 1 SLIG call per image (was 1 base + 1 re-base + 4 sim + 4 text = 10/img;
+                # now 1 base + 4 sim + 0 text-cached = 5/img).
                 specialized_embeddings, pil_image_for_reuse = await self._generate_specialized_siglip_embeddings(
-                    image_url, image_data, pil_image=pil_image_for_reuse
+                    image_url,
+                    image_data,
+                    pil_image=pil_image_for_reuse,
+                    base_image_embedding=visual_embedding,
                 )
                 if specialized_embeddings:
                     embeddings["embeddings"]["color_slig_768"] = specialized_embeddings.get("color")
@@ -1143,32 +1150,72 @@ class RealEmbeddingsService:
 
         return None, None
 
+    # Class-level cache for the 4 fixed text-prompt SLIG embeddings.
+    # These prompts are CONSTANTS — embedding them once per pipeline run
+    # instead of per-image saves 4 SLIG calls × N images per product.
+    # On a 30-image product = 120 fewer SLIG calls per product.
+    _SPECIALIZED_TEXT_PROMPTS = {
+        "color": "focus on color palette and color relationships",
+        "texture": "focus on surface patterns and texture details",
+        "material": "focus on material type and physical properties",
+        "style": "focus on design style and aesthetic elements",
+    }
+    _text_prompt_embedding_cache: Dict[str, List[float]] = {}
+    _text_prompt_cache_lock: Optional[asyncio.Lock] = None
+
+    @classmethod
+    def _get_text_cache_lock(cls) -> asyncio.Lock:
+        if cls._text_prompt_cache_lock is None:
+            cls._text_prompt_cache_lock = asyncio.Lock()
+        return cls._text_prompt_cache_lock
+
+    async def _get_cached_specialized_text_embedding(self, prompt_key: str) -> Optional[List[float]]:
+        """Return SLIG text embedding for a fixed specialized prompt, computing
+        once per process and caching forever. The prompts are constants so
+        re-embedding them per image is pure waste."""
+        prompt = self._SPECIALIZED_TEXT_PROMPTS.get(prompt_key)
+        if not prompt:
+            return None
+        cached = RealEmbeddingsService._text_prompt_embedding_cache.get(prompt_key)
+        if cached is not None:
+            return cached
+        async with self._get_text_cache_lock():
+            cached = RealEmbeddingsService._text_prompt_embedding_cache.get(prompt_key)
+            if cached is not None:
+                return cached
+            async with self._get_slig_semaphore():
+                emb = await self._slig_client.get_text_embedding(prompt)
+            if emb and len(emb) == self.slig_embedding_dimension:
+                RealEmbeddingsService._text_prompt_embedding_cache[prompt_key] = emb
+                return emb
+            return None
+
     async def _generate_specialized_siglip_embeddings(
         self,
         image_url: Optional[str],
         image_data: Optional[str],
         pil_image=None,
+        base_image_embedding: Optional[List[float]] = None,
     ) -> tuple[Optional[Dict[str, List[float]]], Optional[any]]:
         """
         Generate 4 text-guided SLIG embeddings (color / texture / style / material).
 
         All-or-nothing: if any of the 4 fail, this returns None for the whole set
         so the image doesn't end up with partial specialized coverage.
+
+        `base_image_embedding`: pass the already-computed visual_768 embedding
+        from the caller so we don't re-compute it. Saves 1 SLIG call per image.
         """
         try:
             import numpy as np
 
-            text_prompts = {
-                "color": "focus on color palette and color relationships",
-                "texture": "focus on surface patterns and texture details",
-                "material": "focus on material type and physical properties",
-                "style": "focus on design style and aesthetic elements",
-            }
+            text_prompts = self._SPECIALIZED_TEXT_PROMPTS
 
-            async with self._get_slig_semaphore():
-                base_image_embedding = await self._slig_client.get_image_embedding(
-                    image=image_data if image_data else image_url
-                )
+            if base_image_embedding is None:
+                async with self._get_slig_semaphore():
+                    base_image_embedding = await self._slig_client.get_image_embedding(
+                        image=image_data if image_data else image_url
+                    )
             if not base_image_embedding or len(base_image_embedding) != self.slig_embedding_dimension:
                 self.logger.warning(
                     f"⚠️ Specialized embeddings: base image embedding invalid "
@@ -1192,8 +1239,8 @@ class RealEmbeddingsService:
                         raise ValueError(f"empty similarity_scores for {embedding_type}")
                     similarity_score = float(sim_matrix[0][0])
 
-                    async with self._get_slig_semaphore():
-                        text_embedding = await self._slig_client.get_text_embedding(text_prompt)
+                    # Cached: only computed once per process for the 4 fixed prompts.
+                    text_embedding = await self._get_cached_specialized_text_embedding(embedding_type)
                     if not text_embedding or len(text_embedding) != self.slig_embedding_dimension:
                         raise ValueError(
                             f"text embedding wrong size for {embedding_type}: "

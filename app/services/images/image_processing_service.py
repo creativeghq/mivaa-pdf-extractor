@@ -2245,12 +2245,11 @@ class ImageProcessingService:
         # so Qwen sat idle for 15s gaps and the 60s auto-pause eventually
         # fired mid-job (Stage 3.5 Material analysis fallback to Claude).
         # Per-image work is fully isolated (no cross-image state), so we
-        # run POST_PROCESSING_CONCURRENCY in flight via a semaphore. This
-        # keeps Qwen continuously busy with N concurrent calls (well under
-        # the 4-replica capacity), eliminates the auto-pause window, and
-        # cuts wall clock from sequential ~16s/img to ~16s/N amortized.
+        # run QWEN_CONCURRENCY in flight via a semaphore. With 4 replicas
+        # × 8 base cap, default is 32 — comfortably saturates the cluster.
         # The outer batching loop is preserved for memory bounds.
-        POST_PROCESSING_CONCURRENCY = 8
+        from app.config import get_settings as _get_settings_for_qwen_sem
+        POST_PROCESSING_CONCURRENCY = _get_settings_for_qwen_sem().qwen_concurrency
         post_processing_sem = asyncio.Semaphore(POST_PROCESSING_CONCURRENCY)
 
         # Dedicated counter for "completed so far" so the per-image progress
@@ -2373,7 +2372,8 @@ class ImageProcessingService:
         # the OCR step is local), so we run them with a smaller concurrency
         # cap to avoid hammering the Anthropic rate limit.
         if icon_candidates:
-            ICON_CONCURRENCY = 4
+            from app.config import get_settings as _get_settings_for_icon_sem
+            ICON_CONCURRENCY = _get_settings_for_icon_sem().icon_concurrency
             icon_sem = asyncio.Semaphore(ICON_CONCURRENCY)
             icon_completed = {'value': 0}
             icon_total = len(icon_candidates)

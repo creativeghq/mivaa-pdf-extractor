@@ -164,9 +164,10 @@ class YoloEndpointManager:
                 logger.info(f"🔄 Resuming YOLO endpoint (status: {endpoint.status})...")
 
                 # Resume with retries
+                from app.services.embeddings.hf_errors import is_hf_billing_error, HFBillingError
                 for attempt in range(self.max_resume_retries):
                     try:
-                        endpoint.resume().wait(timeout=90)  # P2-3: 90s cap  # Wait up to 5 minutes
+                        endpoint.resume().wait(timeout=90)  # P2-3: 90s cap
                         self.resume_count += 1
                         self.last_resume_time = time.time()
                         self.warmup_completed = False  # Reset warmup flag
@@ -178,6 +179,12 @@ class YoloEndpointManager:
                             return False
                         return True
                     except Exception as e:
+                        # FAST-FAIL on HF billing errors — retries can't fix this.
+                        if is_hf_billing_error(e):
+                            logger.error(
+                                f"💳 HF billing error on YOLO resume — aborting all retries: {e}"
+                            )
+                            raise HFBillingError("mh-yolo", self.namespace, original=e) from e
                         logger.warning(f"⚠️ Resume attempt {attempt + 1} failed: {e}")
                         if attempt < self.max_resume_retries - 1:
                             time.sleep(2 ** attempt)  # Exponential backoff

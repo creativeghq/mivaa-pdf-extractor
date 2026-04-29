@@ -232,24 +232,56 @@ async def process_single_product(
                 logger_instance.info(f"      ♻️ Reusing existing temp PDF: {used_temp_path}")
 
                 try:
-                    # Detect layout regions for each physical page
-                    # Convert to PDF index internally for PyMuPDF access
-                    for physical_page in sorted(physical_pages):
-                        # Convert physical page to PDF index for YOLO
+                    # Detect layout regions for each physical page IN PARALLEL.
+                    # YOLO endpoint has yolo_concurrency=48 cap (4 replicas).
+                    # The previous sequential loop wasted ~80% of YOLO capacity
+                    # — 6 pages × ~3s sequential = ~18s; parallel with replica
+                    # fan-out → ~3-5s total per product. Bound to
+                    # min(len(pages), yolo_concurrency / max_concurrent_products)
+                    # so 4 products × 12 pages don't all stampede at once.
+                    import asyncio as _asyncio_yolo
+                    from app.config import get_settings as _get_settings_for_yolo
+                    _yolo_settings = _get_settings_for_yolo()
+                    _per_product_yolo_cap = max(
+                        2,
+                        _yolo_settings.yolo_concurrency // max(1, _yolo_settings.max_concurrent_products)
+                    )
+                    yolo_sem = _asyncio_yolo.Semaphore(_per_product_yolo_cap)
+
+                    async def _detect_one_page(physical_page: int):
                         if has_spread_layout and physical_page in physical_to_pdf_map:
-                            pdf_idx, position = physical_to_pdf_map[physical_page]
+                            pdf_idx, _position = physical_to_pdf_map[physical_page]
                         else:
-                            pdf_idx = physical_page - 1  # Simple 1-based to 0-based
+                            pdf_idx = physical_page - 1
+                        async with yolo_sem:
+                            try:
+                                yolo_result = await detector.detect_layout_regions(used_temp_path, pdf_idx)
+                            except Exception as page_err:
+                                logger_instance.warning(
+                                    f"      ⚠️ YOLO failed for page {physical_page}: {page_err}"
+                                )
+                                return None
+                            if yolo_result and yolo_result.regions:
+                                for region in yolo_result.regions:
+                                    region.bbox.page = physical_page
+                                return yolo_result.regions
+                            return None
 
-                        logger_instance.info(f"      Detecting regions on physical page {physical_page} (PDF index {pdf_idx})...")
-                        result_yolo = await detector.detect_layout_regions(used_temp_path, pdf_idx)
-
-                        if result_yolo and result_yolo.regions:
-                            # Store physical page number in regions (not PDF index)
-                            for region in result_yolo.regions:
-                                region.bbox.page = physical_page
-                            layout_regions.extend(result_yolo.regions)
-                            logger_instance.info(f"      ✅ Found {len(result_yolo.regions)} regions")
+                    sorted_pages = sorted(physical_pages)
+                    logger_instance.info(
+                        f"      Detecting regions on {len(sorted_pages)} pages "
+                        f"(parallel, cap={_per_product_yolo_cap})..."
+                    )
+                    page_results = await _asyncio_yolo.gather(
+                        *(_detect_one_page(p) for p in sorted_pages),
+                        return_exceptions=False,
+                    )
+                    for regions in page_results:
+                        if regions:
+                            layout_regions.extend(regions)
+                    logger_instance.info(
+                        f"      ✅ YOLO complete: {len(layout_regions)} regions across {len(sorted_pages)} pages"
+                    )
                 finally:
                     # Only delete if we created it locally in this stage
                     if created_temp and used_temp_path and os.path.exists(used_temp_path):

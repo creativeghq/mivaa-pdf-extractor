@@ -2702,6 +2702,11 @@ async def process_document_with_discovery(
                 else:
                     warmup_results["skipped"].append("qwen")
             except Exception as e:
+                # Bubble HF billing errors to the gather so the orchestrator
+                # can fast-fail the whole job — retries cannot fix billing.
+                from app.services.embeddings.hf_errors import HFBillingError
+                if isinstance(e, HFBillingError):
+                    raise
                 warmup_results["failed"].append({"endpoint": "qwen", "error": str(e)})
                 logger.warning(f"⚠️ Failed to warmup Qwen endpoint: {e}")
 
@@ -2746,6 +2751,9 @@ async def process_document_with_discovery(
                 else:
                     warmup_results["skipped"].append("slig")
             except Exception as e:
+                from app.services.embeddings.hf_errors import HFBillingError
+                if isinstance(e, HFBillingError):
+                    raise
                 warmup_results["failed"].append({"endpoint": "slig", "error": str(e)})
                 logger.warning(f"⚠️ Failed to warmup SLIG endpoint: {e}")
 
@@ -2790,6 +2798,9 @@ async def process_document_with_discovery(
                 else:
                     warmup_results["skipped"].append("yolo")
             except Exception as e:
+                from app.services.embeddings.hf_errors import HFBillingError
+                if isinstance(e, HFBillingError):
+                    raise
                 warmup_results["failed"].append({"endpoint": "yolo", "error": str(e)})
                 logger.warning(f"⚠️ Failed to warmup YOLO endpoint: {e}")
 
@@ -2857,16 +2868,60 @@ async def process_document_with_discovery(
                 else:
                     warmup_results["skipped"].append("chandra")
             except Exception as e:
+                from app.services.embeddings.hf_errors import HFBillingError
+                if isinstance(e, HFBillingError):
+                    raise
                 warmup_results["failed"].append({"endpoint": "chandra", "error": str(e)})
                 logger.warning(f"⚠️ Failed to warmup Chandra endpoint: {e}")
 
-        # Execute all warmups in parallel
-        await asyncio.gather(
+        # Execute all warmups in parallel.
+        # FAST-FAIL on HF billing errors: if any endpoint's resume returns
+        # 403 "Payment method required", short-circuit the job NOW —
+        # there's no point burning more retry cycles or proceeding to
+        # discovery when the HF account can't bill. The user has to add
+        # a payment method; until then every warmup call is wasted.
+        from app.services.embeddings.hf_errors import HFBillingError
+        gather_results = await asyncio.gather(
             warmup_qwen(),
             warmup_slig(),
             warmup_yolo(),
-            warmup_chandra()
+            warmup_chandra(),
+            return_exceptions=True,
         )
+        billing_errors = [r for r in gather_results if isinstance(r, HFBillingError)]
+        if billing_errors:
+            err = billing_errors[0]
+            logger.error(
+                f"💳 HF BILLING ERROR detected — aborting job {job_id} immediately. "
+                f"Endpoint '{err.endpoint_name}' (namespace='{err.namespace}') refused to start: "
+                f"add a payment method at https://huggingface.co/settings/billing"
+            )
+            sentry_sdk.capture_message(
+                f"💳 PDF job {job_id} aborted — HF billing required",
+                level="error",
+            )
+            # Persist clean failure to DB so the UI shows it correctly.
+            job_storage[job_id]["status"] = "failed"
+            job_storage[job_id]["error"] = str(err)
+            job_storage[job_id]["failed_at"] = datetime.utcnow().isoformat()
+            if job_recovery_service:
+                await job_recovery_service.persist_job(
+                    job_id=job_id,
+                    document_id=document_id,
+                    filename=filename,
+                    status="failed",
+                    progress=job_storage[job_id].get("progress", 0),
+                    metadata=job_storage[job_id].get("metadata", {}),
+                    error=str(err),
+                )
+            # Raise to trigger the orchestrator's outer except + finally
+            # so cleanup (scale-to-zero, temp files, etc.) still runs.
+            raise err
+        # Re-raise any non-billing exception that gather captured so the
+        # orchestrator's normal error handling kicks in.
+        for r in gather_results:
+            if isinstance(r, BaseException) and not isinstance(r, HFBillingError):
+                raise r
 
         logger.info("=" * 80)
         logger.info(f"✅ WARMUP PHASE COMPLETE - {len(endpoint_managers)} endpoints resumed")
@@ -3181,6 +3236,30 @@ async def process_document_with_discovery(
         logger.info(f"\n{'='*80}")
         logger.info(f"🏭 PRODUCT-CENTRIC PIPELINE: Processing {len(catalog.products)} products")
         logger.info(f"{'='*80}\n")
+
+        # Proactive HF scale-up: now that we know catalog size, push the
+        # auto-scaler to provision the right replica count immediately
+        # (instead of waiting for the 30s cron tick to discover the load).
+        # Uses calculate_desired_replicas() so the policy stays in one place.
+        try:
+            from app.services.embeddings.endpoint_auto_scaler import get_auto_scaler
+            from app.services.core.endpoint_controller import endpoint_controller, HF_ENDPOINT_NAMES
+            _auto_scaler = get_auto_scaler()
+            if _auto_scaler is not None and getattr(_auto_scaler, 'enabled', False):
+                # Ensure configs are loaded so we know each endpoint's max
+                if not _auto_scaler._endpoints_initialized:
+                    await _auto_scaler.initialize_endpoint_configs()
+                product_count = len(catalog.products)
+                for short_key, hf_name in HF_ENDPOINT_NAMES.items():
+                    cfg = _auto_scaler._endpoint_configs.get(hf_name, {})
+                    max_rep = cfg.get('max_replica', 4)
+                    desired = _auto_scaler.calculate_desired_replicas(product_count, max_rep)
+                    if desired > 1:
+                        scaled = await endpoint_controller.request_scale_up(short_key, desired)
+                        if scaled:
+                            logger.info(f"📈 Pre-scaled {short_key} to {desired} replicas for {product_count} products")
+        except Exception as scale_up_err:
+            logger.debug(f"Proactive scale-up skipped (non-fatal): {scale_up_err}")
 
         # Initialize product progress tracker
         from app.services.tracking.product_progress_tracker import ProductProgressTracker

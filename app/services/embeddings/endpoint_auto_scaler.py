@@ -141,36 +141,61 @@ class EndpointAutoScaler:
         logger.info(f"✅ Initialized configs for {len(self._endpoint_configs)} endpoints")
     
     async def get_queue_depth(self) -> int:
-        """Get number of LIVE pending/processing jobs from database.
+        """Get number of LIVE work-units pending/processing.
 
-        A job whose heartbeat is older than 5 minutes is treated as dead:
-        the worker is gone but the DB hasn't been reconciled yet (the
-        auto-recovery cron and our startup-resume path will handle it).
-        Counting these keeps endpoints scaled up at full bill rate and is
-        the source of the 'stuck job burns HF credits' bug.
+        Count is **product-level**, not job-level. A single PDF upload with 11
+        products counts as 11 units of work — that's the right signal for
+        deciding how many replicas to keep alive, since each product is
+        roughly an independent stream of YOLO/SLIG/Qwen calls.
+
+        For jobs that haven't started Stage 0 yet (no products in DB), each
+        such job contributes 1 to the queue depth (placeholder) so we don't
+        de-provision endpoints right when a fresh upload lands.
+
+        Stale-heartbeat jobs (>5 min since last heartbeat) are excluded —
+        their products aren't actually doing work, the worker is dead.
         """
         try:
             from app.services.core.supabase_client import get_supabase_client
 
             supabase = get_supabase_client()
             stale_cutoff = (datetime.utcnow() - timedelta(minutes=5)).isoformat()
+            recent_create_cutoff = (datetime.utcnow() - timedelta(seconds=60)).isoformat()
 
-            # pending jobs: count all (no heartbeat yet — they're queued).
+            # Live jobs (pending + processing-with-fresh-heartbeat)
             pending = supabase.client.table('background_jobs') \
                 .select('id', count='exact') \
                 .eq('status', 'pending') \
                 .execute()
+            pending_count = pending.count or 0
 
-            # processing jobs: only count those with a fresh heartbeat
-            # (or no heartbeat yet — within 60s of creation).
-            recent_create_cutoff = (datetime.utcnow() - timedelta(seconds=60)).isoformat()
             live_processing = supabase.client.table('background_jobs') \
-                .select('id', count='exact') \
+                .select('id') \
                 .eq('status', 'processing') \
                 .or_(f'last_heartbeat.gte.{stale_cutoff},and(last_heartbeat.is.null,created_at.gte.{recent_create_cutoff})') \
                 .execute()
+            live_processing_ids = [row['id'] for row in (live_processing.data or [])]
+            processing_count = len(live_processing_ids)
 
-            return (pending.count or 0) + (live_processing.count or 0)
+            # For each live processing job, count its in-flight products
+            # (status != completed/failed). Falls back to 1 if no products yet
+            # (Stage 0 still running) so the scaler doesn't under-provision.
+            product_units = 0
+            if live_processing_ids:
+                pps_resp = supabase.client.table('product_processing_status') \
+                    .select('job_id', count='exact') \
+                    .in_('job_id', live_processing_ids) \
+                    .not_.in_('status', ['completed', 'failed']) \
+                    .execute()
+                product_units = pps_resp.count or 0
+                # If we have processing jobs but zero in-flight products
+                # (Stage 0 hasn't created the rows yet), give each job a
+                # placeholder weight of 1 so endpoints stay warm.
+                if product_units == 0:
+                    product_units = processing_count
+
+            depth = pending_count + product_units
+            return depth
         except Exception as e:
             logger.warning(f"Failed to get queue depth: {e}")
             return 0
@@ -228,15 +253,33 @@ class EndpointAutoScaler:
             return False
     
     def calculate_desired_replicas(self, queue_depth: int, max_replicas: int) -> int:
-        """Calculate desired replicas based on queue depth and endpoint's max."""
+        """Calculate desired replicas based on product-level queue depth.
+
+        Tuned for max_replicas=4 (current production config). With queue depth
+        now counting in-flight products (not just jobs), we want a single PDF
+        with N products to provision proportional replica count:
+
+            queue == 0      → 0 (scaled to zero, $0/hr)
+            queue 1-2       → 1 replica
+            queue 3-5       → 2 replicas
+            queue 6-9       → 3 replicas
+            queue >= 10     → max_replicas (typically 4)
+
+        Each replica handles roughly 2-3 concurrent products comfortably given
+        the per-endpoint AIMD gates (qwen=8 cap, slig=16, yolo=12). 4 replicas
+        × 3 products/replica = 12 products in flight at peak — matches the
+        typical catalog size (10-15 products) almost perfectly.
+        """
         if queue_depth == 0:
-            return 0  # Scale to zero when idle (pause)
-        elif queue_depth <= self.scale_up_threshold:
-            return 1  # Light load, 1 replica
-        elif queue_depth <= self.scale_up_threshold * 2:
-            return min(2, max_replicas)  # Medium load
+            return 0
+        elif queue_depth <= 2:
+            return 1
+        elif queue_depth <= 5:
+            return min(2, max_replicas)
+        elif queue_depth <= 9:
+            return min(3, max_replicas)
         else:
-            return max_replicas  # Heavy load, max out
+            return max_replicas
     
     async def check_and_scale(self):
         """Check queue depth and scale endpoints accordingly."""

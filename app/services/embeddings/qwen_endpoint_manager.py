@@ -210,9 +210,10 @@ class QwenEndpointManager:
                 logger.info(f"🔄 Resuming Qwen endpoint (status: {endpoint.status})...")
 
                 # Resume with retries - FIXED: Added .wait() to block until running
+                from app.services.embeddings.hf_errors import is_hf_billing_error, HFBillingError
                 for attempt in range(self.max_resume_retries):
                     try:
-                        endpoint.resume().wait(timeout=90)  # P2-3: 90s cap  # Wait up to 5 minutes
+                        endpoint.resume().wait(timeout=90)  # P2-3: 90s cap
                         self.resume_count += 1
                         self.last_resume_time = time.time()
                         self.warmup_completed = False  # Reset warmup flag
@@ -226,6 +227,12 @@ class QwenEndpointManager:
 
                         return True
                     except Exception as e:
+                        # FAST-FAIL on HF billing errors — retries can't fix this.
+                        if is_hf_billing_error(e):
+                            logger.error(
+                                f"💳 HF billing error on Qwen resume — aborting all retries: {e}"
+                            )
+                            raise HFBillingError("mh-qwen332binstruct", self.namespace, original=e) from e
                         logger.error(f"❌ Resume attempt {attempt + 1} failed: {e}")
                         if attempt < self.max_resume_retries - 1:
                             time.sleep(2 ** attempt)  # Exponential backoff

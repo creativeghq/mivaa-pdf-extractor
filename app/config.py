@@ -70,10 +70,20 @@ class Settings(BaseSettings):
     # PDF Pipeline Concurrency Settings
     # max_concurrent_products = simultaneous products processed inside one PDF job.
     # Each product holds a reference to the shared file_content bytes plus its own
-    # buffers (chunks, image PIL objects, vision_analysis JSON). 100MB PDF + 3
-    # concurrent products ≈ 1.2-1.5GB RAM peak; tune per server.
+    # buffers (chunks, image PIL objects, vision_analysis JSON). 100MB PDF + 4
+    # concurrent products ≈ 1.6-2.0GB RAM peak; tune per server.
+    #
+    # Default = 3, sized for the 2GB droplet RAM budget. Each product peaks
+    # at ~500MB (PDF page extraction + chunk objects + image PIL buffers +
+    # vision_analysis JSON), so 3 in parallel ≈ 1.5GB peak — safe headroom
+    # under 2GB total.
+    #
+    # 4 replicas × 8 base Qwen cap = 32 concurrent Qwen slots; with 3
+    # products fanning out in-image semaphores, we land around ~24 in-flight
+    # peak — fully utilizes the cluster without saturating it.
+    # 11-product catalog: ~4-5 min total vs. ~10 min when this was 2.
     max_concurrent_products: int = Field(
-        default=2, env="MAX_CONCURRENT_PRODUCTS",
+        default=3, env="MAX_CONCURRENT_PRODUCTS",
         description="Simultaneous products processed within one PDF job"
     )
     product_batch_size: int = Field(
@@ -84,16 +94,35 @@ class Settings(BaseSettings):
         default=4000, env="PRODUCT_MEMORY_THRESHOLD_MB",
         description="Pause adding new products if process RSS exceeds this"
     )
-    # Per-call concurrency caps for outbound embedding HTTP calls. Without these,
-    # a 1000-image catalog fires 1000 simultaneous SLIG/Voyage requests and
-    # trips upstream rate limits.
+    # Per-call concurrency caps for outbound embedding HTTP calls. Defaults
+    # are sized to fully utilize 4 HF replicas (each endpoint has maxReplica=4).
+    # Each base cap × 4 replicas matches what the AIMD gate in
+    # endpoint_controller.py raises to once replicas come online.
+    # Without these caps, a 1000-image catalog fires 1000 simultaneous
+    # SLIG/Qwen requests and trips upstream rate limits.
     slig_concurrency: int = Field(
-        default=8, env="SLIG_CONCURRENCY",
-        description="Max concurrent SLIG visual-embedding requests"
+        default=32, env="SLIG_CONCURRENCY",
+        description="Max concurrent SLIG visual-embedding requests (base=8 × 4 replicas)"
+    )
+    qwen_concurrency: int = Field(
+        default=32, env="QWEN_CONCURRENCY",
+        description="Max concurrent Qwen vision-analysis requests (base=8 × 4 replicas)"
+    )
+    yolo_concurrency: int = Field(
+        default=48, env="YOLO_CONCURRENCY",
+        description="Max concurrent YOLO layout-detection requests (base=12 × 4 replicas)"
+    )
+    chandra_concurrency: int = Field(
+        default=32, env="CHANDRA_CONCURRENCY",
+        description="Max concurrent Chandra OCR requests (base=8 × 4 replicas)"
     )
     voyage_concurrency: int = Field(
         default=16, env="VOYAGE_CONCURRENCY",
-        description="Max concurrent Voyage AI text-embedding requests"
+        description="Max concurrent Voyage AI text-embedding requests (external API)"
+    )
+    icon_concurrency: int = Field(
+        default=4, env="ICON_CONCURRENCY",
+        description="Max concurrent Claude icon-extraction requests (Anthropic rate-limit)"
     )
     # Heartbeat for stuck-job detection. Auto-recovery cron uses last_heartbeat
     # to detect jobs that died silently (process crash, OOM kill, network loss).
