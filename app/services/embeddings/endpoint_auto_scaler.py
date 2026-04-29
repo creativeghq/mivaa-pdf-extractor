@@ -7,7 +7,7 @@ Monitors pending/processing jobs and adjusts replicas accordingly.
 Strategy:
 - Queue > 3 jobs: Scale to 2 replicas
 - Queue > 6 jobs: Scale to max replicas (2 or 3 depending on endpoint config)
-- Queue = 0 for 5 min: Scale to min replicas (0 or 1)
+- Queue = 0 for 10 min: Scale to min replicas (0 or 1)
 """
 
 import os
@@ -43,7 +43,7 @@ class EndpointAutoScaler:
         namespace: str = "basiliskan",
         check_interval_seconds: int = 30,
         scale_up_threshold: int = 3,      # Jobs to trigger scale up
-        scale_down_idle_minutes: int = 5,  # Minutes idle before scale down
+        scale_down_idle_minutes: int = 10,  # Minutes idle before scale down
         enabled: bool = True
     ):
         self.hf_token = hf_token
@@ -59,14 +59,32 @@ class EndpointAutoScaler:
         self._last_queue_empty: Dict[str, datetime] = {}
         self._running = False
         self._endpoints_initialized = False
-        
-        # All HuggingFace endpoints to manage
-        self.managed_endpoints = [
-            "mh-qwen332binstruct",  # Qwen VLM - primary workload
-            "mh-slig",           # SLIG visual embeddings
-            "mh-chandra",           # Chandra OCR
-            "mh-yolo",              # YOLO layout detection
-        ]
+
+        # All HuggingFace endpoints to manage. Resolved from Settings (or env
+        # var overrides) so the user can rename endpoints on HF without
+        # editing code. The previous hardcoded list 404'd every poll after
+        # the 2026-04-29 rename of mh-qwen332binstruct → qwen3-6-35b-fp8
+        # and mh-chandra → chandra-ocr-2.
+        try:
+            from app.config import get_settings
+            _s = get_settings()
+            self.managed_endpoints = [
+                _s.qwen_endpoint_name,
+                _s.slig_endpoint_name,
+                _s.chandra_endpoint_name,
+                _s.yolo_endpoint_name,
+            ]
+        except Exception as _settings_err:
+            logger.warning(
+                f"Auto-scaler couldn't read endpoint names from Settings ({_settings_err}); "
+                f"falling back to current defaults"
+            )
+            self.managed_endpoints = [
+                "qwen3-6-35b-fp8",
+                "mh-slig",
+                "chandra-ocr-2",
+                "mh-yolo",
+            ]
         
         if not HF_HUB_AVAILABLE:
             logger.warning("huggingface_hub not available - auto-scaling disabled")

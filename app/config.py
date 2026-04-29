@@ -389,9 +389,9 @@ class Settings(BaseSettings):
         description="Qwen HuggingFace inference endpoint base URL — resolved dynamically from HF at runtime via endpoint_name+namespace, this field is only a fallback"
     )
     qwen_endpoint_name: str = Field(
-        default="mh-qwen332binstruct",
+        default="qwen3-6-35b-fp8",
         env="QWEN_ENDPOINT_NAME",
-        description="Qwen endpoint service name"
+        description="Qwen endpoint service name (renamed 2026-04-29 from mh-qwen332binstruct after the 4×T4 cluster was replaced with a single A100)"
     )
     qwen_namespace: str = Field(
         default="basiliskan",

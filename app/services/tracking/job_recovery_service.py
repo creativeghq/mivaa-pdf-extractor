@@ -83,9 +83,26 @@ class JobRecoveryService:
             else:
                 job_data["created_at"] = now
                 job_data["metadata"] = metadata or {}
-                self.supabase.client.table(self.table_name).insert(job_data).execute()
-                logger.info(f"Persisted new job {job_id} to database: status={status}")
-                return True
+                try:
+                    self.supabase.client.table(self.table_name).insert(job_data).execute()
+                    logger.info(f"Persisted new job {job_id} to database: status={status}")
+                    return True
+                except Exception as insert_err:
+                    # FK violation on document_id (Postgres 23503) means the
+                    # parent `documents` row is gone — typically because an
+                    # operator manually purged tables in Supabase Studio
+                    # while the job was mid-flight. Surface as a clear warning
+                    # instead of a generic error spam (MIVAA-5BB pattern).
+                    err_str = str(insert_err)
+                    if '23503' in err_str or 'background_jobs_document_id_fkey' in err_str:
+                        logger.warning(
+                            f"⚠️ Cannot persist job {job_id}: parent document "
+                            f"{document_id} no longer exists in `documents` table. "
+                            f"The orchestrator should abort this job — its source "
+                            f"row was deleted externally."
+                        )
+                        return False
+                    raise
 
             # Merge metadata atomically via Postgres function (avoids read-modify-write race)
             if metadata:
@@ -95,7 +112,7 @@ class JobRecoveryService:
                 ).execute()
 
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to persist job {job_id}: {e}", exc_info=True)
             return False

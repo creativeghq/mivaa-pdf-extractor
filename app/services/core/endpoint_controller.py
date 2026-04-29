@@ -49,13 +49,32 @@ logger = logging.getLogger(__name__)
 
 
 # Mapping between our short names and the HuggingFace endpoint names used
-# by the auto-scaler. Keep this as the ONLY source of truth for the mapping.
-HF_ENDPOINT_NAMES: Dict[str, str] = {
-    "qwen":    "mh-qwen332binstruct",
-    "slig":    "mh-slig",
-    "yolo":    "mh-yolo",
-    "chandra": "mh-chandra",
-}
+# by the auto-scaler. Resolved from `Settings.*_endpoint_name` so the user
+# can rename endpoints on HF without editing code (e.g. the 2026-04-29
+# rename of `mh-qwen332binstruct` → `qwen3-6-35b-fp8` and
+# `mh-chandra` → `chandra-ocr-2`).
+def _resolve_hf_endpoint_names() -> Dict[str, str]:
+    try:
+        from app.config import get_settings
+        s = get_settings()
+        return {
+            "qwen":    s.qwen_endpoint_name,
+            "slig":    s.slig_endpoint_name,
+            "yolo":    s.yolo_endpoint_name,
+            "chandra": s.chandra_endpoint_name,
+        }
+    except Exception:
+        # Fallback to the historical defaults so import-time access still
+        # works in test contexts that don't configure Settings.
+        return {
+            "qwen":    "qwen3-6-35b-fp8",
+            "slig":    "mh-slig",
+            "yolo":    "mh-yolo",
+            "chandra": "chandra-ocr-2",
+        }
+
+
+HF_ENDPOINT_NAMES: Dict[str, str] = _resolve_hf_endpoint_names()
 
 VALID_ENDPOINT_KEYS = frozenset(HF_ENDPOINT_NAMES.keys())
 
@@ -318,6 +337,112 @@ class EndpointController:
         except Exception as e:
             # Cooperation is best-effort; never fail the pipeline on scaler noise.
             logger.debug("Auto-scaler alignment skipped: %s", e)
+
+    async def scale_all_to_zero(self, reason: str = "cleanup") -> Dict[str, bool]:
+        """Force every HF endpoint to min_replica=0.
+
+        Sequential by design — easier to debug and 4 calls is not enough volume
+        to justify parallel HF API hits. Manager path first; if a manager is
+        not registered (partial warmup, crashed mid-job, never warmed), falls
+        back to a direct HF API update so we still pin min_replica=0.
+
+        After scale-down, resets the in-memory `_warmed` flags AND informs the
+        auto-scaler that current_replicas=0, so the next job re-warms cleanly
+        and the scaler doesn't think there's still capacity to use.
+
+        Args:
+            reason: short tag for log correlation, e.g. "pdf_job_<id>",
+                    "agent_<id>", "admin_cancel", "periodic_idle".
+
+        Returns:
+            Dict[endpoint_key, success_bool] — same shape as warm_all().
+        """
+        from app.services.embeddings.endpoint_registry import endpoint_registry
+
+        try:
+            from app.config import get_settings
+            settings = get_settings()
+            config_getters = {
+                "qwen":    settings.get_qwen_config,
+                "slig":    settings.get_slig_config,
+                "yolo":    settings.get_yolo_config,
+                "chandra": settings.get_chandra_config,
+            }
+        except Exception as e:
+            logger.warning("scale_all_to_zero(reason=%s): could not load settings for HF fallback: %s", reason, e)
+            config_getters = {}
+
+        manager_getters = {
+            "qwen":    endpoint_registry.get_qwen_manager,
+            "slig":    endpoint_registry.get_slig_manager,
+            "yolo":    endpoint_registry.get_yolo_manager,
+            "chandra": endpoint_registry.get_chandra_manager,
+        }
+
+        outcome: Dict[str, bool] = {}
+        for key in HF_ENDPOINT_NAMES:
+            scaled = False
+
+            mgr = None
+            try:
+                mgr = manager_getters[key]()
+            except Exception:
+                mgr = None
+
+            if mgr is not None and hasattr(mgr, "scale_to_zero"):
+                try:
+                    ok = await asyncio.to_thread(mgr.scale_to_zero)
+                    if ok:
+                        scaled = True
+                        logger.info("   📉 %s scaled to zero (manager, reason=%s)", key, reason)
+                except Exception as e:
+                    logger.warning("   ⚠️ %s manager scale_to_zero failed: %s", key, e)
+
+            if not scaled and key in config_getters:
+                try:
+                    cfg = config_getters[key]() or {}
+                    ep_name = cfg.get("endpoint_name") or HF_ENDPOINT_NAMES[key]
+                    ns = cfg.get("namespace", "basiliskan")
+                    token = cfg.get("hf_token") or cfg.get("endpoint_token")
+                    if ep_name and token:
+                        def _do_direct_scale(name=ep_name, namespace=ns, tok=token) -> bool:
+                            from huggingface_hub import get_inference_endpoint
+                            ep = get_inference_endpoint(name=name, namespace=namespace, token=tok)
+                            ep.fetch()
+                            raw = getattr(ep, "raw", {}) or {}
+                            max_rep = (raw.get("compute", {}).get("scaling", {}) or {}).get("maxReplica", 2)
+                            ep.update(min_replica=0, max_replica=max_rep)
+                            return True
+
+                        ok = await asyncio.to_thread(_do_direct_scale)
+                        if ok:
+                            scaled = True
+                            logger.info("   📉 %s scaled to zero (direct HF, reason=%s)", key, reason)
+                except Exception as e:
+                    logger.warning("   ⚠️ %s direct HF scale_to_zero failed: %s", key, e)
+
+            outcome[key] = scaled
+            self._warmed[key] = False
+
+        try:
+            auto_scaler = self._get_auto_scaler()
+            if auto_scaler is not None:
+                for short_key, hf_name in HF_ENDPOINT_NAMES.items():
+                    if outcome.get(short_key):
+                        try:
+                            auto_scaler._current_replicas[hf_name] = 0
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        succeeded = [k for k, v in outcome.items() if v]
+        failed    = [k for k, v in outcome.items() if not v]
+        logger.info(
+            "📉 EndpointController.scale_all_to_zero(reason=%s): scaled=%s failed=%s",
+            reason, succeeded, failed,
+        )
+        return outcome
 
     async def request_scale_up(self, endpoint: str, desired_replicas: int) -> bool:
         """Ask the auto-scaler to add replicas for one endpoint.
