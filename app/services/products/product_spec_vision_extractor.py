@@ -377,6 +377,12 @@ def _get_source_pdf_path(document_id: str) -> Optional[str]:
     PDFs are kept under /tmp/pdf_processor_{document_id}/{document_id}.pdf during
     processing. If the temp dir was cleaned, we can re-download from Supabase
     storage via the documents.file_path field — handled by the caller.
+
+    Also rejects 0-byte files: when the previous orchestrator crashed mid-
+    write (e.g. kernel OOM kill on Apr 29), the temp dir was left with an
+    empty file. Treating it as "found" then handing it to pymupdf produces
+    the "Cannot open empty file" error chain. Returning None instead lets
+    the caller re-download from Supabase storage.
     """
     candidates = [
         f"/tmp/pdf_processor_{document_id}/{document_id}.pdf",
@@ -384,7 +390,18 @@ def _get_source_pdf_path(document_id: str) -> Optional[str]:
     ]
     for p in candidates:
         if os.path.exists(p):
-            return p
+            try:
+                size = os.path.getsize(p)
+            except OSError:
+                continue
+            if size > 0:
+                return p
+            # Empty file — clean it up so the caller's re-download writes
+            # cleanly without an EEXIST or partial-write conflict.
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
     return None
 
 

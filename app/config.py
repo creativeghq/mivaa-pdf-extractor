@@ -73,17 +73,14 @@ class Settings(BaseSettings):
     # buffers (chunks, image PIL objects, vision_analysis JSON). 100MB PDF + 4
     # concurrent products ≈ 1.6-2.0GB RAM peak; tune per server.
     #
-    # Default = 3, sized for the 2GB droplet RAM budget. Each product peaks
-    # at ~500MB (PDF page extraction + chunk objects + image PIL buffers +
-    # vision_analysis JSON), so 3 in parallel ≈ 1.5GB peak — safe headroom
-    # under 2GB total.
-    #
-    # 4 replicas × 8 base Qwen cap = 32 concurrent Qwen slots; with 3
-    # products fanning out in-image semaphores, we land around ~24 in-flight
-    # peak — fully utilizes the cluster without saturating it.
-    # 11-product catalog: ~4-5 min total vs. ~10 min when this was 2.
+    # Default = 2 on a 4 GB droplet. Even with the 4 GB upgrade, the kernel
+    # OOM killer fired during peak chunking on Apr 29 with 3 concurrent
+    # products (process RSS hit ~3.5 GB before MIVAA's own check could
+    # abort). 2 concurrent products keeps peak RSS around 2.0-2.5 GB,
+    # which fits under the systemd MemoryHigh=2.5G + MemoryMax=3.0G caps.
+    # Bump to 3 only when the droplet is upgraded to 8 GB+.
     max_concurrent_products: int = Field(
-        default=3, env="MAX_CONCURRENT_PRODUCTS",
+        default=2, env="MAX_CONCURRENT_PRODUCTS",
         description="Simultaneous products processed within one PDF job"
     )
     product_batch_size: int = Field(

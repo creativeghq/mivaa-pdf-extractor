@@ -36,19 +36,64 @@ class JobContextLogFilter(logging.Filter):
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        record.job_id = _current_job_id.get() or "-"
-        record.document_id = _current_document_id.get() or "-"
-        record.product_id = _current_product_id.get() or "-"
-        record.pdf_stage = _current_stage.get() or "-"
+        # Use getattr so already-set attributes (from thread-local context
+        # or sub-logger filters) aren't clobbered with "-".
+        if not hasattr(record, 'job_id'):
+            record.job_id = _current_job_id.get() or "-"
+        if not hasattr(record, 'document_id'):
+            record.document_id = _current_document_id.get() or "-"
+        if not hasattr(record, 'product_id'):
+            record.product_id = _current_product_id.get() or "-"
+        if not hasattr(record, 'pdf_stage'):
+            record.pdf_stage = _current_stage.get() or "-"
         return True
 
 
 def install_job_context_filter() -> None:
-    """Attach the filter to the root logger if not already present."""
+    """Make sure every log record has job_id/document_id/product_id/pdf_stage
+    attrs set BEFORE any formatter runs.
+
+    The previous design only attached this filter to the root logger,
+    which works for records that propagate up the standard Python logging
+    tree — but fails for records emitted by sub-loggers that have their
+    own handlers (uvicorn, sentry, third-party libs running on threads).
+    Those records bypass the root filter, hit a formatter with
+    %(job_id)s in the pattern, and crash with KeyError.
+
+    Observed failure mode: yolo_endpoint_manager logs from a worker
+    thread → no filter runs → KeyError: 'job_id' → format error handler
+    re-emits → infinite loop → kernel OOM kill.
+
+    Robust fix: monkey-patch logging.LogRecord.__init__ so the four
+    attrs are ALWAYS pre-set on every record, including ones created by
+    libraries we don't control. Filter still attached as belt-and-braces.
+    """
     root = logging.getLogger()
-    if any(isinstance(f, JobContextLogFilter) for f in root.filters):
+    if not any(isinstance(f, JobContextLogFilter) for f in root.filters):
+        root.addFilter(JobContextLogFilter())
+
+    # Patch LogRecord so the attrs exist BEFORE any formatter sees them.
+    # Idempotent — guard so multiple calls don't double-wrap.
+    if getattr(logging.LogRecord, "_kai_patched", False):
         return
-    root.addFilter(JobContextLogFilter())
+    _orig_init = logging.LogRecord.__init__
+
+    def _patched_init(self, *args, **kwargs):
+        _orig_init(self, *args, **kwargs)
+        try:
+            self.job_id = _current_job_id.get() or "-"
+            self.document_id = _current_document_id.get() or "-"
+            self.product_id = _current_product_id.get() or "-"
+            self.pdf_stage = _current_stage.get() or "-"
+        except Exception:
+            # ContextVar API failures must NEVER break logging.
+            self.job_id = "-"
+            self.document_id = "-"
+            self.product_id = "-"
+            self.pdf_stage = "-"
+
+    logging.LogRecord.__init__ = _patched_init
+    logging.LogRecord._kai_patched = True
 
 
 @contextmanager

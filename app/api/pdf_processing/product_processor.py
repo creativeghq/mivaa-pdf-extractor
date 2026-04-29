@@ -94,14 +94,22 @@ async def process_single_product(
     # Track current stage for accurate error reporting
     current_stage = ProductStage.EXTRACTION
 
-    # Fix E: per-product resume skip. If a previous run already produced this
-    # product's chunks/images/relationships, don't re-do the expensive work.
-    # Read the prior product_processing_status row + stage_history events for
-    # this product and short-circuit if RELATIONSHIPS_CREATED already happened.
+    # Fix E: per-product resume — pick up from the LAST checkpoint we
+    # actually reached, instead of re-processing every stage from scratch.
+    # On the previous run, products that reached chunks_created or
+    # images_extracted were producing duplicates because we re-ran Stage 1+2
+    # on resume; this short-circuits each stage individually.
+    prior_stages: set = set()
+    prior_db_id: Optional[str] = None
+    skip_extraction = False
+    skip_chunking = False
+    skip_images = False
+    skip_creation = False
     try:
         prior_status = await product_tracker.get_product_status(product_id)
         prior_db_id = (prior_status.metadata or {}).get('product_db_id') if prior_status else None
-        prior_stages = set((prior_status.stages_completed or []) if prior_status else [])
+        if prior_status and prior_status.stages_completed:
+            prior_stages.update(prior_status.stages_completed)
         # Also peek at job stage_history for per-product checkpoint events
         # tied to THIS product_index (catches resumes where product_tracker
         # state was wiped on the previous restart).
@@ -116,15 +124,59 @@ async def process_single_product(
         except Exception:
             pass
 
+        # Verify with database state — checkpoints alone aren't authoritative
+        # because a stage might have been MID-INSERT when the worker died.
+        # If chunks/images for this product already exist in DB, treat the
+        # corresponding stage as done.
+        try:
+            if prior_db_id:
+                existing_chunks = supabase.client.table('document_chunks') \
+                    .select('id', count='exact') \
+                    .eq('document_id', document_id) \
+                    .eq('product_id', prior_db_id) \
+                    .execute()
+                if (existing_chunks.count or 0) > 0:
+                    prior_stages.add('chunks_created')
+                existing_imgs = supabase.client.table('document_images') \
+                    .select('id', count='exact') \
+                    .eq('document_id', document_id) \
+                    .eq('product_id', prior_db_id) \
+                    .execute()
+                if (existing_imgs.count or 0) > 0:
+                    prior_stages.add('images_extracted')
+        except Exception as db_check_err:
+            logger_instance.debug(f"DB state check failed for {product.name}: {db_check_err}")
+
+        # Whole-product skip if everything's done.
         if 'relationships_created' in prior_stages or 'completed' in prior_stages:
             logger_instance.info(
                 f"♻️  [RESUME] Product {product_index}/{total_products} '{product.name}' "
-                f"already completed in a previous run — skipping all stages"
+                f"already fully processed — skipping all stages"
             )
             result.success = True
             result.product_db_id = prior_db_id
             await product_tracker.mark_product_complete(product_id, result)
             return result
+
+        # Per-stage skip flags. Each stage will check these and short-circuit.
+        # We DON'T skip Stage 1 extraction because the in-memory page list +
+        # layout regions are needed by Stage 3; just re-extracting pages is
+        # cheap (no AI calls) so it's fine to redo.
+        if 'chunks_created' in prior_stages:
+            skip_chunking = True
+            logger_instance.info(
+                f"♻️  [RESUME] Product {product_index} '{product.name}' chunks already in DB — "
+                f"will reuse instead of re-creating"
+            )
+        if 'images_extracted' in prior_stages:
+            skip_images = True
+            logger_instance.info(
+                f"♻️  [RESUME] Product {product_index} '{product.name}' images already in DB — "
+                f"will reuse instead of re-creating"
+            )
+        if 'products_created' in prior_stages:
+            skip_creation = True
+
     except Exception as resume_check_err:
         logger_instance.debug(f"Per-product resume check failed (continuing): {resume_check_err}")
 
@@ -315,25 +367,56 @@ async def process_single_product(
 
         from app.api.pdf_processing.stage_2_chunking import process_product_chunking
 
-        chunk_result = await process_product_chunking(
-            file_content=file_content,
-            document_id=document_id,
-            workspace_id=workspace_id,
-            job_id=job_id,
-            product=product,
-            physical_pages=physical_pages,
-            catalog=catalog,
-            config=config,
-            supabase=supabase,
-            logger=logger_instance,
-            product_id=product_db_id,
-            temp_pdf_path=temp_pdf_path,
-            layout_regions=layout_regions
-        )
+        if skip_chunking and product_db_id:
+            # Resume optimization: chunks already exist in DB for this
+            # product (from a prior run). Read counts and skip the call.
+            try:
+                existing = supabase.client.table('document_chunks') \
+                    .select('id, text_embedding', count='exact') \
+                    .eq('document_id', document_id) \
+                    .eq('product_id', product_db_id) \
+                    .execute()
+                chunks_created = existing.count or 0
+                # Count rows that already have an embedding stored
+                embeddings_generated = sum(
+                    1 for r in (existing.data or []) if r.get('text_embedding') is not None
+                )
+                logger_instance.info(
+                    f"♻️  [RESUME Stage 2] Reusing {chunks_created} existing chunks "
+                    f"({embeddings_generated} embeddings) for {product.name} — Voyage call skipped"
+                )
+                chunk_result = {
+                    'chunks_created': chunks_created,
+                    'embeddings_generated': embeddings_generated,
+                    'skipped': True,
+                }
+            except Exception as reuse_err:
+                logger_instance.warning(
+                    f"⚠️ Could not reuse existing chunks for {product.name}: {reuse_err} — "
+                    f"falling through to fresh chunking"
+                )
+                skip_chunking = False
 
-        chunks_created = chunk_result.get('chunks_created', 0)
-        embeddings_generated = chunk_result.get('embeddings_generated', 0)
-        logger_instance.info(f"✅ Created {chunks_created} chunks for {product.name} ({embeddings_generated} text embeddings)")
+        if not skip_chunking:
+            chunk_result = await process_product_chunking(
+                file_content=file_content,
+                document_id=document_id,
+                workspace_id=workspace_id,
+                job_id=job_id,
+                product=product,
+                physical_pages=physical_pages,
+                catalog=catalog,
+                config=config,
+                supabase=supabase,
+                logger=logger_instance,
+                product_id=product_db_id,
+                temp_pdf_path=temp_pdf_path,
+                layout_regions=layout_regions
+            )
+
+            chunks_created = chunk_result.get('chunks_created', 0)
+            embeddings_generated = chunk_result.get('embeddings_generated', 0)
+            logger_instance.info(f"✅ Created {chunks_created} chunks for {product.name} ({embeddings_generated} text embeddings)")
         await product_tracker.mark_stage_complete(
             product_id,
             ProductStage.CHUNKING,
@@ -403,25 +486,62 @@ async def process_single_product(
 
         from app.api.pdf_processing.stage_3_images import process_product_images
 
-        image_result = await process_product_images(
-            file_content=file_content,
-            document_id=document_id,
-            workspace_id=workspace_id,
-            job_id=job_id,
-            product=product,
-            physical_pages=physical_pages,  # ✅ FIXED: Now using physical pages (1-based)
-            catalog=catalog,
-            config=config,
-            logger=logger_instance,
-            layout_regions=layout_regions,  # ✅ NEW: Pass YOLO layout regions for bbox data
-            tracker=tracker,  # ✅ NEW: Per-image progress events visible in admin UI
-        )
+        if skip_images and product_db_id:
+            try:
+                existing_imgs = supabase.client.table('document_images') \
+                    .select('id, has_slig_embedding', count='exact') \
+                    .eq('document_id', document_id) \
+                    .eq('product_id', product_db_id) \
+                    .execute()
+                images_processed = existing_imgs.count or 0
+                clip_embeddings = sum(
+                    1 for r in (existing_imgs.data or []) if r.get('has_slig_embedding')
+                )
+                logger_instance.info(
+                    f"♻️  [RESUME Stage 3] Reusing {images_processed} existing images "
+                    f"({clip_embeddings} with SLIG embeddings) for {product.name} — "
+                    f"Qwen + SLIG + Voyage calls skipped"
+                )
+                image_result = {
+                    'images_processed': images_processed,
+                    'clip_embeddings_generated': clip_embeddings,
+                    'vector_stats': {},
+                    'failed_images': [],
+                    'images_material': images_processed,
+                    'images_icon_candidates': 0,
+                    'images_non_material': 0,
+                    'skipped': True,
+                }
+                vector_stats = {}
+                failed_images_list = []
+                images_failed_count = 0
+            except Exception as reuse_err:
+                logger_instance.warning(
+                    f"⚠️ Could not reuse existing images for {product.name}: {reuse_err} — "
+                    f"falling through to fresh image processing"
+                )
+                skip_images = False
 
-        images_processed = image_result.get('images_processed', 0)
-        clip_embeddings = image_result.get('clip_embeddings_generated', 0)
-        vector_stats = image_result.get('vector_stats', {}) or {}
-        failed_images_list = image_result.get('failed_images', []) or []
-        images_failed_count = len(failed_images_list)
+        if not skip_images:
+            image_result = await process_product_images(
+                file_content=file_content,
+                document_id=document_id,
+                workspace_id=workspace_id,
+                job_id=job_id,
+                product=product,
+                physical_pages=physical_pages,  # ✅ FIXED: Now using physical pages (1-based)
+                catalog=catalog,
+                config=config,
+                logger=logger_instance,
+                layout_regions=layout_regions,  # ✅ NEW: Pass YOLO layout regions for bbox data
+                tracker=tracker,  # ✅ NEW: Per-image progress events visible in admin UI
+            )
+
+            images_processed = image_result.get('images_processed', 0)
+            clip_embeddings = image_result.get('clip_embeddings_generated', 0)
+            vector_stats = image_result.get('vector_stats', {}) or {}
+            failed_images_list = image_result.get('failed_images', []) or []
+            images_failed_count = len(failed_images_list)
         if images_failed_count:
             logger_instance.warning(
                 f"   ⚠️ {images_failed_count} image(s) failed to save for {product.name} — "

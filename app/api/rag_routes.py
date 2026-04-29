@@ -2491,6 +2491,25 @@ async def process_document_with_discovery(
     if not os.path.exists(file_path):
          logger.error(f"❌ [BACKGROUND TASK] File not found at {file_path}")
          raise FileNotFoundError(f"File not found at {file_path}")
+    # Defensive: a previous worker may have left a 0-byte file behind
+    # (e.g. mid-write SIGKILL from kernel OOM). pymupdf raises a confusing
+    # "Cannot open empty file" later if we proceed; fail clearly here so
+    # the caller can re-download from Supabase storage.
+    try:
+        _file_size_check = os.path.getsize(file_path)
+    except OSError as e:
+        logger.error(f"❌ [BACKGROUND TASK] Cannot stat {file_path}: {e}")
+        raise FileNotFoundError(f"Cannot stat PDF at {file_path}: {e}")
+    if _file_size_check == 0:
+        logger.error(f"❌ [BACKGROUND TASK] PDF at {file_path} is 0 bytes — likely truncated by prior crash")
+        try:
+            os.unlink(file_path)
+        except OSError:
+            pass
+        raise FileNotFoundError(
+            f"PDF at {file_path} is 0 bytes (likely truncated by prior crash). "
+            f"Re-upload required."
+        )
 
     logger.info(f"🔧 [BACKGROUND TASK] Opening file for reading...")
     with open(file_path, 'rb') as f:

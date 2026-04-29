@@ -815,6 +815,19 @@ jobs:
           # Send SIGTERM first (gives uvicorn lifespan a chance to drain),
           # only escalate to SIGKILL after TimeoutStopSec.
           KillSignal=SIGTERM
+          # Memory hard-caps. On the 4 GB droplet, MIVAA was getting kernel-
+          # OOM-killed at peak chunking (Apr 29 incident: kernel killed PID
+          # 3122 even though the in-process memory check reported 67%).
+          # MemoryHigh=2.5G triggers cgroup pushback (slows allocations,
+          # forces GC) BEFORE the kernel reaches for the OOM hammer.
+          # MemoryMax=3.0G is the systemd-enforced ceiling — process gets
+          # systemd-level OOM (clean shutdown signal) instead of SIGKILL,
+          # so the lifespan hook + auto-resume actually run.
+          # Leaves ~1 GB headroom on a 4 GB droplet for system + cache.
+          MemoryHigh=2.5G
+          MemoryMax=3.0G
+          MemorySwapMax=2G
+          OOMScoreAdjust=200
           StandardOutput=journal
           StandardError=journal
 
