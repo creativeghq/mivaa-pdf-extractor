@@ -184,7 +184,13 @@ class RAGService:
                 try:
                     import pymupdf4llm
                     import tempfile
-                    import os
+                    # NOTE: do NOT re-import os here. `os` is imported at module
+                    # level (line 19). Re-importing inside this branch makes
+                    # Python treat `os` as a function-local for the WHOLE
+                    # `index_pdf_content` method, so when this branch is
+                    # skipped (page_chunks provided by caller) the later use
+                    # of `os.getenv` on line ~253 crashes with
+                    # UnboundLocalError. Bug observed: MIVAA-59J (2026-04-29).
 
                     # Save PDF bytes to temporary file (pymupdf4llm needs a file path)
                     with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
@@ -1942,7 +1948,8 @@ class RAGService:
         try:
             import json
             import httpx
-            import os
+            # NOTE: `os` is imported at module level — do not re-import here
+            # (would create a function-local that breaks unrelated branches).
 
             huggingface_api_key = os.getenv('HUGGINGFACE_API_KEY')
             if not huggingface_api_key:
@@ -2049,7 +2056,8 @@ Respond with JSON:
         try:
             import json
             import httpx
-            import os
+            # NOTE: `os` is imported at module level — see comment in
+            # _analyze_image_huggingface for why we don't re-import locally.
 
             huggingface_api_key = os.getenv('HUGGINGFACE_API_KEY')
             if not huggingface_api_key:
