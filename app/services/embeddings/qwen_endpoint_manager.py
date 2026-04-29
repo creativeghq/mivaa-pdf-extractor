@@ -232,7 +232,7 @@ class QwenEndpointManager:
                             logger.error(
                                 f"💳 HF billing error on Qwen resume — aborting all retries: {e}"
                             )
-                            raise HFBillingError("mh-qwen332binstruct", self.namespace, original=e) from e
+                            raise HFBillingError(self.endpoint_name, self.namespace, original=e) from e
                         logger.error(f"❌ Resume attempt {attempt + 1} failed: {e}")
                         if attempt < self.max_resume_retries - 1:
                             time.sleep(2 ** attempt)  # Exponential backoff
