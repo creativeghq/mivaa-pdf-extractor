@@ -201,6 +201,13 @@ class EndpointController:
         """Resume + warmup a single endpoint.
 
         Any failure force_minimum()s the corresponding gate.
+
+        Optimization: rag_routes already ran parallel warmup before calling
+        warm_all (so warmup_completed=True for the successful ones). For
+        managers whose prior warmup FAILED, calling manager.warmup() again
+        re-runs the full 360s polling loop unnecessarily — we already know
+        the endpoint is broken. Short-circuit by checking the endpoint
+        status BEFORE entering the polling loop.
         """
         gate = self.get_gate(key)
 
@@ -211,6 +218,36 @@ class EndpointController:
             )
             gate.force_minimum()
             return False
+
+        # Fast path: a prior warmup() already succeeded → no need to re-probe.
+        if getattr(manager, 'warmup_completed', False):
+            self._warmed[key] = True
+            logger.debug("   ↪️  %s already warmed up — skipping re-probe", key)
+            return True
+
+        # Pre-check: ask HF for the endpoint's actual status. If it's not
+        # running (paused, failed, scaledToZero, deploying), don't burn the
+        # 360s warmup polling loop — we know it won't respond.
+        try:
+            def _peek_status() -> Optional[str]:
+                ep = manager._get_endpoint() if hasattr(manager, '_get_endpoint') else None
+                if ep is None:
+                    return None
+                try:
+                    ep.fetch()
+                    return getattr(ep, 'status', None)
+                except Exception:
+                    return None
+            status = await asyncio.to_thread(_peek_status)
+            if status is not None and status != 'running':
+                logger.warning(
+                    "   ⚠️ %s status=%s (not running) — skipping re-probe, gate forced to minimum",
+                    key, status,
+                )
+                gate.force_minimum()
+                return False
+        except Exception as peek_err:
+            logger.debug("Status peek for %s failed (continuing): %s", key, peek_err)
 
         try:
             # warmup() is sync, uses requests. Wrap in a thread so parallel
