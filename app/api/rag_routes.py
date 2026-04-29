@@ -126,8 +126,27 @@ def _evict_expired_job_storage() -> None:
 
 async def initialize_job_recovery():
     """
-    Initialize job recovery service and mark any interrupted jobs.
-    This should be called on application startup.
+    Initialize job recovery service AND auto-resume jobs that were interrupted
+    by the previous shutdown.
+
+    Why this matters:
+    - The shutdown hook (main.py lifespan) marks `processing` jobs as
+      'interrupted' because uvicorn cannot drain BackgroundTasks during a
+      systemd restart.
+    - Without auto-resume, those jobs sat 'interrupted' until the auto-
+      recovery cron noticed (up to 5 min later) — and historically the cron
+      filtered on status='processing' only, so they sat stuck *indefinitely*.
+    - This startup hook closes the loop: after marking, we immediately
+      re-dispatch eligible jobs into the new event loop using the same
+      orchestrator the upload endpoint uses (process_document_with_discovery).
+      The orchestrator's checkpoint logic resumes from the last completed stage.
+
+    Eligibility for auto-resume:
+      - status was just flipped to 'interrupted' by THIS startup pass (or by
+        the previous shutdown — interrupted_at within the last 4 hours).
+      - recovery_attempts < 3 (same cap the cron uses).
+      - The original PDF still exists on disk (temp files survive a service
+        restart but not a full host reboot — fall back gracefully if missing).
     """
     global job_recovery_service
 
@@ -137,19 +156,21 @@ async def initialize_job_recovery():
         supabase_client = get_supabase_client()
         job_recovery_service = JobRecoveryService(supabase_client)
 
-        # Mark all processing jobs as interrupted (they were interrupted by restart)
+        # 1. Mark anything left in 'processing' as 'interrupted' so the DB
+        #    reflects reality before we attempt resume.
         interrupted_count = await job_recovery_service.mark_all_processing_as_interrupted(
             reason="Service restart detected"
         )
-
         if interrupted_count > 0:
             logger.warning(f"🛑 Marked {interrupted_count} jobs as interrupted due to service restart")
+
+        # 2. Auto-resume recently interrupted jobs (root-cause fix for the
+        #    "deploy kills job, nothing picks it up" stuck-state bug).
+        await _resume_recently_interrupted_jobs(supabase_client)
 
         # Get statistics
         stats = await job_recovery_service.get_job_statistics()
         logger.info(f"📊 Job statistics: {stats}")
-
-        # NOTE: Job cleanup moved to admin panel cron job
 
         logger.info("✅ Job recovery service initialized successfully")
 
@@ -157,6 +178,151 @@ async def initialize_job_recovery():
         logger.error(f"❌ Failed to initialize job recovery service: {e}", exc_info=True)
         # Don't fail startup if job recovery fails
         job_recovery_service = None
+
+
+async def _resume_recently_interrupted_jobs(supabase_client) -> None:
+    """Re-dispatch jobs interrupted within the last 30 min back into the event loop.
+
+    Uses the same orchestrator the upload endpoint uses, so checkpoint resume
+    is automatic: process_document_with_discovery reads `last_checkpoint` and
+    skips already-completed stages.
+    """
+    from datetime import datetime, timedelta
+    import os
+
+    cutoff = (datetime.utcnow() - timedelta(hours=4)).isoformat()
+
+    try:
+        rows = supabase_client.client.table('background_jobs') \
+            .select('id, document_id, filename, metadata, recovery_attempts, interrupted_at') \
+            .eq('status', 'interrupted') \
+            .in_('job_type', ['product_discovery_upload', 'pdf_processing']) \
+            .gte('interrupted_at', cutoff) \
+            .lt('recovery_attempts', 3) \
+            .execute()
+    except Exception as e:
+        logger.error(f"⚠️ Could not query interrupted jobs for auto-resume: {e}")
+        return
+
+    candidates = rows.data or []
+    if not candidates:
+        logger.info("✅ No recently-interrupted jobs to auto-resume")
+        return
+
+    logger.warning(f"🔄 Auto-resuming {len(candidates)} interrupted job(s) from last 4 hours")
+
+    # Pull file_path + workspace_id from the documents table for each.
+    doc_ids = [c['document_id'] for c in candidates if c.get('document_id')]
+    docs_by_id: Dict[str, Dict[str, Any]] = {}
+    if doc_ids:
+        try:
+            docs = supabase_client.client.table('documents') \
+                .select('id, file_path, workspace_id') \
+                .in_('id', doc_ids).execute()
+            for d in (docs.data or []):
+                docs_by_id[d['id']] = d
+        except Exception as e:
+            logger.warning(f"⚠️ Could not fetch document file_paths: {e}")
+
+    resumed = 0
+    skipped_no_file = 0
+    skipped_no_doc = 0
+
+    for job in candidates:
+        job_id = job['id']
+        doc_id = job.get('document_id')
+        meta = job.get('metadata') or {}
+
+        if not doc_id or doc_id not in docs_by_id:
+            logger.warning(f"   ⏭️  Skipping {job_id}: document row missing")
+            skipped_no_doc += 1
+            continue
+
+        doc_row = docs_by_id[doc_id]
+        file_path = doc_row.get('file_path')
+        workspace_id = doc_row.get('workspace_id') or meta.get('workspace_id')
+
+        if not file_path or not os.path.exists(file_path):
+            # Temp PDF was wiped (full host reboot, /tmp on tmpfs, etc.).
+            # We can't resume without the source file — leave as 'interrupted'
+            # so the admin can choose to delete or re-upload.
+            logger.warning(f"   ⏭️  Skipping {job_id}: source PDF missing on disk ({file_path})")
+            skipped_no_file += 1
+            continue
+
+        # Atomic claim: flip back to processing + bump recovery counter.
+        # Uses the same SQL function the auto-recovery cron calls, then
+        # forces status back to 'processing' (the helper sets it to 'pending'
+        # but we have everything we need to run it right now).
+        try:
+            claimed = supabase_client.client.rpc(
+                'mark_pdf_job_for_recovery',
+                {'p_job_id': job_id, 'p_max_attempts': 3},
+            ).execute()
+            if not claimed.data:
+                logger.info(f"   ⏭️  {job_id}: claim no-op (already recovered or attempts exhausted)")
+                continue
+
+            now_iso = datetime.utcnow().isoformat()
+            supabase_client.client.table('background_jobs').update({
+                'status': 'processing',
+                'last_heartbeat': now_iso,
+                'updated_at': now_iso,
+            }).eq('id', job_id).execute()
+
+            try:
+                supabase_client.client.rpc('append_recovery_history', {
+                    'p_job_id': job_id,
+                    'p_event': {
+                        'attempted_at': now_iso,
+                        'reason': 'startup_auto_resume',
+                        'attempt_number': (job.get('recovery_attempts') or 0) + 1,
+                        'succeeded': True,
+                    },
+                }).execute()
+            except Exception as e:
+                logger.debug(f"append_recovery_history failed for {job_id}: {e}")
+
+        except Exception as e:
+            logger.error(f"   ❌ Failed to claim {job_id} for resume: {e}")
+            continue
+
+        # Rehydrate orchestrator parameters from saved metadata.
+        categories = meta.get('categories') or ['products']
+        if isinstance(categories, str):
+            categories = [c.strip() for c in categories.split(',')]
+        focused = 'all' not in categories
+
+        try:
+            asyncio.create_task(
+                process_document_with_discovery(
+                    job_id=job_id,
+                    document_id=doc_id,
+                    file_path=file_path,
+                    filename=job.get('filename') or meta.get('filename') or 'resumed.pdf',
+                    title=meta.get('title'),
+                    description=meta.get('description'),
+                    document_tags=meta.get('tags') or [],
+                    discovery_model=meta.get('discovery_model') or 'claude-vision',
+                    focused_extraction=focused,
+                    extract_categories=categories,
+                    chunk_size=meta.get('chunk_size') or 1000,
+                    chunk_overlap=meta.get('chunk_overlap') or 200,
+                    workspace_id=workspace_id,
+                    agent_prompt=meta.get('agent_prompt'),
+                    enable_prompt_enhancement=meta.get('prompt_enhancement_enabled', True),
+                    test_single_product=meta.get('test_single_product', False),
+                )
+            )
+            resumed += 1
+            logger.info(f"   🚀 Resumed {job_id} (attempt {(job.get('recovery_attempts') or 0) + 1}/3)")
+        except Exception as e:
+            logger.error(f"   ❌ Failed to dispatch resume for {job_id}: {e}", exc_info=True)
+
+    logger.warning(
+        f"🔄 Auto-resume summary: resumed={resumed}, "
+        f"skipped_no_file={skipped_no_file}, skipped_no_doc={skipped_no_doc}"
+    )
 
 # Pydantic models for request/response validation
 class DocumentUploadRequest(BaseModel):
@@ -2357,6 +2523,16 @@ async def process_document_with_discovery(
             # Use the numbered PDF for all subsequent processing
             file_path = numbered_pdf_path
 
+            # P2-1: explicitly drop the original PDF bytes before re-reading
+            # the numbered PDF, so we don't hold both copies in RAM
+            # simultaneously (numbered PDFs are 10-50% larger).
+            try:
+                del file_content
+                import gc as _gc_after_numbering
+                _gc_after_numbering.collect()
+            except Exception:
+                pass
+
             # Re-read file content from numbered PDF
             with open(file_path, 'rb') as f:
                 file_content = f.read()
@@ -2629,13 +2805,39 @@ async def process_document_with_discovery(
                         warmup_results["skipped"].append("chandra")
                         return
 
-                    # Run blocking resume in thread pool
-                    resumed = await asyncio.to_thread(manager.resume_if_needed)
-                    if resumed:
-                        logger.info(f"   ⏳ Warming up Chandra (60s)...")
-                        await asyncio.sleep(60)
+                    # P2-4: poll Chandra instead of blind sleep(60). Same
+                    # pattern the other endpoints use — finish as soon as
+                    # the model responds, don't keep paying for idle time.
+                    def resume_and_warmup_chandra():
+                        if manager.resume_if_needed():
+                            # ChandraEndpointManager exposes warmup() in newer
+                            # versions; fall back to a short polling loop
+                            # against /health if not.
+                            warmup_method = getattr(manager, 'warmup', None)
+                            if callable(warmup_method):
+                                return warmup_method()
+                            # Bounded poll fallback (max 60s, exits early)
+                            import time as _time
+                            deadline = _time.time() + 60
+                            while _time.time() < deadline:
+                                ep = manager._get_endpoint() if hasattr(manager, '_get_endpoint') else None
+                                if ep:
+                                    try:
+                                        ep.fetch()
+                                        if getattr(ep, 'status', None) == 'running':
+                                            return True
+                                    except Exception:
+                                        pass
+                                _time.sleep(3)
+                            return False
+
+                    success = await asyncio.to_thread(resume_and_warmup_chandra)
+                    if success:
                         warmup_results["success"].append("chandra")
                         logger.info("   ✅ Chandra warmup complete")
+                    else:
+                        warmup_results["failed"].append({"endpoint": "chandra", "error": "warmup polling timed out"})
+                        logger.warning("   ⚠️ Chandra warmup polling timed out (will retry on first use)")
                 else:
                     warmup_results["skipped"].append("chandra")
             except Exception as e:
@@ -2676,9 +2878,12 @@ async def process_document_with_discovery(
                         metadata=job_storage[job_id].get("metadata", {}),
                         error="SLIG endpoint warmup failed - CLIP embeddings unavailable"
                     )
-                raise HTTPException(
-                    status_code=503,
-                    detail="SLIG endpoint warmup failed. Please retry later or check HuggingFace endpoint status."
+                # NOT HTTPException — we are inside a BackgroundTask, no HTTP
+                # response to attach a 503 to. Raise a plain RuntimeError so
+                # the orchestrator's outer except + finally runs and triggers
+                # scale-to-zero cleanup of the endpoints we already woke.
+                raise RuntimeError(
+                    "SLIG endpoint warmup failed - CLIP embeddings unavailable"
                 )
         logger.info("=" * 80)
 
@@ -3039,39 +3244,60 @@ async def process_document_with_discovery(
         # Stage 4 `_merge_icon_metadata_into_product` rollup already queries
         # all images for the document — so every product in this catalog
         # automatically inherits the catalog-wide spec defaults.
-        try:
-            from app.api.pdf_processing.stage_3_images import process_catalog_wide_icons
-
-            logger.info("🔖 Running catalog-wide icon extraction pass (supplementary pages)...")
-            if tracker:
-                tracker.current_step = "Catalog-wide icon extraction"
-                await tracker.update_heartbeat()
-
-            catalog_icon_stats = await process_catalog_wide_icons(
-                file_content=file_content,
-                document_id=document_id,
-                workspace_id=workspace_id,
-                job_id=job_id,
-                catalog=catalog,
-                logger=logger,
-            )
+        # P2-9: skip the catalog-wide icon pass when the user's category
+        # selection makes it irrelevant. The pass calls Claude on every
+        # supplementary page — pure waste if the user only asked for
+        # products and not for icons/specs/certificates. Saves 1× Claude
+        # call per supplementary page on every upload.
+        _icon_relevant_categories = {'specifications', 'certificates', 'logos'}
+        _icon_pass_relevant = bool(set(extract_categories) & _icon_relevant_categories)
+        if not _icon_pass_relevant:
             logger.info(
-                f"🔖 Catalog-wide icon pass complete: "
-                f"pages={catalog_icon_stats.get('supplementary_pages_scanned', 0)}, "
-                f"icons_found={catalog_icon_stats.get('icon_candidates_found', 0)}, "
-                f"icons_with_spec_items={catalog_icon_stats.get('icon_metadata_extracted', 0)}, "
-                f"failed={catalog_icon_stats.get('icon_extraction_failed', 0)}"
+                f"🔖 Skipping catalog-wide icon pass — "
+                f"categories={extract_categories} don't include icon-relevant types"
             )
-        except Exception as cat_icons_err:
-            # This is a best-effort pre-pass — the rest of the pipeline MUST
-            # keep running if it fails. We surface to Sentry so ops can see it.
-            logger.warning(
-                f"⚠️ Catalog-wide icon pass failed (non-blocking): {cat_icons_err}"
-            )
+            catalog_icon_stats = {
+                'supplementary_pages_scanned': 0,
+                'icon_candidates_found': 0,
+                'icon_metadata_extracted': 0,
+                'icon_extraction_failed': 0,
+                'skipped': True,
+                'skipped_reason': 'icon-irrelevant categories',
+            }
+        else:
             try:
-                sentry_sdk.capture_exception(cat_icons_err)
-            except Exception:
-                pass
+                from app.api.pdf_processing.stage_3_images import process_catalog_wide_icons
+
+                logger.info("🔖 Running catalog-wide icon extraction pass (supplementary pages)...")
+                if tracker:
+                    tracker.current_step = "Catalog-wide icon extraction"
+                    await tracker.update_heartbeat()
+
+                catalog_icon_stats = await process_catalog_wide_icons(
+                    file_content=file_content,
+                    document_id=document_id,
+                    workspace_id=workspace_id,
+                    job_id=job_id,
+                    catalog=catalog,
+                    logger=logger,
+                )
+                logger.info(
+                    f"🔖 Catalog-wide icon pass complete: "
+                    f"pages={catalog_icon_stats.get('supplementary_pages_scanned', 0)}, "
+                    f"icons_found={catalog_icon_stats.get('icon_candidates_found', 0)}, "
+                    f"icons_with_spec_items={catalog_icon_stats.get('icon_metadata_extracted', 0)}, "
+                    f"failed={catalog_icon_stats.get('icon_extraction_failed', 0)}"
+                )
+            except Exception as cat_icons_err:
+                # This is a best-effort pre-pass — the rest of the pipeline MUST
+                # keep running if it fails. We surface to Sentry so ops can see it.
+                logger.warning(
+                    f"⚠️ Catalog-wide icon pass failed (non-blocking): {cat_icons_err}"
+                )
+                try:
+                    sentry_sdk.capture_exception(cat_icons_err)
+                except Exception:
+                    pass
 
         # 🧪 TEST MODE: Process only first product if test_single_product=True
         if test_single_product:
@@ -3306,13 +3532,28 @@ async def process_document_with_discovery(
                 # `await asyncio.to_thread(...)` calls in the warm-up section
                 # (~line 2215+) to UnboundLocalError before this line is ever
                 # reached. Removed 2026-04-10 after Phase E crash.
-                _fe_task = asyncio.create_task(_trigger_factory_enrichment(
-                    workspace_id=workspace_id,
-                    product_ids=all_product_ids,
-                    scope_column='source_document_id',
-                    scope_value=document_id,
-                    logger=logger,
-                ))
+                # P2-10: hard cap on factory enrichment so a hung downstream
+                # call can't keep HF endpoints pinned (endpoint_registry
+                # treats this fire-and-forget task as part of the job).
+                async def _factory_enrichment_with_timeout():
+                    try:
+                        await asyncio.wait_for(
+                            _trigger_factory_enrichment(
+                                workspace_id=workspace_id,
+                                product_ids=all_product_ids,
+                                scope_column='source_document_id',
+                                scope_value=document_id,
+                                logger=logger,
+                            ),
+                            timeout=120,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            f"⏱️ Factory enrichment for document {document_id} "
+                            f"exceeded 120s — abandoning so endpoints can scale down"
+                        )
+
+                _fe_task = asyncio.create_task(_factory_enrichment_with_timeout())
                 _fe_task.add_done_callback(lambda t: logger.error(
                     f"❌ Factory enrichment task failed: {t.exception()}",
                     exc_info=t.exception(),
@@ -3547,14 +3788,50 @@ async def process_document_with_discovery(
         if 'endpoint_managers' not in locals():
             endpoint_managers = {}
 
+        # P0-2 fix: scale every endpoint we attempted to wake, even if its
+        # manager wasn't fully registered. We hit HF directly via
+        # get_inference_endpoint(...).update(min_replica=0,...) so a partial
+        # warmup that resumed the endpoint (= billing started) but failed
+        # before manager registration still gets scaled down.
+        from app.config import get_settings as _get_settings_for_cleanup
+        _cleanup_settings = _get_settings_for_cleanup()
+        _config_getters = {
+            'qwen': _cleanup_settings.get_qwen_config,
+            'slig': _cleanup_settings.get_slig_config,
+            'yolo': _cleanup_settings.get_yolo_config,
+            'chandra': _cleanup_settings.get_chandra_config,
+        }
         for name in endpoints_to_scale:
+            scaled = False
             if name in endpoint_managers:
                 try:
                     if endpoint_managers[name].scale_to_zero():
-                        scaled_count += 1
-                        logger.info(f"   ✅ {name.upper()} endpoint scaled to zero")
+                        scaled = True
+                        logger.info(f"   ✅ {name.upper()} endpoint scaled to zero (via manager)")
                 except Exception as scale_error:
-                    logger.warning(f"   ⚠️ Failed to scale {name} endpoint to zero: {scale_error}")
+                    logger.warning(f"   ⚠️ Failed to scale {name} via manager: {scale_error}")
+
+            # Fallback: hit HF directly if the manager path didn't work
+            if not scaled:
+                try:
+                    cfg = _config_getters[name]() or {}
+                    ep_name = cfg.get('endpoint_name')
+                    ns = cfg.get('namespace', 'basiliskan')
+                    token = cfg.get('hf_token') or cfg.get('endpoint_token')
+                    if ep_name and token:
+                        from huggingface_hub import get_inference_endpoint
+                        ep = get_inference_endpoint(name=ep_name, namespace=ns, token=token)
+                        ep.fetch()
+                        raw = getattr(ep, 'raw', {}) or {}
+                        max_rep = (raw.get('compute', {}).get('scaling', {}) or {}).get('maxReplica', 2)
+                        ep.update(min_replica=0, max_replica=max_rep)
+                        scaled = True
+                        logger.info(f"   ✅ {name.upper()} endpoint scaled to zero (direct HF fallback)")
+                except Exception as fallback_error:
+                    logger.warning(f"   ⚠️ Direct HF fallback failed for {name}: {fallback_error}")
+
+            if scaled:
+                scaled_count += 1
 
         # 5. Clear endpoint registry (cleanup singleton state)
         try:

@@ -183,18 +183,19 @@ async def process_single_product(
                 yolo_config = settings.get_yolo_config()
                 detector = YoloLayoutDetector(config=yolo_config)
 
-                # ✅ FIX: Reuse existing temp PDF
+                # P2-6: STRICT temp PDF reuse. The orchestrator always
+                # provides temp_pdf_path; if it's missing or gone, that's
+                # a bug — fail loudly instead of silently re-creating.
                 used_temp_path = temp_pdf_path
                 created_temp = False
 
                 if not used_temp_path or not os.path.exists(used_temp_path):
-                    logger_instance.info("      ⚠️ No temp_pdf_path provided, creating temporary copy...")
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-                        tmp_file.write(file_content)
-                        used_temp_path = tmp_file.name
-                        created_temp = True
-                else:
-                    logger_instance.info(f"      ♻️ Reusing existing temp PDF: {used_temp_path}")
+                    raise RuntimeError(
+                        f"YOLO stage: temp PDF not available "
+                        f"(path={used_temp_path!r}). Orchestrator must keep "
+                        f"the temp PDF alive for the duration of the job."
+                    )
+                logger_instance.info(f"      ♻️ Reusing existing temp PDF: {used_temp_path}")
 
                 try:
                     # Detect layout regions for each physical page
@@ -586,37 +587,30 @@ async def process_single_product(
                             tables_by_page[p_num] = []
                         tables_by_page[p_num].append(region)
 
-                    # Extract tables
+                    # Extract tables — P2-6: strict reuse of orchestrator temp PDF
                     all_tables = []
-                    # Use existing temp path if available
                     tab_temp_path = temp_pdf_path
-                    tab_created_temp = False
-                    
                     if not tab_temp_path or not os.path.exists(tab_temp_path):
-                        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-                            tmp_file.write(file_content)
-                            tab_temp_path = tmp_file.name
-                            tab_created_temp = True
+                        raise RuntimeError(
+                            f"Table extraction stage: temp PDF not available "
+                            f"(path={tab_temp_path!r})."
+                        )
 
-                    try:
-                        for page_num, regions in tables_by_page.items():
-                            tables = extractor.extract_tables_from_page(
-                                pdf_path=tab_temp_path,
-                                page_number=page_num,
-                                table_regions=regions
-                            )
-                            all_tables.extend(tables)
+                    for page_num, regions in tables_by_page.items():
+                        tables = extractor.extract_tables_from_page(
+                            pdf_path=tab_temp_path,
+                            page_number=page_num,
+                            table_regions=regions
+                        )
+                        all_tables.extend(tables)
 
-                        if all_tables:
-                            stored_count = await extractor.store_tables_in_database(
-                                product_id=product_db_id,
-                                tables=all_tables,
-                                supabase_client=supabase_client
-                            )
-                            logger_instance.info(f"   ✅ Stored {stored_count} tables")
-                    finally:
-                        if tab_created_temp and tab_temp_path and os.path.exists(tab_temp_path):
-                            os.unlink(tab_temp_path)
+                    if all_tables:
+                        stored_count = await extractor.store_tables_in_database(
+                            product_id=product_db_id,
+                            tables=all_tables,
+                            supabase_client=supabase_client
+                        )
+                        logger_instance.info(f"   ✅ Stored {stored_count} tables")
             except Exception as e:
                 logger_instance.error(f"❌ Failed to store layout/tables: {e}")
 

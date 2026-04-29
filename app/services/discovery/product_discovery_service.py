@@ -699,6 +699,15 @@ class ProductDiscoveryService:
 
         except Exception as e:
             self.logger.error(f"Failed to load discovery prompt from database: {e}")
+            # P2-7: surface prompt-enhancement failures into the job metadata
+            # so the admin UI shows them. Best-effort — don't mask the original
+            # error.
+            await self._record_prompt_warning(
+                workspace_id=workspace_id,
+                stage="discovery",
+                category="products",
+                error=str(e),
+            )
             raise ValueError(
                 f"Discovery prompt not found in database for workspace={workspace_id}, "
                 f"stage=discovery, category=products. Please add it via /admin/ai-configs."
@@ -755,10 +764,49 @@ class ProductDiscoveryService:
 
         except Exception as e:
             self.logger.error(f"Failed to load index_scan prompt from database: {e}")
+            await self._record_prompt_warning(
+                workspace_id=workspace_id,
+                stage="discovery",
+                category="index_scan",
+                error=str(e),
+            )
             raise ValueError(
                 f"Index scan prompt not found in database for workspace={workspace_id}, "
                 f"stage=discovery, category=index_scan. Please add it via /admin/ai-configs."
             )
+
+    async def _record_prompt_warning(
+        self,
+        *,
+        workspace_id: str,
+        stage: str,
+        category: str,
+        error: str,
+    ) -> None:
+        """P2-7: best-effort write of prompt-enhancement failures to job
+        metadata so the AsyncJobQueueMonitor can show them as warnings.
+        Silent on failure — this is purely informational.
+        """
+        try:
+            job_id = getattr(self.tracker, 'job_id', None) if getattr(self, 'tracker', None) else None
+            if not job_id:
+                return
+            from app.services.core.supabase_client import get_supabase_client
+            sb = get_supabase_client().client
+            row = sb.table('background_jobs').select('metadata').eq('id', job_id).single().execute()
+            meta = (row.data or {}).get('metadata') or {}
+            warnings = meta.get('warnings') or []
+            warnings.append({
+                'kind': 'prompt_enhancement_failed',
+                'workspace_id': workspace_id,
+                'stage': stage,
+                'category': category,
+                'error': error[:500],
+            })
+            meta['warnings'] = warnings[-20:]  # cap
+            sb.table('background_jobs').update({'metadata': meta}).eq('id', job_id).execute()
+        except Exception:
+            pass
 
 
     def _repair_json(self, json_str: str) -> str:
@@ -776,31 +824,37 @@ class ProductDiscoveryService:
         prompt: str,
         job_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Use the configured Claude model for product discovery."""
-        start_time = datetime.now()
+        """Use the configured Claude model for product discovery.
 
-        try:
-            from app.config import get_settings as _get_settings_disc
-            claude_model = _get_settings_disc().anthropic_model_validation
-            ai_service = get_ai_client_service()
-            client = ai_service.anthropic
+        P0-5 cost control:
+          - First attempt uses the configured (Opus) model.
+          - On JSON-parse failure or transient API error, retry ONCE with
+            claude-haiku-4-5 (much cheaper, comparable structured-output
+            quality). After 2 attempts total, give up — yesterday we saw
+            22 retries with 22 × Opus billing for the same broken call.
+        """
+        from app.config import get_settings as _get_settings_disc
+        primary_model = _get_settings_disc().anthropic_model_validation
+        # Haiku 4.5 is roughly 1/12th the price of Opus 4.7 per token —
+        # acceptable degradation for the retry path.
+        attempts = [primary_model, "claude-haiku-4-5"]
+        last_error: Optional[Exception] = None
 
-            response = client.messages.create(
-                model=claude_model,
-                max_tokens=16000,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
-            )
-            
-            content = response.content[0].text.strip()
-            
-            # Parse JSON from response
+        for attempt_idx, model_to_use in enumerate(attempts, start=1):
+            start_time = datetime.now()
             try:
-                # Extract JSON from markdown code blocks if present
+                ai_service = get_ai_client_service()
+                client = ai_service.anthropic
+
+                response = client.messages.create(
+                    model=model_to_use,
+                    max_tokens=16000,
+                    messages=[
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+                content = response.content[0].text.strip()
+
                 if "```json" in content:
                     json_start = content.find("```json") + 7
                     json_end = content.find("```", json_start)
@@ -813,46 +867,48 @@ class ProductDiscoveryService:
                 try:
                     result = json.loads(content)
                 except json.JSONDecodeError as first_error:
-                    self.logger.warning(f"First JSON parse failed, attempting repair: {first_error}")
-                    try:
-                        repaired = self._repair_json(content)
-                        result = json.loads(repaired)
-                        self.logger.info("Successfully repaired and parsed JSON")
-                    except json.JSONDecodeError as e:
-                        self.logger.error(f"Failed to parse Claude response as JSON even after repair: {e}")
-                        self.logger.debug(f"Raw response (first 1000 chars): {content[:1000]}")
-                        raise RuntimeError(f"Claude returned invalid JSON: {e}")
+                    self.logger.warning(
+                        f"[discovery attempt {attempt_idx}/{len(attempts)} {model_to_use}] "
+                        f"JSON parse failed, attempting repair: {first_error}"
+                    )
+                    repaired = self._repair_json(content)
+                    result = json.loads(repaired)  # raises if still bad
+                    self.logger.info("Repaired JSON parsed successfully")
 
-                # DEBUG: Log how many products Claude found
                 products_found = len(result.get("products", []))
-                self.logger.info(f"🔍 {claude_model} discovered {products_found} products")
+                self.logger.info(f"🔍 {model_to_use} discovered {products_found} products")
                 if products_found > 0:
                     product_names = [p.get("name", "Unknown") for p in result.get("products", [])]
                     self.logger.info(f"   Product names: {product_names}")
 
-                # Log AI call
                 latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
                 await self.ai_logger.log_claude_call(
                     task="product_discovery",
-                    model=claude_model,
+                    model=model_to_use,
                     response=response,
                     latency_ms=latency_ms,
                     confidence_score=result.get("confidence_score", 0.9),
                     confidence_breakdown={},
-                    action="use_ai_result",
+                    action="use_ai_result" if attempt_idx == 1 else "fallback_to_rules",
                     job_id=job_id
                 )
-                
                 return result
-                
-            except json.JSONDecodeError as e:
-                self.logger.error(f"Failed to parse Claude response as JSON: {e}")
-                self.logger.debug(f"Raw response (first 500 chars): {content[:500]}")
-                raise RuntimeError(f"Claude returned invalid JSON: {e}")
-                
-        except Exception as e:
-            self.logger.error(f"Claude product discovery failed: {e}")
-            raise RuntimeError(f"Claude product discovery failed: {str(e)}") from e
+
+            except Exception as e:
+                last_error = e
+                self.logger.error(
+                    f"[discovery attempt {attempt_idx}/{len(attempts)} {model_to_use}] failed: {e}"
+                )
+                # Continue to next attempt (with cheaper model) only if not last attempt
+                if attempt_idx < len(attempts):
+                    self.logger.warning(
+                        f"   ↩️  Retrying ONCE with {attempts[attempt_idx]} (cost-control fallback)"
+                    )
+
+        # Both attempts exhausted — surface to caller, no more retries.
+        raise RuntimeError(
+            f"Claude product discovery failed after {len(attempts)} attempts: {last_error}"
+        ) from last_error
     
     def _parse_discovery_results(
         self,

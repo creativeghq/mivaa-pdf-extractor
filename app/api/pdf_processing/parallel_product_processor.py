@@ -151,35 +151,50 @@ async def process_products_parallel(
         'clip_embeddings': 0
     }
 
+    # P2-2: per-product timeout. Without this, a stalled product (HF endpoint
+    # hang, network blip, runaway Claude call) wedges the entire parallel
+    # gather indefinitely, holding HF endpoints up at full bill rate.
+    # Default 10 min/product, configurable via PRODUCT_PROCESSING_TIMEOUT_SECONDS.
+    import os as _os_p2
+    per_product_timeout = int(_os_p2.environ.get('PRODUCT_PROCESSING_TIMEOUT_SECONDS', '600'))
+
     async def process_with_semaphore(product: Any, product_index: int) -> ProductProcessingResult:
         """Process a single product with semaphore-controlled concurrency."""
         async with semaphore:
             try:
-                logger_instance.info(f"▶️  Starting product {product_index}/{total_products}: {product.name}")
+                logger_instance.info(
+                    f"▶️  Starting product {product_index}/{total_products}: {product.name} "
+                    f"(timeout {per_product_timeout}s)"
+                )
 
-                # Update tracker
+                # P2-8: per-product handlers update progress only (cheap),
+                # not the heartbeat. The orchestrator's threaded heartbeat
+                # owns last_heartbeat — multiple writers race on the same row
+                # and produce inconsistent timestamps.
                 async with update_lock:
                     tracker.current_step = f"Processing product {product_index}/{total_products}: {product.name}"
-                    await tracker.update_heartbeat()
 
-                # Process the product
-                product_result = await process_single_product(
-                    product=product,
-                    product_index=product_index,
-                    total_products=total_products,
-                    file_content=file_content,
-                    document_id=document_id,
-                    workspace_id=workspace_id,
-                    job_id=job_id,
-                    catalog=catalog,
-                    tracker=tracker,
-                    product_tracker=product_tracker,
-                    checkpoint_recovery_service=checkpoint_recovery_service,
-                    supabase=supabase,
-                    config=config,
-                    logger_instance=logger_instance,
-                    total_pages=total_pages,
-                    temp_pdf_path=temp_pdf_path
+                # Process the product (P2-2: hard-capped wall time)
+                product_result = await asyncio.wait_for(
+                    process_single_product(
+                        product=product,
+                        product_index=product_index,
+                        total_products=total_products,
+                        file_content=file_content,
+                        document_id=document_id,
+                        workspace_id=workspace_id,
+                        job_id=job_id,
+                        catalog=catalog,
+                        tracker=tracker,
+                        product_tracker=product_tracker,
+                        checkpoint_recovery_service=checkpoint_recovery_service,
+                        supabase=supabase,
+                        config=config,
+                        logger_instance=logger_instance,
+                        total_pages=total_pages,
+                        temp_pdf_path=temp_pdf_path,
+                    ),
+                    timeout=per_product_timeout,
                 )
 
                 # Update shared metrics
@@ -216,6 +231,21 @@ async def process_products_parallel(
                     })
 
                 return product_result
+
+            except asyncio.TimeoutError:
+                logger_instance.error(
+                    f"⏱️ Product {product_index}/{total_products} ({product.name}) "
+                    f"exceeded {per_product_timeout}s timeout — marking failed"
+                )
+                async with update_lock:
+                    metrics['failed'] += 1
+                return ProductProcessingResult(
+                    product_id=f"product_{product_index}_{product.name.replace(' ', '_')}",
+                    product_name=product.name,
+                    product_index=product_index,
+                    success=False,
+                    error=f"Per-product timeout ({per_product_timeout}s) exceeded",
+                )
 
             except Exception as e:
                 logger_instance.error(f"❌ Exception processing product {product.name}: {e}", exc_info=True)
@@ -316,34 +346,42 @@ async def _process_products_sequential(
     result = ParallelProcessingResult()
     start_time = datetime.utcnow()
 
+    # P2-2: per-product timeout (sequential path).
+    import os as _os_p2_seq
+    per_product_timeout = int(_os_p2_seq.environ.get('PRODUCT_PROCESSING_TIMEOUT_SECONDS', '600'))
+
     for product_index, product in enumerate(products, start=1):
         try:
             logger_instance.info(f"\n{'─'*80}")
             logger_instance.info(f"Processing product {product_index}/{total_products}: {product.name}")
             logger_instance.info(f"{'─'*80}")
 
+            # P2-8: orchestrator's threaded heartbeat owns last_heartbeat.
+            # Sequential per-product loop only updates the visible step name.
             tracker.current_step = f"Processing product {product_index}/{total_products}: {product.name}"
             tracker.progress_current = product_index - 1
             tracker.progress_total = total_products
-            await tracker.update_heartbeat()
 
-            product_result = await process_single_product(
-                product=product,
-                product_index=product_index,
-                total_products=total_products,
-                file_content=file_content,
-                document_id=document_id,
-                workspace_id=workspace_id,
-                job_id=job_id,
-                catalog=catalog,
-                tracker=tracker,
-                product_tracker=product_tracker,
-                checkpoint_recovery_service=checkpoint_recovery_service,
-                supabase=supabase,
-                config=config,
-                logger_instance=logger_instance,
-                total_pages=total_pages,
-                temp_pdf_path=temp_pdf_path
+            product_result = await asyncio.wait_for(
+                process_single_product(
+                    product=product,
+                    product_index=product_index,
+                    total_products=total_products,
+                    file_content=file_content,
+                    document_id=document_id,
+                    workspace_id=workspace_id,
+                    job_id=job_id,
+                    catalog=catalog,
+                    tracker=tracker,
+                    product_tracker=product_tracker,
+                    checkpoint_recovery_service=checkpoint_recovery_service,
+                    supabase=supabase,
+                    config=config,
+                    logger_instance=logger_instance,
+                    total_pages=total_pages,
+                    temp_pdf_path=temp_pdf_path,
+                ),
+                timeout=per_product_timeout,
             )
 
             result.results.append(product_result)

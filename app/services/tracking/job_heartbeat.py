@@ -7,10 +7,17 @@ for many minutes. Without a periodic heartbeat the auto-recovery cron cannot
 distinguish "still working" from "process died." This helper writes a
 heartbeat every `JOB_HEARTBEAT_INTERVAL_SECONDS` while the orchestrator is
 running, regardless of stage progress.
+
+P1-3 fix: heartbeat runs on a real OS thread (not asyncio.create_task) so
+even if the orchestrator's event loop is blocked by a long synchronous call
+(PyMuPDF page processing, sync HF SDK, big GC pause) the heartbeat keeps
+firing. Without this, a CPU-bound stage looks "stuck" to the auto-recovery
+cron and triggers unnecessary recovery attempts.
 """
 
 import asyncio
 import logging
+import threading
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -33,43 +40,48 @@ class JobHeartbeat:
             from app.config import get_settings
             interval_seconds = get_settings().job_heartbeat_interval_seconds
         self.interval_seconds = max(15, int(interval_seconds))
-        self._task: Optional[asyncio.Task] = None
-        self._stop = asyncio.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
 
-    async def _write_once(self) -> None:
+    def _write_once(self) -> None:
+        """Synchronous heartbeat write — runs on the heartbeat thread, not the asyncio loop."""
         try:
             now = datetime.now(timezone.utc).isoformat()
-            await asyncio.to_thread(
-                lambda: self.supabase.client.table('background_jobs').update({
-                    'last_heartbeat': now,
-                }).eq('id', self.job_id).execute()
-            )
+            self.supabase.client.table('background_jobs').update({
+                'last_heartbeat': now,
+            }).eq('id', self.job_id).execute()
         except Exception as e:
             # Heartbeat failures are not fatal — the orchestrator continues.
             # Auto-recovery cron uses last_heartbeat ± stuck_threshold so a
             # short outage just looks like one missed heartbeat.
             logger.debug(f"heartbeat write failed for {self.job_id}: {e}")
 
-    async def _loop(self) -> None:
+    def _thread_loop(self) -> None:
+        """Threaded heartbeat loop. Runs independently of the asyncio event loop."""
         # Write one immediately so dashboards show "started" instantly.
-        await self._write_once()
-        while not self._stop.is_set():
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=self.interval_seconds)
-            except asyncio.TimeoutError:
-                await self._write_once()
+        self._write_once()
+        while not self._stop_event.is_set():
+            # Event.wait returns True if set, False if timeout — we use it
+            # as a non-busy sleep that can be interrupted by stop().
+            if self._stop_event.wait(timeout=self.interval_seconds):
+                break
+            self._write_once()
+        # Final heartbeat so the cron sees a fresh timestamp on natural completion.
+        self._write_once()
 
     async def __aenter__(self) -> "JobHeartbeat":
-        self._stop.clear()
-        self._task = asyncio.create_task(self._loop(), name=f"heartbeat-{self.job_id}")
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._thread_loop,
+            name=f"heartbeat-{self.job_id}",
+            daemon=True,
+        )
+        self._thread.start()
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
-        self._stop.set()
-        if self._task is not None:
-            try:
-                await asyncio.wait_for(self._task, timeout=5.0)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                self._task.cancel()
-        # Final heartbeat so the cron sees a fresh timestamp on natural completion.
-        await self._write_once()
+        self._stop_event.set()
+        if self._thread is not None:
+            # Wait briefly for the thread to flush its final write.
+            # Don't block forever — daemon=True so it'll die with the process.
+            await asyncio.to_thread(self._thread.join, 5.0)

@@ -645,9 +645,33 @@ class DynamicMetadataExtractor:
             self.logger.error(f"Metadata extraction failed: {e}")
             return self._get_empty_result(error=str(e))
     
+    # P0-6 cost control: in-process content-hash cache. Same product text
+    # → same metadata, no second Claude call. Capped at 64 entries per
+    # extractor instance (typical job has 5-30 products).
+    _CALL_CACHE: Dict[str, str] = {}
+    _CALL_CACHE_MAX = 64
+
     async def _call_claude(self, prompt: str) -> str:
-        """Call Claude Opus 4.7 for metadata extraction."""
+        """Call Claude for metadata extraction.
+
+        P0-6 cost control:
+          - Uses claude-haiku-4-5 by default (12× cheaper than Opus, accurate
+            enough for structured field extraction). Override via env
+            METADATA_EXTRACTOR_MODEL if you need to escalate.
+          - SHA-256 cache by prompt: identical inputs return cached responses
+            instead of re-billing.
+        """
+        import hashlib
+        import os as _os
+
+        cache_key = hashlib.sha256(prompt.encode('utf-8', errors='replace')).hexdigest()
+        cached = DynamicMetadataExtractor._CALL_CACHE.get(cache_key)
+        if cached is not None:
+            self.logger.info("💰 Metadata extraction cache hit — skipping Claude call")
+            return cached
+
         start_time = datetime.now()
+        model = _os.environ.get("METADATA_EXTRACTOR_MODEL", "claude-haiku-4-5")
 
         try:
             # Use centralized AI client service
@@ -655,7 +679,7 @@ class DynamicMetadataExtractor:
             client = ai_service.anthropic
 
             response = client.messages.create(
-                model="claude-opus-4-7",
+                model=model,
                 max_tokens=16000,
                 messages=[
                     {
@@ -667,11 +691,17 @@ class DynamicMetadataExtractor:
 
             content = response.content[0].text
 
+            # Cache (LRU-ish: drop oldest when full)
+            cache = DynamicMetadataExtractor._CALL_CACHE
+            if len(cache) >= DynamicMetadataExtractor._CALL_CACHE_MAX:
+                cache.pop(next(iter(cache)))
+            cache[cache_key] = content
+
             # Log AI call
             latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
             await self.ai_logger.log_claude_call(
                 task="dynamic_metadata_extraction",
-                model="claude-opus-4-7",
+                model=model,
                 response=response,
                 latency_ms=latency_ms,
                 confidence_score=0.9,

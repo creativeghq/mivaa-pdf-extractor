@@ -428,44 +428,57 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ Failed to stop job monitor service: {e}")
 
-    # Mark active jobs as interrupted in database before shutdown
+    # P1-1: shutdown queries DB directly so we catch jobs that are NOT in
+    # this process's in-memory job_storage (e.g. a job started by a previous
+    # uvicorn worker that's still flagged 'processing' in the database).
+    # in-memory state is unreliable across restart boundaries.
     try:
-        import sys
-        if 'app.api.rag_routes' in sys.modules:
-            from app.api.rag_routes import job_storage
-            # get_supabase_client is already imported at top of file - don't re-import locally
+        supabase_client = get_supabase_client()
+        active_resp = (
+            supabase_client.client.table('background_jobs')
+            .select('id, document_id, filename, last_heartbeat')
+            .eq('status', 'processing')
+            .in_('job_type', ['product_discovery_upload', 'pdf_processing'])
+            .execute()
+        )
+        active_rows = active_resp.data or []
+        if active_rows:
+            logger.error(
+                f"🛑 SHUTDOWN: {len(active_rows)} job(s) flagged 'processing' in DB - marking as interrupted"
+            )
+            now_iso = datetime.now().isoformat()
+            for row in active_rows:
+                jid = row['id']
+                logger.error(
+                    f"   - Job {jid}: Document {row.get('document_id', 'unknown')}, "
+                    f"last_heartbeat={row.get('last_heartbeat')}, file={row.get('filename')}"
+                )
+                try:
+                    supabase_client.client.table('background_jobs').update({
+                        'status': 'interrupted',
+                        'error': 'Service restart detected',
+                        'interrupted_at': now_iso,
+                        'updated_at': now_iso,
+                    }).eq('id', jid).eq('status', 'processing').execute()
+                    logger.info(f"   ✅ Marked {jid} as interrupted")
+                except Exception as job_error:
+                    logger.error(f"   ❌ Failed to mark {jid} as interrupted: {job_error}")
 
-            active_jobs = [job_id for job_id, job in job_storage.items() if job.get("status") == "processing"]
-            if active_jobs:
-                logger.error(f"🛑 SHUTDOWN WARNING: {len(active_jobs)} jobs still processing - marking as interrupted")
-
-                supabase_client = get_supabase_client()
-                for job_id in active_jobs:
-                    job = job_storage[job_id]
-                    logger.error(f"   - Job {job_id}: Document {job.get('document_id', 'unknown')}, Started: {job.get('started_at', 'unknown')}")
-
-                    # Mark job as interrupted in database
-                    try:
-                        supabase_client.client.table('background_jobs').update({
-                            'status': 'interrupted',
-                            'error': 'Service restart detected',
-                            'interrupted_at': datetime.now().isoformat(),
-                            'updated_at': datetime.now().isoformat()
-                        }).eq('id', job_id).execute()
-
-                        # Update in-memory storage
-                        job_storage[job_id]['status'] = 'interrupted'
-                        job_storage[job_id]['error'] = 'Service restart detected'
-
-                        logger.info(f"   ✅ Marked job {job_id} as interrupted in database")
-                    except Exception as job_error:
-                        logger.error(f"   ❌ Failed to mark job {job_id} as interrupted: {job_error}")
-            else:
-                logger.info("✅ No active jobs during shutdown")
+            # Also keep in-memory job_storage in sync if it's been imported
+            try:
+                import sys
+                if 'app.api.rag_routes' in sys.modules:
+                    from app.api.rag_routes import job_storage
+                    for row in active_rows:
+                        if row['id'] in job_storage:
+                            job_storage[row['id']]['status'] = 'interrupted'
+                            job_storage[row['id']]['error'] = 'Service restart detected'
+            except Exception:
+                pass
         else:
-            logger.info("ℹ️ RAG routes not yet initialized, skipping job interruption marking")
+            logger.info("✅ No active jobs during shutdown")
     except Exception as e:
-        logger.error(f"Failed to check/interrupt active jobs during shutdown: {e}")
+        logger.error(f"Failed to mark active jobs as interrupted during shutdown: {e}")
 
     logger.info("Shutting down PDF2Markdown Microservice...")
     await cleanup_resources(app, logger)

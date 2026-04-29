@@ -75,21 +75,29 @@ class EndpointAutoScaler:
         logger.info(f"✅ Endpoint Auto-Scaler initialized: enabled={enabled}, endpoints={len(self.managed_endpoints)}")
     
     async def initialize_endpoint_configs(self):
-        """Fetch and store the min/max replica configuration for each endpoint."""
+        """Fetch and store the min/max replica config AND current replica count
+        for each endpoint.
+
+        Seeding `_current_replicas` from actual HF state (not 0) is the fix for
+        the 'orphan replicas survive a restart and bill forever' leak: if the
+        previous MIVAA process died mid-job without running scale_to_zero(),
+        endpoints are still live on HF. Without this seeding the in-memory
+        view says replicas=0 (matches desired=0 when queue empty) and the
+        scaler never issues a scale-down, so we keep paying.
+        """
         if self._endpoints_initialized:
             return
-        
+
         for endpoint_name in self.managed_endpoints:
             try:
                 endpoint = self.get_endpoint(endpoint_name)
                 if endpoint:
                     endpoint.fetch()
-                    
-                    # Get scaling configuration from endpoint
+
+                    # Min/max replica config
                     scaling = getattr(endpoint, 'scaling', None)
                     raw = getattr(endpoint, 'raw', {})
-                    
-                    # Try to get from scaling object or raw data
+
                     if scaling:
                         min_rep = getattr(scaling, 'min_replica', 0)
                         max_rep = getattr(scaling, 'max_replica', 2)
@@ -97,41 +105,72 @@ class EndpointAutoScaler:
                         min_rep = raw['compute']['scaling'].get('minReplica', 0)
                         max_rep = raw['compute']['scaling'].get('maxReplica', 2)
                     else:
-                        # Default conservative values
                         min_rep = 0
                         max_rep = 2
-                    
+
+                    # Current actual replica count on HF — covers the case
+                    # where endpoints are still alive from before our restart.
+                    current_rep = getattr(endpoint, 'replica', None)
+                    if current_rep is None and 'compute' in raw:
+                        # Some HF SDK versions expose it as raw.compute.scaling.minReplica
+                        # while running; fall back to the configured min.
+                        current_rep = min_rep
+                    if current_rep is None:
+                        current_rep = 0
+
                     self._endpoint_configs[endpoint_name] = {
                         'min_replica': min_rep,
                         'max_replica': max_rep,
-                        'status': endpoint.status
+                        'status': endpoint.status,
                     }
-                    
-                    logger.info(f"📊 {endpoint_name}: min={min_rep}, max={max_rep}, status={endpoint.status}")
-                    
+                    self._current_replicas[endpoint_name] = int(current_rep)
+
+                    logger.info(
+                        f"📊 {endpoint_name}: min={min_rep}, max={max_rep}, "
+                        f"status={endpoint.status}, current_replicas={current_rep}"
+                    )
+
             except Exception as e:
                 logger.warning(f"⚠️ Could not fetch config for {endpoint_name}: {e}")
-                # Use defaults
                 self._endpoint_configs[endpoint_name] = {
                     'min_replica': 0,
-                    'max_replica': 2
+                    'max_replica': 2,
                 }
-        
+
         self._endpoints_initialized = True
         logger.info(f"✅ Initialized configs for {len(self._endpoint_configs)} endpoints")
     
     async def get_queue_depth(self) -> int:
-        """Get number of pending/processing jobs from database."""
+        """Get number of LIVE pending/processing jobs from database.
+
+        A job whose heartbeat is older than 5 minutes is treated as dead:
+        the worker is gone but the DB hasn't been reconciled yet (the
+        auto-recovery cron and our startup-resume path will handle it).
+        Counting these keeps endpoints scaled up at full bill rate and is
+        the source of the 'stuck job burns HF credits' bug.
+        """
         try:
             from app.services.core.supabase_client import get_supabase_client
-            
+
             supabase = get_supabase_client()
-            result = supabase.client.table('background_jobs') \
+            stale_cutoff = (datetime.utcnow() - timedelta(minutes=5)).isoformat()
+
+            # pending jobs: count all (no heartbeat yet — they're queued).
+            pending = supabase.client.table('background_jobs') \
                 .select('id', count='exact') \
-                .in_('status', ['pending', 'processing']) \
+                .eq('status', 'pending') \
                 .execute()
-            
-            return result.count or 0
+
+            # processing jobs: only count those with a fresh heartbeat
+            # (or no heartbeat yet — within 60s of creation).
+            recent_create_cutoff = (datetime.utcnow() - timedelta(seconds=60)).isoformat()
+            live_processing = supabase.client.table('background_jobs') \
+                .select('id', count='exact') \
+                .eq('status', 'processing') \
+                .or_(f'last_heartbeat.gte.{stale_cutoff},and(last_heartbeat.is.null,created_at.gte.{recent_create_cutoff})') \
+                .execute()
+
+            return (pending.count or 0) + (live_processing.count or 0)
         except Exception as e:
             logger.warning(f"Failed to get queue depth: {e}")
             return 0
@@ -204,19 +243,39 @@ class EndpointAutoScaler:
         if not self.enabled:
             return
 
+        # P3-3: cheap idle short-circuit — when the registry says nothing is
+        # processing AND we haven't tracked any live replicas, skip the DB
+        # round-trip entirely. Saves ~2880 supabase reads/day in the steady-
+        # state-idle case (auto-scaler ticks every 30s × 24h).
+        try:
+            from app.services.embeddings.endpoint_registry import endpoint_registry
+            if not endpoint_registry.is_processing() and self._endpoints_initialized and not any(
+                self._current_replicas.get(name, 0) > 0 for name in self.managed_endpoints
+            ):
+                return
+        except Exception:
+            pass
+
         queue_depth = await self.get_queue_depth()
 
-        # If queue is empty and no endpoints are tracked as running, skip entirely.
-        # This avoids making HuggingFace API calls (and generating errors/Sentry events)
-        # when endpoints are paused and nothing needs processing.
+        # First-tick guarantee: always run initialize_endpoint_configs at least
+        # once so we discover replicas already running from before this process
+        # started (e.g. mid-job restart). Without this we'd silently skip the
+        # scale-down for orphaned replicas because the in-memory view says 0.
+        if not self._endpoints_initialized:
+            await self.initialize_endpoint_configs()
+
+        # P0-1 cost watchdog: even when queue=0, if any endpoint is still
+        # running per HF state we must drive it down to 0. Don't early-return
+        # in that case — the scale-down logic at the bottom of this function
+        # will see desired=0 < current>0 and start the idle timer.
         if queue_depth == 0 and not any(
             self._current_replicas.get(name, 0) > 0 for name in self.managed_endpoints
         ):
+            # P3-3: skip the supabase round-trip on idle ticks too —
+            # the get_queue_depth call above already returned 0, no further
+            # work needed.
             return
-
-        # Initialize endpoint configs lazily — only when we actually need to scale
-        if not self._endpoints_initialized:
-            await self.initialize_endpoint_configs()
 
         for endpoint_name in self.managed_endpoints:
             config = self._endpoint_configs.get(endpoint_name, {'max_replica': 2})

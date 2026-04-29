@@ -159,7 +159,7 @@ class SLIGEndpointManager:
                 # Resume with retries
                 for attempt in range(self.max_resume_retries):
                     try:
-                        endpoint.resume().wait(timeout=300)  # Wait up to 5 minutes
+                        endpoint.resume().wait(timeout=90)  # P2-3: 90s cap (was 300s) — billing starts the moment resume succeeds  # Wait up to 5 minutes
                         self.resume_count += 1
                         self.last_resume_time = time.time()
                         self.warmup_completed = False  # Reset warmup flag
@@ -279,7 +279,7 @@ class SLIGEndpointManager:
                     endpoint.fetch()
                     if endpoint.status in ["paused", "scaledToZero"]:
                         logger.warning(f"⚠️ SLIG endpoint is {endpoint.status} - triggering resume")
-                        endpoint.resume().wait(timeout=300)
+                        endpoint.resume().wait(timeout=90)  # P2-3: 90s cap (was 300s) — billing starts the moment resume succeeds
                         self.resume_count += 1
                         self.last_resume_time = time.time()
                 except Exception as e:
