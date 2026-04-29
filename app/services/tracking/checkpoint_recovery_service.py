@@ -101,11 +101,35 @@ class CheckpointRecoveryService:
             if stage == ProcessingStage.CHUNKS_CREATED:
                 chunks_created = data.get('chunks_created', 0)
                 if chunks_created == 0:
-                    # Empty chunks is only a failure for full extraction
-                    # Scanned PDFs with images-only content may have 0 chunks legitimately
-                    should_fail = not is_filtered_extraction
-                    if should_fail:
-                        failure_reason = "Chunking completed but created 0 chunks - no text content found"
+                    # Per-product checkpoints carry `product_db_id` in metadata —
+                    # those represent a single product within a multi-product
+                    # job. An image-heavy product page legitimately produces
+                    # 0 text chunks (CLIP/SLIG image embeddings are the value
+                    # there). Don't fail the whole job because of one such
+                    # product — the document-level COMPLETED stage check
+                    # below is where "the whole job produced nothing" lives.
+                    is_per_product_checkpoint = bool(
+                        (metadata or {}).get('product_db_id')
+                        or data.get('product_db_id')
+                        or data.get('product_name')
+                    )
+                    if is_per_product_checkpoint:
+                        logger.warning(
+                            f"⚠️ Product '{data.get('product_name', 'unknown')}' "
+                            f"produced 0 text chunks (likely image-heavy pages) — "
+                            f"continuing pipeline; document-level validation will "
+                            f"catch a fully-empty job."
+                        )
+                        # Treat as a soft warning, NOT a failure.
+                        should_fail = False
+                    else:
+                        # Document-level chunks checkpoint with 0 chunks.
+                        # Empty chunks is only a failure for full extraction.
+                        # Scanned PDFs with images-only content may have 0 chunks
+                        # legitimately.
+                        should_fail = not is_filtered_extraction
+                        if should_fail:
+                            failure_reason = "Chunking completed but created 0 chunks - no text content found"
 
             elif stage == ProcessingStage.PRODUCTS_CREATED:
                 products_created = data.get('products_created', 0)
